@@ -25,21 +25,40 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [go]
+        # `actions` scans the workflows themselves — worth having regardless of Go,
+        # and it catches workflow-injection, which matters because claude-issue.yml
+        # feeds attacker-influenced issue text to an agent.
+        language: [go, actions]
 
     steps:
       - uses: actions/checkout@v7
 
+      # CodeQL fails hard with "no source code seen" rather than skipping, so the
+      # Go analysis stays off until there is Go to analyse. It switches itself on
+      # with the first commit that adds go.mod — no edit needed here.
+      - name: Source present for ${{ matrix.language }}?
+        id: src
+        run: |
+          if [ "${{ matrix.language }}" = "go" ] && [ ! -f go.mod ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No go.mod yet — skipping CodeQL for Go."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Initialize CodeQL
+        if: steps.src.outputs.present == 'true'
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           queries: security-and-quality
 
       - name: Autobuild
+        if: steps.src.outputs.present == 'true'
         uses: github/codeql-action/autobuild@v4
 
       - name: Perform CodeQL analysis
+        if: steps.src.outputs.present == 'true'
         uses: github/codeql-action/analyze@v4
         with:
           category: /language:${{ matrix.language }}
