@@ -1,7 +1,7 @@
 name: Dependency review
 
 # Blocks a PR that introduces a vulnerable or badly-licensed dependency.
-# FREE for public repositories.
+# Free because this repo is public.
 
 on:
   pull_request:
@@ -20,5 +20,6 @@ jobs:
         with:
           fail-on-severity: high
           comment-summary-in-pr: on-failure
-          # <FILL IN> tighten once the project's licence policy is decided:
-          # deny-licenses: GPL-3.0, AGPL-3.0
+          # This project is MIT and vendors almost nothing (see docs/security.md §5).
+          # Copyleft would force a licence change, so it is refused outright.
+          deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-3.0

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Block a commit that contains a secret.
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+#
+# This exists because Ralph commits autonomously — no human reads every diff
+# before it lands, and this repo is public. GitHub push protection catches known
+# vendor token formats; this catches the project's own secrets, which it does not
+# know about. See .gitleaks.toml.
+set -euo pipefail
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  # Warn loudly but do not block: a missing tool must not make the repo
+  # uncommittable. CI runs gitleaks too, so nothing reaches main unscanned.
+  printf '\033[33mwarning\033[0m: gitleaks not installed — commit NOT scanned locally.\n' >&2
+  printf '         install: https://github.com/gitleaks/gitleaks  (CI still enforces this)\n' >&2
+  exit 0
+fi
+
+if ! gitleaks protect --staged --redact --config .gitleaks.toml; then
+  printf '\n\033[31mblocked\033[0m: a staged change looks like a secret.\n' >&2
+  printf '  - If it is real: remove it, and rotate it. Assume it is already burned.\n' >&2
+  printf '  - If it is a false positive: add a narrow allowlist entry to .gitleaks.toml\n' >&2
+  printf '    in the same commit, so the exception is reviewable.\n' >&2
+  printf '  Do NOT reach for --no-verify.\n' >&2
+  exit 1
+fi

@@ -7,20 +7,32 @@ project. **No secret values appear in this repo — only their names.**
 
 ## What is wired up
 
-| Feature | File / location | Cost on a public repo |
+**This repo is public**, and that is a deliberate security decision rather than a
+default. On a private repo, secret scanning, push protection, CodeQL, dependency
+review, and rulesets are all either licence-gated or Pro-gated. Public makes every
+one of them free — on a project whose subject matter is secrets and an RCE surface,
+that tooling is worth more than design obscurity.
+
+| Feature | File / location | Status |
 |---|---|---|
-| CI guardrails (hook tests, template integrity) | `.github/workflows/ci.yml` | Free — Actions is free on GitHub-hosted runners for public repos |
-| Issue → automated PR | `.github/workflows/claude-issue.yml` | Runner is self-hosted; Claude API usage is billed by Anthropic |
-| CodeQL code scanning | `.github/workflows/codeql.yml` *(or Default setup)* | Free for public repos |
-| Secret scanning | Automatic | Free and on by default for public repos |
-| Push protection | Settings → Code security | Free for public repos — **turn it on** |
-| Dependabot alerts + updates | `.github/dependabot.yml` | Free |
-| Dependency review on PRs | `.github/workflows/dependency-review.yml` | Free for public repos |
-| Private vulnerability reporting | Settings → Code security | Free |
-| Issue Forms | `.github/ISSUE_TEMPLATE/*.yml` | Free |
-| Code owners review | `.github/CODEOWNERS` | Free |
-| Rulesets / branch protection | Settings → Rules | Free for public repos |
-| Discussions, Projects, Pages | Settings | Free |
+| CI guardrails (hook tests, template integrity) | `.github/workflows/ci.yml` | **On** — free on public repos |
+| gitleaks secret scan | `.github/workflows/ci.yml` + `.githooks/pre-commit` | **On** |
+| Issue → automated PR | `.github/workflows/claude-issue.yml` | **On** — GitHub-hosted; Claude usage billed by Anthropic |
+| Secret scanning + push protection | Settings → Code security | **On** |
+| CodeQL code scanning | `.github/workflows/codeql.yml` | **On** — `go` |
+| Dependency review on PRs | `.github/workflows/dependency-review.yml` | **On** |
+| Dependabot alerts + security updates | `.github/dependabot.yml` | **On** |
+| Dependency graph | Automatic | **On** |
+| Rulesets / branch protection | Settings → Rules | **On** |
+| Private vulnerability reporting | Settings → Code security | **On** |
+| Code owners review | `.github/CODEOWNERS` | **On** |
+| Issue Forms | `.github/ISSUE_TEMPLATE/*.yml` | **On** |
+
+**The cost of being public** is targeting, not design disclosure: the auth design is
+standard and does not depend on secrecy. What must never appear here is anything
+that identifies the actual deployment — hostname, tunnel ID, Access AUD, allowed
+emails, real paths. See [`deploy/README.md`](../deploy/README.md); every file there
+is an example, and the real values come from the environment or 1Password.
 
 ---
 
@@ -54,34 +66,21 @@ see the action's `docs/cloud-providers.md`.
 
 ---
 
-## 2. Self-hosted runner
+## 2. Runner
 
-`claude-issue.yml` targets `runs-on: [self-hosted]`.
+`claude-issue.yml` targets `runs-on: ubuntu-latest` — GitHub-hosted. There is no
+runner to install or keep online. This repo is private, so Actions minutes come out
+of the account's included quota rather than being free.
 
-Settings → **Actions → Runners → New self-hosted runner**, then follow the
-generated commands on your machine. Afterwards:
+**Do not move this to a self-hosted runner on the daemon's own host.** A self-hosted
+runner executes repository code on the machine it runs on; putting one on the box
+that also runs unsandboxed Claude sessions collapses two trust boundaries into one
+for no benefit. If a self-hosted runner is ever genuinely needed, it belongs on a
+separate machine.
 
-```bash
-cd ~/actions-runner
-sudo ./svc.sh install     # run as a service
-sudo ./svc.sh start
-sudo ./svc.sh status
-```
-
-The runner host must have: `git`, `bash`, `curl`, plus your project's toolchain.
-The action installs its own Bun/Claude Code dependencies.
-
-**Security note.** A self-hosted runner executes code from the repository. On a
-*public* repo this is a real risk: never enable it for `pull_request` events from
-forks. This template only triggers on `issues: [labeled]`, which requires write
-access to apply the label — that is the safety boundary. Do not widen the trigger
-without thinking it through.
-
-Prefer no runner to maintain? Change one line:
-
-```yaml
-runs-on: ubuntu-latest    # free for public repos
-```
+The trigger is `issues: [labeled]`, which requires write access to apply the label —
+that is the safety boundary. Do not widen it to `pull_request` without thinking it
+through.
 
 ---
 
@@ -113,16 +112,26 @@ including for the automation, which only ever opens PRs.
 
 ---
 
-## 5. Turn on the free security features
+## 5. Security features
 
-Settings → **Code security**:
+All free on a public repo, and all on:
 
-- [ ] Secret scanning — on (automatic for public repos)
-- [ ] **Push protection** — on
-- [ ] Private vulnerability reporting — on
-- [ ] Dependabot alerts — on
-- [ ] Dependabot security updates — on
-- [ ] Code scanning → CodeQL → **Default setup** (simplest), *or* fill in `codeql.yml`
+- [x] Dependabot alerts + security updates
+- [x] Dependency graph
+- [x] Secret scanning + push protection
+- [x] CodeQL (`codeql.yml`, `go`)
+- [x] Dependency review on PRs
+- [x] Private vulnerability reporting
+
+Plus gitleaks, which is not a GitHub feature. Enable the local hook once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+It no-ops with a warning if `gitleaks` is not installed, so a missing binary never
+makes the repo uncommittable. CI runs it regardless, which is what actually keeps
+an unscanned commit off `main`.
 
 ---
 
@@ -146,7 +155,7 @@ gh pr list                                   # a PR should appear, never a push 
 | Symptom | Cause |
 |---|---|
 | Workflow never starts | Label name differs from the `if:` in `claude-issue.yml` |
-| "No runner matching labels" | Runner offline, or labels do not include `self-hosted` |
+| "No runner matching labels" | Workflow was pointed at a runner label that does not exist |
 | Auth failure in the action | `ANTHROPIC_API_KEY` missing/expired at repo scope |
 | Agent opens a PR that ignores the rules | `settings: .claude/settings.json` was removed from the step |
 | CI fails on `AGENTS.md is N lines` | It grew past 150 — move detail into `docs/` and link it |

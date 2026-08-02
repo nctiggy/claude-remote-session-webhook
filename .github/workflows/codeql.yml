@@ -1,25 +1,17 @@
 name: CodeQL
 
-# Static analysis. FREE for public repositories (a Code Security licence is only
-# required for private repos).
-#
-# NOTE: this advanced workflow needs a language matrix. Until you pick a stack it
-# runs on manual dispatch only, so a fresh template never fails red.
-#
-# Easiest path for most projects: skip this file entirely and turn on
-#   Settings -> Code security -> Code scanning -> CodeQL analysis -> Default setup
-# which auto-detects languages and needs no YAML at all.
-#
-# To use THIS file instead: fill in `language:` below and re-enable the triggers.
+# Static analysis, configured for Go. Free because this repo is public — one of the
+# main reasons it is public. Given the daemon spawns unsandboxed sessions, the
+# `security-and-quality` query suite is the minimum, not a nice-to-have.
 
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: '27 4 * * 1'        # weekly, Monday 04:27 UTC
-  # push:
-  #   branches: [main]
-  # pull_request:
-  #   branches: [main]
+  schedule:
+    - cron: '27 4 * * 1'        # weekly, Monday 04:27 UTC
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -33,8 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # <FILL IN> e.g. [javascript-typescript, python, go, ruby, java-kotlin, csharp, c-cpp, swift]
-        language: [javascript-typescript]
+        language: [go]
 
     steps:
       - uses: actions/checkout@v7

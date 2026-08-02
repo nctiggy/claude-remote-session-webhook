@@ -27,7 +27,7 @@ jobs:
 
     # SELF-HOSTED, as specified. Swap to `ubuntu-latest` to use GitHub-hosted
     # runners instead (free for public repos).
-    runs-on: [self-hosted]
+    runs-on: ubuntu-latest
 
     timeout-minutes: 30
 

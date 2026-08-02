@@ -1,4 +1,4 @@
-# `<FILL IN: PROJECT_NAME>` Constitution
+# claude-remote-session-webhook Constitution
 
 The highest-authority document in this repo. Spec Kit reads it at
 `/speckit-specify`, `/speckit-plan`, `/speckit-tasks`, and `/speckit-implement`.
@@ -15,50 +15,70 @@ Operational detail lives in `AGENTS.md`. Principles live here.
 [`docs/security.md`](../../docs/security.md) is binding. Every plan and every task
 list is checked against it. A feature that cannot satisfy it does not ship.
 
-Specifically, and without exception:
-- Authorization is enforced **server-side on every request**. Client guards are UX.
+A request that passes authentication causes **unsandboxed code execution on the
+host**. There is no second line of defence behind the auth check. Therefore, and
+without exception:
+- Authorization is enforced **server-side on every request**. The calling skill is
+  not a trust boundary — anyone can write another client.
 - Ownership is checked, not merely authentication.
-- Input is validated at the boundary; output is encoded by context.
+- Input is validated at the boundary; no shell string is ever constructed.
+- Missing or weak auth configuration is a startup failure, never a warning.
 - No secret ever enters the repository.
 
-### II. Design system is binding (NON-NEGOTIABLE)
-
-[`docs/design-system.md`](../../docs/design-system.md) and
-[`docs/components.md`](../../docs/components.md) define the vocabulary.
-
-- Tokens only — never a hard-coded colour, size, or font in a component.
-- Reuse the canonical component. A second button component is a defect.
-- Every authenticated view shows user identity top-right. No exceptions.
-
-### III. Unknowns are surfaced, never invented (NON-NEGOTIABLE)
+### II. Unknowns are surfaced, never invented (NON-NEGOTIABLE)
 
 If a requirement is ambiguous, the artifact must say `NEEDS CLARIFICATION` and
 stop. A plausible guess that turns out wrong costs more than a question.
 
 This applies to specs, plans, tasks, PRs, and autonomous loop iterations alike.
 
-### IV. Every change is verifiable
+### III. Every change is verifiable
 
 "It works" is not a claim, it is a demonstration. A change is done when the
 build, test, and lint commands in `AGENTS.md` pass — the same commands CI runs.
 No merging on a red or skipped check.
 
-### V. Smallest correct change
+### IV. Smallest correct change
 
 Fix the thing asked for. Do not refactor adjacent code, rename things in passing,
 or "improve" what was not in scope. Unrequested churn hides real changes in review.
 
-### VI. Standards are enforced, not documented
+### V. Standards are enforced, not documented
 
 A rule that lives only in prose is a suggestion. Rules belong in
 `.claude/hooks/` and `.github/workflows/`, which are themselves tested
 (`.claude/hooks/test-hooks.sh`). Changing a guardrail requires a reviewed PR —
 that is the point, not friction to be avoided.
 
-### VII. `<FILL IN: PRINCIPLE_7>`
+### VI. Blast radius is bounded by construction (NON-NEGOTIABLE)
 
-`<FILL IN: project-specific principle — e.g. Test-First, Library-First,
-Observability, Simplicity/YAGNI. Delete if six is enough.>`
+Sessions run with `--dangerously-skip-permissions`. The permission prompt is gone,
+so every constraint it used to provide must be re-established structurally:
+
+- Working directories are **allowlisted**, resolved, and verified — never taken
+  from the caller as a free-form path.
+- Concurrent sessions are **capped**; the daemon refuses rather than degrading
+  the host.
+- Every session has an **idle timeout and an absolute lifetime**, enforced by a
+  reaper, not by the next request.
+- Teardown is **verified**, not assumed. An orphaned tmux window is a live
+  unsandboxed shell with no owner.
+- The listener binds **loopback only**. Reachability comes from the tunnel.
+
+A feature that widens any of these needs an explicit justification in the plan
+naming what now becomes reachable.
+
+### VII. Design system is binding
+
+[`docs/design-system.md`](../../docs/design-system.md) and
+[`docs/components.md`](../../docs/components.md) define the vocabulary for the
+dashboard.
+
+- Tokens only — never a hard-coded colour, size, or font in a template.
+- Reuse the canonical component. A second session card is a defect.
+- **Pane output is rendered as text, never as HTML.** Everything a Claude session
+  prints reaches the browser. This is the project's only XSS surface and it is
+  closed by construction, not by sanitising.
 
 ---
 
@@ -85,8 +105,9 @@ A change may merge only when all of these are true:
 - [ ] Build, test, and lint green (the `AGENTS.md` commands)
 - [ ] New behaviour has a test that fails without the change
 - [ ] `docs/security.md` checklist satisfied for anything touching input, authz, or secrets
+- [ ] `docs/auth-and-sessions.md` checklist satisfied, if auth or the session lifecycle was touched
+- [ ] Cross-session isolation still holds; teardown still verified
 - [ ] `docs/design-system.md` + `docs/components.md` respected for anything visual
-- [ ] Sign-out clears all state, if auth or session was touched
 - [ ] No `NEEDS CLARIFICATION` left unanswered
 - [ ] Reviewed by a code owner (`.github/CODEOWNERS`)
 
@@ -103,4 +124,4 @@ justification.
 
 Agents: `AGENTS.md` is your runtime guide; this document is the authority behind it.
 
-**Version**: 1.0.0 | **Ratified**: `<FILL IN: YYYY-MM-DD>` | **Last Amended**: `<FILL IN: YYYY-MM-DD>`
+**Version**: 1.0.0 | **Ratified**: 2026-08-02 | **Last Amended**: 2026-08-02

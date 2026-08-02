@@ -1,0 +1,40 @@
+# gitleaks configuration.
+#
+# Ralph commits autonomously, so a human does not see every diff before it lands.
+# On a public repo an accidental secret is harvested within minutes. This is the
+# backstop for the custom secrets GitHub's own scanning does not know about.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "crsw-shared-secret"
+description = "CRSW HMAC shared secret assigned a real value"
+# 32+ hex chars after the var name. The empty assignment in .env.example does not match.
+regex = '''(?i)CRSW_SHARED_SECRET\s*[=:]\s*['"]?[0-9a-f]{32,}'''
+tags = ["secret", "crsw"]
+
+[[rules]]
+id = "crsw-access-aud"
+description = "Cloudflare Access AUD tag"
+regex = '''(?i)CRSW_ACCESS_AUD\s*[=:]\s*['"]?[0-9a-f]{40,}'''
+tags = ["config", "crsw"]
+
+[[rules]]
+id = "cloudflare-tunnel-credentials"
+description = "Cloudflare tunnel credentials JSON"
+regex = '''"TunnelSecret"\s*:\s*"[A-Za-z0-9+/=]{40,}"'''
+tags = ["secret", "cloudflare"]
+
+[allowlist]
+description = "Documentation and examples carry placeholders, not secrets"
+paths = [
+  '''\.env\.example$''',
+  '''^deploy/.*\.example\..*$''',
+  '''^deploy/README\.md$''',
+  '''^docs/.*\.md$''',
+]
+# The all-zero tunnel ID used throughout the examples.
+regexes = [
+  '''00000000-0000-0000-0000-000000000000''',
+]

@@ -24,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0     # gitleaks scans history, not just the tip
 
       - name: Required context files exist
         run: |
@@ -32,8 +34,7 @@ jobs:
                    docs/design-system.md docs/components.md \
                    docs/auth-and-sessions.md docs/security.md docs/fixes-log.md \
                    ralph/PROMPT.md ralph/IMPLEMENTATION_PLAN.md ralph/PROGRESS.md ralph/loop.sh \
-                   .claude/settings.json .specify/memory/constitution.md \
-                   plugin/.claude-plugin/plugin.json plugin/skills/start-project/SKILL.md; do
+                   .claude/settings.json .specify/memory/constitution.md; do
             [ -f "$f" ] || { echo "::error::missing required file: $f"; exit 1; }
           done
           echo "All required files present."
@@ -67,11 +68,6 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck -S warning .claude/hooks/*.sh ralph/loop.sh .claude/statusline.sh
-          # The skill's bundled scripts ship to users; lint them too. Guarded
-          # because plugin/ is removed from generated projects.
-          if [ -d plugin/skills/start-project/scripts ]; then
-            shellcheck -S warning plugin/skills/start-project/scripts/*.sh
-          fi
 
       - name: Hook behaviour tests
         run: ./.claude/hooks/test-hooks.sh
@@ -107,6 +103,18 @@ jobs:
           fi
           echo "No secret-like files tracked."
 
+      # Ralph commits autonomously and this repo is public, so nothing reaches
+      # main unscanned. The .githooks/pre-commit hook is the local mirror of this;
+      # this step is what actually enforces it.
+      - name: gitleaks
+        run: |
+          VER=8.21.2
+          curl -sSL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz"
+          tar xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          chmod +x /tmp/gitleaks
+          /tmp/gitleaks detect --config .gitleaks.toml --redact --verbose
+
   # ---------------------------------------------------------------------------
   # Project checks. These are the commands from AGENTS.md — keep the two in sync.
   # Skipped until a stack is chosen, so a fresh template is green rather than red.
@@ -132,26 +140,30 @@ jobs:
             echo "No stack manifest yet. Fill in the AGENTS.md commands and these steps."
           fi
 
-      # <FILL IN> language setup, e.g.:
-      # - uses: actions/setup-node@v4
-      #   with: { node-version: '22', cache: 'npm' }
+      - uses: actions/setup-go@v5
+        if: steps.stack.outputs.present == 'true'
+        with:
+          go-version: '1.23'
+          cache: true
 
       - name: Install
         if: steps.stack.outputs.present == 'true'
-        run: 'echo "<FILL IN: npm ci>"'
+        run: go mod download
 
       - name: Lint
         if: steps.stack.outputs.present == 'true'
-        run: 'echo "<FILL IN: npm run lint>"'
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62
 
       - name: Typecheck
         if: steps.stack.outputs.present == 'true'
-        run: 'echo "<FILL IN: npm run typecheck>"'
+        run: go vet ./...
 
       - name: Test
         if: steps.stack.outputs.present == 'true'
-        run: 'echo "<FILL IN: npm test>"'
+        run: go test ./...
 
       - name: Build
         if: steps.stack.outputs.present == 'true'
-        run: 'echo "<FILL IN: npm run build>"'
+        run: go build ./...

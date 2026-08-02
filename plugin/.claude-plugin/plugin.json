@@ -1,9 +1,0 @@
-{
-  "name": "start-project",
-  "description": "Bootstrap a new project from the ai-project-template: creates the GitHub repo, fills in every placeholder, wires the guardrails, and hands back a repo ready for Spec Kit PRDs and Ralph loops.",
-  "version": "1.0.0",
-  "author": { "name": "Craig Smith" },
-  "homepage": "https://github.com/nctiggy/ai-project-template",
-  "repository": "https://github.com/nctiggy/ai-project-template",
-  "license": "MIT"
-}

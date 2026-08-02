@@ -1,0 +1,46 @@
+# Example systemd *user* unit. Copy outside the repo, fill in, then install to
+#   ~/.config/systemd/user/crswd.service
+#
+# A user unit, not a system one, on purpose: sessions should run as you, with your
+# environment and your repo access — not as root. Running this as root would hand
+# every session root on the host.
+
+[Unit]
+Description=Claude remote session webhook daemon
+Documentation=https://github.com/nctiggy/claude-remote-session-webhook
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/bin/crswd --listen 127.0.0.1:8787
+
+# Secrets come from a file that lives OUTSIDE the repo and is mode 0600.
+# Populate it from 1Password at deploy time; never commit it.
+#   op read "op://Lobster/crswd/shared-secret" > ~/.config/crswd/env
+EnvironmentFile=%h/.config/crswd/env
+
+# Non-secret configuration can live here inline.
+Environment=CRSW_ALLOWED_ROOTS=%h/code
+Environment=CRSW_SESSION_CAP=8
+Environment=CRSW_IDLE_TIMEOUT=60m
+Environment=CRSW_ABSOLUTE_LIFETIME=24h
+
+Restart=on-failure
+RestartSec=5s
+
+# Hardening. Note these protect the HOST FROM THE DAEMON, not sessions from each
+# other — sessions run with --dangerously-skip-permissions by design, and anything
+# the daemon can reach, a session can reach. Keep ALLOWED_ROOTS narrow; that is the
+# real control. See constitution Principle VI.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/code %h/.config/crswd %h/.claude
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target

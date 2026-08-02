@@ -17,17 +17,16 @@ updates:
       actions-minor-patch:
         update-types: [minor, patch]
 
-  # <FILL IN> uncomment the ecosystem this project actually uses.
-  # - package-ecosystem: npm
-  #   directory: "/"
-  #   schedule: { interval: weekly }
-  #   open-pull-requests-limit: 10
-  #   labels: [dependencies]
-  #   commit-message: { prefix: "chore(deps)" }
-  #   groups:
-  #     minor-and-patch:
-  #       update-types: [minor, patch]
-
-  # - package-ecosystem: pip
-  #   directory: "/"
-  #   schedule: { interval: weekly }
+  # The daemon leans on stdlib by design (see docs/security.md §5), so this list
+  # should stay short. A noisy gomod section means the dependency budget slipped.
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels: [dependencies]
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]

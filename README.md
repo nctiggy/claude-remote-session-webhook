@@ -1,216 +1,117 @@
-# ai-project-template
+# claude-remote-session-webhook
 
-A portable, tool-agnostic scaffold for AI-assisted development.
+Start and drive Claude Code sessions on your own machine, from anywhere.
 
-The premise: **consistency should come from the repository, not from remembering
-to ask for it.** Standards that live only in prose get skimmed and drift. So the
-rules here are enforced by hooks and CI, and every lane of work — human,
-autonomous loop, or GitHub automation — inherits the same guardrails.
+A self-hosted Go daemon (`crswd`) that serves a web dashboard and an HTTP API under
+a `*.example.com` hostname. Each session runs in a tmux window with
+`--dangerously-skip-permissions`. Two clients: a browser UI behind Cloudflare Access
+(Google identity), and a companion Claude skill authenticating by HMAC signature.
 
----
-
-## The three lanes
-
-All three read the same `AGENTS.md`, obey the same constitution, and run under the
-same hooks. That is the whole idea.
-
-**1. Feature — Spec Kit + Ralph**
-For anything with more than one moving part.
-```
-/speckit-constitution → /speckit-specify → /speckit-plan → /speckit-tasks → /speckit-implement
-```
-Paste the resulting tasks into `ralph/IMPLEMENTATION_PLAN.md` and let the loop
-work them one at a time, fresh context per iteration.
-
-**2. Quick fix**
-A typo, a one-line bug, bad copy. No spec, no ceremony. Fix it, verify it, append
-one line to `docs/fixes-log.md`.
-
-**3. GitHub issue → automated PR**
-Label an issue `claude-fix`. A self-hosted runner picks it up, works under the
-same rules, and opens a reviewable PR. It never pushes to `main`.
+> **Status: scaffolded, no implementation yet.** The contract (`AGENTS.md`), the
+> constitution, and the security docs are written. Code starts at milestone 1.
 
 ---
 
-## Layout
+## What it does
 
-```
-AGENTS.md                  ← the contract. Read first. Under 150 lines, on purpose.
-CLAUDE.md                  ← thin pointer to AGENTS.md
-docs/                      ← loaded on demand, not all at once
-  design-system.md           tokens, spacing, header rules
-  components.md              canonical components — use these, don't invent
-  auth-and-sessions.md       session handling; the no-bleed rule
-  security.md                input, authz, secrets
-  fixes-log.md               append-only quick-fix log
-  github-automation.md       runner, secrets, rulesets, free-tier setup
-.specify/                  ← Spec Kit: constitution, templates, scripts
-.claude/
-  settings.json              hook wiring
-  hooks/                     danger-guard · format-and-lint · session-start
-  hooks/test-hooks.sh        the guardrails are themselves tested
-  skills/speckit-*           Spec Kit slash commands
-ralph/
-  PROMPT.md                  loop prompt: ONE task, then exit
-  IMPLEMENTATION_PLAN.md     prioritized tasks
-  PROGRESS.md                append-only notebook across fresh contexts
-  loop.sh                    bounded loop, commits each iteration
-.github/
-  workflows/                 ci · claude-issue · codeql · dependency-review
-  ISSUE_TEMPLATE/            issue forms that feed automation cleanly
-  dependabot.yml · CODEOWNERS · PULL_REQUEST_TEMPLATE.md
-```
+- See every session in flight, with live pane output
+- Create, destroy, and rename sessions
+- Compact a session (`/compact` sent into the pane)
+- Relay Claude's own device-code login when a session asks for it
+- Drive all of the above from a Claude skill instead of the browser
 
----
+## Why it is built this way
 
-## Start a new project
+**tmux, not bare subprocesses.** Sessions survive a daemon restart, you can attach
+by hand to debug, and `send-keys` / `capture-pane` are what make `/compact` and the
+device-code login relay possible at all.
 
-### The easy way — the `start-project` skill
+**Cloudflare Tunnel, not an open port.** The daemon binds `127.0.0.1` only. The
+tunnel connects outbound; nothing inbound is ever opened on the host or the router.
 
-One command, no clone. Claude does the whole bootstrap: creates the repo, fills
-every placeholder, prunes docs that do not apply, enables the guardrails and the
-free GitHub security features, optionally wires a design system, and hands back a
-repo that is ready for specs and Ralph loops.
+**Cloudflare Access, not an in-daemon OAuth flow.** Google login and the one-email
+allowlist are enforced at the edge, so unauthenticated traffic never reaches the
+box. The daemon just validates the signed JWT — tens of lines instead of hundreds.
 
-```bash
-claude --plugin-url https://github.com/nctiggy/ai-project-template/releases/latest/download/start-project.zip
-```
+**Go templates + htmx, not an SPA.** Single static binary via `go:embed`. No npm,
+no second toolchain, and SSE is a natural fit for tailing pane output.
 
-then in the session:
+## The security posture, stated plainly
 
-```
-/start-project:start-project
-```
+A request that passes authentication is **arbitrary code execution as the daemon's
+user**. There is no sandbox behind the auth check.
 
-It reads what you already told it and asks only about genuine gaps — typically
-visibility, whether there is a UI, and whether there is auth. Everything else
-(build/test/lint commands, CI setup, CodeQL language, Dependabot ecosystem) is
-derived from the stack.
-
-Source lives in [`plugin/`](plugin/); it is removed from generated projects.
-
-### The manual way
-
-```bash
-gh repo create my-project --public --template nctiggy/ai-project-template --clone
-cd my-project
-rm -rf plugin/                          # template tooling, not project content
-
-grep -rn "<FILL IN" --exclude-dir=.git . # fill every marker, AGENTS.md first
-chmod +x .claude/hooks/*.sh ralph/loop.sh
-./.claude/hooks/test-hooks.sh            # should be 28/28
-
-claude
-> /speckit-constitution
-```
-
-Then configure the repo side once: [`docs/github-automation.md`](docs/github-automation.md).
+That is the whole point of the tool and also its entire risk. It is why
+[`docs/security.md`](docs/security.md) and
+[`docs/auth-and-sessions.md`](docs/auth-and-sessions.md) are binding documents
+rather than advice, and why the constitution has a principle dedicated to keeping
+the blast radius bounded. Read both before touching a handler.
 
 ---
 
-## Run a Ralph loop
+## Roadmap
 
-```bash
-git switch -c feat/my-feature          # loop refuses to run on main
-./ralph/loop.sh 5                      # cap at 5 iterations
-```
+Each milestone is planned and run separately — one Ralph loop per milestone, not
+one loop for the lot.
 
-Run `claude -p "$(cat ralph/PROMPT.md)"` manually two or three times first. Watch
-what it does. Only wrap it in the loop once the behaviour is boring — an
-autonomous loop amplifies whatever it already does, including mistakes.
-
-The loop stops on the iteration cap, on any failure, or when `RALPH_COMPLETE`
-appears in `ralph/PROGRESS.md`.
-
----
-
-## Trigger the issue automation
-
-```bash
-gh issue create --title "[bug] Sign-out leaves cached data" \
-  --body "1. Sign in as A  2. Sign out  3. Sign in as B → A's data still shows" \
-  --label claude-fix
-gh run watch
-gh pr list
-```
-
----
-
-## What is enforced
-
-| Hook | Fires | Does |
+| # | Milestone | Contents |
 |---|---|---|
-| `danger-guard.sh` | `PreToolUse` (Bash) | **Blocks** `rm -rf /`, `rm -rf ~`, force-push to main/master, `git reset --hard origin`, `DROP`/`TRUNCATE TABLE`, `mkfs`, `dd` to a device |
-| `format-and-lint.sh` | `PostToolUse` (Write/Edit) | Formats + auto-fixes the changed file. No-ops when a tool isn't installed |
-| `session-start.sh` | `SessionStart` | Injects git status, open TODOs, and the read-this-first checklist |
+| 1 | Daemon core | config, `tmuxctl`, session CRUD, HMAC auth, audit log, reaper. No UI. |
+| 2 | Read-only dashboard | Access JWT validation, session list, live pane via SSE |
+| 3 | Dashboard actions | create, destroy, rename, compact |
+| 4 | Claude login relay | detect device-code prompt, surface URL, relay code back |
 
-Plus, in CI: required files present, `AGENTS.md` under 150 lines, hooks executable
-and shellcheck-clean, all 28 hook behaviour tests green, no secret-like files tracked.
+## Working in this repo
+
+Read [`AGENTS.md`](AGENTS.md) first — it is the contract for humans and agents
+alike, and it names which `docs/` file to load for a given change.
+
+```bash
+git config core.hooksPath .githooks   # once per clone — gitleaks pre-commit
+cp .env.example .env                  # names only; fill in locally, never commit
+
+go mod download
+go build ./...
+go test ./...
+golangci-lint run
+```
+
+### Planning a milestone
+
+```
+/prd                    # write the PRD
+/prd-critic-loop        # Staff Engineer / SRE / Security passes
+```
+
+Then convert the milestone's tasks into `ralph/IMPLEMENTATION_PLAN.md` as a
+checklist. Spec Kit (`/speckit-specify` → `/speckit-plan` → `/speckit-tasks`) is
+the alternative route and is wired into this repo.
+
+> **Note:** `loop.sh` reads `ralph/IMPLEMENTATION_PLAN.md` (markdown checklist).
+> It does **not** read snarktank `prd.json` — that is a different Ralph.
+
+### Running a loop
+
+```bash
+git switch -c feat/milestone-1     # the loop refuses to run on main
+./ralph/loop.sh 5                  # cap at 5 iterations
+```
+
+Run `claude -p "$(cat ralph/PROMPT.md)"` by hand two or three times first and watch
+what it does. Wrap it in the loop only once the behaviour is boring.
 
 ---
 
-## Spec Kit provenance
+## Deployment
 
-`.specify/` and `.claude/skills/speckit-*` are **generated by `specify-cli`**, not
-hand-written. They are committed so a new project works immediately without
-re-running the tool.
+Example systemd user unit and `cloudflared` config live in [`deploy/`](deploy/).
 
-Pinned to a **stable release**, not `main` — an unpinned dev build makes the
-starting point of every future project non-reproducible.
+**Every file there is an example.** This repository is public, so no real hostname,
+tunnel ID, Access AUD tag, allowed email, or path appears in it — those come from
+the environment or 1Password at deploy time. `deploy/README.md` lists exactly what
+you supply and in what order, including how to verify the daemon really is bound to
+loopback once it is running.
 
-```bash
-pipx install "git+https://github.com/github/spec-kit.git@v0.14.4"   # or: uv tool install
-specify init . --integration claude --script sh --force
-```
+## Licence
 
-Recorded in `.specify/init-options.json` (`speckit_version`). To upgrade: bump the
-tag, re-run the two commands, then **restore `.specify/memory/constitution.md`** —
-`--force` overwrites it with the blank template.
-
-The skills are Claude-flavoured because of `--integration claude`. That is
-deliberate and does not compromise portability: `AGENTS.md` stays the
-tool-agnostic contract that Copilot, Cursor, and Codex read. Re-run `specify init`
-with a different `--integration` to add another agent alongside it.
-
-## Status line (opt-in)
-
-`.claude/statusline.sh` ships with the template but is **not enabled by default** —
-a status line is a personal preference, and forcing one through the shared
-`.claude/settings.json` would override whatever every collaborator already has.
-
-Turn it on for yourself, in your own user settings:
-
-```bash
-cp .claude/statusline.sh ~/.claude/statusline.sh && chmod +x ~/.claude/statusline.sh
-```
-
-then add to `~/.claude/settings.json`:
-
-```json
-{
-  "statusLine": { "type": "command", "command": "~/.claude/statusline.sh", "padding": 1 }
-}
-```
-
-Shows model (+ effort), directory, branch/worktree, a colour-coded context bar
-(green → yellow at 60% → red at 85%), 5-hour rate-limit burn, and open-PR review
-state. Cost only appears above $0.50, so it stays quiet on a subscription.
-
-Requires `jq`. Degrades to `?` rather than erroring if fields are absent.
-
-## Design notes
-
-**Why `AGENTS.md` and not `CLAUDE.md`?** `AGENTS.md` is tool-agnostic — Copilot,
-Cursor, Codex and Claude Code all read it. `CLAUDE.md` is a three-line pointer so
-there is exactly one source of truth.
-
-**Why under 150 lines?** A context file long enough to need skimming gets skimmed.
-Detail belongs in `docs/`, loaded only when relevant.
-
-**Why fresh context every Ralph iteration?** Long sessions drift, forget the plan,
-and start inventing. State belongs in git and `PROGRESS.md`, not a conversation.
-
-**Why test the hooks?** An unenforced guard is a comment. `test-hooks.sh` runs in
-CI so the guardrails cannot rot quietly.
-
-MIT licensed.
+MIT — see [LICENSE](LICENSE).

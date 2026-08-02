@@ -1,0 +1,21 @@
+# Example Cloudflare Tunnel config. Copy outside the repo, fill in, then install to
+#   ~/.cloudflared/config.yml
+#
+# The tunnel dials OUT to Cloudflare. No inbound port is opened on the host or the
+# router, and the daemon itself only ever listens on loopback.
+
+tunnel: 00000000-0000-0000-0000-000000000000        # your tunnel ID
+credentials-file: /home/YOURUSER/.cloudflared/00000000-0000-0000-0000-000000000000.json
+
+# Refuse to start rather than silently serving something unintended.
+originRequest:
+  connectTimeout: 10s
+  noTLSVerify: false
+
+ingress:
+  - hostname: crswd.example.com                     # your hostname
+    service: http://127.0.0.1:8787                  # must be loopback
+
+  # Everything else is refused. Without this the tunnel would happily proxy
+  # anything, which is the opposite of the point.
+  - service: http_status:404

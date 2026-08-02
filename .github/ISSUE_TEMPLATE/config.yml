@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/nctiggy/ai-project-template/security/advisories/new
+    url: https://github.com/nctiggy/claude-remote-session-webhook/security/advisories/new
     about: Report privately. Never open a public issue for a security problem.
   - name: Question or idea
-    url: https://github.com/nctiggy/ai-project-template/discussions
+    url: https://github.com/nctiggy/claude-remote-session-webhook/discussions
     about: Use Discussions for open-ended questions.

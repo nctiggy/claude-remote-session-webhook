@@ -1,7 +1,5 @@
 # Every PR needs a review from an owner. Pair with a branch ruleset that requires
 # code-owner review, and automation cannot merge itself.
-#
-# <FILL IN> replace with the real owner(s).
 
 *                       @nctiggy
 
