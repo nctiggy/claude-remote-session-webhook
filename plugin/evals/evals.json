@@ -1,0 +1,47 @@
+{
+  "skill_name": "start-project",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I want to start a new project called logsift — a Python CLI that parses nginx logs and reports the top error sources. Private repo.",
+      "expected_output": "A private GitHub repo 'logsift' created from the template, cloned locally, zero <FILL IN> markers, docs/design-system.md and docs/components.md removed (no UI), docs/auth-and-sessions.md removed (no auth), AGENTS.md commands populated with the Python stack (pytest/ruff/mypy), hooks 28/28, CI green.",
+      "files": [],
+      "assertions": [
+        { "text": "Repo exists and is private", "passed": null, "evidence": "" },
+        { "text": "Zero '<FILL IN' markers remain anywhere in the repo", "passed": null, "evidence": "" },
+        { "text": "AGENTS.md test command is pytest, not the npm placeholder", "passed": null, "evidence": "" },
+        { "text": "docs/design-system.md and docs/components.md are absent (no UI)", "passed": null, "evidence": "" },
+        { "text": "docs/security.md is still present", "passed": null, "evidence": "" },
+        { "text": "./.claude/hooks/test-hooks.sh exits 0 with 28 passes", "passed": null, "evidence": "" },
+        { "text": "AGENTS.md is under 150 lines", "passed": null, "evidence": "" },
+        { "text": "CI concludes success on main", "passed": null, "evidence": "" }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Spin up a new public repo for a Next.js dashboard with user login. Call it pulseboard.",
+      "expected_output": "A public repo 'pulseboard' from the template with the node-ts stack wired, design-system.md and components.md RETAINED and populated (has UI), auth-and-sessions.md RETAINED (has auth), and the user offered the Claude Design path before falling back to manual tokens.",
+      "files": [],
+      "assertions": [
+        { "text": "Repo exists and is public", "passed": null, "evidence": "" },
+        { "text": "Zero '<FILL IN' markers remain", "passed": null, "evidence": "" },
+        { "text": "docs/design-system.md retained AND contains real token values, not placeholders", "passed": null, "evidence": "" },
+        { "text": "docs/auth-and-sessions.md retained (project has auth)", "passed": null, "evidence": "" },
+        { "text": "The user was offered a design-system option before tokens were hand-filled", "passed": null, "evidence": "" },
+        { "text": "CI concludes success on main", "passed": null, "evidence": "" }
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Set me up a new Go service repo.",
+      "expected_output": "The skill triggers despite a terse prompt, asks only for the genuine gaps (name, visibility, purpose) rather than re-asking everything, and completes the bootstrap with the Go stack.",
+      "files": [],
+      "assertions": [
+        { "text": "Skill triggered without the template being named", "passed": null, "evidence": "" },
+        { "text": "Asked for name and visibility (genuinely unknown) but did NOT ask for the Go build/test commands", "passed": null, "evidence": "" },
+        { "text": "AGENTS.md contains 'go test ./...'", "passed": null, "evidence": "" },
+        { "text": "Zero '<FILL IN' markers remain", "passed": null, "evidence": "" }
+      ]
+    }
+  ]
+}

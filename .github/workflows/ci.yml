@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Guardrails run on day one, before the project has picked a stack. They verify
+  # the template's own contract: the hooks work, the context files exist, the
+  # config parses. This job must stay green in a fresh clone.
+  # ---------------------------------------------------------------------------
+  guardrails:
+    name: Template guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Required context files exist
+        run: |
+          set -e
+          for f in AGENTS.md CLAUDE.md README.md \
+                   docs/design-system.md docs/components.md \
+                   docs/auth-and-sessions.md docs/security.md docs/fixes-log.md \
+                   ralph/PROMPT.md ralph/IMPLEMENTATION_PLAN.md ralph/PROGRESS.md ralph/loop.sh \
+                   .claude/settings.json .specify/memory/constitution.md \
+                   plugin/.claude-plugin/plugin.json plugin/skills/start-project/SKILL.md; do
+            [ -f "$f" ] || { echo "::error::missing required file: $f"; exit 1; }
+          done
+          echo "All required files present."
+
+      - name: AGENTS.md stays skimmable (<150 lines)
+        run: |
+          lines=$(wc -l < AGENTS.md)
+          echo "AGENTS.md is $lines lines"
+          if [ "$lines" -ge 150 ]; then
+            echo "::error::AGENTS.md is $lines lines (limit 150). Move detail into docs/ and link it."
+            exit 1
+          fi
+
+      - name: Hooks are executable
+        run: |
+          set -e
+          for h in .claude/hooks/*.sh ralph/loop.sh; do
+            [ -x "$h" ] || { echo "::error::$h is not executable (chmod +x)"; exit 1; }
+          done
+          echo "All hooks executable."
+
+      - name: Shell syntax
+        run: |
+          set -e
+          for f in .claude/hooks/*.sh ralph/loop.sh; do
+            sh -n "$f" 2>/dev/null || bash -n "$f"
+          done
+          echo "Shell syntax OK."
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S warning .claude/hooks/*.sh ralph/loop.sh .claude/statusline.sh
+          # The skill's bundled scripts ship to users; lint them too. Guarded
+          # because plugin/ is removed from generated projects.
+          if [ -d plugin/skills/start-project/scripts ]; then
+            shellcheck -S warning plugin/skills/start-project/scripts/*.sh
+          fi
+
+      - name: Hook behaviour tests
+        run: ./.claude/hooks/test-hooks.sh
+
+      - name: actionlint (workflow validity)
+        run: |
+          curl -sL -o /tmp/actionlint.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          tar xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          chmod +x /tmp/actionlint
+          /tmp/actionlint
+
+      - name: JSON / YAML parse
+        run: |
+          set -e
+          python3 -c "import json;json.load(open('.claude/settings.json'))"
+          python3 - <<'PY'
+          import sys, pathlib
+          try:
+              import yaml
+          except ImportError:
+              sys.exit(0)  # yaml not present; workflow linting covers this anyway
+          for p in pathlib.Path('.github/workflows').glob('*.yml'):
+              yaml.safe_load(p.read_text())
+              print(f"ok {p}")
+          PY
+
+      - name: No secrets committed
+        run: |
+          if git ls-files | grep -E '(^|/)\.env$|\.pem$|\.key$|^secrets\.json$'; then
+            echo "::error::secret-like file is tracked in git"
+            exit 1
+          fi
+          echo "No secret-like files tracked."
+
+  # ---------------------------------------------------------------------------
+  # Project checks. These are the commands from AGENTS.md — keep the two in sync.
+  # Skipped until a stack is chosen, so a fresh template is green rather than red.
+  # Delete the `if:` guard once you fill these in.
+  # ---------------------------------------------------------------------------
+  project:
+    name: Build / test / lint
+    runs-on: ubuntu-latest
+    needs: guardrails
+    steps:
+      - uses: actions/checkout@v7
+
+      # hashFiles() is not available in a job-level `if`, so detect here and
+      # gate the steps below. Until a stack exists these no-op instead of
+      # failing a fresh clone.
+      - name: Detect stack
+        id: stack
+        run: |
+          if ls package.json pyproject.toml go.mod Cargo.toml >/dev/null 2>&1; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No stack manifest yet. Fill in the AGENTS.md commands and these steps."
+          fi
+
+      # <FILL IN> language setup, e.g.:
+      # - uses: actions/setup-node@v4
+      #   with: { node-version: '22', cache: 'npm' }
+
+      - name: Install
+        if: steps.stack.outputs.present == 'true'
+        run: 'echo "<FILL IN: npm ci>"'
+
+      - name: Lint
+        if: steps.stack.outputs.present == 'true'
+        run: 'echo "<FILL IN: npm run lint>"'
+
+      - name: Typecheck
+        if: steps.stack.outputs.present == 'true'
+        run: 'echo "<FILL IN: npm run typecheck>"'
+
+      - name: Test
+        if: steps.stack.outputs.present == 'true'
+        run: 'echo "<FILL IN: npm test>"'
+
+      - name: Build
+        if: steps.stack.outputs.present == 'true'
+        run: 'echo "<FILL IN: npm run build>"'

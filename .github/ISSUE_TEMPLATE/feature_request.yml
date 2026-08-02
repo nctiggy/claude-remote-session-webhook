@@ -1,0 +1,47 @@
+name: Feature request
+description: Propose new behaviour. Feeds the Spec Kit lane.
+title: "[feat] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Features go through Spec Kit (`/speckit-specify`). This issue is the raw
+        input to that — describe the problem, not the implementation.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: Who is blocked, and by what? Avoid jumping to a solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What is true once this is done?
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      value: |
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+
+  - type: textarea
+    id: unknowns
+    attributes:
+      label: Open questions / NEEDS CLARIFICATION
+      description: List what is genuinely undecided. Do not let the agent guess it.
+
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Explicitly out of scope

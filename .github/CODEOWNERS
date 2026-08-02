@@ -1,0 +1,14 @@
+# Every PR needs a review from an owner. Pair with a branch ruleset that requires
+# code-owner review, and automation cannot merge itself.
+#
+# <FILL IN> replace with the real owner(s).
+
+*                       @nctiggy
+
+# The guardrail layer deserves extra scrutiny — a change here changes what every
+# agent in the repo is allowed to do.
+/.claude/               @nctiggy
+/.github/workflows/     @nctiggy
+/.specify/memory/       @nctiggy
+/AGENTS.md              @nctiggy
+/docs/security.md       @nctiggy

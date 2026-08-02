@@ -1,0 +1,109 @@
+name: Claude — issue to PR
+
+# Lane 3: label an issue `claude-fix`, a self-hosted runner picks it up, works
+# under the SAME hooks and constitution as a human, and opens a reviewable PR.
+#
+# It never pushes to main. The output is always a PR.
+
+on:
+  issues:
+    types: [labeled]
+
+# One run per issue. A second label event supersedes an in-flight run rather than
+# racing it and producing two PRs.
+concurrency:
+  group: claude-issue-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write        # create the branch + commits
+  pull-requests: write   # open the PR
+  issues: write          # comment progress back on the issue
+
+jobs:
+  claude-fix:
+    # Only the trigger label. Every other label is ignored.
+    if: github.event.label.name == 'claude-fix'
+
+    # SELF-HOSTED, as specified. Swap to `ubuntu-latest` to use GitHub-hosted
+    # runners instead (free for public repos).
+    runs-on: [self-hosted]
+
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history so the agent can read context
+
+      - name: Run Claude Code against the issue
+        id: claude
+        uses: anthropics/claude-code-action@v1.0.183
+        with:
+          # Subscription auth (Claude Pro/Max) — no API billing.
+          # Generate on the runner (or any machine you are signed in on) with:
+          #     claude setup-token
+          # then store the value as the CLAUDE_CODE_OAUTH_TOKEN repo secret.
+          #
+          # To use pay-as-you-go API billing instead, swap this line for:
+          #     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+          # Repo hooks apply to automated runs too. This is the whole point:
+          # the runner inherits danger-guard and format-and-lint, so automation
+          # cannot do anything a human contributor is forbidden from doing.
+          settings: .claude/settings.json
+
+          # Keep the agent bounded. A runaway loop on a runner is expensive
+          # and produces an unreviewable diff.
+          claude_args: --max-turns 25
+
+          branch_prefix: claude/issue-
+          track_progress: true
+          use_sticky_comment: true
+
+          prompt: |
+            You are fixing a single GitHub issue in this repository.
+
+            Issue #${{ github.event.issue.number }}: ${{ github.event.issue.title }}
+
+            ---
+            ${{ github.event.issue.body }}
+            ---
+
+            Work in a bounded, Ralph-style way — but you get ONE pass, not a loop:
+
+            1. Read AGENTS.md at the repo root. It is the contract.
+            2. Read .specify/memory/constitution.md.
+            3. Read the docs/ file matching this change (see the Progressive
+               disclosure table in AGENTS.md). Do not read all of them.
+            4. Reproduce or precisely locate the problem before changing anything.
+            5. Make the SMALLEST correct change. Do not refactor adjacent code.
+               Do not "improve" things you were not asked about.
+            6. Run the build, test, and lint commands listed in AGENTS.md.
+               They must pass. If you cannot make them pass, stop and explain
+               in the PR description rather than forcing a green.
+            7. If this qualifies as a quick fix, append one line to
+               docs/fixes-log.md referencing issue #${{ github.event.issue.number }}.
+            8. Open a pull request that closes the issue. The description must state:
+               what was wrong, what you changed, and how you verified it.
+
+            Hard limits:
+            - Never push to main. PR only.
+            - Never commit a secret.
+            - Never disable or bypass a hook in .claude/.
+            - If the issue is ambiguous, do NOT guess. Open the PR as a draft and
+              write the specific question under a "NEEDS CLARIFICATION" heading.
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "### Claude issue automation"
+            echo ""
+            echo "- Issue: #${{ github.event.issue.number }}"
+            echo "- Branch: ${{ steps.claude.outputs.branch_name || 'none created' }}"
+            echo "- Result: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"

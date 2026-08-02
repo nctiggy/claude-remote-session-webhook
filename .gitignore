@@ -1,0 +1,35 @@
+# dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# build output
+dist/
+build/
+out/
+target/
+*.tsbuildinfo
+
+# env & secrets — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+
+# logs & scratch
+*.log
+npm-debug.log*
+.ralph-tmp/
+
+# editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+
+# Claude Code local overrides (machine-specific, not shared)
+.claude/settings.local.json

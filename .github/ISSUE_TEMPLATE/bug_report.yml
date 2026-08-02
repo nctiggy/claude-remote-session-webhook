@@ -1,0 +1,71 @@
+name: Bug report
+description: Something is broken. Fill this in well and it can be handed straight to automation.
+title: "[bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A good bug report is a spec. The clearer this is, the more likely the
+        `claude-fix` automation can resolve it without a round trip.
+
+  - type: textarea
+    id: what-happens
+    attributes:
+      label: What happens
+      description: The actual, observed behaviour.
+      placeholder: Clicking "Sign out" returns to login, but the previous user's dashboard data is still cached.
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-should-happen
+    attributes:
+      label: What should happen instead
+      placeholder: Sign-out clears all cached state; signing in as another user shows no trace of the previous one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Numbered, from a known starting state. This is the single most useful field.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: input
+    id: scope
+    attributes:
+      label: Where is it (file, route, component) — if known
+      placeholder: src/auth/signOut.ts
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Errors / logs / screenshots
+      render: shell
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Cosmetic
+        - Annoying but workable
+        - Blocks a core flow
+        - Data loss / security
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: automation
+    attributes:
+      label: Automation
+      options:
+        - label: This is small and well-scoped — safe to add the `claude-fix` label
+        - label: I have checked this is not already reported

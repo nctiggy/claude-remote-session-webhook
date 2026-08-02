@@ -1,0 +1,33 @@
+version: 2
+updates:
+  # Keep the automation itself current — pinned action SHAs/tags go stale and
+  # stale actions are a supply-chain risk.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: [dependencies, github-actions]
+    commit-message:
+      prefix: "chore(actions)"
+    # Group routine bumps into ONE PR to cut review noise. Majors stay
+    # separate and manual on purpose — a silent major bump is exactly how
+    # a breaking workflow change (renamed input, dropped context) slips in.
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]
+
+  # <FILL IN> uncomment the ecosystem this project actually uses.
+  # - package-ecosystem: npm
+  #   directory: "/"
+  #   schedule: { interval: weekly }
+  #   open-pull-requests-limit: 10
+  #   labels: [dependencies]
+  #   commit-message: { prefix: "chore(deps)" }
+  #   groups:
+  #     minor-and-patch:
+  #       update-types: [minor, patch]
+
+  # - package-ecosystem: pip
+  #   directory: "/"
+  #   schedule: { interval: weekly }
