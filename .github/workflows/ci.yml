@@ -108,8 +108,11 @@ jobs:
       # this step is what actually enforces it.
       - name: gitleaks
         run: |
-          # Keep this pin in step with .githooks/pre-commit. A local scanner that
-          # disagrees with CI is worse than none.
+          # Deliberately newer than the distro package a developer is likely to
+          # have (Ubuntu 24.04 ships 8.16). The skew runs in the safe direction:
+          # CI has strictly more default rules, so it can only catch more than the
+          # pre-commit hook, never less. The hook is a pre-filter; this is the
+          # authority. Bump freely — it cannot make a local commit wrongly pass.
           VER=8.30.1
           curl -sSL -o /tmp/gitleaks.tar.gz \
             "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz"

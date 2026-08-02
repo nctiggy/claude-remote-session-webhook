@@ -18,11 +18,22 @@ if ! command -v gitleaks >/dev/null 2>&1; then
   exit 0
 fi
 
-# `gitleaks git --staged` needs >= 8.28; older builds only have the now-hidden
-# `protect`. Keep this in step with the pinned version in ci.yml — a local scanner
-# that disagrees with CI is worse than none, because it teaches you to trust a
-# green commit that CI then rejects.
-if ! gitleaks git --staged --redact --no-banner --config .gitleaks.toml; then
+# gitleaks renamed its subcommands: >= 8.28 uses `git`, older builds use `protect`.
+# Detect rather than pin, so the distro package (Ubuntu 24.04 ships 8.16) and a
+# current release both work.
+#
+# CI pins a newer gitleaks than the distro package, on purpose. The skew runs in
+# the safe direction — CI has strictly more default rules, so it can only catch
+# more than this hook does, never less. This is a fast pre-filter; CI is the
+# authority. A surprise CI failure after a clean local commit means the version
+# gap found something, not that the hook is broken.
+if gitleaks git --help >/dev/null 2>&1; then
+  scan=(gitleaks git --staged --redact --no-banner)
+else
+  scan=(gitleaks protect --staged --redact)
+fi
+
+if ! "${scan[@]}" --config .gitleaks.toml; then
   printf '\n\033[31mblocked\033[0m: a staged change looks like a secret.\n' >&2
   printf '  - If it is real: remove it, and rotate it. Assume it is already burned.\n' >&2
   printf '  - If it is a false positive: add a narrow allowlist entry to .gitleaks.toml\n' >&2
