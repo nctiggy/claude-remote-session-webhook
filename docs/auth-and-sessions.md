@@ -176,12 +176,18 @@ This is the most fragile thing in the project and the most sensitive:
 |---|---|
 | Request signature window | 5 minutes |
 | Replay cache TTL | 10 minutes |
-| Session bearer token TTL | 12 hours |
+| Session bearer token TTL | 24 hours — deliberately equal to the absolute lifetime |
 | Session idle timeout | 60 minutes, then auto-destroy |
 | Session absolute lifetime | 24 hours, no renewal |
 
 Idle and absolute timeouts are enforced by a reaper goroutine, not by the next
 request — an abandoned session must die on its own.
+
+**The token TTL must never be shorter than the absolute lifetime.** A shorter token
+leaves a window where a live unsandboxed session exists that its owner cannot drive,
+read, *or destroy* — only the reaper can end it. There is no renewal and no re-issue:
+one token covers exactly one session's life, and then both are gone. If you shorten
+one of these two numbers, shorten both.
 
 ## Checklist before merging auth or session work
 
