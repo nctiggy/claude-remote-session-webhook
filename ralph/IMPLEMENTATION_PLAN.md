@@ -9,8 +9,19 @@
 ## Status: provisional
 
 Written from the architecture decisions in `AGENTS.md` and the two security docs.
-**A PRD is being written and will refine this list** — treat ordering as sound and
-individual task wording as replaceable.
+Feed this to `/speckit-specify`; the generated `spec.md` supersedes it.
+
+## Resolved decisions
+
+Answered by the operator. **Do not re-litigate these in an iteration** — if one
+looks wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and stop.
+
+| Question | Decision | Consequence |
+|---|---|---|
+| What does session ownership mean with one shared secret? | Single operator, but the `Owner` field and the ownership check exist from day one | Milestone 2's Access identity drops in without touching a handler. The cross-owner test uses a synthetic second owner |
+| What does the tmux window run? | The shell, then the daemon sends `claude --dangerously-skip-permissions` as keys | Window survives a Claude crash, so scrollback is inspectable — and milestone 4's device-code relay has a prompt to type into |
+| What happens to tmux sessions that outlive the daemon? | **Adopt** them on startup | An orphaned window is a live unsandboxed shell with no owner (Principle VI). Ignoring them is not an option |
+| Where does the audit log go? | Structured JSON on stdout, captured by journald | No file mode, rotation, or disk-fill to get wrong. `journalctl --user -u crswd` |
 
 ## Conventions
 
@@ -36,10 +47,11 @@ individual task wording as replaceable.
 
 ### Sessions
 
-- [ ] `internal/session`: `Session` model and in-memory store. IDs from `crypto/rand`, ≥128 bits, never sequential. Test asserts non-sequential, non-colliding IDs
+- [ ] `internal/session`: `Session` model (including `Owner`, populated from the credential used) and in-memory store. IDs from `crypto/rand`, ≥128 bits, never sequential. Test asserts non-sequential, non-colliding IDs
 - [ ] Session name validation `^[a-zA-Z0-9-]{1,64}$`, rejecting `:` and `.` explicitly — they address a different tmux target. Table test with hostile inputs
 - [ ] Working-directory allowlist: `filepath.Clean` + `EvalSymlinks`, then verify under an approved root. Tests cover `..`, absolute escapes, and a symlink pointing outside
-- [ ] `Manager.Create` spawns a Claude session in tmux and records it; `Destroy` kills it and **verifies the kill**, returning an error if the window survives
+- [ ] `Manager.Create` opens a tmux window running the login shell, names it `crswd-<id>`, then sends `claude --dangerously-skip-permissions` as keys; records the session. `Destroy` kills it and **verifies the kill**, returning an error if the window survives
+- [ ] `Manager.Adopt`: on startup, list tmux sessions matching the `crswd-` prefix and rebuild records for any the daemon has no entry for. Fresh tokens are issued; the old ones are unrecoverable by design. Test covers a surviving session, a half-dead one, and a name that matches the prefix but was not ours
 
 ### Authentication
 
@@ -59,7 +71,7 @@ individual task wording as replaceable.
 
 ### Guardrails
 
-- [ ] `internal/audit`: append-only record of timestamp, caller, action, session ID, decision. Test asserts prompt text, pane content, and tokens never appear in a record
+- [ ] `internal/audit`: structured JSON records on stdout via `log/slog` — timestamp, caller, action, session ID, decision. Test asserts prompt text, pane content, and tokens never appear in a record
 - [ ] Concurrent-session cap and a rate limit on create; refuse past the cap rather than degrading the host
 - [ ] Reaper goroutine enforcing idle (60m) and absolute (24h) lifetimes, driven by an injected clock so tests do not sleep
 - [ ] Bind `127.0.0.1` only, with graceful shutdown that reaps sessions on `SIGTERM`. Test asserts the listener address is loopback
@@ -79,5 +91,6 @@ Deliberately NOT in milestone 1, so no iteration wanders into them:
 - Rename and compact — milestone 3
 - The Claude device-code login relay — milestone 4
 - The companion Claude skill in `skill/` — after the API is stable
-- Persistence across daemon restarts; the in-memory store is sufficient for M1
+- Persisting session records to disk. The store stays in-memory — restart recovery
+  comes from adopting live tmux sessions, not from a database
 - Multi-user support. There is exactly one operator
