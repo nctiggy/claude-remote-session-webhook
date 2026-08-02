@@ -18,7 +18,11 @@ if ! command -v gitleaks >/dev/null 2>&1; then
   exit 0
 fi
 
-if ! gitleaks protect --staged --redact --config .gitleaks.toml; then
+# `gitleaks git --staged` needs >= 8.28; older builds only have the now-hidden
+# `protect`. Keep this in step with the pinned version in ci.yml — a local scanner
+# that disagrees with CI is worse than none, because it teaches you to trust a
+# green commit that CI then rejects.
+if ! gitleaks git --staged --redact --no-banner --config .gitleaks.toml; then
   printf '\n\033[31mblocked\033[0m: a staged change looks like a secret.\n' >&2
   printf '  - If it is real: remove it, and rotate it. Assume it is already burned.\n' >&2
   printf '  - If it is a false positive: add a narrow allowlist entry to .gitleaks.toml\n' >&2
