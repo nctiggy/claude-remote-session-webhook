@@ -73,7 +73,15 @@ for (( i=1; i<=MAX_ITERATIONS; i++ )); do
   # or dirty, capture it rather than silently carrying it into the next context.
   if [[ -n "$(git status --porcelain)" ]]; then
     git add -A
-    git commit -m "ralph: iteration ${i} (sweep uncommitted changes)" --no-verify
+    # No --no-verify. AGENTS.md lists the gitleaks pre-commit hook as enforced,
+    # and an unattended sweep is precisely when you least want it bypassed —
+    # nobody is reading this diff. If the hook rejects, stop rather than commit
+    # unscanned work.
+    if ! git commit -m "ralph: iteration ${i} (sweep uncommitted changes)"; then
+      echo >&2
+      echo "Sweep commit rejected by the pre-commit hook. Stopping so a human can look." >&2
+      exit 1
+    fi
     echo "  (swept uncommitted changes into a commit)"
   fi
 

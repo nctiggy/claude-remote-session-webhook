@@ -6,6 +6,13 @@
 > with no UI. Milestones 2–4 (dashboard, actions, Claude login relay) get their own
 > plan and their own loop. One loop for the whole product drifts.
 
+> ⛔ **BLOCKED — read `ralph/PROGRESS.md` iteration 1 before doing anything.**
+> `.claude/settings.json` has no `permissions` block, and `--permission-mode
+> acceptEdits` never approves Bash. No iteration can run `go build`, `go test`,
+> `golangci-lint`, or `git commit`, so no task can reach the green state every one
+> of them requires. An operator must apply the patch in that entry by hand; the
+> loop cannot fix it from inside, because editing that file is refused too.
+
 ## Status: generated from the spec
 
 Generated from [`specs/001-crswd-daemon-core/tasks.md`](../specs/001-crswd-daemon-core/tasks.md),
