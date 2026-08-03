@@ -629,6 +629,111 @@ func TestResolveNamesNoCallerSuppliedTextInItsError(t *testing.T) {
 	}
 }
 
+// Prompt's two commands, in the only order that delivers anything: the bytes
+// reach tmux on stdin, and only then is Return pressed. The payload is one
+// research D4 verified send-keys would mangle, and it must appear on no command
+// line at all — which is the whole of FR-029 for this path.
+func TestPromptPastesThenSubmits(t *testing.T) {
+	t.Parallel()
+
+	const payload = "run the tests; then summarise;"
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+	before := len(f.tmux.Calls())
+
+	if err := f.mgr.Prompt(context.Background(), *s, payload); err != nil {
+		t.Fatalf("Prompt() unexpected error: %v", err)
+	}
+
+	name := "crswd-" + s.ID
+	pane := "=" + name + ":"
+	want := []tmuxctl.Call{
+		{Op: tmuxctl.OpPaste, Argv: []string{"tmux", "load-buffer", "-b", name, "-"}, Stdin: []byte(payload)},
+		{Op: tmuxctl.OpPaste, Argv: []string{"tmux", "paste-buffer", "-d", "-b", name, "-t", pane}},
+		{Op: tmuxctl.OpSendKeys, Argv: []string{"tmux", "send-keys", "-t", pane, "--", "Enter"}},
+	}
+
+	got := f.tmux.Calls()[before:]
+	if len(got) != len(want) {
+		t.Fatalf("Prompt() ran %d tmux commands, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Op != want[i].Op || !slices.Equal(got[i].Argv, want[i].Argv) {
+			t.Errorf("command %d is %s %q, want %s %q", i, got[i].Op, got[i].Argv, want[i].Op, want[i].Argv)
+		}
+		if !bytes.Equal(got[i].Stdin, want[i].Stdin) {
+			t.Errorf("command %d stdin = %q, want %q", i, got[i].Stdin, want[i].Stdin)
+		}
+		if slices.ContainsFunc(got[i].Argv, func(arg string) bool { return strings.Contains(arg, payload) }) {
+			t.Errorf("command %d put the prompt on the command line: %q", i, got[i].Argv)
+		}
+	}
+}
+
+// The three records Prompt refuses before it executes anything. Only the empty
+// text is reachable through the API — the resolver refuses a dead session and no
+// handler can produce a record without an ID — so these are the fail-closed
+// guards, checked here because nothing above this package can reach them.
+func TestPromptRefusesWhatItCannotDeliver(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	live, _ := mustCreate(t, f, f.request())
+
+	dead := *live
+	dead.State = StateDead
+
+	cases := map[string]struct {
+		session Session
+		text    string
+		want    error
+	}{
+		"an empty prompt": {*live, "", ErrEmptyPrompt},
+		"a dead session":  {dead, "hello", ErrSessionDead},
+		"a record with no id": {
+			Session{Owner: auth.CallerOperator, State: StateStarting}, "hello", ErrSessionNotFound,
+		},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			// Counted rather than compared: the fixture's create already ran four
+			// commands, and what this asserts is that the refusal added none.
+			before := len(f.tmux.Calls())
+			err := f.mgr.Prompt(context.Background(), c.session, c.text)
+			if !errors.Is(err, c.want) {
+				t.Fatalf("Prompt() = %v, want %v", err, c.want)
+			}
+			if after := len(f.tmux.Calls()); after != before {
+				t.Errorf("the refused prompt ran %v; a refusal must cost no tmux command",
+					f.tmux.Calls()[before:after])
+			}
+		})
+	}
+}
+
+// FR-042 and docs/security.md §3 for the one place this package handles text the
+// caller wrote: an error carrying the prompt back is an error a handler could
+// record, and prompt text is secret.
+func TestPromptNamesNoPromptTextInItsError(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+	f.tmux.FailOp(tmuxctl.OpPaste, errTmuxBroken)
+
+	err := f.mgr.Prompt(context.Background(), *s, hostileLabel)
+	if err == nil {
+		t.Fatal("Prompt() reported success while tmux was failing")
+	}
+	if strings.Contains(err.Error(), hostileLabel) {
+		t.Errorf("Prompt() error %q carries the caller's own prompt text", err)
+	}
+}
+
 func TestNewManagerFailsClosed(t *testing.T) {
 	t.Parallel()
 

@@ -119,6 +119,15 @@ func (f sessionFixture) plant(t *testing.T, s session.Session) (session.Session,
 	if err := f.store.Add(s); err != nil {
 		t.Fatalf("plant session %s: %v", s.ID, err)
 	}
+
+	// The tmux session the record names exists too, seeded rather than created
+	// so no call is recorded and an argv assertion still sees only what the
+	// request caused. A planted record whose host session is missing is a real
+	// case — a session that died on its own — but it is not the one most tests
+	// mean, and before T024 nothing noticed the difference because no handler
+	// touched tmux per request.
+	f.tmux.Seed(tmuxctl.SessionInfo{Name: s.TmuxName(), Created: s.CreatedAt, Managed: true})
+
 	return s, issued
 }
 
@@ -128,11 +137,20 @@ func createBody(f sessionFixture) []byte {
 	return []byte(`{"name":"refactor-auth","work_dir":"` + f.repo + `"}`)
 }
 
+// promptBody is the well-formed prompt every test here starts from. The text is
+// deliberately unremarkable; the hostile payloads live in their own table.
+func promptBody() []byte { return []byte(`{"text":"run the tests"}`) }
+
 // bodyFor is what a route sweep should send to reach a route's handler: a real
-// create body for the one route that has one, nothing for the five that do not.
+// body for the two routes that take one, nothing for the four that do not. A
+// sweep that sent nothing to a route with a required body would be stopped by
+// the decoder with a 400 and would prove only that.
 func bodyFor(f sessionFixture, route Route) []byte {
-	if route == (Route{Method: http.MethodPost, Pattern: "/sessions"}) {
+	switch route {
+	case Route{Method: http.MethodPost, Pattern: "/sessions"}:
 		return createBody(f)
+	case Route{Method: http.MethodPost, Pattern: "/sessions/{id}/prompt"}:
+		return promptBody()
 	}
 	return nil
 }
@@ -141,16 +159,17 @@ func bodyFor(f sessionFixture, route Route) []byte {
 // bodyFor's body has got past layer 2.
 //
 // It is a literal table rather than one constant because the six no longer
-// answer alike: T022 gave POST /sessions a handler, so it answers 201 where the
-// five unimplemented routes still answer 501. Each later task moves one row, and
-// what the sweeps assert through it is unchanged — the request reached a
-// handler, which is only possible through the middleware.
+// answer alike: T022 gave POST /sessions a handler and T024 gave the prompt
+// route one, so they answer 201 and 202 where the four unimplemented routes
+// still answer 501. Each later task moves one row, and what the sweeps assert
+// through it is unchanged — the request reached a handler, which is only
+// possible through the middleware.
 var reachedStatus = map[Route]int{
 	{Method: http.MethodPost, Pattern: "/sessions"}:             http.StatusCreated,
 	{Method: http.MethodGet, Pattern: "/sessions"}:              http.StatusNotImplemented,
 	{Method: http.MethodGet, Pattern: "/sessions/{id}"}:         http.StatusNotImplemented,
 	{Method: http.MethodDelete, Pattern: "/sessions/{id}"}:      http.StatusNotImplemented,
-	{Method: http.MethodPost, Pattern: "/sessions/{id}/prompt"}: http.StatusNotImplemented,
+	{Method: http.MethodPost, Pattern: "/sessions/{id}/prompt"}: http.StatusAccepted,
 	{Method: http.MethodGet, Pattern: "/sessions/{id}/output"}:  http.StatusNotImplemented,
 }
 
@@ -721,6 +740,337 @@ func TestASuccessfulCreateNeverReachesTheHostTwice(t *testing.T) {
 	}
 	if n := s.fixture.store.Len(); n != 1 {
 		t.Errorf("the store holds %d session(s) after one create and its replay; want 1", n)
+	}
+}
+
+// promptFixture is an audited server plus one live session and the only copy of
+// its credential, which is everything a prompt request needs before it can be
+// about the prompt at all.
+type promptFixture struct {
+	*testServer
+
+	live  session.Session
+	token string
+}
+
+func newPromptFixture(t *testing.T) promptFixture {
+	t.Helper()
+
+	s := newAuditedServer(t)
+	live, issued := s.fixture.plant(t, session.Session{})
+	return promptFixture{testServer: s, live: live, token: issued}
+}
+
+// post drives one signed, credentialled prompt through the whole stack —
+// signature, middleware, resolver, decoder, manager, tmux fake — because every
+// claim T024 makes is about a request and not about a function.
+//
+// The instant is a parameter for the reason postSessionsAt takes one: the
+// signature covers the timestamp and the body and nothing else, so two identical
+// prompts to the same server share a signature and the second is refused as a
+// replay unless they are signed a second apart.
+func (f promptFixture) post(t *testing.T, body []byte, at time.Time) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodPost, "/sessions/"+f.live.ID+"/prompt", bytes.NewReader(body))
+	signRequest(t, req, body, at)
+	// After signing, because layer 3 is a separate credential and not part of
+	// the signed payload.
+	req.Header.Set(headerAuthorization, bearerScheme+f.token)
+
+	answer := httptest.NewRecorder()
+	f.ServeHTTP(answer, req)
+
+	var decoded map[string]any
+	if answer.Body.Len() > 0 {
+		if err := json.Unmarshal(answer.Body.Bytes(), &decoded); err != nil {
+			t.Fatalf("the response %q is not JSON: %v", answer.Body, err)
+		}
+	}
+	return answer, decoded
+}
+
+// TestPromptAnswersTheContractResponse is contracts/http-api.md's 202 example,
+// field by field. 202 and not 200: what is confirmed is that the keystrokes
+// reached the pane, not that Claude has read them.
+func TestPromptAnswersTheContractResponse(t *testing.T) {
+	t.Parallel()
+
+	f := newPromptFixture(t)
+	answer, body := f.post(t, promptBody(), testTime)
+
+	if answer.Code != http.StatusAccepted {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusAccepted)
+	}
+	if ct := answer.Header().Get(headerContentType); ct != contentTypeJSON {
+		t.Errorf("Content-Type = %q; want %q", ct, contentTypeJSON)
+	}
+	if got := body["id"]; got != f.live.ID {
+		t.Errorf("id = %v; want %q — the daemon's own ID for the resolved session", got, f.live.ID)
+	}
+	if got := body["delivered"]; got != true {
+		t.Errorf("delivered = %v; want true", got)
+	}
+	if len(body) != 2 {
+		t.Errorf("the response carries %d fields (%v); the contract defines exactly two", len(body), body)
+	}
+}
+
+// hostilePrompts is research D4's table plus the newline SC-012 names. Every one
+// of these is a payload send-keys -l would mangle or a shell would act on, and
+// the point of each is that neither happens: the bytes travel on stdin and land
+// in the pane unchanged.
+var hostilePrompts = map[string]string{
+	"a lone semicolon":          ";",
+	"a trailing semicolon":      "foo;",
+	"two trailing semicolons":   "foo;;",
+	"a shell injection attempt": "a; echo PWNED; $(id) `whoami`",
+	"an embedded newline":       "first line\nsecond line",
+}
+
+// TestAPromptIsDeliveredByteForByte is SC-012, and it is the reason this route
+// does not use send-keys. tmux's own parser eats a trailing unescaped ";" from
+// the last argument before -l applies and "--" does not stop it, so ";" would
+// arrive empty and "foo;" would arrive as "foo" — silently, on the one prompt in
+// a hundred that happens to end in a semicolon.
+//
+// The assertions are two halves of the same claim: the exact bytes reached tmux
+// on stdin, and they appear in no argv at all. The second is what "no shell
+// string is ever built" looks like as a test rather than a review comment.
+func TestAPromptIsDeliveredByteForByte(t *testing.T) {
+	t.Parallel()
+
+	for name, payload := range hostilePrompts {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newPromptFixture(t)
+			body, err := json.Marshal(promptRequest{Text: payload})
+			if err != nil {
+				t.Fatalf("marshal the prompt body: %v", err)
+			}
+
+			answer, _ := f.post(t, body, testTime)
+			if answer.Code != http.StatusAccepted {
+				t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusAccepted)
+			}
+
+			tmuxName, pane := f.live.TmuxName(), f.live.PaneTarget()
+			want := []tmuxctl.Call{
+				{Op: tmuxctl.OpPaste, Argv: []string{"tmux", "load-buffer", "-b", tmuxName, "-"}, Stdin: []byte(payload)},
+				{
+					Op:   tmuxctl.OpPaste,
+					Argv: []string{"tmux", "paste-buffer", "-d", "-b", tmuxName, "-t", pane},
+				},
+				{Op: tmuxctl.OpSendKeys, Argv: []string{"tmux", "send-keys", "-t", pane, "--", "Enter"}},
+			}
+
+			got := f.fixture.tmux.Calls()
+			if len(got) != len(want) {
+				t.Fatalf("the prompt ran %v; want exactly %v", got, want)
+			}
+			for i, c := range got {
+				if c.Op != want[i].Op || !slices.Equal(c.Argv, want[i].Argv) {
+					t.Errorf("call %d = %s %v; want %s %v", i, c.Op, c.Argv, want[i].Op, want[i].Argv)
+				}
+				if !bytes.Equal(c.Stdin, want[i].Stdin) {
+					t.Errorf("call %d stdin = %q; want %q — the payload must arrive byte-for-byte",
+						i, c.Stdin, want[i].Stdin)
+				}
+			}
+			for _, c := range got {
+				if slices.ContainsFunc(c.Argv, func(arg string) bool { return strings.Contains(arg, payload) }) {
+					t.Errorf("%s put the prompt on the command line: %v", c.Op, c.Argv)
+				}
+			}
+		})
+	}
+}
+
+// TestThePromptTextReachesNoAuditRecordOrLog is FR-042 for this route. Prompt
+// text is secret under docs/security.md §3 — it is whatever the operator was
+// about to ask Claude to do, on whatever it was about to do it to — and the one
+// record this request produces says which session was prompted, never with what.
+func TestThePromptTextReachesNoAuditRecordOrLog(t *testing.T) {
+	t.Parallel()
+
+	// Distinctive enough that finding it anywhere is proof rather than
+	// coincidence, and shaped like the prompts that matter.
+	const marker = "zzz-secret-prompt-text-zzz"
+
+	f := newPromptFixture(t)
+	body, err := json.Marshal(promptRequest{Text: "deploy " + marker + " to production"})
+	if err != nil {
+		t.Fatalf("marshal the prompt body: %v", err)
+	}
+
+	answer, _ := f.post(t, body, testTime)
+	if answer.Code != http.StatusAccepted {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusAccepted)
+	}
+
+	if written := f.sink.String(); strings.Contains(written, marker) {
+		t.Errorf("the audit trail carries the prompt text: %q", written)
+	}
+	if outward := answer.Body.String() + " " + fmt.Sprint(answer.Header()); strings.Contains(outward, marker) {
+		t.Errorf("the response echoed the prompt back: %q", outward)
+	}
+	if len(f.failed) != 0 {
+		t.Errorf("the request reported %v; want nothing", f.failed)
+	}
+
+	rec := f.only(t)
+	if rec["action"] != string(audit.ActionSessionPrompt) {
+		t.Errorf("action = %v; want %q", rec["action"], audit.ActionSessionPrompt)
+	}
+	if rec["decision"] != string(audit.Allow) {
+		t.Errorf("decision = %v; want %q", rec["decision"], audit.Allow)
+	}
+	if rec["session_id"] != f.live.ID {
+		t.Errorf("session_id = %v; want %q", rec["session_id"], f.live.ID)
+	}
+	if reason, ok := rec["reason"]; ok {
+		t.Errorf("an allowed prompt recorded a reason: %v", reason)
+	}
+}
+
+// refusedPrompts is every way this route's body can be bad. The empty cases are
+// the contract's "required, non-empty" rule; the rest are the decoder's, and
+// they are here to prove this handler goes through it rather than reading the
+// body its own way.
+var refusedPrompts = map[string]struct {
+	body   []byte
+	reason error
+}{
+	"an empty text":            {[]byte(`{"text":""}`), session.ErrEmptyPrompt},
+	"no text field at all":     {[]byte(`{}`), session.ErrEmptyPrompt},
+	"a text of the wrong type": {[]byte(`{"text":42}`), errBodyWrongShape},
+	"an unknown field":         {[]byte(`{"text":"hi","surprise":true}`), errBodyUnknownField},
+	"a body that is not JSON":  {[]byte(`{"text":`), errBodyMalformed},
+	"no body at all":           {nil, errBodyMissing},
+	"two JSON values in one body": {
+		[]byte(`{"text":"first"} {"text":"second"}`), errBodyTrailingData,
+	},
+}
+
+// TestARefusedPromptCostsNoTmuxCommand is the contract's 400 row for this route.
+// Every refusal answers with the identical body — an oracle here would be worth
+// less than on create, but a second spelling of a 400 is how the uniform ones
+// stop being uniform — and, more to the point, nothing reaches the host: a body
+// the daemon would not accept must not put keystrokes into a live session.
+func TestARefusedPromptCostsNoTmuxCommand(t *testing.T) {
+	t.Parallel()
+
+	for name, c := range refusedPrompts {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			// A server of its own, so "nothing ran" and "exactly one record" are
+			// claims about this request alone.
+			f := newPromptFixture(t)
+			answer, _ := f.post(t, c.body, testTime)
+
+			if answer.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusBadRequest)
+			}
+			if body := answer.Body.String(); body != string(bodyBadRequest) {
+				t.Errorf("body = %q; want %q", body, bodyBadRequest)
+			}
+			if calls := f.fixture.tmux.Calls(); len(calls) != 0 {
+				t.Errorf("the refused prompt ran %v; a rejected request must cost no tmux command", calls)
+			}
+
+			rec := f.only(t)
+			if rec["decision"] != string(audit.Deny) {
+				t.Errorf("decision = %v; want %q", rec["decision"], audit.Deny)
+			}
+			if rec["reason"] != c.reason.Error() {
+				t.Errorf("reason = %v; want %q", rec["reason"], c.reason.Error())
+			}
+			if rec["action"] != string(audit.ActionSessionPrompt) {
+				t.Errorf("action = %v; want %q — refusing must not rename the operation",
+					rec["action"], audit.ActionSessionPrompt)
+			}
+			// The resolver ran before the body was read, so the session it
+			// resolved is on the record even though the prompt was refused.
+			if rec["session_id"] != f.live.ID {
+				t.Errorf("session_id = %v; want %q", rec["session_id"], f.live.ID)
+			}
+		})
+	}
+}
+
+// TestATmuxFailureDuringAPromptAnswersFiveHundredWithNoDetail covers both halves
+// of the delivery. A failed paste means the text never arrived; a failed Return
+// means it is sitting in the pane unsubmitted. Neither is a delivery, so neither
+// may answer 202 — and the caller learns nothing about the host either way.
+func TestATmuxFailureDuringAPromptAnswersFiveHundredWithNoDetail(t *testing.T) {
+	t.Parallel()
+
+	for name, op := range map[string]tmuxctl.Op{
+		"the paste failed":  tmuxctl.OpPaste,
+		"the return failed": tmuxctl.OpSendKeys,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			const tmuxMarker = "no-such-tmux-binary"
+			const textMarker = "zzz-secret-prompt-text-zzz"
+
+			f := newPromptFixture(t)
+			f.fixture.tmux.FailOp(op, errors.New(tmuxMarker))
+
+			body, err := json.Marshal(promptRequest{Text: textMarker})
+			if err != nil {
+				t.Fatalf("marshal the prompt body: %v", err)
+			}
+			answer, _ := f.post(t, body, testTime)
+
+			if answer.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusInternalServerError)
+			}
+			if got := answer.Body.String(); got != string(bodyInternalError) {
+				t.Errorf("body = %q; want %q", got, bodyInternalError)
+			}
+
+			rec := f.only(t)
+			if rec["decision"] != string(audit.Deny) {
+				t.Errorf("decision = %v; want %q", rec["decision"], audit.Deny)
+			}
+			if rec["reason"] != errPromptUndelivered.Error() {
+				t.Errorf("reason = %v; want %q", rec["reason"], errPromptUndelivered.Error())
+			}
+			outward := f.sink.String() + answer.Body.String()
+			if strings.Contains(outward, tmuxMarker) {
+				t.Errorf("the tmux failure travelled outward: %q", outward)
+			}
+			if strings.Contains(outward, textMarker) {
+				t.Errorf("the undelivered prompt text travelled outward: %q", outward)
+			}
+		})
+	}
+}
+
+// TestPromptRefusesARequestWithNoResolvedSession is unreachable through the
+// router, which is the point: the handler is checked directly to prove it fails
+// closed rather than falling back to the {id} in the path. A handler that read
+// the path itself would address a window on a caller's say-so, which is the one
+// thing FR-034 exists to prevent.
+func TestPromptRefusesARequestWithNoResolvedSession(t *testing.T) {
+	t.Parallel()
+
+	f := newPromptFixture(t)
+	req := httptest.NewRequest(http.MethodPost, "/sessions/"+f.live.ID+"/prompt", bytes.NewReader(promptBody()))
+	req.SetPathValue(pathValueID, f.live.ID)
+
+	answer := httptest.NewRecorder()
+	f.promptSession(answer, req)
+
+	if answer.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusInternalServerError)
+	}
+	if calls := f.fixture.tmux.Calls(); len(calls) != 0 {
+		t.Errorf("a prompt with no resolved session ran %v; want nothing", calls)
 	}
 }
 

@@ -57,6 +57,30 @@ type createResponse struct {
 	Token string `json:"token"`
 }
 
+// promptRequest is the fixed shape POST /sessions/{id}/prompt accepts: one
+// field, which is the text to deliver (contracts/http-api.md).
+//
+// There is deliberately no session field. Which session a prompt is for is
+// settled by the path and the credential presented for it, both of which layer 3
+// has already checked; a body that could name a session would be a second answer
+// to that question, free to disagree with the first.
+type promptRequest struct {
+	// Text is data, not a command. It is length-bounded by CRSW_MAX_BODY_BYTES
+	// and required to be non-empty, and that is the whole of its validation
+	// (FR-030): it is delivered byte-for-byte, so anything this handler
+	// "sanitised" would be a prompt the caller did not send.
+	Text string `json:"text"`
+}
+
+// promptResponse is the contract's 202 body. It carries the daemon's own ID for
+// the session and no echo of the text — which is not merely unnecessary but
+// forbidden: prompt text is secret under docs/security.md §3, and a response
+// that repeats it is one more place it can be logged by whatever reads it.
+type promptResponse struct {
+	ID        string `json:"id"`
+	Delivered bool   `json:"delivered"`
+}
+
 // The reasons this handler records, authored here.
 //
 // None is ever written into a response, and none is built from a byte the caller
@@ -82,6 +106,19 @@ var (
 	// errResponseUnencodable cannot happen for a struct of strings, and is here
 	// so that it cannot happen *silently* if a later field makes it possible.
 	errResponseUnencodable = errors.New("the response could not be encoded")
+
+	// errPromptNoSession is unreachable behind the layer-3 resolver, for the
+	// reason errCreateNoCaller is unreachable behind layer 2. It fails closed
+	// rather than falling back to the {id} in the path: a handler that read the
+	// path itself would be addressing a window on a caller's say-so, which is
+	// the one thing FR-034 exists to prevent.
+	errPromptNoSession = errors.New("the prompt handler was reached with no resolved session")
+
+	// errPromptUndelivered is what a caller's prompt failing to reach the
+	// session is recorded as. It names no tmux message and no text: the caller
+	// learns the prompt did not land, and the operator learns which session from
+	// the record the resolver already stamped.
+	errPromptUndelivered = errors.New("the prompt could not be delivered to the session")
 )
 
 // createSession is POST /sessions: validate, start, and hand back the only copy
@@ -185,6 +222,58 @@ func createReason(err error) error {
 		}
 	}
 	return errCreateRefused
+}
+
+// promptSession is POST /sessions/{id}/prompt: deliver the caller's text into
+// the session it named and say it arrived (contracts/http-api.md).
+//
+// The session comes from the context and nowhere else. By the time this runs,
+// layer 3 has matched the {id} against a record the caller owns and the
+// credential issued for it, and has stamped that record's ID on the audit
+// record — so this handler neither reads the path nor sets a session ID, and
+// there is no version of it that could act on a session it was not given.
+//
+// Delivery itself belongs to internal/session, which is the only thing here that
+// can cause execution on the host. What is left is the HTTP half: read the one
+// field, hand it over unaltered, and answer.
+func (s *Server) promptSession(w http.ResponseWriter, r *http.Request) {
+	resolved, ok := SessionFrom(r.Context())
+	if !ok {
+		s.failInternal(w, r, errPromptNoSession)
+		return
+	}
+
+	req, ok := decode[promptRequest](s, w, r)
+	if !ok {
+		return
+	}
+
+	if err := s.sessions.Prompt(r.Context(), resolved, req.Text); err != nil {
+		s.refusePrompt(w, r, err)
+		return
+	}
+
+	// 202, not 200: what is confirmed is that the keystrokes reached the pane,
+	// which is not the same claim as Claude having read them, and the contract
+	// spells that difference as "accepted for delivery".
+	s.writeJSON(w, r, http.StatusAccepted, promptResponse{ID: resolved.ID, Delivered: true})
+}
+
+// refusePrompt maps a Prompt failure onto the answer the contract gives it.
+//
+// An empty text is the one thing the caller can fix, and it is a 400 with the
+// same uniform body every other refused body gets. Everything else is a 500 with
+// no detail — including a dead session, which the resolver already refuses as a
+// 404 and which reaching here would mean a record went terminal between two
+// layers of the same request. That is a fact about the host's state, and telling
+// a caller which of tmux's failures it hit would be an oracle about a machine it
+// cannot otherwise see.
+func (s *Server) refusePrompt(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, session.ErrEmptyPrompt) {
+		s.rejectBadRequest(w, r, session.ErrEmptyPrompt)
+		return
+	}
+	s.failInternal(w, r, errPromptUndelivered)
 }
 
 // writeJSON is the one place a success body is written, so that the header, the

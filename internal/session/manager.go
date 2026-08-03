@@ -65,6 +65,14 @@ var (
 	// session may exist on the host. The record is kept when this is returned —
 	// see rollback.
 	ErrOrphanedSession = errors.New("the tmux session could not be confirmed gone and may still be running")
+
+	// ErrEmptyPrompt refuses a prompt with no text in it. The contract makes
+	// text required and non-empty, and the refusal lives here rather than in the
+	// handler for the reason ValidateName does: the rule about what may reach a
+	// session belongs to the package that reaches it. An empty prompt would
+	// paste nothing and then press Return, which is a bare newline typed into
+	// Claude — an action the caller did not ask for and cannot take back.
+	ErrEmptyPrompt = errors.New("prompt text is required")
 )
 
 // Manager owns the mapping between session records and the tmux sessions they
@@ -239,6 +247,54 @@ func (m *Manager) Resolve(id string, owner auth.CallerID, presented string) (Ses
 		return Session{}, fmt.Errorf("resolve session: %w", ErrSessionDead)
 	}
 	return s, nil
+}
+
+// Prompt delivers caller text into a session verbatim and submits it (FR-030).
+//
+// The record is the one Resolve returned, so ownership, the credential, and the
+// deadline have already been settled and the target derives from its ID alone
+// (FR-034). Prompt takes the record rather than an ID for exactly that reason:
+// there is no second lookup here to disagree with the first, and no path by
+// which a caller's spelling of an ID could name a window.
+//
+// Two commands, in this order and no other. Paste writes the bytes to a tmux
+// buffer over stdin, so the payload never becomes part of a command line
+// (FR-029) — research D4 is the reason this is not send-keys -l, which drops a
+// trailing unescaped ";" from caller text before -l ever applies. The Return
+// that follows is a daemon-authored key constant and travels the way the Claude
+// start command does. Nothing escapes, quotes, or inspects the text: it is data.
+//
+// A failure leaves the text where it fell. The buffer paste-buffer -d would have
+// deleted may survive a failed submit, which is prompt text sitting in a named
+// tmux buffer another client could read — the caller is told the prompt did not
+// land, and the buffer is overwritten by the next prompt to the same session.
+func (m *Manager) Prompt(ctx context.Context, s Session, text string) error {
+	// Unreachable behind the resolver, and refused rather than trusted: an empty
+	// ID would build the bare prefix as a target, and a dead session's window is
+	// already gone. Both fail closed here so that a future caller reaching this
+	// method with a hand-made record cannot type into whatever that names.
+	if s.ID == "" {
+		return fmt.Errorf("prompt session: %w", ErrSessionNotFound)
+	}
+	if s.State == StateDead {
+		return fmt.Errorf("prompt session %s: %w", s.ID, ErrSessionDead)
+	}
+	if text == "" {
+		return fmt.Errorf("prompt session %s: %w", s.ID, ErrEmptyPrompt)
+	}
+
+	name := s.TmuxName()
+
+	// The error deliberately names the session and nothing else. Prompt text is
+	// secret under docs/security.md §3, so it may not travel back to a caller in
+	// an error string any more than it may reach the trail (FR-042).
+	if err := m.tmux.Paste(ctx, name, []byte(text)); err != nil {
+		return fmt.Errorf("paste the prompt into session %s: %w", s.ID, err)
+	}
+	if err := m.tmux.SendKeys(ctx, name, enterKey); err != nil {
+		return fmt.Errorf("submit the prompt in session %s: %w", s.ID, err)
+	}
+	return nil
 }
 
 // start runs the four tmux commands FR-018 describes, in the only order that
