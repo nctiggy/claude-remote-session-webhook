@@ -1225,3 +1225,163 @@ T017/T035: **no hex-shaped fixtures** — gitleaks blocks the commit.
 15. **Iteration 6 #6 / 7 #7 / 8 #9 / 9 #11 / 10 #13 still stands:** `AGENTS.md`'s command
     table has no entry for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so
     "Test (all)" is not all.
+
+---
+
+## Iteration 12 — 2026-08-03 03:25
+
+**Did:** Completed **T011**. Added `internal/auth/replay.go` (`replayCache`, `Observe`,
+`replayTTL = 2 × maxSkew`) and `replay_test.go` (11 tests / 16 runs; the package is now
+28 tests / 96 runs), and wired the cache into `Verify` as the fourth and last layer-2
+check with `ErrReplayedRequest` as the eighth sentinel. Ticked T011 in **both**
+`ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (auth 28 tests / 96 runs, audit 36, config 45, tmuxctl 84)
+go test -race -count=1 ./...   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+```
+
+**Learned (do not rediscover):**
+
+- **`Observe(sig string) bool` takes no timestamp, and the three specs disagree about
+  that.** `tasks.md` and `data-model.md` say `Observe(sig) bool`; `research.md` D10 and
+  the sample in `docs/auth-and-sessions.md` say `Observe(sig, ts)`. Took `tasks.md`, which
+  the plan names as the single source of truth — and the shorter signature is also the
+  correct one: the entry is stamped with the *observation* time, and observation time is
+  the only clock reading that makes the TTL exact. Recorded as a finding so an operator
+  can reconcile the docs rather than a future task re-deciding it.
+- **The TTL is not a free parameter, and this is the reasoning worth keeping.** A request
+  stamped at `ts` satisfies the window while `|now - ts| <= maxSkew`. A signature first
+  accepted at `T` therefore had `ts ∈ [T-300, T+300]`, and stays acceptable until
+  `ts+300 <= T+600`. So `2 × maxSkew` is exactly right — anything shorter opens a gap at
+  the far end of the window, anything longer only holds memory. `replayTTL` is written as
+  `2 * maxSkew` so widening one widens both.
+- **The expiry boundary is exclusive (`elapsed > TTL`, not `>=`) and that one instant is
+  real.** The extreme case: a request stamped 300s in the future, first used at once,
+  replayed 600s later — still inside the window, and its entry is *exactly* `replayTTL`
+  old at that moment. `>=` would let it through. Pinned twice, at cache level and through
+  `Verify`. A clock jumping backwards yields a negative elapsed time, which is not `>` the
+  TTL, so entries are kept — fails closed.
+- **`Observe` runs *after* `hmac.Equal`, and the attack it forecloses is not the obvious
+  one.** The cache keys on the value the *daemon* computes, so an attacker cannot insert
+  an entry for a signature they cannot compute. What they *can* do, if the record happened
+  before the compare, is send a copy of the bytes an honest caller is about to send (a
+  guessable create body at a predictable second) under a junk signature — the daemon
+  computes the real signature for those bytes, records it, and refuses the genuine request
+  as a replay when it arrives. No secret required. Plus the map would grow on
+  unauthenticated traffic. **The first version of this test asserted the wrong thing and
+  the mutation probe is what caught it** — see below.
+- **`replay_test.go` is `package auth` (internal) while `hmac_test.go` next to it is
+  `package auth_test`. Both in one directory is legal Go and deliberate here.** The TTL
+  outlives what `Verify` can show (a signature stops passing the window at the same
+  instant its entry expires, never after), and "swept on write" is a claim about the map,
+  not about a response. Testing from inside kept `replayCache` unexported and avoided a
+  `Size()` method existing only for tests. Cost: ~30 lines of duplicated fixtures, which
+  is the cheaper half of the trade.
+- **A plain "release all goroutines at once" concurrency test does NOT catch a split
+  critical section — measured, not assumed.** Replacing the single locked section with
+  check-under-lock / release / record-under-lock passed the first version of
+  `TestReplayCacheObservesAtomically` every time. What works is a **gate clock**: `Observe`
+  reads the clock as its first act, so a `Clock` that blocks every caller until all N have
+  arrived parks the racers immediately before the section under test. With 256 racers ×
+  64 rounds that catches the split **20/20 runs under `-race`** — but only **1/20 without
+  it**, because the detector's instrumentation is what widens the unlock→relock gap.
+  Detection is also strongly super-linear in rounds (8 rounds caught it 16/30, 64 rounds
+  20/20), so do not "tidy" the round count down. **Reuse the gate-clock shape for T033's
+  cap-boundary race and T036's destroy-racing-the-reaper**, and run those under `-race`.
+- **Mutation-probing (iterations 4–11) earned its keep a ninth time, and this was its most
+  valuable outing yet — it invalidated a test rather than the code.** Seven mutations:
+  the expiry boundary made inclusive (3 tests incl. the Verify-level extreme), the
+  critical section split (1, and only after the gate clock was built), `Observe` moved
+  ahead of `hmac.Equal` (2), `replayTTL` halved to one window (4), the sweep removed (1),
+  `.Abs()` applied to elapsed time (1), and the cache populated but never consulted (3).
+  All reverted, gate re-run. The third of those initially caught **nothing**, which is how
+  the forged-request fixture was found to be constructed wrongly — it varied the body
+  instead of the signature, so it never exercised the ordering at all.
+- `ErrReplayedRequest` is the eighth sentinel. T012 collapses all of them into one opaque
+  value at the boundary; the specific one stays for the audit reason.
+
+**Left:** T012 is next (`internal/auth/caller.go`: the `Caller` type, identity derived
+server-side only, and a single opaque error so no caller learns which check failed —
+`Verify`'s **return** changes, not its checks). Then T013–T042. Iteration 8's warning
+still applies to T012 and T017/T035: **no hex-shaped fixtures** — gitleaks blocks the
+commit.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: CI never runs `-race`.** `.github/workflows/ci.yml:178` runs
+   `go test ./...` and nothing else. Every iteration of this loop has run `-race` by hand,
+   which is the only reason the concurrency guarantees are checked at all — and as measured
+   above, `TestReplayCacheObservesAtomically` catches a split critical section 20/20 under
+   `-race` and 1/20 without it. So the repo's one real concurrency guard is currently
+   ~95% invisible to CI, and T033/T034/T036 add three more. A one-line change to the
+   workflow, but it is a guardrail change and Principle V says that is a reviewed PR, not
+   something an iteration slips in. **Worth an operator doing before T033.**
+2. **New this iteration: three specs disagree on `Observe`'s signature.** `tasks.md` and
+   `data-model.md` say `Observe(sig) bool`; `research.md` D10 says `Observe(sig, ts) bool`
+   and `docs/auth-and-sessions.md`'s sample calls `a.replay.Observe(want, ts)`. Took
+   `tasks.md` (the plan names it the single source of truth) and the code is right, but two
+   documents now describe an API that does not exist. Worth an operator reconciling them.
+3. **New this iteration: the cache is unbounded in count, only in age.** Nothing caps
+   `len(seen)`; growth is bounded only by how many *validly signed* requests arrive within
+   600 seconds. That is a holder of the shared secret, so it is not a stranger's lever, and
+   T034's rate limit bounds it further — but a compromised or buggy client could still grow
+   it without limit, and no task in the plan owns a cap. Small (a signature is ~80 bytes),
+   real, and worth an operator knowing.
+4. **Iteration 11 #1 still stands:** the audit trail cannot tell clock drift from a forged
+   future timestamp — both return `ErrTimestampOutsideWindow`. T038 should decide whether
+   to split the sentinel.
+5. **Iteration 11 #2 still stands:** nothing forces the daemon's clock to be monotonic or
+   roughly right, and both the window and now the replay TTL are only as good as it is.
+   No NTP assertion at startup and no plan task for one. Worth an operator knowing before
+   T041.
+6. **Iteration 10 #1 / 11 #3 still stands:** `contracts/http-api.md` promises `400` for an
+   oversize body, but auth runs first and returns `ErrBodyTooLarge`. **T020 must decide**
+   whether that maps to `400` or is folded into the uniform `401`.
+7. **Iteration 10 #2 / 11 #4 still stands:** the signature covers the timestamp and body
+   but not the method or path, so a signed body is valid on any route.
+   `DisallowUnknownFields` (T021) is the defence, not the signature. Note the replay cache
+   narrows this: the same signed body can now only be spent on **one** route, once.
+8. **Iteration 9 #1 / 10 #3 / 11 #5 still stands:** `audit.Record.Reason` can carry
+   arbitrary text. T038 should pass server-authored constants.
+9. **Iteration 9 #2 / 10 #4 / 11 #6 still stands:** `audit.Emit`'s error has no handler
+   yet. T020 owns the ruling — a request that could not be audited has not been completed.
+10. **Iteration 8 #2 / 9 #3 / 10 #5 / 11 #7 still stands:** the loud default-root warning
+    goes to stderr while audit records go to stdout. T032 owns deciding this.
+11. **Iteration 8 #1 / 9 #4 / 10 #6 / 11 #8 still stands:** `.env.example` does not exist,
+    so the `.gitleaks.toml` allowlist entry for it guards nothing. T040 owns creating it.
+12. **Iteration 7 #1 / 8 #3 / 9 #5 / 10 #7 / 11 #9 still stands:** bidi and invisible
+    Unicode are not stripped by `tmuxctl.Strip`, by design. The milestone-2 dashboard must
+    decide it.
+13. **Iteration 6 #2 / 7 #2 / 8 #4 / 9 #6 / 10 #8 / 11 #10 still stands:** a failed
+    `paste-buffer` leaves caller prompt text in a named tmux buffer. Needs a
+    `delete-buffer` argv builder in `fake.go` *and* `exec.go` together.
+14. **Iteration 6 #1 / 7 #3 / 8 #5 / 9 #7 / 10 #9 / 11 #11 still stands:** T028 will report
+    a false failure on the last session — killing the only session stops the tmux server
+    and `Has` then errors rather than returning false. Use `List`. Do not loosen `Has`.
+15. **Iteration 6 #3 / 7 #4 / 8 #6 / 9 #8 / 10 #10 / 11 #12 still stands:**
+    `contracts/tmuxctl.md` names only `no server running` for the empty-server case and is
+    stale.
+16. **Iteration 1 #1 / 2 #1 / 3 #2 / 4 #2 / 5 #2 / 6 #4 / 7 #5 / 8 #7 / 9 #9 / 10 #11 /
+    11 #13 still stands, twelfth iteration carrying it:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing the gitleaks pre-commit hook (which ran clean on this
+    iteration's commit — `1 commits scanned … no leaks found`). Not in the plan, and
+    Principle IV forbids wandering — needs an operator or a task of its own.
+17. **Iteration 2 #2 / 3 #3 / 4 #3 / 5 #3 / 6 #5 / 7 #6 / 8 #8 / 9 #10 / 10 #12 / 11 #14
+    still stands:** duplicate checkbox state in `IMPLEMENTATION_PLAN.md` and
+    `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the plan. Ticked both by hand
+    again, again only because the finding was written down. Eleventh iteration of manual
+    compensation for a one-line fix to step 9.
+18. **Iteration 6 #6 / 7 #7 / 8 #9 / 9 #11 / 10 #13 / 11 #15 still stands:** `AGENTS.md`'s
+    command table has no entry for `go test -tags tmux ./...` or `go vet -tags tmux ./...`,
+    so "Test (all)" is not all. Finding #1 above is the same shape: the commands that
+    actually protect this repo are not the documented ones.

@@ -73,7 +73,7 @@ owner plus its clock origin.
 
 - [x] T009 `internal/auth/hmac.go`: HMAC-SHA256 over `timestamp + "." + rawBody` with `hmac.Equal`, body re-buffered for the handler. Tests: valid, bad signature, tampered body, missing headers
 - [x] T010 `internal/auth/hmac.go`: 300s timestamp window enforced in **both** directions against an injected `Clock`; test proves a far-future timestamp is rejected
-- [ ] T011 `internal/auth/replay.go`: replay cache keyed on signature, TTL `2 × skew`, with `Observe` checking and recording in **one** critical section; test proves a second use is refused and two concurrent replays yield one winner
+- [x] T011 `internal/auth/replay.go`: replay cache keyed on signature, TTL `2 × skew`, with `Observe` checking and recording in **one** critical section; test proves a second use is refused and two concurrent replays yield one winner
 - [ ] T012 `internal/auth/caller.go`: `Caller` identity derived server-side only, plus one opaque error so no caller learns which check failed
 - [ ] T013 `internal/session/id.go`: IDs from `crypto/rand`, 16 bytes → 32 lowercase hex (**not** `crypto/rand.Text` — it needs a `go 1.24` directive; go.mod deliberately declares 1.23.0). Test asserts shape, non-sequential, non-colliding
 - [ ] T014 `internal/session/name.go`: name validation `^[a-zA-Z0-9-]{1,64}$`, rejecting `:` and `.` explicitly — they address a different tmux target. Hostile table test
