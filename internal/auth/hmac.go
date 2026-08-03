@@ -12,9 +12,10 @@
 // method and path alone would let a captured request be replayed with a
 // different prompt in it.
 //
-// Verification is not yet complete. The 300-second window (FR-008) and the
-// replay cache (FR-010) join this function in the next two tasks, against an
-// injected clock; until then nothing in this repo binds a listener.
+// Verification is not yet complete. Verify enforces the signature (FR-007,
+// FR-009) and the 300-second window (FR-008); the replay cache (FR-010) joins
+// it in the next task, on the same injected clock the window uses. Until then
+// nothing in this repo binds a listener.
 package auth
 
 import (
@@ -27,6 +28,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 // The headers carrying the credential, per contracts/http-api.md.
@@ -48,6 +50,14 @@ const (
 	payloadSeparator = "."
 )
 
+// maxSkew is the window either side of the daemon's own clock within which a
+// request's timestamp is accepted (FR-008).
+//
+// It is not a tolerance to be widened when clocks disagree — it is the interval
+// during which a captured request is replayable, and the replay cache's TTL is
+// derived from it (2 × maxSkew, T011). Widening this widens both. Fix the clock.
+const maxSkew = 300 * time.Second
+
 // The failure modes, one value each. They exist to be recorded server-side: the
 // response a caller sees is uniform and reveals none of this (FR-011), and is
 // built in internal/httpapi.
@@ -56,13 +66,18 @@ const (
 // strings reach the audit trail's reason field, which may never hold
 // caller-supplied bytes (FR-042, FR-043) — which is also why the strconv parse
 // error below is dropped rather than wrapped: it quotes its input.
+//
+// ErrTimestampOutsideWindow is named for the window rather than for staleness:
+// it is returned just as readily for a timestamp in the future, which is the
+// direction that matters more.
 var (
-	ErrMissingTimestamp   = errors.New("missing request timestamp header")
-	ErrMalformedTimestamp = errors.New("request timestamp header is not a decimal integer")
-	ErrMissingSignature   = errors.New("missing request signature header")
-	ErrSignatureMismatch  = errors.New("request signature does not match")
-	ErrUnreadableBody     = errors.New("request body could not be read")
-	ErrBodyTooLarge       = errors.New("request body exceeds the configured maximum")
+	ErrMissingTimestamp       = errors.New("missing request timestamp header")
+	ErrMalformedTimestamp     = errors.New("request timestamp header is not a decimal integer")
+	ErrTimestampOutsideWindow = errors.New("request timestamp is outside the accepted window")
+	ErrMissingSignature       = errors.New("missing request signature header")
+	ErrSignatureMismatch      = errors.New("request signature does not match")
+	ErrUnreadableBody         = errors.New("request body could not be read")
+	ErrBodyTooLarge           = errors.New("request body exceeds the configured maximum")
 )
 
 // errUnsignable is unreachable — see sign — but a signature that could not be
@@ -74,17 +89,30 @@ var errUnsignable = errors.New("request signature could not be computed")
 type Authenticator struct {
 	secret  []byte
 	maxBody int64
+	clock   Clock
 }
 
-// New fails closed on a configuration that would weaken the check. config.Load
-// already refuses a secret under 32 bytes; this is the assertion that the two
-// cannot drift apart, not a second opinion about the length.
+// New builds an Authenticator on the host's clock. This is the constructor the
+// daemon uses; tests reach for NewWithClock.
 func New(secret []byte, maxBody int64) (*Authenticator, error) {
+	return NewWithClock(secret, maxBody, systemClock{})
+}
+
+// NewWithClock fails closed on a configuration that would weaken the check.
+// config.Load already refuses a secret under 32 bytes; this is the assertion
+// that the two cannot drift apart, not a second opinion about the length.
+func NewWithClock(secret []byte, maxBody int64, clock Clock) (*Authenticator, error) {
 	if len(secret) == 0 {
 		return nil, errors.New("auth: no shared secret provided; refusing to start")
 	}
 	if maxBody < 1 {
 		return nil, fmt.Errorf("auth: max body bytes must be at least 1, got %d; refusing to start", maxBody)
+	}
+	// A nil clock would panic on the first request rather than at startup, and
+	// an Authenticator that cannot tell the time cannot enforce the window at
+	// all — which is a daemon that starts with half its auth disabled.
+	if clock == nil {
+		return nil, errors.New("auth: no clock provided; refusing to start")
 	}
 
 	// Copied so that mutating the slice the config was loaded into cannot
@@ -92,11 +120,12 @@ func New(secret []byte, maxBody int64) (*Authenticator, error) {
 	key := make([]byte, len(secret))
 	copy(key, secret)
 
-	return &Authenticator{secret: key, maxBody: maxBody}, nil
+	return &Authenticator{secret: key, maxBody: maxBody, clock: clock}, nil
 }
 
-// Verify checks the signature over the request's timestamp and raw body, and
-// leaves the body readable for the handler behind it.
+// Verify checks that the request's timestamp is inside the window and that its
+// signature covers that timestamp and the raw body, and leaves the body readable
+// for the handler behind it.
 //
 // The returned error names which check failed, for the audit trail only. Every
 // caller of Verify answers all of them identically.
@@ -108,6 +137,12 @@ func (a *Authenticator) Verify(r *http.Request) error {
 	timestamp, err := strconv.ParseInt(rawTimestamp, 10, 64)
 	if err != nil {
 		return ErrMalformedTimestamp
+	}
+	// Before the body is read, let alone hashed: an unauthenticated caller
+	// should not be able to make the daemon buffer and MAC a full-size body by
+	// sending a timestamp from last year.
+	if !a.withinWindow(timestamp) {
+		return ErrTimestampOutsideWindow
 	}
 
 	signature := r.Header.Get(HeaderSignature)
@@ -131,6 +166,18 @@ func (a *Authenticator) Verify(r *http.Request) error {
 		return ErrSignatureMismatch
 	}
 	return nil
+}
+
+// withinWindow answers FR-008: the timestamp must be within maxSkew of the
+// daemon's own clock in *both* directions.
+//
+// The future bound is the one that is easy to leave out and expensive to omit.
+// A timestamp bounded only from below never goes stale, so a single captured
+// request signed a year ahead outlives the replay cache — which remembers a
+// signature for 2 × maxSkew and no longer — and becomes a permanent key to an
+// unsandboxed shell.
+func (a *Authenticator) withinWindow(timestamp int64) bool {
+	return a.clock.Now().Sub(time.Unix(timestamp, 0)).Abs() <= maxSkew
 }
 
 // readBody buffers the body so it can be signed over, then puts it back for the
