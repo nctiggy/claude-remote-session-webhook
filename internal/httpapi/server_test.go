@@ -23,18 +23,15 @@ import (
 // choose, so nothing here can collide with a real crswd or with another test.
 const loopbackListen = "127.0.0.1:0"
 
-func testConfig(listen string) *config.Config {
-	// SharedSecret is deliberately left nil: nothing in this file authenticates,
-	// and a secret-shaped literal in a test file is a credential as far as
-	// gitleaks is concerned.
-	return &config.Config{Listen: listen}
-}
-
+// newTestServer builds a server on the fixed clock and a discarded audit trail.
+// It goes through newServer rather than New so that a test serving a request
+// does not write real audit records onto the test binary's stdout; New itself is
+// covered by the construction and loopback tests below.
 func newTestServer(t *testing.T, listen string) *Server {
 	t.Helper()
-	s, err := New(testConfig(listen))
+	s, err := newServer(testConfig(listen), net.Listen, testAuth(t), testTrail(t))
 	if err != nil {
-		t.Fatalf("New(%q) = _, %v; want a server", listen, err)
+		t.Fatalf("newServer(%q) = _, %v; want a server", listen, err)
 	}
 	return s
 }
@@ -82,17 +79,28 @@ func TestRoutesReturnsACopy(t *testing.T) {
 }
 
 // TestEveryRegisteredRouteIsReachable sweeps the real router rather than a
-// hand-written list. Today every route answers 501; T022–T029 replace that, and
-// this test then proves each handler is wired to the pattern it belongs to.
+// hand-written list. Today every authenticated route answers 501; T022–T029
+// replace that, and this test then proves each handler is wired to the pattern
+// it belongs to.
+//
+// The request has to be signed now — reaching a handler at all is what layer 2
+// gates — which makes this the positive half of the sweep in middleware_test.go.
 func TestEveryRegisteredRouteIsReachable(t *testing.T) {
 	t.Parallel()
 
 	s := newTestServer(t, loopbackListen)
-	for _, route := range s.Routes() {
+	for i, route := range s.Routes() {
 		path := strings.ReplaceAll(route.Pattern, "{id}", "0123456789abcdef")
 
+		// A distinct timestamp per route, because the signature covers the
+		// timestamp and the body and *not* the method or path: six identical
+		// empty-bodied requests would share one signature and the second would
+		// be refused as a replay. See middleware_test.go's replay case.
+		req := httptest.NewRequest(route.Method, path, nil)
+		signRequest(t, req, nil, testTime.Add(-time.Duration(i)*time.Second))
+
 		rec := httptest.NewRecorder()
-		s.ServeHTTP(rec, httptest.NewRequest(route.Method, path, nil))
+		s.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusNotImplemented {
 			t.Errorf("%s %s = %d; want %d — the route is not wired to the mux",
@@ -170,11 +178,14 @@ func TestTheServerHasItsOwnHandler(t *testing.T) {
 		t.Fatal("http.Server.Handler is nil, so the daemon would serve http.DefaultServeMux")
 	}
 
+	// Unsigned, so the answer is the uniform 401 — which is a stronger proof
+	// than a 501 was: http.DefaultServeMux would 404 an unregistered pattern,
+	// and only this server's mux carries the middleware that refuses.
 	rec := httptest.NewRecorder()
 	s.http.Handler.ServeHTTP(rec, httptest.NewRequest("GET", "/sessions", nil))
-	if rec.Code != http.StatusNotImplemented {
+	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("the server's own handler answered GET /sessions with %d; want %d",
-			rec.Code, http.StatusNotImplemented)
+			rec.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -291,14 +302,37 @@ func TestNonLoopbackCRSWListenIsFatalAtLoad(t *testing.T) {
 	}
 }
 
+// TestNewRefusesMissingDependencies covers every way the server can be built
+// without something it must not run without. The authenticator is the one that
+// matters most: docs/security.md §4 ranks a daemon that starts with auth
+// disabled as worse than one that does not start.
 func TestNewRefusesMissingDependencies(t *testing.T) {
 	t.Parallel()
 
-	if _, err := New(nil); err == nil {
-		t.Error("New(nil) built a server; want a refusal")
+	cfg := testConfig(loopbackListen)
+	cases := map[string]func() (*Server, error){
+		"no config":        func() (*Server, error) { return New(nil) },
+		"no listen source": func() (*Server, error) { return newServer(cfg, nil, testAuth(t), testTrail(t)) },
+		"no authenticator": func() (*Server, error) { return newServer(cfg, net.Listen, nil, testTrail(t)) },
+		"no audit sink":    func() (*Server, error) { return newServer(cfg, net.Listen, testAuth(t), nil) },
+		"no shared secret": func() (*Server, error) { return New(&config.Config{Listen: loopbackListen, MaxBodyBytes: 64}) },
+		"no body size cap": func() (*Server, error) {
+			return New(&config.Config{Listen: loopbackListen, SharedSecret: testSecret()})
+		},
+		"a short secret": func() (*Server, error) {
+			return New(&config.Config{Listen: loopbackListen, SharedSecret: []byte{}, MaxBodyBytes: 64})
+		},
+		"a negative amount": func() (*Server, error) {
+			return New(&config.Config{Listen: loopbackListen, SharedSecret: testSecret(), MaxBodyBytes: -1})
+		},
 	}
-	if _, err := newServer(testConfig(loopbackListen), nil); err == nil {
-		t.Error("newServer with no listener source built a server; want a refusal")
+	for name, build := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if s, err := build(); err == nil {
+				t.Fatalf("built a server with %s: %v; want a refusal", name, s)
+			}
+		})
 	}
 }
 
@@ -337,8 +371,10 @@ func TestListenBindsLoopbackAndServes(t *testing.T) {
 	if err := resp.Body.Close(); err != nil {
 		t.Errorf("close the response body: %v", err)
 	}
-	if resp.StatusCode != http.StatusNotImplemented {
-		t.Errorf("GET /sessions over the socket = %d; want %d", resp.StatusCode, http.StatusNotImplemented)
+	// Unsigned over a real socket: the middleware is in the tree the listener
+	// actually serves, not only the one ServeHTTP reaches in the other tests.
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("GET /sessions over the socket = %d; want %d", resp.StatusCode, http.StatusUnauthorized)
 	}
 
 	if err := s.Close(); err != nil {
@@ -418,7 +454,7 @@ func TestListenRefusesAndClosesAListenerThatIsNotOnLoopback(t *testing.T) {
 			ln := &fakeListener{addr: c.addr}
 			s, err := newServer(testConfig(loopbackListen), func(string, string) (net.Listener, error) {
 				return ln, nil
-			})
+			}, testAuth(t), testTrail(t))
 			if err != nil {
 				t.Fatalf("newServer = _, %v; want a server", err)
 			}
@@ -446,7 +482,7 @@ func TestListenReportsABindFailure(t *testing.T) {
 	want := errors.New("address already in use")
 	s, err := newServer(testConfig(loopbackListen), func(string, string) (net.Listener, error) {
 		return nil, want
-	})
+	}, testAuth(t), testTrail(t))
 	if err != nil {
 		t.Fatalf("newServer = _, %v; want a server", err)
 	}

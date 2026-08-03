@@ -233,6 +233,9 @@ func TestEmitAcceptsEveryDocumentedAction(t *testing.T) {
 		audit.ActionAuthReject:     "auth.reject",
 		audit.ActionReaperDestroy:  "reaper.destroy",
 		audit.ActionStartupAdopt:   "startup.adopt",
+		audit.ActionSessionList:    "session.list",
+		audit.ActionSessionDetail:  "session.detail",
+		audit.ActionSessionOutput:  "session.output",
 	}
 	for action, want := range cases {
 		t.Run(want, func(t *testing.T) {

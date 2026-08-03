@@ -22,6 +22,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 )
 
@@ -85,6 +87,21 @@ type Server struct {
 	mux  *http.ServeMux
 	http *http.Server
 
+	// authn is layer 2, applied to every route by handle. It is a field rather
+	// than something a handler reaches for so that there is one Authenticator
+	// per server — two would be two independent memories of which signatures
+	// have been seen, which is a replay cache that does not refuse replays.
+	authn *auth.Authenticator
+
+	// trail is the audit sink. One record per request (FR-041), emitted by the
+	// middleware.
+	trail *audit.Logger
+
+	// report is where a failure with nowhere else to go is written — the audit
+	// sink itself failing, or a response that could not be written. A field so
+	// a test can read what was reported rather than watch stderr.
+	report func(error)
+
 	// registered records what was actually handed to the mux, which is not the
 	// same claim as the routes table above. See Routes.
 	registered []Route
@@ -99,14 +116,39 @@ type Server struct {
 }
 
 // New builds the server for a validated Config. It binds nothing; Listen does.
-func New(cfg *config.Config) (*Server, error) { return newServer(cfg, net.Listen) }
+//
+// The Authenticator and the audit sink are built here rather than passed in:
+// cmd/crswd loads the config and hands it over, and a daemon whose auth is
+// assembled by its caller is a daemon that can be assembled without it.
+func New(cfg *config.Config) (*Server, error) {
+	if cfg == nil {
+		return nil, errors.New("httpapi: no configuration provided; refusing to start")
+	}
+	authn, err := auth.New(cfg.SharedSecret, cfg.MaxBodyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("httpapi: build the request authenticator: %w", err)
+	}
+	return newServer(cfg, net.Listen, authn, audit.New())
+}
 
-func newServer(cfg *config.Config, listen func(network, address string) (net.Listener, error)) (*Server, error) {
+func newServer(
+	cfg *config.Config,
+	listen func(network, address string) (net.Listener, error),
+	authn *auth.Authenticator,
+	trail *audit.Logger,
+) (*Server, error) {
 	switch {
 	case cfg == nil:
 		return nil, errors.New("httpapi: no configuration provided; refusing to start")
 	case listen == nil:
 		return nil, errors.New("httpapi: no listener source provided; refusing to start")
+	case authn == nil:
+		// A server that starts without an Authenticator is a server with no
+		// authentication at all, which docs/security.md §4 ranks as worse than
+		// one that does not start.
+		return nil, errors.New("httpapi: no authenticator provided; refusing to start")
+	case trail == nil:
+		return nil, errors.New("httpapi: no audit sink provided; refusing to start")
 	}
 	if err := assertLoopbackAddress(cfg.Listen); err != nil {
 		return nil, err
@@ -125,21 +167,35 @@ func newServer(cfg *config.Config, listen func(network, address string) (net.Lis
 			MaxHeaderBytes:    maxHeaderBytes,
 		},
 		listen: listen,
+		authn:  authn,
+		trail:  trail,
+		report: reportToStderr,
 	}
 
 	for _, r := range routes {
-		s.handle(r, s.notImplemented)
+		if err := s.handle(r, s.notImplemented); err != nil {
+			return nil, err
+		}
 	}
 	return s, nil
 }
 
 // handle is the single place a route reaches the mux. Everything that must be
-// true of every route gets applied here exactly once — T020 wraps the
-// authentication middleware around h at this line, so that a route physically
-// cannot be registered without it.
-func (s *Server) handle(r Route, h http.HandlerFunc) {
-	s.mux.Handle(r.String(), h)
+// true of every route is applied here exactly once — the authentication
+// middleware wraps h at this line, so that a route physically cannot be
+// registered without it (FR-007).
+//
+// It fails rather than registering a route with no audit action. FR-041 wants
+// one record per request, and a route the trail has no name for is a route whose
+// traffic is invisible; refusing at startup is how a seventh route gets noticed.
+func (s *Server) handle(r Route, h http.HandlerFunc) error {
+	action, ok := routeActions[r]
+	if !ok {
+		return fmt.Errorf("httpapi: route %s has no audit action; refusing to register it", r)
+	}
+	s.mux.Handle(r.String(), s.authenticate(action, h))
 	s.registered = append(s.registered, r)
+	return nil
 }
 
 // Routes reports what was registered, in registration order.
@@ -214,9 +270,10 @@ func (s *Server) Close() error {
 // notImplemented answers the six routes until T022–T029 give them handlers.
 //
 // It replies 501 with no body, and both halves are deliberate. A stub that
-// already returned the uniform 401 would let T020's "every registered route
-// refuses an unauthenticated request" sweep pass green without any middleware
-// existing, which is the one thing that sweep is for. And the JSON error bodies
+// answered anything the middleware also answers would let the "every registered
+// route refuses an unauthenticated request" sweep pass green without the
+// middleware being in the tree at all, which is the one thing that sweep is for:
+// a 501 can only be reached *through* authentication. And the JSON error bodies
 // belong to the tasks that own the responses; wiring does not get to invent them.
 func (s *Server) notImplemented(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
