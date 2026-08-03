@@ -49,6 +49,17 @@ const (
 	ActionAuthReject     Action = "auth.reject"
 	ActionReaperDestroy  Action = "reaper.destroy"
 	ActionStartupAdopt   Action = "startup.adopt"
+
+	// The three read operations. data-model.md's action column lists the six
+	// above as examples and names no action for a read, but FR-041 wants one
+	// record for *every* request and contracts/http-api.md defines six routes —
+	// so three of them would otherwise have no action to be recorded under.
+	// These are named for the contract's own headings ("list", "detail", "read
+	// the pane") rather than approximated onto session.create, which is the
+	// reuse this type's doc comment warns against.
+	ActionSessionList   Action = "session.list"
+	ActionSessionDetail Action = "session.detail"
+	ActionSessionOutput Action = "session.output"
 )
 
 // Decision is the allow/deny outcome, and unlike Action it is closed: two
