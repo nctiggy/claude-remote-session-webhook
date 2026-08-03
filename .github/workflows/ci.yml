@@ -148,7 +148,10 @@ jobs:
       - uses: actions/setup-go@v5
         if: steps.stack.outputs.present == 'true'
         with:
-          go-version: '1.23'
+          # Match the dev host. With CI older than local, a 1.24-only stdlib call
+          # (crypto/rand.Text, testing/synctest) compiles locally and fails here —
+          # skew in the unsafe direction. Keep these equal.
+          go-version: '1.24'
           cache: true
 
       - name: Install

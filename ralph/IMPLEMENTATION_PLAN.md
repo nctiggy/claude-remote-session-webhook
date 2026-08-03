@@ -66,7 +66,7 @@ looks wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and stop.
 - [ ] `POST /sessions` — create; body decoded with `DisallowUnknownFields` and a body-size limit. Tests cover unknown fields and oversize bodies
 - [ ] `GET /sessions` and `GET /sessions/{id}` — list and detail, ownership enforced, **404 not 403** for another owner's session. Cross-owner test required
 - [ ] `DELETE /sessions/{id}` — destroy with verified teardown
-- [ ] `POST /sessions/{id}/prompt` — `send-keys` the prompt as a single literal argument. Test asserts a prompt containing `;`, `$(...)`, and newlines is not interpreted
+- [ ] `POST /sessions/{id}/prompt` — deliver the prompt via `load-buffer -b <name> -` (payload on **stdin**) then `paste-buffer -d`. **Do not use `send-keys -l`**: tmux's own parser strips a trailing unescaped `;` from the final argument before `-l` applies, and `--` does not prevent it — verified, `;` lands empty and `foo;` lands as `foo`. Test asserts byte-for-byte delivery of a prompt that is exactly `;`, one ending in `;`, and one containing `$(...)`, backticks, and newlines
 - [ ] `GET /sessions/{id}/output` — captured pane text, ANSI stripped
 
 ### Guardrails
