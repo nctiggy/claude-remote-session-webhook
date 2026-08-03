@@ -3918,3 +3918,198 @@ knob for arranging output. Then T026–T042.
 37. **Iteration 6 #6 / … / 24 #41 still stands:** `AGENTS.md`'s command table has no
     entry for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is
     not all.
+
+---
+
+## Iteration 26 — 2026-08-03 20:00
+
+**Did:** Completed **T025**, finishing US2. Added `Manager.Output` and the `Capture`
+type in `internal/session/manager.go` (one `CapturePane` against the record's own
+target, then `tmuxctl.Strip`), and the HTTP half in `internal/httpapi/sessions.go`:
+`sessionOutput`, `outputResponse`, `errOutputNoSession`, `errOutputUncaptured`. One
+line in `handlerFor` wires the route; `notImplemented`'s comment now says three routes,
+not four. 6 new tests / 13 subtests in `sessions_test.go`, 3 tests / 2 subtests in
+`session/manager_test.go`. Ticked T025 in **both** `ralph/IMPLEMENTATION_PLAN.md` and
+`specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (httpapi 81 top-level tests)
+go test -race -count=1 ./internal/...   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK (v1.62.2)
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git status                  clean after both probes were reverted
+gitleaks (pre-commit)       1 commit scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **The capture lives on the Manager, exactly as iteration 25 said it should.** `Server`
+  still holds no `tmuxctl.Controller` and still must not acquire one. `Manager.Output(ctx,
+  Session) (Capture, error)` is the seam, taking the resolved record for the reason
+  `Prompt` does — no second lookup to disagree with the first.
+- **`Strip` runs in `Manager.Output`, not in `CapturePane`.** `ansi.go`'s own comment asks
+  for this: stripping where output *leaves* the package makes it a property of the daemon
+  rather than of one `Controller`, so the fake every other package tests against is held
+  to it too. The httpapi test proves the property end to end because of this choice.
+- **`Capture` is a named type rather than `(string, time.Time, error)`.** The text is
+  secret under `docs/security.md` §3, and a named type makes a value carrying it
+  recognisable at a glance in a future signature.
+- **`captured_at` is read *after* the capture, not before.** The content is what the pane
+  held as of *at most* that instant; stamping first would claim content newer than its own
+  timestamp whenever the exec was slow.
+- **One failure answer: 500, no detail.** Missing tmux, a dead server, and a window that
+  vanished under a record that still resolves are one answer to a caller and three
+  different reasons in the trail. No new sentinel was added for the tmux failure — `Prompt`
+  has none either, and a sentinel nobody branches on is the complexity the constitution's
+  Governance section refuses.
+- **`errOutputUncaptured` never carries a fragment of what was read.** A partial read in an
+  error string is pane content in whatever records that error.
+
+**Learned (do not rediscover):**
+
+- **The Edit/Write tool does not *eat* a JSON-style ESC escape (backslash-u-0-0-1-b) in
+  file content — it decodes it, writing the raw 0x1B byte into the file.** This iteration
+  put three of them into `sessions_test.go`: two in comments, and one **inside a backtick
+  literal**, which silently turned an intended `\u`-spelling needle into a raw-ESC needle —
+  a check that can never fire, because `encoding/json` escapes control bytes on the way
+  out. `PROGRESS.md:597`'s "silently eats" is the same trap seen from the other side.
+  Detect with `grep -cP '\x1b' <file>`; `\x1b` in Go source is safe, since it is not a JSON
+  escape. **`perl -i` is not in the permission allowlist**, so a stray byte cannot be
+  scrubbed with a one-liner — the recovery is an `Edit` whose `old_string` spells the
+  escape, which the tool decodes to the byte and therefore matches.
+- **The fix that survives is to derive the needle from the encoder**:
+  `json.Marshal(string(rune(escByte)))`, quotes trimmed. It cannot drift from what the
+  encoder emits and puts no invisible byte in the file.
+- **Asserting "no ESC bytes in the response" on the raw body alone is vacuous.**
+  `encoding/json` escapes control bytes, so a raw body can never hold a literal ESC and the
+  test passes against a handler that strips nothing. The real claim is on the *decoded*
+  string; the raw body is then checked for the escape's spelling. The strip probe proved
+  all three assertion layers fire.
+- **`errcheck` flags `text, _ := body["text"].(string)`** — a blank identifier on a type
+  assertion counts. Use `, ok` and check it.
+- **`sessionFixture.plant` seeding the tmux fake (iteration 25) is what makes this route
+  testable at all**, and `f.tmux.SetPane(live.TmuxName(), …)` is the knob. `SetPane` records
+  no call, so the argv assertion still sees only the one `capture-pane` the request caused.
+- **The route needs no `decode`** — a GET carries no body — so `bodyFor` did not grow a
+  third case. `reachedStatus`'s output row moved 501 → 200; three rows left.
+- **Both probes fail loudly.** Dropping `tmuxctl.Strip` fails 2 tests / 7 subtests;
+  unwiring the route from `handlerFor` fails 6 tests / 8 subtests including two older
+  router sweeps. Reverted with `Edit` in reverse; `git status` clean before the commit.
+
+**Left:** T026 is next (`GET /sessions` — owner-scoped, never a token or hash). It needs
+an owner-scoped list on the `Manager`, which iteration 24 #3 already flagged as missing:
+`Manager.Resolve` is still the only reader of the store outside `Create`, and a handler
+reaching for the store directly would be a second path to a record. Then T027–T042.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: nothing bounds the size of a capture.** `capture-pane -p` returns
+   the visible pane, which the terminal's height bounds in practice — but the daemon
+   applies no limit of its own, and `CRSW_MAX_BODY_BYTES` bounds *requests*, not responses.
+   A session whose pane is very wide, or a future capture that grows a `-S` for scrollback,
+   would put an unbounded string in a JSON document. Milestone 2's streaming must rule.
+2. **New this iteration: `captured_at` is the daemon's clock, not tmux's.** No tmux
+   facility hands back an instant for a capture, so the field says when the daemon read the
+   pane. That is honest and it is also one more thing riding on the clock being roughly
+   right (see #29).
+3. **Iteration 24 #4 / 25 #3 still stands, and T025 declined it:** a session whose window
+   vanished still resolves, and `GET /sessions/{id}/output` answers **500** (`can't find
+   session`) rather than moving the record to `dead` and answering 404. `data-model.md`
+   says a vanished session transitions "on the next observation" and this handler is the
+   second that could observe — but **no task assigns the transition**, and writing one here
+   would be inventing a requirement (Principle II). T028 or an operator should rule.
+4. **Iteration 25 #2 still stands, now for all four `{id}` routes:** `Manager.Output` does
+   not touch the idle clock either. `Store.Touch` still has no caller. **A session read
+   every minute is still reaped at 60.** T036, in `resolveSession`, once.
+5. **Iteration 25 #1 still stands:** a failed submit can leave prompt text in a named tmux
+   buffer. T038 or an operator on whether a `delete-buffer` on the failure path is worth
+   the fourth exec.
+6. **Iteration 23 #1 / … / 25 #4 still stands:** `POST /sessions` has no rate limit and no
+   concurrency cap. T033/T034; `cfg.MaxSessions` and `cfg.CreateRatePerMin` still have no
+   reader.
+7. **Iteration 23 #2 / … / 25 #5 still stands:** nothing moves a record to `running`;
+   `Store.SetState` still has no caller outside tests. See #3.
+8. **Iteration 23 #4 / … / 25 #6 still stands:** `New` builds `tmuxctl.NewExec()`
+   unconditionally; T032 should build one controller in `main` and pass it in.
+9. **Iteration 22 #2 / … / 25 #7 still stands:** nothing forces a handler to use `decode`.
+   This route needs no body at all, which sidesteps rather than answers it.
+10. **Iteration 22 #3 / … / 25 #8 still stands:** an oversize body is refused twice with
+    two different reasons and two different statuses. T038.
+11. **Iteration 21 #1 / … / 25 #9 still stands:** the mux's own `404`/`405` are
+    `text/plain` while the contract says every response is JSON. **An operator should
+    rule; no task owns it.**
+12. **Iteration 21 #2 / … / 25 #10 still stands:** the contract's `400` row for an
+    oversize body is unreachable behind layer 2.
+13. **Iteration 21 #3 / … / 25 #11 still stands:** `session.list`, `session.detail`, and
+    `session.output` are action names iteration 21 chose and `data-model.md` does not
+    carry. This iteration made `session.output` load-bearing in a test.
+14. **Iteration 21 #4 / … / 25 #12 still stands:** `RequestAudit` is not safe for
+    concurrent use, and nothing enforces it.
+15. **Iteration 21 #5 / … / 25 #13 still stands:** every exit path amends the record by
+    habit, not by construction. `sessionOutput` has three and all three do. T038.
+16. **Iteration 20 #3 / … / 25 #14 still stands:** none of `docs/security.md`'s
+    "Transport & exposure" headers are applied by anything, and no task owns them.
+17. **Iteration 18 #1 / … / 25 #15 still stands:** `Store.Add` does not require a
+    `TokenHash`. T031.
+18. **Iteration 17 #2 / … / 25 #16 still stands:** `Delete`'s hash scrub is best effort.
+19. **Iteration 17 #3 / … / 25 #17 still stands:** nothing enforces that a `Session.ID` in
+    the store came from `NewID`.
+20. **Iteration 16 #1 / … / 25 #18 still stands:** `ResolveWorkDir` has an unavoidable
+    TOCTOU window before `tmux new-session -c`.
+21. **Iteration 16 #3 / … / 25 #19 still stands:** nothing re-stats an approved root.
+22. **Iteration 15 #1 / … / 25 #20 still stands:** FR-027's class admits a leading `-`
+    while `tasks.md` T014 calls it hostile.
+23. **Iteration 13 #1 / … / 25 #21 still stands:** `docs/auth-and-sessions.md`'s samples
+    are stale in four ways.
+24. **Iteration 12 #1 / … / 25 #22 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Run by hand again this iteration, green.
+25. **Iteration 12 #2 / … / 25 #23 still stands:** three specs disagree on `Observe`'s
+    signature.
+26. **Iteration 12 #3 / … / 25 #24 still stands:** the replay cache is unbounded in count.
+27. **Iteration 11 #1 / … / 25 #25 still stands:** the audit trail cannot tell clock drift
+    from a forged future timestamp. T038.
+28. **Iteration 11 #2 / … / 25 #26 still stands, and now decides a third thing:** nothing
+    forces the daemon's clock to be monotonic or roughly right. It sets `expires_at`,
+    decides whether a credential still works, and since this iteration stamps
+    `captured_at`.
+29. **Iteration 10 #2 / … / 25 #27 still stands:** the signature covers timestamp and body
+    but not method or path. This route signs a nil body, so its signature is
+    interchangeable with any other bodiless request at the same instant.
+30. **Iteration 9 #1 / … / 25 #28 still stands:** `RequestAudit.Deny` takes a free
+    `string`. `sessionOutput` passes only sentinels; nothing enforces it on the next
+    caller. T038.
+31. **Iteration 8 #2 / … / 25 #29 still stands:** the loud default-root warning goes to
+    stderr while audit records go to stdout. T032.
+32. **Iteration 8 #1 / … / 25 #30 still stands:** `.env.example` does not exist. T040.
+33. **Iteration 7 #1 / … / 25 #31 still stands, and is now visible on the wire:** bidi and
+    invisible Unicode are **not** stripped by `tmuxctl.Strip`, by design, so a pane
+    containing them reaches a client through this route unchanged. `hostilePanes` covers
+    the control sequences FR-031 names and deliberately not these. **Milestone 2 decides
+    before any of it is rendered.**
+34. **Iteration 6 #1 / … / 25 #32 still stands:** killing the only session stops the tmux
+    server and `Has` then errors rather than returning false. T028.
+35. **Iteration 6 #3 / … / 25 #33 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case.
+36. **Iteration 14 #1 / … / 25 #34 still stands, with a new instance:** `git checkout --`
+    and `git restore` are not in the permission allowlist, so `PROMPT.md` step 6's
+    documented recovery path needs an approval an autonomous run cannot give. Both probes
+    were reverted with `Edit` in reverse. **New: `perl -i` is refused too** (see Learned),
+    so a stray byte in a file is an `Edit` problem, not a shell one. The commit message
+    heredoc went through.
+37. **Iteration 1 #1 / … / 25 #35 still stands, twenty-sixth iteration carrying it:**
+    `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook
+    (which ran clean on this iteration's commit). Needs an operator or a task of its own.
+38. **Iteration 2 #2 / … / 25 #36 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again, again only because the finding was written down.
+    Twenty-fifth iteration of manual compensation for a one-line fix to step 9.
+39. **Iteration 6 #6 / … / 25 #37 still stands:** `AGENTS.md`'s command table has no entry
+    for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not
+    all.

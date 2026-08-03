@@ -90,7 +90,7 @@ owner plus its clock origin.
 ### US2 — Drive a session and read it back (P2)
 
 - [x] T024 `internal/httpapi/sessions.go`: `POST /sessions/{id}/prompt` delivering text via `Controller.Paste` then `Enter`. **Never `send-keys -l` for caller text** — tmux's parser strips a trailing unescaped `;` before `-l` applies, and `--` does not prevent it; `;` lands empty and `foo;` lands as `foo`. Test asserts byte-for-byte delivery of `;`, `foo;`, `foo;;`, `a; echo PWNED; $(id)`, and an embedded newline
-- [ ] T025 `internal/httpapi/sessions.go`: `GET /sessions/{id}/output` — captured pane text, stripped. Test asserts no ESC bytes and no pane content in any log or audit record
+- [x] T025 `internal/httpapi/sessions.go`: `GET /sessions/{id}/output` — captured pane text, stripped. Test asserts no ESC bytes and no pane content in any log or audit record
 
 ### US3 — See the fleet and tear it down for certain (P3)
 
