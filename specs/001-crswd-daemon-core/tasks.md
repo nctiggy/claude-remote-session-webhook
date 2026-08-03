@@ -171,7 +171,7 @@ the presence of a stack manifest — from T001 onward, CI is real.
 
 ## Phase 9: Polish & Cross-Cutting Concerns
 
-- [ ] T040 [P] Document every environment variable from [data-model.md](./data-model.md) in `.env.example` (**names and descriptions only, never a value**) and add a configuration section to `README.md`.
+- [x] T040 [P] Document every environment variable from [data-model.md](./data-model.md) in `.env.example` (**names and descriptions only, never a value**) and add a configuration section to `README.md`.
 - [ ] T041 Fill in `deploy/crswd.example.service` and `deploy/cloudflared.example.yml` with the secret sourced from 1Password rather than any repo file, and complete the deployment section of `README.md` including `journalctl --user -u crswd` for reading the audit trail.
 - [ ] T042 Run the full [quickstart.md](./quickstart.md) validation end to end against a real build and real tmux, and record the outcome in `ralph/PROGRESS.md`. Any deviation from the documented expectations is a defect in the code or the doc — fix one of them, do not paper over it.
 

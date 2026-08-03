@@ -120,7 +120,7 @@ owner plus its clock origin.
 
 ### Ship it
 
-- [ ] T040 Document every environment variable in `.env.example` (**names and descriptions only, never a value**) and add a configuration section to `README.md`
+- [x] T040 Document every environment variable in `.env.example` (**names and descriptions only, never a value**) and add a configuration section to `README.md`
 - [ ] T041 `deploy/`: fill in the systemd user unit and `cloudflared` config, with the secret sourced from 1Password rather than a repo file. Complete the README deployment section, including `journalctl --user -u crswd` for reading the audit trail
 - [ ] T042 Run the full `specs/001-crswd-daemon-core/quickstart.md` validation end to end against a real build and real tmux; record the outcome in `PROGRESS.md`. Any deviation is a defect in the code or the doc — fix one, do not paper over it
 

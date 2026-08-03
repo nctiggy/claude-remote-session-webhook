@@ -7293,3 +7293,239 @@ gitleaks (pre-commit)       1 commit scanned … no leaks found
 68. **Iteration 6 #6 / … / 39 #68 still stands:** `AGENTS.md`'s command table has no entry for
     `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both were
     run by hand this iteration, green.
+
+## Iteration 41 — 2026-08-03 22:45
+
+**Did:** Completed **T040**. `.env.example` existed but was scaffolding-era fiction, so this was a
+rewrite against `internal/config` rather than a fill-in. It named **seven** variables the daemon has
+never read (`CRSW_ACCESS_AUD`, `CRSW_ACCESS_TEAM_DOMAIN`, `CRSW_ALLOWED_EMAILS`, `CRSW_SESSION_CAP`,
+`CRSW_IDLE_TIMEOUT`, `CRSW_ABSOLUTE_LIFETIME`, `CRSW_CLOCK_SKEW`, `CRSW_DEV_AUTH_BYPASS`) and
+omitted **three** it does (`CRSW_MAX_SESSIONS`, `CRSW_CREATE_RATE_PER_MIN`, `CRSW_MAX_BODY_BYTES`).
+Added the configuration section to `README.md`, and `internal/config/envexample_test.go` to hold
+both files to the code.
+
+Ticked T040 in **both** `ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK
+go test -tags tmux ./...    OK (real tmux on this host)
+go test -race ./...         OK
+golangci-lint run           OK
+gofmt -l .                  empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git diff --stat             +307/-26 across three files (one new)
+gitleaks (pre-commit)       1 commit scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **Two of the stale entries were worse than absent, and they are why this was a rewrite.**
+  `CRSW_ALLOWED_ROOTS` was documented as comma-separated; `config.go` splits on `:` and is fixed
+  there deliberately (`rootListSeparator`, so an allowlist cannot change meaning with the build
+  platform). An operator copying `a,b` out of that file gets **one** root spelled `"a,b"`, which
+  `resolveRoot` cannot resolve, so the daemon refuses to start — the good ending. The bad one is
+  `CRSW_SESSION_CAP=8`: nothing reads it, so the operator who set it runs with the default of 5 and
+  is never told. Silent-wrong beats loud-wrong here, which is why the fictional names had to go
+  rather than be left as aspirational.
+- **The file now carries no values at all, including defaults.** It previously assigned five
+  (`127.0.0.1:8787`, `8`, `60m`, `24h`, `false`), and the port was not even the real default
+  (`8765`). T040's "never a value" is not only about secrets: `.gitleaks.toml` allowlists this exact
+  path, so the *premise* of that allowlist is that the file holds nothing. Defaults moved into the
+  comment above each name, where they cannot be copied into a shell.
+- **The prose is pinned to the code by test, not by review.** Three tests in
+  `internal/config/envexample_test.go`: names match, no assignment carries a value, every assignment
+  has a comment line directly above it. They **parse `config.go` with `go/ast`** for string
+  constants beginning `CRSW_` instead of restating the six — a hand-kept list in the test would be a
+  third copy to drift, and parsing catches an *unexported* `envFoo = "CRSW_FOO"` too, which a list
+  built from the exported constants could not.
+- **Comments are deliberately not scanned for names.** The file closes by naming the milestone-2
+  Access variables in prose, and that must not read as "set these". Only `NAME=` lines count as
+  documentation an operator can act on, which is also what makes the prose note safe to keep.
+- **Settled iteration 35 #1 / 39 #13, which named T040 as its owner:** the create burst is
+  `max(1, rate/2)` — 3 at the default 6 — and is stated in both files as *derived on purpose*, since
+  a second variable could be set in disagreement with the first. Also stated: the idle timeout,
+  absolute lifetime and 300s timestamp window are constants, so nobody goes looking for the knob.
+- **The probe is the point, again.** All four defects were seeded into `.env.example` and each was
+  caught by the intended assertion with the intended message — including
+  `"tells an operator to set CRSW_SESSION_CAP and nothing in config.go reads it"`, which is
+  **verbatim the defect this file shipped with for 40 iterations**. Reverted with `Edit` before the
+  commit.
+
+**Learned (do not rediscover):**
+
+- **A carried finding was false, and being carried is what kept it false.** Finding 62 has said
+  "`.env.example` does not exist" since iteration 8 and was restated in every entry since. It has
+  existed the whole time — that is *why* it was never written, since the one task pointed at it read
+  as create-from-nothing. A finding restated 30-plus times without being re-checked against the disk
+  is a finding that can quietly stop being true. Re-verify one before carrying it.
+- **`go/ast` is enough to read constants and needs no dependency.** `parser.ParseFile` on
+  `config.go` (relative path — a test's working directory is its own package directory), then
+  `*ast.GenDecl` with `Tok == token.CONST` → `*ast.ValueSpec` → `*ast.BasicLit` of
+  `token.STRING` → `strconv.Unquote`. The `//nolint:gosec` trailing `EnvSharedSecret` does not
+  interfere, since a comment is not part of the literal. Guard against the parse finding nothing:
+  an empty result would make all three tests pass forever.
+- **`gosec` G304 does not fire on `os.ReadFile(envExamplePath)`** because the path is a `const`. A
+  `var`, or a path built at run time, would have needed a `//nolint`.
+- **The default listen port is `8765`, not `8787`.** Two places in the repo said `8787`; only
+  `config.DefaultListen` decides.
+
+**Left:** T041 (`deploy/` + the README deployment section), T042 (the quickstart validation end to
+end). T040 closes the documentation half of Ship it.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration, and it lands squarely in T041's path: `deploy/crswd.example.service` sets
+   the same three variables nothing reads** — `CRSW_SESSION_CAP=8`, `CRSW_IDLE_TIMEOUT=60m`,
+   `CRSW_ABSOLUTE_LIFETIME=24h` (lines 25–27). An operator who installs that unit today gets a cap
+   of **5**, silently, and cannot change the idle or absolute lifetime at all. `deploy/README.md`
+   likewise lists `CRSW_ACCESS_AUD`, `CRSW_ACCESS_TEAM_DOMAIN` and `CRSW_ALLOWED_EMAILS` under
+   "What you fill in yourself". **T041 owns both files and must reconcile them** — this iteration
+   deliberately did not, one task per iteration.
+2. **New: the guard added here covers `.env.example` and nothing else.** `deploy/` is outside it by
+   construction (finding 1 is exactly what an unguarded file looks like), and so is `README.md`'s
+   table, which is prose a test cannot check without inventing a format. Extending the parse to
+   `deploy/*.example.*` is a small, obvious follow-on once T041 has rewritten them. **No task owns
+   it.**
+3. **New: `README.md:10` still says "Status: scaffolded, no implementation yet."** It now sits nine
+   lines above a configuration section documenting a working daemon, and 41 iterations of code say
+   otherwise. Not fixed here because it is not T040's line and this loop takes one task at a time.
+   **T041 touches this file again and should correct it.**
+4. **New, minor: the new test reads `../../.env.example`**, coupling `internal/config`'s tests to
+   the repo layout two directories up. Deliberate — the file it guards lives at the root and nowhere
+   else — but it is the first test in this repo to reach outside its own module subtree, and a
+   future move of the package breaks it. Recorded so the choice is visible.
+5. **Iteration 40 #1 / 37–39 still stands, and is now the last blocker before T042:
+   `Reaper.Run` still has no caller.** `reaper.destroy` is implemented, audited and leak-proofed but
+   **unreachable in a running daemon**. **An operator must rule, or a task must own it.**
+6. **Iteration 40 #2 still stands:** `httpapi.NewWith` is exported production API with no production
+   caller besides `New`.
+7. **Iteration 40 #3 still stands:** a failed submit leaves prompt text in a named tmux buffer that
+   nothing deletes — a leak into *tmux*, which T039's suite provably cannot see.
+8. **Iteration 39 #2 / 40 #4 still stands:** a shutdown teardown leaves no audit record.
+9. **Iteration 33 #2 / … / 40 #5 still stands:** a session destroyed at startup for outliving its
+   ceiling leaves no audit record either.
+10. **Iteration 39 #4 / 40 #6 still stands:** a session the host will not confirm gone writes one
+    `deny` record per sweep, forever — 2,880 a day at a 30-second interval.
+11. **Iteration 38 #3 / … / 40 #7 still stands:** a drain that times out can race a create.
+12. **Iteration 38 #4 / … / 40 #8 still stands:** `shutdownBudget` (30s) and `shutdownDrain` (10s)
+    are unstated numbers, and **T041's systemd unit needs a `TimeoutStopSec` consistent with the
+    first** — the example unit sets none today, so systemd's default 90s applies by accident rather
+    than by agreement. Note `cmd/crswd/main.go:24` already reasons about that 90s.
+13. **Iteration 37 #2 / … / 40 #9 still stands:** `Store.Touch` has no caller in the request path,
+    so `LastActivity` never moves off `CreatedAt`. One line in the session-scoped resolver. **No
+    task owns it.**
+14. **Iteration 37 #3 / … / 40 #10 still stands:** one slow tmux exec stalls a whole sweep.
+15. **Iteration 37 #4 / … / 40 #11 still stands:** neither the reaper nor shutdown produces `dead`
+    records; `StateDead` stays unreachable.
+16. **Iteration 36 #1 / … / 40 #12 still stands:** `Session.TokenMatches` answers the match without
+    the expiry.
+17. **Iteration 35 #2 / … / 40 #14 still stands:** the 429 carries no `Retry-After`, deliberately.
+    Now slightly sharper, since the README states the burst an operator would want it to reflect.
+18. **Iteration 35 #3 / … / 40 #15 still stands:** create budgets do not survive a restart, while
+    the cap does.
+19. **Iteration 35 #4 / … / 40 #16 still stands:** the daemon's clocks are wired together by
+    construction, not by check.
+20. **Iteration 36 #3 / … / 40 #17 still stands:** `Resolve` checks the credential before the
+    dead-state check. **Unowned.**
+21. **Iteration 34 #2 / … / 40 #18 still stands:** the concurrent-session cap counts records in any
+    state, `dead` included — of which there are none (finding 15).
+22. **Iteration 34 #1 / … / 40 #19 still stands:** `contracts/http-api.md` gives the 429 a row and
+    **no body**. **An operator should rule.**
+23. **Iteration 34 #3 / … / 40 #20 still stands:** `httpapi.New` builds the authenticator, manager
+    and limiter before asserting the listen address is loopback.
+24. **Iteration 32 #1 / … / 40 #21 still stands:** `Reconcile` drops the plaintext credential
+    `Adopt` returns, so an adopted session is drivable by nobody. **An operator should rule.**
+25. **Iteration 33 #3 / … / 40 #22 still stands:** nothing forces `Reconcile` to be called at all.
+26. **Iteration 33 #4 / … / 40 #23 still stands:** `cmd/crswd` has no test files and `run()` has no
+    seam. **An operator should rule whether it gets one before T042.**
+27. **Iteration 32 #3 / … / 40 #24 still stands:** `Adopt` is not safe to call twice concurrently.
+28. **Iteration 31 #1 / … / 40 #25 still stands:** `docs/auth-and-sessions.md:135–137` describes a
+    cross-caller isolation test that cannot be written as specified in milestone 1.
+29. **Iteration 31 #2 / … / 40 #26 still stands:** `GET /sessions` is outside every sweep in the
+    isolation suite.
+30. **Iteration 30 #1 / … / 40 #27 still stands:** `notImplemented` is unreachable dead code.
+31. **Iteration 30 #2 / … / 40 #28 still stands:** the mux's `405` is `text/plain` with an `Allow`
+    header, contradicting `contracts/http-api.md`. **An operator should rule.**
+32. **Iteration 30 #3 / … / 40 #29 still stands:** the contract's test matrix has no row for
+    destroy-then-destroy, destroy-racing-the-reaper, or destroy-racing-shutdown.
+33. **Iteration 30 #4 / … / 40 #30 still stands:** `errDestroyRefused` is unreachable and untested.
+34. **Iteration 29 #1 / … / 40 #31 still stands:** `rollback` verifies with `Has` alone and reports
+    a **false orphan** on a host where the killed session was the only one. **No task owns it.**
+35. **Iteration 29 #3 / … / 40 #32 still stands:** `Destroy` takes a `Session` rather than an id.
+36. **Iteration 28 #1 / … / 40 #33 still stands:** the two read routes disagree about which sessions
+    exist. **Unassigned.**
+37. **Iteration 28 #2 / … / 40 #34 still stands:** a detail reports `state` from the record and
+    never asks the host.
+38. **Iteration 24 #4 / … / 40 #35 still stands:** a session whose window vanished still resolves
+    and answers 500 rather than moving to `dead`. **An operator should rule.**
+39. **Iteration 27 #2 / … / 40 #36 still stands:** the list is unbounded in length.
+40. **Iteration 26 #1 / … / 40 #37 still stands:** nothing bounds the size of a capture.
+41. **Iteration 26 #2 / … / 40 #38 still stands:** `captured_at` is the daemon's clock, not tmux's.
+42. **Iteration 22 #2 / … / 40 #39 still stands:** nothing forces a handler to use `decode`.
+43. **Iteration 22 #3 / … / 40 #40 still stands:** an oversize body is refused twice with two
+    different reasons and two different statuses. **The README now documents the 401 as the one that
+    fires**, which makes the contract's 400 row provably wrong rather than merely unreached.
+    **Unowned.**
+44. **Iteration 21 #1 / … / 40 #41 still stands:** the mux's own `404` is `text/plain` while the
+    contract says every response is JSON.
+45. **Iteration 21 #2 / … / 40 #42 still stands:** the contract's `400` row for an oversize body is
+    unreachable behind layer 2 (finding 43).
+46. **Iteration 21 #3 / … / 40 #43 still stands:** `session.list`, `session.detail`, and
+    `session.output` are action names `data-model.md` does not carry. **`data-model.md` should be
+    reconciled with `internal/audit/audit.go` before T042.**
+47. **Iteration 21 #4 / … / 40 #44 still stands:** `RequestAudit` is not safe for concurrent use.
+48. **Iteration 21 #5 / … / 40 #45 still stands:** every request exit path amends the record by
+    habit, not by construction. **Unowned.**
+49. **Iteration 20 #3 / … / 40 #46 still stands:** none of `docs/security.md`'s "Transport &
+    exposure" headers are applied by anything.
+50. **Iteration 18 #1 / … / 40 #47 still stands:** `Store.Add` does not require a `TokenHash`.
+51. **Iteration 17 #2 / … / 40 #48 still stands:** `Delete`'s hash scrub is best effort.
+52. **Iteration 17 #3 / … / 40 #49 still stands:** nothing enforces that a `Session.ID` in the store
+    came from `NewID`.
+53. **Iteration 16 #1 / … / 40 #50 still stands:** `ResolveWorkDir` has an unavoidable TOCTOU window
+    before `tmux new-session -c`.
+54. **Iteration 16 #3 / … / 40 #51 still stands:** nothing re-stats an approved root. The README now
+    states roots are resolved "once at startup", which makes the assumption explicit.
+55. **Iteration 15 #1 / … / 40 #52 still stands:** FR-027's class admits a leading `-`.
+56. **Iteration 13 #1 / … / 40 #53 still stands:** `docs/auth-and-sessions.md`'s samples are stale
+    in four ways, and finding 28 above is a fifth.
+57. **Iteration 12 #1 / … / 40 #54 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Run by hand again this iteration, green.
+58. **Iteration 12 #2 / … / 40 #55 still stands:** three specs disagree on `Observe`'s signature.
+59. **Iteration 12 #3 / … / 40 #56 still stands:** the replay cache is unbounded in count.
+60. **Iteration 11 #1 / … / 40 #57 still stands:** the audit trail cannot tell clock drift from a
+    forged future timestamp. **Unowned.**
+61. **Iteration 11 #2 / … / 40 #58 still stands:** nothing forces the daemon's clock to be monotonic
+    or roughly right.
+62. **Iteration 10 #2 / … / 40 #59 still stands:** the signature covers the timestamp and body but
+    **not the method or the path**. **No task owns it.**
+63. **Iteration 9 #1 / … / 40 #60 still stands:** `RequestAudit.Deny` takes a free `string`.
+    **Worth an operator's ruling now that T039's assertion exists.**
+64. **Iteration 8 #2 / … / 40 #61 still stands:** the loud default-root warning goes to stderr while
+    audit records go to stdout, and `main`'s `log.Fatalf` is a second unstructured writer. **The
+    config warning and the fatal are unowned.**
+65. **Iteration 7 #1 / … / 40 #63 still stands:** bidi and invisible Unicode are not stripped by
+    `tmuxctl.Strip`, by design. **Milestone 2 decides before rendering.**
+66. **Iteration 6 #3 / … / 40 #64 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case while `exec.go` also matches the missing-socket
+    pair.
+67. **Iteration 14 #1 / … / 40 #65 still stands:** `git checkout --`, `git restore`, `perl -i` and a
+    heredoc are outside the permission allowlist, so `PROMPT.md` step 6's recovery path needs an
+    approval an autonomous run cannot give. The four probes this iteration were reverted with
+    `Edit`, which is allowed, and that is again the only reason probing was possible. A compound
+    `set -e` gate command was also refused mid-iteration and had to be split into single commands —
+    **worth knowing before writing one.**
+68. **Iteration 1 #1 / … / 40 #66 still stands, forty-first iteration carrying it:** `loop.sh`'s
+    sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook, which ran clean on this
+    iteration's commit. Needs an operator or a task of its own.
+69. **Iteration 2 #2 / … / 40 #67 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the plan.
+    Ticked both by hand again. Fortieth iteration of manual compensation for a one-line fix.
+70. **Iteration 6 #6 / … / 40 #68 still stands:** `AGENTS.md`'s command table has no entry for
+    `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both were
+    run by hand this iteration, green.
