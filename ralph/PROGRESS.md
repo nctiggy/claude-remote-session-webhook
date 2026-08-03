@@ -3729,3 +3729,192 @@ alone, so no handler after this one ever reads the `{id}` again. Then T025–T04
 41. **Iteration 6 #6 / … / 23 #40 still stands:** `AGENTS.md`'s command table has no entry
     for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not
     all.
+
+---
+
+## Iteration 25 — 2026-08-03 19:49
+
+**Did:** Completed **T024**, the first half of US2. Added `Manager.Prompt` and
+`ErrEmptyPrompt` in `internal/session/manager.go` (paste then Return, with three
+fail-closed guards), and the HTTP half in `internal/httpapi/sessions.go`:
+`promptSession`, `refusePrompt`, `promptRequest`, `promptResponse`,
+`errPromptNoSession`, `errPromptUndelivered`. One line in `handlerFor` wires the route.
+6 new tests / 15 subtests in `sessions_test.go`, 3 in `session/manager_test.go`. Ticked
+T024 in **both** `ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (httpapi 75 top-level tests)
+go test -race -count=1 ./internal/...   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK (v1.62.2)
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git status                  clean after both probes were reverted
+gitleaks (pre-commit)       1 commit scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **Delivery lives on the Manager, not in the handler.** `Server` holds no
+  `tmuxctl.Controller` and must not acquire one — `server.go`'s own comment says every
+  rule standing in for the permission prompt lives behind the single `sessions` field —
+  so the handler cannot call `Controller.Paste` itself the way T024's wording implies.
+  `Manager.Prompt(ctx, Session, string)` is the seam, and **T025 should take the same
+  shape** rather than reaching for a controller.
+- **`Prompt` takes the resolved record, not an id.** Layer 3 has already matched the
+  `{id}` to a record the caller owns; passing the record means there is no second lookup
+  to disagree with the first, and no path from a caller's spelling of an id to a tmux
+  target. It is also why the handler sets no `session_id` on the audit record — the
+  resolver stamped it already, from the daemon's own record.
+- **Empty-text validation is the manager's, like `ValidateName`.** `ErrEmptyPrompt` is a
+  `session` sentinel that `refusePrompt` maps to the uniform 400. An empty prompt would
+  paste nothing and then press Return, which is a bare newline typed into Claude.
+- **Everything except an empty text is a 500 with no detail**, including a dead session
+  (unreachable: the resolver refuses `dead` first). Distinguishing tmux's failures for
+  the caller would be an oracle about a host it cannot otherwise see.
+- **202, not 200.** What is confirmed is that the keystrokes reached the pane, not that
+  Claude read them — which is what `contracts/http-api.md` means by "accepted for
+  delivery". `delivered:true` is about the two tmux commands succeeding.
+- **The response does not echo the text.** Prompt text is secret under
+  `docs/security.md` §3; a response that repeated it is one more place it gets logged by
+  whatever reads it.
+
+**Learned (do not rediscover):**
+
+- **`sessionFixture.plant` now seeds the tmux fake too** (`Seed` records no call, so argv
+  assertions still see only what the request caused). Without it every planted record
+  named a session the fake did not have, and the first handler to touch tmux per request
+  — this one — answered 500 in all three route sweeps. **T025 and T028 depend on this; a
+  test that wants a vanished session must call `f.tmux.Vanish` explicitly now.**
+- **`bodyFor` had to grow a second case.** A sweep that sends no body to a route with a
+  required body is stopped by the decoder at 400 and proves nothing, so the prompt route
+  gets `promptBody()`. `reachedStatus`'s prompt row moved 501 → 202. Four rows left.
+- **Both probes fail loudly, which is the point.** Swapping `Paste` for
+  `SendKeys(name, text)` fails 4 tests / 8 subtests — every hostile payload subtest plus
+  both manager tests. Unwiring the route from `handlerFor` fails 7 tests / 22 assertions,
+  including the two older router sweeps. Reverted with `Edit` in reverse; `git status`
+  clean before the commit.
+- **The hostile payloads go through `json.Marshal(promptRequest{...})`,** not a
+  hand-built body — a shell-injection string and an embedded newline are not things to
+  escape by hand into a JSON literal. One literal body (`promptBody`) still pins the wire
+  field name as `text`.
+- **The replay trap again (iterations 19–24):** the signature covers timestamp and body
+  only, so `promptFixture.post` takes the signing instant. Two identical prompts to one
+  server need two instants or the second is a 401.
+- **`go test -count=1 ./...` on this tree is ~0.2s; `-race` adds ~26s in `tmuxctl`
+  alone.** Budget for it, do not skip it.
+
+**Left:** T025 is next (`GET /sessions/{id}/output` — captured pane text through
+`tmuxctl.Strip`, no ESC bytes, no pane content in any record or log line). It needs the
+same Manager-method shape this iteration established, and `f.tmux.SetPane` is the fixture
+knob for arranging output. Then T026–T042.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: a failed submit can leave prompt text where a second client
+   could read it.** This is iteration 6 #2 met at last, and it is *narrower* than it was:
+   `paste-buffer -d` deletes the buffer as it pastes, so the only windows are a `Paste`
+   that loaded the buffer and failed to paste it, and a `SendKeys` failure after a
+   successful paste (which leaves text in the **pane**, not the buffer). The buffer is
+   named for the session, so the next prompt to the same session overwrites it. **Not
+   fixed because the cleanup command can itself fail**, and a daemon that reported
+   success after a best-effort scrub would be lying about the one thing that matters.
+   T038 or an operator should rule on whether a `delete-buffer` on the failure path is
+   worth the fourth exec.
+2. **New this iteration: `Manager.Prompt` does not touch the idle clock.** Same as
+   iteration 24 #1 and the same owner — T036 must add the touch in `resolveSession`,
+   once, for all four `{id}` routes. **A session prompted every minute is still reaped at
+   60.**
+3. **New this iteration: nothing observes that tmux still has the session.** A prompt to
+   a record whose window vanished answers 500 (`can't find session`) rather than moving
+   the record to `dead` and answering 404. `data-model.md` says a vanished session
+   transitions on the next observation; this handler is the first that *could* observe
+   and does not. Iteration 24 #4 restated with a live example. T025/T028.
+4. **Iteration 23 #1 / 24 #5 still stands:** `POST /sessions` has no rate limit and no
+   concurrency cap. T033/T034; `cfg.MaxSessions` and `cfg.CreateRatePerMin` still have no
+   reader.
+5. **Iteration 23 #2 / 24 #6 still stands:** nothing moves a record to `running`;
+   `Store.SetState` still has no caller outside tests. See #3.
+6. **Iteration 23 #4 / 24 #7 still stands:** `New` builds `tmuxctl.NewExec()`
+   unconditionally; T032 should build one controller in `main` and pass it in.
+7. **Iteration 22 #2 / … / 24 #8 still stands:** nothing forces a handler to use
+   `decode`. `promptSession` does, and `TestARefusedPromptCostsNoTmuxCommand` pins that
+   for this handler — the next four are still on their own.
+8. **Iteration 22 #3 / … / 24 #9 still stands:** an oversize body is refused twice with
+   two different reasons and two different statuses. T038.
+9. **Iteration 21 #1 / … / 24 #10 still stands:** the mux's own `404`/`405` are
+   `text/plain` while the contract says every response is JSON. **An operator should
+   rule; no task owns it.**
+10. **Iteration 21 #2 / … / 24 #11 still stands:** the contract's `400` row for an
+    oversize body is unreachable behind layer 2.
+11. **Iteration 21 #3 / … / 24 #12 still stands:** `session.list`, `session.detail`, and
+    `session.output` are action names iteration 21 chose and `data-model.md` does not
+    carry. `session.prompt` — this iteration's — *is* in `data-model.md`.
+12. **Iteration 21 #4 / … / 24 #13 still stands:** `RequestAudit` is not safe for
+    concurrent use, and nothing enforces it.
+13. **Iteration 21 #5 / … / 24 #14 still stands:** every exit path amends the record by
+    habit, not by construction. `promptSession` has four and all four do. T038's sweep is
+    what would make it a property.
+14. **Iteration 20 #3 / … / 24 #15 still stands:** none of `docs/security.md`'s
+    "Transport & exposure" headers are applied by anything, and no task owns them.
+15. **Iteration 18 #1 / … / 24 #17 still stands:** `Store.Add` does not require a
+    `TokenHash`. T031.
+16. **Iteration 17 #2 / … / 24 #19 still stands:** `Delete`'s hash scrub is best effort.
+17. **Iteration 17 #3 / … / 24 #20 still stands:** nothing enforces that a `Session.ID`
+    in the store came from `NewID`.
+18. **Iteration 16 #1 / … / 24 #21 still stands:** `ResolveWorkDir` has an unavoidable
+    TOCTOU window before `tmux new-session -c`.
+19. **Iteration 16 #3 / … / 24 #22 still stands:** nothing re-stats an approved root.
+20. **Iteration 15 #1 / … / 24 #23 still stands:** FR-027's class admits a leading `-`
+    while `tasks.md` T014 calls it hostile.
+21. **Iteration 13 #1 / … / 24 #24 still stands:** `docs/auth-and-sessions.md`'s samples
+    are stale in four ways.
+22. **Iteration 12 #1 / … / 24 #25 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Run by hand again this iteration, green.
+23. **Iteration 12 #2 / … / 24 #26 still stands:** three specs disagree on `Observe`'s
+    signature.
+24. **Iteration 12 #3 / … / 24 #27 still stands:** the replay cache is unbounded in
+    count.
+25. **Iteration 11 #1 / … / 24 #28 still stands:** the audit trail cannot tell clock
+    drift from a forged future timestamp. T038.
+26. **Iteration 11 #2 / … / 24 #29 still stands:** nothing forces the daemon's clock to
+    be monotonic or roughly right.
+27. **Iteration 10 #2 / … / 24 #30 still stands:** the signature covers timestamp and
+    body but not method or path. Bit `promptFixture.post` again (see Learned).
+28. **Iteration 9 #1 / … / 24 #31 still stands:** `RequestAudit.Deny` takes a free
+    `string`. `refusePrompt` passes only sentinels; nothing enforces that on the next
+    caller. T038.
+29. **Iteration 8 #2 / … / 24 #32 still stands:** the loud default-root warning goes to
+    stderr while audit records go to stdout. T032.
+30. **Iteration 8 #1 / … / 24 #33 still stands:** `.env.example` does not exist. T040.
+31. **Iteration 7 #1 / … / 24 #34 still stands:** bidi and invisible Unicode are not
+    stripped by `tmuxctl.Strip`, by design. **T025 is where this becomes visible** —
+    milestone 2 decides.
+32. **Iteration 6 #1 / … / 24 #36 still stands:** killing the only session stops the tmux
+    server and `Has` then errors rather than returning false. T028 should use `List`, and
+    switching `Manager.rollback`'s call with it needs
+    `TestATmuxFailureAnswersFiveHundredWithNoDetail` re-read.
+33. **Iteration 6 #3 / … / 24 #37 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case.
+34. **Iteration 14 #1 / … / 24 #38 still stands:** `git checkout -- <path>` and
+    `git restore` are not in the permission allowlist, so `PROMPT.md` step 6's documented
+    recovery path needs an approval an autonomous run cannot give. Both probes this
+    iteration were reverted with `Edit` in reverse. **Also new: a heredoc long enough to
+    carry this section was refused by the Bash parser** ("Parser aborted"), so
+    `PROGRESS.md` was appended with two `Edit` calls anchored on the previous entry's
+    last lines. The commit message heredoc was short enough and went through.
+35. **Iteration 1 #1 / … / 24 #39 still stands, twenty-fifth iteration carrying it:**
+    `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook
+    (which ran clean on this iteration's commit). Needs an operator or a task of its own.
+36. **Iteration 2 #2 / … / 24 #40 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again, again only because the finding was written down.
+    Twenty-fourth iteration of manual compensation for a one-line fix to step 9.
+37. **Iteration 6 #6 / … / 24 #41 still stands:** `AGENTS.md`'s command table has no
+    entry for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is
+    not all.
