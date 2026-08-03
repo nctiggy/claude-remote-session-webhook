@@ -182,3 +182,84 @@ tooling" half is already satisfied — only the config file remains.
    which proves `core.hooksPath` is already pointed at `.githooks` on this host.
    No action needed — and this is the reason finding #1 matters, since `loop.sh`'s
    `--no-verify` sweep is now the only path that skips a hook known to be live.
+
+---
+
+## Iteration 3 — 2026-08-03 01:38
+
+**Did:** Completed **T002**. Added `.golangci.yml` (v1 schema) enabling the five
+required linters — `errcheck`, `gosec`, `govet`, `staticcheck`, `bodyclose` — plus
+v1's own defaults (`gosimple`, `ineffassign`, `unused`) named explicitly, so
+`disable-all: true` cannot leave a weaker gate than an unconfigured run. Ticked T002
+in **both** `ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`. The task's
+"install the tooling" half was already satisfied by an operator (iteration 2).
+
+Gate, executed not asserted:
+
+```
+go build ./...      OK
+go vet ./...        OK
+go test ./...       OK (cmd/crswd: no test files)
+golangci-lint run   OK
+gofmt -l .          empty
+go.sum              absent  ✅ zero third-party deps still holds
+```
+
+**Learned (do not rediscover):**
+
+- **Iteration 2 was right that a clean `golangci-lint run` proves nothing**, so this
+  iteration did not take it on faith. Verified three ways: `golangci-lint config path`
+  now prints `.golangci.yml` (it printed `level=warning msg="No config file detected"`
+  beforehand); `golangci-lint linters` lists exactly the eight enabled; and a
+  throwaway probe file was linted to confirm findings are actually *reported*, then
+  deleted. The tree is clean — the probe was never committed. **Reuse this trick**
+  whenever a task's deliverable is a config rather than code: a passing linter and an
+  absent linter look identical from the exit code.
+- **`exclude-use-default: false` is load-bearing and measured.** Probed both ways on
+  identical source. Default exclusions ON reports 1 finding; OFF reports 3. The two
+  that the defaults would have silently eaten:
+  - `defer f.Close()` unchecked (errcheck EXC0001) — the exact shape by which
+    "teardown is verified" (Constitution VI) decays into teardown assumed. **T028
+    and T036 depend on this being visible.**
+  - `G304: Potential file inclusion via variable` (gosec EXC0010) — which is
+    literally T015's subject matter (`workdir.go`, path containment).
+- **gosec `G204` is a precise alarm here, and better than expected.** Probed all
+  three call shapes. It fires on `exec.Command("sh", "-c", "echo "+user)` — a
+  constructed shell string, the thing `docs/security.md` bans outright. It does
+  **not** fire on `exec.Command(name, args...)` (argv slice) or on
+  `exec.Command("tmux", "send-keys", user)` (constant argv0, variable arg). So
+  **T005's sanctioned argv-slice style will not need a `//nolint`** — do not add one
+  pre-emptively, and if G204 ever does fire in `internal/tmuxctl/exec.go`, that is a
+  real defect, not lint noise. (It fires regardless of `exclude-use-default`; the
+  earlier assumption that the defaults muted it was wrong and is corrected here.)
+- `errcheck` is set to `check-blank: true` + `check-type-assertions: true`, so
+  `_ = someErr()` and `s := i.(string)` both fail the build. Write `if err := …`.
+- `max-issues-per-linter: 0` / `max-same-issues: 0` — reports are uncapped. A
+  truncated lint report reads as "clean" when it is not.
+
+**Left:** T003 is next (`internal/tmuxctl`: `Controller` interface + `SessionInfo` in
+`controller.go`, and the two target helpers in `target.go` — `SessionTarget` → `=name`,
+`PaneTarget` → `=name:`, which are **not** interchangeable). Then T004–T042. T003–T008
+are the Foundational phase and block every user story.
+
+**Findings (noticed, not fixed):**
+
+1. **`.golangci.yml` sets no `build-tags`, so T005's `//go:build tmux` integration
+   test will never be linted** — not by `golangci-lint run` locally and not by CI.
+   Deliberately left alone here rather than pre-solving a task I was not on (Principle
+   IV), but **T005 should add `run: build-tags: [tmux]`** as part of its own change,
+   or ship a file that no linter ever reads. Same trap applies to any future build tag.
+2. **Iteration 1 finding #1 / iteration 2 finding #1 still stands, still unfixed:**
+   `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook
+   that iteration 2 proved is live on this host. Third iteration carrying it. It needs
+   an operator or a task of its own — no iteration will ever pick it up, because it is
+   not in the plan.
+3. **Iteration 2 finding #2 still stands:** `ralph/IMPLEMENTATION_PLAN.md` and
+   `specs/.../tasks.md` carry duplicate checkbox state, and `PROMPT.md` step 9 names
+   only the plan. This iteration ticked both by hand *because the finding was written
+   down* — which is the notebook working, but it is one fresh context away from
+   breaking. Worth fixing at the source.
+4. `.editorconfig` and the format-and-lint hook run `gofmt`/`goimports` on Go files
+   but nothing formats YAML. `.golangci.yml` was hand-formatted; the hook's
+   `npx --no-install prettier` path no-ops without a `node_modules`, which this repo
+   deliberately does not have. Not a problem, just not the safety net it looks like.

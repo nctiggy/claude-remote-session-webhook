@@ -58,7 +58,7 @@ owner plus its clock origin.
 ### Setup
 
 - [x] T001 Initialize the Go module in `go.mod` declaring `go 1.23.0` as the **minimum language version** (the CI toolchain is 1.24 and matches the dev host — do not "fix" this to 1.24) and add `cmd/crswd/main.go` that parses flags and exits cleanly. Creating `go.mod` switches CI's build/test/lint job on
-- [ ] T002 Add `.golangci.yml` using the **v1 config schema** (CI pins golangci-lint v1.62) enabling `errcheck`, `gosec`, `govet`, `staticcheck`, `bodyclose`; install `golangci-lint` and `goimports` locally — both are currently missing, so the format-and-lint hook silently no-ops
+- [x] T002 Add `.golangci.yml` using the **v1 config schema** (CI pins golangci-lint v1.62) enabling `errcheck`, `gosec`, `govet`, `staticcheck`, `bodyclose`; install `golangci-lint` and `goimports` locally — both are currently missing, so the format-and-lint hook silently no-ops
 
 ### Foundation — tmux, config, audit
 

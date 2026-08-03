@@ -51,7 +51,7 @@ switches on the entire build/test/lint job in `.github/workflows/ci.yml`, which 
 the presence of a stack manifest — from T001 onward, CI is real.
 
 - [x] T001 Initialize the Go module in `go.mod` declaring `go 1.23.0` as the **minimum language version** so the module builds for anyone on 1.23+. The CI *toolchain* is 1.24 and matches the dev host — do not "fix" this to 1.24 with module path `github.com/nctiggy/claude-remote-session-webhook`, and add `cmd/crswd/main.go` that parses flags and exits cleanly with no other logic. Verify: `go build ./... && go vet ./...` pass and `go.sum` does not exist.
-- [ ] T002 Add `.golangci.yml` using the **v1 config schema** (CI pins `golangci-lint` v1.62; a v2-schema file fails) enabling at minimum `errcheck`, `gosec`, `govet`, `staticcheck`, `bodyclose`. Install the missing local tooling documented in [quickstart.md](./quickstart.md) (`golangci-lint@v1.62.2`, `goimports`). Verify: `golangci-lint run` executes and passes — confirm it actually ran, since `.claude/hooks/format-and-lint.sh` no-ops when the binary is absent.
+- [x] T002 Add `.golangci.yml` using the **v1 config schema** (CI pins `golangci-lint` v1.62; a v2-schema file fails) enabling at minimum `errcheck`, `gosec`, `govet`, `staticcheck`, `bodyclose`. Install the missing local tooling documented in [quickstart.md](./quickstart.md) (`golangci-lint@v1.62.2`, `goimports`). Verify: `golangci-lint run` executes and passes — confirm it actually ran, since `.claude/hooks/format-and-lint.sh` no-ops when the binary is absent.
 
 ---
 
