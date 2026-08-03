@@ -7529,3 +7529,252 @@ end). T040 closes the documentation half of Ship it.
 70. **Iteration 6 #6 / … / 40 #68 still stands:** `AGENTS.md`'s command table has no entry for
     `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both were
     run by hand this iteration, green.
+
+## Iteration 42 — 2026-08-03 22:55
+
+**Did:** Completed **T041**. Like T040 before it, this was a correction rather than a fill-in: the
+example systemd unit had never been read against `config.go` and **would not have started**. It
+passed `--listen 127.0.0.1:8787` to a binary that defines no flags — `flag.Parse` exits non-zero on
+an unknown one — and set three variables nothing reads (`CRSW_SESSION_CAP`, `CRSW_IDLE_TIMEOUT`,
+`CRSW_ABSOLUTE_LIFETIME`) while omitting all three it does. The tunnel proxied to `8787` against a
+`config.DefaultListen` of `8765`. Rewrote both example files and `deploy/README.md`, completed the
+`README.md` deployment section including `journalctl --user -u crswd`, and added
+`internal/config/deployexample_test.go` to hold the unit to the code.
+
+Ticked T041 in **both** `ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK
+go test -tags tmux ./...    OK (real tmux on this host)
+go test -race ./...         OK
+golangci-lint run           OK
+gofmt -l .                  empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git diff --stat             +416/-30 across five files (one new)
+gitleaks (pre-commit)       1 commit scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **`KillMode=process`, and this is the one setting a reviewer will want to revert.** A tmux server
+  the daemon starts lands in the unit's cgroup, so systemd's default `control-group` kills every
+  session on **any** restart — exactly the sessions `Manager.Adopt` (T031/T032) exists to recover,
+  which would make two tasks and their tests dead code in production. Killing them is not the safer
+  reading either: it only works when the daemon happened to start the server. Attach to tmux from
+  your own shell first and the server is outside the cgroup entirely, where systemd's kill never
+  reaches it — so the default gives an *illusion* of teardown whose truth depends on boot order.
+  Teardown here is the daemon's verified teardown, by choice.
+- **`PrivateTmp=true` and `ProtectHome=read-only` were removed, not forgotten.** tmux's socket
+  directory is `/tmp/tmux-$UID` unless `TMUX_TMPDIR` says otherwise — **not** `$XDG_RUNTIME_DIR` —
+  so a private `/tmp` hides the daemon's tmux server from the operator's own shell. `tmux attach`
+  stops working and two servers appear where there should be one, and "you can attach by hand to
+  debug" is `README.md`'s stated reason for using tmux at all. `ProtectHome` breaks Claude Code,
+  which reads and writes `~/.claude`, `~/.claude.json` and `~/.cache`; it fails inside a pane, as an
+  unrelated-looking error. Both are written into the unit as a *deliberately absent* block with the
+  reason, because both read as obvious additions to anyone hardening by habit.
+- **What is left is honest about what it does not do.** `ProtectSystem=full` under a *user* unit is
+  defence in depth, not a boundary — the process is already unprivileged. Nothing in the unit
+  sandboxes a **session**: sessions run `--dangerously-skip-permissions` as the operator, so
+  anything the daemon can reach a session can reach. `CRSW_ALLOWED_ROOTS` is the only real control
+  and the unit says so.
+- **Settled iteration 38 #4 / … / 41 #12, which named T041 as its owner:** `TimeoutStopSec=45s`,
+  chosen to sit above `shutdownBudget` (30s, `cmd/crswd/main.go:24`) so the deadline that fires is
+  the daemon's own. The single ending that certainly leaves unsandboxed shells on the host is a
+  SIGKILL from systemd part-way through a verified teardown, and the unit previously accepted
+  systemd's 90s default by accident rather than by agreement.
+- **The `op read` line in the old unit produced a file `EnvironmentFile` cannot use.**
+  `op read … > ~/.config/crswd/env` writes the bare secret; `EnvironmentFile` parses `NAME=value`
+  lines and would have silently loaded nothing, so the daemon would refuse to start on a missing
+  secret with the file sitting right there. Now `printf 'CRSW_SHARED_SECRET=%s\n' "$(op read …)"`
+  under `umask 077`, in all three places it appears.
+- **Settled iteration 41 #3:** `README.md:10` no longer claims "scaffolded, no implementation yet".
+  It named the wrong milestone state nine lines above a working configuration section.
+- **The probe is the point, again.** Six defects were seeded — `--listen` on `ExecStart`,
+  `CRSW_SESSION_CAP=8`, an inline `CRSW_SHARED_SECRET`, an `8787` origin, `CRSW_MAX_SESSIONS=8`, and
+  `CRSW_ALLOWED_ROOTS=%h/src` — and each was caught by the intended assertion with the intended
+  message. Two of them are **verbatim what this file shipped with for 41 iterations**. All reverted
+  with `Edit` before the commit.
+
+**Learned (do not rediscover):**
+
+- **A documentation task can be a broken-deployment task.** T041 reads as prose work and was the
+  second-to-last item in the plan, but the unit it "filled in" could not have started a daemon.
+  Nothing in 41 iterations of a green gate touched `deploy/` — the tree being green says nothing
+  about files no test reads. **T042 is the last task and the same warning applies to `quickstart.md`.**
+- **`config_test` can import `config` directly, which beats the `go/ast` route where it applies.**
+  `envexample_test.go` parses `config.go` because it needs the *set* of `CRSW_` names, including
+  unexported ones. For comparing against a specific value — `config.DefaultListen`,
+  `config.DefaultMaxSessions` — the exported constant is simply available and needs no parsing.
+  Both helpers now live in the same package and the new file reuses `declaredVars` unchanged.
+- **The unit's inline values are asserted to be the daemon's defaults, so a deleted line changes
+  nothing.** That is the only reason it is safe to ship a unit hard-coding numbers at all, and the
+  claim was written into the file before it was enforced — the second commit-shaped mistake this
+  task existed to fix. `%h/code` is checked against `"%h/" + config.DefaultRootName`, so renaming
+  the default root fails the build.
+- **A systemd unit parses as `Key=Value` with repeated keys**, which is why `unitSettings` returns
+  `map[string][]string` — `Environment=` and `ExecStart=` can each appear many times, and taking
+  only the first would have made the guard miss a second assignment. Section headers (`[Service]`)
+  and `#` comments are skipped, which is what keeps the deliberately-absent block at the foot of
+  the file from reading as settings that are present.
+- **`loginctl enable-linger` is not optional for this daemon.** A systemd *user* manager stops when
+  the last login session ends, so without lingering the service is up only while the operator is
+  logged in — the opposite of a daemon whose purpose is reaching the host when they are not there.
+  It was in neither README before this.
+
+**Left:** T042 only (the `quickstart.md` validation end to end against a real build and real tmux).
+That is the last task in the plan. Note finding 6 below: **`Reaper.Run` still has no caller**, so a
+quickstart run cannot demonstrate the idle or absolute lifetime in a live daemon.
+
+**Findings (noticed, not fixed):**
+
+1. **New: the unit was never machine-validated.** `systemd-analyze --user verify` is outside the
+   permission allowlist and was refused, so the file was checked by eye and by the new test only.
+   Every directive used is a real one, but that is my reading, not a parser's. **T042 should run it
+   once** — it is a single command and the natural home for it.
+2. **New, and the limit of the guard just added: it checks the unit's *shape*, not systemd's
+   grammar.** `ProtectKernelTunable=true` (singular, a plausible typo) passes every assertion in
+   `deployexample_test.go` and is silently ignored by systemd. The test catches drift between the
+   unit and `config.go`; it cannot catch a directive that does not exist. Finding 1 is the fix.
+3. **New: `%h/bin/crswd` and `~/.config/crswd/env` are now spelled in three files** — the unit,
+   `deploy/README.md` and `README.md` — with nothing tying them together. The `op read` line is in
+   two of them. A path changed in one place is a deploy that fails at `systemctl --user start`.
+4. **New: `cloudflared.example.yml` is unguarded beyond its origin address.** The test pins
+   `service:` to `config.DefaultListen`; the placeholder tunnel ID, the credentials path, and the
+   catch-all `http_status:404` rule are checked by nobody. Losing that last rule would turn the
+   tunnel into an open proxy, which is the file's own stated reason for having it.
+5. **Iteration 41 #2 still stands, narrowed:** prose is still outside every guard.
+   `deploy/*.example.*` is now covered, but `README.md`'s configuration table and both deployment
+   sections are English a test cannot check without inventing a format. **No task owns it.**
+6. **Iteration 41 #4 still stands, and there are now two:** `internal/config`'s tests read
+   `../../.env.example` and `../../deploy/*`, coupling the package's tests to the repo layout two
+   directories up. Deliberate — the files they guard live at the root — but a move of the package
+   breaks them.
+7. **Iteration 40 #1 / 37–41 #5 still stands, and is the last blocker before T042:
+   `Reaper.Run` still has no caller.** `reaper.destroy` is implemented, audited and leak-proofed but
+   **unreachable in a running daemon**. **An operator must rule, or a task must own it.**
+8. **Iteration 40 #2 / 41 #6 still stands:** `httpapi.NewWith` is exported production API with no
+   production caller besides `New`.
+9. **Iteration 40 #3 / 41 #7 still stands:** a failed submit leaves prompt text in a named tmux
+   buffer that nothing deletes — a leak into *tmux*, which T039's suite provably cannot see.
+10. **Iteration 39 #2 / … / 41 #8 still stands:** a shutdown teardown leaves no audit record.
+11. **Iteration 33 #2 / … / 41 #9 still stands:** a session destroyed at startup for outliving its
+    ceiling leaves no audit record either.
+12. **Iteration 39 #4 / … / 41 #10 still stands:** a session the host will not confirm gone writes
+    one `deny` record per sweep, forever — 2,880 a day at a 30-second interval.
+13. **Iteration 38 #3 / … / 41 #11 still stands:** a drain that times out can race a create.
+14. **Iteration 37 #2 / … / 41 #13 still stands:** `Store.Touch` has no caller in the request path,
+    so `LastActivity` never moves off `CreatedAt`. One line in the session-scoped resolver. **No
+    task owns it.**
+15. **Iteration 37 #3 / … / 41 #14 still stands:** one slow tmux exec stalls a whole sweep.
+16. **Iteration 37 #4 / … / 41 #15 still stands:** neither the reaper nor shutdown produces `dead`
+    records; `StateDead` stays unreachable.
+17. **Iteration 36 #1 / … / 41 #16 still stands:** `Session.TokenMatches` answers the match without
+    the expiry.
+18. **Iteration 35 #2 / … / 41 #17 still stands:** the 429 carries no `Retry-After`, deliberately.
+19. **Iteration 35 #3 / … / 41 #18 still stands:** create budgets do not survive a restart, while
+    the cap does.
+20. **Iteration 35 #4 / … / 41 #19 still stands:** the daemon's clocks are wired together by
+    construction, not by check.
+21. **Iteration 36 #3 / … / 41 #20 still stands:** `Resolve` checks the credential before the
+    dead-state check. **Unowned.**
+22. **Iteration 34 #2 / … / 41 #21 still stands:** the concurrent-session cap counts records in any
+    state, `dead` included — of which there are none (finding 16).
+23. **Iteration 34 #1 / … / 41 #22 still stands:** `contracts/http-api.md` gives the 429 a row and
+    **no body**. **An operator should rule.**
+24. **Iteration 34 #3 / … / 41 #23 still stands:** `httpapi.New` builds the authenticator, manager
+    and limiter before asserting the listen address is loopback.
+25. **Iteration 32 #1 / … / 41 #24 still stands:** `Reconcile` drops the plaintext credential
+    `Adopt` returns, so an adopted session is drivable by nobody. **An operator should rule** — and
+    T041 has now documented a deployment whose restart path depends on adoption working.
+26. **Iteration 33 #3 / … / 41 #25 still stands:** nothing forces `Reconcile` to be called at all.
+27. **Iteration 33 #4 / … / 41 #26 still stands:** `cmd/crswd` has no test files and `run()` has no
+    seam. **An operator should rule whether it gets one before T042.**
+28. **Iteration 32 #3 / … / 41 #27 still stands:** `Adopt` is not safe to call twice concurrently.
+29. **Iteration 31 #1 / … / 41 #28 still stands:** `docs/auth-and-sessions.md:135–137` describes a
+    cross-caller isolation test that cannot be written as specified in milestone 1.
+30. **Iteration 31 #2 / … / 41 #29 still stands:** `GET /sessions` is outside every sweep in the
+    isolation suite.
+31. **Iteration 30 #1 / … / 41 #30 still stands:** `notImplemented` is unreachable dead code.
+32. **Iteration 30 #2 / … / 41 #31 still stands:** the mux's `405` is `text/plain` with an `Allow`
+    header, contradicting `contracts/http-api.md`. **An operator should rule.**
+33. **Iteration 30 #3 / … / 41 #32 still stands:** the contract's test matrix has no row for
+    destroy-then-destroy, destroy-racing-the-reaper, or destroy-racing-shutdown.
+34. **Iteration 30 #4 / … / 41 #33 still stands:** `errDestroyRefused` is unreachable and untested.
+35. **Iteration 29 #1 / … / 41 #34 still stands:** `rollback` verifies with `Has` alone and reports
+    a **false orphan** on a host where the killed session was the only one. **No task owns it.**
+36. **Iteration 29 #3 / … / 41 #35 still stands:** `Destroy` takes a `Session` rather than an id.
+37. **Iteration 28 #1 / … / 41 #36 still stands:** the two read routes disagree about which sessions
+    exist. **Unassigned.**
+38. **Iteration 28 #2 / … / 41 #37 still stands:** a detail reports `state` from the record and
+    never asks the host.
+39. **Iteration 24 #4 / … / 41 #38 still stands:** a session whose window vanished still resolves
+    and answers 500 rather than moving to `dead`. **An operator should rule.**
+40. **Iteration 27 #2 / … / 41 #39 still stands:** the list is unbounded in length.
+41. **Iteration 26 #1 / … / 41 #40 still stands:** nothing bounds the size of a capture.
+42. **Iteration 26 #2 / … / 41 #41 still stands:** `captured_at` is the daemon's clock, not tmux's.
+43. **Iteration 22 #2 / … / 41 #42 still stands:** nothing forces a handler to use `decode`.
+44. **Iteration 22 #3 / … / 41 #43 still stands:** an oversize body is refused twice with two
+    different reasons and two different statuses. **Unowned.**
+45. **Iteration 21 #1 / … / 41 #44 still stands:** the mux's own `404` is `text/plain` while the
+    contract says every response is JSON.
+46. **Iteration 21 #2 / … / 41 #45 still stands:** the contract's `400` row for an oversize body is
+    unreachable behind layer 2 (finding 44).
+47. **Iteration 21 #3 / … / 41 #46 still stands:** `session.list`, `session.detail`, and
+    `session.output` are action names `data-model.md` does not carry. **`data-model.md` should be
+    reconciled with `internal/audit/audit.go` before T042.**
+48. **Iteration 21 #4 / … / 41 #47 still stands:** `RequestAudit` is not safe for concurrent use.
+49. **Iteration 21 #5 / … / 41 #48 still stands:** every request exit path amends the record by
+    habit, not by construction. **Unowned.**
+50. **Iteration 20 #3 / … / 41 #49 still stands:** none of `docs/security.md`'s "Transport &
+    exposure" headers are applied by anything.
+51. **Iteration 18 #1 / … / 41 #50 still stands:** `Store.Add` does not require a `TokenHash`.
+52. **Iteration 17 #2 / … / 41 #51 still stands:** `Delete`'s hash scrub is best effort.
+53. **Iteration 17 #3 / … / 41 #52 still stands:** nothing enforces that a `Session.ID` in the store
+    came from `NewID`.
+54. **Iteration 16 #1 / … / 41 #53 still stands:** `ResolveWorkDir` has an unavoidable TOCTOU window
+    before `tmux new-session -c`.
+55. **Iteration 16 #3 / … / 41 #54 still stands:** nothing re-stats an approved root.
+56. **Iteration 15 #1 / … / 41 #55 still stands:** FR-027's class admits a leading `-`.
+57. **Iteration 13 #1 / … / 41 #56 still stands:** `docs/auth-and-sessions.md`'s samples are stale
+    in four ways, and finding 29 above is a fifth.
+58. **Iteration 12 #1 / … / 41 #57 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Run by hand again this iteration, green.
+59. **Iteration 12 #2 / … / 41 #58 still stands:** three specs disagree on `Observe`'s signature.
+60. **Iteration 12 #3 / … / 41 #59 still stands:** the replay cache is unbounded in count.
+61. **Iteration 11 #1 / … / 41 #60 still stands:** the audit trail cannot tell clock drift from a
+    forged future timestamp. **Unowned.**
+62. **Iteration 11 #2 / … / 41 #61 still stands:** nothing forces the daemon's clock to be monotonic
+    or roughly right.
+63. **Iteration 10 #2 / … / 41 #62 still stands:** the signature covers the timestamp and body but
+    **not the method or the path**. **No task owns it.**
+64. **Iteration 9 #1 / … / 41 #63 still stands:** `RequestAudit.Deny` takes a free `string`.
+65. **Iteration 8 #2 / … / 41 #64 still stands:** the loud default-root warning goes to stderr while
+    audit records go to stdout, and `main`'s `log.Fatalf` is a second unstructured writer. **Now
+    slightly sharper: the unit sets `StandardError=journal` too, so all three land in the same
+    journal with nothing marking which stream they came from.** The config warning and the fatal
+    remain unowned.
+66. **Iteration 7 #1 / … / 41 #65 still stands:** bidi and invisible Unicode are not stripped by
+    `tmuxctl.Strip`, by design. **Milestone 2 decides before rendering.**
+67. **Iteration 6 #3 / … / 41 #66 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case while `exec.go` also matches the missing-socket
+    pair.
+68. **Iteration 14 #1 / … / 41 #67 still stands:** `git checkout --`, `git restore`, `perl -i` and a
+    heredoc are outside the permission allowlist, so `PROMPT.md` step 6's recovery path needs an
+    approval an autonomous run cannot give. The six probes this iteration were reverted with `Edit`,
+    which is allowed, and that is again the only reason probing was possible. Two compound commands
+    were refused mid-iteration and had to be split — `cmd | tail; echo $?` counts as multiple
+    operations. `systemd-analyze` is also outside it (finding 1).
+69. **Iteration 1 #1 / … / 41 #68 still stands, forty-second iteration carrying it:** `loop.sh`'s
+    sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook, which ran clean on this
+    iteration's commit — twice, since the commit was amended. Needs an operator or a task of its own.
+70. **Iteration 2 #2 / … / 41 #69 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the plan.
+    Ticked both by hand again. Forty-first iteration of manual compensation for a one-line fix.
+71. **Iteration 6 #6 / … / 41 #70 still stands:** `AGENTS.md`'s command table has no entry for
+    `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both were
+    run by hand this iteration, green.
