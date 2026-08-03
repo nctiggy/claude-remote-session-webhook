@@ -253,6 +253,23 @@ func (st *Store) Get(id string, owner auth.CallerID) (Session, error) {
 	return s, nil
 }
 
+// lookup is the owner-blind read Get's comment promises reconciliation and the
+// reaper: both act on the daemon's own behalf, and neither has a caller to check
+// a record against.
+//
+// It is unexported so that this stays true by construction rather than by
+// habit. Everything reached from a request goes through Get, which takes an
+// owner and cannot be called without one — a caller-facing path that wanted this
+// instead would have to be written inside this package, where the reason it may
+// not is written down.
+func (st *Store) lookup(id string) (Session, bool) {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+
+	s, ok := st.byID[id]
+	return s, ok
+}
+
 // List returns the caller's own sessions, oldest first, as copies.
 //
 // Ordering is by CreatedAt then ID because map iteration is randomised, and a

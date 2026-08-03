@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
@@ -426,6 +427,169 @@ func (m *Manager) Destroy(ctx context.Context, s Session) error {
 		return fmt.Errorf("destroy session %s: %w", s.ID, err)
 	}
 	return nil
+}
+
+// AdoptedSession is one reconciled record together with the only copy of the
+// credential issued for it (FR-021).
+//
+// The token comes back to the caller rather than going into the record, for the
+// reason Create's does: the plaintext exists in one place and the record keeps
+// only its hash. Whatever the caller does with it, the trail is not one of the
+// options — an adopted session's token in an audit record is the credential to
+// an unsandboxed shell sitting in journald (FR-042).
+type AdoptedSession struct {
+	Session Session
+	Token   string
+}
+
+// Adopt reconciles the daemon with the host: every live tmux session it created
+// but has no record of is taken back under management, and anything already past
+// its ceiling is destroyed instead of adopted (FR-021, FR-025).
+//
+// It runs at startup before the listener binds (T032), which is what makes an
+// empty store the ordinary case rather than an assumption. A candidate the store
+// already knows is left exactly as it is — that is US4 scenario 7, and it is the
+// reason a restart loop cannot hold a session open: nothing here writes to a
+// record that already exists.
+//
+// Discovery is one List, and everything reconciliation needs arrives in that one
+// call — name, creation time, and provenance (research D6). What follows is per
+// candidate, and per candidate the daemon asks one further question, because
+// FR-022 will not let a present-but-unusable session be recorded as healthy and
+// the listing on its own offers nothing to resolve that against.
+//
+// The clock is the deliberate part. CreatedAt is tmux's own #{session_created},
+// so an adopted session keeps the absolute deadline it always had; only
+// LastActivity is reset, because the daemon genuinely does not know when the
+// session was last driven (FR-024). A restart therefore buys nothing.
+//
+// Every adoption mints a fresh credential. The one the dead process issued is
+// unrecoverable by design (FR-021) — it was never stored, so this is not a
+// choice made here so much as the only thing that was ever possible.
+//
+// Failures are collected rather than returned at the first one. A single session
+// the host cannot answer for must not leave the rest unowned, and startup treats
+// any returned error as fatal (T032), so nothing here is quietly skipped.
+func (m *Manager) Adopt(ctx context.Context) ([]AdoptedSession, error) {
+	infos, err := m.tmux.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reconcile with the host: %w", err)
+	}
+
+	now := m.clock.Now()
+	adopted := make([]AdoptedSession, 0, len(infos))
+	var failures []error
+
+	for _, info := range infos {
+		id, ours := adoptableID(info)
+		if !ours {
+			continue
+		}
+		// FR-021 adopts what has no record. A second pass over a live store must
+		// leave the first pass's work — and its deadline, and its credential —
+		// untouched.
+		if _, known := m.store.lookup(id); known {
+			continue
+		}
+
+		s := Session{
+			ID:    id,
+			Owner: auth.CallerOperator,
+			// Name and WorkDir stay empty on purpose. Neither survives the
+			// process that knew them: nothing on the host carries the caller's
+			// label at all, and while tmux does know the session's directory,
+			// SessionInfo does not carry it and widening that contract is not
+			// this task. A value invented here would describe nothing, and the
+			// id is the only field a tmux target is ever built from anyway.
+			CreatedAt:    info.Created,
+			LastActivity: now,
+			State:        StateRunning,
+			Adopted:      true,
+		}
+
+		// FR-025: a session that outlived its ceiling while the daemon was down
+		// is torn down, not adopted into an already-expired state. Destroy
+		// verifies rather than assumes, and the record was never added — so the
+		// delete it ends with is the harmless no-op it already tolerates.
+		if !now.Before(s.AbsoluteDeadline()) {
+			if err := m.Destroy(ctx, s); err != nil {
+				failures = append(failures, fmt.Errorf("a session was past its ceiling at startup: %w", err))
+			}
+			continue
+		}
+
+		// The second observation, and the only one this Controller can make:
+		// List said the session was there, and this asks again by name. A
+		// session that is gone between the two questions is resolved to the
+		// definite state "gone" by never becoming a record — there is nothing to
+		// tear down, and a record for a window that does not exist is a session
+		// nobody can drive answering as though somebody could.
+		//
+		// An error is not an answer, and adopting on one would be recording a
+		// session as healthy on no evidence at all — the single thing FR-022
+		// names. It is reported instead, which at startup is fatal, and the next
+		// boot lists the session again.
+		present, err := m.tmux.Has(ctx, s.TmuxName())
+		if err != nil {
+			failures = append(failures, fmt.Errorf("confirm session %s is still on the host: %w", id, err))
+			continue
+		}
+		if !present {
+			continue
+		}
+
+		token, hash, err := NewToken()
+		if err != nil {
+			failures = append(failures, fmt.Errorf("adopt session %s: %w", id, err))
+			continue
+		}
+		s.TokenHash = hash
+
+		if err := m.store.Add(s); err != nil {
+			failures = append(failures, fmt.Errorf("adopt session %s: %w", id, err))
+			continue
+		}
+		adopted = append(adopted, AdoptedSession{Session: s, Token: token})
+	}
+
+	return adopted, errors.Join(failures...)
+}
+
+// adoptableID is the whole of FR-022: which host sessions are ours to take back,
+// and what the id of the record for one is.
+//
+// Three signals must agree, and no session the daemon created can fail any of
+// them:
+//
+//   - @crswd-managed is provenance. A session that merely resembles the prefix
+//     was not created here, and is neither adopted nor destroyed.
+//   - The reserved prefix is what makes the record's TmuxName address the window
+//     it was built from. Without it there is no id to build a record around, and
+//     a record whose target named some other session would be worse than none.
+//   - The shape is provenance a second time. Every id the daemon mints is 32
+//     lowercase hex characters (NewID), so a marked, prefixed session named
+//     anything else was marked by something that is not this daemon — and its id
+//     would go on to be what API responses and path values are made of.
+//
+// Failing any of them means leaving the session alone, which is the same answer
+// FR-022 gives a lookalike: not adopted, and not touched.
+func adoptableID(info tmuxctl.SessionInfo) (string, bool) {
+	if !info.Managed {
+		return "", false
+	}
+
+	id, ok := strings.CutPrefix(info.Name, tmuxNamePrefix)
+	if !ok || len(id) != IDLen {
+		return "", false
+	}
+	// Ranging over the string rather than its bytes costs nothing and refuses a
+	// multi-byte rune on the same branch as an out-of-class byte.
+	for _, c := range id {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return "", false
+		}
+	}
+	return id, true
 }
 
 // confirmGone answers whether the host still has the session, and refuses to

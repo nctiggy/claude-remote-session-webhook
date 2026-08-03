@@ -1111,6 +1111,455 @@ func TestDestroyRacingItselfReportsSuccessToEveryCaller(t *testing.T) {
 	}
 }
 
+// seedSurvivor puts on the host a session the daemon did not start this run —
+// what a restart leaves behind. Seed records no tmux call, because the daemon
+// made none, so every call an adoption test sees is one Adopt chose to make.
+func (f managerFixture) seedSurvivor(id string, created time.Time) string {
+	name := tmuxNamePrefix + id
+	f.tmux.Seed(tmuxctl.SessionInfo{Name: name, Created: created, Managed: true})
+	return name
+}
+
+// managerAt is the restarted daemon: the same host, a store that may or may not
+// be the one before it, and a clock stopped wherever the test needs it.
+func (f managerFixture) managerAt(t *testing.T, store *Store, now time.Time) *Manager {
+	t.Helper()
+
+	mgr, err := NewManagerWithClock(f.tmux, store, f.roots(), stoppedClock{now: now})
+	if err != nil {
+		t.Fatalf("NewManagerWithClock() unexpected error: %v", err)
+	}
+	return mgr
+}
+
+func mustAdoptOne(t *testing.T, mgr *Manager) AdoptedSession {
+	t.Helper()
+
+	got, err := mgr.Adopt(context.Background())
+	if err != nil {
+		t.Fatalf("Adopt() unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Adopt() took %d sessions under management, want exactly 1", len(got))
+	}
+	return got[0]
+}
+
+// US4 scenario 1, and the shape of every field an adopted record carries. The
+// clock is the assertion that matters: CreatedAt is the host session's own start
+// time and LastActivity is the moment of adoption, which is FR-024 in two lines
+// — a restart may reset how long a session has been idle, and may not move the
+// ceiling it dies at.
+func TestAdoptTakesBackASurvivingSessionWithAFreshCredential(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	id := testID("a")
+	started := f.now.Add(-2 * time.Hour)
+	name := f.seedSurvivor(id, started)
+	before := len(f.tmux.Calls())
+
+	got := mustAdoptOne(t, f.mgr)
+	s := got.Session
+
+	if s.ID != id {
+		t.Errorf("Adopt() id = %q, want the id in the host session's name %q", s.ID, id)
+	}
+	if s.Owner != auth.CallerOperator {
+		t.Errorf("Adopt() owner = %q, want the configured operator %q", s.Owner, auth.CallerOperator)
+	}
+	if !s.Adopted {
+		t.Error("Adopt() left the record indistinguishable from one the API created")
+	}
+	if s.State != StateRunning {
+		t.Errorf("Adopt() state = %q, want %q — the host was asked and answered", s.State, StateRunning)
+	}
+	// Neither survived the process that knew them, and neither was invented.
+	if s.Name != "" || s.WorkDir != "" {
+		t.Errorf("Adopt() invented name %q and work dir %q for a session it only knows the id of", s.Name, s.WorkDir)
+	}
+
+	if !s.CreatedAt.Equal(started) {
+		t.Errorf("Adopt() created at %s, want the host's own start time %s", s.CreatedAt, started)
+	}
+	if !s.LastActivity.Equal(f.now) {
+		t.Errorf("Adopt() last activity %s, want the adoption instant %s — only the idle clock resets", s.LastActivity, f.now)
+	}
+	if want := started.Add(AbsoluteLifetime); !s.AbsoluteDeadline().Equal(want) {
+		t.Errorf("Adopt() absolute deadline %s, want %s", s.AbsoluteDeadline(), want)
+	}
+	if !s.TokenExpiry().Equal(s.AbsoluteDeadline()) {
+		t.Error("Adopt() issued a credential whose life is not the session's own")
+	}
+
+	// Lengths and acceptance, never the value: a 64-character hex string in a
+	// failure message is a credential in CI's logs.
+	if !tokenShape.MatchString(got.Token) {
+		t.Errorf("Adopt() token is %d characters and does not match %s", len(got.Token), tokenShape)
+	}
+	if _, err := f.mgr.Resolve(id, auth.CallerOperator, got.Token); err != nil {
+		t.Errorf("Resolve() with the credential Adopt issued = _, %v; want the record", err)
+	}
+	if stored, err := f.store.Get(id, auth.CallerOperator); err != nil || stored != s {
+		t.Errorf("the store holds %+v (err %v) for an adopted session, want the record Adopt returned", stored, err)
+	}
+
+	// One List for discovery (research D6) and one question per candidate. The
+	// argv is spelled out rather than built from tmuxctl's helpers: this asserts
+	// the command line tmux will receive, not that Adopt called a builder.
+	want := []tmuxctl.Call{
+		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}"}},
+		{Op: tmuxctl.OpHas, Argv: []string{"tmux", "has-session", "-t", "=" + name}},
+	}
+	calls := f.tmux.Calls()[before:]
+	if len(calls) != len(want) {
+		t.Fatalf("Adopt() ran %d tmux commands, want %d: %v", len(calls), len(want), calls)
+	}
+	for i := range want {
+		if calls[i].Op != want[i].Op || !slices.Equal(calls[i].Argv, want[i].Argv) {
+			t.Errorf("command %d is %s %q, want %s %q", i, calls[i].Op, calls[i].Argv, want[i].Op, want[i].Argv)
+		}
+	}
+}
+
+// US4 scenario 2, stated end to end: the daemon that issued the first credential
+// is gone, and the credential is gone with it — it was never stored, so there is
+// nothing for a restart to recover even in principle (FR-021). The session the
+// second pass adopts is the one the first pass created, and the two hold
+// different credentials for it.
+func TestAdoptIssuesACredentialTheProcessBeforeItCannotHave(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	// Pin the host's clock too, so the session's start time is an exact instant
+	// rather than whenever the test ran.
+	f.tmux.SetNow(func() time.Time { return f.now })
+	created, before := mustCreate(t, f, f.request())
+
+	restarted := f.managerAt(t, NewStore(), f.now.Add(time.Hour))
+	got := mustAdoptOne(t, restarted)
+
+	if got.Session.ID != created.ID {
+		t.Fatalf("Adopt() took %q under management, want the session the previous run created, %q", got.Session.ID, created.ID)
+	}
+	if got.Token == before {
+		t.Fatal("Adopt() handed back the credential the previous run issued")
+	}
+	if _, err := restarted.Resolve(created.ID, auth.CallerOperator, before); !errors.Is(err, ErrTokenMismatch) {
+		t.Errorf("Resolve() with the credential from before the restart = _, %v; want %v", err, ErrTokenMismatch)
+	}
+	if _, err := restarted.Resolve(created.ID, auth.CallerOperator, got.Token); err != nil {
+		t.Errorf("Resolve() with the credential the restart issued = _, %v; want the record", err)
+	}
+	// The ceiling is the one the first run set, an hour before this pass ran.
+	if want := f.now.Add(AbsoluteLifetime); !got.Session.AbsoluteDeadline().Equal(want) {
+		t.Errorf("Adopt() absolute deadline %s, want the original %s", got.Session.AbsoluteDeadline(), want)
+	}
+}
+
+// US4 scenario 3 and the whole of FR-022's first half. Provenance is the marker,
+// the prefix, and the shape of what follows it — a session failing any of them
+// was not created here, so it is neither adopted nor touched. "Not touched" is
+// half the requirement and the more dangerous half to get wrong: the operator's
+// own tmux sessions are on this host.
+func TestAdoptLeavesEverythingItDidNotCreateAlone(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]tmuxctl.SessionInfo{
+		"the prefix without the marker":    {Name: tmuxNamePrefix + testID("a"), Managed: false},
+		"the marker without the prefix":    {Name: "notes", Managed: true},
+		"a marked name that is not an id":  {Name: tmuxNamePrefix + "not-an-id", Managed: true},
+		"a marked id in the wrong case":    {Name: tmuxNamePrefix + strings.ToUpper(testID("b")), Managed: true},
+		"a marked id one character short":  {Name: tmuxNamePrefix + testID("c")[:IDLen-1], Managed: true},
+		"the bare prefix and nothing else": {Name: tmuxNamePrefix, Managed: true},
+	}
+
+	for name, info := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newManagerFixture(t)
+			info.Created = f.now.Add(-time.Hour)
+			f.tmux.Seed(info)
+			before := len(f.tmux.Calls())
+
+			got, err := f.mgr.Adopt(context.Background())
+			if err != nil {
+				t.Fatalf("Adopt() unexpected error: %v", err)
+			}
+			if len(got) != 0 {
+				t.Errorf("Adopt() took %d sessions under management, want none", len(got))
+			}
+			if n := f.store.Len(); n != 0 {
+				t.Errorf("the store holds %d records after adopting nothing, want 0", n)
+			}
+			if _, ok := f.tmux.WorkDir(info.Name); !ok {
+				t.Error("a session the daemon did not create is gone from the host")
+			}
+			// The listing and nothing else: a kill or even a has-session here
+			// would be the daemon acting on a session that is not its business.
+			if calls := f.tmux.Calls()[before:]; len(calls) != 1 || calls[0].Op != tmuxctl.OpList {
+				t.Errorf("Adopt() ran %v, want the one listing", calls)
+			}
+		})
+	}
+}
+
+// vanishingLister answers List honestly and then removes the session it named.
+// It is the one shape the fake cannot produce on its own — present in the
+// listing, gone by the time anything asks again — and it is what a session whose
+// shell exited between the two questions looks like from here.
+type vanishingLister struct {
+	*tmuxctl.Fake
+
+	name string
+}
+
+func (v vanishingLister) List(ctx context.Context) ([]tmuxctl.SessionInfo, error) {
+	infos, err := v.Fake.List(ctx)
+	v.Fake.Vanish(v.name)
+	return infos, err
+}
+
+// US4 scenario 4, in the two shapes FR-022 distinguishes: a session that is no
+// longer there when asked a second time, and one the host will not answer for at
+// all. Neither becomes a record. A listing is not evidence a session is usable,
+// and a record created on one would be the daemon reporting a session as healthy
+// having never confirmed it.
+func TestAdoptRecordsNothingItCouldNotConfirm(t *testing.T) {
+	t.Parallel()
+
+	t.Run("gone between the listing and the check", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		id := testID("a")
+		name := f.seedSurvivor(id, f.now.Add(-time.Hour))
+
+		mgr, err := NewManagerWithClock(vanishingLister{Fake: f.tmux, name: name}, f.store, f.roots(), stoppedClock{now: f.now})
+		if err != nil {
+			t.Fatalf("NewManagerWithClock() unexpected error: %v", err)
+		}
+
+		got, err := mgr.Adopt(context.Background())
+		if err != nil {
+			t.Fatalf("Adopt() unexpected error: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("Adopt() took %d sessions under management, want none — the window was gone", len(got))
+		}
+		if _, err := f.store.Get(id, auth.CallerOperator); !errors.Is(err, ErrSessionNotFound) {
+			t.Errorf("the store holds a record for a session that vanished: %v", err)
+		}
+		if calls := f.tmux.Calls(); len(calls) != 2 || calls[1].Op != tmuxctl.OpHas {
+			t.Errorf("Adopt() ran %v, want a listing and then a check", calls)
+		}
+	})
+
+	t.Run("the host will not answer", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		id := testID("a")
+		f.seedSurvivor(id, f.now.Add(-time.Hour))
+		f.tmux.FailOp(tmuxctl.OpHas, errTmuxBroken)
+
+		got, err := f.mgr.Adopt(context.Background())
+		if !errors.Is(err, errTmuxBroken) {
+			t.Fatalf("Adopt() = _, %v; want the failure reported so startup can be fatal", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("Adopt() took %d sessions under management, want none", len(got))
+		}
+		if n := f.store.Len(); n != 0 {
+			t.Errorf("the store holds %d records built on an unanswered question, want 0", n)
+		}
+	})
+}
+
+// US4 scenario 5, which is the point of reading the clock off the host: a
+// session that started 23 hours before the daemon did dies an hour later, not 24
+// hours later. The credential goes with it, because the two are one expression.
+func TestAdoptCountsTheCeilingFromTheHostsOwnClock(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	id := testID("a")
+	f.seedSurvivor(id, f.now.Add(-23*time.Hour))
+
+	got := mustAdoptOne(t, f.mgr)
+
+	if want := f.now.Add(time.Hour); !got.Session.AbsoluteDeadline().Equal(want) {
+		t.Fatalf("Adopt() absolute deadline %s, want %s — one hour of the ceiling is left", got.Session.AbsoluteDeadline(), want)
+	}
+	if _, err := f.mgr.Resolve(id, auth.CallerOperator, got.Token); err != nil {
+		t.Errorf("Resolve() an hour before the ceiling = _, %v; want the record", err)
+	}
+
+	anHourLater := f.managerAt(t, f.store, f.now.Add(time.Hour))
+	if _, err := anHourLater.Resolve(id, auth.CallerOperator, got.Token); !errors.Is(err, ErrTokenExpired) {
+		t.Errorf("Resolve() at the ceiling = _, %v; want %v", err, ErrTokenExpired)
+	}
+}
+
+// US4 scenario 6 and FR-025: a session that outlived its ceiling while the
+// daemon was down is torn down, not adopted into a state it is already past. The
+// teardown is the verified one — a kill is asked for and then confirmed — so the
+// outcome is the same claim Destroy makes and not a weaker one made at startup.
+func TestAdoptDestroysWhatOutlivedItsCeiling(t *testing.T) {
+	t.Parallel()
+
+	ages := map[string]time.Duration{
+		"exactly at the ceiling": AbsoluteLifetime,
+		"an hour past it":        AbsoluteLifetime + time.Hour,
+	}
+
+	for name, age := range ages {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newManagerFixture(t)
+			id := testID("a")
+			hostName := f.seedSurvivor(id, f.now.Add(-age))
+			before := len(f.tmux.Calls())
+
+			got, err := f.mgr.Adopt(context.Background())
+			if err != nil {
+				t.Fatalf("Adopt() unexpected error: %v", err)
+			}
+			if len(got) != 0 {
+				t.Errorf("Adopt() took %d expired sessions under management, want none", len(got))
+			}
+			if n := f.store.Len(); n != 0 {
+				t.Errorf("the store holds %d records for an expired session, want 0", n)
+			}
+			if _, ok := f.tmux.WorkDir(hostName); ok {
+				t.Error("the expired session is still on the host after reconciliation")
+			}
+
+			wantOps := []tmuxctl.Op{tmuxctl.OpList, tmuxctl.OpKill, tmuxctl.OpHas}
+			calls := f.tmux.Calls()[before:]
+			if len(calls) != len(wantOps) {
+				t.Fatalf("Adopt() ran %d tmux commands, want %d: %v", len(calls), len(wantOps), calls)
+			}
+			for i, op := range wantOps {
+				if calls[i].Op != op {
+					t.Errorf("command %d is %s, want %s", i, calls[i].Op, op)
+				}
+			}
+		})
+	}
+}
+
+// The other half of FR-025, and the one Principle VI turns on: an expired
+// session the daemon could not confirm gone is reported, not swallowed. Startup
+// is what makes that loud (T032) — and the session is deliberately still not
+// adopted, because a record built for a session that is already past its ceiling
+// is a record nothing would ever hand a credential for.
+func TestAdoptReportsAnExpiredSessionItCouldNotTearDown(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	id := testID("a")
+	hostName := f.seedSurvivor(id, f.now.Add(-25*time.Hour))
+	f.tmux.SurviveKill(hostName)
+
+	got, err := f.mgr.Adopt(context.Background())
+	if !errors.Is(err, ErrOrphanedSession) {
+		t.Fatalf("Adopt() = _, %v; want one wrapping %v", err, ErrOrphanedSession)
+	}
+	if len(got) != 0 {
+		t.Errorf("Adopt() took %d sessions under management, want none", len(got))
+	}
+	if n := f.store.Len(); n != 0 {
+		t.Errorf("the store holds %d records for a session past its ceiling, want 0", n)
+	}
+	if _, ok := f.tmux.WorkDir(hostName); !ok {
+		t.Error("the fixture did not leave the session present; the test proves nothing")
+	}
+}
+
+// US4 scenario 7, in the shape a single process can produce it: a second pass
+// over a store that already holds the record changes nothing about it. Adoption
+// is what runs at startup, and a daemon that restarted in a loop would otherwise
+// re-issue a credential and re-stamp an idle clock every time.
+func TestAdoptLeavesARecordItAlreadyHasUntouched(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	id := testID("a")
+	f.seedSurvivor(id, f.now.Add(-time.Hour))
+
+	first := mustAdoptOne(t, f.mgr)
+
+	again := f.managerAt(t, f.store, f.now.Add(3*time.Hour))
+	got, err := again.Adopt(context.Background())
+	if err != nil {
+		t.Fatalf("Adopt() a second time = _, %v; want success", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("Adopt() took %d sessions under management a second time, want none", len(got))
+	}
+
+	stored, err := f.store.Get(id, auth.CallerOperator)
+	if err != nil {
+		t.Fatalf("the adopted record is gone after a second pass: %v", err)
+	}
+	if stored != first.Session {
+		t.Errorf("the record is %+v after a second pass, want the one the first pass made", stored)
+	}
+	// The credential the first pass issued is still the session's, which is the
+	// part a re-adoption would silently break for whoever is holding it.
+	if _, err := again.Resolve(id, auth.CallerOperator, first.Token); err != nil {
+		t.Errorf("Resolve() with the first pass's credential = _, %v; want the record", err)
+	}
+}
+
+// US4 scenario 7 again, in the shape a restart actually takes: a fresh store
+// every time, and a ceiling that does not move. This is what makes the 24-hour
+// bound a bound — if adoption read its own clock, a restart every 23 hours would
+// hold a session open forever.
+func TestAdoptDerivesTheSameCeilingHoweverManyRestartsItSurvives(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	id := testID("a")
+	started := f.now.Add(-3 * time.Hour)
+	f.seedSurvivor(id, started)
+	want := started.Add(AbsoluteLifetime)
+
+	for i, at := range []time.Time{f.now, f.now.Add(4 * time.Hour), f.now.Add(9 * time.Hour)} {
+		got := mustAdoptOne(t, f.managerAt(t, NewStore(), at))
+
+		if !got.Session.AbsoluteDeadline().Equal(want) {
+			t.Errorf("restart %d adopted a session with deadline %s, want the original %s", i, got.Session.AbsoluteDeadline(), want)
+		}
+		if !got.Session.LastActivity.Equal(at) {
+			t.Errorf("restart %d left the idle clock at %s, want the adoption instant %s", i, got.Session.LastActivity, at)
+		}
+	}
+}
+
+// A host that cannot be listed is not an empty host. Reconciliation returns the
+// failure rather than an empty result, because startup treats it as fatal
+// (T032): carrying on would leave every surviving session unowned, uncapped and
+// unreaped for as long as the daemon ran.
+func TestAdoptReportsAHostItCannotList(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	f.seedSurvivor(testID("a"), f.now.Add(-time.Hour))
+	f.tmux.FailOp(tmuxctl.OpList, errTmuxBroken)
+
+	got, err := f.mgr.Adopt(context.Background())
+	if !errors.Is(err, errTmuxBroken) {
+		t.Fatalf("Adopt() = _, %v; want the listing failure", err)
+	}
+	if got != nil {
+		t.Errorf("Adopt() returned %v alongside a failure, want nothing", got)
+	}
+}
+
 func TestNewManagerFailsClosed(t *testing.T) {
 	t.Parallel()
 
