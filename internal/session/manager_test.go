@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -868,6 +869,245 @@ func TestOutputNamesNoPaneContentInItsError(t *testing.T) {
 	}
 	if strings.Contains(got.Text, paneMarker) {
 		t.Errorf("Output() returned pane content alongside an error: %q", got.Text)
+	}
+}
+
+// Destroy's two commands, in the only order that proves anything: the kill, and
+// then the question about whether it worked (FR-019). What follows the answer is
+// FR-020 — the record and the hash it carries are gone, and the credential that
+// was good a moment ago now resolves exactly as an id nobody was ever issued.
+func TestDestroyKillsThenVerifiesAndClearsTheRecord(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, tok := mustCreate(t, f, f.request())
+	before := len(f.tmux.Calls())
+
+	if err := f.mgr.Destroy(context.Background(), *s); err != nil {
+		t.Fatalf("Destroy() unexpected error: %v", err)
+	}
+
+	name := "crswd-" + s.ID
+	want := []tmuxctl.Call{
+		{Op: tmuxctl.OpKill, Argv: []string{"tmux", "kill-session", "-t", "=" + name}},
+		{Op: tmuxctl.OpHas, Argv: []string{"tmux", "has-session", "-t", "=" + name}},
+	}
+
+	got := f.tmux.Calls()[before:]
+	if len(got) != len(want) {
+		t.Fatalf("Destroy() ran %d tmux commands, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Op != want[i].Op || !slices.Equal(got[i].Argv, want[i].Argv) {
+			t.Errorf("command %d is %s %q, want %s %q", i, got[i].Op, got[i].Argv, want[i].Op, want[i].Argv)
+		}
+	}
+
+	if _, ok := f.tmux.WorkDir(name); ok {
+		t.Error("the tmux session survived a destroy that reported success")
+	}
+	if n := f.store.Len(); n != 0 {
+		t.Errorf("the store holds %d records after a verified teardown, want 0", n)
+	}
+	if _, err := f.mgr.Resolve(s.ID, auth.CallerOperator, tok); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("Resolve() with the destroyed session's credential = _, %v; want %v", err, ErrSessionNotFound)
+	}
+}
+
+// The 409 path (FR-019, spec.md US3 scenario 4). tmux reports the kill worked
+// and the session is still there, which is the one outcome a daemon that
+// believed its own kill would record as success. The record stays: it is the
+// only thing carrying an owner and two deadlines for a shell that is still
+// running, and the reaper is what will eventually collect it.
+func TestDestroyKeepsTheRecordWhenTheSessionSurvives(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, tok := mustCreate(t, f, f.request())
+	name := "crswd-" + s.ID
+	f.tmux.SurviveKill(name)
+
+	err := f.mgr.Destroy(context.Background(), *s)
+	if err == nil {
+		t.Fatal("Destroy() reported success for a session that is still running")
+	}
+	if !errors.Is(err, ErrOrphanedSession) {
+		t.Errorf("Destroy() error = %v, want one wrapping %v", err, ErrOrphanedSession)
+	}
+	if _, ok := f.tmux.WorkDir(name); !ok {
+		t.Fatal("the fixture did not leave the session present; the test proves nothing")
+	}
+
+	// Still the owner's, and still drivable. A session that outlived its
+	// teardown is a session someone may want to try again on.
+	if _, err := f.mgr.Resolve(s.ID, auth.CallerOperator, tok); err != nil {
+		t.Errorf("Resolve() after a refused teardown = _, %v; want the record", err)
+	}
+}
+
+// The case iteration 6 pinned in exec_tmux_test.go: killing the last session
+// takes the tmux server with it, so has-session answers "no server running" —
+// an error, deliberately, because Has may not read a dead server as an absent
+// session. Without a second question, every correct teardown of the last session
+// on the host would be reported as an orphan. List is that question.
+func TestDestroyConfirmsAbsenceThroughListWhenHasCannotAnswer(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+	before := len(f.tmux.Calls())
+	f.tmux.FailOp(tmuxctl.OpHas, errTmuxBroken)
+
+	if err := f.mgr.Destroy(context.Background(), *s); err != nil {
+		t.Fatalf("Destroy() reported failure for a session tmux no longer lists: %v", err)
+	}
+
+	got := f.tmux.Calls()[before:]
+	wantOps := []tmuxctl.Op{tmuxctl.OpKill, tmuxctl.OpHas, tmuxctl.OpList}
+	if len(got) != len(wantOps) {
+		t.Fatalf("Destroy() ran %d tmux commands, want %d: %v", len(got), len(wantOps), got)
+	}
+	for i, op := range wantOps {
+		if got[i].Op != op {
+			t.Errorf("command %d is %s, want %s", i, got[i].Op, op)
+		}
+	}
+	if n := f.store.Len(); n != 0 {
+		t.Errorf("the store holds %d records after a teardown confirmed through List, want 0", n)
+	}
+}
+
+// Unknown is treated as surviving, in both the shapes that produce it: a host
+// nothing can be asked about, and a host that answers and still has the session.
+// Principle VI does not have a third answer — "we could not find out" and "it is
+// still there" cost the same thing if they are wrong.
+func TestDestroyKeepsTheRecordWhenNothingCanConfirm(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		arrange func(*tmuxctl.Fake, string)
+	}{
+		{"neither question can be asked", func(fake *tmuxctl.Fake, _ string) {
+			fake.FailOp(tmuxctl.OpHas, errTmuxBroken)
+			fake.FailOp(tmuxctl.OpList, errTmuxBroken)
+		}},
+		{"the fallback finds the session still listed", func(fake *tmuxctl.Fake, name string) {
+			fake.SurviveKill(name)
+			fake.FailOp(tmuxctl.OpHas, errTmuxBroken)
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newManagerFixture(t)
+			s, tok := mustCreate(t, f, f.request())
+			tc.arrange(f.tmux, "crswd-"+s.ID)
+
+			err := f.mgr.Destroy(context.Background(), *s)
+			if err == nil {
+				t.Fatal("Destroy() reported success for a teardown it could not confirm")
+			}
+			if !errors.Is(err, ErrOrphanedSession) {
+				t.Errorf("Destroy() error = %v, want one wrapping %v", err, ErrOrphanedSession)
+			}
+			if _, err := f.mgr.Resolve(s.ID, auth.CallerOperator, tok); err != nil {
+				t.Errorf("Resolve() after an unconfirmed teardown = _, %v; want the record", err)
+			}
+		})
+	}
+}
+
+// A session whose shell exited on its own is already gone when the kill lands,
+// so tmux refuses the kill and the verification agrees the session is absent.
+// That is a completed teardown, not a failure — this is the path the reaper and
+// shutdown will take for anything that died while nobody was looking.
+func TestDestroySucceedsForASessionThatVanishedOnItsOwn(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+	f.tmux.Vanish("crswd-" + s.ID)
+
+	if err := f.mgr.Destroy(context.Background(), *s); err != nil {
+		t.Fatalf("Destroy() reported failure for a session that was already gone: %v", err)
+	}
+	if n := f.store.Len(); n != 0 {
+		t.Errorf("the store holds %d records for a session that is gone, want 0", n)
+	}
+}
+
+// FR-034 on the teardown path. The record carries a caller-supplied name, and
+// the only string that may reach a target is built from the id.
+func TestDestroyDerivesItsTargetFromTheIDAlone(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	req := f.request()
+	req.Name = hostileLabel
+	s, _ := mustCreate(t, f, req)
+	before := len(f.tmux.Calls())
+
+	if err := f.mgr.Destroy(context.Background(), *s); err != nil {
+		t.Fatalf("Destroy() unexpected error: %v", err)
+	}
+	for i, c := range f.tmux.Calls()[before:] {
+		if slices.ContainsFunc(c.Argv, func(arg string) bool { return strings.Contains(arg, hostileLabel) }) {
+			t.Errorf("command %d (%s) put the caller's own label on the command line: %q", i, c.Op, c.Argv)
+		}
+	}
+}
+
+// The one guard Destroy keeps, and the reason it keeps it: an empty id builds
+// the bare prefix as a target, which addresses no session the daemon owns and
+// possibly one it does not. Unreachable behind the resolver, refused anyway.
+func TestDestroyRefusesARecordWithNoID(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	before := len(f.tmux.Calls())
+
+	err := f.mgr.Destroy(context.Background(), Session{Owner: auth.CallerOperator, State: StateStarting})
+	if !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("Destroy() = %v, want %v", err, ErrSessionNotFound)
+	}
+	if after := len(f.tmux.Calls()); after != before {
+		t.Errorf("the refused destroy ran %v; a refusal must cost no tmux command", f.tmux.Calls()[before:after])
+	}
+}
+
+// spec.md's concurrency edge case, in the shape this package can state it:
+// whoever loses the race finds the session gone and the record already dropped,
+// and that is success. A destroy that answered "not found" for a teardown that
+// completed would send a caller looking for a session that no longer exists.
+func TestDestroyRacingItselfReportsSuccessToEveryCaller(t *testing.T) {
+	t.Parallel()
+
+	const racers = 8
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+
+	var wg sync.WaitGroup
+	errs := make([]error, racers)
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = f.mgr.Destroy(context.Background(), *s)
+		}()
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("racer %d = %v, want success: the session is gone and so is the record", i, err)
+		}
+	}
+	if n := f.store.Len(); n != 0 {
+		t.Errorf("the store holds %d records after %d concurrent destroys, want 0", n, racers)
 	}
 }
 

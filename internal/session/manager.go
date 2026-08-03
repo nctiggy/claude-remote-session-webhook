@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
@@ -58,12 +59,14 @@ var (
 	// check can refuse.
 	ErrMissingOwner = errors.New("a session owner is required")
 
-	// ErrOrphanedSession is the loud answer to a create that failed *after* tmux
-	// had already started a shell, where the rollback could not confirm the shell
-	// is gone (Principle VI). It is a sentinel so a handler can answer 500 and
-	// the audit trail can carry the one thing that matters: a live unsandboxed
-	// session may exist on the host. The record is kept when this is returned —
-	// see rollback.
+	// ErrOrphanedSession is the loud answer to a teardown that could not be
+	// confirmed (Principle VI): a create that failed *after* tmux had already
+	// started a shell, or a Destroy whose session was still there — or could not
+	// be asked about — afterwards. It is one sentinel for both because the fact
+	// that matters is the same one, and it is the fact the audit trail carries: a
+	// live unsandboxed session may exist on the host. Create answers 500 and
+	// Destroy answers 409 (FR-019), and the record is kept either way — see
+	// rollback and Destroy.
 	ErrOrphanedSession = errors.New("the tmux session could not be confirmed gone and may still be running")
 
 	// ErrEmptyPrompt refuses a prompt with no text in it. The contract makes
@@ -364,6 +367,101 @@ func (m *Manager) Output(ctx context.Context, s Session) (Capture, error) {
 	}
 
 	return Capture{Text: tmuxctl.Strip(text), At: m.clock.Now()}, nil
+}
+
+// Destroy tears a session down and reports success only once the host has
+// confirmed it is gone (FR-019), then clears the record and the credential hash
+// with it (FR-020).
+//
+// The order is the requirement. A kill that reports success is not evidence —
+// tmux answering "I asked" is not tmux answering "it is gone" — so nothing is
+// dropped until confirmGone says so. Until then the record stays, because a
+// record is the only thing carrying an owner and two deadlines for a session
+// that may still be running, and adoption runs at startup: a live session the
+// running daemon has forgotten is forgotten for good.
+//
+// The Kill error is folded into the result rather than returned on its own, for
+// the reason rollback does it. A session whose shell already exited is gone
+// before the kill lands, so "can't find session" here is an ordinary outcome
+// that ends in success, and only the verification decides.
+//
+// The state checks Prompt and Output make are deliberately absent. They refuse a
+// dead record because their action needs a live window; this one's action is
+// removal, and refusing it would leave the record nothing could clear. Only the
+// empty id is refused, and for the same reason as there: it would build the bare
+// prefix as a target.
+//
+// FR-020's other two clauses are satisfied by construction rather than by code
+// here. There is no buffered output to clear — Output captures a pane per
+// request and caches nothing, and a cache added later must be cleared in this
+// method — and the daemon creates no working directory, since ResolveWorkDir
+// only ever approves one that already existed.
+//
+// Nothing here emits an audit record, for the reason Create does not: one record
+// per request belongs to the middleware, and the surviving-session case is
+// prominent in the trail because the handler answers 409 (T029), not because
+// this method logged underneath it.
+func (m *Manager) Destroy(ctx context.Context, s Session) error {
+	if s.ID == "" {
+		return fmt.Errorf("destroy session: %w", ErrSessionNotFound)
+	}
+
+	name := s.TmuxName()
+	killErr := m.tmux.Kill(ctx, name)
+
+	gone, verifyErr := m.confirmGone(ctx, name)
+	if verifyErr != nil || !gone {
+		if detail := errors.Join(killErr, verifyErr); detail != nil {
+			return fmt.Errorf("destroy session %s: %w: %w", s.ID, ErrOrphanedSession, detail)
+		}
+		return fmt.Errorf("destroy session %s: %w", s.ID, ErrOrphanedSession)
+	}
+
+	// A record already gone is not a failure. spec.md names a destroy racing the
+	// reaper as an edge case, and both of them end at this line: the session is
+	// confirmed gone and so is the record, which is exactly what the caller
+	// asked for. Reporting an error for a teardown that completed would be the
+	// one lie Principle VI cannot afford in either direction.
+	if err := m.store.Delete(s.ID); err != nil && !errors.Is(err, ErrSessionNotFound) {
+		return fmt.Errorf("destroy session %s: %w", s.ID, err)
+	}
+	return nil
+}
+
+// confirmGone answers whether the host still has the session, and refuses to
+// guess when it cannot tell (FR-019).
+//
+// Has is the direct question, and whenever tmux can answer it that answer is
+// taken. The fallback exists because of what a *successful* teardown does to a
+// host running one session: tmux exits with its last session, so the has-session
+// that follows reports "no server running" rather than "can't find session".
+// Has is required to call that an error (contracts/tmuxctl.md) — a dead server
+// is exactly what a tmux that never started looks like, and reading it as
+// absence would let a broken binary confirm every teardown. So Has cannot answer
+// it, and without a second question every correct destruction of the last
+// session on the host would be reported as an orphan.
+//
+// List is that second question, and it is sound where collapsing Has would not
+// be: a server that is not running has no sessions, and List distinguishes that
+// from a server it merely could not reach — a socket that exists but refuses the
+// connection is still an error there, so a reachable-but-broken tmux cannot look
+// like an empty host. The exec costs one command, and only on the path where the
+// first one already failed.
+//
+// An error means the answer is unknown, and Destroy treats unknown as surviving.
+func (m *Manager) confirmGone(ctx context.Context, name string) (bool, error) {
+	present, err := m.tmux.Has(ctx, name)
+	if err == nil {
+		return !present, nil
+	}
+
+	sessions, listErr := m.tmux.List(ctx)
+	if listErr != nil {
+		return false, errors.Join(err, listErr)
+	}
+	return !slices.ContainsFunc(sessions, func(info tmuxctl.SessionInfo) bool {
+		return info.Name == name
+	}), nil
 }
 
 // start runs the four tmux commands FR-018 describes, in the only order that
