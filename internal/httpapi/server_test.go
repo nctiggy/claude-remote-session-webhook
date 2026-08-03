@@ -7,7 +7,6 @@
 package httpapi
 
 import (
-	"bytes"
 	"errors"
 	"io"
 	"net"
@@ -91,22 +90,18 @@ func TestEveryRegisteredRouteIsReachable(t *testing.T) {
 
 	s := newAuditedServer(t)
 	for i, route := range s.Routes() {
-		path := strings.ReplaceAll(route.Pattern, "{id}", "0123456789abcdef")
-
 		// A distinct timestamp per route, because the signature covers the
 		// timestamp and the body and *not* the method or path: six identical
 		// empty-bodied requests would share one signature and the second would
 		// be refused as a replay. See middleware_test.go's replay case.
-		body := bodyFor(s.fixture, route)
-		req := httptest.NewRequest(route.Method, path, bytes.NewReader(body))
-		signRequest(t, req, body, testTime.Add(-time.Duration(i)*time.Second))
+		req := requestFor(t, s, route, testTime.Add(-time.Duration(i)*time.Second))
 
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, req)
 
 		if want := reachedStatus[route]; rec.Code != want {
 			t.Errorf("%s %s = %d; want %d — the route is not wired to the mux",
-				route.Method, path, rec.Code, want)
+				route.Method, req.URL.Path, rec.Code, want)
 		}
 	}
 }

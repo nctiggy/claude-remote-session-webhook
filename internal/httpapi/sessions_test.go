@@ -76,6 +76,52 @@ func newSessionFixture(t *testing.T) sessionFixture {
 	return sessionFixture{mgr: mgr, tmux: fake, store: store, root: root, repo: repo}
 }
 
+// plant puts a session straight into the store and returns it with the only copy
+// of its bearer credential, filling in whatever the caller left unset.
+//
+// It goes around Manager.Create on purpose. What the layer-3 tests need is a
+// record in a particular *shape* — owned by someone else, created 25 hours ago,
+// already dead — and a create can produce none of those: it stamps the manager's
+// clock, takes its owner from the caller, and always starts a session running.
+// Driving the API for the healthy case as well would also spend a signature per
+// fixture, which the replay cache counts.
+func (f sessionFixture) plant(t *testing.T, s session.Session) (session.Session, string) {
+	t.Helper()
+
+	// Through the real generator, so the record carries a hash of exactly what a
+	// caller would have been handed and the compare under test is the real one.
+	issued, hash, err := session.NewToken()
+	if err != nil {
+		t.Fatalf("session.NewToken = _, _, %v; want a credential", err)
+	}
+	s.TokenHash = hash
+
+	if s.ID == "" {
+		id, err := session.NewID()
+		if err != nil {
+			t.Fatalf("session.NewID = _, %v; want an id", err)
+		}
+		s.ID = id
+	}
+	if s.Owner == "" {
+		s.Owner = auth.CallerOperator
+	}
+	if s.State == "" {
+		s.State = session.StateStarting
+	}
+	if s.CreatedAt.IsZero() {
+		s.CreatedAt = testTime
+	}
+	if s.LastActivity.IsZero() {
+		s.LastActivity = s.CreatedAt
+	}
+
+	if err := f.store.Add(s); err != nil {
+		t.Fatalf("plant session %s: %v", s.ID, err)
+	}
+	return s, issued
+}
+
 // createBody is the well-formed create every test here starts from, varied per
 // case by the callers that need to.
 func createBody(f sessionFixture) []byte {

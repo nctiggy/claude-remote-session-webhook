@@ -504,6 +504,131 @@ func TestCreateKeepsTheTokenOffTheHost(t *testing.T) {
 	}
 }
 
+// TestResolveIsEveryCheckAtOnce is the layer-3 table (FR-014, FR-032, FR-033).
+// The four refusals answer with four sentinels so the trail can say which, and
+// the caller behind them is answered identically by the handler — see
+// internal/httpapi.
+func TestResolveIsEveryCheckAtOnce(t *testing.T) {
+	t.Parallel()
+
+	// Named neutrally and spelled in words: a hex run of credential length is
+	// what gitleaks refuses into the repository, and this is a value whose
+	// rejection is the point.
+	const neverIssued = "a-value-that-was-never-issued-for-any-session"
+	const otherOwner auth.CallerID = "a-second-operator"
+
+	f := newManagerFixture(t)
+	s, tok := mustCreate(t, f, f.request())
+
+	cases := map[string]struct {
+		id        string
+		owner     auth.CallerID
+		presented string
+		want      error
+	}{
+		"the owner with the credential issued": {s.ID, auth.CallerOperator, tok, nil},
+		"an id that was never issued":          {"0123456789abcdef0123456789abcdef", auth.CallerOperator, tok, ErrSessionNotFound},
+		"another owner holding the credential": {s.ID, otherOwner, tok, ErrSessionNotFound},
+		// Unreachable behind authentication, and it must not become a skeleton
+		// key if it ever is reached.
+		"no owner at all":           {s.ID, "", tok, ErrSessionNotFound},
+		"a credential never issued": {s.ID, auth.CallerOperator, neverIssued, ErrTokenMismatch},
+		"no credential at all":      {s.ID, auth.CallerOperator, "", ErrTokenMismatch},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := f.mgr.Resolve(c.id, c.owner, c.presented)
+			if !errors.Is(err, c.want) {
+				t.Fatalf("Resolve() = _, %v; want %v", err, c.want)
+			}
+			if c.want != nil {
+				if got.ID != "" {
+					t.Errorf("Resolve() returned session %q alongside a refusal", got.ID)
+				}
+				return
+			}
+			if got.ID != s.ID || got.Owner != s.Owner {
+				t.Errorf("Resolve() = %+v; want the record for %s owned by %s", got, s.ID, s.Owner)
+			}
+		})
+	}
+}
+
+// TestResolveRefusesACredentialAtItsSessionsDeadline is FR-015's boundary, and
+// it is stated against a second Manager over the same store so that what moved
+// is the daemon's clock and not the record. A credential is good for the
+// session's whole life and not one instant longer.
+func TestResolveRefusesACredentialAtItsSessionsDeadline(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, tok := mustCreate(t, f, f.request())
+
+	cases := map[string]struct {
+		at   time.Time
+		want error
+	}{
+		"a second inside the lifetime": {f.now.Add(AbsoluteLifetime - time.Second), nil},
+		"exactly at the deadline":      {f.now.Add(AbsoluteLifetime), ErrTokenExpired},
+		"an hour past it":              {f.now.Add(AbsoluteLifetime + time.Hour), ErrTokenExpired},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			mgr, err := NewManagerWithClock(f.tmux, f.store, f.roots(), stoppedClock{now: c.at})
+			if err != nil {
+				t.Fatalf("NewManagerWithClock() unexpected error: %v", err)
+			}
+			if _, err := mgr.Resolve(s.ID, auth.CallerOperator, tok); !errors.Is(err, c.want) {
+				t.Fatalf("Resolve() at %v = _, %v; want %v", c.at, err, c.want)
+			}
+		})
+	}
+}
+
+// TestResolveRefusesADeadSession keeps data-model.md's terminal state terminal.
+// A record whose session is confirmed gone answers exactly as an unknown ID does
+// (FR-033) — otherwise a destroyed session's endpoints would keep answering for
+// a window that no longer exists.
+func TestResolveRefusesADeadSession(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, tok := mustCreate(t, f, f.request())
+
+	if _, err := f.mgr.Resolve(s.ID, auth.CallerOperator, tok); err != nil {
+		t.Fatalf("Resolve() before the session died = _, %v; want the record", err)
+	}
+	if err := f.store.SetState(s.ID, StateDead); err != nil {
+		t.Fatalf("SetState(dead) unexpected error: %v", err)
+	}
+	if _, err := f.mgr.Resolve(s.ID, auth.CallerOperator, tok); !errors.Is(err, ErrSessionDead) {
+		t.Fatalf("Resolve() on a dead session = _, %v; want %v", err, ErrSessionDead)
+	}
+}
+
+// TestResolveNamesNoCallerSuppliedTextInItsError is FR-042 at the one place this
+// package handles bytes the caller chose: the id. An error built with %w around
+// it would put a hostile string — newlines included — into the audit trail the
+// moment a handler recorded it.
+func TestResolveNamesNoCallerSuppliedTextInItsError(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	_, err := f.mgr.Resolve(hostileLabel, auth.CallerOperator, "")
+	if err == nil {
+		t.Fatal("Resolve() accepted an id nothing was ever issued for")
+	}
+	if strings.Contains(err.Error(), hostileLabel) {
+		t.Errorf("Resolve() error %q carries the caller's own text", err)
+	}
+}
+
 func TestNewManagerFailsClosed(t *testing.T) {
 	t.Parallel()
 

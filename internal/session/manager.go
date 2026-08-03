@@ -196,6 +196,51 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 	return &s, token, nil
 }
 
+// Resolve is the whole of layer 3 (FR-014): the record must exist, be the
+// caller's own, carry the credential presented, still be inside the lifetime
+// that credential was issued for, and not already be dead.
+//
+// The five are one call rather than five repeated at each session-scoped
+// endpoint, because the failure this guards against is not a check written
+// wrongly — it is a future endpoint that remembers four of them. Ownership is
+// not even a step: Store.Get takes the owner and answers ErrSessionNotFound
+// without it, so an unknown ID and someone else's ID are already one answer
+// from one lookup (FR-032, FR-033).
+//
+// The distinct sentinels exist for the audit trail and for nothing else. A
+// caller must not be able to tell "no such session" from "not yours" from
+// "wrong token" from "expired" — that difference is what enumeration is made of
+// — so the handler answers all of them identically (FR-033) and the operator
+// reads which one it was in the trail. Nothing here is wrapped with the id: it
+// is caller-supplied text, and the trail may not carry it (FR-042).
+//
+// Time comes from the manager's clock, the same one the reaper will enforce the
+// absolute deadline on (T036), so a credential cannot be expired by one and
+// live by the other.
+func (m *Manager) Resolve(id string, owner auth.CallerID, presented string) (Session, error) {
+	s, err := m.store.Get(id, owner)
+	if err != nil {
+		return Session{}, fmt.Errorf("resolve session: %w", err)
+	}
+	if !s.TokenMatches(presented) {
+		return Session{}, fmt.Errorf("resolve session: %w", ErrTokenMismatch)
+	}
+	// Before, not !After: at the deadline the credential is already gone. The
+	// boundary belongs on the refusing side of the comparison for the same
+	// reason the signature window does — a lifetime that is "24 hours plus
+	// however long the last request takes" is not a lifetime anyone bounded.
+	if !m.clock.Now().Before(s.TokenExpiry()) {
+		return Session{}, fmt.Errorf("resolve session: %w", ErrTokenExpired)
+	}
+	// A dead record answers exactly as an unknown ID does (data-model.md). Dead
+	// is terminal, so this is not a race to lose: the session is gone and the
+	// record is waiting to be collected.
+	if s.State == StateDead {
+		return Session{}, fmt.Errorf("resolve session: %w", ErrSessionDead)
+	}
+	return s, nil
+}
+
 // start runs the four tmux commands FR-018 describes, in the only order that
 // works: the session must exist before an option can be set on it, and it must
 // be marked as ours before it runs anything, because an unmarked session is one

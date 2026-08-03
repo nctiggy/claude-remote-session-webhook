@@ -2,12 +2,15 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 )
 
 // bodyUnauthorized is the layer-2 denial, byte for byte from
@@ -20,9 +23,32 @@ import (
 // checks refused. A caller learns only that it is not authenticated.
 var bodyUnauthorized = []byte(`{"error":"unauthorized"}`)
 
+// bodyNotFound is the layer-3 denial, byte for byte from contracts/http-api.md,
+// and a package-level value for the reason bodyUnauthorized is one.
+//
+// An unknown ID, another owner's session, a wrong bearer token, an expired one,
+// and a session already dead all answer with these bytes and no others
+// (FR-033). The difference between "does not exist" and "not yours" is what an
+// enumeration attack is made of; it is kept in the trail, where the operator can
+// read it and the caller cannot.
+var bodyNotFound = []byte(`{"error":"not found"}`)
+
 const (
-	headerContentType = "Content-Type"
-	contentTypeJSON   = "application/json"
+	headerContentType   = "Content-Type"
+	headerAuthorization = "Authorization"
+	contentTypeJSON     = "application/json"
+
+	// bearerScheme is the only credential scheme this API accepts, with its one
+	// separating space. Compared case-insensitively, since RFC 7235 makes the
+	// scheme name case-insensitive and a client that sends "bearer" is holding
+	// the right credential.
+	bearerScheme = "Bearer "
+
+	// pathValueID is the wildcard every session-scoped route carries. Spelled
+	// once, because the string in the pattern and the string read back out of
+	// the request are the same string: a typo in either would make PathValue
+	// return "" and every lookup miss.
+	pathValueID = "id"
 )
 
 // routeActions names the audit action for every route in the contract.
@@ -50,6 +76,7 @@ type contextKey int
 const (
 	callerContextKey contextKey = iota
 	auditContextKey
+	sessionContextKey
 )
 
 // RequestAudit is the single record a request will produce, held open while the
@@ -113,6 +140,20 @@ func AuditFrom(ctx context.Context) *RequestAudit {
 	return ra
 }
 
+// SessionFrom reports the session a session-scoped request was resolved to.
+//
+// It is the only way a handler on an {id} route may learn which session it is
+// acting on. The record it returns has already been matched against the caller's
+// identity and the presented credential, and every target derives from its ID —
+// which is FR-034 stated as an API: a handler that took the {id} out of the path
+// itself would be addressing a window on a caller's say-so.
+//
+// The Session is a copy, as Store hands out. Mutating it changes nothing.
+func SessionFrom(ctx context.Context) (session.Session, bool) {
+	s, ok := ctx.Value(sessionContextKey).(session.Session)
+	return s, ok
+}
+
 // authenticate is layer 2 (FR-007), applied by handle to every route with no
 // exemption possible: it is wrapped around the handler at the single point where
 // a route reaches the mux, so an unauthenticated route cannot be written, only
@@ -152,6 +193,121 @@ func (s *Server) authenticate(action audit.Action, next http.Handler) http.Handl
 		ctx = context.WithValue(ctx, auditContextKey, ra)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// The reasons the resolver records, authored here.
+//
+// None is ever written into a response, and none is built from a byte the caller
+// sent — in particular never the {id} out of the path, which is caller-supplied
+// text the trail may not carry (FR-042). The refusals that come from
+// internal/session are recorded under that package's own sentinels instead; see
+// resolveReason.
+var (
+	// errScopeNoCaller is unreachable behind the authentication middleware,
+	// which is why it fails closed rather than resolving against an empty
+	// identity: Store.Get treats the zero CallerID as matching nothing, so this
+	// would already refuse — but it would refuse as "no such session", and a
+	// wiring mistake that removed layer 2 deserves a reason of its own in the
+	// trail rather than a 404 that looks routine.
+	errScopeNoCaller = errors.New("a session-scoped route was reached with no authenticated caller")
+
+	// errScopeNoCredential is a request with no bearer token at all. It is a 404
+	// and not a 401: holding the shared secret is not evidence about any
+	// particular session, so "you did not present a session credential" and
+	// "that session is not yours" must read alike from outside (FR-014).
+	errScopeNoCredential = errors.New("no session credential was presented")
+
+	// errScopeRefused is the fail-closed reason for a refusal none of the
+	// sentinels explain. A refusal nobody classified is still a refusal.
+	errScopeRefused = errors.New("the session could not be resolved")
+)
+
+// resolveSession is layer 3 (FR-014), applied by handle to every route carrying
+// an {id} and to no others — at the same single point where a route reaches the
+// mux, so a session-scoped route physically cannot be registered without it.
+//
+// Everything it decides, it delegates. The lookup, the ownership match, the
+// credential compare, the expiry, and the dead-record rule are one call into
+// internal/session, where the store and the clock live; what belongs here is the
+// half that is about HTTP: reading the credential off the request, answering
+// every failure with the identical 404, and handing the resolved record to the
+// handler so that nothing downstream ever reads the {id} again.
+func (s *Server) resolveSession(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		caller, ok := CallerFrom(r.Context())
+		if !ok {
+			s.refuseSession(w, r, errScopeNoCaller)
+			return
+		}
+
+		presented, ok := bearerToken(r)
+		if !ok {
+			s.refuseSession(w, r, errScopeNoCredential)
+			return
+		}
+
+		resolved, err := s.sessions.Resolve(r.PathValue(pathValueID), caller.ID, presented)
+		if err != nil {
+			s.refuseSession(w, r, resolveReason(err))
+			return
+		}
+
+		// The ID off the daemon's own record, never the bytes the caller put in
+		// the path — which is the rule SetSessionID exists to keep, and is only
+		// safe to do here because the record has just been matched to them.
+		AuditFrom(r.Context()).SetSessionID(resolved.ID)
+
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), sessionContextKey, resolved)))
+	})
+}
+
+// bearerToken reads the credential out of the Authorization header.
+//
+// The parse is deliberately strict: one scheme, one space, and a non-empty
+// remainder, with no trimming. A token surrounded by whitespace is not the token
+// that was issued and would fail the compare anyway, so leniency here would buy
+// nothing except a second spelling of a credential.
+func bearerToken(r *http.Request) (string, bool) {
+	header := r.Header.Get(headerAuthorization)
+	if len(header) <= len(bearerScheme) || !strings.EqualFold(header[:len(bearerScheme)], bearerScheme) {
+		return "", false
+	}
+	return header[len(bearerScheme):], true
+}
+
+// resolveReason picks the most specific account of a refusal that is still a
+// fixed string, exactly as createReason does and for the same reason: the
+// wrapped error is never used directly, so no rewording — or one %w — in
+// internal/session can put a caller-supplied path value into the trail.
+func resolveReason(err error) error {
+	for _, reason := range []error{
+		session.ErrTokenMismatch,
+		session.ErrTokenExpired,
+		session.ErrSessionDead,
+		session.ErrSessionNotFound,
+	} {
+		if errors.Is(err, reason) {
+			return reason
+		}
+	}
+	return errScopeRefused
+}
+
+// refuseSession answers every layer-3 failure identically (FR-033) and records
+// which one it really was.
+//
+// It is one function for the reason writeUnauthorized is one: FR-033 is
+// satisfied by every refusal producing the *identical* response, and a status
+// and body assembled at five call sites is a response that eventually differs by
+// a space. No Content-Length variation, no header naming the check, no hint.
+func (s *Server) refuseSession(w http.ResponseWriter, r *http.Request, reason error) {
+	AuditFrom(r.Context()).Deny(reason.Error())
+
+	w.Header().Set(headerContentType, contentTypeJSON)
+	w.WriteHeader(http.StatusNotFound)
+	if _, err := w.Write(bodyNotFound); err != nil {
+		s.report(fmt.Errorf("write the not-found response: %w", err))
+	}
 }
 
 // writeUnauthorized answers every layer-2 failure identically (FR-011).

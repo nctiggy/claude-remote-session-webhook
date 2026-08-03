@@ -5,8 +5,26 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+)
+
+var (
+	// ErrTokenMismatch is a credential that is not the one issued for the
+	// session it was presented against (FR-014).
+	//
+	// It is distinct from ErrSessionNotFound for the operator reading the trail
+	// and for nobody else: a wrong token means the caller already knew a real
+	// session ID, which is a different event from a guess at one. The *client*
+	// must not be able to tell the two apart, so both answer the uniform 404.
+	ErrTokenMismatch = errors.New("session credential does not match")
+
+	// ErrTokenExpired is a credential presented at or after the session's
+	// absolute deadline (FR-015). Since TokenExpiry is AbsoluteDeadline, this is
+	// also the moment the session itself stops being reachable — there is no
+	// window where one outlives the other, and no renewal.
+	ErrTokenExpired = errors.New("session credential has expired")
 )
 
 // tokenBytes is the raw entropy behind a bearer token, before encoding

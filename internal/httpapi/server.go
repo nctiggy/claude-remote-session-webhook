@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
@@ -69,6 +70,15 @@ type Route struct {
 // String is the ServeMux registration string, and is also what an error message
 // or a test failure prints. One spelling, so the two cannot drift.
 func (r Route) String() string { return r.Method + " " + r.Pattern }
+
+// SessionScoped reports whether the route addresses one particular session,
+// which is the same question as "does layer 3 apply here" (FR-014).
+//
+// It is derived from the pattern rather than listed in a table beside it. A
+// seventh route carrying an {id} would have to be added to such a table as well
+// as to the router, and the failure mode of forgetting is a session endpoint
+// reachable with the shared secret alone.
+func (r Route) SessionScoped() bool { return strings.Contains(r.Pattern, "{"+pathValueID+"}") }
 
 // routes is the complete set from contracts/http-api.md, in the order the
 // contract documents them. Nothing else may be registered.
@@ -218,7 +228,13 @@ func (s *Server) handlerFor(r Route) http.HandlerFunc {
 // handle is the single place a route reaches the mux. Everything that must be
 // true of every route is applied here exactly once — the authentication
 // middleware wraps h at this line, so that a route physically cannot be
-// registered without it (FR-007).
+// registered without it (FR-007), and a session-scoped one is wrapped again by
+// the layer-3 resolver so that it cannot be registered without that either.
+//
+// The order is the guarantee. authenticate is outermost, so a request with no
+// valid signature is refused as unauthenticated before anything asks which
+// session it meant; the resolver only ever runs for a caller layer 2 has already
+// named, which is what makes the ownership check a comparison and not a guess.
 //
 // It fails rather than registering a route with no audit action. FR-041 wants
 // one record per request, and a route the trail has no name for is a route whose
@@ -228,7 +244,13 @@ func (s *Server) handle(r Route, h http.HandlerFunc) error {
 	if !ok {
 		return fmt.Errorf("httpapi: route %s has no audit action; refusing to register it", r)
 	}
-	s.mux.Handle(r.String(), s.authenticate(action, h))
+
+	var handler http.Handler = h
+	if r.SessionScoped() {
+		handler = s.resolveSession(handler)
+	}
+
+	s.mux.Handle(r.String(), s.authenticate(action, handler))
 	s.registered = append(s.registered, r)
 	return nil
 }
