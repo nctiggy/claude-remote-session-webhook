@@ -162,7 +162,7 @@ the presence of a stack manifest — from T001 onward, CI is real.
 
 **Independent Test**: Exercise every endpoint including failures, then grep the capture for prompt text, tokens, the shared secret, and escape bytes — all zero.
 
-- [ ] T038 [US6] Wire audit records through every remaining path in `internal/httpapi/middleware.go`, `internal/session/reaper.go`, and `cmd/crswd/main.go` so that `session.create`, `session.prompt`, `session.destroy`, `auth.reject`, `reaper.destroy`, and `startup.adopt` each emit exactly one record with caller, session ID, and decision. Test in `internal/audit/audit_test.go` that every route produces exactly one record, allowed or denied.
+- [x] T038 [US6] Wire audit records through every remaining path in `internal/httpapi/middleware.go`, `internal/session/reaper.go`, and `cmd/crswd/main.go` so that `session.create`, `session.prompt`, `session.destroy`, `auth.reject`, `reaper.destroy`, and `startup.adopt` each emit exactly one record with caller, session ID, and decision. Test in `internal/audit/audit_test.go` that every route produces exactly one record, allowed or denied.
 - [ ] T039 [US6] Add the leak-assertion suite in `internal/audit/leak_test.go`: drive an end-to-end exercise of every operation with distinctive prompt text and pane content, capture all emitted records and log lines, and assert **zero** occurrences of prompt text, pane output, bearer tokens, token hashes, the shared secret, or any full request body. Required by `docs/security.md` §3 and SC-013.
 
 **Checkpoint**: All six stories independently functional and verified.

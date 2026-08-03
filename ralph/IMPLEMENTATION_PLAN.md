@@ -115,7 +115,7 @@ owner plus its clock origin.
 
 ### US6 — The audit trail answers "what happened" (P6)
 
-- [ ] T038 Wire audit records through every remaining path in `internal/httpapi/middleware.go`, `internal/session/reaper.go`, and `cmd/crswd/main.go` so `session.create`, `session.prompt`, `session.destroy`, `auth.reject`, `reaper.destroy`, and `startup.adopt` each emit exactly one record
+- [x] T038 Wire audit records through every remaining path in `internal/httpapi/middleware.go`, `internal/session/reaper.go`, and `cmd/crswd/main.go` so `session.create`, `session.prompt`, `session.destroy`, `auth.reject`, `reaper.destroy`, and `startup.adopt` each emit exactly one record
 - [ ] T039 `internal/audit/leak_test.go`: drive every operation with distinctive prompt text and pane content, then assert **zero** occurrences of prompt text, pane output, tokens, token hashes, the shared secret, or any full body across all records and log lines
 
 ### Ship it

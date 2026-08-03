@@ -6764,3 +6764,268 @@ gitleaks (pre-commit)       1 commit scanned … no leaks found
 66. **Iteration 6 #6 / … / 37 #64 still stands:** `AGENTS.md`'s command table has no entry for
     `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both were
     run by hand this iteration, green.
+
+---
+
+## Iteration 39 — 2026-08-03 22:20
+
+**Did:** Completed **T038**, the audit wiring. The only path still missing one was the reaper:
+`NewReaper(m *Manager, trail *audit.Logger)` now takes the sink and refuses a nil one (the same
+ruling `newServer` makes for the server's), and `Reaper.Sweep` emits exactly one
+`reaper.destroy` record per session it acts on — `allow` when `Manager.Destroy` confirmed the
+teardown, `deny` when the host would not, with the bound named by a reason constant authored in
+`reaper.go`. A failed audit write joins the sweep's error, so it reaches `Run`'s loud-failure
+path instead of being dropped because the teardown itself worked. Five new tests plus a widened
+`TestNewReaperFailsClosed` in `internal/session/reaper_test.go`. Ticked T038 in **both**
+`ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+The other two files T038 names needed nothing. `internal/httpapi/middleware.go` has emitted one
+record per request since T020 and amends it from the handler through `RequestAudit` (T023,
+T029); `cmd/crswd/main.go` has no audit path of its own — `startup.adopt` is emitted by
+`Server.Reconcile`, which `main` calls, and iteration 32 put it there deliberately. Both were
+re-read this iteration rather than assumed. So the six actions T038 names now all emit:
+`session.create`, `session.prompt`, `session.destroy` and `auth.reject` from the middleware,
+`startup.adopt` from `Reconcile`, `reaper.destroy` from `Sweep`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK
+go test -tags tmux ./...    OK (real tmux on this host)
+go test -race ./...         OK
+golangci-lint run           OK
+gofmt -l .                  empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git diff --stat             +347/-21 across two files (none new)
+gitleaks (pre-commit)       1 commit scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **The record is written in `Sweep`, not in `Run`.** `Run` discards what a sweep returns, so a
+  record emitted there could only describe the sessions the sweep managed to destroy — and the
+  one an operator most needs is the survivor. Emitting per session inside the loop also means a
+  direct `Sweep` caller (a test, or whatever eventually starts the reaper) gets the trail too.
+- **A failed teardown is recorded as `deny`, not omitted.** The decision field answers "did the
+  thing described happen", and for a reaped session the answer is the difference between a bound
+  enforced and a live unsandboxed shell still on the host. The reason carries the fixed
+  `reasonUnconfirmed` prefix in front of the same bound string, so one grep finds every session
+  that hit a ceiling whether or not it actually died.
+- **A failed audit write joins the sweep's error.** `Reconcile` already makes this ruling for
+  `startup.adopt`; the httpapi middleware makes the opposite one (report, never change the
+  response) because there a 500 that appeared only when the sink broke would make the uniform 401
+  non-uniform. A sweep has no response, so there is no uniformity to protect and nothing else that
+  would ever mention it.
+- **The error is deliberately not in the record.** What it would add is the session id, which the
+  record already carries in its own field; putting it in `Reason` would make every future
+  rewording — or one `%w` in `internal/session` — a new chance to break FR-042.
+- **The new tests went in `internal/session/reaper_test.go`, not the file T038 names.** T038 asks
+  for a test "in `internal/audit/audit_test.go` that every route produces exactly one record" —
+  that test already exists twice over, as `TestEveryRouteAuditsAnAllowedRequestUnderItsOwnAction`
+  (which sweeps `s.Routes()` and asserts exactly one record through the `only` helper) and
+  `TestEveryContractRouteHasAnAuditAction` in `internal/httpapi/middleware_test.go`, plus
+  `TestEmitAcceptsEveryDocumentedAction` in `audit_test.go`. Writing a third would have coupled
+  `internal/audit` to `internal/httpapi` for no new assertion, and T039 is the task that genuinely
+  needs that direction of import (`internal/audit/leak_test.go`). AGENTS.md's "tests colocated
+  with the package they cover" decided the rest. **See finding 3.**
+
+**Learned (do not rediscover):**
+
+- **`internal/session` may import `internal/audit`, and now does.** No cycle: `audit` imports
+  nothing from this repo, and `httpapi` importing both is unaffected. This is the first non-http
+  package to hold a `*audit.Logger`; the pattern to copy is `Server.trail`.
+- **errcheck in this repo is configured with `check-blank`,** so `v, _ := m["k"].(string)` in a
+  test fails the lint that `v, ok := …` passes. Every existing map-reading assertion uses the
+  two-value form with an `ok` branch (`server_test.go:583`, `ratelimit_test.go:471`) — that is
+  not style, it is the linter.
+- **`reaperAt` still returns a bare `*Reaper`.** It now delegates to `auditedReaperAt`, which
+  returns the sink as well, so the ten existing tests that only care about teardown were left
+  untouched. Adding the buffer to the shared helper's signature would have churned all of them.
+- **A test asserting an audit `deny` needs `f.tmux.SurviveKill(...)` and nothing else** — the fake
+  reports the kill succeeded and leaves the session present, which is the orphan path. Contrast
+  iteration 38's Learned note: failing `OpHas` alone is *not* enough, because `confirmGone` falls
+  back to `List`.
+- **No probe was reverted this iteration.** The gate went red once, on the errcheck rule above,
+  and was fixed rather than reverted.
+
+**Left:** T039 (the leak-assertion suite), T040–T042 (ship it).
+
+**Findings (noticed, not fixed):**
+
+1. **NEEDS CLARIFICATION, unchanged and now sharper: `Reaper.Run` still has no caller.** Iterations
+   37 and 38 both raised it; no operator ruling arrived. This iteration gave the reaper a trail,
+   which makes the gap plainer rather than smaller — `reaper.destroy` is now implemented, tested,
+   and **unreachable in a running daemon**, because `httpapi.New` builds the manager and no
+   reaper and `cmd/crswd` never sees one. T038's text named the audit wiring, not the goroutine's
+   startup (Principle II, Principle IV), so this iteration again did not guess. Note that whoever
+   fixes it needs *both* the manager and the trail, and both are unexported fields of `Server`, so
+   the fix is a new constructor or accessor in `internal/httpapi`, not a line in `main`. **An
+   operator must rule, or a task must own it, before T042 signs the milestone off.**
+2. **Iteration 38 #2 still stands, and T038 has now been and gone:** a shutdown teardown leaves no
+   audit record, because the action set in `internal/audit/audit.go` and `data-model.md` has no
+   name for it. T038 was its natural owner and named six actions, none of them this. **Now
+   definitively unowned; an operator should rule whether `DestroyAll` gets an action.**
+3. **New this iteration: T038's named test location was not used, deliberately** (see Decided).
+   If the spec's intent was a *seventh* sweep living in `internal/audit`, T039's `leak_test.go`
+   is where it would go and this note is the pointer. **Recorded so the deviation is visible.**
+4. **New this iteration: a session the host will not confirm gone writes one `deny` record per
+   sweep, forever.** The record is correct each time — the sweep really did try again — but at a
+   30-second interval that is 2,880 identical records a day for one stuck session, and nothing
+   dedupes or backs off. Truthful and loud, which is the right default, but the volume is a
+   ruling nobody has made. **An operator should rule.**
+5. **Iteration 38 #3 still stands:** a drain that times out can race a create, so a `Manager.Create`
+   past its store insert could land after `DestroyAll` took its snapshot. **No task owns it.**
+6. **Iteration 38 #4 still stands:** `shutdownBudget` (30s) and `shutdownDrain` (10s) are unstated
+   numbers, and T041's systemd unit needs a `TimeoutStopSec` consistent with the first.
+7. **Iteration 37 #2 / 38 #5 still stands:** `Store.Touch` has no caller in the request path, so
+   `LastActivity` never moves off `CreatedAt` and every session would die 60 minutes after
+   creation however hard it is being used — *if* anything started the reaper (finding 1). One line
+   in the session-scoped resolver. **No task owns it; an operator should rule.**
+8. **Iteration 37 #3 / 38 #6 still stands:** one slow tmux exec stalls a whole sweep, and
+   `DestroyAll` inherits the same serial shape. The audit emit added this iteration is in the same
+   loop, but it is a buffered write and adds nothing measurable. **No task owns it.**
+9. **Iteration 37 #4 / 38 #7 still stands:** neither the reaper nor shutdown produces `dead`
+   records; `Destroy` deletes outright, so `StateDead` stays unreachable.
+10. **Iteration 36 #1 / … / 38 #8 still stands:** `Session.TokenMatches` is exported and answers
+    the match without the expiry. **An operator should rule; no task owns it.**
+11. **Iteration 35 #1 / … / 38 #9 still stands:** nothing states that the create limiter's burst is
+    half the rate. **An operator should rule, or T040 should settle it.**
+12. **Iteration 35 #2 / … / 38 #10 still stands:** the 429 carries no `Retry-After`, deliberately.
+13. **Iteration 35 #3 / … / 38 #11 still stands:** create budgets do not survive a restart, while
+    the cap does. **No task owns it.**
+14. **Iteration 35 #4 / … / 38 #12 still stands:** three independent clocks wired to `systemClock{}`
+    by construction, not by check. The reaper's trail takes a `now` too — `audit.New()` uses
+    `time.Now` — which makes the audit timestamp a fourth reading of the host clock, independent of
+    the manager clock the same sweep judged the deadline on.
+15. **Iteration 36 #3 / … / 38 #13 still stands, and T038 has been and gone:** `Resolve` checks the
+    credential before the dead-state check, so a session both destroyed and past its ceiling reads
+    as `ErrTokenExpired`. It was tagged T038; T038's text is about which records are emitted, not
+    which reason a resolver picks. **Now unowned.**
+16. **Iteration 34 #2 / … / 38 #14 still stands:** the concurrent-session cap counts records in any
+    state, `dead` included — of which there are none (finding 9).
+17. **Iteration 34 #1 / … / 38 #15 still stands:** `contracts/http-api.md` gives the 429 a row and
+    **no body**. **An operator should rule.**
+18. **Iteration 34 #3 / … / 38 #16 still stands:** `httpapi.New` builds the authenticator, the
+    manager and the limiter before asserting the listen address is loopback.
+19. **Iteration 32 #1 / … / 38 #17 still stands:** `Reconcile` drops the plaintext credential
+    `Adopt` returns, so an adopted session is owned, listed, capped and reapable but **drivable by
+    nobody**. **An operator should rule; no task owns it.**
+20. **Iteration 33 #2 / … / 38 #18 still stands:** a session destroyed at startup for outliving its
+    ceiling leaves no audit record — `Adopt` destroys it and `Reconcile` only emits for what it
+    adopted. Finding 2 is the same hole at the other end of the process, and T038 named neither.
+    **Now definitively unowned.**
+21. **Iteration 33 #3 / … / 38 #19 still stands:** nothing forces `Reconcile` to be called at all —
+    the guard is one-directional. **Still unowned.**
+22. **Iteration 33 #4 / … / 38 #20 still stands:** `cmd/crswd` has no test files, and `run()`
+    carries the signal wiring, the serve/shutdown select, the second `stop()`, and the budget —
+    none of it reachable from a test. **An operator should rule whether `cmd/crswd` gets a seam
+    before T042.**
+23. **Iteration 32 #3 / … / 38 #21 still stands:** `Adopt` is not safe to call twice concurrently.
+24. **Iteration 31 #1 / … / 38 #22 still stands:** `docs/auth-and-sessions.md:135–137` describes a
+    cross-caller isolation test that cannot be written as specified in milestone 1.
+25. **Iteration 31 #2 / … / 38 #23 still stands:** `GET /sessions` is outside every sweep in the
+    isolation suite.
+26. **Iteration 30 #1 / … / 38 #24 still stands:** `notImplemented` is unreachable dead code.
+27. **Iteration 30 #2 / … / 38 #25 still stands:** the mux's `405` is `text/plain` with an `Allow`
+    header, contradicting `contracts/http-api.md`. **An operator should rule.**
+28. **Iteration 30 #3 / … / 38 #26 still stands:** the contract's test matrix has no row for
+    destroy-then-destroy, destroy-racing-the-reaper, or destroy-racing-shutdown.
+29. **Iteration 30 #4 / … / 38 #27 still stands:** `errDestroyRefused` is unreachable and untested.
+30. **Iteration 29 #1 / … / 38 #28 still stands:** `rollback` verifies with `Has` alone and never
+    calls `confirmGone`, so a failed create on a host where the killed session was the only one
+    reports a **false orphan**. One line plus one test edit. **No task owns it.**
+31. **Iteration 29 #3 / … / 38 #29 still stands:** `Destroy` takes a `Session` rather than an id,
+    which is what lets `Adopt`, `Sweep` and `DestroyAll` tear down a record from a copy — and what
+    lets this iteration's `reapRecord` name the owner without a second store read.
+32. **Iteration 28 #1 / … / 38 #30 still stands:** the two read routes disagree about which sessions
+    exist. **Unassigned.**
+33. **Iteration 28 #2 / … / 38 #31 still stands:** a detail reports `state` from the record and
+    never asks the host.
+34. **Iteration 24 #4 / … / 38 #32 still stands:** a session whose window vanished still resolves
+    and answers 500 rather than moving to `dead`. **An operator should rule.**
+35. **Iteration 27 #2 / … / 38 #33 still stands:** the list is unbounded in length.
+36. **Iteration 26 #1 / … / 38 #34 still stands:** nothing bounds the size of a capture.
+37. **Iteration 26 #2 / … / 38 #35 still stands:** `captured_at` is the daemon's clock, not tmux's.
+38. **Iteration 25 #1 / … / 38 #36 still stands:** a failed submit can leave prompt text in a named
+    tmux buffer, and neither `Destroy`, nor the reaper, nor shutdown deletes the session's paste
+    buffer. **This is the one FR-042 hole a leak test cannot see, and T039 is next.**
+39. **Iteration 22 #2 / … / 38 #37 still stands:** nothing forces a handler to use `decode`.
+40. **Iteration 22 #3 / … / 38 #38 still stands:** an oversize body is refused twice with two
+    different reasons and two different statuses. It was tagged T038, which did not touch it — the
+    task is about which records exist, not about the double refusal. **Now unowned.**
+41. **Iteration 21 #1 / … / 38 #39 still stands:** the mux's own `404` is `text/plain` while the
+    contract says every response is JSON.
+42. **Iteration 21 #2 / … / 38 #40 still stands:** the contract's `400` row for an oversize body is
+    unreachable behind layer 2.
+43. **Iteration 21 #3 / … / 38 #41, updated:** `session.list`, `session.detail`, and
+    `session.output` are action names iteration 21 chose and `data-model.md` does not carry.
+    `reaper.destroy` now exists (this iteration) and *is* in `data-model.md`; a shutdown action is
+    still named by nobody (finding 2). **`data-model.md` should be reconciled with
+    `internal/audit/audit.go` before T042.**
+44. **Iteration 21 #4 / … / 38 #42 still stands:** `RequestAudit` is not safe for concurrent use,
+    and nothing enforces it. The reaper's record needs no such type — it is built and emitted in
+    one statement — so this stays an httpapi-only hazard.
+45. **Iteration 21 #5 / … / 38 #43 still stands, and T038 has been and gone:** every request exit
+    path amends the record by habit, not by construction. Nothing makes a handler set a decision;
+    the middleware's `Deny`-by-default is what saves it. **Now unowned.**
+46. **Iteration 20 #3 / … / 38 #44 still stands:** none of `docs/security.md`'s "Transport &
+    exposure" headers are applied by anything.
+47. **Iteration 18 #1 / … / 38 #45 still stands:** `Store.Add` does not require a `TokenHash`, and
+    `AddCapped` inherits that.
+48. **Iteration 17 #2 / … / 38 #46 still stands:** `Delete`'s hash scrub is best effort.
+49. **Iteration 17 #3 / … / 38 #47 still stands:** nothing enforces that a `Session.ID` in the store
+    came from `NewID`, beyond `adoptableID` on the adoption path.
+50. **Iteration 16 #1 / … / 38 #48 still stands:** `ResolveWorkDir` has an unavoidable TOCTOU window
+    before `tmux new-session -c`.
+51. **Iteration 16 #3 / … / 38 #49 still stands:** nothing re-stats an approved root.
+52. **Iteration 15 #1 / … / 38 #50 still stands:** FR-027's class admits a leading `-`.
+53. **Iteration 13 #1 / … / 38 #51 still stands:** `docs/auth-and-sessions.md`'s samples are stale in
+    four ways, and finding 24 above is a fifth.
+54. **Iteration 12 #1 / … / 38 #52 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Run by hand again this iteration, green.
+55. **Iteration 12 #2 / … / 38 #53 still stands:** three specs disagree on `Observe`'s signature.
+56. **Iteration 12 #3 / … / 38 #54 still stands:** the replay cache is unbounded in count.
+57. **Iteration 11 #1 / … / 38 #55 still stands, and T038 has been and gone:** the audit trail
+    cannot tell clock drift from a forged future timestamp — both reach `auth.Reason` as the same
+    sentinel. It was tagged T038, whose text is about which paths emit records, not about splitting
+    an auth sentinel in two. **Now unowned.**
+58. **Iteration 11 #2 / … / 38 #56 still stands:** nothing forces the daemon's clock to be monotonic
+    or roughly right.
+59. **Iteration 10 #2 / … / 38 #57 still stands:** the signature covers timestamp and body but **not
+    the method or the path**. **No task owns it.**
+60. **Iteration 9 #1 / … / 38 #58 still stands:** `RequestAudit.Deny` takes a free `string`. The
+    reaper's equivalent does not — `reapRecord` picks from constants — so the hazard is now
+    httpapi-only, which is an argument for closing it there.
+61. **Iteration 8 #2 / … / 38 #59, narrowed:** the loud default-root warning still goes to stderr
+    while audit records go to stdout, and `main`'s `log.Fatalf` on a failed shutdown is a second
+    unstructured writer. `reportToLog` in `reaper.go` is no longer a *third* in the ordinary case —
+    every reaped session is now a structured record — but it remains the last-resort channel for a
+    sink that broke, which is deliberate and matches `reportToStderr`. **T038 was assigned this and
+    closed the reaper's half only; the config warning and the fatal are unowned.**
+62. **Iteration 8 #1 / … / 38 #60 still stands:** `.env.example` does not exist, and it will need
+    `CRSW_MAX_SESSIONS` and `CRSW_CREATE_RATE_PER_MIN` described (names only, never a value).
+    T040 — see findings 6 and 11.
+63. **Iteration 7 #1 / … / 38 #61 still stands:** bidi and invisible Unicode are not stripped by
+    `tmuxctl.Strip`, by design. **Milestone 2 decides before rendering.**
+64. **Iteration 6 #3 / … / 38 #62 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case while `exec.go` also matches the missing-socket
+    pair.
+65. **Iteration 14 #1 / … / 38 #63 still stands:** `git checkout --`, `git restore`, `perl -i` and a
+    heredoc are all outside the permission allowlist, so `PROMPT.md` step 6's documented recovery
+    path needs an approval an autonomous run cannot give. Nothing needed reverting this iteration.
+    New this iteration: `git -c core.hooksPath=.githooks commit` is *also* outside it — the plain
+    `git commit` form is allowed and the hook ran anyway, so nothing was bypassed, but the
+    defensive spelling is not available.
+66. **Iteration 1 #1 / … / 38 #64 still stands, thirty-ninth iteration carrying it:** `loop.sh`'s
+    sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook (which ran clean on
+    this iteration's commit). Needs an operator or a task of its own.
+67. **Iteration 2 #2 / … / 38 #65 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the plan.
+    Ticked both by hand again, again only because the finding was written down. Thirty-eighth
+    iteration of manual compensation for a one-line fix to step 9.
+68. **Iteration 6 #6 / … / 38 #66 still stands:** `AGENTS.md`'s command table has no entry for
+    `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both were
+    run by hand this iteration, green.
