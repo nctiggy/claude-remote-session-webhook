@@ -7,16 +7,22 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 )
 
 // loopbackListen is the address every fixture asks for. Port 0 lets the kernel
@@ -487,6 +493,246 @@ func TestListenRefusesAndClosesAListenerThatIsNotOnLoopback(t *testing.T) {
 				t.Error("Serve() succeeded after a refused bind")
 			}
 		})
+	}
+}
+
+// hostID builds an ID-shaped value without putting a 32-character hex string in
+// the source, which gitleaks reads as a credential. internal/session spells its
+// own the same way, and for the same reason.
+func hostID(ch string) string { return strings.Repeat(ch, session.IDLen) }
+
+// survivorName is the tmux name the daemon would have given this ID. It comes
+// from the session package's own spelling rather than a literal "crswd-" here,
+// so a test cannot go on passing after the prefix moves.
+func survivorName(id string) string { return session.Session{ID: id}.TmuxName() }
+
+// seedSurvivor puts on the fake host a session this run did not start — what a
+// restart leaves behind. Seed records no tmux call, so every call a
+// reconciliation test sees is one Reconcile chose to make.
+func seedSurvivor(t *testing.T, s *testServer, id string, created time.Time) {
+	t.Helper()
+	s.fixture.tmux.Seed(tmuxctl.SessionInfo{Name: survivorName(id), Created: created, Managed: true})
+}
+
+// tokenShape is what a session credential looks like on the wire: 64 hex
+// characters. A session ID is 32, so a match is a credential and never an ID.
+var tokenShape = regexp.MustCompile(`[0-9a-f]{64}`)
+
+// TestReconcileTakesBackWhatARestartLeftRunning is US4 stated at the seam
+// cmd/crswd uses: the sessions are under management again, and the trail carries
+// exactly one startup.adopt record for each.
+//
+// The store assertions are the half that matters most. An adopted session that
+// never reached the store is a live shell running with
+// --dangerously-skip-permissions that no ownership check, no cap, and no reaper
+// can see — the state FR-021 exists to make unreachable.
+func TestReconcileTakesBackWhatARestartLeftRunning(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	ids := []string{hostID("a"), hostID("b")}
+	for _, id := range ids {
+		seedSurvivor(t, s, id, testTime.Add(-2*time.Hour))
+	}
+
+	if err := s.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile() = %v; want the host reconciled", err)
+	}
+
+	if n := s.fixture.store.Len(); n != len(ids) {
+		t.Fatalf("the store holds %d records after %d sessions were adopted; want one each", n, len(ids))
+	}
+	for _, id := range ids {
+		if _, err := s.fixture.store.Get(id, auth.CallerOperator); err != nil {
+			t.Errorf("the store has no record of adopted session %q for %q: %v", id, auth.CallerOperator, err)
+		}
+	}
+
+	got := s.records(t)
+	if len(got) != len(ids) {
+		t.Fatalf("reconciliation emitted %d audit records (%v); want exactly one per adopted session (%d)", len(got), got, len(ids))
+	}
+
+	recorded := make(map[string]bool, len(got))
+	for i, rec := range got {
+		// The spellings are data-model.md's and contracts', written out rather
+		// than read back out of the audit package: a test that took them from
+		// the constants would prove only that the code agrees with itself.
+		if rec["action"] != "startup.adopt" {
+			t.Errorf("record %d action = %v; want %q", i, rec["action"], "startup.adopt")
+		}
+		if rec["decision"] != "allow" {
+			t.Errorf("record %d decision = %v; want %q", i, rec["decision"], "allow")
+		}
+		if rec["caller"] != string(auth.CallerOperator) {
+			t.Errorf("record %d caller = %v; want the configured operator %q", i, rec["caller"], auth.CallerOperator)
+		}
+		if remote, ok := rec["remote"]; ok {
+			t.Errorf("record %d carries remote %v; no request is behind a startup adoption", i, remote)
+		}
+		id, ok := rec["session_id"].(string)
+		if !ok {
+			t.Errorf("record %d names no session; an adoption record is about one particular session", i)
+			continue
+		}
+		recorded[id] = true
+	}
+	for _, id := range ids {
+		if !recorded[id] {
+			t.Errorf("no audit record names adopted session %q", id)
+		}
+	}
+}
+
+// TestReconcileKeepsAnAdoptedCredentialOutOfTheTrail is FR-042 on the one path
+// that mints a credential nobody asked for. A session token in journald is the
+// key to an unsandboxed shell, and it stays out of the trail even though there is
+// nowhere else in milestone 1 for it to go.
+func TestReconcileKeepsAnAdoptedCredentialOutOfTheTrail(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	seedSurvivor(t, s, hostID("c"), testTime.Add(-time.Hour))
+
+	if err := s.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile() = %v; want the host reconciled", err)
+	}
+	// The match is never printed: a failure message carrying the value would put
+	// the credential in CI's logs, which is the thing being tested.
+	if tokenShape.MatchString(s.sink.String()) {
+		t.Error("a 64-character hex string reached the audit trail; a session credential may never appear in one (FR-042)")
+	}
+}
+
+// TestReconcileOnAnEmptyHostRecordsNothing keeps the trail readable: a restart
+// that adopted nothing is the ordinary case, and a record per startup rather than
+// per adopted session would say a session was taken over when none was.
+func TestReconcileOnAnEmptyHostRecordsNothing(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	if err := s.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile() on an empty host = %v; want success", err)
+	}
+	if got := s.records(t); len(got) != 0 {
+		t.Errorf("reconciliation of an empty host emitted %v; want no records", got)
+	}
+	if n := s.fixture.store.Len(); n != 0 {
+		t.Errorf("the store holds %d records after adopting nothing", n)
+	}
+}
+
+// TestReconcileIsFatalWhenTheHostCannotBeAsked is the other half of T032: a tmux
+// failure at startup stops the daemon rather than being skipped.
+//
+// The distinction is not cosmetic. A host the daemon cannot list is a host that
+// may be carrying sessions this daemon started and no longer owns, and a daemon
+// that logged the failure and served anyway would leave them unowned, uncapped,
+// and unreaped for the life of the process.
+func TestReconcileIsFatalWhenTheHostCannotBeAsked(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	seedSurvivor(t, s, hostID("d"), testTime.Add(-time.Hour))
+	broken := errors.New("tmux: no server running on /tmp/tmux-1000/default")
+	s.fixture.tmux.FailOp(tmuxctl.OpList, broken)
+
+	err := s.Reconcile(context.Background())
+	if err == nil {
+		t.Fatal("Reconcile() succeeded on a host it could not list; startup must fail rather than skip reconciliation")
+	}
+	if !errors.Is(err, broken) {
+		t.Errorf("Reconcile() = %v; want the tmux failure wrapped so startup can say why", err)
+	}
+	if n := s.fixture.store.Len(); n != 0 {
+		t.Errorf("the store holds %d records after a reconciliation that failed", n)
+	}
+	if got := s.records(t); len(got) != 0 {
+		t.Errorf("a failed reconciliation emitted %v; a record must describe a session actually adopted", got)
+	}
+}
+
+// TestReconcileRefusesToRunOnceTheListenerIsBound is "before the listener binds"
+// made a property of the type instead of a line order in cmd/crswd. A request
+// served before reconciliation finished would be answered by a daemon that does
+// not yet know what is running on its own host.
+func TestReconcileRefusesToRunOnceTheListenerIsBound(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	seedSurvivor(t, s, hostID("e"), testTime.Add(-time.Hour))
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen() = %v; want a bound listener", err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close() = %v", err)
+		}
+	})
+
+	if err := s.Reconcile(context.Background()); err == nil {
+		t.Fatal("Reconcile() ran after the listener was bound; want a refusal")
+	}
+	if n := s.fixture.store.Len(); n != 0 {
+		t.Errorf("the refused reconciliation adopted %d session(s) anyway", n)
+	}
+	if calls := s.fixture.tmux.Calls(); len(calls) != 0 {
+		t.Errorf("the refused reconciliation ran %v; it must cost no tmux command", calls)
+	}
+}
+
+// TestReconcileRecordsWhatItAdoptedEvenWhenThePassAlsoFailed: startup is about to
+// exit, and the sessions it did take over were genuinely taken over. A trail that
+// dropped them would be missing the half an operator has to act on.
+func TestReconcileRecordsWhatItAdoptedEvenWhenThePassAlsoFailed(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	healthy := hostID("a")
+	seedSurvivor(t, s, healthy, testTime.Add(-2*time.Hour))
+
+	// Past its ceiling, so it is destroyed rather than adopted (FR-025) — and
+	// the kill does not take, so the teardown cannot be confirmed and the pass
+	// fails around the adoption that succeeded.
+	expired := hostID("b")
+	seedSurvivor(t, s, expired, testTime.Add(-session.AbsoluteLifetime-time.Hour))
+	s.fixture.tmux.SurviveKill(survivorName(expired))
+
+	if err := s.Reconcile(context.Background()); err == nil {
+		t.Fatal("Reconcile() reported success with a session it could not tear down still on the host")
+	}
+
+	rec := s.only(t)
+	if rec["session_id"] != healthy {
+		t.Errorf("record names session %v; want the one that was adopted, %q", rec["session_id"], healthy)
+	}
+	if _, err := s.fixture.store.Get(healthy, auth.CallerOperator); err != nil {
+		t.Errorf("the healthy survivor was left unowned by a pass that failed elsewhere: %v", err)
+	}
+	if _, err := s.fixture.store.Get(expired, auth.CallerOperator); err == nil {
+		t.Error("a session past its ceiling was adopted; FR-025 destroys it instead")
+	}
+}
+
+// TestReconcileIsFatalWhenTheTrailCannotBeWritten. FR-041 makes the record
+// mandatory, and startup is the one moment where refusing to run is still an
+// option — unlike a request, which has already happened by the time its record
+// fails to write.
+func TestReconcileIsFatalWhenTheTrailCannotBeWritten(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	seedSurvivor(t, s, hostID("f"), testTime.Add(-time.Hour))
+
+	want := errors.New("stdout is closed")
+	s.Server.trail = audit.NewTo(brokenSink{err: want}, func() time.Time { return testTime })
+
+	err := s.Reconcile(context.Background())
+	if err == nil {
+		t.Fatal("Reconcile() succeeded with no record of what it adopted; want a startup failure")
+	}
+	if !errors.Is(err, want) {
+		t.Errorf("Reconcile() = %v; want the write failure wrapped", err)
 	}
 }
 

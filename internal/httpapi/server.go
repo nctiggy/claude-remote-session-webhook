@@ -15,6 +15,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -276,6 +277,66 @@ func (s *Server) Routes() []Route { return slices.Clone(s.registered) }
 // ServeHTTP makes the Server the handler it wires, so that a test — and any
 // future wrapper — can drive a route through httptest without binding a socket.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
+
+// reasonAdopted is the server-authored account of a startup adoption. Like every
+// other reason in the trail it is a constant in this repo, built from nothing the
+// host or a caller supplied (FR-042).
+const reasonAdopted = "took back a tmux session that outlived the daemon that started it"
+
+// Reconcile takes back the sessions a previous run left behind and records one
+// startup.adopt entry for each (FR-021, FR-025). It is the daemon's first act.
+//
+// It refuses to run once Listen has bound, and that is the whole point of the
+// method living here rather than in cmd/crswd: an adopted session is one an
+// ownership check, the cap, and the reaper can all see, and a request served
+// before reconciliation finished would be answered by a daemon that does not yet
+// know what is running on its own host. Ordering the two calls correctly in main
+// is then a thing the type helps with rather than a thing a reader has to notice.
+//
+// A failure is returned rather than logged and stepped over, because startup
+// treats it as fatal: a tmux the daemon cannot ask about is a host that may be
+// carrying live unsandboxed shells with no owner, and serving anyway would be the
+// silent skip Principle VI forbids. Nothing is retried — the next boot lists the
+// host again.
+//
+// Records are emitted for whatever was adopted even when the pass also failed.
+// The process is about to exit, but the sessions were genuinely taken over first,
+// and a trail that omitted them would be missing the part an operator needs.
+//
+// The credential Adopt minted for each session is deliberately dropped. It may
+// not go in the trail (FR-042 — a session token in journald is the key to an
+// unsandboxed shell), and milestone 1 has nowhere else to put it, so an adopted
+// session is owned, listed, capped, and reapable, but drivable by nobody. That is
+// a known gap in US4 scenario 1, not an oversight of this method.
+func (s *Server) Reconcile(ctx context.Context) error {
+	if s.ln != nil {
+		return fmt.Errorf("httpapi: the host must be reconciled before the listener binds, and this one is already bound to %s", s.ln.Addr())
+	}
+
+	adopted, err := s.sessions.Adopt(ctx)
+	failures := []error{err}
+
+	for _, a := range adopted {
+		// The owner is the record's own, not a constant repeated here: the
+		// caller field has to name whoever the ownership check will compare
+		// against, and Adopt is the one that decided it.
+		if err := s.trail.Emit(audit.Record{
+			Action:    audit.ActionStartupAdopt,
+			Caller:    string(a.Session.Owner),
+			SessionID: a.Session.ID,
+			Decision:  audit.Allow,
+			Reason:    reasonAdopted,
+			// Remote is empty: there is no request behind this record.
+		}); err != nil {
+			failures = append(failures, err)
+		}
+	}
+
+	if err := errors.Join(failures...); err != nil {
+		return fmt.Errorf("httpapi: reconcile with the host before serving: %w", err)
+	}
+	return nil
+}
 
 // Listen binds the configured address and refuses to keep a listener that is not
 // on loopback.
