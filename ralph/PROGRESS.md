@@ -1083,3 +1083,145 @@ fixtures** — gitleaks blocks the commit.
 13. **Iteration 6 #6 / 7 #7 / 8 #9 / 9 #11 still stands:** `AGENTS.md`'s command table has
     no entry for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)"
     is not all.
+
+---
+
+## Iteration 11 — 2026-08-03 03:10
+
+**Did:** Completed **T010**. Added `internal/auth/clock.go` (the one-method `Clock`
+interface plus `systemClock`) and enforced the 300-second window in `Verify` **in both
+directions** against it, with `ErrTimestampOutsideWindow` as the seventh sentinel.
+`hmac_test.go` grew five window tests (17 test functions / 63 subtests / 80 runs in the
+package now). Ticked T010 in **both** `ralph/IMPLEMENTATION_PLAN.md` and
+`specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (auth 17 tests / 80 runs, audit 36, config 45, tmuxctl 84)
+go test -race -count=1 ./...   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+```
+
+**Learned (do not rediscover):**
+
+- **`New(secret, maxBody)` is now a one-line wrapper over
+  `NewWithClock(secret, maxBody, Clock)`, matching `config.Load`/`LoadFrom` and
+  `audit.New`/`NewTo`. T019/T020 should call `New`.** `NewWithClock` refuses a nil clock
+  for the same reason it refuses an empty secret: an Authenticator that cannot tell the
+  time cannot enforce the window, and discovering that on the first request is a daemon
+  that started with half its auth missing.
+- **The window is checked *before* the body is read**, which is a deliberate ordering and
+  is pinned by `TestVerifyChecksTheWindowBeforeTheBody` (it asserts **zero** bytes of the
+  body were read). `contracts/http-api.md`'s verification order says so, and the reason is
+  concrete: everything past that point buffers and MACs up to `CRSW_MAX_BODY_BYTES`, and
+  an unauthenticated caller should not be able to buy that work with a timestamp from last
+  year. **A consequence T020 inherits: on this path `r.Body` is never replaced**, because
+  `readBody` is not reached — the original reader is still whole and unread, which is the
+  same guarantee by a different route.
+- **`now.Sub(time.Unix(ts, 0)).Abs() <= maxSkew` is overflow-safe, and this was measured,
+  not assumed.** A throwaway probe test walked `math.MaxInt64`, `math.MinInt64`, and both
+  sides of the point where `time.Unix` overflows internally (`MaxInt64 - 62135596800`,
+  the epoch↔year-1 offset): `Time.Sub` clamps to `maxDuration` rather than wrapping with
+  it, and `Duration.Abs` maps `minDuration` to `maxDuration`, so an absurd timestamp can
+  only ever land *outside* the window. Those values are now permanent cases in
+  `TestVerifyRejectsExtremeTimestamps`, so a future rewrite into `int64` subtraction —
+  which **would** overflow — fails a test instead of accepting a request.
+- **`maxSkew` is unexported and `T011 must derive its TTL from it (2 × maxSkew)`, not
+  restate 600s.** Same package, no reason to export. The *test* restates 300s as its own
+  `testWindow` constant on purpose: a test that imports the number it is checking cannot
+  notice that number changing, and the widening probe below proves the restatement works.
+- **`ErrTimestampOutsideWindow` is one sentinel for both directions**, named for the
+  window rather than for staleness. Two sentinels would let the audit trail distinguish
+  "clock drift" from "stamped in the future" — the latter is a much stronger attack
+  signal — but that is T038's vocabulary to design, not T010's to pre-empt. Flagged as a
+  finding below rather than guessed at.
+- **`rm <file>` IS permitted by Bash here**, despite iteration 4's note that only
+  `go`/`git`/`gofmt`/`goimports`/`golangci-lint` run. That is what made the overflow probe
+  disposable. Iteration 3's "throwaway probe, then delete" trick is therefore fully
+  available — write it as a `_test.go` in the package under study, run it with
+  `go test -run`, read the `t.Logf` output, delete it. Compound commands are still refused
+  if *any* part is outside the allowlist, and `grep -c '^pattern$'` was refused for
+  quoting reasons, so keep probe commands single and simple.
+- **The fake clock is a value type (`fakeClock{now}`) with a `driftedClock(d)` helper**,
+  so every window test shares one immutable clock and `t.Parallel()` needs no lock.
+  Positive drift = the daemon's clock is ahead = the request is stale; negative drift =
+  the request is from the future. **T011 will likely need an *advanceable* clock** to age
+  entries out of the replay cache — that is a different type, not a change to this one.
+- **Mutation-probing (iterations 4–10) earned its keep an eighth time.** Five mutations,
+  each caught only by its intended tests: `.Abs()` dropped so only stale requests are
+  refused (5 future rows + the far-future test + one extreme row), `<=` narrowed to `<`
+  (both boundary rows), `maxSkew` widened to 3000s (6 rows + the host-clock test),
+  the window check moved after the signature compare (the ordering test + the epoch row),
+  and `systemClock.Now` stopped at the zero time (`TestNewUsesTheHostClock` alone).
+  Reverted, then the gate re-run.
+
+**Left:** T011 is next (`internal/auth/replay.go`: the replay cache keyed on the full
+`sha256=…` signature, TTL `2 × maxSkew`, expired entries swept opportunistically on write,
+`Observe` checking and recording in **one** critical section; tests prove a second use is
+refused and that two concurrent replays produce exactly one winner). Then T012 (`Caller` +
+one opaque error) and on to T042. Iteration 8's warning still applies to T011/T012 and
+T017/T035: **no hex-shaped fixtures** — gitleaks blocks the commit.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: the audit trail cannot tell clock drift from a forged future
+   timestamp.** Both return `ErrTimestampOutsideWindow`, so `auth.reject` records the same
+   reason for an operator whose laptop clock slipped and for a request stamped a year
+   ahead — which is a real attack signal, not an operations problem. Splitting the
+   sentinel is a two-line change, but the reason vocabulary belongs to T038; deciding it
+   here would pre-empt that. **T038 should decide whether to split it.**
+2. **New this iteration: nothing yet forces the daemon's clock to be monotonic or even
+   roughly right, and the window is only as good as it is.** `systemClock` reads
+   `time.Now()`, so a host whose clock jumps backwards by an hour refuses every honest
+   request, and one that jumps forwards accepts requests signed in what is now its past.
+   There is no NTP assertion at startup and no plan task for one. Bounded — it fails
+   closed in the direction that matters — but worth an operator knowing before deployment
+   (T041).
+3. **Iteration 10 #1 still stands:** `contracts/http-api.md` promises `400` for an
+   oversize body, but auth runs first and returns `ErrBodyTooLarge`. **T020 must decide**
+   whether that maps to `400` (the contract's table) or is folded into the uniform `401`
+   (FR-011). Note the window now sits *ahead* of that check too, so an oversize body with
+   a stale timestamp reports the timestamp — the ordering is deliberate and documented in
+   `Verify`.
+4. **Iteration 10 #2 still stands:** the signature covers the timestamp and body but not
+   the method or path, so a signed body is valid on any route. `DisallowUnknownFields`
+   (T021) is the defence, not the signature.
+5. **Iteration 9 #1 / 10 #3 still stands:** `audit.Record.Reason` can carry arbitrary
+   text. This package's errors are all fixed strings and a test enforces it — T038 should
+   pass server-authored constants for the same reason.
+6. **Iteration 9 #2 / 10 #4 still stands:** `audit.Emit`'s error has no handler yet. T020
+   owns the ruling — a request that could not be audited has not been completed.
+7. **Iteration 8 #2 / 9 #3 / 10 #5 still stands:** the loud default-root warning goes to
+   stderr while audit records go to stdout. T032 owns deciding this.
+8. **Iteration 8 #1 / 9 #4 / 10 #6 still stands:** `.env.example` does not exist, so the
+   `.gitleaks.toml` allowlist entry for it guards nothing. T040 owns creating it.
+9. **Iteration 7 #1 / 8 #3 / 9 #5 / 10 #7 still stands:** bidi and invisible Unicode are
+   not stripped by `tmuxctl.Strip`, by design. The milestone-2 dashboard must decide it.
+10. **Iteration 6 #2 / 7 #2 / 8 #4 / 9 #6 / 10 #8 still stands:** a failed `paste-buffer`
+    leaves caller prompt text in a named tmux buffer. Needs a `delete-buffer` argv builder
+    in `fake.go` *and* `exec.go` together, which is why no single task owns it.
+11. **Iteration 6 #1 / 7 #3 / 8 #5 / 9 #7 / 10 #9 still stands:** T028 will report a false
+    failure on the last session — killing the only session stops the tmux server and `Has`
+    then errors rather than returning false. Use `List`. Do not loosen `Has`.
+12. **Iteration 6 #3 / 7 #4 / 8 #6 / 9 #8 / 10 #10 still stands:** `contracts/tmuxctl.md`
+    names only `no server running` for the empty-server case and is stale.
+13. **Iteration 1 #1 / 2 #1 / 3 #2 / 4 #2 / 5 #2 / 6 #4 / 7 #5 / 8 #7 / 9 #9 / 10 #11
+    still stands, eleventh iteration carrying it:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing the gitleaks pre-commit hook (which ran clean on this
+    iteration's commit — `1 commits scanned … no leaks found`). Not in the plan, and
+    Principle IV forbids wandering — needs an operator or a task of its own.
+14. **Iteration 2 #2 / 3 #3 / 4 #3 / 5 #3 / 6 #5 / 7 #6 / 8 #8 / 9 #10 / 10 #12 still
+    stands:** duplicate checkbox state in `IMPLEMENTATION_PLAN.md` and
+    `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the plan. Ticked both by hand
+    again, again only because the finding was written down. Tenth iteration of manual
+    compensation for a one-line fix to step 9.
+15. **Iteration 6 #6 / 7 #7 / 8 #9 / 9 #11 / 10 #13 still stands:** `AGENTS.md`'s command
+    table has no entry for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so
+    "Test (all)" is not all.
