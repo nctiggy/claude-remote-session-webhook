@@ -7,6 +7,13 @@
 
 run:
   timeout: 5m
+  # Without this, every file behind `//go:build tmux` — the real-tmux
+  # integration tests, the only place a tmux binary is required — is invisible
+  # to the linter locally and in CI. A file no linter ever reads is not covered
+  # by the gate that the definition of done rests on. Any future build tag needs
+  # adding here for the same reason.
+  build-tags:
+    - tmux
 
 linters:
   disable-all: true
