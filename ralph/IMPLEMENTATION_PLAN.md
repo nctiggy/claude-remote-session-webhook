@@ -6,12 +6,9 @@
 > with no UI. Milestones 2–4 (dashboard, actions, Claude login relay) get their own
 > plan and their own loop. One loop for the whole product drifts.
 
-> ⛔ **BLOCKED — read `ralph/PROGRESS.md` iteration 1 before doing anything.**
-> `.claude/settings.json` has no `permissions` block, and `--permission-mode
-> acceptEdits` never approves Bash. No iteration can run `go build`, `go test`,
-> `golangci-lint`, or `git commit`, so no task can reach the green state every one
-> of them requires. An operator must apply the patch in that entry by hand; the
-> loop cannot fix it from inside, because editing that file is refused too.
+> ✅ **Unblocked.** Iteration 1 could not run Bash at all — `.claude/settings.json`
+> had no `permissions` block. An operator added one in `902c249`, so build, test,
+> lint, and commit all work from inside an iteration now. Do not re-raise this.
 
 ## Status: generated from the spec
 
@@ -60,7 +57,7 @@ owner plus its clock origin.
 
 ### Setup
 
-- [ ] T001 Initialize the Go module in `go.mod` declaring `go 1.23.0` as the **minimum language version** (the CI toolchain is 1.24 and matches the dev host — do not "fix" this to 1.24) and add `cmd/crswd/main.go` that parses flags and exits cleanly. Creating `go.mod` switches CI's build/test/lint job on
+- [x] T001 Initialize the Go module in `go.mod` declaring `go 1.23.0` as the **minimum language version** (the CI toolchain is 1.24 and matches the dev host — do not "fix" this to 1.24) and add `cmd/crswd/main.go` that parses flags and exits cleanly. Creating `go.mod` switches CI's build/test/lint job on
 - [ ] T002 Add `.golangci.yml` using the **v1 config schema** (CI pins golangci-lint v1.62) enabling `errcheck`, `gosec`, `govet`, `staticcheck`, `bodyclose`; install `golangci-lint` and `goimports` locally — both are currently missing, so the format-and-lint hook silently no-ops
 
 ### Foundation — tmux, config, audit

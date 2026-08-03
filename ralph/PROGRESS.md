@@ -116,3 +116,69 @@ would not reach the autonomous run.
    T002 owns installing them — but T002 needs Bash, so it is blocked by the same
    issue above.
 3. No `go.sum` was created, as required. Nothing was imported beyond stdlib.
+
+---
+
+## Iteration 2 — 2026-08-03
+
+**Did:** Closed out **T001**. No new code — iteration 1's `go.mod` and
+`cmd/crswd/main.go` were committed by an operator in `902c249`; this iteration ran
+the verification iteration 1 could not, confirmed all four gates green, and ticked
+T001 in both `ralph/IMPLEMENTATION_PLAN.md` and
+`specs/001-crswd-daemon-core/tasks.md`. Also deleted the stale ⛔ BLOCKED banner at
+the top of the plan, which was still telling every fresh context that no task could
+run.
+
+T001 acceptance, actually executed rather than asserted:
+
+```
+go build ./...      OK
+go vet ./...        OK
+go test ./...       OK (cmd/crswd: no test files)
+golangci-lint run   OK (clean, no config yet — T002 owns .golangci.yml)
+gofmt -l .          empty
+go.sum              absent  ✅ zero third-party deps still holds
+```
+
+**Learned (do not rediscover):**
+
+- **The Bash block from iteration 1 is gone.** `.claude/settings.json` now carries
+  the `permissions.allow` list proposed in that entry. Build, vet, test, lint,
+  `git add`, and `git commit` all run from inside an autonomous iteration. Do not
+  re-raise this; do not re-propose the patch.
+- **Iteration 1's finding #2 is now stale — the tooling IS installed:**
+  `golangci-lint` at `/home/nctiggy/bin/golangci-lint`, `goimports` at
+  `/usr/bin/goimports`. So `.claude/hooks/format-and-lint.sh` no longer silently
+  no-ops.
+- **`golangci-lint` is v1.62.2** — exactly the version T002 pins, so T002's
+  "**v1 config schema**" instruction is correct as written and needs no adjusting.
+  A v2-schema `.golangci.yml` would fail against this binary.
+- The host toolchain is **go1.24.0** while `go.mod` declares `go 1.23.0`. That
+  mismatch is deliberate and correct (1.23.0 is the *minimum language version*,
+  1.24 is the toolchain). T001 and T013 both warn against "fixing" it — T013
+  depends on it, since `crypto/rand.Text` would require a 1.24 directive.
+- `golangci-lint run` with **no** `.golangci.yml` still exits clean today, so it
+  proves nothing yet. T002 must confirm its config is actually loaded, not just
+  that the command exits 0.
+
+**Left:** T002 is next (`.golangci.yml`, v1 schema, `errcheck`/`gosec`/`govet`/
+`staticcheck`/`bodyclose`), then T003–T042. Its "install the missing local
+tooling" half is already satisfied — only the config file remains.
+
+**Findings (noticed, not fixed):**
+
+1. **Iteration 1's finding #1 still stands and is still unfixed:** `loop.sh`'s
+   sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook that
+   `AGENTS.md` lists as an enforced guardrail. Now that Bash works the sweep should
+   rarely fire, which makes it *more* dangerous, not less — it is now the quiet
+   path that only opens when an iteration has already gone wrong. Worth a guard:
+   refuse to sweep, or sweep to a scratch branch.
+2. **`ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md` carry duplicate
+   checkbox state** and must now be ticked in lockstep by hand. `PROMPT.md` step 9
+   only names the plan file, so a future iteration will likely tick one and not the
+   other. Either derive the plan's list from `tasks.md` or make step 9 name both.
+3. ~~`git config core.hooksPath` unverified.~~ **Resolved during this iteration:**
+   this commit tripped the hook (`gitleaks … 1 commits scanned … no leaks found`),
+   which proves `core.hooksPath` is already pointed at `.githooks` on this host.
+   No action needed — and this is the reason finding #1 matters, since `loop.sh`'s
+   `--no-verify` sweep is now the only path that skips a hook known to be live.
