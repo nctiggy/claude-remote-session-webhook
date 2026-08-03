@@ -43,11 +43,20 @@ var testTime = time.Unix(1785706480, 0).UTC()
 // to let one into the repository.
 func testSecret() []byte { return []byte("test-only-shared-secret-32-bytes") }
 
+// testRoot is the allowlist entry a fixture Config carries so that New can build
+// a session manager at all. It is deliberately a path that does not exist: a
+// server built through New here is never asked to create a session, and a root
+// nothing can resolve under is the spelling of that which fails closed. The
+// tests that do create a session build a manager over a real temp directory —
+// see newSessionFixture.
+const testRoot = "/nonexistent-crswd-test-root"
+
 func testConfig(listen string) *config.Config {
 	return &config.Config{
 		Listen:       listen,
 		SharedSecret: testSecret(),
 		MaxBodyBytes: testMaxBody,
+		Roots:        []config.ApprovedRoot{{Path: testRoot}},
 	}
 }
 
@@ -93,23 +102,30 @@ type testServer struct {
 	*Server
 	sink   *bytes.Buffer
 	failed []error
+
+	// fixture is the session half — the tmux fake, the store, and the real
+	// approved root the manager was built on. Named for what it is rather than
+	// shadowing Server.sessions, which is the Manager standing on it.
+	fixture sessionFixture
 }
 
 func newAuditedServer(t *testing.T) *testServer {
 	t.Helper()
 
 	buf := &bytes.Buffer{}
+	fixture := newSessionFixture(t)
 	s, err := newServer(
 		testConfig(loopbackListen),
 		net.Listen,
 		testAuth(t),
 		audit.NewTo(buf, func() time.Time { return testTime }),
+		fixture.mgr,
 	)
 	if err != nil {
 		t.Fatalf("newServer = _, %v; want a server", err)
 	}
 
-	ts := &testServer{Server: s, sink: buf}
+	ts := &testServer{Server: s, sink: buf, fixture: fixture}
 	s.report = func(err error) { ts.failed = append(ts.failed, err) }
 	return ts
 }
@@ -373,17 +389,18 @@ func TestEveryRouteAuditsAnAllowedRequestUnderItsOwnAction(t *testing.T) {
 			t.Parallel()
 
 			s := newAuditedServer(t)
-			req := httptest.NewRequest(route.Method, pathFor(route), nil)
+			body := bodyFor(s.fixture, route)
+			req := httptest.NewRequest(route.Method, pathFor(route), bytes.NewReader(body))
 			// A distinct instant per route: the signature covers the timestamp
 			// and the body only, so six identical empty-bodied requests would
 			// share a signature and all but the first would be replays.
-			signRequest(t, req, nil, testTime.Add(-time.Duration(i)*time.Second))
+			signRequest(t, req, body, testTime.Add(-time.Duration(i)*time.Second))
 
 			rec := httptest.NewRecorder()
 			s.ServeHTTP(rec, req)
-			if rec.Code != http.StatusNotImplemented {
+			if want := reachedStatus[route]; rec.Code != want {
 				t.Fatalf("%s = %d; want %d — a signed request must reach the handler",
-					route, rec.Code, http.StatusNotImplemented)
+					route, rec.Code, want)
 			}
 
 			got := s.only(t)
@@ -638,8 +655,12 @@ func TestABodyAtTheLimitIsAcceptedAndOneByteOverIsRefused(t *testing.T) {
 		size int
 		want int
 	}{
-		"one byte under the limit": {size: testMaxBody - 1, want: http.StatusNotImplemented},
-		"exactly at the limit":     {size: testMaxBody, want: http.StatusNotImplemented},
+		// A body that is inside the limit reaches the create handler, which
+		// refuses a run of "a" as malformed JSON. The 400 is the evidence the
+		// test wants — only a handler past layer 2 produces one — and the 401
+		// below is the evidence that one byte more never got that far.
+		"one byte under the limit": {size: testMaxBody - 1, want: http.StatusBadRequest},
+		"exactly at the limit":     {size: testMaxBody, want: http.StatusBadRequest},
 		"one byte over the limit":  {size: testMaxBody + 1, want: http.StatusUnauthorized},
 	}
 

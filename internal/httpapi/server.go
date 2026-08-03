@@ -25,6 +25,8 @@ import (
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 )
 
 // Server timeouts. net/http applies none of these by default, so one stalled
@@ -97,6 +99,13 @@ type Server struct {
 	// middleware.
 	trail *audit.Logger
 
+	// sessions is the daemon's session store and tmux driver. It is the only
+	// thing in this package that can cause execution on the host, which is why
+	// no handler holds a Controller of its own: every rule standing in for the
+	// permission prompt — the approved roots, the name alphabet, the ID-derived
+	// target — lives behind this one field.
+	sessions *session.Manager
+
 	// report is where a failure with nowhere else to go is written — the audit
 	// sink itself failing, or a response that could not be written. A field so
 	// a test can read what was reported rather than watch stderr.
@@ -117,9 +126,11 @@ type Server struct {
 
 // New builds the server for a validated Config. It binds nothing; Listen does.
 //
-// The Authenticator and the audit sink are built here rather than passed in:
-// cmd/crswd loads the config and hands it over, and a daemon whose auth is
-// assembled by its caller is a daemon that can be assembled without it.
+// The Authenticator, the audit sink, and the session manager are built here
+// rather than passed in: cmd/crswd loads the config and hands it over, and a
+// daemon whose auth is assembled by its caller is a daemon that can be assembled
+// without it. The manager gets cfg.Roots directly, so the allowlist a session is
+// checked against is the one config.Load resolved at startup.
 func New(cfg *config.Config) (*Server, error) {
 	if cfg == nil {
 		return nil, errors.New("httpapi: no configuration provided; refusing to start")
@@ -128,7 +139,11 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the request authenticator: %w", err)
 	}
-	return newServer(cfg, net.Listen, authn, audit.New())
+	sessions, err := session.NewManager(tmuxctl.NewExec(), session.NewStore(), cfg.Roots)
+	if err != nil {
+		return nil, fmt.Errorf("httpapi: build the session manager: %w", err)
+	}
+	return newServer(cfg, net.Listen, authn, audit.New(), sessions)
 }
 
 func newServer(
@@ -136,6 +151,7 @@ func newServer(
 	listen func(network, address string) (net.Listener, error),
 	authn *auth.Authenticator,
 	trail *audit.Logger,
+	sessions *session.Manager,
 ) (*Server, error) {
 	switch {
 	case cfg == nil:
@@ -149,6 +165,11 @@ func newServer(
 		return nil, errors.New("httpapi: no authenticator provided; refusing to start")
 	case trail == nil:
 		return nil, errors.New("httpapi: no audit sink provided; refusing to start")
+	case sessions == nil:
+		// Refused rather than tolerated with the create route disabled: a daemon
+		// serving five of six routes is a daemon whose failure is discovered one
+		// request at a time.
+		return nil, errors.New("httpapi: no session manager provided; refusing to start")
 	}
 	if err := assertLoopbackAddress(cfg.Listen); err != nil {
 		return nil, err
@@ -166,18 +187,32 @@ func newServer(
 			IdleTimeout:       idleTimeout,
 			MaxHeaderBytes:    maxHeaderBytes,
 		},
-		listen: listen,
-		authn:  authn,
-		trail:  trail,
-		report: reportToStderr,
+		listen:   listen,
+		authn:    authn,
+		trail:    trail,
+		sessions: sessions,
+		report:   reportToStderr,
 	}
 
 	for _, r := range routes {
-		if err := s.handle(r, s.notImplemented); err != nil {
+		if err := s.handle(r, s.handlerFor(r)); err != nil {
 			return nil, err
 		}
 	}
 	return s, nil
+}
+
+// handlerFor is where a route acquires its behaviour, and it is a switch with a
+// default rather than a map so that a route can never be registered with no
+// handler at all — the six are fixed above, and one that has yet to be
+// implemented answers 501 instead of nil-panicking on its first request.
+func (s *Server) handlerFor(r Route) http.HandlerFunc {
+	switch r {
+	case Route{Method: http.MethodPost, Pattern: "/sessions"}:
+		return s.createSession
+	default:
+		return s.notImplemented
+	}
 }
 
 // handle is the single place a route reaches the mux. Everything that must be
@@ -267,7 +302,7 @@ func (s *Server) Close() error {
 	return nil
 }
 
-// notImplemented answers the six routes until T022–T029 give them handlers.
+// notImplemented answers the five routes T024–T029 have yet to implement.
 //
 // It replies 501 with no body, and both halves are deliberate. A stub that
 // answered anything the middleware also answers would let the "every registered

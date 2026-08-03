@@ -7,6 +7,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net"
@@ -29,7 +30,7 @@ const loopbackListen = "127.0.0.1:0"
 // covered by the construction and loopback tests below.
 func newTestServer(t *testing.T, listen string) *Server {
 	t.Helper()
-	s, err := newServer(testConfig(listen), net.Listen, testAuth(t), testTrail(t))
+	s, err := newServer(testConfig(listen), net.Listen, testAuth(t), testTrail(t), newSessionFixture(t).mgr)
 	if err != nil {
 		t.Fatalf("newServer(%q) = _, %v; want a server", listen, err)
 	}
@@ -88,7 +89,7 @@ func TestRoutesReturnsACopy(t *testing.T) {
 func TestEveryRegisteredRouteIsReachable(t *testing.T) {
 	t.Parallel()
 
-	s := newTestServer(t, loopbackListen)
+	s := newAuditedServer(t)
 	for i, route := range s.Routes() {
 		path := strings.ReplaceAll(route.Pattern, "{id}", "0123456789abcdef")
 
@@ -96,15 +97,16 @@ func TestEveryRegisteredRouteIsReachable(t *testing.T) {
 		// timestamp and the body and *not* the method or path: six identical
 		// empty-bodied requests would share one signature and the second would
 		// be refused as a replay. See middleware_test.go's replay case.
-		req := httptest.NewRequest(route.Method, path, nil)
-		signRequest(t, req, nil, testTime.Add(-time.Duration(i)*time.Second))
+		body := bodyFor(s.fixture, route)
+		req := httptest.NewRequest(route.Method, path, bytes.NewReader(body))
+		signRequest(t, req, body, testTime.Add(-time.Duration(i)*time.Second))
 
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, req)
 
-		if rec.Code != http.StatusNotImplemented {
+		if want := reachedStatus[route]; rec.Code != want {
 			t.Errorf("%s %s = %d; want %d — the route is not wired to the mux",
-				route.Method, path, rec.Code, http.StatusNotImplemented)
+				route.Method, path, rec.Code, want)
 		}
 	}
 }
@@ -310,14 +312,25 @@ func TestNewRefusesMissingDependencies(t *testing.T) {
 	t.Parallel()
 
 	cfg := testConfig(loopbackListen)
+	mgr := newSessionFixture(t).mgr
 	cases := map[string]func() (*Server, error){
 		"no config":        func() (*Server, error) { return New(nil) },
-		"no listen source": func() (*Server, error) { return newServer(cfg, nil, testAuth(t), testTrail(t)) },
-		"no authenticator": func() (*Server, error) { return newServer(cfg, net.Listen, nil, testTrail(t)) },
-		"no audit sink":    func() (*Server, error) { return newServer(cfg, net.Listen, testAuth(t), nil) },
+		"no listen source": func() (*Server, error) { return newServer(cfg, nil, testAuth(t), testTrail(t), mgr) },
+		"no authenticator": func() (*Server, error) { return newServer(cfg, net.Listen, nil, testTrail(t), mgr) },
+		"no audit sink":    func() (*Server, error) { return newServer(cfg, net.Listen, testAuth(t), nil, mgr) },
+		"no session manager": func() (*Server, error) {
+			return newServer(cfg, net.Listen, testAuth(t), testTrail(t), nil)
+		},
 		"no shared secret": func() (*Server, error) { return New(&config.Config{Listen: loopbackListen, MaxBodyBytes: 64}) },
 		"no body size cap": func() (*Server, error) {
 			return New(&config.Config{Listen: loopbackListen, SharedSecret: testSecret()})
+		},
+		// An empty allowlist is a daemon with nowhere to run a session, which
+		// config.Load never produces (FR-004 defaults it loudly) and New must
+		// still refuse: discovering it one 400 per create is not a startup
+		// failure.
+		"no approved roots": func() (*Server, error) {
+			return New(&config.Config{Listen: loopbackListen, SharedSecret: testSecret(), MaxBodyBytes: 64})
 		},
 		"a short secret": func() (*Server, error) {
 			return New(&config.Config{Listen: loopbackListen, SharedSecret: []byte{}, MaxBodyBytes: 64})
@@ -454,7 +467,7 @@ func TestListenRefusesAndClosesAListenerThatIsNotOnLoopback(t *testing.T) {
 			ln := &fakeListener{addr: c.addr}
 			s, err := newServer(testConfig(loopbackListen), func(string, string) (net.Listener, error) {
 				return ln, nil
-			}, testAuth(t), testTrail(t))
+			}, testAuth(t), testTrail(t), newSessionFixture(t).mgr)
 			if err != nil {
 				t.Fatalf("newServer = _, %v; want a server", err)
 			}
@@ -482,7 +495,7 @@ func TestListenReportsABindFailure(t *testing.T) {
 	want := errors.New("address already in use")
 	s, err := newServer(testConfig(loopbackListen), func(string, string) (net.Listener, error) {
 		return nil, want
-	}, testAuth(t), testTrail(t))
+	}, testAuth(t), testTrail(t), newSessionFixture(t).mgr)
 	if err != nil {
 		t.Fatalf("newServer = _, %v; want a server", err)
 	}
