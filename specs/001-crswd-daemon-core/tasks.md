@@ -134,7 +134,7 @@ the presence of a stack manifest — from T001 onward, CI is real.
 **Independent Test**: Kill the daemon with a session live, plant a hand-made `crswd-*` session, restart; the real one is listed and destroyable with a fresh token, the lookalike is absent from the listing and still alive in tmux.
 
 - [x] T031 [US4] Implement `Manager.Adopt` in `internal/session/manager.go`: `List` once, adopt only sessions carrying `@crswd-managed`, set `Owner` to the configured operator identity, derive the absolute deadline from `#{session_created}` (**not** from adoption time), reset only the idle clock, issue a fresh token, and **destroy rather than adopt** anything already past 24 hours. Test against the fake in `internal/session/manager_test.go` covering: a healthy survivor, an unmanaged lookalike left alone, a half-dead session resolved to a definite state, a 23-hour-old survivor that dies an hour later, an already-expired survivor destroyed, and repeated adoptions leaving the deadline unchanged.
-- [ ] T032 [US4] Wire `Adopt` into daemon startup in `cmd/crswd/main.go` before the listener binds, emitting a `startup.adopt` audit record per adopted session. Test in `internal/session/manager_test.go` that reconciliation runs before serving and that a tmux failure at startup is fatal rather than silently skipped.
+- [x] T032 [US4] Wire `Adopt` into daemon startup in `cmd/crswd/main.go` before the listener binds, emitting a `startup.adopt` audit record per adopted session. Test in `internal/session/manager_test.go` that reconciliation runs before serving and that a tmux failure at startup is fatal rather than silently skipped.
 
 **Checkpoint**: A restart can no longer orphan an unsandboxed shell.
 

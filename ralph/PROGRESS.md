@@ -5363,3 +5363,216 @@ T032 inherits findings #1, #2 and #21 below directly.
     Thirty-first iteration of manual compensation for a one-line fix to step 9.
 51. **Iteration 6 #6 / … / 31 #48 still stands:** `AGENTS.md`'s command table has no entry for
     `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
+
+## Iteration 33 — 2026-08-03 21:15
+
+**Did:** Completed **T032**, startup reconciliation wired into the daemon. `Server.Reconcile`
+in `internal/httpapi/server.go` (61 lines: the `reasonAdopted` constant and the method), the
+whole startup sequence in `cmd/crswd/main.go` (config → reconcile → bind → serve, previously
+`flag.Parse()` and nothing else), and 246 lines of tests appended to
+`internal/httpapi/server_test.go` (7 tests plus three helpers). Ticked T032 in **both**
+`ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`. **US4 is complete.**
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK
+go test -tags tmux ./...    OK (real tmux on this host)
+go test -race ./...         OK
+golangci-lint run           OK (after one fix — see below)
+gofmt -l .                  empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git diff --stat             +365 / −1 across three files
+gitleaks (pre-commit)       1 commit scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **The adoption pass lives on the `Server`, not in `main`, and that is what makes "before
+  the listener binds" checkable.** `Reconcile` refuses when `s.ln != nil`, so the ordering is
+  a property of the type rather than a line order in `main` that a future edit can reverse
+  silently. It also settles finding #21 without moving anything: `New` already builds the one
+  `tmuxctl.NewExec()` and the one `Store` behind `s.sessions`, so reconciliation and every
+  served request are by construction against the same host and the same records. The
+  alternative — injecting a manager built in `main` — would have meant changing `New`'s
+  signature and re-homing the "no approved roots" / "no shared secret" cases that
+  `server_test.go` reaches *through* `New`. Strictly more churn for the same guarantee.
+- **`Listen` was deliberately *not* gated on `Reconcile` having run.** That would make the
+  bound-without-reconciling case impossible rather than merely wrong, but six existing tests
+  call `Listen` on servers that have no reason to adopt anything, and each would have had to
+  reconcile first for reasons unrelated to what it asserts. Left as finding #3 below.
+- **Records are emitted for what was adopted even when the same pass failed elsewhere.** The
+  process is about to exit, but those sessions really were taken over, and the operator
+  reading the trail after a failed boot needs exactly that half. `errors.Join` carries the
+  adoption failure and any audit-write failure out together.
+- **An audit write failure at startup is fatal, unlike the same failure on a request.** A
+  request has already happened by the time its record fails to write, so `Server.emit` reports
+  to stderr and carries on; startup has not yet bound anything, so refusing to run is still
+  available and FR-041 says the record is mandatory.
+- **`main` uses `log.Fatalf`, not the audit trail.** The trail is stdout and belongs to
+  requests; a startup failure has no caller and no session, and `log` is the same channel
+  `reportToStderr` already uses for what is left when the trail is the thing that broke.
+  `config.Config` redacts the shared secret in every format verb, so an error carrying one
+  cannot print it.
+- **`Serve` is in `main` even though T037 owns shutdown.** "Before the listener binds" means
+  nothing in a `main` that never binds. T037 adds `signal.NotifyContext` and `Shutdown`
+  around what is now there; nothing it needs was foreclosed.
+
+**Learned (do not rediscover):**
+
+- **Four probes, all reverted with `Edit` in reverse, all confirming the suite is not
+  vacuous.** (1) `if false && s.ln != nil` failed the after-bind case. (2) `_ = err` on
+  `Adopt`'s return failed *two* tests — the fatal-List case and the partial-failure one.
+  (3) `Reason: reasonAdopted + " " + a.Token` failed the credential-leak case. (4) a `break`
+  at the end of the emit loop failed the two-survivors case with "emitted 1 … want 2".
+  Still no `git checkout` needed (finding #48).
+- **`errcheck` with `check-type-assertions: true` flags `id, _ := rec["session_id"].(string)`
+  in a test.** The comma-ok form counts as an unchecked return. It is not a nolint case —
+  checking the `ok` and failing the test when a record names no session is the better
+  assertion, and is what the file now does. Expect this on any future map-of-`any` audit
+  assertion.
+- **`session.Session{ID: id}.TmuxName()` is how a test outside `internal/session` spells a
+  tmux session name** without hardcoding `crswd-`; `tmuxNamePrefix` is unexported. `IDLen` and
+  `AbsoluteLifetime` *are* exported, so `strings.Repeat(ch, session.IDLen)` gives an
+  ID-shaped value without a 32-character hex literal (gitleaks) and
+  `testTime.Add(-session.AbsoluteLifetime-time.Hour)` gives an expired survivor.
+- **`newAuditedServer(t)` (middleware_test.go) is the fixture for anything that needs a
+  server plus a readable trail plus a tmux fake**: `s.sink`, `s.records(t)`, `s.only(t)`,
+  `s.fixture.tmux`, `s.fixture.store`. It binds nothing, but its config is `127.0.0.1:0`, so
+  `s.Listen()` works when a test needs a real socket.
+- **A partial-failure pass is constructible from the fake even though `FailOp` is
+  per-operation rather than per-session**: seed one healthy survivor and one past its ceiling,
+  then `SurviveKill` the expired one. The expired one goes through `Destroy`, cannot be
+  confirmed gone, and fails; the healthy one is adopted regardless.
+
+**Left:** T033–T042. T033 (concurrency cap) is next, and finding #20 below applies to it
+directly — adopted records must count against the cap, or a restart on a full host starts
+already over it.
+
+**Findings (noticed, not fixed):**
+
+1. **Iteration 32 #1 still stands and this iteration made it concrete:** `Reconcile` drops the
+   plaintext credential `Adopt` returns. It may not go in the trail (FR-042, and T039 asserts
+   zero tokens across all records) and milestone 1 has no dashboard, so an adopted session is
+   owned, listed, capped and reapable but **drivable by nobody** — US4 scenario 1 says it
+   should be destroyable through the API. **An operator should rule; no task owns it.**
+2. **New this iteration: a session destroyed at startup for outliving its ceiling leaves no
+   audit record.** `Adopt` tears it down (FR-025) and returns nothing about it, so `Reconcile`
+   has nothing to record — the only trace is the process exiting when the teardown also fails.
+   `startup.adopt` is the wrong action for it and inventing a second one is inventing a
+   requirement. **T038 is the natural owner; it does not name this case.**
+3. **New this iteration: nothing forces `Reconcile` to be called at all.** `Listen` binds
+   happily without it; only `main` orders the two, and the guard is one-directional
+   (reconcile-after-bind is refused, bind-without-reconcile is not). Gating `Listen` on a
+   `reconciled` flag would close it by construction at the cost of one line in six existing
+   bind tests. **Unassigned — a candidate for T037, which touches this sequence anyway.**
+4. **New this iteration: `cmd/crswd` has no test files at all,** and T032's own task entry
+   asks for its test in `internal/session/manager_test.go` — a file that cannot observe
+   main's ordering or the audit records. The behaviour was tested where it lives
+   (`internal/httpapi/server_test.go`); `run()` itself is four straight-line calls with no
+   seam for a fake, so a `main_test.go` would need `config.LoadFrom`-style injection through
+   `httpapi.New`. Worth an operator's ruling before T037 adds signal handling to the same
+   function.
+5. **Iteration 32 #3 still stands:** `Adopt` is not safe to call twice concurrently. Startup
+   calls it once before the listener binds, which is now true in code rather than in intent.
+6. **Iteration 31 #1 / 32 #4 still stands:** `docs/auth-and-sessions.md:135–137` describes a
+   cross-caller isolation test that cannot be written as specified in milestone 1.
+   **An operator should rule; no task owns it.**
+7. **Iteration 31 #2 / 32 #5 still stands:** `GET /sessions` is outside every sweep in the
+   isolation suite, because it is caller-scoped rather than session-scoped.
+8. **Iteration 30 #1 / … / 32 #6 still stands:** `notImplemented` is unreachable dead code.
+9. **Iteration 30 #2 / … / 32 #7 still stands:** the mux's `405` is `text/plain` with an
+   `Allow` header, contradicting `contracts/http-api.md`. **An operator should rule.**
+10. **Iteration 30 #3 / … / 32 #8 still stands:** the contract's test matrix has no row for
+    destroy-then-destroy.
+11. **Iteration 30 #4 / … / 32 #9 still stands:** `errDestroyRefused` is unreachable and
+    untested.
+12. **Iteration 29 #1 / … / 32 #10 still stands:** `rollback` verifies with `Has` alone and
+    never calls `confirmGone`, so a failed create on a host where the killed session was the
+    only one reports a **false orphan**. One line plus one test edit. **No task owns it.**
+13. **Iteration 29 #3 / … / 32 #11 still stands:** `Destroy` takes a `Session` rather than an
+    id, which is what lets `Adopt` tear down an expired candidate the store never held.
+14. **Iteration 28 #1 / … / 32 #12 still stands:** the two read routes disagree about which
+    sessions exist. **Unassigned.**
+15. **Iteration 28 #2 / … / 32 #13 still stands:** a detail reports `state` from the record and
+    never asks the host.
+16. **Iteration 27 #2 / … / 32 #14 still stands:** the list is unbounded in length.
+17. **Iteration 26 #1 / … / 32 #15 still stands:** nothing bounds the size of a capture.
+18. **Iteration 26 #2 / … / 32 #16 still stands:** `captured_at` is the daemon's clock, not
+    tmux's.
+19. **Iteration 24 #4 / … / 32 #17 still stands:** a session whose window vanished still
+    resolves and answers 500 rather than moving to `dead`. `Store.SetState` **still has no
+    caller outside tests**. T036 or an operator.
+20. **Iteration 25 #2 / … / 32 #18 still stands:** nothing touches the idle clock;
+    `Store.Touch` still has no caller. An adopted session's idle deadline is now, in running
+    code, 60 minutes after the daemon started regardless of use. T036.
+21. **Iteration 25 #1 / … / 32 #19 still stands:** a failed submit can leave prompt text in a
+    named tmux buffer, and **Destroy still does not delete the session's paste buffer**.
+22. **Iteration 23 #1 / … / 32 #20 still stands, and T033 is next:** `POST /sessions` has no
+    rate limit and no concurrency cap. **Adopted records must count against the cap**, or a
+    restart with a full host starts already over it.
+23. **Iteration 22 #2 / … / 32 #22 still stands:** nothing forces a handler to use `decode`.
+24. **Iteration 22 #3 / … / 32 #23 still stands:** an oversize body is refused twice with two
+    different reasons and two different statuses. T038.
+25. **Iteration 21 #1 / … / 32 #24 still stands:** the mux's own `404` is `text/plain` while
+    the contract says every response is JSON.
+26. **Iteration 21 #2 / … / 32 #25 still stands:** the contract's `400` row for an oversize
+    body is unreachable behind layer 2.
+27. **Iteration 21 #3 / … / 32 #26 still stands:** `session.list`, `session.detail`, and
+    `session.output` are action names iteration 21 chose and `data-model.md` does not carry.
+28. **Iteration 21 #4 / … / 32 #27 still stands:** `RequestAudit` is not safe for concurrent
+    use, and nothing enforces it.
+29. **Iteration 21 #5 / … / 32 #28 still stands:** every request exit path amends the record by
+    habit, not by construction. T038.
+30. **Iteration 20 #3 / … / 32 #29 still stands:** none of `docs/security.md`'s "Transport &
+    exposure" headers are applied by anything.
+31. **Iteration 18 #1 / … / 32 #30 still stands:** `Store.Add` does not require a `TokenHash`.
+32. **Iteration 17 #2 / … / 32 #31 still stands:** `Delete`'s hash scrub is best effort.
+33. **Iteration 17 #3 / … / 32 #32 still stands:** nothing enforces that a `Session.ID` in the
+    store came from `NewID`, beyond `adoptableID` on the adoption path.
+34. **Iteration 16 #1 / … / 32 #33 still stands:** `ResolveWorkDir` has an unavoidable TOCTOU
+    window before `tmux new-session -c`.
+35. **Iteration 16 #3 / … / 32 #34 still stands:** nothing re-stats an approved root.
+36. **Iteration 15 #1 / … / 32 #35 still stands:** FR-027's class admits a leading `-`.
+37. **Iteration 13 #1 / … / 32 #36 still stands:** `docs/auth-and-sessions.md`'s samples are
+    stale in four ways, and #6 above is a fifth.
+38. **Iteration 12 #1 / … / 32 #37 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Run by hand again this iteration, green.
+39. **Iteration 12 #2 / … / 32 #38 still stands:** three specs disagree on `Observe`'s
+    signature.
+40. **Iteration 12 #3 / … / 32 #39 still stands:** the replay cache is unbounded in count.
+41. **Iteration 11 #1 / … / 32 #40 still stands:** the audit trail cannot tell clock drift from
+    a forged future timestamp. T038.
+42. **Iteration 11 #2 / … / 32 #41 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right, and adoption compares it against tmux's.
+43. **Iteration 10 #2 / … / 32 #42 still stands:** the signature covers timestamp and body but
+    **not the method or the path**. **No task owns it.**
+44. **Iteration 9 #1 / … / 32 #43 still stands:** `RequestAudit.Deny` takes a free `string`.
+45. **Iteration 8 #2 / … / 32 #44 still stands, and T032 did not fix it:** the loud
+    default-root warning goes to stderr while audit records go to stdout, so the two are read
+    with different tools. This iteration deliberately did not add a startup record for it —
+    there is no action name for one, and inventing one is inventing a requirement.
+    **Re-assigned to T038**, which owns the remaining audit wiring in `cmd/crswd/main.go`.
+46. **Iteration 8 #1 / … / 32 #45 still stands:** `.env.example` does not exist. T040.
+47. **Iteration 7 #1 / … / 32 #46 still stands:** bidi and invisible Unicode are not stripped
+    by `tmuxctl.Strip`, by design. **Milestone 2 decides before rendering.**
+48. **Iteration 6 #3 / … / 32 #47 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case while `exec.go` also matches the
+    missing-socket pair.
+49. **Iteration 14 #1 / … / 32 #48 still stands:** `git checkout --`, `git restore`, `perl -i`
+    and a heredoc are all outside the permission allowlist, so `PROMPT.md` step 6's documented
+    recovery path needs an approval an autonomous run cannot give. Four probes were reverted
+    with `Edit` in reverse this iteration; repeated `-m` flags carried the commit message.
+50. **Iteration 1 #1 / … / 32 #49 still stands, thirty-third iteration carrying it:**
+    `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook (which
+    ran clean on this iteration's commit). Needs an operator or a task of its own.
+51. **Iteration 2 #2 / … / 32 #50 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again, again only because the finding was written down.
+    Thirty-second iteration of manual compensation for a one-line fix to step 9.
+52. **Iteration 6 #6 / … / 32 #51 still stands:** `AGENTS.md`'s command table has no entry for
+    `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both
+    were run by hand this iteration, green.

@@ -103,7 +103,7 @@ owner plus its clock origin.
 ### US4 — Restart without leaving unowned shells (P4)
 
 - [x] T031 `internal/session/manager.go`: `Manager.Adopt` — one `List`, adopt only sessions carrying `@crswd-managed`, owner set to the configured operator, absolute deadline derived from `#{session_created}` (**not** adoption time), only the idle clock reset, fresh tokens issued, and anything already past 24h **destroyed rather than adopted**. Tests cover a healthy survivor, an untouched lookalike, a half-dead session, a 23-hour-old survivor dying an hour later, an expired survivor, and repeated adoptions leaving the deadline unchanged
-- [ ] T032 `cmd/crswd/main.go`: run `Adopt` at startup before the listener binds, one `startup.adopt` audit record per adopted session; a tmux failure here is fatal, not silently skipped
+- [x] T032 `cmd/crswd/main.go`: run `Adopt` at startup before the listener binds, one `startup.adopt` audit record per adopted session; a tmux failure here is fatal, not silently skipped
 
 ### US5 — Abandoned sessions die on their own (P5)
 
