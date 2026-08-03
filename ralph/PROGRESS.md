@@ -2171,3 +2171,186 @@ are both still unreferenced; **T022 owns wiring them into `POST /sessions`**.
     iteration of manual compensation for a one-line fix to step 9.
 29. **Iteration 6 #6 / … / 16 #26 still stands:** `AGENTS.md`'s command table has no entry for
     `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
+
+---
+
+## Iteration 18 — 2026-08-03 10:07
+
+**Did:** Completed **T017**. Added `internal/session/token.go` (`NewToken`, `newTokenFrom`,
+`hashToken`, `Session.TokenMatches`, `Session.hasToken`) plus `token_test.go`. The package is
+now 54 tests / 197 runs. Ticked T017 in **both** `ralph/IMPLEMENTATION_PLAN.md` and
+`specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (session, auth, audit, config, tmuxctl)
+go test -race -count=1 ./...   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git status                  only the two new files after every probe was reverted
+gitleaks (pre-commit)       1 commits scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **The hash is taken over the *encoded* token, not the 32 bytes behind it.**
+  `hex.DecodeString` accepts both cases, so hashing decoded bytes would give every
+  credential an uppercase twin — two strings that open the same session, one of which was
+  never issued and appears in no audit record. `data-model.md` says `sha256.Sum256(token)`
+  where `token` is the transported value, so this follows the document; the reason is
+  written into the docstring because the sample in `docs/auth-and-sessions.md` hashes raw
+  bytes and a future reader will find that first. **A test pins it**
+  (`TestHashTokenIsOverTheEncodedForm`).
+- **`NewToken` returns `(plaintext, hash, error)` and writes to nothing.** FR-013's "never
+  stored" is a property of the call graph, not of a comment: there is no setter, no field
+  to assign, and no re-issue path. T022 is the only planned caller and it puts the hash on
+  the record and the plaintext in the response.
+
+**Learned (do not rediscover):**
+
+- **Green on the first run, again meaning nothing until probed.** Nine mutations, each
+  killed only by the case written for it: `hmac.Equal` → `==` (the AST test, and *only* the
+  AST test — see below), case-folded hashing (2 tests), `io.ReadFull` → `Read` (2), a
+  non-zero hash returned beside an error (3 subtests), a partial token returned beside an
+  error (3), uppercase encoding plus a mismatched hash (5 tests), `TrimSpace` on the
+  presented token (2 subtests), `hasToken` → `return true` (1). Reverted each with `Edit`;
+  `git status --porcelain` showed only the two new files afterwards.
+- **`hmac.Equal` versus `==` on two `[32]byte` values is behaviourally identical, so no
+  input can kill that mutation.** The assertion that can is a source-level one:
+  `TestTokenMatchesComparesInConstantTime` parses `token.go` with `go/parser`, finds the
+  `TokenMatches` declaration, and asserts it calls `hmac.Equal` and contains no `==`/`!=` at
+  all. That is why the zero-hash guard lives in its own `hasToken` method — keeping
+  `TokenMatches` free of comparison operators makes the assertion a flat "none", with no
+  allowlist to maintain. Import `go/token` as `gotoken` in that file: `token` is the
+  obvious local name for the thing under test.
+- **A timing measurement was deliberately not written.** It would be flaky on a shared
+  runner and prove nothing on a fast pass. It would also be measuring the wrong thing:
+  hashing first avalanches, so where an early-exit compare stops says nothing about where
+  the guess was wrong. The constant-time compare is still there — see the docstring — but
+  the property that can actually be enforced is "the code calls `hmac.Equal`".
+- **`TokenMatches`'s zero-hash guard is itself unkillable, and the linter does not catch it
+  either.** Deleting `if !s.hasToken() { return false }` leaves every test passing (no
+  preimage of the zero hash exists to present) *and* `golangci-lint run` clean — `unused`
+  counts the test's own call to `hasToken` as a use. Recorded so nobody later reads the
+  passing suite as evidence the guard was exercised. What is pinned is `hasToken` itself,
+  in both directions.
+- **The formatter strips an orphaned import mid-probe, so reverts go body-first,
+  import-second.** Swapping `hmac.Equal(...)` for `==` made `goimports` delete
+  `crypto/hmac` on the probe edit; restoring the body brought the import back on its own
+  (the hook re-runs on the revert), and `go build ./...` was the check that said so.
+  Iteration 17 hit the same thing with `slices`/`cmp`.
+- **No hex-shaped literal is in either new file.** Every expectation is built with
+  `strings.Repeat`, `bytes.Repeat`, or `fmt.Sprintf("%x", …)`, and failure messages print
+  lengths rather than values. gitleaks reads a 64-character hex string as a credential and
+  would block the commit — a 64-char one more readily than the 32-char IDs of iteration 8.
+  Test failure output is a place a token would otherwise land in CI logs.
+- **`Session.TokenMatches` is a method on the record, not a free function over a hash.**
+  T023 wires "bearer token match **and** owner match" together; the owner half is already
+  impossible to skip (`Store.Get` takes it as a parameter), and this makes the token half
+  reachable only from a record that has already passed it.
+
+**Left:** T018 is next (`internal/session/manager.go`: `Manager.Create` — tmux session
+`crswd-<id>` in the validated directory, set `@crswd-managed` and `@crswd-owner`, then send
+`claude --dangerously-skip-permissions` as keys; test asserts call order and that the target
+derives only from the ID). `Session.TmuxName`/`SessionTarget`/`PaneTarget` and
+`tmuxctl.Fake` are both already in place for it. Then T019–T023 and T024–T042. `NewToken`
+has no caller yet — **T022 owns wiring it into `POST /sessions`**, alongside `ValidateName`
+and `ResolveWorkDir`, which are still unreferenced too.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: `Store.Add` does not require a `TokenHash`, so a record with no
+   credential is storable.** `TokenMatches` fails closed on it, but nothing stops a future
+   caller from adding a session nobody can drive — including its owner. T031 (`Adopt`) is
+   the likely place to get this wrong, because it issues fresh tokens for sessions that
+   already exist. Adding `TokenHash` to `validate()` would be the structural fix; it was not
+   done here because it changes T016's code and its test fixtures, which is not this task.
+2. **New this iteration: nothing bounds the length of a presented token before it is
+   hashed.** `TokenMatches` will SHA-256 whatever string it is handed, so a caller sending a
+   megabyte `Authorization` header buys a megabyte hash on the auth path. The body limit
+   (`CRSW_MAX_BODY_BYTES`) does not cover headers, and Go's default header cap (1 MB) is
+   what is left. **T023 should reject anything that is not exactly `TokenLen` before
+   hashing** — a length check leaks nothing here, since the length is public.
+3. **Iteration 17 #1 still stands:** the store cannot tell the audit trail *why* a lookup
+   failed. Milestone 2's second identity makes "someone probed another session" worth
+   seeing. T020/T038 own the ruling.
+4. **Iteration 17 #2 still stands:** `Delete`'s hash scrub is best effort; no test can
+   assert it. FR-013's real guarantee — now implemented — is that the plaintext was never
+   stored at all.
+5. **Iteration 17 #3 still stands:** nothing enforces that a `Session.ID` in the store came
+   from `NewID`. Worth pinning in T018's test.
+6. **Iteration 16 #1 / 17 #4 still stands:** `ResolveWorkDir` is a create-time check with an
+   unavoidable TOCTOU window before `tmux new-session -c`. Operator ruling welcome.
+7. **Iteration 16 #2 / 17 #5 still stands:** a rejected path is a weak existence oracle; the
+   reason must stay server-side. T020/T022.
+8. **Iteration 16 #3 / 17 #6 still stands:** nothing re-stats an approved root, so a root
+   replaced by a symlink after startup narrows silently.
+9. **Iteration 15 #1 / … / 17 #7 still stands:** FR-027's class admits a leading `-` while
+   `tasks.md` T014 calls it hostile. Resolved in favour of the regexp; worth an operator
+   ruling before milestone 2 renders names and milestone 3 adds rename.
+10. **Iteration 15 #2 / 17 #8 still stands, and now covers three files:** `ValidateName`,
+    `ResolveWorkDir`, and now `NewToken` have no caller. T022 owns all three.
+11. **Iteration 13 #1 / … / 17 #9 still stands, and this iteration adds a third way:**
+    `docs/auth-and-sessions.md`'s samples are stale — the `Verify` one in two ways, and the
+    layer-3 sample hashes the raw token bytes (`sha256.Sum256(tok)` over a `[]byte`) where
+    the contract and this implementation hash the transported hex string. The sample also
+    assigns `sess.TokenHash` directly, which is the shape FR-013 exists to prevent.
+12. **Iteration 13 #2 / … / 17 #10 still stands:** nothing stops a handler from putting
+    `auth.Reason(err)` in a response body. T020 should assert the 401 body is byte-identical
+    across failure modes.
+13. **Iteration 12 #1 / … / 17 #11 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178` runs `go test ./...` only). Worth an operator doing
+    before T033.
+14. **Iteration 12 #2 / … / 17 #12 still stands:** three specs disagree on `Observe`'s
+    signature. The code follows `tasks.md`.
+15. **Iteration 12 #3 / … / 17 #13 still stands:** the replay cache is unbounded in count,
+    only in age. No task owns a cap.
+16. **Iteration 11 #1 / … / 17 #14 still stands:** the audit trail cannot tell clock drift
+    from a forged future timestamp. T038 should decide whether to split the sentinel.
+17. **Iteration 11 #2 / … / 17 #15 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right. The token's expiry is `TokenExpiry()` — i.e. `CreatedAt +
+    24h` — so a clock that jumps backwards extends a credential's life, not only a
+    session's.
+18. **Iteration 10 #1 / … / 17 #16 still stands:** `contracts/http-api.md` promises `400` for
+    an oversize body but auth runs first. **T020 must decide.**
+19. **Iteration 10 #2 / … / 17 #17 still stands:** the signature covers timestamp and body
+    but not method or path, so a signed body is valid on any route. **The bearer token now
+    narrows this** — a signed body replayed onto another session's route still fails the
+    token check — but it does not close it for the caller's own sessions.
+20. **Iteration 9 #1 / … / 17 #18 still stands:** `audit.Record.Reason` can carry arbitrary
+    text. T038 should pass server-authored constants.
+21. **Iteration 9 #2 / … / 17 #19 still stands:** `audit.Emit`'s error has no handler yet.
+    T020 owns the ruling.
+22. **Iteration 8 #2 / … / 17 #20 still stands:** the loud default-root warning goes to
+    stderr while audit records go to stdout. T032 owns it.
+23. **Iteration 8 #1 / … / 17 #21 still stands:** `.env.example` does not exist, so the
+    `.gitleaks.toml` allowlist entry for it guards nothing. T040.
+24. **Iteration 7 #1 / … / 17 #22 still stands:** bidi and invisible Unicode are not stripped
+    by `tmuxctl.Strip`, by design. Milestone 2 decides. Pane output only.
+25. **Iteration 6 #2 / … / 17 #23 still stands:** a failed `paste-buffer` leaves caller
+    prompt text in a named tmux buffer.
+26. **Iteration 6 #1 / … / 17 #24 still stands:** T028 will report a false failure on the
+    last session — killing the only session stops the tmux server and `Has` then errors
+    rather than returning false. Use `List`.
+27. **Iteration 6 #3 / … / 17 #25 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case.
+28. **Iteration 14 #1 / … / 17 #26 still stands:** `git checkout -- <path>` and `git restore`
+    are not in the permission allowlist, so `PROMPT.md` step 6's documented recovery path
+    needs an approval an autonomous run cannot give. Nine probes reverted with `Edit` in
+    reverse again this iteration. Also new this iteration: **`git config core.hooksPath`
+    (a read) is refused as part of a `;`-joined command** — one command per call, always.
+29. **Iteration 1 #1 / … / 17 #27 still stands, eighteenth iteration carrying it:**
+    `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook
+    (which ran clean on this iteration's commit). Needs an operator or a task of its own.
+30. **Iteration 2 #2 / … / 17 #28 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again, again only because the finding was written down.
+    Seventeenth iteration of manual compensation for a one-line fix to step 9.
+31. **Iteration 6 #6 / … / 17 #29 still stands:** `AGENTS.md`'s command table has no entry
+    for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
