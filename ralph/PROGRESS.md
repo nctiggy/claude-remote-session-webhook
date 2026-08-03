@@ -1385,3 +1385,157 @@ commit.
     command table has no entry for `go test -tags tmux ./...` or `go vet -tags tmux ./...`,
     so "Test (all)" is not all. Finding #1 above is the same shape: the commands that
     actually protect this repo are not the documented ones.
+
+---
+
+## Iteration 13 — 2026-08-03 03:38
+
+**Did:** Completed **T012**. Added `internal/auth/caller.go` (`CallerID`,
+`CallerOperator`, `Caller`, the unexported `denial`, `ErrUnauthorized`, and `Reason`) and
+`caller_test.go`. `Verify`'s signature changed from `error` to `(*Caller, error)`: it now
+names the caller server-side and answers every failure with one opaque value. The package
+is 34 tests / 134 runs. Ticked T012 in **both** `ralph/IMPLEMENTATION_PLAN.md` and
+`specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (auth 34 tests / 134 runs, audit 36, config 45, tmuxctl 84)
+go test -race -count=1 ./...   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+```
+
+**Learned (do not rediscover):**
+
+- **`Verify(r) (*Caller, error)` is the shape T019/T020 wire up, and the two returns are
+  mutually exclusive by construction:** an identity comes back exactly when the error is
+  nil. Both test files' `verifyReason` helper asserts that on every one of the ~50
+  pre-existing call sites, so a future edit that names a caller for a refused request
+  fails in ten tests rather than handing a handler an owner it should not have.
+- **The eight sentinels are no longer what `Verify` returns.** They are wrapped in an
+  unexported `denial` whose `Error()` is the single word `unauthorized`, whose `Unwrap`
+  points at `ErrUnauthorized` (**not** at the reason), and whose reason is reachable only
+  through `auth.Reason(err)`. **T020's audit call is `auth.Reason(err).Error()`**; the
+  response is the uniform 401 and never touches the reason. `Reason` is nil-safe and
+  passes a non-denial straight through, so middleware needs no type check first.
+- **`Unwrap` returning the reason was tried as a mutation and is exactly the wrong
+  design.** It makes `errors.Is(err, ErrSignatureMismatch)` answer true, which puts "which
+  check failed" one honest-looking branch away from the response body. Ten cases fail if
+  someone re-introduces it. Same for `Error()` returning the reason.
+- **The derivation takes no `*http.Request` at all, and that is the enforcement mechanism,
+  not a style choice.** `docs/auth-and-sessions.md`'s sample shows `a.callerFor(r)`; this
+  package deliberately does not, because a function that was never handed the request
+  cannot read an `X-CRSW-Caller` header from it. The mutation that added the parameter and
+  read one header was caught by exactly one case out of twelve — which is the test earning
+  its keep, but note it only fires because the case names that header. **If milestone 2's
+  Access identity needs the request, pass it the *validated* token, never the raw
+  request.**
+- **`CallerOperator` is `"operator"`, restated as a literal in `caller_test.go` because
+  `data-model.md`'s audit table spells it that way.** **T031 must give adopted sessions
+  this same constant** — an ownership check is only as good as both sides naming the same
+  thing, and an adopted session whose owner is spelled differently is unreachable by its
+  own operator. It is deliberately not configurable: a second place to set it is a second
+  place for the two to disagree.
+- **`CallerID` lives in `auth`, so T016's `Session.Owner` has to come from somewhere.**
+  `data-model.md` types `Owner` as `CallerID`, but `plan.md`'s dependency arrows show
+  `httpapi → {auth, session}` and `session → tmuxctl` — no `session → auth` edge. Either
+  T016 imports `auth` for the type (harmless: `auth` imports nothing from the project) or
+  it stores a plain string and `httpapi` converts. **Flagged, not decided — T016 owns it.**
+- **Two test files in one directory can each define `verifyReason` because they are in
+  different packages** (`auth_test` and `auth`), which iteration 12 set up. The
+  duplication is deliberate; the alternative is exporting a test seam.
+- **Mutation-probing (iterations 4–12) earned its keep a tenth time.** Six mutations, each
+  caught only by its intended tests: `Unwrap` returning the reason (10 cases + the
+  `ErrUnauthorized` assertion), `Error()` returning the reason (20), identity read from an
+  `X-CRSW-Caller` header (1 — the case written for it), a caller returned alongside a
+  denial (4 tests across both test files), `Reason` flattened to `ErrUnauthorized` (10
+  tests / 64 subtests), and `CallerOperator` renamed to `root` (1). Reverted, gate re-run.
+
+**Left:** T013 is next (`internal/session/id.go`: 16 bytes from `crypto/rand` → 32
+lowercase hex, **not** `crypto/rand.Text`, which needs a `go 1.24` directive go.mod
+deliberately does not have; test asserts the `^[a-f0-9]{32}$` shape, non-sequential values,
+and no collisions across a large sample). T013–T015 are `[P]` and start the `session`
+package. Then T016–T042. Iteration 8's warning still applies to T017/T035: **no hex-shaped
+fixtures** — gitleaks blocks the commit. Note T013's own output *is* hex, so assert its
+shape with a regexp rather than pasting a sample ID into a fixture or into this notebook.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: `docs/auth-and-sessions.md`'s sample is now wrong in two ways.**
+   Its `Verify` returns `(*Caller, error)` — which is right — but it returns
+   `errors.New("bad timestamp")`-style errors directly rather than a uniform value, and it
+   derives identity with `a.callerFor(r)`, passing the whole request into the derivation.
+   The code is right and the doc is stale on both counts. It is the file the progressive-
+   disclosure table sends the next auth task to. Worth an operator fixing.
+2. **New this iteration: nothing yet stops a handler from putting `auth.Reason(err)` in a
+   response.** The denial is opaque, but `Reason` is exported and its result is an ordinary
+   error; the uniformity guarantee ends at the point T020 decides what to write. The
+   sentinels' strings are all fixed and caller-free (a test enforces that), so the leak
+   would be "which check failed", not caller data. **T020 should assert the 401 body is
+   byte-identical across failure modes** — the assertion T023 already owes for the 404.
+3. **Iteration 12 #1 still stands:** CI never runs `-race`
+   (`.github/workflows/ci.yml:178` runs `go test ./...` only), so the repo's concurrency
+   guards are ~95% invisible to it. Worth an operator doing before T033.
+4. **Iteration 12 #2 still stands:** three specs disagree on `Observe`'s signature —
+   `tasks.md`/`data-model.md` say `Observe(sig)`, `research.md` D10 and
+   `docs/auth-and-sessions.md` say `Observe(sig, ts)`. The code follows `tasks.md`.
+5. **Iteration 12 #3 still stands:** the replay cache is unbounded in count, only in age.
+   No task in the plan owns a cap.
+6. **Iteration 11 #1 / 12 #4 still stands:** the audit trail cannot tell clock drift from a
+   forged future timestamp — both reasons are `ErrTimestampOutsideWindow`. T038 should
+   decide whether to split the sentinel. Note this iteration makes it cheaper to fix: the
+   split is now invisible to clients by construction.
+7. **Iteration 11 #2 / 12 #5 still stands:** nothing forces the daemon's clock to be
+   monotonic or roughly right, and both the window and the replay TTL are only as good as
+   it is. No NTP assertion at startup and no plan task for one.
+8. **Iteration 10 #1 / 11 #3 / 12 #6 still stands:** `contracts/http-api.md` promises `400`
+   for an oversize body, but auth runs first and `ErrBodyTooLarge` now arrives wrapped in
+   the denial like every other refusal. **T020 must decide** whether to reach for
+   `auth.Reason` to answer `400` or fold it into the uniform `401` (FR-011). The denial
+   makes `401` the default and `400` the deliberate exception, which is the right way round
+   but is now a decision someone has to make on purpose.
+9. **Iteration 10 #2 / 11 #4 / 12 #7 still stands:** the signature covers the timestamp and
+   body but not the method or path, so a signed body is valid on any route.
+   `DisallowUnknownFields` (T021) is the defence; the replay cache narrows it to one route,
+   once.
+10. **Iteration 9 #1 / 10 #3 / 11 #5 / 12 #8 still stands:** `audit.Record.Reason` can carry
+    arbitrary text. T038 should pass server-authored constants — `auth.Reason(err).Error()`
+    is exactly that shape.
+11. **Iteration 9 #2 / 10 #4 / 11 #6 / 12 #9 still stands:** `audit.Emit`'s error has no
+    handler yet. T020 owns the ruling — a request that could not be audited has not been
+    completed.
+12. **Iteration 8 #2 / 9 #3 / 10 #5 / 11 #7 / 12 #10 still stands:** the loud default-root
+    warning goes to stderr while audit records go to stdout. T032 owns deciding this.
+13. **Iteration 8 #1 / 9 #4 / 10 #6 / 11 #8 / 12 #11 still stands:** `.env.example` does not
+    exist, so the `.gitleaks.toml` allowlist entry for it guards nothing. T040 owns it.
+14. **Iteration 7 #1 / 8 #3 / 9 #5 / 10 #7 / 11 #9 / 12 #12 still stands:** bidi and
+    invisible Unicode are not stripped by `tmuxctl.Strip`, by design. The milestone-2
+    dashboard must decide it.
+15. **Iteration 6 #2 / 7 #2 / 8 #4 / 9 #6 / 10 #8 / 11 #10 / 12 #13 still stands:** a failed
+    `paste-buffer` leaves caller prompt text in a named tmux buffer. Needs a
+    `delete-buffer` argv builder in `fake.go` *and* `exec.go` together.
+16. **Iteration 6 #1 / 7 #3 / 8 #5 / 9 #7 / 10 #9 / 11 #11 / 12 #14 still stands:** T028
+    will report a false failure on the last session — killing the only session stops the
+    tmux server and `Has` then errors rather than returning false. Use `List`.
+17. **Iteration 6 #3 / 7 #4 / 8 #6 / 9 #8 / 10 #10 / 11 #12 / 12 #15 still stands:**
+    `contracts/tmuxctl.md` names only `no server running` for the empty-server case and is
+    stale.
+18. **Iteration 1 #1 / 2 #1 / 3 #2 / 4 #2 / 5 #2 / 6 #4 / 7 #5 / 8 #7 / 9 #9 / 10 #11 /
+    11 #13 / 12 #16 still stands, thirteenth iteration carrying it:** `loop.sh`'s sweep
+    commit uses `--no-verify`, bypassing the gitleaks pre-commit hook (which ran clean on
+    this iteration's commit — `1 commits scanned … no leaks found`). Not in the plan, and
+    Principle IV forbids wandering — needs an operator or a task of its own.
+19. **Iteration 2 #2 / 3 #3 / 4 #3 / 5 #3 / 6 #5 / 7 #6 / 8 #8 / 9 #10 / 10 #12 / 11 #14 /
+    12 #17 still stands:** duplicate checkbox state in `IMPLEMENTATION_PLAN.md` and
+    `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the plan. Ticked both by hand
+    again, again only because the finding was written down. Twelfth iteration of manual
+    compensation for a one-line fix to step 9.
+20. **Iteration 6 #6 / 7 #7 / 8 #9 / 9 #11 / 10 #13 / 11 #15 / 12 #18 still stands:**
+    `AGENTS.md`'s command table has no entry for `go test -tags tmux ./...` or
+    `go vet -tags tmux ./...`, so "Test (all)" is not all.
