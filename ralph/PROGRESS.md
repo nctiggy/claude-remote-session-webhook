@@ -5576,3 +5576,221 @@ already over it.
 52. **Iteration 6 #6 / … / 32 #51 still stands:** `AGENTS.md`'s command table has no entry for
     `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both
     were run by hand this iteration, green.
+
+---
+
+## Iteration 34 — 2026-08-03 21:30
+
+**Did:** Completed **T033**, the concurrent-session cap. `Store.AddCapped` plus `addLocked`
+and `ErrTooManySessions` in `internal/session/session.go`, a `maxSessions` field and
+constructor parameter in `internal/session/manager.go` (both constructors, refusing a cap
+under 1), the 429 in `internal/httpapi/sessions.go` (`bodyTooManyRequests`,
+`errCreateCapReached`, `failTooManyRequests`, one new `refuseCreate` case), `cfg.MaxSessions`
+wired through `httpapi.New`, and 6 new tests plus 2 store tests. Ticked T033 in **both**
+`ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`. **US5 has begun.**
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK
+go test -tags tmux ./...    OK (real tmux on this host)
+go test -race ./...         OK (the racing-creates test is the reason)
+golangci-lint run           OK
+gofmt -l .                  empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git diff --stat             +499 / −21 across eight files
+gitleaks (pre-commit)       1 commit scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **The cap is enforced in the store, not in the manager, because that is where the lock is.**
+  `Manager.Create` holds the configured number and passes it to `Store.AddCapped`, which
+  counts and inserts in one critical section. A `Len()` check in `Create` would have left a
+  window between the two calls that no caller could close — every racer reads `limit-1`,
+  every racer finds room. `Len`'s doc comment now says so, since it was the obvious wrong
+  answer and it is still the exported one.
+- **`Store.Add` stays uncapped and adoption keeps using it.** FR-036 caps *creation*; a
+  session the host is already running must be taken back however many there are, because the
+  alternative to an over-cap record is a live unsandboxed shell with no owner, no deadline
+  and no reaper (Principle VI ranks that above being over the cap). Those records then count
+  against every later create — which is finding 32 #20 answered — so a restart onto a full
+  host refuses new creates until the reaper brings the fleet down. Both halves are asserted
+  (`TestTheCapCountsSessionsAdoptedFromTheHost`, `TestStoreAddIsUncapped`).
+- **A cap under 1 refuses everything rather than meaning "no limit".** `NewManagerWithClock`
+  refuses to build on one and `config.Load` already makes it fatal, so `AddCapped`'s
+  `len >= limit` reading is the third answer to a question that should never be asked — and
+  it is the fail-closed one. `TestStoreAddCappedRefusesAtTheLimit` is the only place it is
+  reachable.
+- **429 and not 400.** Nothing the caller sent is wrong; the host has no room. A 400 would
+  say "fix the request", and the only fix is to wait or destroy a session.
+- **One 429 body for both conditions.** `contracts/http-api.md` gives the status one row
+  ("cap reached, or create rate limit exceeded") and **no body**, so this iteration wrote
+  `{"error":"too many requests"}` — the status's own phrase, nothing more — and T034's rate
+  limiter is meant to write the same bytes through the same `failTooManyRequests`. The
+  operator reads which condition it was in the trail (`errCreateCapReached`), the caller
+  cannot tell them apart, and `TestTheCapRefusalDisclosesNothingAboutTheFleet` pins that the
+  refusal names no session and does not disclose the cap. See finding 1 — the contract does
+  not actually specify this body.
+- **The refusal costs no tmux command**, asserted at both levels by counting the fake's calls
+  before and after. An ID and a token are still minted before the store refuses; both are
+  discarded, neither is stored, and bounding the work a refused request costs is T034's job.
+
+**Learned (do not rediscover):**
+
+- **Two probes, both reverted with `Edit`, both confirming the suite is not vacuous.** Making
+  `Create` call `store.Add` instead of `store.AddCapped` failed exactly the four new session
+  tests and the two new httpapi tests, and nothing else. Still no `git checkout` needed
+  (finding #49).
+- **Adding a bound to `NewManagerWithClock` breaks `httpapi`'s fixture `Config`, not its
+  fixture manager.** `testConfig` in `middleware_test.go` had no `MaxSessions`, so `New` began
+  failing with "a concurrent-session cap of 0" in five loopback tests that have nothing to do
+  with sessions. Any future config-driven bound plumbed into the manager needs that struct
+  updated in the same edit.
+- **Test caps are deliberately two different numbers.** `internal/session`'s fixture carries
+  `capNotUnderTest = 64` so tests about something else cannot trip over the cap (one creates 8
+  sessions), and `f.managerWithCap(t, n)` builds a second manager on the *same store and same
+  fake* for the cap's own tests. `internal/httpapi`'s fixture carries
+  `config.DefaultMaxSessions` (5), so `TestCreatePastTheCapAnswersTooManyRequests` is
+  literally quickstart.md's check — six creates, the sixth refused.
+- **Six creates through one server need six signing instants.** The bodies are identical and
+  the signature covers timestamp + body only, so `postSessionsAt(t, s, body, testTime.Add(-i))`
+  is the idiom; without it the second create is a 401 replay and the test asserts layer 2.
+- **`tmuxctl.Fake` really is safe for 16 concurrent creates** — its doc says so and `-race`
+  agrees. `f.tmux.List(ctx)` is how a test asks what the host ended up carrying, which is the
+  claim that matters: a store that counted right while tmux held more would be a cap in name.
+
+**Left:** T034–T042. T034 (per-caller create rate limit) is next and shares this iteration's
+429 writer; T035 (token expiry) and T036 (reaper) follow.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: `contracts/http-api.md` specifies the 429 status and no body for it.**
+   Every other status in that document has its bytes written down. `{"error":"too many
+   requests"}` was chosen as the minimal invention and is shared with T034 by intent, but the
+   contract should say so. **An operator should rule, or T034 should settle it.**
+2. **New this iteration: the cap counts records in any state, `dead` included.** Nothing sets
+   `StateDead` in running code today (finding #20), so this is latent — but once T036 marks a
+   record dead before collecting it, that record holds a slot until it is deleted. Either the
+   reaper deletes rather than marks, or the count skips `dead`. **T036 owns it.**
+3. **New this iteration: `httpapi.New` builds the authenticator and the session manager before
+   asserting the listen address.** A `Config` that is wrong in two ways is reported by whichever
+   check runs first, which is not the loopback one — this surfaced as five tests reporting a
+   cap error where they assert `ErrNotLoopback`. Harmless today because `config.Load` refuses
+   both, and `newServer` still asserts the address; noted so a future startup ordering change
+   is deliberate.
+4. **Iteration 32 #1 / 33 #1 still stands:** `Reconcile` drops the plaintext credential `Adopt`
+   returns, so an adopted session is owned, listed, capped and reapable but **drivable by
+   nobody**. **An operator should rule; no task owns it.**
+5. **Iteration 33 #2 still stands:** a session destroyed at startup for outliving its ceiling
+   leaves no audit record. **T038 is the natural owner; it does not name this case.**
+6. **Iteration 33 #3 still stands:** nothing forces `Reconcile` to be called at all — the guard
+   is one-directional. **A candidate for T037**, which touches this sequence.
+7. **Iteration 33 #4 still stands:** `cmd/crswd` has no test files at all, and `run()` has no
+   seam for a fake. Worth an operator's ruling before T037 adds signal handling to it.
+8. **Iteration 32 #3 / 33 #5 still stands:** `Adopt` is not safe to call twice concurrently.
+   Startup calls it once before the listener binds.
+9. **Iteration 31 #1 / … / 33 #6 still stands:** `docs/auth-and-sessions.md:135–137` describes a
+   cross-caller isolation test that cannot be written as specified in milestone 1.
+   **An operator should rule; no task owns it.**
+10. **Iteration 31 #2 / … / 33 #7 still stands:** `GET /sessions` is outside every sweep in the
+    isolation suite, because it is caller-scoped rather than session-scoped.
+11. **Iteration 30 #1 / … / 33 #8 still stands:** `notImplemented` is unreachable dead code.
+12. **Iteration 30 #2 / … / 33 #9 still stands:** the mux's `405` is `text/plain` with an
+    `Allow` header, contradicting `contracts/http-api.md`. **An operator should rule.**
+13. **Iteration 30 #3 / … / 33 #10 still stands:** the contract's test matrix has no row for
+    destroy-then-destroy.
+14. **Iteration 30 #4 / … / 33 #11 still stands:** `errDestroyRefused` is unreachable and
+    untested.
+15. **Iteration 29 #1 / … / 33 #12 still stands:** `rollback` verifies with `Has` alone and
+    never calls `confirmGone`, so a failed create on a host where the killed session was the
+    only one reports a **false orphan**. One line plus one test edit. **No task owns it.**
+16. **Iteration 29 #3 / … / 33 #13 still stands:** `Destroy` takes a `Session` rather than an
+    id, which is what lets `Adopt` tear down an expired candidate the store never held.
+17. **Iteration 28 #1 / … / 33 #14 still stands:** the two read routes disagree about which
+    sessions exist. **Unassigned.**
+18. **Iteration 28 #2 / … / 33 #15 still stands:** a detail reports `state` from the record and
+    never asks the host.
+19. **Iteration 27 #2 / … / 33 #16 still stands:** the list is unbounded in length.
+20. **Iteration 24 #4 / … / 33 #19 still stands:** a session whose window vanished still
+    resolves and answers 500 rather than moving to `dead`. `Store.SetState` **still has no
+    caller outside tests**. T036 or an operator. See finding 2 — the cap now depends on how
+    that is resolved.
+21. **Iteration 26 #1 / … / 33 #17 still stands:** nothing bounds the size of a capture.
+22. **Iteration 26 #2 / … / 33 #18 still stands:** `captured_at` is the daemon's clock, not
+    tmux's.
+23. **Iteration 25 #2 / … / 33 #20 still stands:** nothing touches the idle clock;
+    `Store.Touch` still has no caller. An adopted session's idle deadline is 60 minutes after
+    the daemon started regardless of use. T036.
+24. **Iteration 25 #1 / … / 33 #21 still stands:** a failed submit can leave prompt text in a
+    named tmux buffer, and **Destroy still does not delete the session's paste buffer**.
+25. **Iteration 23 #1 / … / 33 #22 half-resolved this iteration, and T034 is next:** the cap
+    landed and adopted records count against it; `POST /sessions` still has **no rate limit**,
+    so a caller holding the secret can still make the daemon do create-shaped work as fast as
+    it can sign requests. T034.
+26. **Iteration 22 #2 / … / 33 #23 still stands:** nothing forces a handler to use `decode`.
+27. **Iteration 22 #3 / … / 33 #24 still stands:** an oversize body is refused twice with two
+    different reasons and two different statuses. T038.
+28. **Iteration 21 #1 / … / 33 #25 still stands:** the mux's own `404` is `text/plain` while
+    the contract says every response is JSON.
+29. **Iteration 21 #2 / … / 33 #26 still stands:** the contract's `400` row for an oversize
+    body is unreachable behind layer 2.
+30. **Iteration 21 #3 / … / 33 #27 still stands:** `session.list`, `session.detail`, and
+    `session.output` are action names iteration 21 chose and `data-model.md` does not carry.
+31. **Iteration 21 #4 / … / 33 #28 still stands:** `RequestAudit` is not safe for concurrent
+    use, and nothing enforces it.
+32. **Iteration 21 #5 / … / 33 #29 still stands:** every request exit path amends the record by
+    habit, not by construction — this iteration added a fifth one (`failTooManyRequests`).
+    T038.
+33. **Iteration 20 #3 / … / 33 #30 still stands:** none of `docs/security.md`'s "Transport &
+    exposure" headers are applied by anything.
+34. **Iteration 18 #1 / … / 33 #31 still stands:** `Store.Add` does not require a `TokenHash`,
+    and `AddCapped` inherits that — both go through the same `validate`.
+35. **Iteration 17 #2 / … / 33 #32 still stands:** `Delete`'s hash scrub is best effort.
+36. **Iteration 17 #3 / … / 33 #33 still stands:** nothing enforces that a `Session.ID` in the
+    store came from `NewID`, beyond `adoptableID` on the adoption path.
+37. **Iteration 16 #1 / … / 33 #34 still stands:** `ResolveWorkDir` has an unavoidable TOCTOU
+    window before `tmux new-session -c`.
+38. **Iteration 16 #3 / … / 33 #35 still stands:** nothing re-stats an approved root.
+39. **Iteration 15 #1 / … / 33 #36 still stands:** FR-027's class admits a leading `-`.
+40. **Iteration 13 #1 / … / 33 #37 still stands:** `docs/auth-and-sessions.md`'s samples are
+    stale in four ways, and #9 above is a fifth.
+41. **Iteration 12 #1 / … / 33 #38 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Run by hand again this iteration, green — and this is
+    the first task whose central test is a race.
+42. **Iteration 12 #2 / … / 33 #39 still stands:** three specs disagree on `Observe`'s
+    signature.
+43. **Iteration 12 #3 / … / 33 #40 still stands:** the replay cache is unbounded in count.
+44. **Iteration 11 #1 / … / 33 #41 still stands:** the audit trail cannot tell clock drift from
+    a forged future timestamp. T038.
+45. **Iteration 11 #2 / … / 33 #42 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right, and adoption compares it against tmux's.
+46. **Iteration 10 #2 / … / 33 #43 still stands:** the signature covers timestamp and body but
+    **not the method or the path**. **No task owns it.**
+47. **Iteration 9 #1 / … / 33 #44 still stands:** `RequestAudit.Deny` takes a free `string`.
+48. **Iteration 8 #2 / … / 33 #45 still stands:** the loud default-root warning goes to stderr
+    while audit records go to stdout. **Assigned to T038.**
+49. **Iteration 8 #1 / … / 33 #46 still stands:** `.env.example` does not exist, and it will
+    need `CRSW_MAX_SESSIONS` described (names only, never a value). T040.
+50. **Iteration 7 #1 / … / 33 #47 still stands:** bidi and invisible Unicode are not stripped
+    by `tmuxctl.Strip`, by design. **Milestone 2 decides before rendering.**
+51. **Iteration 6 #3 / … / 33 #48 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case while `exec.go` also matches the
+    missing-socket pair.
+52. **Iteration 14 #1 / … / 33 #49 still stands:** `git checkout --`, `git restore`, `perl -i`
+    and a heredoc are all outside the permission allowlist, so `PROMPT.md` step 6's documented
+    recovery path needs an approval an autonomous run cannot give. Two probes were reverted
+    with `Edit` in reverse this iteration; repeated `-m` flags carried the commit message.
+53. **Iteration 1 #1 / … / 33 #50 still stands, thirty-fourth iteration carrying it:**
+    `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook (which
+    ran clean on this iteration's commit). Needs an operator or a task of its own.
+54. **Iteration 2 #2 / … / 33 #51 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again, again only because the finding was written down.
+    Thirty-third iteration of manual compensation for a one-line fix to step 9.
+55. **Iteration 6 #6 / … / 33 #52 still stands:** `AGENTS.md`'s command table has no entry for
+    `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both
+    were run by hand this iteration, green.
