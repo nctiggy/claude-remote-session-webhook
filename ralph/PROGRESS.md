@@ -421,3 +421,134 @@ go.sum                    absent  ✅ zero third-party deps still holds
    knobs — `SurviveKill`, `FailOp`, `Vanish` — are exported API on a package the daemon
    links. Nothing calls them outside tests today. Worth a lint rule or a build-tag split
    if that ever stops being true.
+
+---
+
+## Iteration 6 — 2026-08-03 02:07
+
+**Did:** Completed **T005**. Added `internal/tmuxctl/exec.go` (the real `Controller`,
+built on the argv builders `fake.go` already exports so the two cannot drift),
+`exec_test.go` (36 tests, no tmux required), and `exec_tmux_test.go` (8 real-tmux
+tests behind `//go:build tmux`). Also added `run: build-tags: [tmux]` to
+`.golangci.yml`, which T005 owed since iteration 3. Ticked T005 in **both**
+`ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK   ← plain `go vet` does NOT typecheck the tagged file
+go test -count=1 ./...      OK (internal/tmuxctl 66 tests)
+go test -race ./...         OK
+go test -tags tmux ./...    OK (8 integration tests, real tmux, isolated sockets)
+golangci-lint run           OK
+gofmt -l .                  empty
+go.sum                      absent  ✅ zero third-party deps still holds
+```
+
+**Learned (do not rediscover):**
+
+- **The integration test found a real bug, and it was worth the whole task.** tmux has
+  **two** "there is no server" messages, not one. `contracts/tmuxctl.md` and
+  `research.md` only ever saw the first, because the research host had run tmux before:
+  - socket file exists, nothing listening → `no server running on <path>`
+  - socket file absent entirely → `error connecting to <path> (No such file or directory)`
+
+  A machine that has never started tmux has no `/tmp/tmux-<uid>/` at all, so it gives
+  the **second**. Matching only the first — which is what the contract says — meant
+  `List` would return an error on a fresh host, and T032 makes a tmux failure at startup
+  fatal. **The daemon would have refused to boot on exactly the clean machine it is
+  meant to be deployed to.** `noServer()` now matches both. It deliberately does *not*
+  match `error connecting to … (Permission denied)`: same prefix, but there the socket
+  exists and a server with live sessions may be behind it, and calling that "empty"
+  would walk adoption past every session it was supposed to reclaim.
+- **Killing the last session takes the tmux server down with it, so the `Has` that was
+  meant to confirm the teardown cannot answer.** `Has` refuses to read "no server" as
+  "gone" (contract, and it is the right call), so `Kill` + `Has` on the *only* live
+  session returns an **error**, every time. **T028 must handle this or verified destroy
+  will return 409 on every successful teardown of the last session.** The way out is
+  already proven in `TestTmuxKillingTheLastSessionStopsTheServer`: `List` treats no
+  server as the empty slice, so "not in `List`" confirms the teardown. Do not "fix"
+  this by loosening `Has`.
+- **`go vet ./...` silently skips `//go:build tmux` files.** So does `go test ./...`.
+  Only `golangci-lint` sees them now, and only because of the `build-tags` addition —
+  which was verified by observing it report findings *inside* `exec_tmux_test.go`, not
+  by trusting the config. Run `go vet -tags tmux ./...` too; it is not in `AGENTS.md`.
+- **Iteration 3's gosec G204 note was too optimistic and is corrected here.** G204 *does*
+  fire on `exec.CommandContext(ctx, argv[0], args...)` — a variable in the program slot
+  or the argument slot is enough; only all-literal calls stay quiet. It is unavoidable
+  in this package by construction, so `run()` carries a `//nolint:gosec` with the
+  reasoning. **This does not weaken the FR-029 guarantee**, which is now an assertion
+  rather than a comment: `TestExecSendsTheContractArgv` records the argv the child
+  process actually received, and `TestExecPasteKeepsCallerTextOffTheCommandLine` proves
+  every hostile payload rides on stdin and appears in no argument.
+- **Unit tests drive the real exec path with no tmux anywhere**, by symlinking the test
+  binary into a temp dir as `tmux` and putting it at the front of `PATH`; `TestMain`
+  notices an env var and acts as the stub, recording argv + stdin as JSON lines and
+  reproducing a chosen exit status, stdout, and stderr. That is what makes exit-status
+  and stderr discrimination testable **in CI**, where no tmux exists. A shell-script
+  stub would have needed a `0o755` write (gosec G306) and a `#!/bin/sh` in the one repo
+  whose whole point is that no shell is involved. **Reuse this for any future exec.**
+  Note it forces `t.Setenv`, so those tests cannot call `t.Parallel()`.
+- **Give each integration test its own `-L` socket.** A shared one let one test's
+  `kill-server` race the next test's `new-session` (`server exited unexpectedly`), and
+  leaked sessions between `List` assertions. `socketFor(t.Name())` sanitises the name
+  into a filename. The `-L` isolation is also why `Exec` has a `socket` field at all:
+  `TMUX_TMPDIR` would isolate the tests too, right up until it silently did not, and
+  the cleanup here runs `kill-server`.
+- **`parseSessions` splits rows from the right, not the left.** tmux permits `|` in a
+  session name and `list-sessions` returns *every* session on the host, including the
+  operator's own — so `weird|name|1785706480|` must parse as one session called
+  `weird|name`. A left-to-right split reads the name as `weird`, fails on the creation
+  time, and fails the whole call, taking adoption of every managed session with it.
+- Real tmux confirmed the shape iteration 5 reasoned out: `send-keys` with **no `-l`**
+  delivers `claude --dangerously-skip-permissions` literally *and* sends `Enter` as the
+  Enter key. The question is settled; the builder is correct as written.
+- Real tmux also confirmed D4 and D5 first-hand: all five hostile payloads (`;`,
+  `foo;`, `foo;;`, `a; echo PWNED; $(id) \`whoami\``, and an embedded newline) arrive
+  byte-for-byte through `load-buffer`/`paste-buffer`, and `capture-pane` without `-e`
+  returns colour output with **zero** ESC bytes.
+- Mutation-probing (iterations 4 and 5) again earned its keep — five mutations injected,
+  each caught by the intended test: `Has` ignoring stderr (2 tests), left-to-right row
+  parsing (2), the Paste payload moved into argv (7), `List` swallowing every error (4),
+  and `noServer` accepting any `error connecting to` (1). Reverted, then the gate re-run.
+
+**Left:** T006 is next (`internal/tmuxctl/ansi.go`, the defensive control-sequence
+stripper, golden files in `testdata/`). Note T006 owns a decision T005 deliberately did
+not make: `CapturePane` currently returns tmux's output **verbatim**. The contract says
+"the result still passes through a defensive stripper", but `ansi.go` did not exist yet
+and pre-empting it would have been wandering. T006 must decide whether `Exec.CapturePane`
+calls the stripper or T025's handler does — and say which in its commit. Then T007–T042.
+
+**Findings (noticed, not fixed):**
+
+1. **T028 will report a false failure on the last session.** See "Learned" above: killing
+   the only session stops the tmux server, and `Has` then errors rather than returning
+   false. Pinned by a passing test so it cannot be rediscovered the hard way, but the fix
+   belongs to T028, not here.
+2. **A failed `paste-buffer` leaves the prompt sitting in a named tmux buffer.** `Paste`
+   runs `load-buffer` then `paste-buffer -d`; `-d` deletes the buffer *as it pastes*, so
+   if the paste fails the buffer survives with caller prompt text in it, readable by any
+   tmux client until the next prompt for that session overwrites it. Prompts are secret
+   under `docs/security.md` §3. Not fixed: the cleanup needs a `delete-buffer` argv
+   builder, `fake.go` would have to record it too, and that is T004's file — the drift
+   between fake and real is the exact thing this task was built to prevent. Small, bounded
+   (same-uid, one session's own buffer), but real.
+3. **`contracts/tmuxctl.md` is now wrong on one point** — it names only `no server
+   running` for the empty-server case. The code is right and the doc is stale. Left alone
+   under Principle IV; worth an operator fixing the contract so the next reader of the
+   spec is not misled.
+4. **Iteration 1 #1 / 2 #1 / 3 #2 / 4 #2 / 5 #2 still stands, sixth iteration carrying
+   it:** `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit
+   hook (which fired correctly on this iteration's commit — `1 commits scanned … no leaks
+   found`). No iteration will ever fix it: not in the plan, and Principle IV forbids
+   wandering. Needs an operator or a task of its own.
+5. **Iteration 2 #2 / 3 #3 / 4 #3 / 5 #3 still stands:** duplicate checkbox state in
+   `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+   plan. Ticked both by hand again, again only because the finding was written down.
+   Fifth iteration of manual compensation for a one-line fix to step 9.
+6. **`AGENTS.md`'s command table has no entry for the tagged tests.** `go test ./...` and
+   `go vet ./...` both skip `//go:build tmux` files entirely, so the table's "Test (all)"
+   is not all. A future iteration running only the documented commands will believe a
+   broken integration test is green.
