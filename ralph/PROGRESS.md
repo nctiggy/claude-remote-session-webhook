@@ -4933,3 +4933,208 @@ against. Then T031–T042.
     Twenty-ninth iteration of manual compensation for a one-line fix to step 9.
 46. **Iteration 6 #6 / … / 29 #44 still stands:** `AGENTS.md`'s command table has no entry for
     `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
+
+## Iteration 31 — 2026-08-03 20:50
+
+**Did:** Completed **T030**, the cross-session isolation suite, in a new
+`internal/httpapi/isolation_test.go` (424 lines, 6 top-level tests, 21 cases). Five of the
+six sweep `Routes()` for `SessionScoped()` rather than a hand-written list. No production
+code changed — this task is assertions only. Ticked T030 in **both**
+`ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go test -count=1 ./...      OK
+go test -race ./...         OK
+golangci-lint run           OK (no output)
+gofmt -l .                  empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git status                  clean after all three probes were reverted
+gitleaks (pre-commit)       1 commit scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **The recipe in `docs/auth-and-sessions.md:135` is split in two, because it cannot be run
+  as written.** It says "create A → distinctive output → create B **as a different caller**
+  → assert every read scoped to B returns nothing from A". Milestone 1 has one operator
+  identity, so a request scoped to a second owner's session cannot be authenticated *as*
+  that owner: layer 3 refuses it before any handler runs, and the interesting half is
+  unreachable. So sessions A and B are the **same** caller's — which is the only
+  configuration where a handler reaching past its resolved record actually returns the wrong
+  session's content — and the synthetic second owner carries the FR-033 half, where the whole
+  claim is indistinguishability. The file's header comment carries this argument; read it
+  before changing the fixture.
+- **Every refusal is compared against the unknown-ID answer *per route*, not against a
+  literal.** `assertSameAnswer` diffs status, headers (`reflect.DeepEqual`), and body bytes
+  against a second live request at the same route with an ID that was never issued. A
+  literal would drift; this cannot.
+- **The other owner's credential is presented on purpose** in
+  `TestAnotherOwnersSessionIsIndistinguishableFromOneThatNeverExisted`. Ownership is checked
+  in `Store.Get` *before* `Manager.Resolve` compares the token, and presenting the correct
+  credential is the only case that proves that order: a resolver that matched the token first
+  would answer differently for the right credential than for a wrong one, and that difference
+  is a session-ID oracle.
+- **Marks are one distinct word per field** (`alpha-name`, `alpha-workdir`, `alpha-pane`), and
+  the pane mark has **no newline** — `encoding/json` escapes one, so a multi-line pane mark
+  would never be found in a raw body and the leak check would pass vacuously. The tmux name
+  is deliberately *not* a mark: it derives from the ID, so the ID covers it.
+- **`isolated.absentFrom` is applied to three surfaces, not one:** the response bytes plus
+  headers, the tmux argv **plus stdin** of every call the request caused, and the audit sink.
+  A paste that reached the wrong buffer is the same defect as a capture that read the wrong
+  pane, and stdin is where prompt text travels.
+
+**Learned (do not rediscover):**
+
+- **Three probes, all reverted with `Edit` in reverse, all confirming the suite is not
+  vacuous.** (1) Dropping `s.Owner != owner` from `Store.Get` failed
+  `TestAnotherOwners…` on all four scoped routes — including a `200` DELETE that tore down
+  another owner's window. (2) `if false &&` in front of `Manager.Resolve`'s `TokenMatches`
+  failed `TestOneSessionsCredentialIsUselessOnAnother` on all four. (3) Making
+  `sessionOutput` walk `s.sessions.List(caller.ID)` for a record other than the resolved one
+  failed *both* `TestNoAnswerScopedToOneSessionCarriesAnother` (session A's pane returned
+  through a request scoped to B — the exact FR-035 defect) and
+  `TestNoRequestScopedToOneSessionAddressesAnothersWindow`. Still no `git checkout` needed
+  (finding #44).
+- **A probe must leave the host consistent or it fails on the wrong assertion.** The first
+  attempt at probe 3 set `resolved.ID = pathValue + "x"`, which named a window the fake does
+  not have, so the route answered `500` and the test stopped at the status check before the
+  argv sweep ran. Pointing the defect at a session that really exists is what made it prove
+  anything.
+- **`reachedStatus` is now load-bearing for two files.** `isolation_test.go` reads it for
+  every "the handler was reached" assertion, exactly as the sweeps in `sessions_test.go` do.
+  T033's `429` and any later status change is still the same one-line edit, but it now moves
+  21 cases as well as the sweeps.
+- **Under probe 2 `TestDestroyingOneSessionLeavesTheOthersDrivable` still passed**, and that
+  is honest rather than lucky: its last assertion holds because `Destroy` deleted the record,
+  not because the token was compared. Read it as a claim about the record's removal.
+- **`plant` + `SetPane` record no tmux call**, which is what lets
+  `TestOneSessionsCredentialIsUselessOnAnother` assert `len(Calls()) == 0` and mean it — a
+  refused request that had already killed a window would satisfy every status and body
+  assertion above it.
+- **Each subtest builds its own `newAuditedServer`.** The sink is a `bytes.Buffer` and
+  `testServer.failed` is an unsynchronised slice, so parallel subtests sharing one server
+  would race; `only(t)` also needs a sink holding exactly one record.
+
+**Left:** T031 is next (`Manager.Adopt`), then T032–T042. T031 is the first task in a while
+that is `internal/session` rather than `internal/httpapi`, and finding #27 below (`Store.Add`
+does not require a `TokenHash`) lands squarely in it.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: `docs/auth-and-sessions.md:135–137` describes a test that cannot be
+   written as specified** — see the first Decided item. The prose reads as though a second
+   caller can drive requests, which is milestone 2. The doc should say which half of the
+   recipe is reachable today. **An operator should rule; no task owns it.**
+2. **New this iteration: `GET /sessions` is outside every sweep in the isolation suite**,
+   because it is caller-scoped rather than session-scoped and `SessionScoped()` correctly
+   says so. Its isolation half rests entirely on `TestListReturnsOnlyTheCallersOwnSessions`,
+   which checks another owner's ID and name but not their credential or pane. Nothing is
+   known to leak; the point is that the sweep would not catch it if it did.
+3. **Iteration 30 #1 still stands:** `notImplemented` is unreachable dead code, kept
+   deliberately. The stronger form is `handlerFor` returning `(http.HandlerFunc, error)`.
+   **No task owns it.**
+4. **Iteration 30 #2 still stands:** the mux's `405` is `text/plain` with an `Allow` header,
+   contradicting `contracts/http-api.md`'s "every response is `application/json`". See #21
+   for the `404` half. **An operator should rule.**
+5. **Iteration 30 #3 still stands:** the contract's test matrix has no row for
+   destroy-then-destroy; the idempotency decision lives only in this notebook and a doc
+   comment.
+6. **Iteration 30 #4 still stands:** `errDestroyRefused` is unreachable and untested.
+7. **Iteration 29 #1 / 30 #5 still stands:** `rollback` verifies with `Has` alone and never
+   calls `confirmGone`, so a failed create on a host where the killed session was the only one
+   reports a **false orphan**. One line plus one test edit. **No task owns it.**
+8. **Iteration 29 #3 / 30 #6 still stands:** `Destroy` takes a `Session` rather than an id, so
+   the ownership check lives entirely in the resolver that produced the record. T036 and T037
+   will call it with records read straight from the store, and nothing in the type
+   distinguishes the two.
+9. **Iteration 28 #1 / … / 30 #7 still stands:** the two read routes disagree about which
+   sessions exist — `GET /sessions` lists a `dead` or past-deadline record while
+   `GET /sessions/{id}` answers `404` for it. **Unassigned.**
+10. **Iteration 28 #2 / … / 30 #8 still stands:** a detail reports `state` from the record and
+    never asks the host, so a session whose window died reports `running` forever.
+11. **Iteration 27 #2 / … / 30 #9 still stands:** the list is unbounded in length.
+12. **Iteration 26 #1 / … / 30 #10 still stands:** nothing bounds the size of a capture.
+13. **Iteration 26 #2 / … / 30 #11 still stands:** `captured_at` is the daemon's clock, not
+    tmux's.
+14. **Iteration 24 #4 / … / 30 #12 still stands:** a session whose window vanished still
+    resolves, and `GET /sessions/{id}/output` answers 500 rather than moving the record to
+    `dead`. `Store.SetState` **still has no caller outside tests**. T036 or an operator.
+15. **Iteration 25 #2 / … / 30 #13 still stands:** nothing touches the idle clock;
+    `Store.Touch` still has no caller. T036.
+16. **Iteration 25 #1 / … / 30 #14 still stands:** a failed submit can leave prompt text in a
+    named tmux buffer, and **Destroy still does not delete the session's paste buffer**.
+    T038 or an operator.
+17. **Iteration 23 #1 / … / 30 #15 still stands:** `POST /sessions` has no rate limit and no
+    concurrency cap. T033/T034.
+18. **Iteration 23 #4 / … / 30 #16 still stands:** `New` builds `tmuxctl.NewExec()`
+    unconditionally; T032 should build one controller in `main` and pass it in.
+19. **Iteration 22 #2 / … / 30 #17 still stands:** nothing forces a handler to use `decode`.
+20. **Iteration 22 #3 / … / 30 #18 still stands:** an oversize body is refused twice with two
+    different reasons and two different statuses. T038.
+21. **Iteration 21 #1 / … / 30 #19 still stands:** the mux's own `404` is `text/plain` while
+    the contract says every response is JSON. See #4 for the `405` half.
+22. **Iteration 21 #2 / … / 30 #20 still stands:** the contract's `400` row for an oversize
+    body is unreachable behind layer 2.
+23. **Iteration 21 #3 / … / 30 #21 still stands:** `session.list`, `session.detail`, and
+    `session.output` are action names iteration 21 chose and `data-model.md` does not carry.
+24. **Iteration 21 #4 / … / 30 #22 still stands:** `RequestAudit` is not safe for concurrent
+    use, and nothing enforces it.
+25. **Iteration 21 #5 / … / 30 #23 still stands:** every exit path amends the record by habit,
+    not by construction. T038.
+26. **Iteration 20 #3 / … / 30 #24 still stands:** none of `docs/security.md`'s "Transport &
+    exposure" headers are applied by anything, and no task owns them.
+27. **Iteration 18 #1 / … / 30 #25 still stands:** `Store.Add` does not require a `TokenHash`.
+    T031 — which is the next task.
+28. **Iteration 17 #2 / … / 30 #26 still stands:** `Delete`'s hash scrub is best effort, and
+    T029 depends on it for FR-020 through two layers rather than one.
+29. **Iteration 17 #3 / … / 30 #27 still stands:** nothing enforces that a `Session.ID` in the
+    store came from `NewID`.
+30. **Iteration 16 #1 / … / 30 #28 still stands:** `ResolveWorkDir` has an unavoidable TOCTOU
+    window before `tmux new-session -c`.
+31. **Iteration 16 #3 / … / 30 #29 still stands:** nothing re-stats an approved root.
+32. **Iteration 15 #1 / … / 30 #30 still stands:** FR-027's class admits a leading `-` while
+    `tasks.md` T014 calls it hostile.
+33. **Iteration 13 #1 / … / 30 #31 still stands:** `docs/auth-and-sessions.md`'s samples are
+    stale in four ways. Finding #1 above is a fifth thing wrong with that file.
+34. **Iteration 12 #1 / … / 30 #32 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Run by hand again this iteration, green.
+35. **Iteration 12 #2 / … / 30 #33 still stands:** three specs disagree on `Observe`'s
+    signature.
+36. **Iteration 12 #3 / … / 30 #34 still stands:** the replay cache is unbounded in count.
+37. **Iteration 11 #1 / … / 30 #35 still stands:** the audit trail cannot tell clock drift from
+    a forged future timestamp. T038.
+38. **Iteration 11 #2 / … / 30 #36 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right.
+39. **Iteration 10 #2 / … / 30 #37 still stands:** the signature covers timestamp and body but
+    **not the method or the path**, so an on-path attacker between `cloudflared` and the
+    loopback listener can turn a signed read into a destroy by rewriting the method in
+    flight. Every isolation test in this iteration signs method-specific requests and none of
+    them can see this, because it is not an authorisation bug — it is an integrity one.
+    **No task owns it.**
+40. **Iteration 9 #1 / … / 30 #38 still stands:** `RequestAudit.Deny` takes a free `string`.
+    T038.
+41. **Iteration 8 #2 / … / 30 #39 still stands:** the loud default-root warning goes to stderr
+    while audit records go to stdout. T032.
+42. **Iteration 8 #1 / … / 30 #40 still stands:** `.env.example` does not exist. T040.
+43. **Iteration 7 #1 / … / 30 #41 still stands:** bidi and invisible Unicode are not stripped
+    by `tmuxctl.Strip`, by design. **Milestone 2 decides before rendering.**
+44. **Iteration 6 #3 / … / 30 #42 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case while `exec.go` also matches the
+    missing-socket pair.
+45. **Iteration 14 #1 / … / 30 #43 still stands:** `git checkout --`, `git restore`, and
+    `perl -i` are all outside the permission allowlist, so `PROMPT.md` step 6's documented
+    recovery path needs an approval an autonomous run cannot give. Three probes were reverted
+    with `Edit` in reverse this iteration.
+46. **Iteration 1 #1 / … / 30 #44 still stands, thirty-first iteration carrying it:**
+    `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook (which
+    ran clean on this iteration's commit). Needs an operator or a task of its own.
+47. **Iteration 2 #2 / … / 30 #45 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again, again only because the finding was written down.
+    Thirtieth iteration of manual compensation for a one-line fix to step 9.
+48. **Iteration 6 #6 / … / 30 #46 still stands:** `AGENTS.md`'s command table has no entry for
+    `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
