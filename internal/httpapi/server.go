@@ -117,6 +117,12 @@ type Server struct {
 	// target — lives behind this one field.
 	sessions *session.Manager
 
+	// creates is the per-caller budget for session creation (FR-037). It is one
+	// limiter per server for the reason there is one Authenticator: two would be
+	// two independent memories of how fast a caller has been asking, which is a
+	// rate limit that does not limit the rate.
+	creates *limiter
+
 	// report is where a failure with nowhere else to go is written — the audit
 	// sink itself failing, or a response that could not be written. A field so
 	// a test can read what was reported rather than watch stderr.
@@ -137,12 +143,17 @@ type Server struct {
 
 // New builds the server for a validated Config. It binds nothing; Listen does.
 //
-// The Authenticator, the audit sink, and the session manager are built here
-// rather than passed in: cmd/crswd loads the config and hands it over, and a
-// daemon whose auth is assembled by its caller is a daemon that can be assembled
-// without it. The manager gets cfg.Roots and cfg.MaxSessions directly, so the
-// allowlist a session is checked against and the cap it is counted against are
-// the ones config.Load resolved at startup.
+// The Authenticator, the audit sink, the session manager, and the create limiter
+// are built here rather than passed in: cmd/crswd loads the config and hands it
+// over, and a daemon whose auth is assembled by its caller is a daemon that can
+// be assembled without it. The manager gets cfg.Roots and cfg.MaxSessions
+// directly and the limiter gets cfg.CreateRatePerMin, so the allowlist a session
+// is checked against, the cap it is counted against, and the rate it is spent
+// from are the ones config.Load resolved at startup.
+//
+// This is the one place the host clock is chosen. Everything below takes the
+// clock it was given, which is what makes the limiter's behaviour testable
+// without elapsed time.
 func New(cfg *config.Config) (*Server, error) {
 	if cfg == nil {
 		return nil, errors.New("httpapi: no configuration provided; refusing to start")
@@ -155,7 +166,11 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the session manager: %w", err)
 	}
-	return newServer(cfg, net.Listen, authn, audit.New(), sessions)
+	creates, err := newLimiter(cfg.CreateRatePerMin, systemClock{})
+	if err != nil {
+		return nil, fmt.Errorf("httpapi: build the create rate limiter: %w", err)
+	}
+	return newServer(cfg, net.Listen, authn, audit.New(), sessions, creates)
 }
 
 func newServer(
@@ -164,6 +179,7 @@ func newServer(
 	authn *auth.Authenticator,
 	trail *audit.Logger,
 	sessions *session.Manager,
+	creates *limiter,
 ) (*Server, error) {
 	switch {
 	case cfg == nil:
@@ -182,6 +198,12 @@ func newServer(
 		// serving five of six routes is a daemon whose failure is discovered one
 		// request at a time.
 		return nil, errors.New("httpapi: no session manager provided; refusing to start")
+	case creates == nil:
+		// Refused rather than defaulted to an unlimited one: Principle VI makes
+		// the bounds structural, and a daemon serving creates with no budget is
+		// one whose only remaining brake is the cap — which bounds how many
+		// sessions exist, not how much work asking for them costs.
+		return nil, errors.New("httpapi: no create rate limiter provided; refusing to start")
 	}
 	if err := assertLoopbackAddress(cfg.Listen); err != nil {
 		return nil, err
@@ -203,6 +225,7 @@ func newServer(
 		authn:    authn,
 		trail:    trail,
 		sessions: sessions,
+		creates:  creates,
 		report:   reportToStderr,
 	}
 
@@ -247,6 +270,8 @@ func (s *Server) handlerFor(r Route) http.HandlerFunc {
 // valid signature is refused as unauthenticated before anything asks which
 // session it meant; the resolver only ever runs for a caller layer 2 has already
 // named, which is what makes the ownership check a comparison and not a guess.
+// The rate limit sits between the two — behind the identity it spends, ahead of
+// every lookup a refused request would otherwise pay for.
 //
 // It fails rather than registering a route with no audit action. FR-041 wants
 // one record per request, and a route the trail has no name for is a route whose
@@ -260,6 +285,9 @@ func (s *Server) handle(r Route, h http.HandlerFunc) error {
 	var handler http.Handler = h
 	if r.SessionScoped() {
 		handler = s.resolveSession(handler)
+	}
+	if rateLimited[r] {
+		handler = s.limitCreates(handler)
 	}
 
 	s.mux.Handle(r.String(), s.authenticate(action, handler))

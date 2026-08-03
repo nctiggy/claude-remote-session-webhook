@@ -62,8 +62,21 @@ func testConfig(listen string) *config.Config {
 		// produced, and New refuses one — a session manager that may run no
 		// sessions is not a daemon.
 		MaxSessions: config.DefaultMaxSessions,
+
+		// Deliberately not the production default, which is the opposite choice
+		// from MaxSessions above and for the same reason: quickstart.md's cap
+		// check needs six creates through one server to reach the cap, and a
+		// fixture carrying the real rate would refuse the fourth of them as a
+		// burst instead. Tests about the rate build their own limiter — see
+		// ratelimit_test.go.
+		CreateRatePerMin: rateNotUnderTest,
 	}
 }
+
+// rateNotUnderTest is a create budget no test in this package can exhaust by
+// accident, so that a 429 anywhere else is the concurrent-session cap and
+// nothing else.
+const rateNotUnderTest = 1000
 
 type fixedClock struct{ at time.Time }
 
@@ -119,12 +132,14 @@ func newAuditedServer(t *testing.T) *testServer {
 
 	buf := &bytes.Buffer{}
 	fixture := newSessionFixture(t)
+	cfg := testConfig(loopbackListen)
 	s, err := newServer(
-		testConfig(loopbackListen),
+		cfg,
 		net.Listen,
 		testAuth(t),
 		audit.NewTo(buf, func() time.Time { return testTime }),
 		fixture.mgr,
+		testLimiter(t, cfg.CreateRatePerMin, fixedClock{at: testTime}),
 	)
 	if err != nil {
 		t.Fatalf("newServer = _, %v; want a server", err)
