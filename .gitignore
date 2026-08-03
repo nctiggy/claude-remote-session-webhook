@@ -12,6 +12,16 @@ out/
 target/
 *.tsbuildinfo
 
+# Go build output.
+# `go build ./...` writes the main package's binary into the repo root, and that
+# is the exact command AGENTS.md and T001 tell you to run. Untracked, it makes
+# the tree dirty, and ralph/loop.sh refuses to start on a dirty tree — so
+# without this the loop stops after a single iteration.
+/crswd
+*.exe
+*.test
+coverage.out
+
 # env & secrets — never commit these
 .env
 .env.*

@@ -6,12 +6,9 @@
 > with no UI. Milestones 2–4 (dashboard, actions, Claude login relay) get their own
 > plan and their own loop. One loop for the whole product drifts.
 
-> ⛔ **BLOCKED — read `ralph/PROGRESS.md` iteration 1 before doing anything.**
-> `.claude/settings.json` has no `permissions` block, and `--permission-mode
-> acceptEdits` never approves Bash. No iteration can run `go build`, `go test`,
-> `golangci-lint`, or `git commit`, so no task can reach the green state every one
-> of them requires. An operator must apply the patch in that entry by hand; the
-> loop cannot fix it from inside, because editing that file is refused too.
+> ✅ **Unblocked.** Iteration 1 could not run Bash at all — `.claude/settings.json`
+> had no `permissions` block. An operator added one in `902c249`, so build, test,
+> lint, and commit all work from inside an iteration now. Do not re-raise this.
 
 ## Status: generated from the spec
 
@@ -60,15 +57,15 @@ owner plus its clock origin.
 
 ### Setup
 
-- [ ] T001 Initialize the Go module in `go.mod` declaring `go 1.23.0` as the **minimum language version** (the CI toolchain is 1.24 and matches the dev host — do not "fix" this to 1.24) and add `cmd/crswd/main.go` that parses flags and exits cleanly. Creating `go.mod` switches CI's build/test/lint job on
-- [ ] T002 Add `.golangci.yml` using the **v1 config schema** (CI pins golangci-lint v1.62) enabling `errcheck`, `gosec`, `govet`, `staticcheck`, `bodyclose`; install `golangci-lint` and `goimports` locally — both are currently missing, so the format-and-lint hook silently no-ops
+- [x] T001 Initialize the Go module in `go.mod` declaring `go 1.23.0` as the **minimum language version** (the CI toolchain is 1.24 and matches the dev host — do not "fix" this to 1.24) and add `cmd/crswd/main.go` that parses flags and exits cleanly. Creating `go.mod` switches CI's build/test/lint job on
+- [x] T002 Add `.golangci.yml` using the **v1 config schema** (CI pins golangci-lint v1.62) enabling `errcheck`, `gosec`, `govet`, `staticcheck`, `bodyclose`; install `golangci-lint` and `goimports` locally — both are currently missing, so the format-and-lint hook silently no-ops
 
 ### Foundation — tmux, config, audit
 
-- [ ] T003 `internal/tmuxctl`: `Controller` interface and `SessionInfo` in `controller.go`, plus **two** target helpers in `target.go` — `SessionTarget` → `=name`, `PaneTarget` → `=name:`. They are not interchangeable
-- [ ] T004 `internal/tmuxctl/fake.go`: in-memory `Controller` recording exact argv, able to simulate kill-succeeds-but-still-present, self-vanished sessions, a lookalike in `List`, a 25-hour-old session, and exec failure distinct from absence
-- [ ] T005 `internal/tmuxctl/exec.go`: real controller over `exec.Command`, argv slices only. `Paste` uses `load-buffer -b <buf> -` with the payload on **stdin** plus `paste-buffer -d`; `capture-pane -p` **without `-e`**; `Has` distinguishes exit-1 from exec failure; `List` treats "no server running" as empty. Integration test behind `//go:build tmux` on an isolated socket
-- [ ] T006 `internal/tmuxctl/ansi.go`: defensive control-sequence stripper with golden-file tests in `testdata/`
+- [x] T003 `internal/tmuxctl`: `Controller` interface and `SessionInfo` in `controller.go`, plus **two** target helpers in `target.go` — `SessionTarget` → `=name`, `PaneTarget` → `=name:`. They are not interchangeable
+- [x] T004 `internal/tmuxctl/fake.go`: in-memory `Controller` recording exact argv, able to simulate kill-succeeds-but-still-present, self-vanished sessions, a lookalike in `List`, a 25-hour-old session, and exec failure distinct from absence
+- [x] T005 `internal/tmuxctl/exec.go`: real controller over `exec.Command`, argv slices only. `Paste` uses `load-buffer -b <buf> -` with the payload on **stdin** plus `paste-buffer -d`; `capture-pane -p` **without `-e`**; `Has` distinguishes exit-1 from exec failure; `List` treats "no server running" as empty. Integration test behind `//go:build tmux` on an isolated socket
+- [x] T006 `internal/tmuxctl/ansi.go`: defensive control-sequence stripper with golden-file tests in `testdata/`
 - [ ] T007 `internal/config/config.go`: load from environment. `CRSW_SHARED_SECRET` required — **startup fails** if unset or under 32 bytes. `CRSW_ALLOWED_ROOTS` optional, defaulting to `$HOME/code` with a **loud warning on every defaulted start**. Non-loopback `CRSW_LISTEN` is fatal. Table test every case
 - [ ] T008 `internal/audit/audit.go`: structured JSON on stdout via `log/slog`, as a **fixed struct** — no `map[string]any`, no `slog.Any` passthrough, so the record shape cannot carry arbitrary data
 

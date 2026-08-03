@@ -1,0 +1,50 @@
+# golangci-lint configuration — **v1 config schema**.
+#
+# CI pins golangci/golangci-lint-action@v6 at v1.62 (.github/workflows/ci.yml).
+# golangci-lint v2 changed this file's format incompatibly, so a v2-style config
+# fails there. Do not "modernise" it without changing the CI pin in the same PR.
+# Rationale: specs/001-crswd-daemon-core/research.md D12.
+
+run:
+  timeout: 5m
+  # Without this, every file behind `//go:build tmux` — the real-tmux
+  # integration tests, the only place a tmux binary is required — is invisible
+  # to the linter locally and in CI. A file no linter ever reads is not covered
+  # by the gate that the definition of done rests on. Any future build tag needs
+  # adding here for the same reason.
+  build-tags:
+    - tmux
+
+linters:
+  disable-all: true
+  enable:
+    # Required by T002.
+    - errcheck
+    - gosec
+    - govet
+    - staticcheck
+    - bodyclose
+    # v1's remaining defaults, named explicitly so `disable-all` cannot quietly
+    # drop them and leave a weaker gate than an unconfigured run would give.
+    - gosimple
+    - ineffassign
+    - unused
+
+linters-settings:
+  errcheck:
+    # `_ = tmux.Kill(...)` is precisely how verified teardown stops being
+    # verified (Constitution VI), and AGENTS.md bans a swallowed error outright.
+    check-blank: true
+    check-type-assertions: true
+
+issues:
+  # golangci-lint's built-in exclusions mute two findings this daemon cannot
+  # afford to lose (both confirmed by probe, not assumed): gosec G304, file
+  # inclusion via a variable path — which is T015's entire subject — and
+  # errcheck on the `.Close()`/`os.Remove` family, where a dropped error is how
+  # verified teardown quietly stops being verified. Anything genuinely
+  # unavoidable gets a //nolint with a reason, which review can see.
+  exclude-use-default: false
+  # Never truncate. A capped report reads as "clean" when it is not.
+  max-issues-per-linter: 0
+  max-same-issues: 0

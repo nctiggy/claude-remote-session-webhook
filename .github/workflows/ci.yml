@@ -138,8 +138,13 @@ jobs:
       - name: Detect stack
         id: stack
         run: |
-          if ls package.json pyproject.toml go.mod Cargo.toml >/dev/null 2>&1; then
+          # Must be an OR over individual files. `ls a b c d` exits non-zero if ANY
+          # operand is missing, so the original form only reported "present" when
+          # all four manifests existed — meaning it never fired, every Go step was
+          # skipped, and this job reported green without building anything.
+          if [ -f package.json ] || [ -f pyproject.toml ] || [ -f go.mod ] || [ -f Cargo.toml ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "Stack manifest found — running build/test/lint."
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
             echo "No stack manifest yet. Fill in the AGENTS.md commands and these steps."
