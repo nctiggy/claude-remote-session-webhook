@@ -4512,3 +4512,216 @@ record). Then T029–T042. T029's `DELETE /sessions/{id}` is the last 501 — wh
 43. **Iteration 6 #6 / … / 27 #42 still stands:** `AGENTS.md`'s command table has no entry
     for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not
     all.
+
+## Iteration 29 — 2026-08-03 20:30
+
+**Did:** Completed **T028**, `Manager.Destroy`. Added `Destroy` and the unexported
+`confirmGone` to `internal/session/manager.go`, and broadened `ErrOrphanedSession`'s doc
+comment to cover both teardown paths. Kill, then verify, then clear the record and the
+token hash with it; a survivor — or a host that cannot be asked — keeps the record and
+returns `ErrOrphanedSession`. 8 new top-level tests in `manager_test.go`. No other file
+changed. Ticked T028 in **both** `ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK
+go test -race -count=1 ./internal/...   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK (v1.62.2)
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git status                  clean after all three probes were reverted
+gitleaks (pre-commit)       1 commit scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **Verification takes two questions, and iteration 6 wrote down which.** Finding #38 has
+  been aimed at this task for 22 iterations: killing the last session stops the tmux
+  server, so the `Has` that follows a *successful* teardown reports `no server running` —
+  an error, because `contracts/tmuxctl.md` says exit 1 with `can't find session` is the
+  only thing that means gone. `confirmGone` therefore falls back to `List`, which the
+  same contract requires to answer an empty slice for a stopped server while still
+  erroring on a socket it merely could not reach. `TestTmuxKillingTheLastSessionStopsTheServer`
+  in `exec_tmux_test.go` already spelled out this exact escape hatch in a comment.
+  **`Has` was not changed** — the contract binds it, and collapsing a dead server into
+  absence there would let a broken tmux confirm every teardown in the daemon.
+- **Unknown counts as surviving.** `confirmGone` returning an error and returning
+  `present` both end in `ErrOrphanedSession` with the record kept. Principle VI has no
+  third answer: "we could not find out" and "it is still there" cost the same if wrong.
+- **`ErrOrphanedSession` is reused, not duplicated.** Create's rollback and Destroy mean
+  the same thing by it — a live unsandboxed shell may exist — and T029 maps it to `409`
+  while create maps it to `500`. A second sentinel would be two names for one fact.
+- **Destroy deletes the record; it does not set `dead`.** FR-020 and `Store.Delete`'s own
+  doc comment say clear the record and the hash, and a deleted record answers `404` at
+  layer 3 exactly as `dead` would. `data-model.md`'s arrow from Destroy to `dead` is
+  satisfied by the record ceasing to exist. Nothing still sets `dead` (finding #10).
+- **A `Delete` that finds nothing is success, not failure.** `spec.md` names a destroy
+  racing the reaper as an edge case, and both racers end at that line with the session
+  confirmed gone and the record gone. Returning an error there would report a failure for
+  a teardown that completed. `TestDestroyRacingItselfReportsSuccessToEveryCaller` pins it
+  with 8 goroutines under `-race`.
+- **The `dead`-state guard Prompt and Output make is deliberately absent.** They refuse a
+  dead record because their action needs a live window; Destroy's action is removal, and
+  refusing it would leave a record nothing could clear. Only the empty id is refused — it
+  would build the bare `crswd-` prefix as a target.
+- **FR-020's other two clauses are satisfied by construction.** There is no buffered
+  output to clear (`Output` captures per request and caches nothing) and the daemon
+  creates no working directory (`ResolveWorkDir` only approves one that already existed).
+  Both are written into the method's doc comment so a future cache has somewhere to be
+  cleared.
+
+**Learned (do not rediscover):**
+
+- **The fake needs no new knob for any of this.** `SurviveKill`, `Vanish`, and
+  `FailOp(OpHas)`/`FailOp(OpList)` cover all four verification outcomes, and
+  `FailOp(OpHas)` alone reproduces the stopped-server case exactly: the session is gone
+  from the fake's map, `Has` errors, `List` does not carry it. T031's destroy-not-adopt
+  path can lean on the same knobs.
+- **Three `Edit`-in-reverse probes, all cheap, all reverted.** (1) Replacing the
+  `confirmGone` call with `true, nil` failed 4 top-level tests. (2) Replacing the `List`
+  fallback with the `Has` error failed exactly `TestDestroyConfirmsAbsenceThroughListWhenHasCannotAnswer`
+  and nothing else. (3) Dropping the `errors.Is(err, ErrSessionNotFound)` tolerance on
+  `Delete` failed exactly the race test. Each probe is one `Edit` out and one back — still
+  no `git checkout` needed (finding #41).
+- **`errors.Join(nil, nil)` is nil, and `fmt.Errorf("%w: %w", sentinel, nil)` renders
+  `%!w(<nil>)`.** The survivor path has a nil `killErr` *and* a nil `verifyErr` — tmux
+  said the kill worked and then said the session is there — so Destroy builds the error in
+  two shapes rather than one. `rollback` never hits this because its `cause` is never nil.
+- **`goimports` adds the import before the next `Edit` lands.** The `slices` import was
+  already in place when the follow-up edit tried to add it, which is why that edit failed
+  on a stale `old_string`. Write the code, then `Read` the import block rather than
+  editing it blind.
+- **The contract for `DELETE` is already written**: `contracts/http-api.md:181` — `200`
+  with `{"id":…,"destroyed":true}`, `409` with `{"error":"teardown could not be verified"}`,
+  and that non-uniform body is explicitly correct there because the caller already proved
+  ownership. T029 does not need to invent a shape.
+
+**Left:** T029 is next (`DELETE /sessions/{id}` → 200 on verified teardown, 409 plus a
+prominent audit record on a survivor). It is the last `501`, so it should also delete
+`notImplemented` and its `handlerFor` arm rather than leave them dead, and replace the
+now-vacuous 501 sentinel in `TestAMethodTheContractDoesNotDefineIsRefused` (finding #4).
+Then T030–T042.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: `rollback` still verifies with `Has` alone.** It does not call
+   `confirmGone`, so a create that fails after `New` on a host where the killed session
+   was the only one reports a **false orphan** — record kept, `500`, ordinary failure
+   dressed up as a possible live shell. It fails closed, which is why it is a finding
+   rather than a fix: routing `rollback` through `confirmGone` changes the expectation
+   `TestCreateKeepsTheRecordWhenTeardownCannotBeVerified/tmux cannot be asked whether it is gone`
+   encodes, and that is outside T028. **No task owns it.** One line plus one test edit.
+2. **New this iteration: a second `DELETE` for the same id answers `404`, not `200`.** The
+   record is gone, so layer 3 refuses before the handler runs. `contracts/http-api.md`
+   does not say whether destroy is idempotent. T029 should decide deliberately rather than
+   inherit it.
+3. **New this iteration: `Destroy` is reachable with any record the caller can produce.**
+   It takes a `Session` rather than an id, exactly as `Prompt` and `Output` do, so the
+   ownership check lives entirely in the resolver that produced the record. That is the
+   intended seam — but the reaper (T036) and shutdown (T037) will call it with records
+   read straight from the store, with no owner to check against, and nothing in the type
+   distinguishes those two callers.
+4. **Iteration 28 #3 still stands:** `TestAMethodTheContractDoesNotDefineIsRefused`
+   (`server_test.go:159`) goes vacuous when T029 lands.
+5. **Iteration 28 #1 / 27 #1 still stands:** the two read routes disagree about which
+   sessions exist — `GET /sessions` lists a `dead` or past-deadline record while
+   `GET /sessions/{id}` answers `404` for it. Destroy does not create the case (it deletes
+   rather than marks), so this stays latent and **still unassigned**.
+6. **Iteration 28 #2 still stands:** a detail reports `state` from the record and never
+   asks the host, so a session whose window died reports `running` forever.
+7. **Iteration 27 #2 / 28 #4 still stands:** the list is unbounded in length.
+8. **Iteration 26 #1 / … / 28 #5 still stands:** nothing bounds the size of a capture.
+9. **Iteration 26 #2 / … / 28 #6 still stands:** `captured_at` is the daemon's clock, not
+   tmux's.
+10. **Iteration 24 #4 / … / 28 #7 still stands, and T028 did not resolve it:** a session
+    whose window vanished still resolves, and `GET /sessions/{id}/output` answers 500
+    rather than moving the record to `dead`. Destroy now handles the vanished session
+    correctly on its own path, but nothing observes the vanishing anywhere else, and
+    `Store.SetState` still has no caller outside tests. **Still no task assigns the
+    transition** — T036 or an operator.
+11. **Iteration 25 #2 / … / 28 #8 still stands:** nothing touches the idle clock;
+    `Store.Touch` still has no caller. T036.
+12. **Iteration 25 #1 / … / 28 #10 still stands:** a failed submit can leave prompt text in
+    a named tmux buffer. **Destroy does not delete the session's paste buffer**, which is
+    named for the session — `load-buffer -b <name>` outlives the session it was named for.
+    FR-020 says clear "any buffered output"; that is pane output, but a lingering paste
+    buffer is caller text surviving a teardown. T038 or an operator.
+13. **Iteration 23 #1 / … / 28 #11 still stands:** `POST /sessions` has no rate limit and
+    no concurrency cap. T033/T034.
+14. **Iteration 23 #4 / … / 28 #12 still stands:** `New` builds `tmuxctl.NewExec()`
+    unconditionally; T032 should build one controller in `main` and pass it in.
+15. **Iteration 22 #2 / … / 28 #13 still stands:** nothing forces a handler to use
+    `decode`.
+16. **Iteration 22 #3 / … / 28 #14 still stands:** an oversize body is refused twice with
+    two different reasons and two different statuses. T038.
+17. **Iteration 21 #1 / … / 28 #15 still stands:** the mux's own `404`/`405` are
+    `text/plain` while the contract says every response is JSON. **An operator should
+    rule; no task owns it.** T029 will have to look at this anyway — see #4.
+18. **Iteration 21 #2 / … / 28 #16 still stands:** the contract's `400` row for an
+    oversize body is unreachable behind layer 2.
+19. **Iteration 21 #3 / … / 28 #17 still stands:** `session.list`, `session.detail`, and
+    `session.output` are action names iteration 21 chose and `data-model.md` does not
+    carry. `session.destroy` **is** in `data-model.md`, so T029 has a name to use.
+20. **Iteration 21 #4 / … / 28 #18 still stands:** `RequestAudit` is not safe for
+    concurrent use, and nothing enforces it.
+21. **Iteration 21 #5 / … / 28 #19 still stands:** every exit path amends the record by
+    habit, not by construction. T038.
+22. **Iteration 20 #3 / … / 28 #20 still stands:** none of `docs/security.md`'s
+    "Transport & exposure" headers are applied by anything, and no task owns them.
+23. **Iteration 18 #1 / … / 28 #21 still stands:** `Store.Add` does not require a
+    `TokenHash`. T031.
+24. **Iteration 17 #2 / … / 28 #22 still stands:** `Delete`'s hash scrub is best effort.
+    Destroy now depends on it for FR-020, which does not make it any stronger.
+25. **Iteration 17 #3 / … / 28 #23 still stands:** nothing enforces that a `Session.ID` in
+    the store came from `NewID`.
+26. **Iteration 16 #1 / … / 28 #24 still stands:** `ResolveWorkDir` has an unavoidable
+    TOCTOU window before `tmux new-session -c`.
+27. **Iteration 16 #3 / … / 28 #25 still stands:** nothing re-stats an approved root.
+28. **Iteration 15 #1 / … / 28 #26 still stands:** FR-027's class admits a leading `-`
+    while `tasks.md` T014 calls it hostile.
+29. **Iteration 13 #1 / … / 28 #27 still stands:** `docs/auth-and-sessions.md`'s samples
+    are stale in four ways.
+30. **Iteration 12 #1 / … / 28 #28 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Run by hand again this iteration, green — and this
+    iteration is the first whose new test would catch a regression only `-race` can see.
+31. **Iteration 12 #2 / … / 28 #29 still stands:** three specs disagree on `Observe`'s
+    signature.
+32. **Iteration 12 #3 / … / 28 #30 still stands:** the replay cache is unbounded in count.
+33. **Iteration 11 #1 / … / 28 #31 still stands:** the audit trail cannot tell clock drift
+    from a forged future timestamp. T038.
+34. **Iteration 11 #2 / … / 28 #32 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right.
+35. **Iteration 10 #2 / … / 28 #33 still stands:** the signature covers timestamp and body
+    but not method or path.
+36. **Iteration 9 #1 / … / 28 #34 still stands:** `RequestAudit.Deny` takes a free
+    `string`. T038.
+37. **Iteration 8 #2 / … / 28 #35 still stands:** the loud default-root warning goes to
+    stderr while audit records go to stdout. T032.
+38. **Iteration 8 #1 / … / 28 #36 still stands:** `.env.example` does not exist. T040.
+39. **Iteration 7 #1 / … / 28 #37 still stands:** bidi and invisible Unicode are not
+    stripped by `tmuxctl.Strip`, by design. **Milestone 2 decides before rendering.**
+40. **Iteration 6 #3 / … / 28 #39 still stands, and T028 leaned on it:** `contracts/tmuxctl.md`
+    names only `no server running` for the empty-server case, while `exec.go` also matches
+    the missing-socket pair. `confirmGone`'s fallback depends on `List` treating both as
+    empty, so the contract is now load-bearing prose that is narrower than the code.
+    **Iteration 6 #1 (`Has` errors after the last session dies) is closed** — that is what
+    `confirmGone` answers.
+41. **Iteration 14 #1 / … / 28 #40 still stands:** `git checkout --`, `git restore`, and
+    `perl -i` are all outside the permission allowlist, so `PROMPT.md` step 6's documented
+    recovery path needs an approval an autonomous run cannot give. All three probes were
+    reverted with `Edit` in reverse. The commit message heredoc went through.
+42. **Iteration 1 #1 / … / 28 #41 still stands, twenty-ninth iteration carrying it:**
+    `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook
+    (which ran clean on this iteration's commit). Needs an operator or a task of its own.
+43. **Iteration 2 #2 / … / 28 #42 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again, again only because the finding was written down.
+    Twenty-eighth iteration of manual compensation for a one-line fix to step 9.
+44. **Iteration 6 #6 / … / 28 #43 still stands:** `AGENTS.md`'s command table has no entry
+    for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not
+    all.
