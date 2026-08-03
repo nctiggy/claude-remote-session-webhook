@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 )
 
 // SweepInterval is how often Run asks the store whether anything has expired.
@@ -88,6 +90,12 @@ type Reaper struct {
 	mgr      *Manager
 	interval time.Duration
 
+	// trail is the audit sink, and a sweep is the one teardown that needs it
+	// most: there is no request behind it and so no response for the outcome to
+	// travel back in. FR-041 makes the record the whole account of what the
+	// daemon did to a session nobody came back for.
+	trail *audit.Logger
+
 	// ticker and report are the two seams. Both are fields rather than calls
 	// into the package they come from, so that Run's loop and its loud-failure
 	// path are reachable from a test without elapsed time and without stderr.
@@ -95,17 +103,26 @@ type Reaper struct {
 	report func(error)
 }
 
-// NewReaper builds the reaper for a manager, on the documented interval.
+// NewReaper builds the reaper for a manager and an audit sink, on the documented
+// interval.
 //
 // A nil manager is refused rather than tolerated: a Reaper without one has no
 // store to sweep, no clock to sweep on, and no verified teardown to sweep with,
 // and a daemon that started with one would be a daemon whose sessions have no
 // end at all. That is the failure Principle VI ranks above not starting.
-func NewReaper(m *Manager) (*Reaper, error) {
-	if m == nil {
+//
+// A nil sink is refused for the same reason newServer refuses one. A reaper
+// destroys unsandboxed shells on nobody's request; one that could not write a
+// record would do it with nothing left to say it happened, which is the trail
+// FR-041 requires being absent exactly where nothing else reports.
+func NewReaper(m *Manager, trail *audit.Logger) (*Reaper, error) {
+	switch {
+	case m == nil:
 		return nil, errors.New("session: no session manager provided for the reaper; refusing to start")
+	case trail == nil:
+		return nil, errors.New("session: no audit sink provided for the reaper; refusing to start")
 	}
-	return &Reaper{mgr: m, interval: SweepInterval, ticker: systemTicker, report: reportToLog}, nil
+	return &Reaper{mgr: m, trail: trail, interval: SweepInterval, ticker: systemTicker, report: reportToLog}, nil
 }
 
 // Run sweeps on every tick until ctx is done. It is the goroutine the daemon
@@ -158,6 +175,11 @@ func (r *Reaper) Run(ctx context.Context) {
 // host cannot answer for must not leave the rest of an expired fleet standing —
 // they are unsandboxed shells past their bounds, and the reason this runs
 // without a request is that nothing else will come for them.
+//
+// Every session the sweep acts on gets one record, whichever way the teardown
+// went (FR-041). It is written here rather than in Run because Run discards what
+// a sweep returns, and because a record is the only account there is: a caller
+// learning its session is gone is a response, and a sweep has none.
 func (r *Reaper) Sweep(ctx context.Context) ([]Reaped, error) {
 	now := r.mgr.clock.Now()
 
@@ -170,10 +192,15 @@ func (r *Reaper) Sweep(ctx context.Context) ([]Reaped, error) {
 			continue
 		}
 
-		// The error names the bound and lets Destroy name the session. Neither
-		// carries the caller's label, the working directory, or anything else a
-		// request supplied — this string reaches a log line (FR-042, FR-043).
-		if err := r.mgr.Destroy(ctx, s); err != nil {
+		err := r.mgr.Destroy(ctx, s)
+		if emitErr := r.trail.Emit(reapRecord(s, expiry, err)); emitErr != nil {
+			failures = append(failures, emitErr)
+		}
+		if err != nil {
+			// The error names the bound and lets Destroy name the session.
+			// Neither carries the caller's label, the working directory, or
+			// anything else a request supplied — this string reaches a log line
+			// (FR-042, FR-043).
 			failures = append(failures, fmt.Errorf("reap a session past its %s bound: %w", expiry, err))
 			continue
 		}
@@ -181,6 +208,65 @@ func (r *Reaper) Sweep(ctx context.Context) ([]Reaped, error) {
 	}
 
 	return reaped, errors.Join(failures...)
+}
+
+// The reasons a sweep records, authored here as constants for the reason
+// httpapi's refusal reasons are: the trail may carry no byte a caller supplied
+// (FR-042), and a reason built at the call site out of an error, a name, or a
+// path is how one gets in.
+const (
+	reasonPastIdle     = "the session was idle past its idle timeout"
+	reasonPastAbsolute = "the session had reached its absolute lifetime"
+
+	// reasonPastUnnamedBound is unreachable — expiredAt returns one of the two
+	// above or nothing at all — and fails closed rather than recording a bound
+	// the daemon did not decide, the same ruling errScopeRefused makes.
+	reasonPastUnnamedBound = "the session was past a bound this daemon has no name for"
+
+	// reasonUnconfirmed prefixes the reason of a teardown tmux would not
+	// confirm. It is a prefix rather than a fourth pair of constants so that the
+	// bound reads the same in both records: an operator greps one string to find
+	// every session that hit a ceiling, whether or not it actually died.
+	reasonUnconfirmed = "the host could not confirm the teardown, so the record is kept for the next sweep: "
+)
+
+// reapRecord is the trail's account of one session a sweep acted on: allowed
+// when the host confirmed the teardown, denied when it did not (FR-020). A
+// denial is the loudest thing this daemon has to say — the session is a live
+// unsandboxed shell past its bound — and the trail is where an operator finds
+// out it is still there.
+//
+// The caller is the session's own owner, not a constant repeated here: the field
+// names whoever the ownership check would have compared against, and the reaper
+// acts on nobody's request. Remote stays empty for the same reason.
+//
+// The error is deliberately not in the record. What it would add is the session
+// id, which the record already carries under its own field, and every future
+// rewording of it would be a new chance for FR-042 to be broken by a %w.
+func reapRecord(s Session, expiry Expiry, err error) audit.Record {
+	rec := audit.Record{
+		Action:    audit.ActionReaperDestroy,
+		Caller:    string(s.Owner),
+		SessionID: s.ID,
+		Decision:  audit.Allow,
+		Reason:    reapReason(expiry),
+	}
+	if err != nil {
+		rec.Decision = audit.Deny
+		rec.Reason = reasonUnconfirmed + rec.Reason
+	}
+	return rec
+}
+
+func reapReason(expiry Expiry) string {
+	switch expiry {
+	case ExpiryIdle:
+		return reasonPastIdle
+	case ExpiryAbsolute:
+		return reasonPastAbsolute
+	default:
+		return reasonPastUnnamedBound
+	}
 }
 
 // expiredAt reports which bound s is past at now, or "" for a session still
@@ -208,11 +294,12 @@ func expiredAt(s Session, now time.Time) Expiry {
 	}
 }
 
-// reportToLog is where a sweep's failures go until T038 gives the reaper the
-// audit sink (reaper.destroy).
+// reportToLog is the last-resort channel for what a sweep could not say in the
+// trail: a teardown the host would not confirm, and the audit write that was
+// supposed to record it.
 //
 // It uses log rather than the trail for the reason httpapi's own last-resort
-// reporter does: this is what is left when there is nowhere structured to write.
+// reporter does: this is what is left when the sink is the thing that broke.
 // What it prints is an error built in this repo out of a bound name and a session
 // id, and never a secret, a token, a prompt, or pane content (FR-043).
 func reportToLog(err error) { log.Printf("crswd: %v", err) }

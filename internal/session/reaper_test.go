@@ -1,13 +1,19 @@
 package session
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 )
 
@@ -20,11 +26,54 @@ import (
 func reaperAt(t *testing.T, f managerFixture, at time.Time) *Reaper {
 	t.Helper()
 
-	r, err := NewReaper(f.managerAt(t, f.store, at))
+	r, _ := auditedReaperAt(t, f, at)
+	return r
+}
+
+// auditedReaperAt is reaperAt with the trail readable, for the tests that assert
+// what a sweep wrote rather than what it destroyed. The sink is returned rather
+// than reached for through the Reaper, which holds the Logger writing into it
+// and not the bytes.
+func auditedReaperAt(t *testing.T, f managerFixture, at time.Time) (*Reaper, *bytes.Buffer) {
+	t.Helper()
+
+	sink := &bytes.Buffer{}
+	r, err := NewReaper(f.managerAt(t, f.store, at), audit.NewTo(sink, func() time.Time { return at }))
 	if err != nil {
 		t.Fatalf("NewReaper() unexpected error: %v", err)
 	}
-	return r
+	return r, sink
+}
+
+// reapRecords decodes everything a sweep wrote to the trail.
+func reapRecords(t *testing.T, sink *bytes.Buffer) []map[string]any {
+	t.Helper()
+
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(sink.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("audit line %q is not JSON: %v", line, err)
+		}
+		out = append(out, rec)
+	}
+	return out
+}
+
+// onlyReapRecord asserts that a sweep produced exactly one record — FR-041's
+// whole claim, applied to the teardown that has no request behind it — and
+// returns it.
+func onlyReapRecord(t *testing.T, sink *bytes.Buffer) map[string]any {
+	t.Helper()
+
+	got := reapRecords(t, sink)
+	if len(got) != 1 {
+		t.Fatalf("the sweep emitted %d audit records (%v); FR-041 requires exactly one per session it acted on", len(got), got)
+	}
+	return got[0]
 }
 
 func mustSweep(t *testing.T, r *Reaper) []Reaped {
@@ -355,6 +404,177 @@ func TestDestroyRacingTheReaperReportsSuccessToBoth(t *testing.T) {
 	}
 }
 
+// FR-041 at the one teardown with no request behind it: a session nobody came
+// back for is destroyed on nobody's say-so, and the record is the entire account
+// of it. One per session acted on, under the caller the ownership check would
+// have compared against, naming the session by the daemon's own id.
+func TestSweepRecordsEverySessionItTakes(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	first, _ := mustCreate(t, f, f.request())
+	second, _ := mustCreate(t, f, f.request())
+
+	r, sink := auditedReaperAt(t, f, f.now.Add(IdleTimeout))
+	if n := len(mustSweep(t, r)); n != 2 {
+		t.Fatalf("Sweep() took %d sessions, want both", n)
+	}
+
+	got := reapRecords(t, sink)
+	if len(got) != 2 {
+		t.Fatalf("the sweep emitted %d audit records for two sessions (%v); FR-041 requires one each", len(got), got)
+	}
+
+	recorded := make(map[string]bool)
+	for _, rec := range got {
+		if want := string(audit.ActionReaperDestroy); rec["action"] != want {
+			t.Errorf("the sweep recorded action %v, want %q", rec["action"], want)
+		}
+		if want := string(audit.Allow); rec["decision"] != want {
+			t.Errorf("a confirmed teardown was recorded as %v, want %q", rec["decision"], want)
+		}
+		if want := string(auth.CallerOperator); rec["caller"] != want {
+			t.Errorf("the sweep recorded caller %v, want the session's own owner %q", rec["caller"], want)
+		}
+		if _, ok := rec["remote"]; ok {
+			t.Errorf("the sweep recorded a peer address (%v); there is no request behind a sweep", rec["remote"])
+		}
+		id, ok := rec["session_id"].(string)
+		if !ok {
+			t.Errorf("the sweep recorded session_id %v, which is not the 32-hex id of a session", rec["session_id"])
+			continue
+		}
+		recorded[id] = true
+	}
+	for _, want := range []string{first.ID, second.ID} {
+		if !recorded[want] {
+			t.Errorf("the sweep destroyed %q and recorded no session under that id", want)
+		}
+	}
+}
+
+// "Idle for an hour" and "ran for a day" are different facts about how the host
+// is being used, and the trail is the only place either is readable. An operator
+// greps one string to find every session that hit a ceiling.
+func TestSweepNamesTheBoundItEnforcedInTheRecord(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		after time.Duration
+		want  string
+	}{
+		{"idle", IdleTimeout, reasonPastIdle},
+		{"absolute", AbsoluteLifetime, reasonPastAbsolute},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newManagerFixture(t)
+			mustCreate(t, f, f.request())
+
+			r, sink := auditedReaperAt(t, f, f.now.Add(tc.after))
+			mustSweep(t, r)
+
+			if got := onlyReapRecord(t, sink)["reason"]; got != tc.want {
+				t.Errorf("a session past its %s bound was recorded as %v, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// The denial is the loudest thing this daemon has to say. tmux reported the kill
+// worked and the session is still there, so what the trail must carry is that the
+// bound was reached and the shell is *still running* — recording an allow here
+// would tell an operator the host is clean when it is not.
+func TestSweepRecordsATeardownItCouldNotConfirmAsARefusal(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+	f.tmux.SurviveKill(s.TmuxName())
+
+	r, sink := auditedReaperAt(t, f, f.now.Add(IdleTimeout))
+	if _, err := r.Sweep(context.Background()); !errors.Is(err, ErrOrphanedSession) {
+		t.Fatalf("Sweep() error = %v, want one wrapping %v", err, ErrOrphanedSession)
+	}
+
+	rec := onlyReapRecord(t, sink)
+	if want := string(audit.Deny); rec["decision"] != want {
+		t.Errorf("a session the host would not confirm gone was recorded as %v, want %q", rec["decision"], want)
+	}
+	if rec["session_id"] != s.ID {
+		t.Errorf("the refusal names session %v, want the one still running (%q)", rec["session_id"], s.ID)
+	}
+	reason, ok := rec["reason"].(string)
+	if !ok {
+		t.Fatalf("the refusal records reason %v, which is not a string", rec["reason"])
+	}
+	if !strings.HasPrefix(reason, reasonUnconfirmed) {
+		t.Errorf("the refusal reads %q, and does not say the teardown was unconfirmed", reason)
+	}
+	if !strings.Contains(reason, reasonPastIdle) {
+		t.Errorf("the refusal reads %q, and does not name the bound the session was past", reason)
+	}
+}
+
+// A sweep that took nothing says nothing. The trail is what an operator greps
+// for a session that ended without them; a record per tick per living session
+// would bury the ones that mean something.
+func TestSweepRecordsNothingForASessionInsideItsBounds(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	mustCreate(t, f, f.request())
+
+	r, sink := auditedReaperAt(t, f, f.now.Add(IdleTimeout-time.Nanosecond))
+	if n := len(mustSweep(t, r)); n != 0 {
+		t.Fatalf("Sweep() took %d sessions that are inside both bounds", n)
+	}
+
+	if got := reapRecords(t, sink); len(got) != 0 {
+		t.Errorf("a sweep that destroyed nothing wrote %d audit records: %v", len(got), got)
+	}
+}
+
+// brokenSink is an audit destination that cannot be written to — a closed pipe,
+// a full disk, a journald that went away.
+type brokenSink struct{ err error }
+
+func (s brokenSink) Write([]byte) (int, error) { return 0, s.err }
+
+// A record that could not be written is a session torn down with no account of
+// it, which is the failure FR-041 exists to prevent. The sweep cannot undo the
+// teardown, so what is left is to refuse to be silent: the failure joins the
+// sweep's error and reaches Run's loud-failure path, rather than being dropped
+// because the teardown itself worked.
+func TestSweepReportsAnAuditWriteItCouldNotMake(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+
+	want := errors.New("the journal went away")
+	at := f.now.Add(IdleTimeout)
+	r, err := NewReaper(f.managerAt(t, f.store, at), audit.NewTo(brokenSink{err: want}, func() time.Time { return at }))
+	if err != nil {
+		t.Fatalf("NewReaper() unexpected error: %v", err)
+	}
+
+	reaped, err := r.Sweep(context.Background())
+	if !errors.Is(err, want) {
+		t.Errorf("Sweep() error = %v, want one wrapping the sink's %v", err, want)
+	}
+	if len(reaped) != 1 {
+		t.Errorf("Sweep() reported %d sessions destroyed; the teardown succeeded and the record is what failed", len(reaped))
+	}
+	if _, ok := f.store.lookup(s.ID); ok {
+		t.Error("Sweep() kept the record of a session it did tear down, because it could not audit it")
+	}
+}
+
 // The loop, driven a tick at a time. Nothing here sleeps: the second send cannot
 // complete until Run has finished the sweep the first one started.
 func TestRunSweepsOnEveryTickAndStopsWithItsContext(t *testing.T) {
@@ -449,17 +669,36 @@ func TestRunReportsAFailedSweepRatherThanSwallowingIt(t *testing.T) {
 }
 
 // A reaper without a manager has no store to sweep, no clock to sweep on, and no
-// verified teardown to sweep with. Refused at construction, because a daemon that
-// started with one would be a daemon whose sessions have no end at all.
+// verified teardown to sweep with; one without a sink destroys unsandboxed shells
+// with nothing left to say it happened. Both are refused at construction, because
+// a daemon that started with either would be a daemon whose sessions have no end
+// at all, or no end anyone can account for.
 func TestNewReaperFailsClosed(t *testing.T) {
 	t.Parallel()
 
-	r, err := NewReaper(nil)
-	if err == nil {
-		t.Fatal("NewReaper() accepted a reaper with nothing to reap")
+	f := newManagerFixture(t)
+	cases := []struct {
+		name  string
+		mgr   *Manager
+		trail *audit.Logger
+	}{
+		{"nothing to reap", nil, audit.NewTo(io.Discard, nil)},
+		{"nowhere to record a reaping", f.mgr, nil},
+		{"neither", nil, nil},
 	}
-	if r != nil {
-		t.Error("NewReaper() returned a Reaper alongside an error")
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			r, err := NewReaper(tc.mgr, tc.trail)
+			if err == nil {
+				t.Fatal("NewReaper() accepted a reaper with " + tc.name)
+			}
+			if r != nil {
+				t.Error("NewReaper() returned a Reaper alongside an error")
+			}
+		})
 	}
 }
 
@@ -470,7 +709,7 @@ func TestTheSweepIsFinerThanTheBoundsItEnforces(t *testing.T) {
 	t.Parallel()
 
 	f := newManagerFixture(t)
-	r, err := NewReaper(f.mgr)
+	r, err := NewReaper(f.mgr, audit.NewTo(io.Discard, nil))
 	if err != nil {
 		t.Fatalf("NewReaper() unexpected error: %v", err)
 	}
