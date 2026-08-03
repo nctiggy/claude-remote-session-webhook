@@ -4113,3 +4113,204 @@ reaching for the store directly would be a second path to a record. Then T027–
 39. **Iteration 6 #6 / … / 25 #37 still stands:** `AGENTS.md`'s command table has no entry
     for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not
     all.
+
+## Iteration 27 — 2026-08-03 20:10
+
+**Did:** Completed **T026**, opening US3. Added `Manager.List(owner)` in
+`internal/session/manager.go` (one line, delegating to `Store.List`, which already
+sorted and scoped), and the HTTP half in `internal/httpapi/sessions.go`: `sessionEntry`,
+`listResponse`, `entryFor`, `listSessions`, `errListNoCaller`. One line in `handlerFor`
+wires the route; `notImplemented`'s comment now says two routes, not three. 8 new tests
+in `sessions_test.go`, 1 in `session/manager_test.go`. One existing test needed a
+one-line change — see Learned. Ticked T026 in **both** `ralph/IMPLEMENTATION_PLAN.md`
+and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (httpapi 89 top-level tests)
+go test -race -count=1 ./internal/...   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK (v1.62.2)
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git status                  clean after all three probes were reverted
+gitleaks (pre-commit)       1 commit scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **`Manager.List` is the seam, exactly as iteration 26 predicted.** `Server` still
+  reaches no `*Store`. Two methods now read records for a request — `Resolve` and
+  `List` — and **both take the owner as a parameter**, so there is no owner-blind lookup
+  for a later handler to reach for. `Store.List` already existed, already sorted, and
+  already answered the empty `CallerID` with nothing; the new method adds no logic and
+  deliberately no filter beyond the owner (a filter by name or state would be a way of
+  asking about records that are not the caller's).
+- **`sessionEntry` is its own type with the contract's eight fields and nowhere to put a
+  ninth.** The list never marshals a `session.Session`. `Session.TokenHash` carries
+  `json:"-"`, but a struct tag is something a future edit can remove; "there is no such
+  field on the type that leaves the daemon" is not. Probe 3 below is what that buys.
+- **`entryFor` is shared with T027 by construction.** `contracts/http-api.md` says the
+  detail response is "the same object shape as one list entry", so T027 should call
+  `entryFor` and add no second rendering. **It must not embed `sessionEntry` into
+  `createResponse`** — Go flattens an untagged embedded struct, which would silently add
+  `last_activity` and `adopted` to the 201 body and break the exact-field-set assertion
+  in `TestCreateAnswersTheContractResponse`.
+- **`entries := make([]sessionEntry, 0, len(owned))`, never `var entries []`.** A nil
+  slice marshals as `null`; the contract shows an array. This is one word and nothing
+  else in the package would notice losing it, so `TestAnEmptyFleetIsAnEmptyArray` asserts
+  the raw body is exactly `{"sessions":[]}`.
+- **No `SetSessionID` on this route.** A list acts on no single session, and stamping one
+  of the returned IDs would make the trail claim an operation on a session that was only
+  read about. The record carries caller + action + decision and stops there.
+- **The route touches tmux zero times**, and `TestListCostsNoTmuxCommand` pins it: a
+  fleet view that asked tmux about each session would fail whenever one window did, on
+  the one route milestone 2's dashboard is going to poll.
+- **No bearer token on this route.** It is caller-scoped, not session-scoped —
+  `Route.SessionScoped()` is false for `/sessions`, so `resolveSession` never wraps it
+  and layer 2 is the whole of its authentication.
+
+**Learned (do not rediscover):**
+
+- **Implementing a route breaks tests that used it as a cheap 501.**
+  `TestEveryLayer2FailureAnswersTheIdenticalResponse` (`middleware_test.go`) drove
+  `GET /sessions` to prime the replay cache and asserted `501` on the first use. Fixed by
+  reading `reachedStatus[Route{GET, "/sessions"}]` instead of a literal — the table
+  `sessions_test.go` already keeps for exactly this. **T027 and T029 will hit the same
+  class of failure**: grep for `StatusNotImplemented` in the test files before assuming a
+  new failure is your handler's fault.
+- **`reachedStatus` needs its row moved in the same edit as `handlerFor`.** Two router
+  sweeps read it; leaving it at 501 fails them with a message about the middleware, which
+  reads like a wiring bug and is not one.
+- **Asserting the exact field set of a response object is the assertion that earns its
+  keep.** Probe 3 (adding a `token` field to `sessionEntry` filled from the hash) fired
+  three separate checks: the `token`-key check, the hex-needle check, and the field-set
+  check in the contract test. A test that only looked for a `"token"` key would miss a
+  leak named `"t"` or `"hash"`; the field set catches any of them.
+- **Reverting a probe that adds a `hex.` call also has to un-add the import**, which
+  `goimports` (the PostToolUse hook) adds and removes on its own. Verified with
+  `git diff … | grep -iE 'hex|import'` returning nothing rather than by eye.
+- **`plant` takes a partial `session.Session` and fills only the zero fields**, so
+  `Owner`, `CreatedAt`, `State`, and `Adopted` are all settable per record — which is
+  what makes the owner-scoping, ordering, and adopted-flag tests cheap. It also spends no
+  signature, so a test can plant three sessions and still make exactly one signed request.
+- **Two bodiless requests to the same server need distinct signing instants.** The
+  signature covers timestamp + body only, so two `GET /sessions` at `testTime` are the
+  same signature and the second is a replay. `getSessions` takes an `at` for that reason
+  (same as `postSessionsAt`).
+
+**Left:** T027 is next (`GET /sessions/{id}` detail) and should be small — call
+`entryFor` on the record `SessionFrom` already resolved, answer 200, and move
+`reachedStatus`'s row. Then T028–T042.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: the list shows `dead` and past-deadline records.** `Store.List`
+   filters on owner alone, so a session in `dead` state — which every `{id}` route answers
+   `404` for (FR-033) — would still appear in the fleet view, as would one past its
+   `expires_at`. Neither is reachable today (nothing sets `dead`, see #8; nothing expires
+   records without the reaper), so this is latent rather than live. **No task assigns the
+   rule**, and inventing a filter here would be inventing a requirement (Principle II).
+   T028/T036 or an operator should rule.
+2. **New this iteration: the list is unbounded in length.** It returns every record the
+   caller owns with no cap, no page, and no cursor. `CRSW_MAX_SESSIONS` (T033) bounds it
+   in practice at 5, which is why this is a note and not a defect — but the bound comes
+   from a config value this route has never heard of.
+3. **New this iteration: `state` is whatever was last written to the record.** Nothing
+   re-checks the host, so a session whose window died reports `starting` or `running`
+   forever. Same root as #8; the list is now the most visible consumer of it.
+4. **Iteration 26 #1 still stands:** nothing bounds the size of a capture.
+   `CRSW_MAX_BODY_BYTES` bounds requests, not responses. See #2 — same shape, different
+   route.
+5. **Iteration 26 #2 still stands:** `captured_at` is the daemon's clock, not tmux's.
+6. **Iteration 24 #4 / 25 #3 / 26 #3 still stands:** a session whose window vanished still
+   resolves and `GET /sessions/{id}/output` answers 500 rather than moving the record to
+   `dead`. **No task assigns the transition.** T028 or an operator.
+7. **Iteration 25 #2 / 26 #4 still stands, now for five routes:** nothing touches the idle
+   clock. `Store.Touch` still has no caller. **A session read every minute is still reaped
+   at 60.** T036, in `resolveSession`, once. A list does not touch it either, and arguably
+   should not — polling a fleet view is not using a session.
+8. **Iteration 23 #2 / … / 26 #7 still stands:** nothing moves a record to `running`;
+   `Store.SetState` still has no caller outside tests. See #3.
+9. **Iteration 25 #1 / 26 #5 still stands:** a failed submit can leave prompt text in a
+   named tmux buffer. T038 or an operator on whether a `delete-buffer` is worth it.
+10. **Iteration 23 #1 / … / 26 #6 still stands:** `POST /sessions` has no rate limit and
+    no concurrency cap. T033/T034; `cfg.MaxSessions` and `cfg.CreateRatePerMin` still have
+    no reader.
+11. **Iteration 23 #4 / … / 26 #8 still stands:** `New` builds `tmuxctl.NewExec()`
+    unconditionally; T032 should build one controller in `main` and pass it in.
+12. **Iteration 22 #2 / … / 26 #9 still stands:** nothing forces a handler to use
+    `decode`. This route needs no body, which sidesteps rather than answers it.
+13. **Iteration 22 #3 / … / 26 #10 still stands:** an oversize body is refused twice with
+    two different reasons and two different statuses. T038.
+14. **Iteration 21 #1 / … / 26 #11 still stands:** the mux's own `404`/`405` are
+    `text/plain` while the contract says every response is JSON. **An operator should
+    rule; no task owns it.**
+15. **Iteration 21 #2 / … / 26 #12 still stands:** the contract's `400` row for an
+    oversize body is unreachable behind layer 2.
+16. **Iteration 21 #3 / … / 26 #13 still stands:** `session.list`, `session.detail`, and
+    `session.output` are action names iteration 21 chose and `data-model.md` does not
+    carry. This iteration made `session.list` load-bearing in a test.
+17. **Iteration 21 #4 / … / 26 #14 still stands:** `RequestAudit` is not safe for
+    concurrent use, and nothing enforces it.
+18. **Iteration 21 #5 / … / 26 #15 still stands:** every exit path amends the record by
+    habit, not by construction. T038.
+19. **Iteration 20 #3 / … / 26 #16 still stands:** none of `docs/security.md`'s
+    "Transport & exposure" headers are applied by anything, and no task owns them.
+20. **Iteration 18 #1 / … / 26 #17 still stands:** `Store.Add` does not require a
+    `TokenHash`. T031.
+21. **Iteration 17 #2 / … / 26 #18 still stands:** `Delete`'s hash scrub is best effort.
+22. **Iteration 17 #3 / … / 26 #19 still stands:** nothing enforces that a `Session.ID` in
+    the store came from `NewID`.
+23. **Iteration 16 #1 / … / 26 #20 still stands:** `ResolveWorkDir` has an unavoidable
+    TOCTOU window before `tmux new-session -c`.
+24. **Iteration 16 #3 / … / 26 #21 still stands:** nothing re-stats an approved root.
+25. **Iteration 15 #1 / … / 26 #22 still stands:** FR-027's class admits a leading `-`
+    while `tasks.md` T014 calls it hostile.
+26. **Iteration 13 #1 / … / 26 #23 still stands:** `docs/auth-and-sessions.md`'s samples
+    are stale in four ways.
+27. **Iteration 12 #1 / … / 26 #24 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Run by hand again this iteration, green.
+28. **Iteration 12 #2 / … / 26 #25 still stands:** three specs disagree on `Observe`'s
+    signature.
+29. **Iteration 12 #3 / … / 26 #26 still stands:** the replay cache is unbounded in count.
+30. **Iteration 11 #1 / … / 26 #27 still stands:** the audit trail cannot tell clock drift
+    from a forged future timestamp. T038.
+31. **Iteration 11 #2 / … / 26 #28 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right. It now also decides every `expires_at` in a list.
+32. **Iteration 10 #2 / … / 26 #29 still stands:** the signature covers timestamp and body
+    but not method or path. This route signs a nil body, so its signature is
+    interchangeable with any other bodiless request at the same instant — which is why
+    `getSessions` takes an instant.
+33. **Iteration 9 #1 / … / 26 #30 still stands:** `RequestAudit.Deny` takes a free
+    `string`. T038.
+34. **Iteration 8 #2 / … / 26 #31 still stands:** the loud default-root warning goes to
+    stderr while audit records go to stdout. T032.
+35. **Iteration 8 #1 / … / 26 #32 still stands:** `.env.example` does not exist. T040.
+36. **Iteration 7 #1 / … / 26 #33 still stands:** bidi and invisible Unicode are not
+    stripped by `tmuxctl.Strip`, by design. **Milestone 2 decides before rendering.** Note
+    this route returns a caller-supplied `name` and a resolved `work_dir`, neither of
+    which goes through `Strip` at all — `ValidateName`'s alphabet is what makes the name
+    safe, and nothing normalises the path.
+37. **Iteration 6 #1 / … / 26 #34 still stands:** killing the only session stops the tmux
+    server and `Has` then errors rather than returning false. T028.
+38. **Iteration 6 #3 / … / 26 #35 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case.
+39. **Iteration 14 #1 / … / 26 #36 still stands:** `git checkout --`, `git restore`, and
+    `perl -i` are all outside the permission allowlist, so `PROMPT.md` step 6's documented
+    recovery path needs an approval an autonomous run cannot give. All three probes were
+    reverted with `Edit` in reverse. The commit message heredoc went through.
+40. **Iteration 1 #1 / … / 26 #37 still stands, twenty-seventh iteration carrying it:**
+    `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook
+    (which ran clean on this iteration's commit). Needs an operator or a task of its own.
+41. **Iteration 2 #2 / … / 26 #38 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again, again only because the finding was written down.
+    Twenty-sixth iteration of manual compensation for a one-line fix to step 9.
+42. **Iteration 6 #6 / … / 26 #39 still stands:** `AGENTS.md`'s command table has no entry
+    for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not
+    all.

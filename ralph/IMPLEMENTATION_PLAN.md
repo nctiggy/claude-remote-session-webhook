@@ -94,7 +94,7 @@ owner plus its clock origin.
 
 ### US3 — See the fleet and tear it down for certain (P3)
 
-- [ ] T026 `internal/httpapi/sessions.go`: `GET /sessions`, owner-scoped, never returning a token or hash
+- [x] T026 `internal/httpapi/sessions.go`: `GET /sessions`, owner-scoped, never returning a token or hash
 - [ ] T027 `internal/httpapi/sessions.go`: `GET /sessions/{id}` detail
 - [ ] T028 `internal/session/manager.go`: `Manager.Destroy` — kill, then **verify gone** via `Has`; report success only on confirmation; clear record, token hash, and buffered output. A survivor returns an error and keeps the record
 - [ ] T029 `internal/httpapi/sessions.go`: `DELETE /sessions/{id}` → 200 on verified teardown, **409** plus a prominent audit record when the session survives
