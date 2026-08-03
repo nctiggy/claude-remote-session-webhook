@@ -333,3 +333,91 @@ and the target tests describe the same trap. Then T005–T042.
    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, with `PROMPT.md` step 9 naming
    only the plan. Ticked both by hand again, again only because the finding was written
    down. Three iterations of manual compensation for a one-line fix to step 9.
+
+---
+
+## Iteration 5 — 2026-08-03 01:50
+
+**Did:** Completed **T004**. Added `internal/tmuxctl/fake.go` (in-memory `Controller`,
+recording the full argv of every call plus the stdin that rode with it) and
+`fake_test.go` (30 tests). Ticked T004 in **both** `ralph/IMPLEMENTATION_PLAN.md` and
+`specs/.../tasks.md`. All six scenarios the contract requires are reproducible:
+`SurviveKill` (the 409 path), `Vanish` (died on its own), `Seed` (managed + unmanaged
+lookalike + unrelated + a 25-hour-old survivor), `FailOp` (tmux itself failing, kept
+distinct from absence), and argv recording.
+
+Gate, executed not asserted:
+
+```
+go build ./...            OK
+go vet ./...              OK
+go test -count=1 ./...    OK (internal/tmuxctl 30 tests; cmd/crswd: no test files)
+go test -race ./...       OK
+golangci-lint run         OK
+gofmt -l .                empty
+go.sum                    absent  ✅ zero third-party deps still holds
+```
+
+**Learned (do not rediscover):**
+
+- **The argv builders are package-level (`argvNew`, `argvSendKeys`, `argvCapturePane`,
+  …), not private to the fake — deliberately, and T005 should USE them rather than
+  write its own.** `fake.go` and `exec.go` are the same package, so `exec.go` can call
+  them directly: `exec.CommandContext(ctx, argv[0], argv[1:]...)`. Each returns a fresh
+  slice with `"tmux"` at index 0. A fake whose argv agrees with the contract but
+  disagrees with the real controller is worse than no fake, and this is the only
+  structural defence against that drift. If T005 duplicates the strings instead, every
+  argv assertion written against the fake between now and then becomes decorative.
+- **`SendKeys` argv is `send-keys -t =name: -- <keys...>` with NO `-l`, and that is a
+  reasoned decision, not an oversight.** `contracts/tmuxctl.md` shows two forms — `-l --`
+  for the claude constant and a bare `Enter` — which a single variadic method cannot both
+  produce. `-l` would send `Enter` as five literal characters instead of the Enter key;
+  omitting it still delivers the claude constant literally, because tmux sends any
+  argument that is not a known key name as a literal string. So the uniform no-`-l` shape
+  is the only one correct for both. `--` is kept as a guard for a key name beginning with
+  `-`. **T005's real-tmux integration test is what settles this for good** — if it
+  disagrees, fix the shared builder and both sides move together.
+- **Mutation-probing (iteration 4's trick) again earned its keep.** Four mutations were
+  injected and each was caught by the intended test: `-e` added to `capture-pane`
+  (2 tests), `Kill` ignoring `SurviveKill` (1), `Has` swallowing the exec error into
+  `false, nil` (1), and the Paste payload appended to argv (2, incl. all 5 hostile
+  payloads). Then reverted and the gate re-run. Do this *before* committing, not after.
+- **`Paste` records TWO calls**, matching the two tmux commands: `load-buffer -b <name> -`
+  carrying the payload on `Stdin`, then `paste-buffer -d -b <name> -t =<name>:`. The
+  buffer is named for the session, so two sessions pasting at once cannot read each
+  other's text. `Calls()` deep-copies, so a test cannot corrupt the record it just read.
+- **`List` sorts by name** so tests are not at the mercy of map iteration order. Do not
+  read that as tmux guaranteeing the same ordering — it is a determinism aid, nothing more.
+  Note `crswd-9f2c…` sorts *before* `crswd-expired` (`9` < `e`); an expected-order table
+  got this wrong on the first run.
+- **`Managed` comes from `@crswd-managed` being non-empty, never from the name.** `New`
+  alone does not set it — the manager sets it explicitly in T018. That is what makes the
+  `-decoy` lookalike a provenance test rather than a string test.
+- `SetNow(func() time.Time)` injects the clock that stamps `Created` on sessions made
+  through `New`, so T031/T036 can age a session without waiting for one. `Seed` takes
+  `Created` directly for survivors.
+
+**Left:** T005 is next (`internal/tmuxctl/exec.go`, the real controller — and it must add
+`run: build-tags: [tmux]` to `.golangci.yml`, see finding 1). Then T006–T042.
+
+**Findings (noticed, not fixed):**
+
+1. **Iteration 3 #1 / 4 #1 — now due.** `.golangci.yml` sets no `build-tags`, so T005's
+   `//go:build tmux` file in `exec_tmux_test.go` will be invisible to `golangci-lint run`
+   locally *and* in CI. **T005 must add `run: build-tags: [tmux]` as part of its own
+   change**, or ship a file no linter ever reads.
+2. **Iteration 1 #1 / 2 #1 / 3 #2 / 4 #2 still stands, fifth iteration carrying it:**
+   `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook
+   (which fired correctly on this iteration's commit — `1 commits scanned … no leaks
+   found`). No iteration will ever fix it: it is not in the plan and Principle IV forbids
+   wandering. It needs an operator or a task of its own.
+3. **Iteration 2 #2 / 3 #3 / 4 #3 still stands:** duplicate checkbox state in
+   `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+   plan. Ticked both by hand again, again only because the finding was written down.
+   Fourth iteration of manual compensation for a one-line fix to step 9.
+4. **New this iteration:** `fake.go` compiles into the production package, not just into
+   tests, because other packages' `_test.go` files must import it (the `httptest` pattern).
+   It is unreachable from `cmd/crswd` and adds no dependency, but it does mean the fake's
+   knobs — `SurviveKill`, `FailOp`, `Vanish` — are exported API on a package the daemon
+   links. Nothing calls them outside tests today. Worth a lint rule or a build-tag split
+   if that ever stops being true.
