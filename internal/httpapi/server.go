@@ -141,20 +141,45 @@ type Server struct {
 	ln net.Listener
 }
 
-// New builds the server for a validated Config. It binds nothing; Listen does.
+// New builds the production server for a validated Config: the real tmux and the
+// real audit sink. It binds nothing; Listen does. This is the only form
+// cmd/crswd needs, and it is the pairing config.Load and audit.New have.
 //
 // The Authenticator, the audit sink, the session manager, and the create limiter
-// are built here rather than passed in: cmd/crswd loads the config and hands it
+// are built below rather than passed in: cmd/crswd loads the config and hands it
 // over, and a daemon whose auth is assembled by its caller is a daemon that can
 // be assembled without it. The manager gets cfg.Roots and cfg.MaxSessions
 // directly and the limiter gets cfg.CreateRatePerMin, so the allowlist a session
 // is checked against, the cap it is counted against, and the rate it is spent
 // from are the ones config.Load resolved at startup.
 //
-// This is the one place the host clock is chosen. Everything below takes the
-// clock it was given, which is what makes the limiter's behaviour testable
+// NewWith is the one place the host clock is chosen. Everything below it takes
+// the clock it was given, which is what makes the limiter's behaviour testable
 // without elapsed time.
 func New(cfg *config.Config) (*Server, error) {
+	return NewWith(cfg, tmuxctl.NewExec(), audit.New())
+}
+
+// NewWith is New with the two collaborators that reach outside the process
+// injected: the controller that drives tmux, and the sink the trail is written
+// to. It is the seam config.LoadFrom, audit.NewTo, auth.NewWithClock, and
+// session.NewManagerWithClock each have, and it exists for the same reason — a
+// test of the whole daemon needs one that starts no real session and whose trail
+// it can read back, and those are exactly the two things production reaches out
+// of the process for.
+//
+// Everything else still comes from the Config, deliberately. The approved roots,
+// the concurrent-session cap, the create budget, and the shared secret are the
+// constraints standing in for the permission prompt (Principle VI), so they are
+// not injectable here: a caller may say where tmux and the trail are, never how
+// bounded the daemon is.
+//
+// internal/audit/leak_test.go is the caller (T039). It proves FR-042 across the
+// whole daemon at once, which means driving the real routes through the real
+// middleware — and it lives in package audit_test, where newServer is out of
+// reach, because internal/httpapi imports internal/audit and not the other way
+// round.
+func NewWith(cfg *config.Config, tmux tmuxctl.Controller, trail *audit.Logger) (*Server, error) {
 	if cfg == nil {
 		return nil, errors.New("httpapi: no configuration provided; refusing to start")
 	}
@@ -162,7 +187,10 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the request authenticator: %w", err)
 	}
-	sessions, err := session.NewManager(tmuxctl.NewExec(), session.NewStore(), cfg.Roots, cfg.MaxSessions)
+	// A nil controller is refused by NewManager and a nil sink by newServer, so
+	// neither is checked twice here: an injected collaborator that is missing
+	// fails closed at the same line a production one would.
+	sessions, err := session.NewManager(tmux, session.NewStore(), cfg.Roots, cfg.MaxSessions)
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the session manager: %w", err)
 	}
@@ -170,7 +198,7 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the create rate limiter: %w", err)
 	}
-	return newServer(cfg, net.Listen, authn, audit.New(), sessions, creates)
+	return newServer(cfg, net.Listen, authn, trail, sessions, creates)
 }
 
 func newServer(
