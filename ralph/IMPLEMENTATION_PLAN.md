@@ -97,7 +97,7 @@ owner plus its clock origin.
 - [x] T026 `internal/httpapi/sessions.go`: `GET /sessions`, owner-scoped, never returning a token or hash
 - [x] T027 `internal/httpapi/sessions.go`: `GET /sessions/{id}` detail
 - [x] T028 `internal/session/manager.go`: `Manager.Destroy` — kill, then **verify gone** via `Has`; report success only on confirmation; clear record, token hash, and buffered output. A survivor returns an error and keeps the record
-- [ ] T029 `internal/httpapi/sessions.go`: `DELETE /sessions/{id}` → 200 on verified teardown, **409** plus a prominent audit record when the session survives
+- [x] T029 `internal/httpapi/sessions.go`: `DELETE /sessions/{id}` → 200 on verified teardown, **409** plus a prominent audit record when the session survives
 - [ ] T030 `internal/httpapi/isolation_test.go`: cross-session isolation suite — session A's output unreachable through any request scoped to B, and B's token on A's ID returning a 404 byte-identical to the unknown-ID response
 
 ### US4 — Restart without leaving unowned shells (P4)
