@@ -7,8 +7,9 @@ a `*.example.com` hostname. Each session runs in a tmux window with
 `--dangerously-skip-permissions`. Two clients: a browser UI behind Cloudflare Access
 (Google identity), and a companion Claude skill authenticating by HMAC signature.
 
-> **Status: scaffolded, no implementation yet.** The contract (`AGENTS.md`), the
-> constitution, and the security docs are written. Code starts at milestone 1.
+> **Status: milestone 1 in progress.** The daemon core — config, `tmuxctl`, session
+> CRUD, HMAC auth, the audit log, and the reaper — is built and tested. There is no
+> UI and no Cloudflare Access validation yet; both are milestone 2.
 
 ---
 
@@ -162,13 +163,63 @@ yet.
 
 ## Deployment
 
-Example systemd user unit and `cloudflared` config live in [`deploy/`](deploy/).
+The daemon runs as a **systemd user service**, with a Cloudflare Tunnel dialling out
+beside it. Example files for both live in [`deploy/`](deploy/), and
+[`deploy/README.md`](deploy/README.md) is the operator's page: what you supply, in
+what order, and why three settings in the unit are load-bearing.
 
-**Every file there is an example.** This repository is public, so no real hostname,
-tunnel ID, Access AUD tag, allowed email, or path appears in it — those come from
-the environment or 1Password at deploy time. `deploy/README.md` lists exactly what
-you supply and in what order, including how to verify the daemon really is bound to
-loopback once it is running.
+**Every file in `deploy/` is an example.** This repository is public, so no real
+hostname, tunnel ID, Access AUD tag, allowed email, or path appears in it — those
+come from the environment or 1Password at deploy time.
+
+> **Milestone 1 is not ready for a public hostname.** Cloudflare Access JWT
+> validation lands in milestone 2; until then HMAC on the API is the only check,
+> and Access is what keeps unauthenticated traffic off the box. Demo it locally.
+
+```bash
+go build -o ~/bin/crswd ./cmd/crswd
+cp deploy/crswd.example.service ~/.config/systemd/user/crswd.service   # then edit
+cp deploy/cloudflared.example.yml ~/.cloudflared/config.yml           # then edit
+
+# The secret comes from 1Password, into a file outside the repo, mode 0600.
+# EnvironmentFile parses NAME=value lines — write the assignment, not the secret.
+mkdir -p ~/.config/crswd
+( umask 077; printf 'CRSW_SHARED_SECRET=%s\n' \
+    "$(op read 'op://Lobster/crswd/shared-secret')" > ~/.config/crswd/env )
+
+loginctl enable-linger "$USER"          # or the unit stops when you log out
+systemctl --user daemon-reload
+systemctl --user enable --now crswd
+```
+
+`Environment=CRSW_SHARED_SECRET=` in the unit would be wrong even in a private
+repo: anyone who can run `systemctl --user show crswd` can read a unit back.
+
+### Reading the audit trail
+
+Audit records are structured JSON on stdout, which makes the journal the entire
+storage design — no file mode, no rotation, no disk to fill.
+
+```bash
+journalctl --user -u crswd -f -o cat | jq .
+journalctl --user -u crswd -o cat | jq 'select(.action == "auth.reject")'
+```
+
+`-o cat` is what makes this work: it prints the message alone, without the syslog
+prefix systemd would otherwise put in front of the JSON. No record carries prompt
+text, pane output, a token, a token hash, or the shared secret — `internal/audit`
+asserts that across every operation, so the journal is safe to read in a way a
+pane never is.
+
+### Verifying the exposure model
+
+```bash
+ss -tlnp | grep crswd                  # 127.0.0.1:PORT, never 0.0.0.0
+curl -sS http://<host-lan-ip>:PORT/    # must fail to connect
+```
+
+If the second command reaches the daemon, stop and fix the bind address before
+going any further.
 
 ## Licence
 
