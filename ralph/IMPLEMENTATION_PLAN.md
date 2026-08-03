@@ -111,7 +111,7 @@ owner plus its clock origin.
 - [x] T034 `internal/httpapi/ratelimit.go`: hand-rolled token bucket on the injected clock (no `golang.org/x/time/rate`), applied per caller to create, returning 429. Test does not sleep
 - [x] T035 `internal/session/token.go`: enforce token expiry at 24h, equal to the absolute lifetime by construction so the two cannot diverge
 - [x] T036 `internal/session/reaper.go`: reaper goroutine enforcing idle (60m) and absolute (24h) lifetimes with the same verified teardown, driven by an injected clock so tests do not sleep. Covers a destroy racing the reaper
-- [ ] T037 `cmd/crswd/main.go`: graceful shutdown on `SIGTERM` via `signal.NotifyContext` and `Server.Shutdown`, reaping every live session with verification; a failed teardown is logged loudly, never swallowed
+- [x] T037 `cmd/crswd/main.go`: graceful shutdown on `SIGTERM` via `signal.NotifyContext` and `Server.Shutdown`, reaping every live session with verification; a failed teardown is logged loudly, never swallowed
 
 ### US6 — The audit trail answers "what happened" (P6)
 

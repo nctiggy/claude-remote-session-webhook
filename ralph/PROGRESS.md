@@ -6510,3 +6510,257 @@ T040–T042 (ship it).
 64. **Iteration 6 #6 / … / 36 #62 still stands:** `AGENTS.md`'s command table has no entry for
     `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both were
     run by hand this iteration, green.
+
+---
+
+## Iteration 38 — 2026-08-03 22:15
+
+**Did:** Completed **T037**, graceful shutdown. `Manager.DestroyAll` in
+`internal/session/manager.go` walks `store.snapshot()` and tears every record down through
+`Manager.Destroy` — the same verified teardown an explicit destroy uses — joining failures
+rather than stopping at the first. `Server.Shutdown(ctx)` in `internal/httpapi/server.go`
+drains with `http.Server.Shutdown` on a bounded `shutdownDrain` (10s), closes what the drain
+could not finish, then calls `DestroyAll` and returns the joined error. `cmd/crswd/main.go`
+wraps its context in `signal.NotifyContext` (SIGINT **and** SIGTERM), serves in a goroutine,
+and on either a signal or a listener that stopped on its own runs `Shutdown` on a fresh
+30s budget. Four tests in `internal/httpapi/server_test.go`. Ticked T037 in **both**
+`ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK
+go test -tags tmux ./...    OK (real tmux on this host)
+go test -race ./...         OK
+golangci-lint run           OK
+gofmt -l .                  empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git diff --stat             +308/-6 across four files (none new)
+gitleaks (pre-commit)       1 commit scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **The teardown runs on a context deliberately *not* derived from the signal's.**
+  `signal.NotifyContext`'s context is already done by the time shutdown starts — it is what
+  reported the signal — and every tmux command goes through `exec.CommandContext`. Deriving the
+  shutdown budget from it would mean a daemon that exits reporting a fleet it never asked the
+  host about. `context.WithTimeout(context.WithoutCancel(ctx), shutdownBudget)`.
+- **`DestroyAll` is owner-blind, like the reaper's sweep and for the same reason.** Shutdown acts
+  on the daemon's own behalf; there is no caller whose sessions these are. A sweep scoped to one
+  identity would leave every other session running with `--dangerously-skip-permissions` and
+  nothing alive that owns it. It uses the unexported `store.snapshot()` iteration 37 added, which
+  is why the method has to live in `internal/session` rather than in the handler package.
+- **Drain first, then tear down, with separate budgets.** Draining means a prompt already in
+  flight finishes against a session that still exists, and `http.Shutdown` stops accepting first
+  so nothing new can create a session after the sweep has decided what there was to destroy. The
+  10s drain is a fraction of the 30s budget on purpose: draining is the polite half, teardown is
+  the half FR-040 requires, and a stalled peer may cost the daemon the former and not the latter.
+- **A failed teardown is returned, not reported.** `Server.report` exists for failures with
+  nowhere to go; this one has somewhere — `run` joins it, `main` logs it, and the process exits
+  non-zero, so systemd records a stop that left something behind. Calling `report` *as well*
+  would print it twice and would not make it any louder.
+- **`stop()` is called a second time, on purpose,** before the slow part. A second SIGTERM during
+  a shutdown that is not making progress must kill the process rather than be swallowed by a
+  handler that has already fired.
+- **SIGINT is handled as well as SIGTERM.** `quickstart.md` only sends `kill -TERM`, but an
+  operator demoing this locally presses Ctrl-C, and a daemon that reaped under systemd and not
+  under a shell would leave the developer host carrying exactly what FR-040 prevents.
+- **30s and 10s are this iteration's numbers.** No FR or spec states either — see finding 4.
+
+**Learned (do not rediscover):**
+
+- **`confirmGone` falls back to `List` when `Has` fails, so failing only `OpHas` on the fake is
+  not "a host that cannot be asked".** The first version of
+  `TestShutdownReportsAHostItCannotAskAbout` passed against a *successful* shutdown for that
+  reason — `Kill` had already removed the session, so `List` confirmed it gone. Fail **both**
+  `OpHas` and `OpList` to reach the unknown-answer branch. This applies to every future test of
+  verified teardown, not just this one.
+- **`sessionFixture.plant` seeds the tmux fake as well as the store** (`sessions_test.go:132`), so
+  a planted session is genuinely on the fake host and a `Kill` against it is a real one. Nothing
+  extra is needed to make a teardown test meaningful.
+- **A helper that returns only a context has to discard its `cancel`,** which is what `go vet`'s
+  lostcancel analyzer is for. The shutdown context is therefore built inline in `run` with
+  `defer cancel()`; the first draft's `shutdownContext(ctx)` helper was rewritten before it ever
+  reached the gate.
+- **Receiving twice from the `serving` channel deadlocks.** `Serve` sends exactly once, so the
+  branch where it stopped on its own must not fall through to a second `<-serving`. Hence the
+  `stoppedOnItsOwn` flag rather than a second receive.
+- **No probe was reverted this iteration** — the wrong-premise test above was the equivalent, and
+  it failed loudly rather than silently passing. Finding 62's recovery-path problem was not hit.
+
+**Left:** T038–T039 (audit), T040–T042 (ship it). **T037 was the last task before the plan's
+"Not shippable before T037" line lifts — but see findings 1 and 2 before believing it.**
+
+**Findings (noticed, not fixed):**
+
+1. **NEEDS CLARIFICATION, and it is the one that matters: `Reaper.Run` still has no caller, and
+   T037 was the last task that could plausibly have started it.** Iteration 37 raised this
+   (37 #1) and asked for an operator ruling; none arrived, and T037's text names only shutdown,
+   so this iteration did not guess (Principle II, Principle IV). The consequence is now concrete:
+   `tasks.md`'s checkpoint after T037 reads "Every Constitution Principle VI bound is enforced
+   structurally. The milestone is now shippable", and the idle and absolute lifetimes are
+   enforced by a goroutine **nothing starts**. `httpapi.New` builds the manager and no reaper;
+   `cmd/crswd` builds a `Server` and never sees one. Shipping on that checkpoint would put an
+   unreaped fleet behind a public hostname. **An operator must rule, or a task must own it,
+   before T042 signs the milestone off.**
+2. **New this iteration: a shutdown teardown leaves no audit record.** The action set in
+   `internal/audit/audit.go` and `data-model.md` has no name for it — `session.destroy` belongs to
+   a request and `reaper.destroy` to a sweep — so the one moment the daemon destroys the *entire*
+   fleet is invisible in the trail, including the case where a session could not be confirmed gone
+   (that reaches stderr through `log.Fatalf` and nothing else). **T038 is the natural owner and
+   does not name this case.**
+3. **New this iteration: a drain that times out can race a create.** `http.Close` drops the
+   connection but does not wait for the handler goroutine, so a `Manager.Create` already past its
+   store insert could land *after* `DestroyAll` took its snapshot, and that session would outlive
+   the shutdown. Narrow — it needs a create in flight when the 10s drain expires — and the same
+   window is why the drain is bounded separately at all. **No task owns it.**
+4. **New this iteration: `shutdownBudget` (30s) and `shutdownDrain` (10s) are unstated numbers.**
+   Nothing in `specs/` or `docs/` fixes either, and T041's systemd unit will need a
+   `TimeoutStopSec` consistent with the first — the default 90s is what they were chosen against.
+   Same shape as finding 9 (the limiter's burst). **T040/T041 should settle it, or an operator.**
+5. **Iteration 37 #2 still stands, and is now reachable:** `Store.Touch` has no caller in the
+   request path, so `LastActivity` never moves off `CreatedAt` and every session would die 60
+   minutes after creation however hard it is being used — *if* anything started the reaper
+   (finding 1). One line in the session-scoped resolver. **No task owns it; an operator should
+   rule.**
+6. **Iteration 37 #3 still stands:** one slow tmux exec stalls a whole sweep, and `DestroyAll`
+   inherits the same serial shape — a hung `has-session` at shutdown holds up every session behind
+   it until the 30s budget expires. **No task owns it.**
+7. **Iteration 37 #4 still stands:** neither the reaper nor shutdown produces `dead` records;
+   `Destroy` deletes outright, so `StateDead` stays unreachable and `Store.SetState` has no caller
+   outside tests.
+8. **Iteration 36 #1 / 37 #5 still stands:** `Session.TokenMatches` is exported and answers the
+   match without the expiry. **An operator should rule; no task owns it.**
+9. **Iteration 35 #1 / … / 37 #8 still stands:** nothing states that the create limiter's burst is
+   half the rate. **An operator should rule, or T040 should settle it.**
+10. **Iteration 35 #2 / … / 37 #9 still stands:** the 429 carries no `Retry-After`, deliberately.
+11. **Iteration 35 #3 / … / 37 #10 still stands:** create budgets do not survive a restart, while
+    the cap does. **No task owns it.**
+12. **Iteration 35 #4 / … / 37 #11 still stands:** three independent clocks wired to
+    `systemClock{}` by construction, not by check. Shutdown adds no fourth — it takes no clock at
+    all, only a deadline.
+13. **Iteration 36 #3 / 37 #7 still stands:** `Resolve` checks the credential before the
+    dead-state check, so a session both destroyed and past its ceiling reads as
+    `ErrTokenExpired`. **T038.**
+14. **Iteration 34 #2 / … / 37 #12 still stands:** the concurrent-session cap counts records in
+    any state, `dead` included — of which there are none (finding 7).
+15. **Iteration 34 #1 / … / 37 #13 still stands:** `contracts/http-api.md` gives the 429 a row and
+    **no body**. **An operator should rule.**
+16. **Iteration 34 #3 / … / 37 #14 still stands:** `httpapi.New` builds the authenticator, the
+    manager and the limiter before asserting the listen address is loopback.
+17. **Iteration 32 #1 / … / 37 #15 still stands:** `Reconcile` drops the plaintext credential
+    `Adopt` returns, so an adopted session is owned, listed, capped and reapable but **drivable by
+    nobody** — and now also destroyed at shutdown, which is the only ending it has that does not
+    require a reaper nobody starts. **An operator should rule; no task owns it.**
+18. **Iteration 33 #2 / … / 37 #16 still stands:** a session destroyed at startup for outliving its
+    ceiling leaves no audit record. Finding 2 is the same hole at the other end of the process.
+    **T038 names neither.**
+19. **Iteration 33 #3 / … / 37 #17 still stands:** nothing forces `Reconcile` to be called at all
+    — the guard is one-directional. It was listed as "a candidate for T037"; T037 is shutdown and
+    did not touch startup order, so it is **still unowned**.
+20. **Iteration 33 #4 / … / 37 #18 still stands and grew:** `cmd/crswd` has no test files, and
+    `run()` now carries the signal wiring, the serve/shutdown select, the second `stop()`, and the
+    budget — none of it reachable from a test, because T037's text puts the tests in
+    `internal/httpapi/server_test.go` and `run` has no seam for a fake config or a fake server.
+    **An operator should rule whether `cmd/crswd` gets a seam before T042.**
+21. **Iteration 32 #3 / … / 37 #19 still stands:** `Adopt` is not safe to call twice concurrently.
+22. **Iteration 31 #1 / … / 37 #20 still stands:** `docs/auth-and-sessions.md:135–137` describes a
+    cross-caller isolation test that cannot be written as specified in milestone 1.
+23. **Iteration 31 #2 / … / 37 #21 still stands:** `GET /sessions` is outside every sweep in the
+    isolation suite.
+24. **Iteration 30 #1 / … / 37 #22 still stands:** `notImplemented` is unreachable dead code.
+25. **Iteration 30 #2 / … / 37 #23 still stands:** the mux's `405` is `text/plain` with an `Allow`
+    header, contradicting `contracts/http-api.md`. **An operator should rule.**
+26. **Iteration 30 #3 / … / 37 #24 still stands:** the contract's test matrix has no row for
+    destroy-then-destroy, destroy-racing-the-reaper, or destroy-racing-shutdown.
+27. **Iteration 30 #4 / … / 37 #25 still stands:** `errDestroyRefused` is unreachable and untested.
+28. **Iteration 29 #1 / … / 37 #26 still stands:** `rollback` verifies with `Has` alone and never
+    calls `confirmGone`, so a failed create on a host where the killed session was the only one
+    reports a **false orphan**. This iteration's wrong-premise test is the same fact from the
+    other side (see Learned). One line plus one test edit. **No task owns it.**
+29. **Iteration 29 #3 / … / 37 #27 still stands:** `Destroy` takes a `Session` rather than an id,
+    which is what lets `Adopt`, `Sweep` and now `DestroyAll` tear down a record from a copy.
+30. **Iteration 28 #1 / … / 37 #28 still stands:** the two read routes disagree about which
+    sessions exist. **Unassigned.**
+31. **Iteration 28 #2 / … / 37 #29 still stands:** a detail reports `state` from the record and
+    never asks the host.
+32. **Iteration 24 #4 / … / 37 #30 still stands:** a session whose window vanished still resolves
+    and answers 500 rather than moving to `dead`. Shutdown does not fix this either — it destroys
+    the record whatever state it was in. **An operator should rule.**
+33. **Iteration 27 #2 / … / 37 #31 still stands:** the list is unbounded in length.
+34. **Iteration 26 #1 / … / 37 #32 still stands:** nothing bounds the size of a capture.
+35. **Iteration 26 #2 / … / 37 #33 still stands:** `captured_at` is the daemon's clock, not tmux's.
+36. **Iteration 25 #1 / … / 37 #34 still stands:** a failed submit can leave prompt text in a named
+    tmux buffer, and **neither `Destroy`, nor the reaper, nor shutdown deletes the session's paste
+    buffer**.
+37. **Iteration 22 #2 / … / 37 #35 still stands:** nothing forces a handler to use `decode`.
+38. **Iteration 22 #3 / … / 37 #36 still stands:** an oversize body is refused twice with two
+    different reasons and two different statuses. T038.
+39. **Iteration 21 #1 / … / 37 #37 still stands:** the mux's own `404` is `text/plain` while the
+    contract says every response is JSON.
+40. **Iteration 21 #2 / … / 37 #38 still stands:** the contract's `400` row for an oversize body is
+    unreachable behind layer 2.
+41. **Iteration 21 #3 / … / 37 #39 still stands:** `session.list`, `session.detail`, and
+    `session.output` are action names iteration 21 chose and `data-model.md` does not carry.
+    `reaper.destroy` is named by T038 and does not exist yet; a shutdown action is named by
+    nobody (finding 2).
+42. **Iteration 21 #4 / … / 37 #40 still stands:** `RequestAudit` is not safe for concurrent use,
+    and nothing enforces it.
+43. **Iteration 21 #5 / … / 37 #41 still stands:** every request exit path amends the record by
+    habit, not by construction. T038.
+44. **Iteration 20 #3 / … / 37 #42 still stands:** none of `docs/security.md`'s "Transport &
+    exposure" headers are applied by anything.
+45. **Iteration 18 #1 / … / 37 #43 still stands:** `Store.Add` does not require a `TokenHash`, and
+    `AddCapped` inherits that.
+46. **Iteration 17 #2 / … / 37 #44 still stands:** `Delete`'s hash scrub is best effort.
+47. **Iteration 17 #3 / … / 37 #45 still stands:** nothing enforces that a `Session.ID` in the
+    store came from `NewID`, beyond `adoptableID` on the adoption path.
+48. **Iteration 16 #1 / … / 37 #46 still stands:** `ResolveWorkDir` has an unavoidable TOCTOU
+    window before `tmux new-session -c`.
+49. **Iteration 16 #3 / … / 37 #47 still stands:** nothing re-stats an approved root.
+50. **Iteration 15 #1 / … / 37 #48 still stands:** FR-027's class admits a leading `-`.
+51. **Iteration 13 #1 / … / 37 #49 still stands:** `docs/auth-and-sessions.md`'s samples are stale
+    in four ways, and finding 22 above is a fifth.
+52. **Iteration 12 #1 / … / 37 #50 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Run by hand again this iteration, green — and this
+    iteration's shutdown-over-a-real-socket test is a fifth that needs it.
+53. **Iteration 12 #2 / … / 37 #51 still stands:** three specs disagree on `Observe`'s signature.
+54. **Iteration 12 #3 / … / 37 #52 still stands:** the replay cache is unbounded in count.
+55. **Iteration 11 #1 / … / 37 #53 still stands:** the audit trail cannot tell clock drift from a
+    forged future timestamp. T038.
+56. **Iteration 11 #2 / … / 37 #54 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right.
+57. **Iteration 10 #2 / … / 37 #55 still stands:** the signature covers timestamp and body but
+    **not the method or the path**. **No task owns it.**
+58. **Iteration 9 #1 / … / 37 #56 still stands:** `RequestAudit.Deny` takes a free `string`.
+59. **Iteration 8 #2 / … / 37 #57 still stands:** the loud default-root warning goes to stderr
+    while audit records go to stdout — and `reportToLog` in `reaper.go`, plus `main`'s
+    `log.Fatalf` on a failed shutdown, are now two more unstructured writers to stderr.
+    **Assigned to T038.**
+60. **Iteration 8 #1 / … / 37 #58 still stands:** `.env.example` does not exist, and it will need
+    `CRSW_MAX_SESSIONS` and `CRSW_CREATE_RATE_PER_MIN` described (names only, never a value).
+    T040 — see findings 4 and 9.
+61. **Iteration 7 #1 / … / 37 #59 still stands:** bidi and invisible Unicode are not stripped by
+    `tmuxctl.Strip`, by design. **Milestone 2 decides before rendering.**
+62. **Iteration 6 #3 / … / 37 #60 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case while `exec.go` also matches the missing-socket
+    pair.
+63. **Iteration 14 #1 / … / 37 #61 still stands:** `git checkout --`, `git restore`, `perl -i` and
+    a heredoc are all outside the permission allowlist, so `PROMPT.md` step 6's documented recovery
+    path needs an approval an autonomous run cannot give. Nothing needed reverting this iteration;
+    repeated `-m` flags carried the commit message, and this entry was again appended with `Edit`
+    against the previous iteration's last finding.
+64. **Iteration 1 #1 / … / 37 #62 still stands, thirty-eighth iteration carrying it:** `loop.sh`'s
+    sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook (which ran clean on
+    this iteration's commit). Needs an operator or a task of its own.
+65. **Iteration 2 #2 / … / 37 #63 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the plan.
+    Ticked both by hand again, again only because the finding was written down. Thirty-seventh
+    iteration of manual compensation for a one-line fix to step 9.
+66. **Iteration 6 #6 / … / 37 #64 still stands:** `AGENTS.md`'s command table has no entry for
+    `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both were
+    run by hand this iteration, green.
