@@ -12,10 +12,12 @@
 // method and path alone would let a captured request be replayed with a
 // different prompt in it.
 //
-// Verification is not yet complete. Verify enforces the signature (FR-007,
-// FR-009) and the 300-second window (FR-008); the replay cache (FR-010) joins
-// it in the next task, on the same injected clock the window uses. Until then
-// nothing in this repo binds a listener.
+// Verify now runs all four of the layer-2 checks: the signature (FR-007,
+// FR-009), the 300-second window (FR-008), and the seen-signature cache
+// (FR-010), the last two on the same injected clock. What it does not yet do
+// is name the caller or hide which check failed — the Caller type and the one
+// opaque error arrive in T012, and the uniform 401 that FR-011 is really about
+// is built in internal/httpapi. Nothing in this repo binds a listener yet.
 package auth
 
 import (
@@ -55,7 +57,7 @@ const (
 //
 // It is not a tolerance to be widened when clocks disagree — it is the interval
 // during which a captured request is replayable, and the replay cache's TTL is
-// derived from it (2 × maxSkew, T011). Widening this widens both. Fix the clock.
+// derived from it (replayTTL). Widening this widens both. Fix the clock.
 const maxSkew = 300 * time.Second
 
 // The failure modes, one value each. They exist to be recorded server-side: the
@@ -76,6 +78,7 @@ var (
 	ErrTimestampOutsideWindow = errors.New("request timestamp is outside the accepted window")
 	ErrMissingSignature       = errors.New("missing request signature header")
 	ErrSignatureMismatch      = errors.New("request signature does not match")
+	ErrReplayedRequest        = errors.New("request signature has already been used")
 	ErrUnreadableBody         = errors.New("request body could not be read")
 	ErrBodyTooLarge           = errors.New("request body exceeds the configured maximum")
 )
@@ -90,6 +93,7 @@ type Authenticator struct {
 	secret  []byte
 	maxBody int64
 	clock   Clock
+	replay  *replayCache
 }
 
 // New builds an Authenticator on the host's clock. This is the constructor the
@@ -120,7 +124,15 @@ func NewWithClock(secret []byte, maxBody int64, clock Clock) (*Authenticator, er
 	key := make([]byte, len(secret))
 	copy(key, secret)
 
-	return &Authenticator{secret: key, maxBody: maxBody, clock: clock}, nil
+	// One cache per Authenticator, on the same clock the window is measured
+	// against. Two Authenticators would be two independent memories of what has
+	// been seen, which is a replay cache that does not refuse replays.
+	return &Authenticator{
+		secret:  key,
+		maxBody: maxBody,
+		clock:   clock,
+		replay:  newReplayCache(clock),
+	}, nil
 }
 
 // Verify checks that the request's timestamp is inside the window and that its
@@ -164,6 +176,17 @@ func (a *Authenticator) Verify(r *http.Request) error {
 	// difference leaks the expected signature under timing (FR-009).
 	if !hmac.Equal([]byte(want), []byte(signature)) {
 		return ErrSignatureMismatch
+	}
+
+	// Last, and only for a signature that has already proved genuine. Observing
+	// first would hand two things to anyone who can reach the listener and has
+	// no secret at all: the cache would grow an entry per unauthenticated
+	// request, and — worse — sending a copy of the bytes an honest caller is
+	// about to send would record that request's signature before it arrived,
+	// refusing it as a replay. The value keyed on is the one the daemon
+	// computed, which hmac.Equal has just proved is the one the caller sent.
+	if !a.replay.Observe(want) {
+		return ErrReplayedRequest
 	}
 	return nil
 }
