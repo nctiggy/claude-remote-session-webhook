@@ -71,7 +71,7 @@ owner plus its clock origin.
 
 ### US1 — Start a session from a signed request (P1, MVP)
 
-- [ ] T009 `internal/auth/hmac.go`: HMAC-SHA256 over `timestamp + "." + rawBody` with `hmac.Equal`, body re-buffered for the handler. Tests: valid, bad signature, tampered body, missing headers
+- [x] T009 `internal/auth/hmac.go`: HMAC-SHA256 over `timestamp + "." + rawBody` with `hmac.Equal`, body re-buffered for the handler. Tests: valid, bad signature, tampered body, missing headers
 - [ ] T010 `internal/auth/hmac.go`: 300s timestamp window enforced in **both** directions against an injected `Clock`; test proves a far-future timestamp is rejected
 - [ ] T011 `internal/auth/replay.go`: replay cache keyed on signature, TTL `2 × skew`, with `Observe` checking and recording in **one** critical section; test proves a second use is refused and two concurrent replays yield one winner
 - [ ] T012 `internal/auth/caller.go`: `Caller` identity derived server-side only, plus one opaque error so no caller learns which check failed

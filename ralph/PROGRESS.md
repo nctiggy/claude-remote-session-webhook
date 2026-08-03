@@ -948,3 +948,138 @@ fixtures in T009–T012 or T017/T035** — gitleaks will block the commit.
     written down. Eighth iteration of manual compensation for a one-line fix to step 9.
 11. **Iteration 6 #6 / 7 #7 / 8 #9 still stands:** `AGENTS.md`'s command table has no entry
     for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
+
+---
+
+## Iteration 10 — 2026-08-03 02:59
+
+**Did:** Completed **T009**, opening US1. Added `internal/auth/hmac.go`
+(`Authenticator`, `New`, `Verify`, the `Header*` constants and six sentinel errors) and
+`hmac_test.go` (46 tests / 82 cases). HMAC-SHA256 over `timestamp + "." + rawBody`,
+compared with `hmac.Equal`, body buffered and put back for the handler. Ticked T009 in
+**both** `ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (internal/auth 46 tests / 82 cases)
+go test -race -count=1 ./...   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+```
+
+**Learned (do not rediscover):**
+
+- **`Verify(r *http.Request) error` today; T012 changes the *return*, not the checks.**
+  The six exported sentinels (`ErrMissingTimestamp`, `ErrMalformedTimestamp`,
+  `ErrMissingSignature`, `ErrSignatureMismatch`, `ErrUnreadableBody`, `ErrBodyTooLarge`)
+  exist so the table test can say *which* check failed. FR-011's uniformity is a property
+  of the **HTTP response** (T020), not of this function — T012 should collapse these into
+  one opaque value at the boundary while keeping the specific one for the audit reason,
+  and should not need to touch the verification logic to do it.
+- **`fmt.Fprintf(mac, ...)` does not pass the lint gate**, and neither does `_ =` —
+  `errcheck` has `check-blank: true`. `hash.Hash` documents that `Write` never errors, so
+  `sign` builds the payload with `strconv.AppendInt` + `append` and does **one checked
+  `mac.Write`**, returning an unreachable `errUnsignable`. **Expect this on every future
+  `hash.Hash`/`io.Writer` write in this repo**; the shape above is the one that lints.
+- **The signed timestamp is the *parsed* value re-rendered (`strconv.AppendInt`), not the
+  header string.** One instant therefore has exactly one signature, which is what T011's
+  replay cache keys on. Pinned by `TestVerifyCanonicalisesTheTimestamp` (header
+  `+1785706480` signed canonically still verifies). Non-canonical spellings that sign
+  their own spelling simply mismatch — fail-closed either way.
+- **The strconv parse error is dropped, never wrapped.** `strconv.ParseInt` quotes its
+  input in the message, and these errors become the audit `reason`, which may not carry
+  caller-supplied bytes (iteration 9's finding #1 is exactly this hole).
+  `TestVerifyErrorsRevealNothing` is the guard and it fired when probed.
+- **The body is read through `LimitReader(r.Body, maxBody+1)`, not `maxBody`.** A bare
+  limit truncates silently, so an oversize request would be reported as a *signature
+  mismatch* — indistinguishable from an attack in the trail, and it would hide the real
+  cause from the operator. `TestVerifyStopsReadingAtTheLimit` also proves the limit bounds
+  the read itself, not just the verdict; buffering to sign is the one place the daemon
+  holds caller bytes before deciding anything.
+- **The body is put back on *every* path, including the denials.** T020 still has to
+  audit and answer a rejected request, and a half-drained reader is a trap for whatever
+  reads next. Two separate tests cover the success and failure paths.
+- **`auth.New` takes `(secret []byte, maxBody int64)` and copies the secret.** Aliasing
+  `config.SharedSecret` would let a key change under a request in flight. `New` also
+  refuses an empty secret and a non-positive `maxBody` — config already enforces the
+  32-byte minimum, so this is the assertion that the two cannot drift, not a second
+  opinion on the length.
+- **gosec G101 fires on a test constant named `testSecret` when the *value* has enough
+  entropy** — `"test-only-auth-secret-32-bytes!!"` tripped it, `"test-only-shared-secret-
+  for-auth"` does not, and `config_test.go`'s equivalent never did. G101 scores entropy as
+  well as matching the identifier. Fix by spelling the fixture in plain lowercase words
+  (still exactly 32 bytes, still gitleaks-safe per iteration 8), **not** with a nolint.
+- **Test fixtures compute the signature independently** (`signatureOver` re-derives it
+  from the contract's description with `crypto/hmac`), so a bug in the production payload
+  layout cannot be mirrored by the fixture meant to catch it. `testTimestamp` is
+  `contracts/http-api.md`'s own example instant, so **T010 can pin its fake clock to that
+  one value and every fixture here keeps passing.**
+- **Mutation-probing (iterations 4–9) earned its keep a seventh time.** Six mutations,
+  each caught only by its intended test: the payload separator removed (5 tests), the
+  read limit off by one (2), re-buffering removed (2), the `sha256=` prefix dropped (5),
+  the secret not copied (1), and the strconv error wrapped (1). Reverted, then the gate
+  re-run. One mutation is **not** caught and cannot be: replacing `hmac.Equal` with `==`
+  passes every test, because timing is not observable from a unit test. It is a review
+  item forever — `docs/auth-and-sessions.md` lists it first for that reason.
+
+**Left:** T010 (300s window both directions against a `Clock` in `internal/auth/clock.go`)
+is next, then T011 (replay cache), T012 (`Caller` + one opaque error), and on to T042.
+Iteration 8's warning still applies to T010–T012 and T017/T035: **no hex-shaped
+fixtures** — gitleaks blocks the commit.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: `contracts/http-api.md` promises `400` for an oversize body, but
+   auth runs before the decoder, so the size limit is enforced twice and the first one
+   wins.** `Verify` returns `ErrBodyTooLarge` for a body over `CRSW_MAX_BODY_BYTES`;
+   T021's `MaxBytesReader` never sees it. **T020 must decide** whether that maps to `400`
+   (matching the contract's status-code table and its test matrix row) or is folded into
+   the uniform `401` (matching FR-011's "any layer-2 failure"). The sentinel is separate
+   from the auth failures precisely so T020 can choose; it is a genuine gap between
+   `docs/auth-and-sessions.md`'s sample `Verify` and the contract, not a code defect.
+2. **New this iteration: the signature covers the timestamp and body, but not the method
+   or the path.** That is what FR-007 and the contract specify, and it is sufficient today
+   because every route's effect is determined by its body — but it means a signed body is
+   valid on *any* route. `POST /sessions` and `POST /sessions/{id}/prompt` take different
+   shapes, so `DisallowUnknownFields` (T021) rejects a cross-route replay in practice.
+   Worth an operator knowing the defence is the decoder, not the signature.
+3. **Iteration 9 #1 still stands and now has a second guard:** `Reason` can carry
+   arbitrary text. This package's errors are all fixed strings and a test enforces it —
+   **T038 should pass server-authored constants for the same reason**, and T039's leak
+   test is the assertion that catches it if not.
+4. **Iteration 9 #2 still stands:** `audit.Emit`'s error has no handler yet. T020 owns the
+   ruling — a request that could not be audited has not been completed.
+5. **Iteration 8 #2 / 9 #3 still stands:** the loud default-root warning goes to stderr
+   while audit records go to stdout. T032 owns deciding this when startup wiring lands.
+6. **Iteration 8 #1 / 9 #4 still stands:** `.env.example` does not exist, so the
+   `.gitleaks.toml` allowlist entry for it guards nothing. T040 owns creating it.
+7. **Iteration 7 #1 / 8 #3 / 9 #5 still stands:** bidi and invisible Unicode
+   (U+202A–U+202E, U+2066–U+2069, U+200B–U+200D, U+2028/U+2029) are not stripped by
+   `tmuxctl.Strip`, by design. The milestone-2 dashboard must decide it.
+8. **Iteration 6 #2 / 7 #2 / 8 #4 / 9 #6 still stands:** a failed `paste-buffer` leaves
+   caller prompt text in a named tmux buffer. Needs a `delete-buffer` argv builder in
+   `fake.go` *and* `exec.go` together, which is why no single task owns it.
+9. **Iteration 6 #1 / 7 #3 / 8 #5 / 9 #7 still stands:** T028 will report a false failure
+   on the last session — killing the only session stops the tmux server and `Has` then
+   errors rather than returning false. Use `List`. Do not loosen `Has`.
+10. **Iteration 6 #3 / 7 #4 / 8 #6 / 9 #8 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case and is stale.
+11. **Iteration 1 #1 / 2 #1 / 3 #2 / 4 #2 / 5 #2 / 6 #4 / 7 #5 / 8 #7 / 9 #9 still stands,
+    tenth iteration carrying it:** `loop.sh`'s sweep commit uses `--no-verify`, bypassing
+    the gitleaks pre-commit hook (which ran clean on this iteration's commit — `1 commits
+    scanned … no leaks found`). Not in the plan, and Principle IV forbids wandering —
+    needs an operator or a task of its own.
+12. **Iteration 2 #2 / 3 #3 / 4 #3 / 5 #3 / 6 #5 / 7 #6 / 8 #8 / 9 #10 still stands:**
+    duplicate checkbox state in `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`,
+    `PROMPT.md` step 9 naming only the plan. Ticked both by hand again, again only because
+    the finding was written down. Ninth iteration of manual compensation for a one-line
+    fix to step 9.
+13. **Iteration 6 #6 / 7 #7 / 8 #9 / 9 #11 still stands:** `AGENTS.md`'s command table has
+    no entry for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)"
+    is not all.
