@@ -263,3 +263,73 @@ are the Foundational phase and block every user story.
    but nothing formats YAML. `.golangci.yml` was hand-formatted; the hook's
    `npx --no-install prettier` path no-ops without a `node_modules`, which this repo
    deliberately does not have. Not a problem, just not the safety net it looks like.
+
+---
+
+## Iteration 4 — 2026-08-03 01:52
+
+**Did:** Completed **T003**. Created the `internal/tmuxctl` package: the `Controller`
+interface and `SessionInfo` in `controller.go` (signatures copied exactly from
+`specs/001-crswd-daemon-core/contracts/tmuxctl.md`, not paraphrased), the two target
+helpers in `target.go`, and `target_test.go`. Ticked T003 in **both**
+`ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`. First code under `internal/`.
+
+Gate, executed not asserted:
+
+```
+go build ./...      OK
+go vet ./...        OK
+go test ./...       OK (internal/tmuxctl 4 tests pass; cmd/crswd: no test files)
+golangci-lint run   OK
+gofmt -l .          empty
+go.sum              absent  ✅ zero third-party deps still holds
+```
+
+**Learned (do not rediscover):**
+
+- **Iteration 3's config-probe trick generalises to code, and it caught a real bug
+  here.** The tests were mutation-probed by editing `PaneTarget` to return `"=" + name`
+  and re-running: 4 assertions failed, then the edit was reverted and the gate re-run.
+  Doing this *before* committing is what surfaced a wrong `wantPane` in the lookalike
+  table row — a passing test suite and a test suite that asserts nothing look identical
+  from the exit code. **`sed`/`cp` are not in the permissions allowlist, so do the
+  mutation with the Edit tool, not Bash.** (Only `go`/`git`/`gofmt`/`goimports`/
+  `golangci-lint` are allowed; a compound Bash command is refused if *any* part of it
+  is outside the list.)
+- **The contract file is the source of truth for signatures, and it disagrees with the
+  task text in ordering only.** `tasks.md` lists the methods as `New, SetOption,
+  SendKeys, Paste, CapturePane, Kill, Has, List`; `contracts/tmuxctl.md` declares them
+  `New, SendKeys, Paste, CapturePane, Kill, Has, SetOption, List`. Same eight methods,
+  same signatures — order is not semantic in a Go interface. Resolved by taking the
+  contract's exact signatures and the task's reading order. Nothing to clarify.
+- **The package holds no `Target()` and must not grow one.** Two exported helpers is a
+  deliberate API choice from the contract, so a caller physically cannot pass the wrong
+  target kind. A future "simplification" that merges them re-opens `can't find pane`.
+- **Test package is `tmuxctl_test` (external).** Nothing here needs unexported access,
+  and it keeps T004's fake honest about what the rest of the daemon can actually reach.
+- T003 deliberately ships **no implementation** — no `fake.go` (T004), no `exec.go`
+  (T005), no `ansi.go` (T006). An interface with no implementer still builds, vets, and
+  lints clean, so the phase splits exactly as the plan assumes.
+
+**Left:** T004 is next (`internal/tmuxctl/fake.go` + `fake_test.go`: in-memory
+`Controller` recording exact argv, simulating kill-succeeds-but-`Has`-still-present, a
+self-vanished session, a `List` with managed + unmanaged-lookalike + unrelated, a
+25-hour-old session, and exec failure distinct from absence). The lookalike name
+`crswd-<id>-decoy` is already used in `target_test.go` — reuse it so the adoption tests
+and the target tests describe the same trap. Then T005–T042.
+
+**Findings (noticed, not fixed):**
+
+1. **Iteration 3 finding #1 still stands and is now one task away from biting:**
+   `.golangci.yml` sets no `build-tags`, so T005's `//go:build tmux` file in
+   `exec_tmux_test.go` will be invisible to `golangci-lint run` locally *and* in CI.
+   T005 must add `run: build-tags: [tmux]` as part of its own change.
+2. **Iteration 1 #1 / 2 #1 / 3 #2 still stands, still unfixed, fourth iteration
+   carrying it:** `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks
+   pre-commit hook proven live in iteration 2. No iteration will ever fix it — it is not
+   in the plan, and Principle IV says do not wander outside the task. It needs an
+   operator or a task of its own.
+3. **Iteration 2 #2 / 3 #3 still stands:** duplicate checkbox state in
+   `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, with `PROMPT.md` step 9 naming
+   only the plan. Ticked both by hand again, again only because the finding was written
+   down. Three iterations of manual compensation for a one-line fix to step 9.

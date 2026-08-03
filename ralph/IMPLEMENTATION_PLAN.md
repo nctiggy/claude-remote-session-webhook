@@ -62,7 +62,7 @@ owner plus its clock origin.
 
 ### Foundation — tmux, config, audit
 
-- [ ] T003 `internal/tmuxctl`: `Controller` interface and `SessionInfo` in `controller.go`, plus **two** target helpers in `target.go` — `SessionTarget` → `=name`, `PaneTarget` → `=name:`. They are not interchangeable
+- [x] T003 `internal/tmuxctl`: `Controller` interface and `SessionInfo` in `controller.go`, plus **two** target helpers in `target.go` — `SessionTarget` → `=name`, `PaneTarget` → `=name:`. They are not interchangeable
 - [ ] T004 `internal/tmuxctl/fake.go`: in-memory `Controller` recording exact argv, able to simulate kill-succeeds-but-still-present, self-vanished sessions, a lookalike in `List`, a 25-hour-old session, and exec failure distinct from absence
 - [ ] T005 `internal/tmuxctl/exec.go`: real controller over `exec.Command`, argv slices only. `Paste` uses `load-buffer -b <buf> -` with the payload on **stdin** plus `paste-buffer -d`; `capture-pane -p` **without `-e`**; `Has` distinguishes exit-1 from exec failure; `List` treats "no server running" as empty. Integration test behind `//go:build tmux` on an isolated socket
 - [ ] T006 `internal/tmuxctl/ansi.go`: defensive control-sequence stripper with golden-file tests in `testdata/`
