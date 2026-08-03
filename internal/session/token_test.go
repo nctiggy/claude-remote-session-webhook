@@ -356,6 +356,11 @@ func TestTokenMatchesAcceptsOnlyTheIssuedToken(t *testing.T) {
 		{name: "the token with leading whitespace", presented: " " + tok},
 		{name: "the token with a trailing newline", presented: tok + "\n"},
 		{name: "the token's own hash, hex encoded", presented: hex.EncodeToString(hash[:])},
+		// Hashed like any other and refused on the compare. There is no length
+		// precheck — see TestTokenMatchesComparesInConstantTime, which admits no
+		// comparison here but hmac.Equal's — and the work stays bounded because
+		// the whole header is capped at httpapi's maxHeaderBytes.
+		{name: "a value far longer than any token", presented: strings.Repeat("0", TokenLen*64)},
 	}
 
 	for _, tt := range tests {
