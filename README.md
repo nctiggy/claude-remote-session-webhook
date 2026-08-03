@@ -102,6 +102,64 @@ what it does. Wrap it in the loop only once the behaviour is boring.
 
 ---
 
+## Configuration
+
+The daemon is configured **only** by the environment, read once at startup before
+it binds or spawns anything. There are no flags and no config file; `-h` reports
+usage and nothing else. [`.env.example`](.env.example) carries the same list with
+longer descriptions, and names only — never a value.
+
+Anything that would weaken a bound is a **startup failure, not a warning**.
+Sessions run with `--dangerously-skip-permissions`, so these variables are what
+stands in for the permission prompt that is gone.
+
+| Variable | Required | Default | Refuses to start when |
+|---|---|---|---|
+| `CRSW_SHARED_SECRET` | **yes** | — | unset, or shorter than 32 bytes |
+| `CRSW_ALLOWED_ROOTS` | no | `$HOME/code`, with a loud banner | an entry is empty, relative, missing, unresolvable, or not a directory |
+| `CRSW_LISTEN` | no | `127.0.0.1:8765` | the host is not a loopback IP literal, or the port is out of range |
+| `CRSW_MAX_SESSIONS` | no | `5` | not a whole number, or below 1 |
+| `CRSW_CREATE_RATE_PER_MIN` | no | `6` | not a whole number, or below 1 |
+| `CRSW_MAX_BODY_BYTES` | no | `65536` | not a whole number, or below 1 |
+
+Generate the secret with `openssl rand -hex 32`. It is never logged, never put in
+an error string, and never echoed back — not even its length. Formatting a
+`Config` redacts it under every verb, `%#v` included.
+
+Notes worth having before you set these:
+
+- **`CRSW_ALLOWED_ROOTS` is colon-separated**, like `PATH`, and every entry is
+  resolved through its symlinks at startup so a root cannot be swapped between the
+  check and the spawn. It is the real blast-radius control — keep it narrow. Unset
+  is legal but announced on stderr at every start, and the default is `$HOME/code`
+  rather than `$HOME`, which would put SSH keys and cloud credentials inside the
+  allowlist.
+- **`CRSW_LISTEN` will not take a hostname.** `localhost` is refused rather than
+  resolved: `/etc/hosts` or a resolver could move the bind off loopback without
+  this value changing. Reachability is the tunnel's job.
+- **The create burst is derived, not configured.** The limiter is a per-caller
+  token bucket filling at `CRSW_CREATE_RATE_PER_MIN` and holding `max(1, rate/2)`
+  tokens — 3 at the default. There is no burst variable on purpose, since a second
+  knob could be set in disagreement with the first. A create spends a token
+  whatever it goes on to answer.
+- **An oversize body is answered `401`, not `400`.** The signature covers bytes the
+  daemon declined to read, so the request fails authentication before anything
+  parses it — which is also why no part of it can reach the audit trail.
+- **`HOME` matters only when `CRSW_ALLOWED_ROOTS` is unset**, and must then be an
+  absolute path or startup fails.
+
+Three limits are **constants in the code, not variables**: the idle timeout (60m),
+the absolute session lifetime (24h, which is the session token's lifetime by
+construction so the two cannot diverge), and the signed-request timestamp window
+(300s in both directions). They bound the host; an environment file that could
+widen them could unbound it.
+
+This is milestone 1. Milestone 2 adds the Cloudflare Access variables — the AUD
+tag, the team domain, and the allowed-email list — which the daemon does not read
+yet.
+
+---
+
 ## Deployment
 
 Example systemd user unit and `cloudflared` config live in [`deploy/`](deploy/).
