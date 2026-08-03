@@ -552,3 +552,124 @@ calls the stripper or T025's handler does — and say which in its commit. Then 
    `go vet ./...` both skip `//go:build tmux` files entirely, so the table's "Test (all)"
    is not all. A future iteration running only the documented commands will believe a
    broken integration test is green.
+
+---
+
+## Iteration 7 — 2026-08-03 02:20
+
+**Did:** Completed **T006**. Added `internal/tmuxctl/ansi.go` (`Strip`, an ESC-sequence
+state machine), `ansi_test.go` (18 tests), and 14 golden fixture pairs in
+`internal/tmuxctl/testdata/`. Ticked T006 in **both** `ralph/IMPLEMENTATION_PLAN.md` and
+`specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (internal/tmuxctl 84 tests)
+go test -race -count=1 ./...   OK
+go test -tags tmux ./...    OK (8 integration tests, real tmux)
+golangci-lint run           OK
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+```
+
+**The decision iteration 6 left to this task: `Strip` is NOT wired into
+`Exec.CapturePane`.** T025's handler calls it, at the point output leaves the daemon.
+Reasons, so T025 does not re-litigate it:
+
+- FR-031's boundary is "before it leaves the daemon". The handler is the only place
+  every read path converges, so stripping there holds for **every** `Controller` — the
+  real one, the fake, and anything added later. Stripping inside `Exec` would cover one
+  implementation.
+- More concretely: T025's test runs against `fake.go`. If `Exec` stripped, the fake would
+  not, and T025's "no ESC bytes in the response" assertion would either be testing the
+  fake or be impossible to write honestly. The fake must be able to emit ESC bytes.
+- `exec.go` already says so in a comment T005 wrote ("the defensive stripper is a
+  separate second line of defence"), so this is consistent, not a reversal.
+
+**T025 must call `tmuxctl.Strip` on the captured text. Nothing else does.**
+
+**Learned (do not rediscover):**
+
+- **The Write tool silently eats `\uXXXX` in file content.** Writing a fixture line
+  containing the six characters backslash-u-0-0-9-b produced the *actual* U+009B in the
+  file instead; `\\u009b` produced two literal backslashes. `\x1b`, `\n`, `\t`, and
+  `\U0001F600` all pass through literally — only the four-hex-digit `\u` form is
+  rewritten. It cost two wrong writes of `c1-runes.in` before `grep -H ''` showed it.
+  **Express C1 runes as their UTF-8 bytes (`\xc2\x9b`), not as a backslash-u escape,** in any file
+  written by tool rather than by shell.
+- **Bash in this session refused `mkdir`, `printf`, and `od`** ("requires approval"),
+  even though `grep`, `sed`, and `ls` ran. So raw-byte fixtures cannot be produced with
+  `printf`. This is *why* the fixtures are Go-quoted literals decoded by
+  `strconv.Unquote` — but that turned out to be the better format anyway: a `.golden`
+  full of real ESC bytes shows a reviewer a blank space where the subject of the test
+  should be, and `"\x1b]52;c;…"` is legible in a diff.
+- **`os.DirFS("testdata")` + `fs.ReadFile` avoids gosec G304 with no `//nolint`.** G304
+  matches `os.Open`/`os.ReadFile` with a non-constant path, which is un-muted in this
+  repo (`exclude-use-default: false`). An `fs.FS` is not in its rule set *and* it refuses
+  to escape its root. **Reuse this for any future golden-file test.**
+- **The golden table carries an `unchanged bool` per case, and it is load-bearing.** For
+  every case not marked unchanged, the test asserts `input != golden` *before* comparing
+  — otherwise a fixture with nothing to strip passes against a `Strip` that returns its
+  argument. Two cases (`plain-text`, `utf8-preserved`) are marked unchanged and assert
+  the opposite. `TestGoldenFixturesAndCasesAgree` then checks the `*.in` files on disk
+  against the table, so a fixture added without a case is not a test nobody runs.
+- **Mutation-probing (iterations 4–6) earned its keep for a fourth time.** Five mutations,
+  each caught by the intended test and no others: OSC/DCS/APC introducers treated as
+  two-byte escapes (6 golden + 3 edge cases), the C1 range narrowed to 0x8F (1 golden +
+  the property test), invalid UTF-8 emitted rather than dropped (1 + property),
+  `needsStrip` inverted (23 tests), and charset intermediates not consumed (1 golden —
+  `escape-two-byte` is the *only* case covering `ESC ( B`, so without it that branch is
+  untested). Reverted, then the gate re-run.
+- **Two parser choices are deliberate and are pinned by tests, not left to chance:**
+  an unterminated sequence consumes the rest of the input (a malformed sequence must
+  never out-emit a well-formed one), and a C0 byte inside a sequence *aborts* it — a real
+  terminal would execute the C0 and finish the sequence, so `\x1b[3\x07m` yields a visible
+  `m` here. That difference can only ever produce extra inert characters, never a
+  surviving escape.
+- **Only the 7-bit forms are parsed.** A raw 0x80–0x9F introducer cannot occur in valid
+  UTF-8, so it is dropped as an invalid byte rather than treated as CSI; the parameters
+  that followed survive as inert text. C1 arriving as a *decoded rune* (`\xc2\x9b`) is a
+  separate case and is dropped explicitly — valid-UTF-8 filtering alone would pass it.
+
+**Left:** T007 is next (`internal/config/config.go`: `CRSW_SHARED_SECRET` required and
+fatal under 32 bytes, `CRSW_ALLOWED_ROOTS` defaulting to `$HOME/code` with a loud warning
+on every defaulted start, non-loopback `CRSW_LISTEN` fatal, plus `CRSW_MAX_SESSIONS`,
+`CRSW_CREATE_RATE_PER_MIN`, `CRSW_MAX_BODY_BYTES` — see the Config table in
+`data-model.md`). Then T008–T042. T007 and T008 finish the Foundational phase.
+
+**Findings (noticed, not fixed):**
+
+1. **Bidi and invisible Unicode are NOT stripped, by design, and nothing downstream knows
+   it.** `Strip` removes terminal control sequences; it leaves U+202A–U+202E and
+   U+2066–U+2069 (the Trojan Source overrides), U+200B–U+200D, and U+2028/U+2029. Those
+   are inert in a terminal but reorder or hide text in a browser, and
+   `docs/security.md` is explicit that everything a session prints reaches the dashboard.
+   Out of scope here under Principle IV — this is a control-*sequence* stripper — but the
+   milestone-2 dashboard needs to decide it. Note `html/template` escaping does not help:
+   these are legitimate characters, not markup.
+2. **Iteration 6 #2 still stands:** a failed `paste-buffer` leaves caller prompt text in a
+   named tmux buffer, readable by any tmux client until the next prompt overwrites it.
+   Prompts are secret under `docs/security.md` §3. Needs a `delete-buffer` argv builder in
+   `fake.go` *and* `exec.go` together, which is why no single task owns it.
+3. **Iteration 6 #1 still stands:** T028 will report a false failure on the last session —
+   killing the only session stops the tmux server, and `Has` then errors rather than
+   returning false. Pinned by a passing test; the fix belongs to T028. Use `List`, which
+   treats no server as empty. Do not loosen `Has`.
+4. **Iteration 6 #3 still stands:** `contracts/tmuxctl.md` names only `no server running`
+   for the empty-server case and is stale — the code correctly matches both messages.
+   Worth an operator fixing the contract.
+5. **Iteration 1 #1 / 2 #1 / 3 #2 / 4 #2 / 5 #2 / 6 #4 still stands, seventh iteration
+   carrying it:** `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks
+   pre-commit hook (which fired correctly on this iteration's commit — `1 commits
+   scanned … no leaks found`). No iteration will ever fix it: not in the plan, and
+   Principle IV forbids wandering. Needs an operator or a task of its own.
+6. **Iteration 2 #2 / 3 #3 / 4 #3 / 5 #3 / 6 #5 still stands:** duplicate checkbox state in
+   `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+   plan. Ticked both by hand again, again only because the finding was written down.
+   Sixth iteration of manual compensation for a one-line fix to step 9.
+7. **Iteration 6 #6 still stands:** `AGENTS.md`'s command table has no entry for
+   `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
