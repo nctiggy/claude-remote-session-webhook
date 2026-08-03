@@ -159,15 +159,15 @@ func bodyFor(f sessionFixture, route Route) []byte {
 // bodyFor's body has got past layer 2.
 //
 // It is a literal table rather than one constant because the six no longer
-// answer alike: T022, T024, T025, and T026 gave four of them handlers, so they
-// answer 201, 202, and 200 where the two unimplemented routes still answer 501.
-// Each later task moves one row, and what the sweeps assert through it is
+// answer alike: T022, T024, T025, T026, and T027 gave five of them handlers, so
+// they answer 201, 202, and 200 where the one unimplemented route still answers
+// 501. Each later task moves one row, and what the sweeps assert through it is
 // unchanged — the request reached a handler, which is only possible through the
 // middleware.
 var reachedStatus = map[Route]int{
 	{Method: http.MethodPost, Pattern: "/sessions"}:             http.StatusCreated,
 	{Method: http.MethodGet, Pattern: "/sessions"}:              http.StatusOK,
-	{Method: http.MethodGet, Pattern: "/sessions/{id}"}:         http.StatusNotImplemented,
+	{Method: http.MethodGet, Pattern: "/sessions/{id}"}:         http.StatusOK,
 	{Method: http.MethodDelete, Pattern: "/sessions/{id}"}:      http.StatusNotImplemented,
 	{Method: http.MethodPost, Pattern: "/sessions/{id}/prompt"}: http.StatusAccepted,
 	{Method: http.MethodGet, Pattern: "/sessions/{id}/output"}:  http.StatusOK,
@@ -1733,6 +1733,281 @@ func TestListRefusesARequestWithNoAuthenticatedCaller(t *testing.T) {
 	}
 	if strings.Contains(answer.Body.String(), live.ID) {
 		t.Errorf("a list with no caller answered with a session: %q", answer.Body)
+	}
+}
+
+// detailUsed is the fixture's last_activity, deliberately not its created_at, so
+// that a handler echoing either instant for the other is caught rather than
+// agreed with.
+var detailUsed = testTime.Add(33 * time.Minute)
+
+// detailFixture is a server holding one live session and the only copy of its
+// credential — what every claim on GET /sessions/{id} starts from. The record is
+// filled in rather than left to plant's defaults because this route's whole
+// output is that record, so a field left zero would be a field this file could
+// not tell apart from one the handler dropped.
+type detailFixture struct {
+	*testServer
+
+	live  session.Session
+	token string
+}
+
+func newDetailFixture(t *testing.T) detailFixture {
+	t.Helper()
+
+	s := newAuditedServer(t)
+	live, issued := s.fixture.plant(t, session.Session{
+		Name:         "refactor-auth",
+		WorkDir:      s.fixture.repo,
+		State:        session.StateRunning,
+		LastActivity: detailUsed,
+	})
+	return detailFixture{testServer: s, live: live, token: issued}
+}
+
+// getSession drives one signed, credentialled detail through the whole stack and
+// hands back the raw recorder as well as the decoded body, because half of what
+// this route must be asked is about the bytes on the wire rather than the value
+// a client decodes from them.
+//
+// The request comes from scopedRequest, which builds exactly this route — layer
+// 3's tests drive it too — so a change to how a session-scoped request is spelled
+// cannot leave these tests driving a shape nothing else does.
+func getSession(t *testing.T, s *testServer, id, presented string, at time.Time) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+
+	answer := httptest.NewRecorder()
+	s.ServeHTTP(answer, scopedRequest(t, id, presented, at))
+
+	var decoded map[string]any
+	if answer.Body.Len() > 0 {
+		if err := json.Unmarshal(answer.Body.Bytes(), &decoded); err != nil {
+			t.Fatalf("the response %q is not JSON: %v", answer.Body, err)
+		}
+	}
+	return answer, decoded
+}
+
+func (f detailFixture) get(t *testing.T, at time.Time) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	return getSession(t, f.testServer, f.live.ID, f.token, at)
+}
+
+// TestDetailAnswersTheContractResponse is contracts/http-api.md's detail body,
+// field by field: the same object as one list entry, at the top level rather
+// than inside an array.
+func TestDetailAnswersTheContractResponse(t *testing.T) {
+	t.Parallel()
+
+	f := newDetailFixture(t)
+	answer, body := f.get(t, testTime)
+
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+	if ct := answer.Header().Get(headerContentType); ct != contentTypeJSON {
+		t.Errorf("Content-Type = %q; want %q — every response is JSON", ct, contentTypeJSON)
+	}
+
+	want := map[string]any{
+		"id":            f.live.ID,
+		"name":          "refactor-auth",
+		"work_dir":      f.fixture.repo,
+		"state":         "running",
+		"created_at":    testTime.Format(time.RFC3339),
+		"expires_at":    testTime.Add(24 * time.Hour).Format(time.RFC3339),
+		"last_activity": detailUsed.Format(time.RFC3339),
+		"adopted":       false,
+	}
+	for name, value := range want {
+		if got := body[name]; got != value {
+			t.Errorf("%s = %v; want %v", name, got, value)
+		}
+	}
+
+	// The contract's field set exactly. A detail is the response a caller who
+	// already holds the session's credential gets, which makes it the most
+	// tempting place to add "just one more field" — and the field that would
+	// arrive that way is the token hash.
+	wantFields := slices.Sorted(maps.Keys(want))
+	if fields := slices.Sorted(maps.Keys(body)); !slices.Equal(fields, wantFields) {
+		t.Errorf("the response fields = %v; want %v", fields, wantFields)
+	}
+}
+
+// TestADetailIsTheObjectTheListCarries is the contract's "same object shape as
+// one list entry" asserted as sameness rather than as two lists of fields that
+// happen to match today.
+//
+// It is the property entryFor exists for. Two renderers would pass every other
+// test in this file and still let one route describe a session the other does
+// not — which for a dashboard reading both is a fleet that disagrees with itself.
+func TestADetailIsTheObjectTheListCarries(t *testing.T) {
+	t.Parallel()
+
+	f := newDetailFixture(t)
+
+	_, detail := f.get(t, testTime)
+	// A second later, because both requests carry an empty body: signed at the
+	// same instant they would share a signature and the second would be refused
+	// as a replay.
+	_, list := getSessions(t, f.testServer, testTime.Add(-time.Second))
+
+	entries := listed(t, list)
+	if len(entries) != 1 {
+		t.Fatalf("the list carries %d session(s) (%v); want exactly the one planted", len(entries), entries)
+	}
+	if !reflect.DeepEqual(detail, entries[0]) {
+		t.Errorf("the detail is %v but the list entry is %v; the contract makes them one object", detail, entries[0])
+	}
+}
+
+// TestDetailDescribesTheSessionTheCredentialNamed is FR-034 for this route. The
+// caller's other session is older, so a handler that reached for a record rather
+// than the resolved one — the store sorts oldest first — would answer with it
+// and be caught.
+func TestDetailDescribesTheSessionTheCredentialNamed(t *testing.T) {
+	t.Parallel()
+
+	const otherName = "zzz-the-callers-other-session-zzz"
+
+	f := newDetailFixture(t)
+	other, _ := f.fixture.plant(t, session.Session{
+		Name:      otherName,
+		WorkDir:   f.fixture.repo,
+		CreatedAt: testTime.Add(-time.Hour),
+	})
+
+	answer, body := f.get(t, testTime)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+	if got := body["id"]; got != f.live.ID {
+		t.Errorf("id = %v; want %q — the resolved session and no other", got, f.live.ID)
+	}
+	if got := answer.Body.String(); strings.Contains(got, other.ID) || strings.Contains(got, otherName) {
+		t.Errorf("the detail carries another session: %q", got)
+	}
+}
+
+// TestDetailNeverCarriesATokenOrItsHash is FR-013 on the route where it is
+// easiest to argue it does not matter — the caller already holds this session's
+// token. It matters anyway: the plaintext is the caller's one copy and the daemon
+// keeps none, and the hash is what every session-scoped request is checked
+// against, so a route that handed it back would be handing back the check.
+func TestDetailNeverCarriesATokenOrItsHash(t *testing.T) {
+	t.Parallel()
+
+	f := newDetailFixture(t)
+	record, err := f.fixture.store.Get(f.live.ID, auth.CallerOperator)
+	if err != nil {
+		t.Fatalf("the planted session is not in the store: %v", err)
+	}
+
+	answer, body := f.get(t, testTime)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+	if token, ok := body["token"]; ok {
+		t.Errorf("the detail carries a token: %v", token)
+	}
+
+	// Three spellings, because the field-set assertion above only catches a field
+	// somebody named honestly: the hash as hex and as its own bytes, and the
+	// plaintext the caller presented — which arrives on this request and must not
+	// come back on it.
+	for name, needle := range map[string]string{
+		"the presented token": f.token,
+		"the token hash":      hex.EncodeToString(record.TokenHash[:]),
+	} {
+		if strings.Contains(strings.ToLower(answer.Body.String()), strings.ToLower(needle)) {
+			t.Errorf("the detail carries %s: %q", name, answer.Body)
+		}
+	}
+	if bytes.Contains(answer.Body.Bytes(), record.TokenHash[:]) {
+		t.Errorf("the detail carries the raw token hash: %q", answer.Body)
+	}
+	if written := f.sink.String(); strings.Contains(written, f.token) {
+		t.Errorf("the audit trail carries the token: %q", written)
+	}
+}
+
+// TestDetailIsRecordedOnceUnderItsOwnAction is FR-041 for this route. A read is
+// recorded as a read, under the daemon's own ID for the session the resolver
+// matched — never the {id} the caller wrote, which is caller-supplied text the
+// trail may not carry (FR-042).
+func TestDetailIsRecordedOnceUnderItsOwnAction(t *testing.T) {
+	t.Parallel()
+
+	f := newDetailFixture(t)
+	answer, _ := f.get(t, testTime)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+
+	rec := f.only(t)
+	if rec["action"] != string(audit.ActionSessionDetail) {
+		t.Errorf("action = %v; want %q", rec["action"], audit.ActionSessionDetail)
+	}
+	if rec["decision"] != string(audit.Allow) {
+		t.Errorf("decision = %v; want %q", rec["decision"], audit.Allow)
+	}
+	if want := string(auth.CallerOperator); rec["caller"] != want {
+		t.Errorf("caller = %v; want %q", rec["caller"], want)
+	}
+	if rec["session_id"] != f.live.ID {
+		t.Errorf("session_id = %v; want %q", rec["session_id"], f.live.ID)
+	}
+	if reason, ok := rec["reason"]; ok {
+		t.Errorf("an allowed detail recorded a reason: %v", reason)
+	}
+	if len(f.failed) != 0 {
+		t.Errorf("the request reported %v; want nothing", f.failed)
+	}
+}
+
+// TestDetailCostsNoTmuxCommand: a detail is a read of the daemon's own record,
+// for the reason a list is. A handler that asked tmux whether the window was
+// still there would make this route fail exactly when an operator most needs to
+// read it — and would put an exec on a route a dashboard is going to poll.
+func TestDetailCostsNoTmuxCommand(t *testing.T) {
+	t.Parallel()
+
+	f := newDetailFixture(t)
+	answer, _ := f.get(t, testTime)
+
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+	if calls := f.fixture.tmux.Calls(); len(calls) != 0 {
+		t.Errorf("the detail ran %v; want nothing — it reads records, not the host", calls)
+	}
+}
+
+// TestDetailRefusesARequestWithNoResolvedSession is unreachable through the
+// router, which is the point: the handler is checked directly to prove it fails
+// closed rather than falling back to the {id} in the path. That fallback is the
+// one bug this route could have that would answer every request correctly right
+// up until it described a session to someone who does not own it.
+func TestDetailRefusesARequestWithNoResolvedSession(t *testing.T) {
+	t.Parallel()
+
+	f := newDetailFixture(t)
+	req := httptest.NewRequest(http.MethodGet, "/sessions/"+f.live.ID, nil)
+	req.SetPathValue(pathValueID, f.live.ID)
+
+	answer := httptest.NewRecorder()
+	f.sessionDetail(answer, req)
+
+	if answer.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusInternalServerError)
+	}
+	if got := answer.Body.String(); got != string(bodyInternalError) {
+		t.Errorf("body = %q; want %q", got, bodyInternalError)
+	}
+	if strings.Contains(answer.Body.String(), f.live.ID) {
+		t.Errorf("a detail with no resolved session answered with a session: %q", answer.Body)
 	}
 }
 

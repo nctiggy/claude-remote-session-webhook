@@ -96,7 +96,7 @@ type listResponse struct {
 }
 
 // entryFor renders one record as the contract's entry. It is the only place a
-// session becomes something a client sees, so the list and T027's detail cannot
+// session becomes something a client sees, so the list and the detail cannot
 // describe the same session two ways.
 func entryFor(s session.Session) sessionEntry {
 	return sessionEntry{
@@ -184,6 +184,13 @@ var (
 	// that with nothing today, and that is a property of the store rather than a
 	// guarantee this handler is entitled to rest on.
 	errListNoCaller = errors.New("the list handler was reached with no authenticated caller")
+
+	// errDetailNoSession is unreachable behind the layer-3 resolver, and fails
+	// closed rather than falling back to the {id} in the path: a handler that
+	// read the path itself would be describing a session on a caller's say-so,
+	// which on this route means handing one caller another's fleet one ID at a
+	// time.
+	errDetailNoSession = errors.New("the detail handler was reached with no resolved session")
 
 	// errPromptNoSession is unreachable behind the layer-3 resolver, for the
 	// reason errCreateNoCaller is unreachable behind layer 2. It fails closed
@@ -355,6 +362,37 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	// it would make the trail claim an operation on a session that was only read
 	// about.
 	s.writeJSON(w, r, http.StatusOK, listResponse{Sessions: entries})
+}
+
+// sessionDetail is GET /sessions/{id}: one session, described exactly as the
+// list describes it (contracts/http-api.md).
+//
+// The session comes from the context and nowhere else. Layer 3 has already
+// matched the {id} against a record the caller owns and the credential issued
+// for it, which is the whole of this route's authorisation — so there is no
+// ownership check here to write wrongly, and no second lookup that could answer
+// for a session the resolver did not approve.
+//
+// The body is entryFor's, not a shape of its own. The contract says a detail is
+// the same object as one list entry, and the way to keep that true is for there
+// to be one renderer: a second struct here would be a second decision about what
+// a session discloses, free to drift into carrying a token hash on the day
+// somebody adds a field to it (FR-013).
+//
+// Nothing is read from the host, for the reason a list reads nothing: a detail
+// is a read of the daemon's own record, so it costs no tmux command and cannot
+// be made to fail by the state of the window behind it.
+func (s *Server) sessionDetail(w http.ResponseWriter, r *http.Request) {
+	resolved, ok := SessionFrom(r.Context())
+	if !ok {
+		s.failInternal(w, r, errDetailNoSession)
+		return
+	}
+
+	// No SetSessionID. The resolver already stamped the record's own ID on the
+	// trail, and stamping it again here would be this handler asserting something
+	// it did not establish.
+	s.writeJSON(w, r, http.StatusOK, entryFor(resolved))
 }
 
 // promptSession is POST /sessions/{id}/prompt: deliver the caller's text into

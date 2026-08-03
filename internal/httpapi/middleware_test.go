@@ -1026,12 +1026,18 @@ func TestTheCredentialSchemeIsReadStrictly(t *testing.T) {
 		return rec.Code
 	}
 
+	// Read out of reachedStatus rather than written here, so that a task giving
+	// this route a different answer moves one row instead of teaching a layer-3
+	// test what a handler returns. What is asserted is unchanged: the request got
+	// past the resolver, which only the issued credential can do.
 	for name, header := range accepted {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if got := drive(t, header); got != http.StatusNotImplemented {
+
+			got, want := drive(t, header), reachedStatus[scopedRoute]
+			if got != want {
 				t.Errorf("%s = %d; want %d — the credential is the one that was issued",
-					name, got, http.StatusNotImplemented)
+					name, got, want)
 			}
 		})
 	}
@@ -1056,8 +1062,12 @@ func TestACredentialIsAcceptedUntilTheDeadlineAndNotAtIt(t *testing.T) {
 		want int
 	}{
 		"a second inside the lifetime": {
-			age:  session.AbsoluteLifetime - time.Second,
-			want: http.StatusNotImplemented,
+			age: session.AbsoluteLifetime - time.Second,
+			// The handler's own answer, read out of reachedStatus for the reason
+			// TestTheCredentialSchemeIsReadStrictly reads it: what this case
+			// asserts is that the credential was still accepted, not what the
+			// route does afterwards.
+			want: reachedStatus[scopedRoute],
 		},
 		"exactly at the deadline": {
 			age:  session.AbsoluteLifetime,
