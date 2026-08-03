@@ -805,3 +805,146 @@ Foundational phase; T009 onwards is US1. Note `config` deliberately does **not**
    down. Seventh iteration of manual compensation for a one-line fix to step 9.
 9. **Iteration 6 #6 / 7 #7 still stands:** `AGENTS.md`'s command table has no entry for
    `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
+
+---
+
+## Iteration 9 — 2026-08-03 02:47
+
+**Did:** Completed **T008**, closing the Foundational phase. Added
+`internal/audit/audit.go` (`Record`, `Action`, `Decision`, `Logger`, `New`/`NewTo`,
+`Emit`) and `audit_test.go` (36 cases). One JSON object per line on stdout via
+`log/slog`, carrying exactly the seven fields in `data-model.md`'s AuditRecord table.
+Ticked T008 in **both** `ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (internal/audit 36 cases, config 45, tmuxctl 84)
+go test -race -count=1 ./...   OK
+go test -tags tmux ./...    OK (8 integration tests, real tmux)
+golangci-lint run           OK
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+```
+
+**Learned (do not rediscover):**
+
+- **The FR-042 guarantee is enforced by two reflection tests, and they are the point of
+  the task — do not delete them when adding a field.** `TestRecordCannotCarryFreeFormContent`
+  restates the six field names as literals and asserts every field's `Kind` is `String`,
+  so an `Extra map[string]any`, a `[]slog.Attr`, or an `any` fails the build's tests.
+  `TestLoggerOffersNoFreeFormEntryPoint` walks `Logger`'s method set and rejects any
+  variadic method or any parameter of interface/map/slice/array/chan kind, which is what
+  stops an `EmitWith(rec, extra ...any)` helper from reopening the hole. Both were
+  mutation-probed and both fired.
+- **slog's JSON handler emits `level` and `msg` whether you want them or not; they are
+  dropped in `ReplaceAttr` by returning a zero `slog.Attr`.** The emitted record is
+  exactly `time, action, caller, session_id, decision, reason, remote` — asserted as an
+  exact key set, so a stray attribute added later is a failure rather than a surprise in
+  a journal. This is also why `Emit` builds the `slog.Record` by hand
+  (`slog.NewRecord` + `handler.Handle`) instead of calling `logger.Info`: the message
+  slot has nothing to say, and building the record by hand is what lets the clock be
+  injected at all — `Logger.Info` stamps `time.Now()` internally with no seam.
+- **`Handle` returns an error and `errcheck` has `check-blank: true`, so it cannot be
+  discarded — which forced the ruling: `Emit` returns `error`.** FR-041 makes the record
+  mandatory, so a caller that could not write one has not completed the request it was
+  auditing, and **T038's handlers must not ignore it** — the same shape as config's "a
+  warning that cannot be written is fatal". There is no retry and no fallback sink: an
+  unwritable stdout is a broken daemon, not a degraded one.
+- **Three rulings the spec did not spell out.** Each is stricter than silence; flagged so
+  an operator can overrule any of them:
+  1. **`Decision` is validated as a closed set (`allow`/`deny`), `Action` is only checked
+     for emptiness.** `data-model.md` gives exactly two decisions, so an unknown one is a
+     bug worth refusing. Its action list is *examples* — and US2/US3 add routes
+     (`GET /sessions`, `GET /sessions/{id}`, `.../output`) that will need names not on it.
+     Closing `Action` here would have pre-decided T024–T027's vocabulary. **T024–T027 and
+     T038 should add an `Action` constant per route** rather than reusing an approximate
+     one; the constants exist to be extended.
+  2. **An empty `Caller` becomes `unknown`** rather than an absent field, so `caller` is
+     present on every record including a rejection — `data-model.md` names `unknown` for
+     exactly that case.
+  3. **`session_id`, `reason`, and `remote` are omitted when empty, not emitted as `""`.**
+     `data-model.md` says session_id is "the 32-hex ID, or absent", and `reaper.destroy`
+     and `startup.adopt` have no peer address to name.
+- **Timestamps are UTC RFC3339 at second precision**, matching `data-model.md`'s example
+  literally rather than slog's default (local zone, nanoseconds). Sub-second ordering is
+  not lost in practice — the trail is a `jsonl` stream and line order is arrival order.
+  Worth knowing before someone diffs a record against slog's usual output and thinks it
+  is broken.
+- **`NewTo(w io.Writer, now func() time.Time)` is the injection seam and `New()` is the
+  two-line wrapper T032 should call**, same pattern as `config.LoadFrom` and `tmuxctl`'s
+  `SetNow`. `TestNewWritesToStdout` proves the wiring by swapping `os.Stdout` for an
+  `os.Pipe` — it is deliberately **not** `t.Parallel()`, since it mutates process state.
+  Reuse that for any future "writes to stdout" assertion.
+- **One `Logger` is safe to share across every request path.** slog's handler serialises
+  its writes, so the concurrency test asserts 16 goroutines produce 16 parseable lines
+  with no interleaving, under `-race`.
+- **Mutation-probing (iterations 4–8) earned its keep a sixth time.** Eight mutations,
+  each caught only by its intended test: `level`/`msg` left in (3 tests), local-zone
+  nanosecond timestamps (2), the caller default removed (1), the optional fields always
+  emitted (1), the write error swallowed (1), the decision check removed (1 test / 3
+  subtests), an `Extra map[string]any` field added (1), and an `EmitWith(..., ...any)`
+  method added (1). Reverted, then the gate re-run.
+- **Fixture note, extending iteration 8's gitleaks lesson:** the session-ID fixture is
+  deliberately *not* 32 hex characters (`"a-test-session-id"`). A realistic ID is exactly
+  the shape the scanner reads as a credential, and this package stores whatever it is
+  handed — the ID's shape is **T013's** assertion to make, not this one's.
+
+**Left:** **The Foundational phase (T003–T008) is complete.** T009 is next and starts US1
+(`internal/auth/hmac.go`: HMAC-SHA256 over `timestamp + "." + rawBody` with `hmac.Equal`,
+the body re-buffered so the handler can still read it; table test covering valid, bad
+signature, body tampered after signing, missing signature header, missing timestamp
+header). Then T010–T042. Remember iteration 8's warning: **do not write hex-shaped
+fixtures in T009–T012 or T017/T035** — gitleaks will block the commit.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: `Reason` is the one audit field that can carry arbitrary text,
+   and nothing structural stops caller input reaching it.** The type is closed against
+   maps and passthroughs, but `Reason` is a plain string, and an error built as
+   `fmt.Errorf("bad name %q", name)` wrapped into a record would put caller-supplied
+   bytes in the trail — the shape FR-042 forbids. Not fixed here: closing `Reason` to a
+   vocabulary means designing T038's reason strings from T008, which is guessing. **T038
+   should pass server-authored constants, and T039's leak test is the assertion that
+   catches it if not.**
+2. **New this iteration: `Emit`'s error has no obvious handler yet, and that is a decision
+   T038/T020 must actually make, not inherit.** A record that cannot be written means the
+   request was not audited; the honest response is to fail the request rather than perform
+   an unaudited action. Whatever is chosen, it must not be a silently dropped error —
+   `errcheck` will refuse the discard, but `if err != nil { return }` with an empty body
+   would pass lint and lose the trail.
+3. **Iteration 8 #2 still stands:** the loud default-root warning goes to stderr while
+   audit records go to stdout. `quickstart.md:125` pipes `2>&1` so its check passes either
+   way, but an operator reading only stdout would lose the warning. T032 owns deciding this
+   when startup wiring lands.
+4. **Iteration 8 #1 still stands:** `.env.example` does not exist yet, so the
+   `.gitleaks.toml` allowlist entry for it guards nothing. T040 owns creating it.
+5. **Iteration 7 #1 / 8 #3 still stands:** bidi and invisible Unicode (U+202A–U+202E,
+   U+2066–U+2069, U+200B–U+200D, U+2028/U+2029) are not stripped by `tmuxctl.Strip`, by
+   design — it is a control-*sequence* stripper. The milestone-2 dashboard must decide it;
+   `html/template` escaping does not help, as these are legitimate characters.
+6. **Iteration 6 #2 / 7 #2 / 8 #4 still stands:** a failed `paste-buffer` leaves caller
+   prompt text in a named tmux buffer, readable by any tmux client until the next prompt
+   overwrites it. Prompts are secret under `docs/security.md` §3. Needs a `delete-buffer`
+   argv builder in `fake.go` *and* `exec.go` together, which is why no single task owns it.
+7. **Iteration 6 #1 / 7 #3 / 8 #5 still stands:** T028 will report a false failure on the
+   last session — killing the only session stops the tmux server, and `Has` then errors
+   rather than returning false. Use `List`, which treats no server as empty. Do not loosen
+   `Has`.
+8. **Iteration 6 #3 / 7 #4 / 8 #6 still stands:** `contracts/tmuxctl.md` names only `no
+   server running` for the empty-server case and is stale — the code correctly matches both
+   messages. Worth an operator fixing the contract.
+9. **Iteration 1 #1 / 2 #1 / 3 #2 / 4 #2 / 5 #2 / 6 #4 / 7 #5 / 8 #7 still stands, ninth
+   iteration carrying it:** `loop.sh`'s sweep commit uses `--no-verify`, bypassing the
+   gitleaks pre-commit hook (which fired correctly on this iteration's commit — `1 commits
+   scanned … no leaks found`). Not in the plan, and Principle IV forbids wandering —
+   needs an operator or a task of its own.
+10. **Iteration 2 #2 / 3 #3 / 4 #3 / 5 #3 / 6 #5 / 7 #6 / 8 #8 still stands:** duplicate
+    checkbox state in `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9
+    naming only the plan. Ticked both by hand again, again only because the finding was
+    written down. Eighth iteration of manual compensation for a one-line fix to step 9.
+11. **Iteration 6 #6 / 7 #7 / 8 #9 still stands:** `AGENTS.md`'s command table has no entry
+    for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.

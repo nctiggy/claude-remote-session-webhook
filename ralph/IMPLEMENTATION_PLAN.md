@@ -67,7 +67,7 @@ owner plus its clock origin.
 - [x] T005 `internal/tmuxctl/exec.go`: real controller over `exec.Command`, argv slices only. `Paste` uses `load-buffer -b <buf> -` with the payload on **stdin** plus `paste-buffer -d`; `capture-pane -p` **without `-e`**; `Has` distinguishes exit-1 from exec failure; `List` treats "no server running" as empty. Integration test behind `//go:build tmux` on an isolated socket
 - [x] T006 `internal/tmuxctl/ansi.go`: defensive control-sequence stripper with golden-file tests in `testdata/`
 - [x] T007 `internal/config/config.go`: load from environment. `CRSW_SHARED_SECRET` required — **startup fails** if unset or under 32 bytes. `CRSW_ALLOWED_ROOTS` optional, defaulting to `$HOME/code` with a **loud warning on every defaulted start**. Non-loopback `CRSW_LISTEN` is fatal. Table test every case
-- [ ] T008 `internal/audit/audit.go`: structured JSON on stdout via `log/slog`, as a **fixed struct** — no `map[string]any`, no `slog.Any` passthrough, so the record shape cannot carry arbitrary data
+- [x] T008 `internal/audit/audit.go`: structured JSON on stdout via `log/slog`, as a **fixed struct** — no `map[string]any`, no `slog.Any` passthrough, so the record shape cannot carry arbitrary data
 
 ### US1 — Start a session from a signed request (P1, MVP)
 
