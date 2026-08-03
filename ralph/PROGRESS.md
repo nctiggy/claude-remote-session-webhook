@@ -673,3 +673,135 @@ on every defaulted start, non-loopback `CRSW_LISTEN` fatal, plus `CRSW_MAX_SESSI
    Sixth iteration of manual compensation for a one-line fix to step 9.
 7. **Iteration 6 #6 still stands:** `AGENTS.md`'s command table has no entry for
    `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
+
+---
+
+## Iteration 8 — 2026-08-03 02:37
+
+**Did:** Completed **T007**. Added `internal/config/config.go` (`Load()` plus the
+injectable `LoadFrom(getenv, warn)`) and `config_test.go` (45 tests). Every value in
+`data-model.md`'s Config table is read, validated, and fatal on anything weak; the
+unset root list is the one non-fatal case and is loud. Ticked T007 in **both**
+`ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (internal/config 45 tests, internal/tmuxctl 84)
+go test -race -count=1 ./...   OK
+go test -tags tmux ./...    OK (8 integration tests, real tmux)
+golangci-lint run           OK
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+```
+
+**Learned (do not rediscover):**
+
+- **`Load()` is a two-line wrapper over `LoadFrom(getenv func(string) string, warn
+  io.Writer)`, and T032 should call `Load()`.** The seam exists because the alternative
+  is `t.Setenv`, which forbids `t.Parallel()` for the whole table — and because FR-004's
+  warning has to be *asserted*, which means capturing it, which means it cannot be
+  hard-wired to `os.Stderr`. Two tests still use `t.Setenv` (non-parallel, deliberately)
+  purely to prove `Load()` is wired to `os.Getenv`; without them the delegation is
+  untested. Same injection style as `tmuxctl`'s `SetNow`.
+- **gosec G101 fires on the `EnvSharedSecret = "CRSW_SHARED_SECRET"` constant** — an
+  identifier saying "secret" next to a string literal. It is an env var *name*, published
+  verbatim in `.env.example`, so it carries a `//nolint:gosec` with the reasoning, in the
+  style `exec.go` established for G204. **Expect the same on any future `Env*Secret`/
+  `*Token` constant; it is not a signal there.**
+- **gitleaks blocked the first commit attempt, and it was right.** The test fixture was a
+  constant named `goodSecret` holding a run of 32 lowercase hex digits — which is exactly
+  the shape of a real HMAC key, and matches both the repo's own `crsw-shared-secret` rule
+  and the default generic-key rule. Fixed by spelling the fixture in words
+  (`"test-only-shared-secret-32-bytes"`, still exactly 32 bytes), **not** by adding a
+  `.gitleaks.toml` allowlist entry — an exception would have widened the scanner for
+  every future file. **Do not write hex-shaped fixtures in the auth tests T009–T012 or
+  the token tests T017/T035**, and do not paste one into this notebook either: the
+  writeup tripped the same rule on its own commit, because `ralph/` is not in the
+  `.gitleaks.toml` path allowlist (only `docs/*.md` and the deploy examples are).
+  Describe the shape, never reproduce it. Note `gitleaks` is not in the Bash allowlist,
+  so the only way to see a finding is to attempt the commit and read the hook output.
+- **Decisions made here that T015 (`workdir.go`) inherits, so it does not re-decide them:**
+  roots arrive already `Clean`ed, `EvalSymlinks`-resolved, absolute, verified to be
+  directories, and deduplicated by canonical path. T015 owns only the containment check
+  (the path-separator boundary and the `/home/u/codeEVIL` trap). `ApprovedRoot{Path,
+  IsDefault}` lives in `config` per `data-model.md`; the plan's dependency arrows do not
+  have `session` importing `config`, so T015 should take `[]config.ApprovedRoot` or
+  `[]string` as a **parameter** rather than importing config into the model.
+- **Three fail-closed rulings the spec did not spell out.** Each is stricter than silence,
+  never looser; flagged here so an operator can overrule any of them:
+  1. **A missing default root is fatal.** `spec.md` says the daemon "starts either way"
+     when roots are unset, but `ApprovedRoot` requires symlinks resolved at startup and
+     you cannot resolve a path that does not exist. A phantom allowlist that no work_dir
+     can ever satisfy is worse than refusing to boot. `~/code` exists on this host.
+  2. **A hostname in `CRSW_LISTEN` is refused, not resolved.** `/etc/hosts` or a resolver
+     can point `localhost` off loopback without the operator's configured value changing,
+     which would defeat FR-005 invisibly. Only a loopback IP literal is accepted, so
+     `localhost:8765` is a startup failure — worth knowing before someone tries it.
+  3. **A root that is not a directory, an empty `:` entry, a relative path, and port 0 or
+     >65535 are all fatal.** Each is a typo that would otherwise produce a working daemon
+     with a meaningless allowlist or an unreachable listener.
+- **A warning that cannot be written is fatal.** FR-004 says an unconfigured allowlist is
+  never silent, so `warnDefaultRoot` propagates the `io.Writer` error rather than dropping
+  it — pinned by `TestLoadFromFailsWhenTheWarningCannotBeEmitted`. `errcheck` would have
+  caught the dropped error anyway; the ruling is about what to do with it.
+- **The banner is 5 lines on purpose.** `quickstart.md:125` reads it with `head -5`, so a
+  6-line banner would cut the path off in the documented validation. A test asserts the
+  path falls inside the first five lines.
+- **`Config` has `String()` *and* `GoString()`, both redacting.** `%v`, `%s`, `%+v` and
+  `%q` all route through `String`; `%#v` does not — it needs `GoString` — and `%#v` in a
+  debug print is a realistic leak path. Tested across both verbs and both `Config` and
+  `*Config`.
+- **Mutation-probing (iterations 4–7) earned its keep a fifth time.** Seven mutations,
+  each caught only by its intended test: the 32-byte minimum removed (2 tests), the
+  loopback check removed (3), the default root set to `$HOME` itself (2), the warning's
+  write error swallowed (1), `String` printing the secret (1), the `IsDir` check removed
+  (1), and empty `:` entries silently skipped (3). Reverted, then the gate re-run.
+
+**Left:** T008 is next (`internal/audit/audit.go`: structured JSON on stdout via
+`log/slog` as a **fixed struct** — `time`, `action`, `caller`, `session_id`, `decision`,
+`reason`, `remote` — with no `map[string]any` and no `slog.Any` passthrough, and a test
+asserting the type offers no way to attach free-form content). T008 closes the
+Foundational phase; T009 onwards is US1. Note `config` deliberately does **not** import
+`audit` — the default-root warning predates any audit sink and writes plain text to an
+`io.Writer`; the `startup` audit record naming `IsDefault` belongs to T032.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: `.env.example` does not exist yet**, so the `.gitleaks.toml`
+   allowlist entry for it (`\.env\.example$`) currently guards nothing. T040 owns
+   creating it. Harmless today, but the allowlist reads as though the file is there.
+2. **New this iteration: the loud default-root warning goes to the injected writer
+   (stderr from `Load()`), while T008's audit records go to stdout.** `quickstart.md:125`
+   pipes `2>&1`, so its check passes either way — but an operator reading only
+   `journalctl` stdout, or a future change that captures just stdout, would lose the
+   warning. Worth deciding deliberately in T032 when startup wiring lands.
+3. **Iteration 7 #1 still stands:** bidi and invisible Unicode (U+202A–U+202E,
+   U+2066–U+2069, U+200B–U+200D, U+2028/U+2029) are not stripped by `tmuxctl.Strip`, by
+   design — it is a control-*sequence* stripper. The milestone-2 dashboard must decide
+   this; `html/template` escaping does not help, as these are legitimate characters.
+4. **Iteration 6 #2 / 7 #2 still stands:** a failed `paste-buffer` leaves caller prompt
+   text in a named tmux buffer, readable by any tmux client until the next prompt
+   overwrites it. Prompts are secret under `docs/security.md` §3. Needs a `delete-buffer`
+   argv builder in `fake.go` *and* `exec.go` together, which is why no single task owns it.
+5. **Iteration 6 #1 / 7 #3 still stands:** T028 will report a false failure on the last
+   session — killing the only session stops the tmux server, and `Has` then errors rather
+   than returning false. Use `List`, which treats no server as empty. Do not loosen `Has`.
+6. **Iteration 6 #3 / 7 #4 still stands:** `contracts/tmuxctl.md` names only `no server
+   running` for the empty-server case and is stale — the code correctly matches both
+   messages. Worth an operator fixing the contract.
+7. **Iteration 1 #1 / 2 #1 / 3 #2 / 4 #2 / 5 #2 / 6 #4 / 7 #5 still stands, eighth
+   iteration carrying it:** `loop.sh`'s sweep commit uses `--no-verify`, bypassing the
+   gitleaks pre-commit hook. **This iteration is the concrete proof of why that matters:**
+   the hook fired on a real false-positive-shaped fixture and blocked the commit until it
+   was fixed. A sweep would have committed it unscanned. Not in the plan, and Principle IV
+   forbids wandering — needs an operator or a task of its own.
+8. **Iteration 2 #2 / 3 #3 / 4 #3 / 5 #3 / 6 #5 / 7 #6 still stands:** duplicate checkbox
+   state in `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming
+   only the plan. Ticked both by hand again, again only because the finding was written
+   down. Seventh iteration of manual compensation for a one-line fix to step 9.
+9. **Iteration 6 #6 / 7 #7 still stands:** `AGENTS.md`'s command table has no entry for
+   `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
