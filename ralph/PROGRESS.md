@@ -6040,3 +6040,236 @@ gitleaks (pre-commit)       1 commit scanned … no leaks found
 59. **Iteration 6 #6 / … / 34 #55 still stands:** `AGENTS.md`'s command table has no entry for
     `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both
     were run by hand this iteration, green.
+
+---
+
+## Iteration 36 — 2026-08-03 21:48
+
+**Did:** Completed **T035**, session-token expiry. New `Session.CheckToken(presented, now)` in
+`internal/session/token.go` answering the credential match and the 24-hour expiry in one call —
+`ErrTokenMismatch` first, then `ErrTokenExpired` from `!now.Before(s.TokenExpiry())`.
+`Manager.Resolve` now delegates to it instead of carrying the two checks inline, and
+`TokenMatches` gained a comment saying it answers the match and nothing else. Six new tests in
+`token_test.go`: an `issuedSession` helper, the whole-life boundary table, an
+unissued-credential table crossed with three instants, a per-creation-instant divergence check,
+a no-renewal-by-use check, and an AST guard. Ticked T035 in **both**
+`ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK
+go test -tags tmux ./...    OK (real tmux on this host)
+go test -race ./...         OK
+golangci-lint run           OK
+gofmt -l .                  empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git diff --stat             +273 / −9 across three files
+gitleaks (pre-commit)       1 commit scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **The expiry moved *to* `token.go`; it was not missing.** T016 already had `TokenExpiry()`
+  delegate to `AbsoluteDeadline()`, and T023 already refused an expired credential inside
+  `Manager.Resolve`. What T035 was actually short of was a *single enforcement point*, so the
+  work was to relocate the pair rather than to add a check. `Resolve` now spells neither the
+  match nor the deadline — there is nothing left there for a future session-scoped path to
+  copy half of.
+- **Mismatch is answered before expiry.** A value that was never issued is a guess whatever the
+  clock reads, and answering `ErrTokenExpired` to one would put "this credential was once real"
+  in the operator's trail about one that never was. The caller cannot tell the two apart either
+  way (FR-033), so the ordering is a trail decision only — and the existing manager tables
+  already pinned it, which is why they still pass unchanged.
+- **`TokenMatches` stays exported.** Unexporting it would make the pairing structural rather
+  than conventional, but it is called from `internal/httpapi/sessions_test.go:327` and a dozen
+  places in this package's tests, and that rename is exactly the adjacent churn Principle IV
+  forbids in a task that did not ask for it. **See finding 1 — an operator should rule.**
+- **The AST guard is the only test that can fail on the dangerous edit.** A `CheckToken`
+  spelling `s.CreatedAt.Add(AbsoluteLifetime)` is behaviourally identical today and free to
+  diverge on any later day; no boundary test can see it.
+  `TestCheckTokenDerivesItsDeadlineFromTheRecord` requires a `TokenExpiry` selector and refuses
+  `CreatedAt`, `Add`, `AbsoluteLifetime`, and `IdleTimeout` anywhere in the body. Probed — see
+  below.
+- **The documented TTL is transcribed, not imported.**
+  `TestCheckTokenExpiresWithTheSessionAndNotOnItsOwnSchedule` builds its deadline from a local
+  `24 * time.Hour` taken from `docs/auth-and-sessions.md`'s lifetimes table, because a test that
+  read `AbsoluteLifetime` would keep passing if the constant moved — which is the divergence
+  FR-015 is about. Four creation instants: the contract's, a DST boundary, a sub-second offset,
+  and a record carrying a non-UTC zone.
+- **A clock reading before `CreatedAt` accepts the credential**, pinned as a row rather than
+  left to chance. The instant is inside the lifetime at both ends of the comparison, and a
+  bearer token is not where a daemon clock that ran backwards should be adjudicated (finding 7).
+
+**Learned (do not rediscover):**
+
+- **Two probes, both reverted with `Edit`.** `now.After(...)` in place of `!now.Before(...)`
+  failed the two new boundary tests, `TestCheckTokenIsNotRenewedByUse`, **and**
+  `TestResolveRefusesACredentialAtItsSessionsDeadline` plus
+  `TestAdoptCountsTheCeilingFromTheHostsOwnClock` — the same instant was already pinned through
+  two other paths, so the boundary is triple-covered. `s.CreatedAt.Add(AbsoluteLifetime)` failed
+  **only** `TestCheckTokenDerivesItsDeadlineFromTheRecord`, which is the whole argument for
+  having it. Still no `git checkout` needed (finding 59).
+- **`errors.Is(nil, nil)` is true**, so one table carries both the accepted and the refused rows
+  with `want error` left nil on the accepted ones. Cheaper than two tables, and it puts the two
+  sides of the boundary adjacent in the source where an off-by-one is visible.
+- **`newTestSession` already sets `CreatedAt` to `contractCreatedAt`**, so `contractExpiresAt`
+  is that record's real deadline with no arithmetic in the test at all — the create response in
+  `contracts/http-api.md` is directly usable as a fixture, and any future deadline test should
+  start there rather than computing one.
+- **`parser.ParseFile` with mode `0` drops comments**, so an AST guard over a function body
+  cannot trip over prose in its own doc comment. `TestTokenMatchesComparesInConstantTime`
+  already relied on this; it is now relied on twice.
+
+**Left:** T036–T042. T036 (the reaper) is next — findings 9, 27 and 30 below are all waiting on
+it — then T037 (graceful shutdown, after which the milestone is shippable), T038–T039 (audit),
+T040–T042 (ship it).
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: `Session.TokenMatches` is still exported and still answers the match
+   without the expiry.** "The two cannot be checked apart" therefore holds by convention — one
+   caller, `CheckToken` — and not by construction. Unexporting it costs one line in
+   `internal/httpapi/sessions_test.go` and a rename across this package's tests. **An operator
+   should rule; no task owns it.**
+2. **New this iteration: `CheckToken` takes `now` and nothing forces a caller to pass the
+   manager's clock.** `Resolve` passes `m.clock.Now()`, and the reaper (T036) must pass the same
+   one or a credential can be live by one clock and expired by the other — which is precisely
+   what the method's doc comment promises. It is a promise about call sites, not a property of
+   the signature. Related to finding 7.
+3. **New this iteration: `Resolve` checks the credential before the dead-state check**, so a
+   session that is both destroyed and past its ceiling is recorded as `ErrTokenExpired` rather
+   than `ErrSessionDead`. The caller sees the same 404; only the trail is affected. **T038 is
+   the natural owner.**
+4. **Iteration 35 #1 still stands:** nothing in `specs/` or `docs/` states that the create
+   limiter's burst is half the rate; `burstFor` is iteration 35's reading of a documented
+   default. **An operator should rule, or T040 should settle it.**
+5. **Iteration 35 #2 still stands:** the 429 carries no `Retry-After`, deliberately — right for
+   a caller holding a stolen secret, unhelpful for an honest client. **An operator should rule.**
+6. **Iteration 35 #3 still stands:** create budgets do not survive a restart, while the cap
+   does. **No task owns it.**
+7. **Iteration 35 #4 still stands:** the daemon has three independent clocks (`auth.Clock`,
+   `session.Clock`, `httpapi.clock`) and nothing forces them to be the same instant. `New`
+   wires `systemClock{}` into all three by construction, not by check. See findings 2 and 52.
+8. **Iteration 34 #1 / 35 #5 still stands:** `contracts/http-api.md` gives the 429 a row and
+   **no body**, so `{"error":"too many requests"}` remains this repo's invention. **An operator
+   should rule.**
+9. **Iteration 34 #2 / 35 #6 still stands:** the concurrent-session cap counts records in any
+   state, `dead` included. **T036 owns it.**
+10. **Iteration 34 #3 / 35 #7 still stands:** `httpapi.New` builds the authenticator, the
+    manager and the limiter before asserting the listen address is loopback.
+11. **Iteration 32 #1 / … / 35 #8 still stands:** `Reconcile` drops the plaintext credential
+    `Adopt` returns, so an adopted session is owned, listed, capped and reapable but **drivable
+    by nobody**. **An operator should rule; no task owns it.**
+12. **Iteration 33 #2 / … / 35 #9 still stands:** a session destroyed at startup for outliving
+    its ceiling leaves no audit record. **T038 is the natural owner; it does not name this case.**
+13. **Iteration 33 #3 / … / 35 #10 still stands:** nothing forces `Reconcile` to be called at
+    all — the guard is one-directional. **A candidate for T037.**
+14. **Iteration 33 #4 / … / 35 #11 still stands:** `cmd/crswd` has no test files at all, and
+    `run()` has no seam for a fake. Worth an operator's ruling before T037 adds signal handling.
+15. **Iteration 32 #3 / … / 35 #12 still stands:** `Adopt` is not safe to call twice
+    concurrently. Startup calls it once before the listener binds.
+16. **Iteration 31 #1 / … / 35 #13 still stands:** `docs/auth-and-sessions.md:135–137` describes
+    a cross-caller isolation test that cannot be written as specified in milestone 1. **An
+    operator should rule; no task owns it.**
+17. **Iteration 31 #2 / … / 35 #14 still stands:** `GET /sessions` is outside every sweep in the
+    isolation suite, because it is caller-scoped rather than session-scoped.
+18. **Iteration 30 #1 / … / 35 #15 still stands:** `notImplemented` is unreachable dead code.
+19. **Iteration 30 #2 / … / 35 #16 still stands:** the mux's `405` is `text/plain` with an
+    `Allow` header, contradicting `contracts/http-api.md`. **An operator should rule.**
+20. **Iteration 30 #3 / … / 35 #17 still stands:** the contract's test matrix has no row for
+    destroy-then-destroy.
+21. **Iteration 30 #4 / … / 35 #18 still stands:** `errDestroyRefused` is unreachable and
+    untested.
+22. **Iteration 29 #1 / … / 35 #19 still stands:** `rollback` verifies with `Has` alone and
+    never calls `confirmGone`, so a failed create on a host where the killed session was the
+    only one reports a **false orphan**. One line plus one test edit. **No task owns it.**
+23. **Iteration 29 #3 / … / 35 #20 still stands:** `Destroy` takes a `Session` rather than an
+    id, which is what lets `Adopt` tear down an expired candidate the store never held.
+24. **Iteration 28 #1 / … / 35 #21 still stands:** the two read routes disagree about which
+    sessions exist. **Unassigned.**
+25. **Iteration 28 #2 / … / 35 #22 still stands:** a detail reports `state` from the record and
+    never asks the host.
+26. **Iteration 27 #2 / … / 35 #23 still stands:** the list is unbounded in length.
+27. **Iteration 24 #4 / … / 35 #24 still stands:** a session whose window vanished still
+    resolves and answers 500 rather than moving to `dead`. `Store.SetState` **still has no
+    caller outside tests**. T036 or an operator. See finding 9.
+28. **Iteration 26 #1 / … / 35 #25 still stands:** nothing bounds the size of a capture.
+29. **Iteration 26 #2 / … / 35 #26 still stands:** `captured_at` is the daemon's clock, not
+    tmux's.
+30. **Iteration 25 #2 / … / 35 #27 still stands:** nothing touches the idle clock;
+    `Store.Touch` still has no caller. An adopted session's idle deadline is 60 minutes after
+    the daemon started regardless of use. **T036.**
+31. **Iteration 25 #1 / … / 35 #28 still stands:** a failed submit can leave prompt text in a
+    named tmux buffer, and **Destroy still does not delete the session's paste buffer**.
+32. **Iteration 23 #1 / … / 35 #29 answered in iteration 35:** `POST /sessions` is rate limited
+    per caller, so the create path is bounded in both count (T033) and rate (T034).
+33. **Iteration 22 #2 / … / 35 #30 still stands:** nothing forces a handler to use `decode`.
+34. **Iteration 22 #3 / … / 35 #31 still stands:** an oversize body is refused twice with two
+    different reasons and two different statuses. T038.
+35. **Iteration 21 #1 / … / 35 #32 still stands:** the mux's own `404` is `text/plain` while the
+    contract says every response is JSON.
+36. **Iteration 21 #2 / … / 35 #33 still stands:** the contract's `400` row for an oversize body
+    is unreachable behind layer 2.
+37. **Iteration 21 #3 / … / 35 #34 still stands:** `session.list`, `session.detail`, and
+    `session.output` are action names iteration 21 chose and `data-model.md` does not carry.
+38. **Iteration 21 #4 / … / 35 #35 still stands:** `RequestAudit` is not safe for concurrent
+    use, and nothing enforces it.
+39. **Iteration 21 #5 / … / 35 #36 still stands:** every request exit path amends the record by
+    habit, not by construction. T038.
+40. **Iteration 20 #3 / … / 35 #37 still stands:** none of `docs/security.md`'s "Transport &
+    exposure" headers are applied by anything.
+41. **Iteration 18 #1 / … / 35 #38 still stands:** `Store.Add` does not require a `TokenHash`,
+    and `AddCapped` inherits that. Such a record is now proven closed at *every instant* by
+    `TestCheckTokenRefusesAnUnissuedCredentialWhateverTheClockSays`, but nothing stops one
+    being stored.
+42. **Iteration 17 #2 / … / 35 #39 still stands:** `Delete`'s hash scrub is best effort.
+43. **Iteration 17 #3 / … / 35 #40 still stands:** nothing enforces that a `Session.ID` in the
+    store came from `NewID`, beyond `adoptableID` on the adoption path.
+44. **Iteration 16 #1 / … / 35 #41 still stands:** `ResolveWorkDir` has an unavoidable TOCTOU
+    window before `tmux new-session -c`.
+45. **Iteration 16 #3 / … / 35 #42 still stands:** nothing re-stats an approved root.
+46. **Iteration 15 #1 / … / 35 #43 still stands:** FR-027's class admits a leading `-`.
+47. **Iteration 13 #1 / … / 35 #44 still stands:** `docs/auth-and-sessions.md`'s samples are
+    stale in four ways, and finding 16 above is a fifth.
+48. **Iteration 12 #1 / … / 35 #45 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Run by hand again this iteration, green.
+49. **Iteration 12 #2 / … / 35 #46 still stands:** three specs disagree on `Observe`'s
+    signature.
+50. **Iteration 12 #3 / … / 35 #47 still stands:** the replay cache is unbounded in count.
+51. **Iteration 11 #1 / … / 35 #48 still stands:** the audit trail cannot tell clock drift from
+    a forged future timestamp. T038.
+52. **Iteration 11 #2 / … / 35 #49 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right, and adoption compares it against tmux's. This iteration added a
+    row asserting a backwards clock does **not** invalidate a credential — see findings 2 and 7.
+53. **Iteration 10 #2 / … / 35 #50 still stands:** the signature covers timestamp and body but
+    **not the method or the path**. **No task owns it.**
+54. **Iteration 9 #1 / … / 35 #51 still stands:** `RequestAudit.Deny` takes a free `string`.
+55. **Iteration 8 #2 / … / 35 #52 still stands:** the loud default-root warning goes to stderr
+    while audit records go to stdout. **Assigned to T038.**
+56. **Iteration 8 #1 / … / 35 #53 still stands:** `.env.example` does not exist, and it will
+    need `CRSW_MAX_SESSIONS` and `CRSW_CREATE_RATE_PER_MIN` described (names only, never a
+    value). T040 — see finding 4.
+57. **Iteration 7 #1 / … / 35 #54 still stands:** bidi and invisible Unicode are not stripped by
+    `tmuxctl.Strip`, by design. **Milestone 2 decides before rendering.**
+58. **Iteration 6 #3 / … / 35 #55 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case while `exec.go` also matches the
+    missing-socket pair.
+59. **Iteration 14 #1 / … / 35 #56 still stands:** `git checkout --`, `git restore`, `perl -i`
+    and a heredoc are all outside the permission allowlist, so `PROMPT.md` step 6's documented
+    recovery path needs an approval an autonomous run cannot give. Two probes were reverted with
+    `Edit` in reverse this iteration; repeated `-m` flags carried the commit message, and this
+    entry was again appended with `Edit` against the previous iteration's last finding.
+60. **Iteration 1 #1 / … / 35 #57 still stands, thirty-sixth iteration carrying it:**
+    `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook (which
+    ran clean on this iteration's commit). Needs an operator or a task of its own.
+61. **Iteration 2 #2 / … / 35 #58 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the plan.
+    Ticked both by hand again, again only because the finding was written down. Thirty-fifth
+    iteration of manual compensation for a one-line fix to step 9.
+62. **Iteration 6 #6 / … / 35 #59 still stands:** `AGENTS.md`'s command table has no entry for
+    `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both
+    were run by hand this iteration, green.
