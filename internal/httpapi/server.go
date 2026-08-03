@@ -222,6 +222,8 @@ func (s *Server) handlerFor(r Route) http.HandlerFunc {
 		return s.createSession
 	case Route{Method: http.MethodPost, Pattern: "/sessions/{id}/prompt"}:
 		return s.promptSession
+	case Route{Method: http.MethodGet, Pattern: "/sessions/{id}/output"}:
+		return s.sessionOutput
 	default:
 		return s.notImplemented
 	}
@@ -326,7 +328,7 @@ func (s *Server) Close() error {
 	return nil
 }
 
-// notImplemented answers the four routes T025–T029 have yet to implement.
+// notImplemented answers the three routes T026–T029 have yet to implement.
 //
 // It replies 501 with no body, and both halves are deliberate. A stub that
 // answered anything the middleware also answers would let the "every registered

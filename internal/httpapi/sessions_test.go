@@ -159,18 +159,17 @@ func bodyFor(f sessionFixture, route Route) []byte {
 // bodyFor's body has got past layer 2.
 //
 // It is a literal table rather than one constant because the six no longer
-// answer alike: T022 gave POST /sessions a handler and T024 gave the prompt
-// route one, so they answer 201 and 202 where the four unimplemented routes
-// still answer 501. Each later task moves one row, and what the sweeps assert
-// through it is unchanged — the request reached a handler, which is only
-// possible through the middleware.
+// answer alike: T022, T024, and T025 gave three of them handlers, so they answer
+// 201, 202, and 200 where the three unimplemented routes still answer 501. Each
+// later task moves one row, and what the sweeps assert through it is unchanged —
+// the request reached a handler, which is only possible through the middleware.
 var reachedStatus = map[Route]int{
 	{Method: http.MethodPost, Pattern: "/sessions"}:             http.StatusCreated,
 	{Method: http.MethodGet, Pattern: "/sessions"}:              http.StatusNotImplemented,
 	{Method: http.MethodGet, Pattern: "/sessions/{id}"}:         http.StatusNotImplemented,
 	{Method: http.MethodDelete, Pattern: "/sessions/{id}"}:      http.StatusNotImplemented,
 	{Method: http.MethodPost, Pattern: "/sessions/{id}/prompt"}: http.StatusAccepted,
-	{Method: http.MethodGet, Pattern: "/sessions/{id}/output"}:  http.StatusNotImplemented,
+	{Method: http.MethodGet, Pattern: "/sessions/{id}/output"}:  http.StatusOK,
 }
 
 // created is one drive of POST /sessions through the whole stack — signature,
@@ -1071,6 +1070,297 @@ func TestPromptRefusesARequestWithNoResolvedSession(t *testing.T) {
 	}
 	if calls := f.fixture.tmux.Calls(); len(calls) != 0 {
 		t.Errorf("a prompt with no resolved session ran %v; want nothing", calls)
+	}
+}
+
+// outputFixture is an audited server, one live session with the only copy of its
+// credential, and a pane already holding whatever the test is about.
+type outputFixture struct {
+	*testServer
+
+	live  session.Session
+	token string
+}
+
+func newOutputFixture(t *testing.T, pane string) outputFixture {
+	t.Helper()
+
+	s := newAuditedServer(t)
+	live, issued := s.fixture.plant(t, session.Session{})
+	// The tmux session already exists — plant seeds it — so this arranges what
+	// capture-pane will return without recording a call the request did not make.
+	s.fixture.tmux.SetPane(live.TmuxName(), pane)
+
+	return outputFixture{testServer: s, live: live, token: issued}
+}
+
+// get drives one signed, credentialled capture through the whole stack, and
+// returns the raw recorder as well as the decoded body: half of what this route
+// must be asked is about the bytes on the wire rather than the value a client
+// decodes from them.
+func (f outputFixture) get(t *testing.T, at time.Time) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, "/sessions/"+f.live.ID+"/output", nil)
+	signRequest(t, req, nil, at)
+	// After signing, because layer 3 is a separate credential and not part of
+	// the signed payload.
+	req.Header.Set(headerAuthorization, bearerScheme+f.token)
+
+	answer := httptest.NewRecorder()
+	f.ServeHTTP(answer, req)
+
+	var decoded map[string]any
+	if answer.Body.Len() > 0 {
+		if err := json.Unmarshal(answer.Body.Bytes(), &decoded); err != nil {
+			t.Fatalf("the response %q is not JSON: %v", answer.Body, err)
+		}
+	}
+	return answer, decoded
+}
+
+// TestOutputAnswersTheContractResponse is contracts/http-api.md's 200 example,
+// field by field, down to the pane text the contract prints.
+func TestOutputAnswersTheContractResponse(t *testing.T) {
+	t.Parallel()
+
+	const pane = "$ go test ./...\nok  \tinternal/auth\t0.012s\n"
+
+	f := newOutputFixture(t, pane)
+	answer, body := f.get(t, testTime)
+
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+	if ct := answer.Header().Get(headerContentType); ct != contentTypeJSON {
+		t.Errorf("Content-Type = %q; want %q", ct, contentTypeJSON)
+	}
+	if got := body["id"]; got != f.live.ID {
+		t.Errorf("id = %v; want %q — the daemon's own ID for the resolved session", got, f.live.ID)
+	}
+	// The fixture's manager and its audit sink read the same stopped clock, so
+	// this is the instant of the capture and not approximately it.
+	if want := testTime.UTC().Format(timestampFormat); body["captured_at"] != want {
+		t.Errorf("captured_at = %v; want %q", body["captured_at"], want)
+	}
+	if got := body["text"]; got != pane {
+		t.Errorf("text = %q; want the pane verbatim, %q", got, pane)
+	}
+	if len(body) != 3 {
+		t.Errorf("the response carries %d fields (%v); the contract defines exactly three", len(body), body)
+	}
+}
+
+// escByte is ESC, named rather than spelled for the reason tmuxctl names it:
+// this whole test is about a byte that is invisible at the point of use.
+const escByte = 0x1B
+
+// hostilePanes is what a session can put on its own screen, which is anything at
+// all: colour, a title-setting OSC, cursor movement, a sequence nobody
+// terminated, and a raw NUL. Every one of them is a control sequence a browser
+// or a terminal would act on, and FR-031 makes removing them a requirement.
+var hostilePanes = map[string]struct {
+	pane string
+	want string
+}{
+	"colour":               {"\x1b[31mFAIL\x1b[0m", "FAIL"},
+	"a window title":       {"\x1b]0;pwned\x07ok", "ok"},
+	"cursor movement":      {"a\x1b[2Ab", "ab"},
+	"an unterminated CSI":  {"visible\x1b[", "visible"},
+	"a bare control byte":  {"before\x00after", "beforeafter"},
+	"a terminal reset":     {"\x1bcclean", "clean"},
+	"text with no escapes": {"$ ls\nREADME.md\n", "$ ls\nREADME.md\n"},
+}
+
+// TestOutputStripsEveryControlSequence is FR-031 at the boundary that matters:
+// not "does Strip work" — tmuxctl's golden tests own that — but "is anything on
+// this route capable of returning a control byte to a client".
+//
+// Both halves are needed, and the second is the one to be careful about.
+// encoding/json escapes a control byte on the way out, so a raw body can never
+// carry a literal ESC and a test that looked only for one would pass against a
+// handler that stripped nothing at all. What a client decodes is the real claim;
+// the body is then checked for the escape's own spelling, which arrives as the
+// byte itself the moment anything parses it.
+func TestOutputStripsEveryControlSequence(t *testing.T) {
+	t.Parallel()
+
+	for name, c := range hostilePanes {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newOutputFixture(t, c.pane)
+			answer, body := f.get(t, testTime)
+
+			if answer.Code != http.StatusOK {
+				t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+			}
+			text, ok := body["text"].(string)
+			if !ok {
+				t.Fatalf("text = %v (%T); want a string", body["text"], body["text"])
+			}
+			if text != c.want {
+				t.Errorf("text = %q; want %q", text, c.want)
+			}
+			for _, r := range text {
+				if r == '\n' || r == '\t' {
+					continue
+				}
+				if r < 0x20 || r == 0x7F || (r >= 0x80 && r <= 0x9F) {
+					t.Errorf("text carries the control character %q: %q", r, text)
+				}
+			}
+			// The needle comes from the encoder rather than being written out
+			// here: it is exactly what this response would carry if an escape
+			// survived, and a literal one in this file is a byte no diff shows.
+			encoded, err := json.Marshal(string(rune(escByte)))
+			if err != nil {
+				t.Fatalf("marshal the escape byte: %v", err)
+			}
+			needle := strings.ToLower(strings.Trim(string(encoded), `"`))
+			if strings.Contains(strings.ToLower(answer.Body.String()), needle) {
+				t.Errorf("the response body carries %s, which decodes to an escape: %q", needle, answer.Body)
+			}
+		})
+	}
+}
+
+// TestThePaneContentReachesNoAuditRecordOrLog is FR-042 and docs/security.md §3
+// for this route, and it is the one that matters most on it: a pane holds
+// whatever the session printed — a key it echoed, a customer's data, a file it
+// read — and the record of a capture says which session was read, never what was
+// in it. A trail that carried the answer would be a second, permanent copy of
+// everything every session ever printed.
+func TestThePaneContentReachesNoAuditRecordOrLog(t *testing.T) {
+	t.Parallel()
+
+	// Distinctive enough that finding it anywhere is proof rather than
+	// coincidence, and shaped like the thing that would actually hurt.
+	const marker = "zzz-secret-pane-content-zzz"
+
+	f := newOutputFixture(t, "$ env\nAWS_SECRET_ACCESS_KEY="+marker+"\n")
+	answer, body := f.get(t, testTime)
+
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+	// The caller asked for the pane and must get it; without this the rest of the
+	// test would pass just as well on a handler that returned nothing at all.
+	text, ok := body["text"].(string)
+	if !ok || !strings.Contains(text, marker) {
+		t.Fatalf("text = %v; want the pane the caller asked for", body["text"])
+	}
+
+	if written := f.sink.String(); strings.Contains(written, marker) {
+		t.Errorf("the audit trail carries pane content: %q", written)
+	}
+	if len(f.failed) != 0 {
+		t.Errorf("the request reported %v; want nothing", f.failed)
+	}
+
+	rec := f.only(t)
+	if rec["action"] != string(audit.ActionSessionOutput) {
+		t.Errorf("action = %v; want %q", rec["action"], audit.ActionSessionOutput)
+	}
+	if rec["decision"] != string(audit.Allow) {
+		t.Errorf("decision = %v; want %q", rec["decision"], audit.Allow)
+	}
+	if rec["session_id"] != f.live.ID {
+		t.Errorf("session_id = %v; want %q", rec["session_id"], f.live.ID)
+	}
+	if reason, ok := rec["reason"]; ok {
+		t.Errorf("an allowed capture recorded a reason: %v", reason)
+	}
+}
+
+// TestOutputReadsThePaneTheRecordNames is FR-034 for this route: one command,
+// against a target built from the resolved record's ID and from nothing else.
+// The second session is there so that "the right pane" is a claim with something
+// to be wrong about.
+func TestOutputReadsThePaneTheRecordNames(t *testing.T) {
+	t.Parallel()
+
+	const otherMarker = "zzz-other-sessions-pane-zzz"
+
+	f := newOutputFixture(t, "mine")
+	other, _ := f.fixture.plant(t, session.Session{})
+	f.fixture.tmux.SetPane(other.TmuxName(), otherMarker)
+
+	answer, body := f.get(t, testTime)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+	if got := body["text"]; got != "mine" {
+		t.Errorf("text = %q; want this session's own pane", got)
+	}
+	if strings.Contains(answer.Body.String(), otherMarker) {
+		t.Errorf("the response carries another session's pane: %q", answer.Body)
+	}
+
+	want := []string{"tmux", "capture-pane", "-p", "-t", f.live.PaneTarget()}
+	got := f.fixture.tmux.Calls()
+	if len(got) != 1 {
+		t.Fatalf("the capture ran %v; want exactly one command", got)
+	}
+	if got[0].Op != tmuxctl.OpCapturePane || !slices.Equal(got[0].Argv, want) {
+		t.Errorf("call = %s %v; want %s %v", got[0].Op, got[0].Argv, tmuxctl.OpCapturePane, want)
+	}
+}
+
+// TestATmuxFailureDuringACaptureAnswersFiveHundredWithNoDetail: a pane that could
+// not be read is a fact about the host, and the caller learns only that the
+// request failed. What tmux said and what the pane held both stop here.
+func TestATmuxFailureDuringACaptureAnswersFiveHundredWithNoDetail(t *testing.T) {
+	t.Parallel()
+
+	const tmuxMarker = "no-such-tmux-binary"
+	const paneMarker = "zzz-secret-pane-content-zzz"
+
+	f := newOutputFixture(t, paneMarker)
+	f.fixture.tmux.FailOp(tmuxctl.OpCapturePane, errors.New(tmuxMarker))
+
+	answer, _ := f.get(t, testTime)
+	if answer.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusInternalServerError)
+	}
+	if got := answer.Body.String(); got != string(bodyInternalError) {
+		t.Errorf("body = %q; want %q", got, bodyInternalError)
+	}
+
+	rec := f.only(t)
+	if rec["decision"] != string(audit.Deny) {
+		t.Errorf("decision = %v; want %q", rec["decision"], audit.Deny)
+	}
+	if rec["reason"] != errOutputUncaptured.Error() {
+		t.Errorf("reason = %v; want %q", rec["reason"], errOutputUncaptured.Error())
+	}
+	outward := f.sink.String() + answer.Body.String()
+	if strings.Contains(outward, tmuxMarker) {
+		t.Errorf("the tmux failure travelled outward: %q", outward)
+	}
+	if strings.Contains(outward, paneMarker) {
+		t.Errorf("pane content travelled outward with the failure: %q", outward)
+	}
+}
+
+// TestOutputRefusesARequestWithNoResolvedSession is unreachable through the
+// router, for the reason its prompt twin is: the handler is checked directly to
+// prove it fails closed rather than falling back to the {id} in the path.
+func TestOutputRefusesARequestWithNoResolvedSession(t *testing.T) {
+	t.Parallel()
+
+	f := newOutputFixture(t, "secret")
+	req := httptest.NewRequest(http.MethodGet, "/sessions/"+f.live.ID+"/output", nil)
+	req.SetPathValue(pathValueID, f.live.ID)
+
+	answer := httptest.NewRecorder()
+	f.sessionOutput(answer, req)
+
+	if answer.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusInternalServerError)
+	}
+	if calls := f.fixture.tmux.Calls(); len(calls) != 0 {
+		t.Errorf("a capture with no resolved session ran %v; want nothing", calls)
 	}
 }
 

@@ -81,6 +81,20 @@ type promptResponse struct {
 	Delivered bool   `json:"delivered"`
 }
 
+// outputResponse is the contract's 200 body for GET /sessions/{id}/output, in
+// the contract's field order.
+//
+// Text is pane content: everything the session printed, which is untrusted and
+// secret at once. It is a plain string in a JSON document and nothing else — no
+// HTML, no markup, no ANSI passed through for a client to interpret — because
+// this is the value milestone 2 will put in a browser, and Principle VII closes
+// that surface by construction rather than by sanitising later.
+type outputResponse struct {
+	ID         string `json:"id"`
+	CapturedAt string `json:"captured_at"`
+	Text       string `json:"text"`
+}
+
 // The reasons this handler records, authored here.
 //
 // None is ever written into a response, and none is built from a byte the caller
@@ -119,6 +133,17 @@ var (
 	// learns the prompt did not land, and the operator learns which session from
 	// the record the resolver already stamped.
 	errPromptUndelivered = errors.New("the prompt could not be delivered to the session")
+
+	// errOutputNoSession is unreachable behind the layer-3 resolver, and fails
+	// closed for the reason errPromptNoSession does: a handler that fell back to
+	// the {id} in the path would be capturing a window on a caller's say-so.
+	errOutputNoSession = errors.New("the output handler was reached with no resolved session")
+
+	// errOutputUncaptured is what a pane the daemon could not read is recorded
+	// as. It names no tmux message, and — the part that matters here — no
+	// fragment of what was read: pane content is secret under docs/security.md
+	// §3 and may not reach the trail (FR-042).
+	errOutputUncaptured = errors.New("the session's output could not be captured")
 )
 
 // createSession is POST /sessions: validate, start, and hand back the only copy
@@ -274,6 +299,44 @@ func (s *Server) refusePrompt(w http.ResponseWriter, r *http.Request, err error)
 		return
 	}
 	s.failInternal(w, r, errPromptUndelivered)
+}
+
+// sessionOutput is GET /sessions/{id}/output: hand back what the session's pane
+// currently holds, as text (contracts/http-api.md).
+//
+// The session comes from the context and nowhere else, exactly as it does for a
+// prompt, and the capture itself belongs to internal/session — the stripper runs
+// where output leaves that package, so what arrives here is already the bytes
+// that may go out.
+//
+// There is one failure answer and it is a 500 with no detail. A pane that could
+// not be read is a fact about the host: whether tmux is missing, whether the
+// server died, or whether the window vanished under a record that still resolves
+// are distinctions an operator reads in the trail, and telling them apart for a
+// caller would be an oracle about a machine it cannot otherwise see.
+//
+// Nothing about the capture reaches the audit record. The middleware's record
+// says which session was read and by whom, and that is the whole of what FR-042
+// permits: pane content is secret, and a trail carrying it would be a second,
+// permanent copy of everything the session ever printed.
+func (s *Server) sessionOutput(w http.ResponseWriter, r *http.Request) {
+	resolved, ok := SessionFrom(r.Context())
+	if !ok {
+		s.failInternal(w, r, errOutputNoSession)
+		return
+	}
+
+	capture, err := s.sessions.Output(r.Context(), resolved)
+	if err != nil {
+		s.failInternal(w, r, errOutputUncaptured)
+		return
+	}
+
+	s.writeJSON(w, r, http.StatusOK, outputResponse{
+		ID:         resolved.ID,
+		CapturedAt: capture.At.UTC().Format(timestampFormat),
+		Text:       capture.Text,
+	})
 }
 
 // writeJSON is the one place a success body is written, so that the header, the

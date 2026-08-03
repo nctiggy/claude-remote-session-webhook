@@ -297,6 +297,57 @@ func (m *Manager) Prompt(ctx context.Context, s Session, text string) error {
 	return nil
 }
 
+// Capture is one reading of a session's pane, taken by Output.
+//
+// Text has already been through the stripper and is what will leave the daemon.
+// It is secret under docs/security.md §3 — a pane holds whatever the session
+// printed, which is anything on the host — so it may not be logged, audited, or
+// put in an error message, and this type exists partly so that a value carrying
+// it is recognisable at a glance.
+type Capture struct {
+	Text string
+	At   time.Time
+}
+
+// Output reads a session's pane and returns it as text safe to hand to a client
+// (FR-031).
+//
+// The record is the one Resolve returned, for the reason Prompt takes one: the
+// target derives from the record's ID alone (FR-034), so there is no second
+// lookup here to disagree with the first and no path from a caller's spelling of
+// an ID to a window.
+//
+// Stripping happens here rather than inside CapturePane, which is what makes it
+// a property of the daemon instead of one Controller: capture-pane is run
+// without -e so tmux already renders plain text, and Strip is the second line of
+// defence between a future -e — or a control byte the renderer let through — and
+// a JSON string that ends up in a browser.
+//
+// The instant is read after the capture, not before. It is what the pane held as
+// of *at most* that time, and a timestamp taken first would claim content newer
+// than itself whenever the exec was slow.
+func (m *Manager) Output(ctx context.Context, s Session) (Capture, error) {
+	// Fail closed on the same two records Prompt refuses, and for the same
+	// reason: an empty ID builds the bare prefix as a target, and a dead
+	// session's window is gone. Neither is reachable behind the resolver.
+	if s.ID == "" {
+		return Capture{}, fmt.Errorf("capture pane: %w", ErrSessionNotFound)
+	}
+	if s.State == StateDead {
+		return Capture{}, fmt.Errorf("capture pane of session %s: %w", s.ID, ErrSessionDead)
+	}
+
+	// The error names the session and wraps what tmux said, and deliberately
+	// carries no captured text: a partial read reaching an error string is pane
+	// content in whatever records that error (FR-042).
+	text, err := m.tmux.CapturePane(ctx, s.TmuxName())
+	if err != nil {
+		return Capture{}, fmt.Errorf("capture pane of session %s: %w", s.ID, err)
+	}
+
+	return Capture{Text: tmuxctl.Strip(text), At: m.clock.Now()}, nil
+}
+
 // start runs the four tmux commands FR-018 describes, in the only order that
 // works: the session must exist before an option can be set on it, and it must
 // be marked as ours before it runs anything, because an unmarked session is one

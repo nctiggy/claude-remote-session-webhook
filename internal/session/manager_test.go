@@ -734,6 +734,113 @@ func TestPromptNamesNoPromptTextInItsError(t *testing.T) {
 	}
 }
 
+// Output's one command and what it does to the answer. The pane holds a colour
+// sequence, a title-setting OSC, and a raw control byte — none of which may
+// survive into a value the API will hand a client (FR-031) — and the instant
+// comes from the manager's own clock, so it is the one the reaper measures
+// against rather than a second reading of time.
+func TestOutputCapturesAndStrips(t *testing.T) {
+	t.Parallel()
+
+	const raw = "\x1b[31m$ go test ./...\x1b[0m\n\x1b]0;title\x07ok\tinternal/auth\x00\n"
+	const want = "$ go test ./...\nok\tinternal/auth\n"
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+	f.tmux.SetPane("crswd-"+s.ID, raw)
+	before := len(f.tmux.Calls())
+
+	got, err := f.mgr.Output(context.Background(), *s)
+	if err != nil {
+		t.Fatalf("Output() unexpected error: %v", err)
+	}
+	if got.Text != want {
+		t.Errorf("Output() text = %q, want %q", got.Text, want)
+	}
+	if strings.ContainsRune(got.Text, 0x1B) {
+		t.Errorf("Output() text carries an escape byte: %q", got.Text)
+	}
+	if !got.At.Equal(f.now) {
+		t.Errorf("Output() captured at %v, want the manager's clock at %v", got.At, f.now)
+	}
+
+	calls := f.tmux.Calls()[before:]
+	wantArgv := []string{"tmux", "capture-pane", "-p", "-t", "=crswd-" + s.ID + ":"}
+	if len(calls) != 1 {
+		t.Fatalf("Output() ran %d tmux commands, want exactly 1: %v", len(calls), calls)
+	}
+	if calls[0].Op != tmuxctl.OpCapturePane || !slices.Equal(calls[0].Argv, wantArgv) {
+		t.Errorf("Output() ran %s %q, want %s %q",
+			calls[0].Op, calls[0].Argv, tmuxctl.OpCapturePane, wantArgv)
+	}
+}
+
+// The two records Output refuses before it executes anything, which are the two
+// Prompt refuses and for the same reasons: neither is reachable behind the
+// resolver, and both would otherwise name a window the caller did not earn.
+func TestOutputRefusesWhatItCannotRead(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	live, _ := mustCreate(t, f, f.request())
+
+	dead := *live
+	dead.State = StateDead
+
+	cases := map[string]struct {
+		session Session
+		want    error
+	}{
+		"a dead session":      {dead, ErrSessionDead},
+		"a record with no id": {Session{Owner: auth.CallerOperator, State: StateStarting}, ErrSessionNotFound},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			before := len(f.tmux.Calls())
+			got, err := f.mgr.Output(context.Background(), c.session)
+			if !errors.Is(err, c.want) {
+				t.Fatalf("Output() = _, %v, want %v", err, c.want)
+			}
+			if got.Text != "" || !got.At.IsZero() {
+				t.Errorf("Output() returned %+v alongside an error; want the zero Capture", got)
+			}
+			if after := len(f.tmux.Calls()); after != before {
+				t.Errorf("the refused capture ran %v; a refusal must cost no tmux command",
+					f.tmux.Calls()[before:after])
+			}
+		})
+	}
+}
+
+// docs/security.md §3 for the one thing this method handles that is secret: a
+// failed capture must not carry back what it managed to read. An error is the
+// one value on this path a handler is free to record, so pane content in it
+// would be pane content in the trail.
+func TestOutputNamesNoPaneContentInItsError(t *testing.T) {
+	t.Parallel()
+
+	const paneMarker = "zzz-secret-pane-content-zzz"
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+	f.tmux.SetPane("crswd-"+s.ID, "AWS_SECRET_ACCESS_KEY="+paneMarker)
+	f.tmux.FailOp(tmuxctl.OpCapturePane, errTmuxBroken)
+
+	got, err := f.mgr.Output(context.Background(), *s)
+	if err == nil {
+		t.Fatal("Output() reported success while tmux was failing")
+	}
+	if strings.Contains(err.Error(), paneMarker) {
+		t.Errorf("Output() error %q carries pane content", err)
+	}
+	if strings.Contains(got.Text, paneMarker) {
+		t.Errorf("Output() returned pane content alongside an error: %q", got.Text)
+	}
+}
+
 func TestNewManagerFailsClosed(t *testing.T) {
 	t.Parallel()
 
