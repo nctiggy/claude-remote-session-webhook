@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 )
@@ -429,6 +430,225 @@ func TestTokenMatchesRefusesARecordThatWasNeverIssuedOne(t *testing.T) {
 		if s.TokenMatches(presented) {
 			t.Fatal("a record with no TokenHash accepted a token")
 		}
+	}
+}
+
+// issuedSession is a record with a credential really issued for it, plus the
+// plaintext that opens it. CreatedAt is the contract's instant, so its deadline
+// is contractExpiresAt and the boundary tests read against the same two values a
+// client sees in a create response.
+func issuedSession(t *testing.T, ch string) (Session, string) {
+	t.Helper()
+
+	tok, hash := mustNewToken(t)
+	s := newTestSession(testID(ch), auth.CallerOperator)
+	s.TokenHash = hash
+	return s, tok
+}
+
+// FR-015's boundary, stated at the level that enforces it: the credential is
+// good for the session's whole life and refused from the instant the session is
+// over. T035's requirement is exactly this pair.
+func TestCheckTokenIsGoodForExactlyTheSessionsLife(t *testing.T) {
+	t.Parallel()
+
+	s, tok := issuedSession(t, "e")
+
+	tests := []struct {
+		name string
+		at   time.Time
+		want error
+	}{
+		{name: "the instant the session was created", at: contractCreatedAt},
+		{name: "a nanosecond in", at: contractCreatedAt.Add(time.Nanosecond)},
+		{name: "an hour in", at: contractCreatedAt.Add(time.Hour)},
+		// The idle timeout is the reaper's business and a different deadline
+		// entirely. A credential does not stop working because a session went
+		// quiet — it stops working because the session's life ended.
+		{name: "past the idle timeout, which is not this deadline", at: contractCreatedAt.Add(IdleTimeout + time.Minute)},
+		{name: "halfway through", at: contractCreatedAt.Add(AbsoluteLifetime / 2)},
+		{name: "the last nanosecond of the session", at: contractExpiresAt.Add(-time.Nanosecond)},
+		{name: "exactly at the deadline", at: contractExpiresAt, want: ErrTokenExpired},
+		{name: "a nanosecond past it", at: contractExpiresAt.Add(time.Nanosecond), want: ErrTokenExpired},
+		{name: "an hour past it", at: contractExpiresAt.Add(time.Hour), want: ErrTokenExpired},
+		{name: "a year past it", at: contractExpiresAt.AddDate(1, 0, 0), want: ErrTokenExpired},
+		// A clock that read back past the record's own creation. Nothing should
+		// produce it, and a credential issued for this session is not the thing
+		// that should be adjudicating it: the instant is inside the lifetime at
+		// both ends of the comparison, so it is accepted, and the daemon's clock
+		// is where that problem gets solved.
+		{name: "before the session existed", at: contractCreatedAt.Add(-time.Hour)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if err := s.CheckToken(tok, tt.at); !errors.Is(err, tt.want) {
+				t.Fatalf("CheckToken() at %v = %v, want %v", tt.at, err, tt.want)
+			}
+		})
+	}
+}
+
+// The order inside CheckToken, pinned: a value that was never issued is refused
+// as a mismatch whatever the clock reads. Answering ErrTokenExpired to a guess
+// would put "this credential was once real" in the trail about one that never
+// was — and the operator reading that trail is the only audience the two
+// sentinels have (FR-033 gives the caller one answer for both).
+func TestCheckTokenRefusesAnUnissuedCredentialWhateverTheClockSays(t *testing.T) {
+	t.Parallel()
+
+	s, tok := issuedSession(t, "f")
+	other, _ := mustNewToken(t)
+
+	// Store.Add does not require a TokenHash, so a record with none is one a
+	// future caller could really store. It opens for nobody, at no instant.
+	never := newTestSession(testID("g"), auth.CallerOperator)
+
+	credentials := map[string]struct {
+		record    Session
+		presented string
+	}{
+		"a token issued for nothing":          {s, other},
+		"no credential at all":                {s, ""},
+		"the issued token, one character off": {s, swapAt(tok, 0)},
+		"a record that was never issued one":  {never, tok},
+	}
+	instants := map[string]time.Time{
+		"inside the lifetime": contractCreatedAt.Add(time.Hour),
+		"at the deadline":     contractExpiresAt,
+		"long past it":        contractExpiresAt.Add(30 * 24 * time.Hour),
+	}
+
+	for credential, c := range credentials {
+		for instant, at := range instants {
+			t.Run(credential+" "+instant, func(t *testing.T) {
+				t.Parallel()
+
+				if err := c.record.CheckToken(c.presented, at); !errors.Is(err, ErrTokenMismatch) {
+					t.Fatalf("CheckToken() = %v, want %v", err, ErrTokenMismatch)
+				}
+			})
+		}
+	}
+}
+
+// The divergence FR-015 forbids, checked across creation instants rather than at
+// one. Whatever a session was created at, the credential is refused at exactly
+// that instant plus the documented lifetime — and that instant is the same one
+// the record reports as its own deadline and hands a client as expires_at.
+func TestCheckTokenExpiresWithTheSessionAndNotOnItsOwnSchedule(t *testing.T) {
+	t.Parallel()
+
+	// Transcribed from docs/auth-and-sessions.md's lifetimes table, not read from
+	// AbsoluteLifetime. A test that used the constant would keep passing if the
+	// constant moved, which is the one thing it is here to catch.
+	const documentedTTL = 24 * time.Hour
+
+	tests := []struct {
+		name      string
+		createdAt time.Time
+	}{
+		{name: "the contract's create response", createdAt: contractCreatedAt},
+		{name: "a DST boundary", createdAt: time.Date(2026, 3, 29, 0, 30, 0, 0, time.UTC)},
+		{name: "sub-second precision", createdAt: contractCreatedAt.Add(time.Nanosecond)},
+		{name: "a record carrying a non-UTC zone", createdAt: contractCreatedAt.In(time.FixedZone("UTC+9", 9*60*60))},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s, tok := issuedSession(t, "h")
+			s.CreatedAt = tt.createdAt
+			deadline := tt.createdAt.Add(documentedTTL)
+
+			if err := s.CheckToken(tok, deadline.Add(-time.Nanosecond)); err != nil {
+				t.Errorf("CheckToken() a nanosecond before %v = %v, want it accepted", deadline, err)
+			}
+			if err := s.CheckToken(tok, deadline); !errors.Is(err, ErrTokenExpired) {
+				t.Errorf("CheckToken() at %v = %v, want %v", deadline, err, ErrTokenExpired)
+			}
+			if got := s.TokenExpiry(); !got.Equal(deadline) {
+				t.Errorf("TokenExpiry() = %v, want %v", got, deadline)
+			}
+			if !s.TokenExpiry().Equal(s.AbsoluteDeadline()) {
+				t.Errorf("the credential's deadline %v and the session's %v disagree",
+					s.TokenExpiry(), s.AbsoluteDeadline())
+			}
+		})
+	}
+}
+
+// FR-038 has no renewal, and docs/auth-and-sessions.md has no re-issue: a
+// session used right up to its ceiling stops accepting its credential on
+// schedule. Use moves the idle clock and nothing else.
+func TestCheckTokenIsNotRenewedByUse(t *testing.T) {
+	t.Parallel()
+
+	s, tok := issuedSession(t, "i")
+	s.LastActivity = contractExpiresAt.Add(-time.Second)
+
+	// Without this the test would prove nothing: the point is that a deadline
+	// which activity *has* pushed past the ceiling still does not move the one
+	// the credential is measured against.
+	if !s.IdleDeadline().After(s.TokenExpiry()) {
+		t.Fatalf("the fixture puts the idle deadline at %v, not past the credential's %v",
+			s.IdleDeadline(), s.TokenExpiry())
+	}
+
+	if err := s.CheckToken(tok, contractExpiresAt.Add(-time.Nanosecond)); err != nil {
+		t.Errorf("CheckToken() inside the lifetime of a busy session = %v, want it accepted", err)
+	}
+	if err := s.CheckToken(tok, contractExpiresAt); !errors.Is(err, ErrTokenExpired) {
+		t.Errorf("CheckToken() at the deadline of a busy session = %v, want %v", err, ErrTokenExpired)
+	}
+}
+
+func TestCheckTokenDerivesItsDeadlineFromTheRecord(t *testing.T) {
+	t.Parallel()
+
+	// The "by construction" half of FR-015, asserted where it lives rather than
+	// reviewed. A CheckToken that spelled CreatedAt.Add(AbsoluteLifetime) — or
+	// reached for a duration of its own — would pass every test above on the day
+	// it was written and be free to drift from the session's deadline on any day
+	// after. Asking the record is the only spelling that cannot.
+	fset := gotoken.NewFileSet()
+	file, err := parser.ParseFile(fset, "token.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parsing token.go: %v", err)
+	}
+
+	fn := findMethod(file, "CheckToken")
+	if fn == nil {
+		t.Fatal("CheckToken is not declared in token.go")
+	}
+
+	var asksTheRecord bool
+	var recomputes []string
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.SelectorExpr:
+			switch node.Sel.Name {
+			case "TokenExpiry":
+				asksTheRecord = true
+			case "CreatedAt", "Add":
+				recomputes = append(recomputes, node.Sel.Name)
+			}
+		case *ast.Ident:
+			if node.Name == "AbsoluteLifetime" || node.Name == "IdleTimeout" {
+				recomputes = append(recomputes, node.Name)
+			}
+		}
+		return true
+	})
+
+	if !asksTheRecord {
+		t.Error("CheckToken does not take its deadline from Session.TokenExpiry")
+	}
+	if len(recomputes) != 0 {
+		t.Errorf("CheckToken reaches for %v; the credential's deadline is TokenExpiry and nothing else", recomputes)
 	}
 }
 

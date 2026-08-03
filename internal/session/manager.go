@@ -257,15 +257,12 @@ func (m *Manager) Resolve(id string, owner auth.CallerID, presented string) (Ses
 	if err != nil {
 		return Session{}, fmt.Errorf("resolve session: %w", err)
 	}
-	if !s.TokenMatches(presented) {
-		return Session{}, fmt.Errorf("resolve session: %w", ErrTokenMismatch)
-	}
-	// Before, not !After: at the deadline the credential is already gone. The
-	// boundary belongs on the refusing side of the comparison for the same
-	// reason the signature window does — a lifetime that is "24 hours plus
-	// however long the last request takes" is not a lifetime anyone bounded.
-	if !m.clock.Now().Before(s.TokenExpiry()) {
-		return Session{}, fmt.Errorf("resolve session: %w", ErrTokenExpired)
+	// One call, not two. The credential and its lifetime are enforced together in
+	// token.go (FR-014, FR-015) so that this is not the place either of them is
+	// spelled — a second session-scoped path added later cannot reproduce the
+	// match and omit the expiry, because there is nothing here to copy.
+	if err := s.CheckToken(presented, m.clock.Now()); err != nil {
+		return Session{}, fmt.Errorf("resolve session: %w", err)
 	}
 	// A dead record answers exactly as an unknown ID does (data-model.md). Dead
 	// is terminal, so this is not a race to lose: the session is gone and the
