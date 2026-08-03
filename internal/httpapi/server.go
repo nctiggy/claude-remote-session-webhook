@@ -224,6 +224,8 @@ func (s *Server) handlerFor(r Route) http.HandlerFunc {
 		return s.listSessions
 	case Route{Method: http.MethodGet, Pattern: "/sessions/{id}"}:
 		return s.sessionDetail
+	case Route{Method: http.MethodDelete, Pattern: "/sessions/{id}"}:
+		return s.destroySession
 	case Route{Method: http.MethodPost, Pattern: "/sessions/{id}/prompt"}:
 		return s.promptSession
 	case Route{Method: http.MethodGet, Pattern: "/sessions/{id}/output"}:
@@ -332,14 +334,17 @@ func (s *Server) Close() error {
 	return nil
 }
 
-// notImplemented answers the one route T029 has yet to implement.
+// notImplemented is handlerFor's default, and since T029 gave the sixth route a
+// handler nothing reaches it.
 //
-// It replies 501 with no body, and both halves are deliberate. A stub that
-// answered anything the middleware also answers would let the "every registered
-// route refuses an unauthenticated request" sweep pass green without the
-// middleware being in the tree at all, which is the one thing that sweep is for:
-// a 501 can only be reached *through* authentication. And the JSON error bodies
-// belong to the tasks that own the responses; wiring does not get to invent them.
+// It stays because handlerFor is a switch on a table declared elsewhere in this
+// file: a seventh route added to routes without a case above would otherwise be
+// registered with a nil handler and panic on its first request. A 501 that only
+// authenticated traffic can reach, recorded in the trail like everything else,
+// is the quieter failure and the one an operator can find.
+//
+// It replies with no body on purpose. The JSON error bodies belong to the tasks
+// that own the responses; wiring does not get to invent one.
 func (s *Server) notImplemented(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }

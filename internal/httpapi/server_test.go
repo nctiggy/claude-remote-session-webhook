@@ -140,6 +140,12 @@ func TestNoRouteOutsideTheContractIsServed(t *testing.T) {
 // TestAMethodTheContractDoesNotDefineIsRefused covers the other way a route can
 // leak in: the same path under a verb no handler was written for. ServeMux
 // matches method and pattern together, so these reach nothing.
+//
+// It asserts the mux's own 405 rather than "not the 501 stub", which is what it
+// asserted until T029 gave the sixth route a handler and left nothing answering
+// 501 at all. A test whose failure condition has become unreachable passes for
+// the wrong reason, and this one guards a real mistake: a handler registered for
+// a verb the contract does not define.
 func TestAMethodTheContractDoesNotDefineIsRefused(t *testing.T) {
 	t.Parallel()
 
@@ -156,9 +162,9 @@ func TestAMethodTheContractDoesNotDefineIsRefused(t *testing.T) {
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, httptest.NewRequest(r.method, r.path, nil))
 
-		if rec.Code == http.StatusNotImplemented {
-			t.Errorf("%s %s reached a handler (%d); the contract defines no such operation",
-				r.method, r.path, rec.Code)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s %s = %d; want %d — the contract defines no such operation, so it must reach no handler",
+				r.method, r.path, rec.Code, http.StatusMethodNotAllowed)
 		}
 	}
 }

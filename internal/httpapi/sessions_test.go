@@ -158,17 +158,16 @@ func bodyFor(f sessionFixture, route Route) []byte {
 // reachedStatus is what each route answers once a signed request carrying
 // bodyFor's body has got past layer 2.
 //
-// It is a literal table rather than one constant because the six no longer
-// answer alike: T022, T024, T025, T026, and T027 gave five of them handlers, so
-// they answer 201, 202, and 200 where the one unimplemented route still answers
-// 501. Each later task moves one row, and what the sweeps assert through it is
-// unchanged — the request reached a handler, which is only possible through the
-// middleware.
+// It is a literal table rather than one constant because the six do not answer
+// alike: T022, T024, T025, T026, T027, and T029 gave all of them handlers, so
+// they answer 201, 202, and 200 rather than one status. What the sweeps assert
+// through it is unchanged — the request reached a handler, which is only
+// possible through the middleware.
 var reachedStatus = map[Route]int{
 	{Method: http.MethodPost, Pattern: "/sessions"}:             http.StatusCreated,
 	{Method: http.MethodGet, Pattern: "/sessions"}:              http.StatusOK,
 	{Method: http.MethodGet, Pattern: "/sessions/{id}"}:         http.StatusOK,
-	{Method: http.MethodDelete, Pattern: "/sessions/{id}"}:      http.StatusNotImplemented,
+	{Method: http.MethodDelete, Pattern: "/sessions/{id}"}:      http.StatusOK,
 	{Method: http.MethodPost, Pattern: "/sessions/{id}/prompt"}: http.StatusAccepted,
 	{Method: http.MethodGet, Pattern: "/sessions/{id}/output"}:  http.StatusOK,
 }
@@ -2008,6 +2007,370 @@ func TestDetailRefusesARequestWithNoResolvedSession(t *testing.T) {
 	}
 	if strings.Contains(answer.Body.String(), f.live.ID) {
 		t.Errorf("a detail with no resolved session answered with a session: %q", answer.Body)
+	}
+}
+
+// --- DELETE /sessions/{id} (T029) --------------------------------------------
+
+// destroyFixture is a server holding one live session and the only copy of its
+// credential — what every claim on DELETE /sessions/{id} starts from. plant
+// seeds the tmux session the record names, so the kill this route issues has
+// something real to remove and the verification that follows it has something to
+// find or not find.
+type destroyFixture struct {
+	*testServer
+
+	live  session.Session
+	token string
+}
+
+func newDestroyFixture(t *testing.T) destroyFixture {
+	t.Helper()
+
+	s := newAuditedServer(t)
+	live, issued := s.fixture.plant(t, session.Session{
+		Name:    "refactor-auth",
+		WorkDir: s.fixture.repo,
+		State:   session.StateRunning,
+	})
+	return destroyFixture{testServer: s, live: live, token: issued}
+}
+
+// deleteSession drives one signed, credentialled destroy through the whole
+// stack, and hands back the raw recorder as well as the decoded body because
+// half of what this route must be asked is about the bytes on the wire — the 409
+// is the one place this API answers with something other than a uniform error,
+// and its body is quoted in the contract.
+func deleteSession(t *testing.T, s *testServer, id, presented string, at time.Time) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodDelete, "/sessions/"+id, nil)
+	signRequest(t, req, nil, at)
+	if presented != "" {
+		// After signing, for the reason scopedRequest does it: layer 3 is a
+		// separate credential, not part of the layer-2 signature.
+		req.Header.Set(headerAuthorization, bearerScheme+presented)
+	}
+
+	answer := httptest.NewRecorder()
+	s.ServeHTTP(answer, req)
+
+	var decoded map[string]any
+	if answer.Body.Len() > 0 {
+		if err := json.Unmarshal(answer.Body.Bytes(), &decoded); err != nil {
+			t.Fatalf("the response %q is not JSON: %v", answer.Body, err)
+		}
+	}
+	return answer, decoded
+}
+
+func (f destroyFixture) delete(t *testing.T, at time.Time) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	return deleteSession(t, f.testServer, f.live.ID, f.token, at)
+}
+
+// TestDestroyAnswersTheContractResponse is contracts/http-api.md's 200 body,
+// field by field. Two fields and no more: an ID and a claim, with nowhere to put
+// a token, a hash, or an account of what tmux did.
+func TestDestroyAnswersTheContractResponse(t *testing.T) {
+	t.Parallel()
+
+	f := newDestroyFixture(t)
+	answer, body := f.delete(t, testTime)
+
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+	if ct := answer.Header().Get(headerContentType); ct != contentTypeJSON {
+		t.Errorf("Content-Type = %q; want %q — every response is JSON", ct, contentTypeJSON)
+	}
+
+	want := map[string]any{"id": f.live.ID, "destroyed": true}
+	for name, value := range want {
+		if got := body[name]; got != value {
+			t.Errorf("%s = %v; want %v", name, got, value)
+		}
+	}
+	wantFields := slices.Sorted(maps.Keys(want))
+	if fields := slices.Sorted(maps.Keys(body)); !slices.Equal(fields, wantFields) {
+		t.Errorf("the response fields = %v; want %v", fields, wantFields)
+	}
+	if strings.Contains(answer.Body.String(), f.token) {
+		t.Errorf("the destroy carries the presented credential back: %q", answer.Body)
+	}
+}
+
+// TestDestroyKillsTheSessionTheCredentialNamed is FR-034 for the one route where
+// getting it wrong destroys something. The caller's other session is older, so a
+// handler reaching for a record rather than the resolved one — the store sorts
+// oldest first — would kill it and be caught.
+//
+// The verification is asserted as a command, not merely as an outcome: FR-019
+// makes "gone" something the host said, and a Destroy that killed and returned
+// would pass an outcome assertion while confirming nothing.
+func TestDestroyKillsTheSessionTheCredentialNamed(t *testing.T) {
+	t.Parallel()
+
+	f := newDestroyFixture(t)
+	other, _ := f.fixture.plant(t, session.Session{
+		Name:      "zzz-the-callers-other-session-zzz",
+		WorkDir:   f.fixture.repo,
+		CreatedAt: testTime.Add(-time.Hour),
+	})
+
+	answer, _ := f.delete(t, testTime)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+
+	want := []struct {
+		op   tmuxctl.Op
+		argv []string
+	}{
+		{tmuxctl.OpKill, []string{"tmux", "kill-session", "-t", f.live.SessionTarget()}},
+		{tmuxctl.OpHas, []string{"tmux", "has-session", "-t", f.live.SessionTarget()}},
+	}
+
+	got := f.fixture.tmux.Calls()
+	if len(got) != len(want) {
+		t.Fatalf("the destroy ran %v; want the kill and the verification that follows it", got)
+	}
+	for i, w := range want {
+		if got[i].Op != w.op || !slices.Equal(got[i].Argv, w.argv) {
+			t.Errorf("call %d = %s %v; want %s %v", i, got[i].Op, got[i].Argv, w.op, w.argv)
+		}
+	}
+
+	for _, c := range got {
+		if slices.Contains(c.Argv, other.SessionTarget()) {
+			t.Errorf("the destroy addressed another session: %v", c.Argv)
+		}
+	}
+	if _, err := f.fixture.store.Get(other.ID, auth.CallerOperator); err != nil {
+		t.Errorf("destroying one session removed another: %v", err)
+	}
+}
+
+// TestAVerifiedTeardownClearsTheRecordAndItsCredential is FR-020. The record is
+// what carries the token hash, so a destroy that killed the window and kept the
+// record would leave a live credential for a session that no longer exists.
+func TestAVerifiedTeardownClearsTheRecordAndItsCredential(t *testing.T) {
+	t.Parallel()
+
+	f := newDestroyFixture(t)
+	answer, _ := f.delete(t, testTime)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+
+	if _, err := f.fixture.store.Get(f.live.ID, auth.CallerOperator); !errors.Is(err, session.ErrSessionNotFound) {
+		t.Errorf("the store still holds the destroyed session: %v", err)
+	}
+	if written := f.sink.String(); strings.Contains(written, f.token) {
+		t.Errorf("the audit trail carries the credential of a destroyed session: %q", written)
+	}
+}
+
+// TestASurvivingSessionAnswersConflict is FR-019's whole point, in the three
+// shapes a teardown fails in. Two of them are a session that is demonstrably
+// still there; the third is one nobody can ask about, which counts as surviving
+// because Principle VI does not let an unanswered question be reported as a
+// teardown.
+//
+// The record must be kept in all three. A record is the only thing carrying an
+// owner and two deadlines for a session that may still be running, and adoption
+// runs at startup — so a record dropped here is a live unsandboxed shell the
+// running daemon has forgotten for good.
+func TestASurvivingSessionAnswersConflict(t *testing.T) {
+	t.Parallel()
+
+	const tmuxMarker = "no-such-tmux-binary"
+
+	cases := map[string]func(f destroyFixture){
+		"the kill reported success and the session is still there": func(f destroyFixture) {
+			f.fixture.tmux.SurviveKill(f.live.TmuxName())
+		},
+		"the kill itself failed": func(f destroyFixture) {
+			f.fixture.tmux.FailOp(tmuxctl.OpKill, errors.New(tmuxMarker))
+		},
+		"tmux cannot say whether it is gone": func(f destroyFixture) {
+			// Both, because confirmGone falls back to List when Has cannot
+			// answer: a host whose last session just died reports "no server
+			// running" to has-session, and reading that as absence would let a
+			// broken tmux confirm every teardown.
+			f.fixture.tmux.FailOp(tmuxctl.OpHas, errors.New(tmuxMarker))
+			f.fixture.tmux.FailOp(tmuxctl.OpList, errors.New(tmuxMarker))
+		},
+	}
+
+	for name, arrange := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newDestroyFixture(t)
+			arrange(f)
+
+			answer, _ := f.delete(t, testTime)
+			if answer.Code != http.StatusConflict {
+				t.Fatalf("status = %d (%q); want %d — an unverified teardown is not a teardown",
+					answer.Code, answer.Body, http.StatusConflict)
+			}
+			if got := answer.Body.String(); got != string(bodyTeardownUnverified) {
+				t.Errorf("body = %q; want %q", got, bodyTeardownUnverified)
+			}
+			if ct := answer.Header().Get(headerContentType); ct != contentTypeJSON {
+				t.Errorf("Content-Type = %q; want %q", ct, contentTypeJSON)
+			}
+
+			if _, err := f.fixture.store.Get(f.live.ID, auth.CallerOperator); err != nil {
+				t.Errorf("the record of a session that may still be running was dropped: %v", err)
+			}
+
+			// Prominent means findable: the trail's own name for this operation,
+			// a refusal, the daemon's ID for the session, and the one reason that
+			// says a live unsandboxed shell may exist.
+			rec := f.only(t)
+			if rec["action"] != string(audit.ActionSessionDestroy) {
+				t.Errorf("action = %v; want %q", rec["action"], audit.ActionSessionDestroy)
+			}
+			if rec["decision"] != string(audit.Deny) {
+				t.Errorf("decision = %v; want %q", rec["decision"], audit.Deny)
+			}
+			if rec["reason"] != errDestroyOrphaned.Error() {
+				t.Errorf("reason = %v; want %q", rec["reason"], errDestroyOrphaned.Error())
+			}
+			if rec["session_id"] != f.live.ID {
+				t.Errorf("session_id = %v; want %q", rec["session_id"], f.live.ID)
+			}
+
+			outward := f.sink.String() + answer.Body.String()
+			if strings.Contains(outward, tmuxMarker) {
+				t.Errorf("the tmux failure travelled outward: %q", outward)
+			}
+		})
+	}
+}
+
+// TestASessionThatVanishedOnItsOwnIsDestroyed: a window whose shell already
+// exited is gone, and the caller asked for it to be gone. tmux answers the kill
+// with "can't find session", which is an ordinary outcome on this path and not a
+// failure — only the verification decides.
+func TestASessionThatVanishedOnItsOwnIsDestroyed(t *testing.T) {
+	t.Parallel()
+
+	f := newDestroyFixture(t)
+	f.fixture.tmux.Vanish(f.live.TmuxName())
+
+	answer, body := f.delete(t, testTime)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+	if got := body["destroyed"]; got != true {
+		t.Errorf("destroyed = %v; want true", got)
+	}
+	if _, err := f.fixture.store.Get(f.live.ID, auth.CallerOperator); !errors.Is(err, session.ErrSessionNotFound) {
+		t.Errorf("the store still holds a session confirmed gone: %v", err)
+	}
+}
+
+// TestASecondDestroyIsTheUnknownAnswer pins the decision rather than the
+// accident. Destroy is not idempotent: the record is gone, so layer 3 refuses
+// the second request exactly as it refuses an ID that never existed — and it has
+// to, because a 200 for a session the daemon has no record of would mean the
+// resolver telling "destroyed" apart from "not yours", which is the difference
+// FR-033 closes.
+func TestASecondDestroyIsTheUnknownAnswer(t *testing.T) {
+	t.Parallel()
+
+	f := newDestroyFixture(t)
+
+	// Three distinct instants, because all three requests carry an empty body:
+	// signed alike they would share a signature and the later ones would be
+	// refused as replays.
+	first, _ := f.delete(t, testTime)
+	if first.Code != http.StatusOK {
+		t.Fatalf("the first destroy = %d (%q); want %d", first.Code, first.Body, http.StatusOK)
+	}
+
+	unknown, err := session.NewID()
+	if err != nil {
+		t.Fatalf("session.NewID = _, %v; want an id", err)
+	}
+	again, _ := deleteSession(t, f.testServer, f.live.ID, f.token, testTime.Add(-time.Second))
+	never, _ := deleteSession(t, f.testServer, unknown, f.token, testTime.Add(-2*time.Second))
+
+	if again.Code != http.StatusNotFound {
+		t.Errorf("the second destroy = %d (%q); want %d", again.Code, again.Body, http.StatusNotFound)
+	}
+	if again.Code != never.Code || again.Body.String() != never.Body.String() {
+		t.Errorf("a destroyed session answers %d %q while an unknown one answers %d %q; the two must be identical",
+			again.Code, again.Body, never.Code, never.Body)
+	}
+	if got := again.Body.String(); got != string(bodyNotFound) {
+		t.Errorf("body = %q; want %q", got, bodyNotFound)
+	}
+}
+
+// TestDestroyIsRecordedOnceUnderItsOwnAction is FR-041 for this route, and the
+// action is the one data-model.md already names. The session ID is the daemon's
+// own, off the record the resolver matched — never the {id} the caller wrote,
+// which is caller-supplied text the trail may not carry (FR-042).
+func TestDestroyIsRecordedOnceUnderItsOwnAction(t *testing.T) {
+	t.Parallel()
+
+	f := newDestroyFixture(t)
+	answer, _ := f.delete(t, testTime)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+
+	rec := f.only(t)
+	if rec["action"] != string(audit.ActionSessionDestroy) {
+		t.Errorf("action = %v; want %q", rec["action"], audit.ActionSessionDestroy)
+	}
+	if rec["decision"] != string(audit.Allow) {
+		t.Errorf("decision = %v; want %q", rec["decision"], audit.Allow)
+	}
+	if want := string(auth.CallerOperator); rec["caller"] != want {
+		t.Errorf("caller = %v; want %q", rec["caller"], want)
+	}
+	if rec["session_id"] != f.live.ID {
+		t.Errorf("session_id = %v; want %q", rec["session_id"], f.live.ID)
+	}
+	if reason, ok := rec["reason"]; ok {
+		t.Errorf("a verified teardown recorded a reason: %v", reason)
+	}
+	if len(f.failed) != 0 {
+		t.Errorf("the request reported %v; want nothing", f.failed)
+	}
+}
+
+// TestDestroyRefusesARequestWithNoResolvedSession is unreachable through the
+// router, which is the point: the handler is checked directly to prove it fails
+// closed rather than falling back to the {id} in the path. On this route that
+// fallback would kill a window on a caller's say-so, so the assertion that
+// matters is not the 500 but that tmux was never asked to do anything.
+func TestDestroyRefusesARequestWithNoResolvedSession(t *testing.T) {
+	t.Parallel()
+
+	f := newDestroyFixture(t)
+	req := httptest.NewRequest(http.MethodDelete, "/sessions/"+f.live.ID, nil)
+	req.SetPathValue(pathValueID, f.live.ID)
+
+	answer := httptest.NewRecorder()
+	f.destroySession(answer, req)
+
+	if answer.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusInternalServerError)
+	}
+	if got := answer.Body.String(); got != string(bodyInternalError) {
+		t.Errorf("body = %q; want %q", got, bodyInternalError)
+	}
+	if calls := f.fixture.tmux.Calls(); len(calls) != 0 {
+		t.Errorf("a destroy with no resolved session ran %v; want nothing", calls)
+	}
+	if _, err := f.fixture.store.Get(f.live.ID, auth.CallerOperator); err != nil {
+		t.Errorf("a destroy with no resolved session dropped a record: %v", err)
 	}
 }
 

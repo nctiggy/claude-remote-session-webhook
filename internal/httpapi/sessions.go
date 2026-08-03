@@ -16,6 +16,17 @@ import (
 // fact about the host. What failed is recorded in the trail instead.
 var bodyInternalError = []byte(`{"error":"internal error"}`)
 
+// bodyTeardownUnverified is the 409 body, byte for byte from
+// contracts/http-api.md, and the only non-uniform error this API writes.
+//
+// Being specific here discloses nothing. The caller has already proved it owns
+// this session by presenting the credential issued for it, so the one fact this
+// body carries is a fact about the caller's own session — which is what makes
+// this the exception rather than a hole in FR-011 and FR-033. Being specific is
+// also the point: the alternative is telling an operator a session was torn down
+// while a live unsandboxed shell may have survived it (Principle VI).
+var bodyTeardownUnverified = []byte(`{"error":"teardown could not be verified"}`)
+
 // timestampFormat is how every instant this API returns is spelled — RFC 3339,
 // UTC, to the second, exactly as contracts/http-api.md writes it and exactly as
 // internal/audit writes its own. A response and the trail read side by side
@@ -113,6 +124,19 @@ func entryFor(s session.Session) sessionEntry {
 	}
 }
 
+// destroyResponse is the contract's 200 body for DELETE /sessions/{id}: the
+// daemon's own ID for the session, and the claim that it is gone.
+//
+// Destroyed is always true, and there is deliberately no path that writes a
+// false. The contract prints the field, so it is here; but a teardown that could
+// not be confirmed is a 409, and a 200 carrying "destroyed":false would be a
+// second, quieter way of reporting the one thing Principle VI does not let this
+// daemon report quietly.
+type destroyResponse struct {
+	ID        string `json:"id"`
+	Destroyed bool   `json:"destroyed"`
+}
+
 // promptRequest is the fixed shape POST /sessions/{id}/prompt accepts: one
 // field, which is the text to deliver (contracts/http-api.md).
 //
@@ -191,6 +215,28 @@ var (
 	// which on this route means handing one caller another's fleet one ID at a
 	// time.
 	errDetailNoSession = errors.New("the detail handler was reached with no resolved session")
+
+	// errDestroyNoSession is unreachable behind the layer-3 resolver, and fails
+	// closed for the reason errDetailNoSession does — most sharply of the four,
+	// since a handler that fell back to the {id} in the path would be killing a
+	// window on a caller's say-so, and a kill is the one action on this API that
+	// cannot be taken back.
+	errDestroyNoSession = errors.New("the destroy handler was reached with no resolved session")
+
+	// errDestroyOrphaned is the loud one on this route, and it means what
+	// errCreateOrphaned means: tmux may have been left with a live unsandboxed
+	// shell (Principle VI). It is the reason the 409 records, and the trail is the
+	// only durable copy of it — the caller's 409 is gone the moment its client
+	// exits, and the operator who has to go and look is reading journalctl.
+	errDestroyOrphaned = errors.New("a tmux session may have survived its teardown and could not be confirmed gone")
+
+	// errDestroyRefused is the fail-closed reason for a teardown that failed for
+	// a reason no sentinel explains. It answers 500 rather than 409 because a 409
+	// is a specific claim — this session may still be alive — and a failure
+	// nobody classified is not evidence for it. Nothing is lost by the caution:
+	// Manager.Destroy drops the record only on a confirmed teardown, so the
+	// record survives either answer and the reaper can still collect it.
+	errDestroyRefused = errors.New("the session could not be destroyed")
 
 	// errPromptNoSession is unreachable behind the layer-3 resolver, for the
 	// reason errCreateNoCaller is unreachable behind layer 2. It fails closed
@@ -393,6 +439,77 @@ func (s *Server) sessionDetail(w http.ResponseWriter, r *http.Request) {
 	// trail, and stamping it again here would be this handler asserting something
 	// it did not establish.
 	s.writeJSON(w, r, http.StatusOK, entryFor(resolved))
+}
+
+// destroySession is DELETE /sessions/{id}: tear the session down, and say it is
+// gone only once the host has confirmed that (contracts/http-api.md, FR-019).
+//
+// The session comes from the context and nowhere else, exactly as it does for a
+// detail and a prompt. It matters most here: this is the only route whose action
+// cannot be taken back, so a handler that read the {id} out of the path would be
+// killing a window on a caller's say-so.
+//
+// The two answers are not two spellings of one. A 200 means the host was asked
+// afterwards and said the session is gone; a 409 means it was not gone, or could
+// not be asked, and the record is kept — a record is the only thing carrying an
+// owner and two deadlines for a session that may still be running. Which of the
+// two a caller gets is Manager.Destroy's finding, and this handler's whole job
+// is to pass it on unsoftened.
+//
+// A second DELETE for the same ID is a 404, byte-identical to one for an ID that
+// never existed. That is a decision and not an inheritance: destroy is not
+// idempotent here, because making it so would mean the resolver telling
+// "destroyed" apart from "never yours" — and that difference is what FR-033
+// closes. The caller that got the 200 already knows; the caller that did not is
+// asking about a session it cannot name.
+func (s *Server) destroySession(w http.ResponseWriter, r *http.Request) {
+	resolved, ok := SessionFrom(r.Context())
+	if !ok {
+		s.failInternal(w, r, errDestroyNoSession)
+		return
+	}
+
+	if err := s.sessions.Destroy(r.Context(), resolved); err != nil {
+		s.refuseDestroy(w, r, err)
+		return
+	}
+
+	// No SetSessionID. The resolver already stamped the record's own ID on the
+	// trail, which is what makes the 200 and the 409 name the same session
+	// without this handler asserting anything it did not establish.
+	s.writeJSON(w, r, http.StatusOK, destroyResponse{ID: resolved.ID, Destroyed: true})
+}
+
+// refuseDestroy maps a Destroy failure onto the answer the contract gives it.
+//
+// There is one case with a status of its own, and it is the one an operator has
+// to be able to find: the session may have survived. Everything else is a 500
+// with no detail, for the reason a failed capture is — how tmux failed is a fact
+// about the host, and a caller that could tell those apart would have an oracle
+// about a machine it cannot otherwise see.
+func (s *Server) refuseDestroy(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, session.ErrOrphanedSession) {
+		s.failTeardownUnverified(w, r)
+		return
+	}
+	s.failInternal(w, r, errDestroyRefused)
+}
+
+// failTeardownUnverified writes the contract's 409 and records the fact behind
+// it, which is the half that outlives the request.
+//
+// It is a function of its own next to failInternal for the reason that one is
+// one: a status, a header, and a body assembled at a call site are three things
+// that can be ordered wrongly, and this response is the one place this API
+// deliberately says more than "something went wrong".
+func (s *Server) failTeardownUnverified(w http.ResponseWriter, r *http.Request) {
+	AuditFrom(r.Context()).Deny(errDestroyOrphaned.Error())
+
+	w.Header().Set(headerContentType, contentTypeJSON)
+	w.WriteHeader(http.StatusConflict)
+	if _, err := w.Write(bodyTeardownUnverified); err != nil {
+		s.report(fmt.Errorf("write the unverified-teardown response: %w", err))
+	}
 }
 
 // promptSession is POST /sessions/{id}/prompt: deliver the caller's text into
