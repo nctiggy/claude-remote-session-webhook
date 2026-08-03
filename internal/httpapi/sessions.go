@@ -27,6 +27,16 @@ var bodyInternalError = []byte(`{"error":"internal error"}`)
 // while a live unsandboxed shell may have survived it (Principle VI).
 var bodyTeardownUnverified = []byte(`{"error":"teardown could not be verified"}`)
 
+// bodyTooManyRequests is the 429 body. contracts/http-api.md gives the status
+// one row — "concurrent-session cap reached, or create rate limit exceeded" —
+// and no body, so this is the status's own phrase and nothing more.
+//
+// One body for both halves of that row is deliberate. A caller cannot act on the
+// difference: the answer to either is to wait, and telling them apart would say
+// how many sessions the host is running to a caller that owns none of them. The
+// rate limiter T034 adds writes these same bytes.
+var bodyTooManyRequests = []byte(`{"error":"too many requests"}`)
+
 // timestampFormat is how every instant this API returns is spelled — RFC 3339,
 // UTC, to the second, exactly as contracts/http-api.md writes it and exactly as
 // internal/audit writes its own. A response and the trail read side by side
@@ -197,6 +207,13 @@ var (
 	// file an operator most needs the trail to carry.
 	errCreateOrphaned = errors.New("a tmux session may have survived a failed create and could not be confirmed gone")
 
+	// errCreateCapReached is the concurrent-session cap doing its job (FR-036),
+	// and it is the one refusal in this file that says nothing was wrong with the
+	// request. It belongs in the trail precisely because it is not an error: an
+	// operator seeing it repeatedly is looking at either a fleet the reaper is
+	// not collecting or a cap set too low for the way the host is used.
+	errCreateCapReached = errors.New("the concurrent-session cap was reached, so the session was refused")
+
 	// errResponseUnencodable cannot happen for a struct of strings, and is here
 	// so that it cannot happen *silently* if a later field makes it possible.
 	errResponseUnencodable = errors.New("the response could not be encoded")
@@ -323,6 +340,11 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 // filesystem oracle behind one signature, which is exactly what the allowlist
 // exists to deny. The distinction is kept, server-side, in the trail.
 //
+// A full fleet is a 429 and not a 400, because nothing the caller sent is wrong:
+// the request was well-formed and the host has no room for it (FR-036). That
+// distinction is the whole value of the status to a client — a 400 says "fix the
+// request", and the only fix for this one is to wait or to destroy a session.
+//
 // Everything else is a 500. That includes the orphan case, where the record is
 // kept and the caller holds no token: the session that may still be running is
 // drivable by nobody and collectable by the daemon, which is the intended end
@@ -331,10 +353,30 @@ func (s *Server) refuseCreate(w http.ResponseWriter, r *http.Request, err error)
 	switch {
 	case errors.Is(err, session.ErrInvalidName), errors.Is(err, session.ErrInvalidWorkDir):
 		s.rejectBadRequest(w, r, createReason(err))
+	case errors.Is(err, session.ErrTooManySessions):
+		s.failTooManyRequests(w, r, errCreateCapReached)
 	case errors.Is(err, session.ErrOrphanedSession):
 		s.failInternal(w, r, errCreateOrphaned)
 	default:
 		s.failInternal(w, r, errCreateRefused)
+	}
+}
+
+// failTooManyRequests writes the contract's 429 and records why, which is the
+// half that outlives the request.
+//
+// It takes the reason rather than authoring one, because two different
+// conditions share this status: the concurrent-session cap here, and the create
+// rate limit T034 adds. The caller is told neither — the response is the same
+// bytes either way — and the operator reads which it was in the trail, exactly
+// as they do for the four refusals behind the uniform 404.
+func (s *Server) failTooManyRequests(w http.ResponseWriter, r *http.Request, reason error) {
+	AuditFrom(r.Context()).Deny(reason.Error())
+
+	w.Header().Set(headerContentType, contentTypeJSON)
+	w.WriteHeader(http.StatusTooManyRequests)
+	if _, err := w.Write(bodyTooManyRequests); err != nil {
+		s.report(fmt.Errorf("write the too-many-requests response: %w", err))
 	}
 }
 

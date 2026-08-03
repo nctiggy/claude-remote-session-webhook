@@ -418,6 +418,65 @@ func TestStoreAddRefusesADuplicateID(t *testing.T) {
 	}
 }
 
+// The two halves of FR-036 that only the store can state: AddCapped refuses at
+// the limit while validating exactly as Add does, and a limit under 1 refuses
+// everything rather than being read as "no limit".
+//
+// The manager and the config both refuse a cap under 1 before a store could ever
+// be handed one, which is why this is asserted here — the fail-closed reading is
+// the property, and nothing else in the daemon can reach it to prove it.
+func TestStoreAddCappedRefusesAtTheLimit(t *testing.T) {
+	t.Parallel()
+
+	st := NewStore()
+	if err := st.AddCapped(newTestSession(testID("a"), auth.CallerOperator), 2); err != nil {
+		t.Fatalf("AddCapped() under the limit unexpected error: %v", err)
+	}
+	if err := st.AddCapped(newTestSession(testID("b"), auth.CallerOperator), 2); err != nil {
+		t.Fatalf("AddCapped() at the last free place unexpected error: %v", err)
+	}
+
+	err := st.AddCapped(newTestSession(testID("c"), auth.CallerOperator), 2)
+	if !errors.Is(err, ErrTooManySessions) {
+		t.Fatalf("AddCapped() past the limit = %v, want one wrapping ErrTooManySessions", err)
+	}
+	if n := st.Len(); n != 2 {
+		t.Errorf("Len() = %d after a refused AddCapped, want 2", n)
+	}
+
+	// A malformed record is refused as malformed whichever door it comes
+	// through: the cap is a second check, not a replacement for the first.
+	if err := st.AddCapped(Session{}, 99); !errors.Is(err, ErrInvalidSession) {
+		t.Errorf("AddCapped() of a malformed record = %v, want one wrapping ErrInvalidSession", err)
+	}
+
+	for _, limit := range []int{0, -1} {
+		if err := st.AddCapped(newTestSession(testID("d"), auth.CallerOperator), limit); !errors.Is(err, ErrTooManySessions) {
+			t.Errorf("AddCapped() with a limit of %d = %v, want one wrapping ErrTooManySessions", limit, err)
+		}
+	}
+}
+
+// Adoption's door is uncapped on purpose: a session already running on the host
+// is taken back however many there are, because the alternative to an over-cap
+// record is a live unsandboxed shell with no owner and no deadline.
+func TestStoreAddIsUncapped(t *testing.T) {
+	t.Parallel()
+
+	st := NewStore()
+	for _, ch := range []string{"a", "b", "c"} {
+		mustAdd(t, st, newTestSession(testID(ch), auth.CallerOperator))
+	}
+	if n := st.Len(); n != 3 {
+		t.Fatalf("Len() = %d, want 3", n)
+	}
+
+	// And what those records do is count: the next create is refused.
+	if err := st.AddCapped(newTestSession(testID("d"), auth.CallerOperator), 3); !errors.Is(err, ErrTooManySessions) {
+		t.Errorf("AddCapped() against records the store already holds = %v, want one wrapping ErrTooManySessions", err)
+	}
+}
+
 // FR-033: unknown and not-owned must be one answer. The store returns it, so no
 // handler has to remember to.
 func TestStoreGetIsOwnerScopedAndUniform(t *testing.T) {

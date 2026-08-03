@@ -87,12 +87,18 @@ type Manager struct {
 	store *Store
 	roots []config.ApprovedRoot
 	clock Clock
+
+	// maxSessions is CRSW_MAX_SESSIONS, read once at construction. It is held
+	// here rather than in the store because it is configuration and the store is
+	// not configured — but it is *enforced* in the store, under the lock that
+	// makes counting and inserting one act (see Store.AddCapped).
+	maxSessions int
 }
 
 // NewManager builds a Manager on the host clock. This is the constructor the
 // daemon uses; tests reach for NewManagerWithClock.
-func NewManager(tmux tmuxctl.Controller, store *Store, roots []config.ApprovedRoot) (*Manager, error) {
-	return NewManagerWithClock(tmux, store, roots, systemClock{})
+func NewManager(tmux tmuxctl.Controller, store *Store, roots []config.ApprovedRoot, maxSessions int) (*Manager, error) {
+	return NewManagerWithClock(tmux, store, roots, maxSessions, systemClock{})
 }
 
 // NewManagerWithClock fails closed on anything that would let a session start
@@ -104,7 +110,13 @@ func NewManager(tmux tmuxctl.Controller, store *Store, roots []config.ApprovedRo
 // "no directory is approved" reaching a request as a 400 per create is a
 // misconfiguration discovered by the caller instead of at startup, and
 // config.Load's contract is that a Config is ready to use as-is.
-func NewManagerWithClock(tmux tmuxctl.Controller, store *Store, roots []config.ApprovedRoot, clock Clock) (*Manager, error) {
+//
+// A cap under 1 is refused for the same reason and a sharper one: it is either a
+// Config that never went through Load or a zero value nobody set, and both would
+// give a Manager whose only correct behaviour is to refuse every create. A
+// daemon that cannot say how many unsandboxed sessions it may run must not
+// start (Principle VI).
+func NewManagerWithClock(tmux tmuxctl.Controller, store *Store, roots []config.ApprovedRoot, maxSessions int, clock Clock) (*Manager, error) {
 	switch {
 	case tmux == nil:
 		return nil, errors.New("session: no tmux controller provided; refusing to start")
@@ -114,9 +126,11 @@ func NewManagerWithClock(tmux tmuxctl.Controller, store *Store, roots []config.A
 		return nil, errors.New("session: no clock provided; refusing to start")
 	case len(roots) == 0:
 		return nil, errors.New("session: no approved working-directory roots provided; refusing to start")
+	case maxSessions < 1:
+		return nil, fmt.Errorf("session: a concurrent-session cap of %d would permit no session at all; refusing to start", maxSessions)
 	}
 
-	return &Manager{tmux: tmux, store: store, roots: roots, clock: clock}, nil
+	return &Manager{tmux: tmux, store: store, roots: roots, maxSessions: maxSessions, clock: clock}, nil
 }
 
 // CreateRequest is everything a caller may influence about a new session.
@@ -148,6 +162,11 @@ type CreateRequest struct {
 // moment where a live session has no owner and no deadline; and the tmux
 // session is marked as ours before the Claude command is sent, so a failure
 // mid-way leaves something startup reconciliation can recognise (FR-021).
+//
+// The concurrent-session cap is enforced at that same claim (FR-036), which is
+// what makes it a bound rather than an estimate: the count and the insert happen
+// under one lock, so creates racing at the boundary cannot both find room, and a
+// create refused for want of room has still run no tmux command.
 //
 // A failure after tmux has started the shell goes through rollback, which
 // verifies rather than assumes the teardown. Create returns an error in that
@@ -197,7 +216,11 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 	// record whose endpoints fail; a tmux session without a record is a live
 	// unsandboxed shell that no ownership check, cap, or reaper can see. Only
 	// one of those two is survivable, so the ID is taken first.
-	if err := m.store.Add(s); err != nil {
+	//
+	// The claim is also where the cap is answered, and it is the only place it
+	// is asked: a check before this line would be a second reading of the count
+	// that the one under the lock could disagree with.
+	if err := m.store.AddCapped(s, m.maxSessions); err != nil {
 		return nil, "", fmt.Errorf("create session %s: %w", id, err)
 	}
 
@@ -466,6 +489,13 @@ type AdoptedSession struct {
 // Every adoption mints a fresh credential. The one the dead process issued is
 // unrecoverable by design (FR-021) — it was never stored, so this is not a
 // choice made here so much as the only thing that was ever possible.
+//
+// Nothing here is capped, and Store.Add says why: a session already running on
+// the host is taken back however many there are, because the alternative to an
+// over-cap record is an unowned unsandboxed shell. What the adopted records do
+// is count — every later create is refused until the reaper has brought the
+// fleet back under CRSW_MAX_SESSIONS, which is FR-036 applied to the host the
+// daemon actually woke up on.
 //
 // Failures are collected rather than returned at the first one. A single session
 // the host cannot answer for must not leave the rest unowned, and startup treats

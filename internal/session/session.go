@@ -157,6 +157,13 @@ var (
 	// overwritten holds the token hash its owner is holding the token for.
 	ErrSessionExists = errors.New("session already exists")
 
+	// ErrTooManySessions refuses a create that would put the daemon over
+	// CRSW_MAX_SESSIONS (FR-036). It is the one refusal in this package that is
+	// about the host rather than about the request: nothing the caller sent is
+	// wrong, there is simply no room, which is why the handler answers 429 and
+	// not 400.
+	ErrTooManySessions = errors.New("the concurrent-session cap is reached")
+
 	// ErrSessionDead marks an attempt to move a terminal record. Dead is the
 	// end of the state machine in data-model.md.
 	ErrSessionDead = errors.New("session is dead")
@@ -192,6 +199,14 @@ func NewStore() *Store {
 // carry a deadline in the year 1. Both fail closed, and neither should be
 // reachable — so the store refuses them here rather than letting a caller
 // discover which way they fail.
+//
+// It is deliberately uncapped, and adoption is its only caller. FR-036 caps
+// *creation*; a session the host is already running has to be taken back
+// whatever the count says, because refusing it there would leave a live
+// unsandboxed shell with no owner, no deadline and no reaper — which is the one
+// outcome Principle VI ranks above being over the cap. An adopted record still
+// counts against every later create, since AddCapped counts records and not
+// creates.
 func (st *Store) Add(s Session) error {
 	if err := validate(s); err != nil {
 		return err
@@ -200,6 +215,39 @@ func (st *Store) Add(s Session) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
+	return st.addLocked(s)
+}
+
+// AddCapped records a new session unless the store already holds limit of them
+// (FR-036). It is what Manager.Create adds through.
+//
+// The count and the insert are one critical section, and that is the whole
+// reason this exists rather than a Len check in the manager: two creates racing
+// at the boundary would both read limit-1, both find room, and both insert. No
+// caller can close that window, because it is between the two calls rather than
+// inside either — so the check belongs where the lock already is.
+//
+// A limit below 1 refuses everything. config.Load makes a cap under 1 fatal and
+// NewManagerWithClock refuses one as well, so this is the third answer to a
+// question that should never be asked, and it is the fail-closed one: a daemon
+// that does not know how many sessions it may run does not get to run any.
+func (st *Store) AddCapped(s Session, limit int) error {
+	if err := validate(s); err != nil {
+		return err
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	if len(st.byID) >= limit {
+		return fmt.Errorf("add session: %w", ErrTooManySessions)
+	}
+	return st.addLocked(s)
+}
+
+// addLocked is the insert both add paths end in. The caller holds the write
+// lock, which is what lets AddCapped count and insert without a gap.
+func (st *Store) addLocked(s Session) error {
 	if _, ok := st.byID[s.ID]; ok {
 		return fmt.Errorf("add session: %w", ErrSessionExists)
 	}
@@ -298,8 +346,12 @@ func (st *Store) List(owner auth.CallerID) []Session {
 	return out
 }
 
-// Len is the number of records held, whatever their state and owner. It is what
-// the concurrent-session cap counts (FR-036).
+// Len is the number of records held, whatever their state and owner — the same
+// count AddCapped enforces the cap on (FR-036).
+//
+// It is a read and nothing more. The cap itself is not enforced through it, for
+// the reason AddCapped exists: a caller that read this and then added would have
+// a window between the two where another create could fit.
 func (st *Store) Len() int {
 	st.mu.RLock()
 	defer st.mu.RUnlock()

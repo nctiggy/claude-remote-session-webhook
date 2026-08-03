@@ -66,8 +66,11 @@ func newSessionFixture(t *testing.T) sessionFixture {
 
 	fake := tmuxctl.NewFake()
 	store := session.NewStore()
+	// The production default, not a number chosen here: quickstart.md's cap check
+	// is written against CRSW_MAX_SESSIONS=5, and a fixture with a cap of its own
+	// would make the 429 test assert something no operator will ever run.
 	mgr, err := session.NewManagerWithClock(
-		fake, store, []config.ApprovedRoot{{Path: root}}, fixedClock{at: testTime},
+		fake, store, []config.ApprovedRoot{{Path: root}}, config.DefaultMaxSessions, fixedClock{at: testTime},
 	)
 	if err != nil {
 		t.Fatalf("session.NewManagerWithClock = _, %v; want a manager", err)
@@ -739,6 +742,110 @@ func TestASuccessfulCreateNeverReachesTheHostTwice(t *testing.T) {
 	}
 	if n := s.fixture.store.Len(); n != 1 {
 		t.Errorf("the store holds %d session(s) after one create and its replay; want 1", n)
+	}
+}
+
+// TestCreatePastTheCapAnswersTooManyRequests is quickstart.md's cap check driven
+// through the API: with the default cap of 5 the sixth create is a 429 and the
+// first five are untouched (FR-036).
+//
+// Each create is signed at its own instant. The bodies are identical, and the
+// signature covers the timestamp and the body alone, so without that the second
+// would be refused as a replay and the test would be asserting layer 2 instead of
+// the cap.
+func TestCreatePastTheCapAnswersTooManyRequests(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+
+	ids := make([]string, 0, config.DefaultMaxSessions)
+	for i := 0; i < config.DefaultMaxSessions; i++ {
+		got := postSessionsAt(t, s, createBody(s.fixture), testTime.Add(-time.Duration(i)*time.Second))
+		if got.answer.Code != http.StatusCreated {
+			t.Fatalf("create %d = %d (%q); want %d", i+1, got.answer.Code, got.answer.Body, http.StatusCreated)
+		}
+		ids = append(ids, got.field(t, "id"))
+	}
+
+	before := len(s.fixture.tmux.Calls())
+	refused := postSessionsAt(t, s, createBody(s.fixture),
+		testTime.Add(-time.Duration(config.DefaultMaxSessions)*time.Second))
+
+	if refused.answer.Code != http.StatusTooManyRequests {
+		t.Fatalf("the create past the cap = %d (%q); want %d",
+			refused.answer.Code, refused.answer.Body, http.StatusTooManyRequests)
+	}
+	if body := refused.answer.Body.String(); body != string(bodyTooManyRequests) {
+		t.Errorf("body = %q; want %q", body, bodyTooManyRequests)
+	}
+	if ct := refused.answer.Header().Get(headerContentType); ct != contentTypeJSON {
+		t.Errorf("Content-Type = %q; want %q — every response is JSON", ct, contentTypeJSON)
+	}
+	if extra := s.fixture.tmux.Calls()[before:]; len(extra) != 0 {
+		t.Errorf("the refused create ran %v; a request the cap refuses must cost no tmux command", extra)
+	}
+
+	// The five already running are unaffected: still recorded, still owned, and
+	// still answering as themselves.
+	if n := s.fixture.store.Len(); n != config.DefaultMaxSessions {
+		t.Errorf("the store holds %d session(s) after the refusal; want %d", n, config.DefaultMaxSessions)
+	}
+	for i, id := range ids {
+		if _, err := s.fixture.store.Get(id, auth.CallerOperator); err != nil {
+			t.Errorf("session %d is no longer the caller's after a refused create: %v", i+1, err)
+		}
+	}
+
+	// The trail carries what the caller is not told: which of the two conditions
+	// behind this status it was.
+	records := s.records(t)
+	if len(records) != config.DefaultMaxSessions+1 {
+		t.Fatalf("%d requests emitted %d audit records; FR-041 requires exactly one each",
+			config.DefaultMaxSessions+1, len(records))
+	}
+	rec := records[len(records)-1]
+	if rec["decision"] != string(audit.Deny) {
+		t.Errorf("decision = %v; want %q", rec["decision"], audit.Deny)
+	}
+	if rec["reason"] != errCreateCapReached.Error() {
+		t.Errorf("reason = %v; want %q", rec["reason"], errCreateCapReached.Error())
+	}
+	if rec["action"] != string(audit.ActionSessionCreate) {
+		t.Errorf("action = %v; want %q — refusing must not rename the operation",
+			rec["action"], audit.ActionSessionCreate)
+	}
+	if id, ok := rec["session_id"]; ok {
+		t.Errorf("a refused create recorded a session_id: %v", id)
+	}
+}
+
+// The 429 says nothing about the fleet it is refusing on behalf of. A caller
+// owns none of the sessions it is counted against — there is one operator today,
+// and milestone 2's identities make that literal — so a body or a header naming
+// the cap, the count, or a session would be the daemon reporting on somebody
+// else's work.
+func TestTheCapRefusalDisclosesNothingAboutTheFleet(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+
+	ids := make([]string, 0, config.DefaultMaxSessions)
+	for i := 0; i < config.DefaultMaxSessions; i++ {
+		got := postSessionsAt(t, s, createBody(s.fixture), testTime.Add(-time.Duration(i)*time.Second))
+		ids = append(ids, got.field(t, "id"))
+	}
+
+	refused := postSessionsAt(t, s, createBody(s.fixture),
+		testTime.Add(-time.Duration(config.DefaultMaxSessions)*time.Second))
+	outward := refused.answer.Body.String() + " " + fmt.Sprint(refused.answer.Header())
+
+	for i, id := range ids {
+		if strings.Contains(outward, id) {
+			t.Errorf("the refusal named session %d: %q", i+1, outward)
+		}
+	}
+	if strings.Contains(outward, fmt.Sprint(config.DefaultMaxSessions)) {
+		t.Errorf("the refusal disclosed the cap: %q", outward)
 	}
 }
 

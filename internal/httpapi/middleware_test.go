@@ -58,6 +58,10 @@ func testConfig(listen string) *config.Config {
 		SharedSecret: testSecret(),
 		MaxBodyBytes: testMaxBody,
 		Roots:        []config.ApprovedRoot{{Path: testRoot}},
+		// The production default. A zero here would be a Config no Load ever
+		// produced, and New refuses one — a session manager that may run no
+		// sessions is not a daemon.
+		MaxSessions: config.DefaultMaxSessions,
 	}
 }
 

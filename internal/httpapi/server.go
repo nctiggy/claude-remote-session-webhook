@@ -140,8 +140,9 @@ type Server struct {
 // The Authenticator, the audit sink, and the session manager are built here
 // rather than passed in: cmd/crswd loads the config and hands it over, and a
 // daemon whose auth is assembled by its caller is a daemon that can be assembled
-// without it. The manager gets cfg.Roots directly, so the allowlist a session is
-// checked against is the one config.Load resolved at startup.
+// without it. The manager gets cfg.Roots and cfg.MaxSessions directly, so the
+// allowlist a session is checked against and the cap it is counted against are
+// the ones config.Load resolved at startup.
 func New(cfg *config.Config) (*Server, error) {
 	if cfg == nil {
 		return nil, errors.New("httpapi: no configuration provided; refusing to start")
@@ -150,7 +151,7 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the request authenticator: %w", err)
 	}
-	sessions, err := session.NewManager(tmuxctl.NewExec(), session.NewStore(), cfg.Roots)
+	sessions, err := session.NewManager(tmuxctl.NewExec(), session.NewStore(), cfg.Roots, cfg.MaxSessions)
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the session manager: %w", err)
 	}

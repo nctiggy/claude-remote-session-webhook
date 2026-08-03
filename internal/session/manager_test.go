@@ -35,6 +35,13 @@ const insideLinkName = "inside-link"
 // server, an exec error — as distinct from a session being absent.
 var errTmuxBroken = errors.New("tmux is broken")
 
+// capNotUnderTest is the concurrent-session cap every fixture here carries: high
+// enough that a test about something else cannot trip over it, since a create
+// refused for want of room runs no tmux command and would fail such a test
+// somewhere far from the reason. The cap's own tests build a manager with a cap
+// they choose — see managerWithCap.
+const capNotUnderTest = 64
+
 // stoppedClock stands still, so CreatedAt, LastActivity and every deadline
 // derived from them are exact instants rather than approximately now.
 type stoppedClock struct{ now time.Time }
@@ -61,12 +68,25 @@ func newManagerFixture(t *testing.T) managerFixture {
 	fake := tmuxctl.NewFake()
 	store := NewStore()
 
-	mgr, err := NewManagerWithClock(fake, store, wd.roots(), stoppedClock{now: contractCreatedAt})
+	mgr, err := NewManagerWithClock(fake, store, wd.roots(), capNotUnderTest, stoppedClock{now: contractCreatedAt})
 	if err != nil {
 		t.Fatalf("NewManagerWithClock() unexpected error: %v", err)
 	}
 
 	return managerFixture{workDirFixture: wd, tmux: fake, store: store, mgr: mgr, now: contractCreatedAt}
+}
+
+// managerWithCap is a second Manager on the same host and the same store as the
+// fixture's own, differing only in the cap it enforces. The store is shared on
+// purpose: what the cap counts is records, whoever made them.
+func (f managerFixture) managerWithCap(t *testing.T, limit int) *Manager {
+	t.Helper()
+
+	mgr, err := NewManagerWithClock(f.tmux, f.store, f.roots(), limit, stoppedClock{now: f.now})
+	if err != nil {
+		t.Fatalf("NewManagerWithClock() unexpected error: %v", err)
+	}
+	return mgr
 }
 
 // repo is an ordinary working directory under the first approved root.
@@ -505,6 +525,162 @@ func TestCreateKeepsTheTokenOffTheHost(t *testing.T) {
 	}
 }
 
+// FR-036, and the half of it a caller sees: at the cap the create is refused,
+// and refused before anything runs. A create that reached tmux and was then
+// rolled back would satisfy the count and miss the point — the cap exists so the
+// host is never asked to carry more than it was configured for.
+func TestCreateRefusesPastTheConcurrentCap(t *testing.T) {
+	t.Parallel()
+
+	const limit = 3
+
+	f := newManagerFixture(t)
+	mgr := f.managerWithCap(t, limit)
+
+	live := make([]*Session, 0, limit)
+	for i := 0; i < limit; i++ {
+		s, _, err := mgr.Create(context.Background(), f.request())
+		if err != nil {
+			t.Fatalf("Create() %d of %d unexpected error: %v", i+1, limit, err)
+		}
+		live = append(live, s)
+	}
+
+	before := len(f.tmux.Calls())
+	refused, token, err := mgr.Create(context.Background(), f.request())
+	if !errors.Is(err, ErrTooManySessions) {
+		t.Fatalf("Create() past the cap = %v, want %v", err, ErrTooManySessions)
+	}
+	if refused != nil {
+		t.Error("Create() returned a session alongside the refusal")
+	}
+	if token != "" {
+		t.Error("Create() handed out a credential for a session it refused to start")
+	}
+	if extra := f.tmux.Calls()[before:]; len(extra) != 0 {
+		t.Errorf("the refused create ran %v; a create past the cap must cost no tmux command", extra)
+	}
+
+	// The sessions already running are untouched: the cap refuses the newcomer,
+	// it does not make room by degrading what is there.
+	if n := f.store.Len(); n != limit {
+		t.Errorf("the store holds %d records after a refused create, want %d", n, limit)
+	}
+	for i, s := range live {
+		if _, err := f.store.Get(s.ID, s.Owner); err != nil {
+			t.Errorf("session %d is no longer in the store after a refused create: %v", i, err)
+		}
+		present, err := f.tmux.Has(context.Background(), s.TmuxName())
+		if err != nil {
+			t.Fatalf("Has() unexpected error: %v", err)
+		}
+		if !present {
+			t.Errorf("session %d is no longer on the host after a refused create", i)
+		}
+	}
+}
+
+// The boundary itself, which is the case a Len check in the manager would get
+// wrong: every racer reads the count and inserts under one lock, so the cap is
+// what the host ends up carrying rather than what it carries when nobody is in a
+// hurry.
+func TestConcurrentCreatesCannotOvershootTheCap(t *testing.T) {
+	t.Parallel()
+
+	const limit, racers = 4, 16
+
+	f := newManagerFixture(t)
+	mgr := f.managerWithCap(t, limit)
+
+	var wg sync.WaitGroup
+	errs := make([]error, racers)
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, errs[i] = mgr.Create(context.Background(), f.request())
+		}()
+	}
+	wg.Wait()
+
+	started := 0
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			started++
+		case errors.Is(err, ErrTooManySessions):
+		default:
+			t.Errorf("racer %d = %v, want either a session or the cap", i, err)
+		}
+	}
+	if started != limit {
+		t.Errorf("%d of %d racers started a session, want exactly the cap of %d", started, racers, limit)
+	}
+	if n := f.store.Len(); n != limit {
+		t.Errorf("the store holds %d records, want the cap of %d", n, limit)
+	}
+
+	// The host is the claim that matters. A store that counted correctly while
+	// tmux carried more sessions than the cap would be a cap in name only.
+	infos, err := f.tmux.List(context.Background())
+	if err != nil {
+		t.Fatalf("List() unexpected error: %v", err)
+	}
+	if len(infos) != limit {
+		t.Errorf("the host carries %d sessions, want the cap of %d", len(infos), limit)
+	}
+}
+
+// The cap counts what is live, not what has ever been created: a destroyed
+// session gives its place back. Stated as a test because the alternative — a
+// high-water mark — is what a counter incremented on create and never decremented
+// would silently become.
+func TestTheCapCountsLiveSessionsAndNotCreates(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	mgr := f.managerWithCap(t, 1)
+
+	first, _, err := mgr.Create(context.Background(), f.request())
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
+	if _, _, err := mgr.Create(context.Background(), f.request()); !errors.Is(err, ErrTooManySessions) {
+		t.Fatalf("Create() at the cap = %v, want %v", err, ErrTooManySessions)
+	}
+
+	if err := mgr.Destroy(context.Background(), *first); err != nil {
+		t.Fatalf("Destroy() unexpected error: %v", err)
+	}
+	if _, _, err := mgr.Create(context.Background(), f.request()); err != nil {
+		t.Fatalf("Create() after a teardown freed the cap = %v, want a session", err)
+	}
+}
+
+// US4 against FR-036: a restart onto a host already carrying sessions adopts all
+// of them — leaving one unowned would be worse than being over the cap — and
+// then refuses to add to them until the reaper has brought the fleet back down.
+func TestTheCapCountsSessionsAdoptedFromTheHost(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	f.seedSurvivor(testID("a"), f.now.Add(-time.Hour))
+	f.seedSurvivor(testID("b"), f.now.Add(-time.Hour))
+
+	mgr := f.managerWithCap(t, 1)
+	adopted, err := mgr.Adopt(context.Background())
+	if err != nil {
+		t.Fatalf("Adopt() unexpected error: %v", err)
+	}
+	if len(adopted) != 2 {
+		t.Fatalf("Adopt() took %d sessions under management, want both: an unadopted survivor is an unowned shell", len(adopted))
+	}
+
+	if _, _, err := mgr.Create(context.Background(), f.request()); !errors.Is(err, ErrTooManySessions) {
+		t.Errorf("Create() on a host already over the cap = %v, want %v", err, ErrTooManySessions)
+	}
+}
+
 // TestResolveIsEveryCheckAtOnce is the layer-3 table (FR-014, FR-032, FR-033).
 // The four refusals answer with four sentinels so the trail can say which, and
 // the caller behind them is answered identically by the handler — see
@@ -581,7 +757,7 @@ func TestResolveRefusesACredentialAtItsSessionsDeadline(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			mgr, err := NewManagerWithClock(f.tmux, f.store, f.roots(), stoppedClock{now: c.at})
+			mgr, err := NewManagerWithClock(f.tmux, f.store, f.roots(), capNotUnderTest, stoppedClock{now: c.at})
 			if err != nil {
 				t.Fatalf("NewManagerWithClock() unexpected error: %v", err)
 			}
@@ -1125,7 +1301,7 @@ func (f managerFixture) seedSurvivor(id string, created time.Time) string {
 func (f managerFixture) managerAt(t *testing.T, store *Store, now time.Time) *Manager {
 	t.Helper()
 
-	mgr, err := NewManagerWithClock(f.tmux, store, f.roots(), stoppedClock{now: now})
+	mgr, err := NewManagerWithClock(f.tmux, store, f.roots(), capNotUnderTest, stoppedClock{now: now})
 	if err != nil {
 		t.Fatalf("NewManagerWithClock() unexpected error: %v", err)
 	}
@@ -1336,7 +1512,9 @@ func TestAdoptRecordsNothingItCouldNotConfirm(t *testing.T) {
 		id := testID("a")
 		name := f.seedSurvivor(id, f.now.Add(-time.Hour))
 
-		mgr, err := NewManagerWithClock(vanishingLister{Fake: f.tmux, name: name}, f.store, f.roots(), stoppedClock{now: f.now})
+		mgr, err := NewManagerWithClock(
+			vanishingLister{Fake: f.tmux, name: name}, f.store, f.roots(), capNotUnderTest, stoppedClock{now: f.now},
+		)
 		if err != nil {
 			t.Fatalf("NewManagerWithClock() unexpected error: %v", err)
 		}
@@ -1570,19 +1748,24 @@ func TestNewManagerFailsClosed(t *testing.T) {
 		tmux  tmuxctl.Controller
 		store *Store
 		roots []config.ApprovedRoot
+		limit int
 		clock Clock
 	}{
-		{"no controller", nil, NewStore(), wd.roots(), stoppedClock{}},
-		{"no store", tmuxctl.NewFake(), nil, wd.roots(), stoppedClock{}},
-		{"no clock", tmuxctl.NewFake(), NewStore(), wd.roots(), nil},
-		{"no approved roots", tmuxctl.NewFake(), NewStore(), nil, stoppedClock{}},
+		{"no controller", nil, NewStore(), wd.roots(), capNotUnderTest, stoppedClock{}},
+		{"no store", tmuxctl.NewFake(), nil, wd.roots(), capNotUnderTest, stoppedClock{}},
+		{"no clock", tmuxctl.NewFake(), NewStore(), wd.roots(), capNotUnderTest, nil},
+		{"no approved roots", tmuxctl.NewFake(), NewStore(), nil, capNotUnderTest, stoppedClock{}},
+		// A cap nobody set is the zero value, and a Manager built on it could
+		// only ever refuse every create (FR-036).
+		{"no session cap", tmuxctl.NewFake(), NewStore(), wd.roots(), 0, stoppedClock{}},
+		{"a negative session cap", tmuxctl.NewFake(), NewStore(), wd.roots(), -1, stoppedClock{}},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			m, err := NewManagerWithClock(tc.tmux, tc.store, tc.roots, tc.clock)
+			m, err := NewManagerWithClock(tc.tmux, tc.store, tc.roots, tc.limit, tc.clock)
 			if err == nil {
 				t.Fatal("NewManagerWithClock() accepted a configuration it cannot enforce a session's bounds with")
 			}
@@ -1601,7 +1784,7 @@ func TestNewManagerUsesTheHostClock(t *testing.T) {
 
 	wd := newWorkDirFixture(t)
 
-	m, err := NewManager(tmuxctl.NewFake(), NewStore(), wd.roots())
+	m, err := NewManager(tmuxctl.NewFake(), NewStore(), wd.roots(), capNotUnderTest)
 	if err != nil {
 		t.Fatalf("NewManager() unexpected error: %v", err)
 	}
