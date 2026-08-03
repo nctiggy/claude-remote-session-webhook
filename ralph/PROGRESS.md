@@ -5794,3 +5794,249 @@ gitleaks (pre-commit)       1 commit scanned … no leaks found
 55. **Iteration 6 #6 / … / 33 #52 still stands:** `AGENTS.md`'s command table has no entry for
     `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both
     were run by hand this iteration, green.
+
+---
+
+## Iteration 35 — 2026-08-03 21:45
+
+**Did:** Completed **T034**, the per-caller create rate limit. New
+`internal/httpapi/ratelimit.go` — a `clock` interface, `systemClock`, `burstFor`, the
+`limiter`/`bucket` token bucket (`newLimiter`, `allow`, `refill`, `forgetFull`), the
+`rateLimited` route set, `limitCreates` middleware, and two authored reasons
+(`errLimitNoCaller`, `errCreateRateExceeded`). `internal/httpapi/server.go` grew a
+`creates *limiter` field, a sixth `newServer` collaborator with its nil refusal, the
+`newLimiter(cfg.CreateRatePerMin, systemClock{})` build in `New`, and one wrap in `handle`.
+15 new tests in `ratelimit_test.go`; the six existing `newServer` call sites and `testConfig`
+updated. Ticked T034 in **both** `ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK
+go test -tags tmux ./...    OK (real tmux on this host)
+go test -race ./...         OK (the concurrent-spend test is the reason)
+golangci-lint run           OK
+gofmt -l .                  empty
+go.sum                      absent  ✅ zero third-party deps still holds — D7 honoured
+git diff --stat             +864 / −15 across five files
+gitleaks (pre-commit)       1 commit scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **The burst is derived from the rate, not configured.** `research.md` D11 documents the
+  pair as "6 a minute, burst 3" while `data-model.md` gives the environment only
+  `CRSW_CREATE_RATE_PER_MIN`, so `burstFor(perMinute) = max(1, perMinute/2)` reproduces the
+  documented pair exactly and leaves no second knob free to disagree with the first. The
+  floor of 1 keeps a rate of 1/min from meaning "refuse everything".
+  `TestTheBurstIsHalfTheRateAndNeverLessThanOne` pins all four rows. **See finding 1 — no
+  document actually states this derivation.**
+- **The limiter sits between layer 2 and everything else**, wrapped in `handle` outside
+  `resolveSession` and inside `authenticate`. Behind layer 2 so an unsigned flood cannot
+  spend the operator's budget (`TestAnUnauthenticatedFloodSpendsNoBudget`), ahead of `decode`
+  and the manager so a refusal costs no body read and no tmux command. `rateLimited` is a
+  `map[Route]bool` rather than a predicate on `Route`, so "which routes are limited" is a
+  list somebody has to add to — FR-037 names creation and only creation, and a limit on
+  DELETE would leave live shells running because a caller asked for one session too many
+  (`TestOnlyTheCreateRouteSpendsTheBudget`).
+- **A token is spent whatever the request goes on to answer** — a malformed body and a create
+  the manager refuses both cost the host the work of getting that far, so a budget that only
+  counted successes would let a caller spend the daemon's time for free by getting it wrong
+  on purpose.
+- **The check and the spend share one critical section**, exactly as `auth.replayCache.Observe`
+  does and for the same reason: split in two, a burst arriving together would all read the
+  same budget and all win. `TestConcurrentCreatesSpendOneTokenEach` is the test `-race` is
+  run for.
+- **A backwards clock hands out nothing and does not move the mark.** An NTP correction or a
+  resumed host would otherwise either refill for negative time or leave a mark in the future
+  that pays a windfall a moment later. Fail-closed costs an honest caller a delayed create.
+- **Full buckets are forgotten.** A caller whose bucket has refilled to the top is in the
+  state a caller the limiter has never seen is in, so `forgetFull` deletes it on every write —
+  the replay cache's sweep-on-write, for the same "a background sweeper is a second thing to
+  shut down" reason. The map is bounded by identities layer 2 has authenticated: one today.
+- **`(elapsed × rate) / 60`, not `elapsed × (rate/60)`.** The first is exactly one token after
+  exactly ten seconds at 6/min; the second is exactly nothing in particular, and
+  `TestTokensComeBackAtTheConfiguredRate` asserts that boundary to the nanosecond.
+- **Iteration 34's intent for the 429 was honoured:** the rate refusal writes the same bytes
+  through the same `failTooManyRequests`, and `TestTheRateRefusalIsTheSameAnswerAsTheCapRefusal`
+  compares status, body, and headers of a real cap refusal against a real rate refusal while
+  pinning that the two trail reasons stay distinct.
+
+**Learned (do not rediscover):**
+
+- **Two probes, both reverted with `Edit`, both confirming the suite is not vacuous.**
+  `if false && rateLimited[r]` in `handle` failed exactly the five HTTP-level rate tests and
+  nothing else; dropping the `min(l.burst, …)` clamp in `refill` failed exactly
+  `TestABucketNeverFillsPastItsBurst`. Still no `git checkout` needed (finding 56).
+- **`testConfig` needed `CreateRatePerMin: rateNotUnderTest` (1000), which is the opposite
+  choice from `MaxSessions`.** The fixture deliberately carries the production *cap* so
+  quickstart.md's six-create check is literal; with the production *rate* as well, the fourth
+  of those six creates would be refused as a burst and
+  `TestCreatePastTheCapAnswersTooManyRequests` would assert the wrong 429. Any future
+  per-request bound plumbed through `Config` faces the same call: the real value if it is the
+  thing under test, an unreachable one otherwise.
+- **`newServer` now takes six collaborators and every test builds one.** Adding the parameter
+  touched six call sites across `server_test.go` and `middleware_test.go`; they install
+  `testLimiter(t, cfg.CreateRatePerMin, fixedClock{at: testTime})`, and `rateFixture` swaps in
+  one on a movable `*testClock` after construction — the seam `s.report` and `s.listen`
+  already use.
+- **errcheck counts `x, _ := m[k].(string)` as an unchecked assertion.** `golangci-lint run`
+  refused the first spelling of `lastReason`; the fix (assert `ok`, `t.Fatalf` otherwise) is
+  the better test anyway. Nothing else in the package uses the blank form.
+- **The limiter's clock is a third, independent clock.** `auth`, `session`, and now `httpapi`
+  each define their own one-method `Clock`/`clock` interface. Advancing the limiter's clock in
+  a test does not move the signing window, which is what makes
+  `TestTheBudgetRecoversWithoutARestart` possible at all — but see finding 4.
+
+**Left:** T035–T042. T035 (token expiry at 24h) is next, then T036 (the reaper), T037
+(graceful shutdown, after which the milestone is shippable), T038–T039 (audit), T040–T042
+(ship it).
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: nothing in `specs/` or `docs/` states that the burst is half the
+   rate.** `research.md` D11 gives the pair "6 burst 3" for the default only and
+   `data-model.md` carries no burst variable, so `burstFor` is this iteration's reading of a
+   documented default rather than a documented rule. It is asserted in a test and explained in
+   the code, and `.env.example` (T040) will describe `CRSW_CREATE_RATE_PER_MIN` without being
+   able to name a burst. **An operator should rule, or T040 should settle it.**
+2. **New this iteration: the 429 carries no `Retry-After`, deliberately.** The refusal
+   discloses neither the rate nor the burst nor how long to wait
+   (`TestTheRateRefusalDisclosesNothingAboutTheBudget`), which is right for a caller holding a
+   stolen secret and unhelpful for an honest client, which can only poll. Milestone 2's
+   dashboard will want an answer. **An operator should rule; no task owns it.**
+3. **New this iteration: create budgets do not survive a restart.** The cap counts sessions
+   adopted from the host (iteration 34), so a restart onto a full host still refuses creates —
+   but the limiter is in-memory and per-process, so a restart hands every caller a full
+   bucket. Harmless with one operator who cannot restart the daemon remotely; it is an
+   asymmetry between two bounds that otherwise read alike. **No task owns it.**
+4. **New this iteration: the daemon now has three independent clocks** — `auth.Clock`,
+   `session.Clock`, and `httpapi.clock` — and nothing forces them to be the same instant.
+   `New` wires `systemClock{}` into all three today, so they agree by construction and not by
+   check. Related to finding 49.
+5. **Iteration 34 #1 half-answered this iteration:** the rate limiter does write the same 429
+   bytes through the same `failTooManyRequests`, and a test now compares the two refusals byte
+   for byte — but `contracts/http-api.md` still gives the status one row and **no body**, so
+   `{"error":"too many requests"}` remains this repo's invention. **An operator should rule.**
+6. **Iteration 34 #2 still stands:** the cap counts records in any state, `dead` included.
+   **T036 owns it.**
+7. **Iteration 34 #3 still stands, and grew:** `httpapi.New` builds the authenticator, the
+   session manager, **and now the create limiter** before asserting the listen address, so a
+   `Config` wrong in two ways is reported by whichever check runs first rather than by the
+   loopback one. Harmless today because `config.Load` refuses all of them.
+8. **Iteration 32 #1 / 33 #1 / 34 #4 still stands:** `Reconcile` drops the plaintext credential
+   `Adopt` returns, so an adopted session is owned, listed, capped and reapable but **drivable
+   by nobody**. **An operator should rule; no task owns it.**
+9. **Iteration 33 #2 / 34 #5 still stands:** a session destroyed at startup for outliving its
+   ceiling leaves no audit record. **T038 is the natural owner; it does not name this case.**
+10. **Iteration 33 #3 / 34 #6 still stands:** nothing forces `Reconcile` to be called at all —
+    the guard is one-directional. **A candidate for T037.**
+11. **Iteration 33 #4 / 34 #7 still stands:** `cmd/crswd` has no test files at all, and `run()`
+    has no seam for a fake. Worth an operator's ruling before T037 adds signal handling to it.
+12. **Iteration 32 #3 / 33 #5 / 34 #8 still stands:** `Adopt` is not safe to call twice
+    concurrently. Startup calls it once before the listener binds.
+13. **Iteration 31 #1 / … / 34 #9 still stands:** `docs/auth-and-sessions.md:135–137` describes
+    a cross-caller isolation test that cannot be written as specified in milestone 1.
+    **An operator should rule; no task owns it.**
+14. **Iteration 31 #2 / … / 34 #10 still stands:** `GET /sessions` is outside every sweep in
+    the isolation suite, because it is caller-scoped rather than session-scoped.
+15. **Iteration 30 #1 / … / 34 #11 still stands:** `notImplemented` is unreachable dead code.
+16. **Iteration 30 #2 / … / 34 #12 still stands:** the mux's `405` is `text/plain` with an
+    `Allow` header, contradicting `contracts/http-api.md`. **An operator should rule.**
+17. **Iteration 30 #3 / … / 34 #13 still stands:** the contract's test matrix has no row for
+    destroy-then-destroy.
+18. **Iteration 30 #4 / … / 34 #14 still stands:** `errDestroyRefused` is unreachable and
+    untested.
+19. **Iteration 29 #1 / … / 34 #15 still stands:** `rollback` verifies with `Has` alone and
+    never calls `confirmGone`, so a failed create on a host where the killed session was the
+    only one reports a **false orphan**. One line plus one test edit. **No task owns it.**
+20. **Iteration 29 #3 / … / 34 #16 still stands:** `Destroy` takes a `Session` rather than an
+    id, which is what lets `Adopt` tear down an expired candidate the store never held.
+21. **Iteration 28 #1 / … / 34 #17 still stands:** the two read routes disagree about which
+    sessions exist. **Unassigned.**
+22. **Iteration 28 #2 / … / 34 #18 still stands:** a detail reports `state` from the record and
+    never asks the host.
+23. **Iteration 27 #2 / … / 34 #19 still stands:** the list is unbounded in length.
+24. **Iteration 24 #4 / … / 34 #20 still stands:** a session whose window vanished still
+    resolves and answers 500 rather than moving to `dead`. `Store.SetState` **still has no
+    caller outside tests**. T036 or an operator. See finding 6.
+25. **Iteration 26 #1 / … / 34 #21 still stands:** nothing bounds the size of a capture.
+26. **Iteration 26 #2 / … / 34 #22 still stands:** `captured_at` is the daemon's clock, not
+    tmux's.
+27. **Iteration 25 #2 / … / 34 #23 still stands:** nothing touches the idle clock;
+    `Store.Touch` still has no caller. An adopted session's idle deadline is 60 minutes after
+    the daemon started regardless of use. T036.
+28. **Iteration 25 #1 / … / 34 #24 still stands:** a failed submit can leave prompt text in a
+    named tmux buffer, and **Destroy still does not delete the session's paste buffer**.
+29. **Iteration 23 #1 / … / 34 #25 answered this iteration:** `POST /sessions` is now rate
+    limited per caller, so the create path is bounded in both count (T033) and rate (T034).
+    What a refused create still costs is one map lookup under a mutex.
+30. **Iteration 22 #2 / … / 34 #26 still stands:** nothing forces a handler to use `decode`.
+31. **Iteration 22 #3 / … / 34 #27 still stands:** an oversize body is refused twice with two
+    different reasons and two different statuses. T038.
+32. **Iteration 21 #1 / … / 34 #28 still stands:** the mux's own `404` is `text/plain` while
+    the contract says every response is JSON.
+33. **Iteration 21 #2 / … / 34 #29 still stands:** the contract's `400` row for an oversize
+    body is unreachable behind layer 2.
+34. **Iteration 21 #3 / … / 34 #30 still stands:** `session.list`, `session.detail`, and
+    `session.output` are action names iteration 21 chose and `data-model.md` does not carry.
+35. **Iteration 21 #4 / … / 34 #31 still stands:** `RequestAudit` is not safe for concurrent
+    use, and nothing enforces it.
+36. **Iteration 21 #5 / … / 34 #32 still stands:** every request exit path amends the record by
+    habit, not by construction — this iteration added a sixth caller of `Deny`
+    (`limitCreates`). T038.
+37. **Iteration 20 #3 / … / 34 #33 still stands:** none of `docs/security.md`'s "Transport &
+    exposure" headers are applied by anything.
+38. **Iteration 18 #1 / … / 34 #34 still stands:** `Store.Add` does not require a `TokenHash`,
+    and `AddCapped` inherits that — both go through the same `validate`.
+39. **Iteration 17 #2 / … / 34 #35 still stands:** `Delete`'s hash scrub is best effort.
+40. **Iteration 17 #3 / … / 34 #36 still stands:** nothing enforces that a `Session.ID` in the
+    store came from `NewID`, beyond `adoptableID` on the adoption path.
+41. **Iteration 16 #1 / … / 34 #37 still stands:** `ResolveWorkDir` has an unavoidable TOCTOU
+    window before `tmux new-session -c`.
+42. **Iteration 16 #3 / … / 34 #38 still stands:** nothing re-stats an approved root.
+43. **Iteration 15 #1 / … / 34 #39 still stands:** FR-027's class admits a leading `-`.
+44. **Iteration 13 #1 / … / 34 #40 still stands:** `docs/auth-and-sessions.md`'s samples are
+    stale in four ways, and finding 13 above is a fifth.
+45. **Iteration 12 #1 / … / 34 #41 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Run by hand again this iteration, green — and this
+    iteration's concurrency test is the second one that needs it.
+46. **Iteration 12 #2 / … / 34 #42 still stands:** three specs disagree on `Observe`'s
+    signature.
+47. **Iteration 12 #3 / … / 34 #43 still stands:** the replay cache is unbounded in count.
+48. **Iteration 11 #1 / … / 34 #44 still stands:** the audit trail cannot tell clock drift from
+    a forged future timestamp. T038.
+49. **Iteration 11 #2 / … / 34 #45 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right, and adoption compares it against tmux's. See finding 4.
+50. **Iteration 10 #2 / … / 34 #46 still stands:** the signature covers timestamp and body but
+    **not the method or the path**. **No task owns it.**
+51. **Iteration 9 #1 / … / 34 #47 still stands:** `RequestAudit.Deny` takes a free `string`.
+52. **Iteration 8 #2 / … / 34 #48 still stands:** the loud default-root warning goes to stderr
+    while audit records go to stdout. **Assigned to T038.**
+53. **Iteration 8 #1 / … / 34 #49 still stands:** `.env.example` does not exist, and it will
+    need `CRSW_MAX_SESSIONS` **and `CRSW_CREATE_RATE_PER_MIN`** described (names only, never a
+    value). T040 — see finding 1.
+54. **Iteration 7 #1 / … / 34 #50 still stands:** bidi and invisible Unicode are not stripped
+    by `tmuxctl.Strip`, by design. **Milestone 2 decides before rendering.**
+55. **Iteration 6 #3 / … / 34 #51 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case while `exec.go` also matches the
+    missing-socket pair.
+56. **Iteration 14 #1 / … / 34 #52 still stands:** `git checkout --`, `git restore`, `perl -i`
+    and a heredoc are all outside the permission allowlist, so `PROMPT.md` step 6's documented
+    recovery path needs an approval an autonomous run cannot give. Two probes were reverted
+    with `Edit` in reverse this iteration; repeated `-m` flags carried the commit message, and
+    **appending this entry with a heredoc was refused** — the notebook had to be extended with
+    `Edit` against its last finding.
+57. **Iteration 1 #1 / … / 34 #53 still stands, thirty-fifth iteration carrying it:**
+    `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook (which
+    ran clean on this iteration's commit). Needs an operator or a task of its own.
+58. **Iteration 2 #2 / … / 34 #54 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again, again only because the finding was written down.
+    Thirty-fourth iteration of manual compensation for a one-line fix to step 9.
+59. **Iteration 6 #6 / … / 34 #55 still stands:** `AGENTS.md`'s command table has no entry for
+    `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both
+    were run by hand this iteration, green.
