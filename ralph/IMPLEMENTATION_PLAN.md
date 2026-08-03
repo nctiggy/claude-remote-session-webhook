@@ -76,7 +76,7 @@ owner plus its clock origin.
 - [x] T011 `internal/auth/replay.go`: replay cache keyed on signature, TTL `2 × skew`, with `Observe` checking and recording in **one** critical section; test proves a second use is refused and two concurrent replays yield one winner
 - [x] T012 `internal/auth/caller.go`: `Caller` identity derived server-side only, plus one opaque error so no caller learns which check failed
 - [x] T013 `internal/session/id.go`: IDs from `crypto/rand`, 16 bytes → 32 lowercase hex (**not** `crypto/rand.Text` — it needs a `go 1.24` directive; go.mod deliberately declares 1.23.0). Test asserts shape, non-sequential, non-colliding
-- [ ] T014 `internal/session/name.go`: name validation `^[a-zA-Z0-9-]{1,64}$`, rejecting `:` and `.` explicitly — they address a different tmux target. Hostile table test
+- [x] T014 `internal/session/name.go`: name validation `^[a-zA-Z0-9-]{1,64}$`, rejecting `:` and `.` explicitly — they address a different tmux target. Hostile table test
 - [ ] T015 `internal/session/workdir.go`: `filepath.Clean` + `EvalSymlinks` (failing closed), then containment under an approved root **at a path-separator boundary**. Tests cover `..`, absolute escapes, a symlink pointing outside, and the prefix trap where `/home/u/codeEVIL` must fail against `/home/u/code`
 - [ ] T016 `internal/session/session.go`: `Session` model with `Owner`, the `starting`/`running`/`dead` states, and the in-memory store. Token expiry is **derived** from `CreatedAt + 24h`, never stored separately
 - [ ] T017 `internal/session/token.go`: per-session bearer tokens from `crypto/rand`, returned once, stored as SHA-256, compared with `hmac.Equal`. Test asserts the plaintext is never persisted

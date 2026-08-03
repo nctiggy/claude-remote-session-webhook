@@ -1678,3 +1678,156 @@ T014 and T015 are `[P]` with T013 and touch no shared file.
     Thirteenth iteration of manual compensation for a one-line fix to step 9.
 22. **Iteration 6 #6 / … / 13 #20 still stands:** `AGENTS.md`'s command table has no entry
     for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
+
+---
+
+## Iteration 15 — 2026-08-03 09:31
+
+**Did:** Completed **T014**. Added `internal/session/name.go` (`ValidateName`, `MaxNameLen`,
+`ErrInvalidName`, `ErrNameIsTmuxTarget`, the unexported `isNameByte`, and the two tmux
+separator constants) and `name_test.go`. The package is now 15 tests / 73 runs, up from
+8 / 15. Ticked T014 in **both** `ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (session 15 tests / 73 runs, auth 34, audit 36, config 45,
+                                tmuxctl 84)
+go test -race -count=1 ./...   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git status                  clean against HEAD after every probe was reverted
+gitleaks (pre-commit)       1 commits scanned … no leaks found
+```
+
+**Learned (do not rediscover):**
+
+- **"Reject `:` and `.` *explicitly*" is not free — done naively it is untestable.** The
+  character class already refuses both, so deleting a dedicated guard changes nothing an
+  external test can see. What makes it enforceable is giving that guard its **own wrapped
+  sentinel** (`ErrNameIsTmuxTarget`, wrapped alongside `ErrInvalidName` with Go 1.20's
+  double `%w`) and asserting `errors.Is` per case, including the *negative* — an accented
+  letter must **not** report the tmux reason. Deleting the guard then fails 9 subtests, and
+  reordering it after the class check fails the same 9. **T015 has the identical trap:** its
+  `/home/u/codeEVIL` prefix check and its `EvalSymlinks` failure both need a reason a test
+  can name, or the separator-boundary rule is prose.
+- **The guards' order is load-bearing and is now pinned by tests.** `:`/`.` are checked
+  *before* the alphabet so that widening the alphabet later cannot silently re-admit them.
+  That claim only holds while the order does, which is why the swap is one of the five
+  probes.
+- **`../etc` is refused for the tmux reason, not the path reason** — it opens with the same
+  `.`. The first offending byte decides the reason, and the reason only ever reaches an
+  audit record (the response is 400 either way). My first hostile table asserted the path
+  reason and was wrong; the *code* was right. Worth knowing before writing T015's table,
+  which will want the same string.
+- **The independent-oracle trick from T013 generalises, and it is the test earning the most
+  here.** `name.go` is a hand-rolled byte loop; `name_test.go` compiles
+  `^[a-zA-Z0-9-]{1,64}$` from `spec.md` itself and asserts the two agree over a generated
+  corpus — each of the 256 byte values alone, prefixed, suffixed, and embedded, plus every
+  length from 0 to 66, plus every byte value in the last position of a 64-byte name. That
+  corpus alone killed three of the five mutations, including two the hand-written tables
+  would have missed. **Note Go's `$` matches end of text, not before a trailing newline**,
+  so the transcription is faithful — a name with a trailing newline is in the hostile table
+  because in a laxer regexp flavour it would pass.
+- **Byte-wise iteration is what makes the byte ceiling and the character ceiling the same
+  number**, and that is only true because the alphabet is ASCII. Thirty-two accented letters
+  are 64 bytes and 32 characters; they pass the length check and die on the alphabet. If
+  anyone widens the class beyond ASCII, `MaxNameLen` silently stops meaning characters.
+- **`unicode.IsLetter`/`IsDigit` are the wrong tool, and the full-width colon says why:**
+  U+FF1A renders as `:` in an audit record a human reads, while being no character the class
+  knows. The alphabet is kept to what the store, the log, and the eventual dashboard agree on.
+- **Iteration 14 #2 reproduced exactly:** the `format-and-lint` hook added `"strings"` to
+  `name.go`'s import block the moment a probe used `strings.TrimSpace`, and dropped it again
+  on revert. Expect a probe's diff to be larger than the line you changed.
+- **Iteration 5's backslash-u warning still bites.** Every non-ASCII fixture in
+  `name_test.go` is written as UTF-8 bytes for that reason; `\x` and `\n` pass through the
+  Write tool untouched. Verified with `grep` after writing.
+
+**Left:** T015 is next (`internal/session/workdir.go`: `filepath.Clean`, then
+`filepath.EvalSymlinks` failing closed when the path does not exist, then containment under
+an approved root **at a path-separator boundary**; tests cover `..`, an absolute escape, a
+symlink pointing outside, a non-directory, and the `/home/u/codeEVIL` prefix trap against
+root `/home/u/code`). `config.ApprovedRoot` already resolves the roots at startup, so T015
+consumes those rather than re-resolving. Then T016 (which still owes the `Owner`-type ruling
+flagged in iteration 13), T017 (`io.ReadFull`, the per-byte-column test, and no hex fixtures
+— see iteration 14), and T018–T042.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: FR-027's class admits a leading `-`, and the task list calls a
+   leading `-` hostile.** `tasks.md` T014 lists "leading `-`" among the hostile cases, but
+   `^[a-zA-Z0-9-]{1,64}$` — stated verbatim in `spec.md` FR-027, `data-model.md`,
+   `contracts/http-api.md`, `docs/security.md` §2, and both plan files — accepts `-foo`.
+   **Resolved in favour of the regexp**, which is the higher-authority statement and appears
+   five times, so this is a reading rather than a guess: a leading hyphen is an accepted
+   case, with a comment naming what makes it safe (`data-model.md` builds every tmux target
+   from the ID alone, so a name never reaches an argv slot where a leading `-` reads as a
+   flag). **If an operator wanted it refused, that is one `if` and one moved test case** —
+   but it would mean editing FR-027 too. Worth a ruling, because milestone 2 renders names
+   in a UI and milestone 3 adds rename.
+2. **New this iteration: nothing yet calls `ValidateName`.** T022 owns wiring it into
+   `POST /sessions`, and until then the rule is enforced only in a test. The same will be
+   true of T015's workdir check. **T022's test must cover a bad name, not only a bad path**,
+   or both boundary checks ship unreferenced.
+3. **Iteration 13 #1 / 14 #3 still stands:** `docs/auth-and-sessions.md`'s `Verify` sample is
+   stale in two ways — errors returned directly rather than uniformly, and identity derived
+   from the whole request via `a.callerFor(r)`.
+4. **Iteration 13 #2 / 14 #4 still stands:** nothing stops a handler from putting
+   `auth.Reason(err)` in a response body. T020 should assert the 401 body is byte-identical
+   across failure modes.
+5. **Iteration 12 #1 / 13 #3 / 14 #5 still stands:** CI never runs `-race`
+   (`.github/workflows/ci.yml:178` runs `go test ./...` only). Worth an operator doing before
+   T033.
+6. **Iteration 12 #2 / 13 #4 / 14 #6 still stands:** three specs disagree on `Observe`'s
+   signature. The code follows `tasks.md`.
+7. **Iteration 12 #3 / 13 #5 / 14 #7 still stands:** the replay cache is unbounded in count,
+   only in age. No task owns a cap.
+8. **Iteration 11 #1 / 12 #4 / 13 #6 / 14 #8 still stands:** the audit trail cannot tell clock
+   drift from a forged future timestamp. T038 should decide whether to split the sentinel.
+9. **Iteration 11 #2 / 12 #5 / 13 #7 / 14 #9 still stands:** nothing forces the daemon's clock
+   to be monotonic or roughly right, and both the window and the replay TTL depend on it.
+10. **Iteration 10 #1 / 11 #3 / 12 #6 / 13 #8 / 14 #10 still stands:** `contracts/http-api.md`
+    promises `400` for an oversize body but auth runs first. **T020 must decide.**
+11. **Iteration 10 #2 / 11 #4 / 12 #7 / 13 #9 / 14 #11 still stands:** the signature covers
+    timestamp and body but not method or path, so a signed body is valid on any route.
+12. **Iteration 9 #1 / … / 14 #12 still stands:** `audit.Record.Reason` can carry arbitrary
+    text. T038 should pass server-authored constants. This iteration adds two more candidates
+    for that field — `ErrInvalidName`'s reasons are fixed strings carrying no caller input by
+    construction (a test enforces it), so they are safe to pass through.
+13. **Iteration 9 #2 / … / 14 #13 still stands:** `audit.Emit`'s error has no handler yet.
+    T020 owns the ruling.
+14. **Iteration 8 #2 / … / 14 #14 still stands:** the loud default-root warning goes to stderr
+    while audit records go to stdout. T032 owns it.
+15. **Iteration 8 #1 / … / 14 #15 still stands:** `.env.example` does not exist, so the
+    `.gitleaks.toml` allowlist entry for it guards nothing. T040.
+16. **Iteration 7 #1 / … / 14 #16 still stands:** bidi and invisible Unicode are not stripped
+    by `tmuxctl.Strip`, by design. Milestone 2 decides. Session *names* are now closed to both
+    by this task's alphabet — the gap is pane output only.
+17. **Iteration 6 #2 / … / 14 #17 still stands:** a failed `paste-buffer` leaves caller prompt
+    text in a named tmux buffer.
+18. **Iteration 6 #1 / … / 14 #18 still stands:** T028 will report a false failure on the last
+    session — killing the only session stops the tmux server and `Has` then errors rather than
+    returning false. Use `List`.
+19. **Iteration 6 #3 / … / 14 #19 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case.
+20. **Iteration 14 #1 still stands:** `git checkout -- <path>` and `git restore` are not in the
+    permission allowlist, so `PROMPT.md` step 6's documented recovery path needs an approval an
+    autonomous run cannot give. Five probes were reverted with `Edit` in reverse again this
+    iteration, verified byte-identical to `HEAD` with `git status --porcelain`. **Worth an
+    operator adding both.** New this iteration: writing outside the repo is also refused, and
+    a heredoc past a few dozen lines aborts the Bash parser — this entry went in as six
+    appends.
+21. **Iteration 1 #1 / … / 14 #20 still stands, fifteenth iteration carrying it:** `loop.sh`'s
+    sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook (which ran clean on
+    this iteration's commit). Needs an operator or a task of its own.
+22. **Iteration 2 #2 / … / 14 #21 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the plan.
+    Ticked both by hand again, again only because the finding was written down. Fourteenth
+    iteration of manual compensation for a one-line fix to step 9.
+23. **Iteration 6 #6 / … / 14 #22 still stands:** `AGENTS.md`'s command table has no entry for
+    `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
