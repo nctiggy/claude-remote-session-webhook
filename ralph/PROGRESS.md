@@ -2354,3 +2354,207 @@ and `ResolveWorkDir`, which are still unreferenced too.
     Seventeenth iteration of manual compensation for a one-line fix to step 9.
 31. **Iteration 6 #6 / … / 17 #29 still stands:** `AGENTS.md`'s command table has no entry
     for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
+
+---
+
+## Iteration 19 — 2026-08-03 10:26
+
+**Did:** Completed **T018**. Added `internal/session/manager.go` (`Manager`, `NewManager`,
+`NewManagerWithClock`, `Clock`, `CreateRequest`, `Create`, `start`, `rollback`) plus
+`manager_test.go`. Moved the two tmux option names into `internal/tmuxctl` as
+`OptionManaged`/`OptionOwner`/`OptionManagedValue` and used them from `fake.go`'s
+`argvList`, `List`, and `Seed`. The session package is now 64 tests / 227 runs. Ticked T018
+in **both** `ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (session, auth, audit, config, tmuxctl)
+go test -race -count=1 ./internal/session ./internal/tmuxctl   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git status                  only the four files after every probe was reverted
+gitleaks (pre-commit)       1 commits scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **The record is claimed before the tmux session exists.** `Store.Add` runs before
+  `tmux new-session`, not after. A record without a session is a record whose endpoints
+  fail; a session without a record is a live unsandboxed shell that no ownership check,
+  no cap, and no reaper can see. Only one of those two is survivable (Principle VI), so
+  the ID is taken first. **A test pins the ordering** — moving `Add` after `start` makes
+  `TestCreateKeepsTheRecordWhenTeardownCannotBeVerified` fail, because there is then no
+  record left to keep.
+- **A create that fails after `new-session` kills *and verifies*, and keeps the record
+  when it cannot.** `rollback` asks `Kill`, then `Has`. Confirmed gone → drop the record
+  and return the original failure. Still present, or `Has` errored → keep the record and
+  wrap `ErrOrphanedSession`. Keeping it is the fail-closed direction: adoption runs at
+  startup only (T031/T032), so a live session the *running* daemon has forgotten is
+  forgotten for good, whereas a record for an already-dead session is a phantom the
+  reaper resolves. The caller holds no token on either path — the plaintext dies with the
+  failed response — so a retained record is drivable by nobody and reapable by the daemon.
+- **`Kill`'s error is folded into the result rather than returned.** A `New` that failed
+  may have left nothing to kill, so `can't find session` is the *expected* answer there;
+  only `Has` decides. The error is still carried, via `errors.Join`, on the orphan path.
+- **`ErrMissingOwner` earns its own sentinel even though `Store.Add`'s `validate` also
+  refuses an empty owner.** An empty `Owner` means the call skipped authentication, not
+  that a caller omitted a field, and T022 needs to tell that (a 500-shaped bug) from a
+  malformed record. Probed: deleting the guard still fails the test, but with
+  `invalid session record: an owner is required` — the wrong story for a handler to act on.
+- **`session.Clock` is declared in `internal/session`, not imported from `internal/auth`.**
+  The shapes are identical and the meanings are not: auth's clock decides whether a
+  signature is inside its 300s window, this one decides when a session dies. Importing
+  one into the other would make them a single setting. Go's interfaces are structural, so
+  one stopped clock in a test satisfies both.
+- **The two option names moved into `tmuxctl`.** `argvList` interpolates `@crswd-managed`
+  into the `-F` format string, and T031 matches on what T018 wrote. The name written and
+  the name matched must be one string, and `session` cannot export a constant into
+  `tmuxctl` — the import runs the other way. Three call sites in `fake.go` now read the
+  constant; `exec.go` needed no change because the argv builders already live in `fake.go`.
+
+**Learned (do not rediscover):**
+
+- **Green on the first run, again meaning nothing until probed.** Nine mutations, each
+  killed: swapped `SetOption` order, dropped `Enter`, `New` addressed by
+  `tmuxNamePrefix+s.Name` (caught, but *incidentally* — the fake then refuses the
+  follow-up calls), **every** target built from the name consistently (caught directly, by
+  both the argv test and the derives-from-the-ID test), the caller's unresolved `WorkDir`
+  used instead of `ResolveWorkDir`'s answer, `rollback` removed entirely, `rollback`
+  deleting unconditionally, `if present` alone (i.e. "could not ask" read as "it is
+  gone"), `LastActivity` a minute ahead of `CreatedAt`, the empty-roots constructor guard,
+  and a one-character typo in `OptionManaged`. Reverted each with `Edit`;
+  `git status --porcelain` showed only the four files afterwards.
+- **Mutating one call's target is a weaker probe than mutating them all.** Changing only
+  `New`'s name makes the fake return `can't find session` for the next call, so tests fail
+  for the wrong reason. The probe that actually tests the assertion is `name :=
+  tmuxNamePrefix + s.Name` at the top of `start`, where the fake stays internally
+  consistent and only the argv assertions can catch it. Worth remembering for T024/T025.
+- **`Session` is comparable, so `stored != *s` is a whole-record assertion.** Every field
+  is a string, `time.Time`, `[32]byte`, or `bool`. No `reflect.DeepEqual` needed, and a
+  future field of map or slice type would break the build here rather than silently
+  widening what the test ignores.
+- **The happy-path argv is spelled out literally in the test, not built from
+  `tmuxctl.SessionTarget`/`PaneTarget`.** Reusing the builders would assert only that
+  `Create` called them. `internal/tmuxctl/exec_test.go` already pins the same strings from
+  the other side, which is why the `OptionManaged` typo probe failed in three places.
+- **`t.TempDir()` per subtest is what makes the "no tmux command ran" assertion honest.**
+  The validation table builds a fresh `managerFixture` (and so a fresh `Fake`) per case, so
+  `len(Calls()) == 0` means *this* request executed nothing rather than that some earlier
+  case had not yet run. `newWorkDirFixture` is reused unchanged from T015 — the filesystem
+  half is not fakeable, because `EvalSymlinks` is the thing under test.
+- **No hex-shaped literal is in the new test file.** IDs and tokens are only ever compared
+  to `idShape`/`tokenShape` (T013/T017's package-level regexps) or matched with
+  `TokenMatches`; every failure message prints a length. gitleaks blocks a 64-character hex
+  string, and a `t.Errorf` is a place a token would otherwise reach CI logs.
+
+**Left:** T019 is next (`internal/httpapi/server.go`: `ServeMux` with Go 1.22
+method+wildcard patterns, read/write/idle timeouts, and a startup assertion that the
+resolved listen address is loopback). Then T020–T023 close US1, and T024–T042 follow.
+`Manager.Create` has no caller yet — **T022 owns wiring it into `POST /sessions`**, which
+is also where `ValidateName`, `ResolveWorkDir`, and `NewToken` finally get theirs.
+`Manager.Destroy` (T028) and `Manager.Adopt` (T031) will extend this file; both can reuse
+`rollback`'s kill-then-verify shape, and T028 should read finding 6 below before doing so.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: the concurrent-session cap will not be enforceable by checking
+   `Store.Len()` from `Create`.** The record is added inside `Store.Add`'s lock, so a
+   check-then-`Add` in `Create` is a check-then-act race — two creates at the boundary both
+   pass. **T033 should push the cap *into* the store** (an `AddCapped(s, max)` that counts
+   and inserts in one critical section), not add an `if m.store.Len() >= max` to `Create`.
+2. **New this iteration: `rollback`'s verification uses `Has`, which errors rather than
+   returning false when the session being killed was the tmux server's last one**
+   (iteration 6 #1, still open below). On a host where crswd's session is the only one,
+   every rollback therefore takes the orphan path and retains a record for a session that
+   really is gone. It fails in the safe direction and the reaper resolves it, but T028
+   switching to `List` should switch this call with it — they are the same question.
+3. **New this iteration: the Claude start command races the login shell's own startup.**
+   `send-keys` lands in the pty whenever tmux gets there; a shell that has not finished
+   sourcing its rc files yet will still see the bytes through the line discipline, but a
+   shell that prints a prompt *after* reading will swallow them. The fake cannot show this.
+   **T042's quickstart run against real tmux is where it appears** — if `claude` is not
+   running in a fresh window, this is why.
+4. **New this iteration: a `crswd-`-prefixed session that is missing `@crswd-managed`
+   leaks forever.** `Create` sets the option immediately after `new-session`, and a failure
+   in between is rolled back — but if that rollback cannot be verified, what survives is an
+   unmarked session. FR-022 tells T031 not to adopt lookalikes, and nothing else ever looks
+   at unmarked sessions, so it is never reaped. Options: adopt-and-destroy anything
+   matching the prefix but missing the marker, or log it loudly at startup. **T031 owns the
+   ruling** and should not silently ignore the prefix.
+5. **Iteration 18 #1 still stands:** `Store.Add` does not require a `TokenHash`, so a
+   record with no credential is storable. `Create` always supplies one, so the gap is now
+   only reachable from T031's adoption path.
+6. **Iteration 18 #2 still stands:** nothing bounds the length of a presented token before
+   it is hashed. **T023 should reject anything that is not exactly `TokenLen`.**
+7. **Iteration 17 #1 / 18 #3 still stands:** the store cannot tell the audit trail *why* a
+   lookup failed. T020/T038 own the ruling.
+8. **Iteration 17 #2 / 18 #4 still stands:** `Delete`'s hash scrub is best effort; no test
+   can assert it.
+9. **Iteration 17 #3 / 18 #5 is now partly answered:** nothing enforces that a
+   `Session.ID` in the store came from `NewID`, but every ID `Create` puts there does, and
+   `TestCreateIssuesADistinctIdentityEachTime` pins the shape and the uniqueness of eight
+   consecutive ones. A record `Add`ed directly by a future caller is still unchecked.
+10. **Iteration 16 #1 / … / 18 #6 still stands:** `ResolveWorkDir` is a create-time check
+    with an unavoidable TOCTOU window before `tmux new-session -c`, and `Create` is now the
+    code that opens it. Operator ruling welcome.
+11. **Iteration 16 #2 / … / 18 #7 still stands:** a rejected path is a weak existence
+    oracle; the reason must stay server-side. T020/T022.
+12. **Iteration 16 #3 / … / 18 #8 still stands:** nothing re-stats an approved root, so a
+    root replaced by a symlink after startup narrows silently.
+13. **Iteration 15 #1 / … / 18 #9 still stands:** FR-027's class admits a leading `-` while
+    `tasks.md` T014 calls it hostile.
+14. **Iteration 15 #2 / 18 #10 still stands, and now covers four files:** `ValidateName`,
+    `ResolveWorkDir`, `NewToken`, and now `Manager.Create` have no caller. T022 owns all.
+15. **Iteration 13 #1 / … / 18 #11 still stands:** `docs/auth-and-sessions.md`'s samples
+    are stale in three ways.
+16. **Iteration 13 #2 / … / 18 #12 still stands:** nothing stops a handler from putting
+    `auth.Reason(err)` in a response body. T020.
+17. **Iteration 12 #1 / … / 18 #13 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Worth an operator doing before T033 — finding 1 above
+    is exactly the kind of bug it would catch.
+18. **Iteration 12 #2 / … / 18 #14 still stands:** three specs disagree on `Observe`'s
+    signature.
+19. **Iteration 12 #3 / … / 18 #15 still stands:** the replay cache is unbounded in count.
+20. **Iteration 11 #1 / … / 18 #16 still stands:** the audit trail cannot tell clock drift
+    from a forged future timestamp. T038.
+21. **Iteration 11 #2 / … / 18 #17 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right, and `Create` now stamps `CreatedAt` from it.
+22. **Iteration 10 #1 / … / 18 #18 still stands:** `contracts/http-api.md` promises `400`
+    for an oversize body but auth runs first. **T020 must decide.**
+23. **Iteration 10 #2 / … / 18 #19 still stands:** the signature covers timestamp and body
+    but not method or path.
+24. **Iteration 9 #1 / … / 18 #20 still stands:** `audit.Record.Reason` can carry arbitrary
+    text. T038.
+25. **Iteration 9 #2 / … / 18 #21 still stands:** `audit.Emit`'s error has no handler yet.
+26. **Iteration 8 #2 / … / 18 #22 still stands:** the loud default-root warning goes to
+    stderr while audit records go to stdout. T032.
+27. **Iteration 8 #1 / … / 18 #23 still stands:** `.env.example` does not exist. T040.
+28. **Iteration 7 #1 / … / 18 #24 still stands:** bidi and invisible Unicode are not
+    stripped by `tmuxctl.Strip`, by design.
+29. **Iteration 6 #2 / … / 18 #25 still stands:** a failed `paste-buffer` leaves caller
+    prompt text in a named tmux buffer.
+30. **Iteration 6 #1 / … / 18 #26 still stands, and finding 2 above is its first real
+    consequence:** killing the only session stops the tmux server and `Has` then errors
+    rather than returning false. Use `List`.
+31. **Iteration 6 #3 / … / 18 #27 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case.
+32. **Iteration 14 #1 / … / 18 #28 still stands:** `git checkout -- <path>` and
+    `git restore` are not in the permission allowlist, so `PROMPT.md` step 6's documented
+    recovery path needs an approval an autonomous run cannot give. Nine probes reverted
+    with `Edit` in reverse again. `git config core.hooksPath` (a read) was refused again
+    this iteration, on its own and not `;`-joined — it is the command, not the joining.
+33. **Iteration 1 #1 / … / 18 #29 still stands, nineteenth iteration carrying it:**
+    `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook
+    (which ran clean on this iteration's commit).
+34. **Iteration 2 #2 / … / 18 #30 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again, again only because the finding was written down.
+    Eighteenth iteration of manual compensation for a one-line fix to step 9.
+35. **Iteration 6 #6 / … / 18 #31 still stands:** `AGENTS.md`'s command table has no entry
+    for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
