@@ -2558,3 +2558,223 @@ is also where `ValidateName`, `ResolveWorkDir`, and `NewToken` finally get their
     Eighteenth iteration of manual compensation for a one-line fix to step 9.
 35. **Iteration 6 #6 / … / 18 #31 still stands:** `AGENTS.md`'s command table has no entry
     for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
+
+---
+
+## Iteration 20 — 2026-08-03 10:39
+
+**Did:** Completed **T019**. Added `internal/httpapi/server.go` (`Route`, the `routes` table,
+`Server`, `New`/`newServer`, `handle`, `Routes`, `ServeHTTP`, `Listen`, `Addr`, `Serve`,
+`Close`, `notImplemented`, `assertLoopbackAddress`, `assertLoopbackAddr`, `ErrNotLoopback`)
+plus `server_test.go` — 17 tests / 29 runs. First code in the package that becomes the
+daemon's only external surface. Ticked T019 in **both** `ralph/IMPLEMENTATION_PLAN.md` and
+`specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (httpapi, session, auth, audit, config, tmuxctl)
+go test -race -count=1 ./internal/httpapi ./internal/session   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git status                  only the two new files after every probe was reverted
+gitleaks (pre-commit)       1 commits scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **The route table is declared once and `handle` is the only path to the mux.** FR-006
+  makes the six operations a closed set, so they are a package-level `routes` slice and
+  `newServer` loops over it. `handle` is deliberately the single choke point: **T020 wraps
+  the auth middleware around `h` on that one line**, which is what makes "no route is
+  exempt" a property of the wiring rather than a rule six call sites have to remember.
+- **`Routes()` reports what was *registered*, not what was declared.** They are different
+  claims, and T020's test is required to sweep the router rather than a hand-written list.
+  `handle` appends as it registers, so the two cannot diverge; the slice is `slices.Clone`d
+  because a caller holding the backing array could shorten the very list a test iterates.
+- **The stubs answer `501` with no body, and both halves are deliberate.** A stub already
+  returning the uniform `401` would let T020's "every registered route refuses an
+  unauthenticated request" sweep pass green **with no middleware in the tree at all** — the
+  one thing that sweep exists to catch. And the JSON error bodies belong to the tasks that
+  own the responses (T020's `401`, T023's `404`); wiring does not get to invent them, so
+  this task ships no JSON writer. **T022 owns the first one.**
+- **FR-005 is now checked three times, and only the third is evidence.** `config.loadListen`
+  refuses a non-loopback host; `newServer` refuses it again, because a `Config` is a struct
+  and a test, a future caller, or a reordered startup can produce one that never went
+  through `Load`; and `Listen` checks `ln.Addr()` — what the kernel actually bound — then
+  **closes** the listener rather than serving on it. The socket already exists by then,
+  which is why the close is not optional and is asserted.
+- **Timeout values are chosen here, not specified anywhere.** `spec.md`, `plan.md`, and
+  `data-model.md` all say "timeouts" and fix no numbers, so: header 5s (which also closes
+  the Slowloris class, gosec G112), read 15s, write 30s, idle 60s. Every handler in this
+  milestone is a tmux exec or an in-memory read, so these are far longer than any real
+  request. **Milestone 2's SSE cannot live under a 30s `WriteTimeout`** and needs a
+  per-route answer rather than this value being raised for everything.
+- **`MaxHeaderBytes` is set to 16 KiB, well under net/http's 1 MiB default.** This is a
+  partial answer to iteration 18 #2: a header is read (and, for the bearer token, hashed)
+  before any route can decide it was nonsense, and `CRSW_MAX_BODY_BYTES` covers the body
+  only. It bounds the work; it does not replace T023's length check on the token itself.
+- **`Close` only — there is no `Shutdown`.** T037 owns graceful shutdown and needs a
+  context this cannot take. `Close` drops in-flight requests and is what the tests use.
+
+**Learned (do not rediscover):**
+
+- **Green on the first run, again meaning nothing until probed.** Eleven mutations, each
+  killed by the case written for it: the post-bind assertion deleted (4 subtests), the
+  configured-address check deleted (9), an unrecognised address type read as loopback (1),
+  `WriteTimeout` dropped (1), a seventh route added (2 — the exact-set test *and* the
+  "nothing outside the contract is served" sweep), a contract route dropped (1),
+  `Routes()` returning the backing slice (1), the refused listener kept and not closed
+  (2 assertions, independently), `Handler` left nil so the server would fall back to
+  `http.DefaultServeMux` (2), the method dropped from every registration (see below), and
+  one route registered under `PATCH` instead of `DELETE` (2). Reverted each with `Edit`;
+  `git status --porcelain` showed only the two new files afterwards.
+- **Dropping the method from *every* registration panics instead of failing an
+  assertion** — `ServeMux` refuses two patterns that match the same requests, and
+  `POST /sessions` + `GET /sessions` both collapse to `/sessions`. Caught, but
+  incidentally, exactly as iteration 19 warned. The probe that actually tests the
+  assertion is **one** route registered under the wrong method, where the mux stays
+  consistent and only the route-table and wrong-verb tests can catch it.
+- **`http.Server.Handler` left nil is the quietest routing bug available:** net/http then
+  serves `http.DefaultServeMux`, which any imported package can register onto —
+  `net/http/pprof` does it from an import with no other effect, which is precisely an
+  unauthenticated route on a daemon whose route set is supposed to be closed.
+  `TestTheServerHasItsOwnHandler` pins it.
+- **ServeMux answers an unregistered path with `404` and a registered path under an
+  unregistered method with `405`, both `text/plain`.** See finding 1 — the contract says
+  every response is JSON, and neither of those is.
+- **`errcheck` with `check-blank: true` bans `_ = s.Serve()` in a test goroutine.** Send
+  the error to a buffered channel and assert it instead — which is better anyway, because
+  it also pins that `Serve` returns `nil` after a deliberate `Close` rather than
+  `http.ErrServerClosed`. Same rule means a test that makes a real request must check
+  `resp.Body.Close()`'s error (`bodyclose`, plus `exclude-use-default: false`).
+- **The formatter deleted an orphaned import mid-probe again** — `slices`, when `Routes`
+  stopped cloning. Restoring the body brought it back on the hook's re-run, and
+  `go build ./...` is what said so. Iterations 17, 18, and 19 all hit this; it is now
+  simply how probing works in this repo.
+- **`t.Parallel()` everywhere, including the test that binds a real socket.** The fixture
+  asks for `127.0.0.1:0` so the kernel picks the port; nothing here can collide with a
+  real crswd or with another test. `Addr()` is what the test reads back, never the
+  configured string.
+- **No secret-shaped literal is in the new test file.** `testConfig` leaves
+  `SharedSecret` nil — nothing in this file authenticates — and the one `config.LoadFrom`
+  case spells its secret in words, as iteration 8 established.
+
+**Left:** T020 is next (`internal/httpapi/middleware.go`: authentication on **every**
+registered route, one audit record per request, uniform `401`, with a test that iterates
+`Server.Routes()` rather than a hand-written list). It wraps `h` inside `handle` — that is
+the whole seam, and it is one line. T020 also inherits three rulings the notebook has been
+carrying for it: findings 2, 17, and 22 below. Then T021 (decoder), T022 (`POST /sessions`,
+which finally gives `ValidateName`, `ResolveWorkDir`, `NewToken`, and `Manager.Create` their
+first caller), and T023 close US1. T024–T042 follow.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: the mux's own `404` and `405` responses are `text/plain`, and
+   `contracts/http-api.md` says every response is `application/json`.** An unregistered
+   path gets `404`; a registered path under an unregistered method gets `405` with an
+   `Allow` header, which also discloses that the path is in the contract (harmless — the
+   contract is published — but it is a different answer for a real route than for a
+   fictional one). **T020 owns uniform responses and should decide**: a catch-all `/`
+   handler emitting the JSON `404` would fix the content type and collapse `405` into
+   `404`, at the cost of losing `Allow`. Not done here: this task owns wiring, and
+   inventing an error body would collide with T020's and T023's.
+2. **New this iteration: the six routes are registered and unauthenticated until T020.**
+   Nothing imports `httpapi` yet (`cmd/crswd` gets its wiring in T032) so nothing is
+   exposed, and the stubs execute nothing — but the window exists in-tree, and it closes
+   only when the middleware lands. **T020 is not optional before T032.**
+3. **New this iteration: none of `docs/security.md`'s "Transport & exposure" headers are
+   applied by anything, and no task in the plan owns them.** `Content-Security-Policy`,
+   `Strict-Transport-Security`, `X-Content-Type-Options: nosniff`, and `Referrer-Policy`
+   are a binding table in a binding doc; `grep` finds no mention of any of them in
+   `specs/` or `ralph/`. CSP and HSTS mostly matter to milestone 2's browser UI, but
+   `nosniff` matters to a JSON API today. **Worth an operator adding a task** rather than
+   discovering it when the dashboard ships.
+4. **New this iteration: nothing bounds the number of connections.** The timeouts bound
+   how long one connection may live, not how many may exist; `MaxHeaderBytes` bounds one
+   request's headers, not the count. Loopback-only plus the tunnel makes this a
+   same-host concern, and Principle VI's cap is about *sessions*, so no task owns it. Low
+   risk, recorded because "the server has timeouts" reads as though it were covered.
+5. **New this iteration: `Server` has no `Shutdown`, deliberately.** `Close` drops
+   in-flight requests. **T037 owns adding `Shutdown(ctx)`** and must not reach for `Close`
+   because it is already there.
+6. **Iteration 18 #1 / 19 #5 still stands:** `Store.Add` does not require a `TokenHash`, so
+   a record with no credential is storable. Reachable only from T031's adoption path.
+7. **Iteration 18 #2 / 19 #6 still stands, now half-mitigated:** nothing bounds the length
+   of a presented token before it is hashed. `MaxHeaderBytes` (16 KiB) caps the damage at
+   the transport, but **T023 should still reject anything that is not exactly `TokenLen`**
+   before hashing — the length is public, so a length check leaks nothing.
+8. **Iteration 17 #1 / … / 19 #7 still stands:** the store cannot tell the audit trail *why*
+   a lookup failed. T020/T038 own the ruling.
+9. **Iteration 17 #2 / … / 19 #8 still stands:** `Delete`'s hash scrub is best effort; no
+   test can assert it.
+10. **Iteration 17 #3 / … / 19 #9 still stands, partly answered:** nothing enforces that a
+    `Session.ID` in the store came from `NewID`, though every ID `Create` puts there does.
+11. **Iteration 16 #1 / … / 19 #10 still stands:** `ResolveWorkDir` is a create-time check
+    with an unavoidable TOCTOU window before `tmux new-session -c`. Operator ruling welcome.
+12. **Iteration 16 #2 / … / 19 #11 still stands:** a rejected path is a weak existence
+    oracle; the reason must stay server-side. T020/T022.
+13. **Iteration 16 #3 / … / 19 #12 still stands:** nothing re-stats an approved root, so a
+    root replaced by a symlink after startup narrows silently.
+14. **Iteration 15 #1 / … / 19 #13 still stands:** FR-027's class admits a leading `-` while
+    `tasks.md` T014 calls it hostile.
+15. **Iteration 15 #2 / … / 19 #14 still stands, four files:** `ValidateName`,
+    `ResolveWorkDir`, `NewToken`, and `Manager.Create` have no caller. **T022 owns all
+    four**, and the route they hang off now exists.
+16. **Iteration 13 #1 / … / 19 #15 still stands:** `docs/auth-and-sessions.md`'s samples are
+    stale in three ways.
+17. **Iteration 13 #2 / … / 19 #16 still stands and is now due:** nothing stops a handler
+    from putting `auth.Reason(err)` in a response body. **T020 should assert the 401 body is
+    byte-identical across every failure mode.**
+18. **Iteration 12 #1 / … / 19 #17 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Worth an operator doing before T033.
+19. **Iteration 12 #2 / … / 19 #18 still stands:** three specs disagree on `Observe`'s
+    signature. The code follows `tasks.md`.
+20. **Iteration 12 #3 / … / 19 #19 still stands:** the replay cache is unbounded in count,
+    only in age.
+21. **Iteration 11 #1 / … / 19 #20 still stands:** the audit trail cannot tell clock drift
+    from a forged future timestamp. T038.
+22. **Iteration 11 #2 / … / 19 #21 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right.
+23. **Iteration 10 #1 / … / 19 #22 still stands and is now due:**
+    `contracts/http-api.md` promises `400` for an oversize body but auth runs first, and the
+    signature covers the bytes as received. **T020 must decide** whether the limit is
+    applied before or after verification; T021 implements whichever it says.
+24. **Iteration 10 #2 / … / 19 #23 still stands, and the routes it is about now exist:** the
+    signature covers timestamp and body but not method or path, so a signed body is valid on
+    any of the six routes. The bearer token narrows it for session-scoped routes; it does not
+    close it for the caller's own sessions or for `POST /sessions`.
+25. **Iteration 9 #1 / … / 19 #24 still stands:** `audit.Record.Reason` can carry arbitrary
+    text. T038 should pass server-authored constants.
+26. **Iteration 9 #2 / … / 19 #25 still stands and is now due:** `audit.Emit`'s error has no
+    handler. **T020 owns the ruling** — it is the task that emits one record per request.
+27. **Iteration 8 #2 / … / 19 #26 still stands:** the loud default-root warning goes to
+    stderr while audit records go to stdout. T032.
+28. **Iteration 8 #1 / … / 19 #27 still stands:** `.env.example` does not exist. T040.
+29. **Iteration 7 #1 / … / 19 #28 still stands:** bidi and invisible Unicode are not stripped
+    by `tmuxctl.Strip`, by design. Milestone 2 decides.
+30. **Iteration 6 #2 / … / 19 #29 still stands:** a failed `paste-buffer` leaves caller
+    prompt text in a named tmux buffer.
+31. **Iteration 6 #1 / … / 19 #30 still stands:** killing the only session stops the tmux
+    server and `Has` then errors rather than returning false. T028 should use `List`, and
+    should switch `Manager.rollback`'s call with it (iteration 19 #2).
+32. **Iteration 6 #3 / … / 19 #31 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case.
+33. **Iteration 14 #1 / … / 19 #32 still stands:** `git checkout -- <path>` and `git restore`
+    are not in the permission allowlist, so `PROMPT.md` step 6's documented recovery path
+    needs an approval an autonomous run cannot give. Eleven probes reverted with `Edit` in
+    reverse again this iteration.
+34. **Iteration 1 #1 / … / 19 #33 still stands, twentieth iteration carrying it:** `loop.sh`'s
+    sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook (which ran clean
+    on this iteration's commit). Needs an operator or a task of its own.
+35. **Iteration 2 #2 / … / 19 #34 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again, again only because the finding was written down.
+    Nineteenth iteration of manual compensation for a one-line fix to step 9.
+36. **Iteration 6 #6 / … / 19 #35 still stands:** `AGENTS.md`'s command table has no entry
+    for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.

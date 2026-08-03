@@ -81,7 +81,7 @@ owner plus its clock origin.
 - [x] T016 `internal/session/session.go`: `Session` model with `Owner`, the `starting`/`running`/`dead` states, and the in-memory store. Token expiry is **derived** from `CreatedAt + 24h`, never stored separately
 - [x] T017 `internal/session/token.go`: per-session bearer tokens from `crypto/rand`, returned once, stored as SHA-256, compared with `hmac.Equal`. Test asserts the plaintext is never persisted
 - [x] T018 `internal/session/manager.go`: `Manager.Create` — tmux session `crswd-<id>` in the validated directory, set `@crswd-managed` and `@crswd-owner`, then send `claude --dangerously-skip-permissions` as keys. Test asserts call order and that the target derives only from the ID
-- [ ] T019 `internal/httpapi/server.go`: `ServeMux` with Go 1.22 method+wildcard patterns, server timeouts, and a startup assertion that the listen address is **loopback**
+- [x] T019 `internal/httpapi/server.go`: `ServeMux` with Go 1.22 method+wildcard patterns, server timeouts, and a startup assertion that the listen address is **loopback**
 - [ ] T020 `internal/httpapi/middleware.go`: authentication on **every** registered route, one audit record per request, uniform `401`. The test must iterate the router's registered routes, not a hand-written list, so a future route cannot be forgotten
 - [ ] T021 `internal/httpapi/decode.go`: `MaxBytesReader` + `DisallowUnknownFields`. Tests cover unknown fields, oversize, truncated, and wrong-shape bodies
 - [ ] T022 `internal/httpapi/sessions.go`: `POST /sessions` → 201 with the token returned exactly once and `expires_at` exactly 24h after `created_at`
