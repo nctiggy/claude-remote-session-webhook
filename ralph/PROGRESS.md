@@ -3041,3 +3041,218 @@ use `CallerFrom` for the owner and `RequestAudit.SetSessionID` for the trail) an
 37. **Iteration 6 #6 / … / 20 #36 still stands:** `AGENTS.md`'s command table has no
     entry for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)"
     is not all.
+
+---
+
+## Iteration 22 — 2026-08-03 11:09
+
+**Did:** Completed **T021**. Added `internal/httpapi/decode.go` (`decode`, `decodeBody`,
+`refusal`, `Server.rejectBadRequest`, `bodyBadRequest`, the seven body reasons, and
+`unknownFieldPrefix`) and `decode_test.go` — 12 tests / 44 runs, 164 counting subtests.
+Ticked T021 in **both** `ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (httpapi 44 top-level tests; audit, auth, config, session, tmuxctl)
+go test -race -count=1 ./internal/httpapi ./internal/session   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git status                  only the two new files after every probe was reverted
+gitleaks (pre-commit)       1 commits scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **`decode` refuses, answers, and records why in one step, which is why it takes the
+  `*Server`.** Go has no generic methods, so the shape is a free generic function with
+  the server as its first parameter: `decode[createRequest](s, w, r)`. The alternative —
+  decode returning an error and the handler writing the 400 — is a second step six
+  handlers have to remember, and iteration 21's finding 5 is exactly what happens when a
+  handler forgets to amend its record. Here it cannot: `rejectBadRequest` writes the
+  response *and* flips the audit record from layer 2's `allow` to `deny`.
+- **The 400 body is uniform, and that is a security choice, not tidiness.** The contract
+  gives one status to a malformed body, an unknown field, an oversize body, **and a
+  failed field validation** — and T022's field validation includes `work_dir` outside an
+  approved root. A body that distinguished "unknown field" from "no such directory" is a
+  filesystem oracle behind one signature. `bodyBadRequest` is one package-level value for
+  the same reason `bodyUnauthorized` is, and **T022 must answer with it rather than
+  writing its own** (iteration 20 #12/#16's ruling, now implementable).
+- **The reasons are this package's own errors and the encoding/json error is dropped, not
+  wrapped.** Every `encoding/json` failure quotes the input back — `json: unknown field
+  "x"`, `invalid character 'x' looking for beginning of value`, and `UnmarshalTypeError`
+  names the field — and the trail may not carry caller bytes (FR-042, FR-043). This is
+  the same ruling `auth`'s sentinels made for the same reason; the mutation that wraps
+  the json error into the reason is killed by four tests, one of them the leak test.
+- **Iteration 21's oversize ruling is now pinned from this side too.**
+  `TestAnOversizeBodyNeverReachesTheDecoder` drives a signed 1025-byte body through the
+  middleware and asserts the handler never ran and the answer was the uniform 401. So
+  `MaxBytesReader` here is a genuine second line of defence — for a handler under direct
+  test, a future route reached before layer 2, or a body replaced between the two — and
+  never the thing that produces the contract's 400. **The contract's `400` row for an
+  oversize body remains unreachable** (iteration 21 #2).
+- **A body carrying two JSON values is refused.** `{"name":"a"}{"name":"b"}` is one
+  signed request that means two things; the signature covers both objects, so reading the
+  first and discarding the second is the daemon choosing on the caller's behalf. A second
+  `Decode` that must return `io.EOF` is the whole implementation.
+
+**Learned (do not rediscover):**
+
+- **Green on the first run, again meaning nothing until probed. Eleven mutations, and two
+  of them found real gaps** — the first time probing has changed the *design* rather than
+  just confirming a test:
+  1. **The zero value on failure was guaranteed twice and therefore tested nowhere.**
+     `decodeBody` returned the zero value on error and `decode` zeroed it again, so
+     mutating `decodeBody` to return its half-parsed struct passed every test. Fixed by
+     making the guarantee live in exactly one place: `decodeBody` zeroes, `decode`
+     returns what it was given. Re-probed — now killed by two tests. **Two guarantees of
+     one property is one guarantee and one blind spot; this is worth generalising.**
+  2. **The classifier's fail-closed default was unreachable from every case in the
+     table**, so `default: return nil` — a body nobody classified being *accepted* —
+     passed the whole suite. Every JSON-shaped failure is typed (`SyntaxError`,
+     `UnmarshalTypeError`, `io.EOF`, `io.ErrUnexpectedEOF`, `MaxBytesError`) and lands
+     earlier. What reaches the default is a body that stopped arriving, so
+     `unreadableBody` (a `Read` that returns a connection-reset error) was added, along
+     with `errBodyUnreadable` — a read failure is not "malformed JSON" and the trail
+     should not say it is.
+  - The nine that behaved: `DisallowUnknownFields` deleted (6 tests), the trailing-value
+    check deleted (2), the audit `Deny` deleted (16), `MaxBytesReader` dropped (4), the
+    reason written into the response body (15), the json error wrapped into the reason
+    (4), the write error swallowed (1 test **and** errcheck), `400` changed to `200`
+    (19), and `unknownFieldPrefix` reworded (5 — and this one confirmed the documented
+    degradation: status assertions stayed green, only reason assertions failed).
+- **`DisallowUnknownFields` has no error type.** A `strings.HasPrefix` against
+  `"json: unknown field "` is the only way to tell it from any other decode failure, and
+  the prefix is load-bearing for the trail's detail and nothing else — a reworded message
+  still yields a 400, with the fail-closed reason instead. `TestTheUnknownFieldMessage…`
+  is a named canary so that degradation is noticed rather than silent.
+- **The second `Decode` must be classified too.** `{"a":1}{"b":2}` makes the second call
+  return an *unknown field* error, not a syntax error, so "is it `io.EOF`?" is the only
+  safe test — and a `MaxBytesError` surfacing there is still an oversize body, not
+  trailing data.
+- **`httptest.NewRequest(…, nil)` leaves a non-nil empty body**, so the `r.Body == nil`
+  branch needs `req.Body = nil` set by hand. It is unreachable through net/http, reachable
+  through a handler under direct test, and fails closed: no body is not an empty object.
+- **The formatter deleted the orphaned `fmt` import mid-probe again**, exactly as
+  iterations 17–20 recorded. `go build ./...` is what said so. It is simply how probing
+  works in this repo.
+- **Tests assert the contract, not the source** — the standing rule iteration 21 named.
+  `refusedBodies` spells out the expected reason per case as a literal, and the leak test
+  uses a marker word (`kumquat`) planted in the field name, the value, and the trailing
+  garbage rather than asking the code what it thinks it excluded.
+
+**Left:** T022 is next (`POST /sessions` in `internal/httpapi/sessions.go`: 201 with the
+token returned exactly once and `expires_at` exactly 24h after `created_at`). It finally
+gives `ValidateName`, `ResolveWorkDir`, `NewToken`, and `Manager.Create` their first
+caller; it should decode with `decode[T]`, answer refusals with `rejectBadRequest` rather
+than a second 400 body, take the owner from `CallerFrom`, and set
+`RequestAudit.SetSessionID`. Then T023 (session-scoped resolver, uniform 404) closes US1.
+T024–T042 follow.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: `decode` and `rejectBadRequest` have no caller outside tests.**
+   Same shape as iteration 15 #2's four orphans — **T022 owns wiring all of them**, and
+   until it lands the daemon has a body decoder no route uses.
+2. **New this iteration: nothing forces a handler to use `decode`.** A future handler can
+   still reach for `json.NewDecoder(r.Body)` directly and get none of the limit, the
+   unknown-field rejection, or the audit amendment. `plan.md` calls `decode[T]` "the only
+   body path" and that is a convention, not a structure — the same class of gap
+   `handle` closed for authentication. A lint rule banning `json.NewDecoder` outside
+   `decode.go` would close it; worth an operator adding one.
+3. **New this iteration: an oversize body is refused twice with two different reasons and
+   two different statuses**, depending on whether it arrived through layer 2 (401,
+   `auth.ErrBodyTooLarge`) or reached a handler directly (400, `errBodyTooLarge`). Both
+   are correct in their own context, but an operator reading the trail sees two names for
+   one condition. **T038 should decide whether the two reason strings should be one.**
+4. **Iteration 21 #1 still stands:** the mux's `404`/`405` are `text/plain` while the
+   contract says every response is JSON. **An operator should rule** — no future task
+   owns it.
+5. **Iteration 21 #2 still stands, now pinned by a test from both sides:**
+   `contracts/http-api.md` promises `400` for an oversize body and that response is
+   unreachable behind layer 2. The code is right; the contract row is wrong.
+6. **Iteration 21 #3 still stands:** `session.list`, `session.detail`, and
+   `session.output` are action names iteration 21 chose and `data-model.md` does not
+   carry. T038 enumerates only the original six.
+7. **Iteration 21 #4 still stands:** `RequestAudit` is not safe for concurrent use, and
+   nothing enforces it. `decode` touches it on the request's own goroutine.
+8. **Iteration 21 #5 still stands, and this task is the first to act on it:** a handler
+   that never calls `Deny` leaves an `allow` record for a request that failed. `decode`
+   amends its own; **every other handler still has to remember**, which is why T038's
+   sweep matters.
+9. **Iteration 20 #3 / 21 #7 still stands:** none of `docs/security.md`'s "Transport &
+   exposure" headers are applied by anything, and no task owns them. `nosniff` matters to
+   a JSON API today.
+10. **Iteration 20 #4 / 21 #8 still stands:** nothing bounds the number of connections.
+11. **Iteration 20 #5 / 21 #9 still stands:** `Server` has no `Shutdown`, deliberately.
+    T037.
+12. **Iteration 18 #1 / … / 21 #10 still stands:** `Store.Add` does not require a
+    `TokenHash`. T031.
+13. **Iteration 18 #2 / … / 21 #11 still stands:** nothing bounds the length of a
+    presented bearer token before it is hashed. **T023 should reject anything that is not
+    exactly `TokenLen`**.
+14. **Iteration 17 #1 / … / 21 #12 still stands:** the store cannot tell the audit trail
+    *why* a lookup failed; T023 must author the distinction itself.
+15. **Iteration 17 #2 / … / 21 #13 still stands:** `Delete`'s hash scrub is best effort.
+16. **Iteration 17 #3 / … / 21 #14 still stands:** nothing enforces that a `Session.ID`
+    in the store came from `NewID`.
+17. **Iteration 16 #1 / … / 21 #15 still stands:** `ResolveWorkDir` has an unavoidable
+    TOCTOU window before `tmux new-session -c`.
+18. **Iteration 16 #2 / … / 21 #16 still stands, and is now half-closed:** a rejected path
+    is a weak existence oracle. The uniform `bodyBadRequest` closes the *response* half;
+    T022 must not reintroduce a per-reason body.
+19. **Iteration 16 #3 / … / 21 #17 still stands:** nothing re-stats an approved root.
+20. **Iteration 15 #1 / … / 21 #18 still stands:** FR-027's class admits a leading `-`
+    while `tasks.md` T014 calls it hostile.
+21. **Iteration 15 #2 / … / 21 #19 still stands, four files:** `ValidateName`,
+    `ResolveWorkDir`, `NewToken`, and `Manager.Create` have no caller. **T022 owns all
+    four**, plus this iteration's two.
+22. **Iteration 13 #1 / … / 21 #20 still stands:** `docs/auth-and-sessions.md`'s samples
+    are stale in three ways.
+23. **Iteration 12 #1 / … / 21 #21 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Worth an operator doing.
+24. **Iteration 12 #2 / … / 21 #22 still stands:** three specs disagree on `Observe`'s
+    signature.
+25. **Iteration 12 #3 / … / 21 #23 still stands:** the replay cache is unbounded in count,
+    only in age.
+26. **Iteration 11 #1 / … / 21 #24 still stands:** the audit trail cannot tell clock drift
+    from a forged future timestamp. T038.
+27. **Iteration 11 #2 / … / 21 #25 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right.
+28. **Iteration 10 #2 / … / 21 #26 still stands:** the signature covers timestamp and body
+    but not method or path, so one signed body is valid on any of the six routes.
+29. **Iteration 9 #1 / … / 21 #27 still stands:** `audit.Record.Reason` can carry
+    arbitrary text; `RequestAudit.Deny` takes a free `string`. `decode` passes only errors
+    authored in this repo, but nothing enforces that on the next caller. T038.
+30. **Iteration 8 #2 / … / 21 #28 still stands:** the loud default-root warning goes to
+    stderr while audit records go to stdout. T032.
+31. **Iteration 8 #1 / … / 21 #29 still stands:** `.env.example` does not exist. T040.
+32. **Iteration 7 #1 / … / 21 #30 still stands:** bidi and invisible Unicode are not
+    stripped by `tmuxctl.Strip`, by design. Milestone 2 decides.
+33. **Iteration 6 #2 / … / 21 #31 still stands:** a failed `paste-buffer` leaves caller
+    prompt text in a named tmux buffer.
+34. **Iteration 6 #1 / … / 21 #32 still stands:** killing the only session stops the tmux
+    server and `Has` then errors rather than returning false. T028 should use `List`.
+35. **Iteration 6 #3 / … / 21 #33 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case.
+36. **Iteration 14 #1 / … / 21 #34 still stands:** `git checkout -- <path>` and
+    `git restore` are not in the permission allowlist, so `PROMPT.md` step 6's documented
+    recovery path needs an approval an autonomous run cannot give. Eleven probes reverted
+    with `Edit` in reverse again this iteration. **Also new: a `set -e` multi-command
+    script was refused as "multiple operations"**, so the gate was run as separate Bash
+    calls rather than one block.
+37. **Iteration 1 #1 / … / 21 #35 still stands, twenty-second iteration carrying it:**
+    `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook
+    (which ran clean on this iteration's commit). Needs an operator or a task of its own.
+38. **Iteration 2 #2 / … / 21 #36 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again, again only because the finding was written down.
+    Twenty-first iteration of manual compensation for a one-line fix to step 9.
+39. **Iteration 6 #6 / … / 21 #37 still stands:** `AGENTS.md`'s command table has no entry
+    for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not
+    all.
