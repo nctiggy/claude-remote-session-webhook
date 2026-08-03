@@ -6273,3 +6273,240 @@ T040–T042 (ship it).
 62. **Iteration 6 #6 / … / 35 #59 still stands:** `AGENTS.md`'s command table has no entry for
     `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both
     were run by hand this iteration, green.
+
+---
+
+## Iteration 37 — 2026-08-03 22:00
+
+**Did:** Completed **T036**, the reaper. New `internal/session/reaper.go`: `SweepInterval` (30s,
+the number `plan.md` fixes), `Expiry` with `ExpiryIdle`/`ExpiryAbsolute`, `Reaped`, and a
+`Reaper` built on the `Manager` it sweeps for — the same clock, the same store, the same
+verified teardown. `Sweep` reads the clock **once**, walks a new unexported owner-blind
+`Store.snapshot()`, and destroys anything past a bound through `Manager.Destroy`, joining
+failures rather than stopping at the first. `Run` ticks, sweeps, and reports. Thirteen tests in
+`reaper_test.go`. Ticked T036 in **both** `ralph/IMPLEMENTATION_PLAN.md` and
+`specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK
+go test -tags tmux ./...    OK (real tmux on this host)
+go test -race ./...         OK
+golangci-lint run           OK
+gofmt -l .                  empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git diff --stat             +732 across three files (two new)
+gitleaks (pre-commit)       1 commit scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **The 30-second interval is `plan.md`'s, and it is the one number in this task no `FR` states.**
+  "Performance Goals" asks for a reaper resolution finer than the timeouts it enforces, "a 30s
+  tick against a 60m idle timeout". It is a constant, not configuration, for the reason
+  `AbsoluteLifetime` and `IdleTimeout` are: an operator who could widen it could widen the blast
+  radius Principle VI bounds by construction.
+- **A clock was not enough of a seam.** FR-039 injects the reaper's notion of time, and `Sweep`
+  is fully testable on the manager's `stoppedClock` — but `Run`'s loop is not, because a loop
+  that builds its own `time.Ticker` can only be tested by waiting 30 real seconds. `Reaper.ticker`
+  is therefore a field, defaulting to `systemTicker`. Without it, the pressure would be to shrink
+  the production interval to make a test bearable.
+- **The boundary is on the dying side**, `!now.Before(deadline)`, matching `CheckToken`. A
+  session that expired at exactly its deadline and a credential that expired at exactly its own
+  are the same instant by construction (`TokenExpiry` → `AbsoluteDeadline`), so putting the two
+  comparisons on different sides would create a one-tick window where a session is live and its
+  only credential is not.
+- **The ceiling is named before the idle bound** for a session past both. Nobody is holding a
+  request open for a reaped session, so `Expiry` exists for the trail alone (T038), and "idle"
+  about a session that had also been running for a day is the smaller of two true facts — and the
+  one that could have been avoided by using it.
+- **`Store.snapshot()` copies rather than holding the read lock across the teardown.** A reap is
+  several tmux execs; a store locked for the length of one would stall every request behind a
+  slow host. The cost is exactly `spec.md`'s destroy-racing-the-reaper edge case, which
+  `Manager.Destroy` already ends in success for both racers — now pinned from this side too.
+- **Nothing sweeps on the way in or on the way out.** The first sweep is one interval away because
+  a daemon that has just reconciled has already destroyed anything past its ceiling (FR-025); the
+  last is skipped because a cancelled context is the shutdown path, where tearing down *every*
+  session — not only the expired ones — is T037's and needs a context `Run` no longer has.
+
+**Learned (do not rediscover):**
+
+- **An unbuffered tick channel is a sweep barrier.** `Run` takes one tick, sweeps, and only then
+  returns to the select, so a *second* send cannot complete until the first sweep has finished.
+  Waiting for the second send is waiting for the first sweep, exactly — no sleeping, no polling,
+  no guess at how long a sweep takes. This is what makes `TestRunSweepsOnEveryTickAndStopsWith
+  ItsContext` deterministic, and it is reusable for any tick-driven loop this repo grows.
+- **A blocking `report` hook wedges the loop.** A test that sends to an unbuffered (or full)
+  channel from `r.report` will hang `Run` where cancelling the context cannot reach it, and the
+  test times out instead of failing. The reporter in `reaper_test.go` uses a `select`/`default`
+  send for that reason.
+- **`f.managerAt(t, store, now)` in `manager_test.go` already builds "the same host and the same
+  store on a chosen clock"** — the adoption tests' helper. `reaperAt` wraps it and nothing else;
+  do not write a third constructor for this.
+- **Two probes, both reverted with `Edit`.** `now.After(...)` in place of `!now.Before(...)` failed
+  **eight** tests including both boundary rows — the deadline is covered from several directions.
+  Swapping the two `expiredAt` cases so idle is asked first failed exactly one,
+  `TestSweepNamesTheCeilingForASessionPastBothBounds`, which is the whole argument for that test
+  existing. Still no `git checkout` needed (finding 62).
+- **`Store.Touch` now has callers — all of them in tests.** The reaper tests move an idle clock
+  forward to prove a used session survives; the request path still never calls it. See finding 4.
+
+**Left:** T037 (graceful shutdown — the milestone is shippable after it), T038–T039 (audit),
+T040–T042 (ship it).
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: nothing starts the reaper.** `NewReaper` and `Run` have no caller outside
+   `reaper_test.go` — `cmd/crswd/main.go` builds a `Server`, and `httpapi.New` builds the manager
+   without a reaper — so FR-038 is now *implemented* and still not *enforced*. T036's file list
+   named only `internal/session/reaper.go` and its test, and T037's text names only shutdown, so
+   no task owns the goroutine's start. **T037 is the natural owner; an operator should rule.**
+2. **New this iteration, and the finding that matters most: with the reaper live, every session
+   dies 60 minutes after it was created however hard it is being used.** `Store.Touch` has no
+   caller in the request path (old finding 30, carried since iteration 25), so `LastActivity`
+   never moves off `CreatedAt`. `TestSweepLeavesEverySessionInsideItsBoundsAlone` only passes
+   because the *test* calls `Touch`. Wiring it is one line in the session-scoped resolver, and
+   nothing in the plan asks for it. **No task owns it. An operator should rule before T037 makes
+   this reachable.**
+3. **New this iteration: one slow tmux exec stalls a whole sweep.** `Sweep` destroys serially and
+   `Run` gives it the daemon's context, so a hung `has-session` holds up every other expired
+   session until it returns. Bounded in practice by the exec controller's own behaviour, which
+   this package cannot see. **No task owns it.**
+4. **New this iteration: the reaper does not produce `dead` records either.** `Destroy` deletes
+   the record outright, so `StateDead` remains unreachable and `Store.SetState` still has no
+   caller outside tests — findings 12 and 30 below are unchanged by this iteration rather than
+   answered by it.
+5. **Iteration 36 #1 still stands:** `Session.TokenMatches` is exported and answers the match
+   without the expiry, so "the two cannot be checked apart" holds by convention, not construction.
+   **An operator should rule; no task owns it.**
+6. **Iteration 36 #2 answered this iteration:** `CheckToken` takes `now`, and the reaper passes
+   the *same* manager clock `Resolve` does — `Reaper` holds a `*Manager` and reads `mgr.clock`, so
+   a credential cannot be live by one and expired by the other. Still a property of call sites
+   rather than of the signature.
+7. **Iteration 36 #3 still stands:** `Resolve` checks the credential before the dead-state check,
+   so a session both destroyed and past its ceiling is recorded as `ErrTokenExpired`. **T038.**
+8. **Iteration 35 #1 / 36 #4 still stands:** nothing in `specs/` or `docs/` states that the create
+   limiter's burst is half the rate. **An operator should rule, or T040 should settle it.**
+9. **Iteration 35 #2 / 36 #5 still stands:** the 429 carries no `Retry-After`, deliberately.
+10. **Iteration 35 #3 / 36 #6 still stands:** create budgets do not survive a restart, while the
+    cap does. **No task owns it.**
+11. **Iteration 35 #4 / 36 #7 still stands:** the daemon has three independent clocks
+    (`auth.Clock`, `session.Clock`, `httpapi.clock`) wired to `systemClock{}` by construction, not
+    by check. The reaper adds no fourth — it reuses the manager's. See findings 6 and 55.
+12. **Iteration 34 #2 / … / 36 #9 still stands:** the concurrent-session cap counts records in any
+    state, `dead` included. T036 was assigned it and does not answer it — see finding 4 above:
+    there are no dead records to count, because teardown deletes them.
+13. **Iteration 34 #1 / … / 36 #8 still stands:** `contracts/http-api.md` gives the 429 a row and
+    **no body**. **An operator should rule.**
+14. **Iteration 34 #3 / … / 36 #10 still stands:** `httpapi.New` builds the authenticator, the
+    manager and the limiter before asserting the listen address is loopback.
+15. **Iteration 32 #1 / … / 36 #11 still stands:** `Reconcile` drops the plaintext credential
+    `Adopt` returns, so an adopted session is owned, listed, capped and reapable but **drivable by
+    nobody**. The reaper is now genuinely the only thing that can end one. **An operator should
+    rule; no task owns it.**
+16. **Iteration 33 #2 / … / 36 #12 still stands:** a session destroyed at startup for outliving
+    its ceiling leaves no audit record. **T038 is the natural owner; it does not name this case.**
+17. **Iteration 33 #3 / … / 36 #13 still stands:** nothing forces `Reconcile` to be called at all
+    — the guard is one-directional. **A candidate for T037**, alongside finding 1.
+18. **Iteration 33 #4 / … / 36 #14 still stands:** `cmd/crswd` has no test files at all, and
+    `run()` has no seam for a fake. Worth an operator's ruling before T037 adds signal handling.
+19. **Iteration 32 #3 / … / 36 #15 still stands:** `Adopt` is not safe to call twice concurrently.
+20. **Iteration 31 #1 / … / 36 #16 still stands:** `docs/auth-and-sessions.md:135–137` describes a
+    cross-caller isolation test that cannot be written as specified in milestone 1.
+21. **Iteration 31 #2 / … / 36 #17 still stands:** `GET /sessions` is outside every sweep in the
+    isolation suite.
+22. **Iteration 30 #1 / … / 36 #18 still stands:** `notImplemented` is unreachable dead code.
+23. **Iteration 30 #2 / … / 36 #19 still stands:** the mux's `405` is `text/plain` with an `Allow`
+    header, contradicting `contracts/http-api.md`. **An operator should rule.**
+24. **Iteration 30 #3 / … / 36 #20 still stands:** the contract's test matrix has no row for
+    destroy-then-destroy — and now none for destroy-racing-the-reaper either, which this
+    iteration pinned in code.
+25. **Iteration 30 #4 / … / 36 #21 still stands:** `errDestroyRefused` is unreachable and untested.
+26. **Iteration 29 #1 / … / 36 #22 still stands:** `rollback` verifies with `Has` alone and never
+    calls `confirmGone`, so a failed create on a host where the killed session was the only one
+    reports a **false orphan**. One line plus one test edit. **No task owns it.**
+27. **Iteration 29 #3 / … / 36 #23 still stands:** `Destroy` takes a `Session` rather than an id,
+    which is what lets both `Adopt` and now `Sweep` tear down a record from a copy.
+28. **Iteration 28 #1 / … / 36 #24 still stands:** the two read routes disagree about which
+    sessions exist. **Unassigned.**
+29. **Iteration 28 #2 / … / 36 #25 still stands:** a detail reports `state` from the record and
+    never asks the host.
+30. **Iteration 24 #4 / … / 36 #27 still stands:** a session whose window vanished still resolves
+    and answers 500 rather than moving to `dead`. The reaper does not fix this — it only collects
+    records whose *deadlines* passed, and a vanished session's deadlines are as far away as ever.
+    `Store.SetState` still has no caller outside tests. **An operator should rule.**
+31. **Iteration 27 #2 / … / 36 #26 still stands:** the list is unbounded in length.
+32. **Iteration 26 #1 / … / 36 #28 still stands:** nothing bounds the size of a capture.
+33. **Iteration 26 #2 / … / 36 #29 still stands:** `captured_at` is the daemon's clock, not tmux's.
+34. **Iteration 25 #1 / … / 36 #31 still stands:** a failed submit can leave prompt text in a named
+    tmux buffer, and **neither `Destroy` nor the reaper deletes the session's paste buffer**.
+35. **Iteration 22 #2 / … / 36 #33 still stands:** nothing forces a handler to use `decode`.
+36. **Iteration 22 #3 / … / 36 #34 still stands:** an oversize body is refused twice with two
+    different reasons and two different statuses. T038.
+37. **Iteration 21 #1 / … / 36 #35 still stands:** the mux's own `404` is `text/plain` while the
+    contract says every response is JSON.
+38. **Iteration 21 #2 / … / 36 #36 still stands:** the contract's `400` row for an oversize body is
+    unreachable behind layer 2.
+39. **Iteration 21 #3 / … / 36 #37 still stands:** `session.list`, `session.detail`, and
+    `session.output` are action names iteration 21 chose and `data-model.md` does not carry.
+    `reaper.destroy` is named by T038 and does not exist yet.
+40. **Iteration 21 #4 / … / 36 #38 still stands:** `RequestAudit` is not safe for concurrent use,
+    and nothing enforces it.
+41. **Iteration 21 #5 / … / 36 #39 still stands:** every request exit path amends the record by
+    habit, not by construction. T038.
+42. **Iteration 20 #3 / … / 36 #40 still stands:** none of `docs/security.md`'s "Transport &
+    exposure" headers are applied by anything.
+43. **Iteration 18 #1 / … / 36 #41 still stands:** `Store.Add` does not require a `TokenHash`, and
+    `AddCapped` inherits that.
+44. **Iteration 17 #2 / … / 36 #42 still stands:** `Delete`'s hash scrub is best effort.
+45. **Iteration 17 #3 / … / 36 #43 still stands:** nothing enforces that a `Session.ID` in the
+    store came from `NewID`, beyond `adoptableID` on the adoption path.
+46. **Iteration 16 #1 / … / 36 #44 still stands:** `ResolveWorkDir` has an unavoidable TOCTOU
+    window before `tmux new-session -c`.
+47. **Iteration 16 #3 / … / 36 #45 still stands:** nothing re-stats an approved root.
+48. **Iteration 15 #1 / … / 36 #46 still stands:** FR-027's class admits a leading `-`.
+49. **Iteration 13 #1 / … / 36 #47 still stands:** `docs/auth-and-sessions.md`'s samples are stale
+    in four ways, and finding 20 above is a fifth.
+50. **Iteration 12 #1 / … / 36 #48 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Run by hand again this iteration, green — and this
+    iteration's `Run` and race tests are the third and fourth that need it.
+51. **Iteration 12 #2 / … / 36 #49 still stands:** three specs disagree on `Observe`'s signature.
+52. **Iteration 12 #3 / … / 36 #50 still stands:** the replay cache is unbounded in count.
+53. **Iteration 11 #1 / … / 36 #51 still stands:** the audit trail cannot tell clock drift from a
+    forged future timestamp. T038.
+54. **Iteration 11 #2 / … / 36 #52 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right. A backwards jump now also moves a reaper deadline, though never
+    past what the record says.
+55. **Iteration 10 #2 / … / 36 #53 still stands:** the signature covers timestamp and body but
+    **not the method or the path**. **No task owns it.**
+56. **Iteration 9 #1 / … / 36 #54 still stands:** `RequestAudit.Deny` takes a free `string`.
+57. **Iteration 8 #2 / … / 36 #55 still stands:** the loud default-root warning goes to stderr
+    while audit records go to stdout — and `reportToLog` in `reaper.go` is now a second writer to
+    stderr with nothing structured behind it until T038. **Assigned to T038.**
+58. **Iteration 8 #1 / … / 36 #56 still stands:** `.env.example` does not exist, and it will need
+    `CRSW_MAX_SESSIONS` and `CRSW_CREATE_RATE_PER_MIN` described (names only, never a value).
+    T040 — see finding 8.
+59. **Iteration 7 #1 / … / 36 #57 still stands:** bidi and invisible Unicode are not stripped by
+    `tmuxctl.Strip`, by design. **Milestone 2 decides before rendering.**
+60. **Iteration 6 #3 / … / 36 #58 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case while `exec.go` also matches the missing-socket
+    pair.
+61. **Iteration 14 #1 / … / 36 #59 still stands:** `git checkout --`, `git restore`, `perl -i` and
+    a heredoc are all outside the permission allowlist, so `PROMPT.md` step 6's documented recovery
+    path needs an approval an autonomous run cannot give. Two probes were reverted with `Edit` in
+    reverse this iteration; repeated `-m` flags carried the commit message, and this entry was
+    again appended with `Edit` against the previous iteration's last finding.
+62. **Iteration 1 #1 / … / 36 #60 still stands, thirty-seventh iteration carrying it:** `loop.sh`'s
+    sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook (which ran clean on
+    this iteration's commit). Needs an operator or a task of its own.
+63. **Iteration 2 #2 / … / 36 #61 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the plan.
+    Ticked both by hand again, again only because the finding was written down. Thirty-sixth
+    iteration of manual compensation for a one-line fix to step 9.
+64. **Iteration 6 #6 / … / 36 #62 still stands:** `AGENTS.md`'s command table has no entry for
+    `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both were
+    run by hand this iteration, green.
