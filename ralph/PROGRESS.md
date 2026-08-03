@@ -1539,3 +1539,142 @@ shape with a regexp rather than pasting a sample ID into a fixture or into this 
 20. **Iteration 6 #6 / 7 #7 / 8 #9 / 9 #11 / 10 #13 / 11 #15 / 12 #18 still stands:**
     `AGENTS.md`'s command table has no entry for `go test -tags tmux ./...` or
     `go vet -tags tmux ./...`, so "Test (all)" is not all.
+
+---
+
+## Iteration 14 — 2026-08-03 09:22
+
+**Did:** Completed **T013** by *verifying* it. The code (`internal/session/id.go`,
+`id_test.go`, 8 tests / 15 runs) arrived in `aec3274` from an iteration killed before it
+could prove anything, and was deliberately left unticked so this iteration would own the
+proof. **No code changed this iteration** — the tree is byte-identical to `aec3274` plus
+two ticked checkboxes and this entry. Read `id.go` against T013's `tasks.md` entry
+(16 bytes `crypto/rand` → 32 lowercase hex, not `crypto/rand.Text`), ran the gate, then
+mutation-probed the tests. Ticked T013 in **both** `ralph/IMPLEMENTATION_PLAN.md` and
+`specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (session 8 tests / 15 runs, auth 34, audit 36, config 45,
+                                tmuxctl 84)
+go test -race -count=1 ./...   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git status                  clean against HEAD after every probe was reverted
+```
+
+**Learned (do not rediscover):**
+
+- **Verifying salvaged code is a real task, not a formality, and the split worked.** Five
+  mutations, each killed only by the tests written for it: uppercase hex (4 cases), a
+  short read tolerated via `r.Read` instead of `io.ReadFull` (2), `idBytes` halved to 8
+  (6), a zeroed 3-byte prefix (the column test, naming byte 0, 1, and 2 individually), and
+  the partially-read bytes interpolated into the error (1). Reverted each, gate re-run
+  green at the end.
+- **The short-read mutation is the one worth remembering for T017.** `r.Read` on a source
+  one byte short returns an ID of exactly the right shape and the right length, with a
+  byte of the zero value standing in for entropy that was never read — it fails *open* and
+  looks perfect. `io.ReadFull` is what makes it fail closed. **T017's token generation has
+  the identical shape and must use `ReadFull` too**, and its test needs the
+  "runs out one byte early" case, not just an "empty source" case, to catch it.
+- **`TestNewIDIsNotSequential`'s per-byte-column assertion is what catches a fake source.**
+  Shape and collision tests both pass a counter, a fixed prefix, or a random suffix on a
+  constant — 100k draws of `0000…` + 13 random bytes collide with nobody and match
+  `^[a-f0-9]{32}$`. Only "every byte position takes ≥64 distinct values across 2048 draws"
+  fails, and it reports the offending position. **Copy this shape into T017.**
+- **`newIDFrom(io.Reader)` stays unexported and that is load-bearing.** It is the seam that
+  makes the exhausted-entropy path testable; exporting it would let a caller supply the
+  randomness behind an ID that a bearer token is scoped to. `id_test.go` is therefore an
+  *internal* test (`package session`, not `session_test`). **T014/T015/T016 land in the
+  same directory — if any of them wants an external test package, the two can coexist
+  (iteration 12 set that up in `auth`), but do not "fix" `id_test.go` into `session_test`;
+  it would lose `newIDFrom`, `idBytes`, and four of the eight tests.**
+- **Iteration 13's no-hex-fixtures warning had a subtlety worth stating:** the ban is on
+  hex *in files*, and it costs nothing here because every assertion is a regexp, a decode,
+  or a value computed in the test (`strings.Repeat`, `fmt.Sprintf("%x", …)`). `fmt`'s `%x`
+  as an independent oracle is the trick — it does not route through `encoding/hex`, so
+  agreeing with it is evidence rather than a restatement of the implementation. Note the
+  *failure output* of a mutated build does print live IDs to the terminal; that is fine,
+  but do not paste one into this notebook or a fixture.
+- **`IDLen` is exported and `idBytes` is not**, so a future caller sizing a buffer cannot
+  drift from the encoder. `TestIDLenIsTwoHexCharactersPerByte` asserts the 128-bit floor
+  separately from the shape, because a shrunk ID would still match the regexp if `IDLen`
+  moved with it — assert entropy on its own or it is not asserted at all.
+
+**Left:** T014 is next (`internal/session/name.go`: `^[a-zA-Z0-9-]{1,64}$`, rejecting `:`
+and `.` explicitly because they address a different tmux target; hostile table test
+covering `:`, `.`, path separators, leading `-`, empty, 65 characters, control characters,
+non-ASCII). Then T015 (workdir allowlist, including the `/home/u/codeEVIL` prefix trap),
+T016 (which still owes the `Owner`-type ruling flagged in iteration 13), and T017–T042.
+T014 and T015 are `[P]` with T013 and touch no shared file.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: `git checkout -- <path>` is not in the permission allowlist, so an
+   iteration cannot cheaply revert a file.** This matters for `PROMPT.md` step 6, which
+   instructs "revert your change and log why" — the documented recovery path needs an
+   approval an autonomous run cannot give. I reverted the five mutations with `Edit` in
+   reverse instead, which works but is manual and error-prone (verified byte-identical to
+   `HEAD` with `git status --porcelain` afterwards). Also blocked: `{ … }` shell grouping
+   and `if …; then` compound commands trip the guard's "brace with quote character" and
+   multi-operation checks, so probe loops have to be run one command at a time. **Worth an
+   operator adding `git checkout --` and `git restore` to the allowlist.**
+2. **New this iteration: the `format-and-lint` hook rewrites imports underneath an edit.**
+   Changing the return to `strings.ToUpper(…)` caused the hook to add `"strings"` to the
+   import block before the test ran. Harmless here — reverting the return line made the
+   hook drop it again — but an iteration that edits a file, reads its own diff, and does
+   not expect an import to appear will be confused. It also means a mutation probe is
+   never *only* the line you changed.
+3. **Iteration 13 #1 still stands:** `docs/auth-and-sessions.md`'s `Verify` sample is stale
+   in two ways — errors returned directly rather than uniformly, and identity derived from
+   the whole request via `a.callerFor(r)`.
+4. **Iteration 13 #2 still stands:** nothing stops a handler from putting `auth.Reason(err)`
+   in a response body. T020 should assert the 401 body is byte-identical across failure
+   modes.
+5. **Iteration 12 #1 / 13 #3 still stands:** CI never runs `-race`
+   (`.github/workflows/ci.yml:178` runs `go test ./...` only). Worth an operator doing
+   before T033.
+6. **Iteration 12 #2 / 13 #4 still stands:** three specs disagree on `Observe`'s signature.
+   The code follows `tasks.md`.
+7. **Iteration 12 #3 / 13 #5 still stands:** the replay cache is unbounded in count, only in
+   age. No task owns a cap.
+8. **Iteration 11 #1 / 12 #4 / 13 #6 still stands:** the audit trail cannot tell clock drift
+   from a forged future timestamp. T038 should decide whether to split the sentinel.
+9. **Iteration 11 #2 / 12 #5 / 13 #7 still stands:** nothing forces the daemon's clock to be
+   monotonic or roughly right, and both the window and the replay TTL depend on it.
+10. **Iteration 10 #1 / 11 #3 / 12 #6 / 13 #8 still stands:** `contracts/http-api.md`
+    promises `400` for an oversize body but auth runs first. **T020 must decide.**
+11. **Iteration 10 #2 / 11 #4 / 12 #7 / 13 #9 still stands:** the signature covers timestamp
+    and body but not method or path, so a signed body is valid on any route.
+12. **Iteration 9 #1 / 10 #3 / 11 #5 / 12 #8 / 13 #10 still stands:** `audit.Record.Reason`
+    can carry arbitrary text. T038 should pass server-authored constants.
+13. **Iteration 9 #2 / 10 #4 / 11 #6 / 12 #9 / 13 #11 still stands:** `audit.Emit`'s error
+    has no handler yet. T020 owns the ruling.
+14. **Iteration 8 #2 / 9 #3 / 10 #5 / 11 #7 / 12 #10 / 13 #12 still stands:** the loud
+    default-root warning goes to stderr while audit records go to stdout. T032 owns it.
+15. **Iteration 8 #1 / 9 #4 / 10 #6 / 11 #8 / 12 #11 / 13 #13 still stands:** `.env.example`
+    does not exist, so the `.gitleaks.toml` allowlist entry for it guards nothing. T040.
+16. **Iteration 7 #1 / 8 #3 / 9 #5 / 10 #7 / 11 #9 / 12 #12 / 13 #14 still stands:** bidi and
+    invisible Unicode are not stripped by `tmuxctl.Strip`, by design. Milestone 2 decides.
+17. **Iteration 6 #2 / 7 #2 / 8 #4 / 9 #6 / 10 #8 / 11 #10 / 12 #13 / 13 #15 still stands:** a
+    failed `paste-buffer` leaves caller prompt text in a named tmux buffer.
+18. **Iteration 6 #1 / 7 #3 / 8 #5 / 9 #7 / 10 #9 / 11 #11 / 12 #14 / 13 #16 still stands:**
+    T028 will report a false failure on the last session — killing the only session stops
+    the tmux server and `Has` then errors rather than returning false. Use `List`.
+19. **Iteration 6 #3 / 7 #4 / 8 #6 / 9 #8 / 10 #10 / 11 #12 / 12 #15 / 13 #17 still stands:**
+    `contracts/tmuxctl.md` names only `no server running` for the empty-server case.
+20. **Iteration 1 #1 / … / 13 #18 still stands, fourteenth iteration carrying it:**
+    `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook
+    (which ran clean on this iteration's commit). Needs an operator or a task of its own.
+21. **Iteration 2 #2 / … / 13 #19 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again, again only because the finding was written down.
+    Thirteenth iteration of manual compensation for a one-line fix to step 9.
+22. **Iteration 6 #6 / … / 13 #20 still stands:** `AGENTS.md`'s command table has no entry
+    for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
