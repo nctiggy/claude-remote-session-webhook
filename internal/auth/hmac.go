@@ -12,12 +12,12 @@
 // method and path alone would let a captured request be replayed with a
 // different prompt in it.
 //
-// Verify now runs all four of the layer-2 checks: the signature (FR-007,
-// FR-009), the 300-second window (FR-008), and the seen-signature cache
-// (FR-010), the last two on the same injected clock. What it does not yet do
-// is name the caller or hide which check failed — the Caller type and the one
-// opaque error arrive in T012, and the uniform 401 that FR-011 is really about
-// is built in internal/httpapi. Nothing in this repo binds a listener yet.
+// Verify runs all four of the layer-2 checks: the signature (FR-007, FR-009),
+// the 300-second window (FR-008), and the seen-signature cache (FR-010), the
+// last two on the same injected clock. It names the caller server-side on the
+// way out and answers every failure with one opaque error (FR-011, FR-012);
+// see caller.go. The uniform 401 that error becomes is built in
+// internal/httpapi. Nothing in this repo binds a listener yet.
 package auth
 
 import (
@@ -60,9 +60,9 @@ const (
 // derived from it (replayTTL). Widening this widens both. Fix the clock.
 const maxSkew = 300 * time.Second
 
-// The failure modes, one value each. They exist to be recorded server-side: the
-// response a caller sees is uniform and reveals none of this (FR-011), and is
-// built in internal/httpapi.
+// The failure modes, one value each. They exist to be recorded server-side and
+// they are not what Verify returns: every one of them leaves this package
+// wrapped in the single opaque denial, reachable only through Reason (FR-011).
 //
 // No error here carries a header value, a body byte, or the secret. These
 // strings reach the audit trail's reason field, which may never hold
@@ -136,46 +136,47 @@ func NewWithClock(secret []byte, maxBody int64, clock Clock) (*Authenticator, er
 }
 
 // Verify checks that the request's timestamp is inside the window and that its
-// signature covers that timestamp and the raw body, and leaves the body readable
-// for the handler behind it.
+// signature covers that timestamp and the raw body, leaves the body readable for
+// the handler behind it, and names the caller it just authenticated.
 //
-// The returned error names which check failed, for the audit trail only. Every
-// caller of Verify answers all of them identically.
-func (a *Authenticator) Verify(r *http.Request) error {
+// A *Caller comes back only on success. Every failure returns the one opaque
+// denial, identical whichever check refused: pass it to Reason for the audit
+// trail, never to the client (FR-011).
+func (a *Authenticator) Verify(r *http.Request) (*Caller, error) {
 	rawTimestamp := r.Header.Get(HeaderTimestamp)
 	if rawTimestamp == "" {
-		return ErrMissingTimestamp
+		return nil, deny(ErrMissingTimestamp)
 	}
 	timestamp, err := strconv.ParseInt(rawTimestamp, 10, 64)
 	if err != nil {
-		return ErrMalformedTimestamp
+		return nil, deny(ErrMalformedTimestamp)
 	}
 	// Before the body is read, let alone hashed: an unauthenticated caller
 	// should not be able to make the daemon buffer and MAC a full-size body by
 	// sending a timestamp from last year.
 	if !a.withinWindow(timestamp) {
-		return ErrTimestampOutsideWindow
+		return nil, deny(ErrTimestampOutsideWindow)
 	}
 
 	signature := r.Header.Get(HeaderSignature)
 	if signature == "" {
-		return ErrMissingSignature
+		return nil, deny(ErrMissingSignature)
 	}
 
 	body, err := a.readBody(r)
 	if err != nil {
-		return err
+		return nil, deny(err)
 	}
 
 	want, err := a.sign(timestamp, body)
 	if err != nil {
-		return err
+		return nil, deny(err)
 	}
 
 	// hmac.Equal, never ==. A byte-by-byte compare that stops at the first
 	// difference leaks the expected signature under timing (FR-009).
 	if !hmac.Equal([]byte(want), []byte(signature)) {
-		return ErrSignatureMismatch
+		return nil, deny(ErrSignatureMismatch)
 	}
 
 	// Last, and only for a signature that has already proved genuine. Observing
@@ -186,9 +187,12 @@ func (a *Authenticator) Verify(r *http.Request) error {
 	// refusing it as a replay. The value keyed on is the one the daemon
 	// computed, which hmac.Equal has just proved is the one the caller sent.
 	if !a.replay.Observe(want) {
-		return ErrReplayedRequest
+		return nil, deny(ErrReplayedRequest)
 	}
-	return nil
+
+	// Derived here, from the fact that a signature over these bytes verified
+	// against the daemon's own key — never from anything in the request.
+	return a.caller(), nil
 }
 
 // withinWindow answers FR-008: the timestamp must be within maxSkew of the

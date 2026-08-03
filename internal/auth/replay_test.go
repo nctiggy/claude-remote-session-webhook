@@ -103,6 +103,26 @@ func newReplayAuth(t *testing.T, clock Clock) *Authenticator {
 	return a
 }
 
+// verifyReason returns the server-side reason behind a refusal, since Verify's
+// own error is opaque and identical for every check (caller.go). The helper of
+// the same name in hmac_test.go cannot be shared: that file is package
+// auth_test and this one is package auth.
+//
+// It carries the same invariant with it — an identity comes back exactly when
+// the request was accepted — so the replay cases assert it too.
+func verifyReason(t *testing.T, a *Authenticator, r *http.Request) error {
+	t.Helper()
+
+	caller, err := a.Verify(r)
+	switch {
+	case err != nil && caller != nil:
+		t.Error("Verify() returned a Caller alongside a denial")
+	case err == nil && caller == nil:
+		t.Error("Verify() accepted a request without naming its caller")
+	}
+	return Reason(err)
+}
+
 func (c *replayCache) entryCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -132,11 +152,11 @@ func TestVerifyRefusesAReplayedRequest(t *testing.T) {
 	const body = `{"name":"demo","work_dir":"/home/u/code/x"}`
 	a := newReplayAuth(t, newStepClock())
 
-	if err := a.Verify(replayRequest(t, replayTimestamp, body)); err != nil {
+	if err := verifyReason(t, a, replayRequest(t, replayTimestamp, body)); err != nil {
 		t.Fatalf("Verify() rejected a correctly signed first use: %v", err)
 	}
 
-	err := a.Verify(replayRequest(t, replayTimestamp, body))
+	err := verifyReason(t, a, replayRequest(t, replayTimestamp, body))
 	if !errors.Is(err, ErrReplayedRequest) {
 		t.Fatalf("Verify() on a replayed request = %v, want ErrReplayedRequest", err)
 	}
@@ -174,7 +194,7 @@ func TestVerifyRefusesAReplayAnywhereInTheWindow(t *testing.T) {
 			a := newReplayAuth(t, clock)
 			stamp := replayTimestamp + int64(tt.stamp.Seconds())
 
-			if err := a.Verify(replayRequest(t, stamp, "")); err != nil {
+			if err := verifyReason(t, a, replayRequest(t, stamp, "")); err != nil {
 				t.Fatalf("Verify() rejected the first use: %v", err)
 			}
 
@@ -183,7 +203,7 @@ func TestVerifyRefusesAReplayAnywhereInTheWindow(t *testing.T) {
 			// ErrTimestampOutsideWindow here would mean the case had drifted
 			// out of the range where the cache is what refuses a replay, and
 			// the case would be proving nothing.
-			if err := a.Verify(replayRequest(t, stamp, "")); !errors.Is(err, ErrReplayedRequest) {
+			if err := verifyReason(t, a, replayRequest(t, stamp, "")); !errors.Is(err, ErrReplayedRequest) {
 				t.Fatalf("Verify() %v after the first use = %v, want ErrReplayedRequest", tt.later, err)
 			}
 		})
@@ -206,7 +226,7 @@ func TestVerifyDistinguishesDifferentRequests(t *testing.T) {
 	}
 
 	for i, r := range requests {
-		if err := a.Verify(r); err != nil {
+		if err := verifyReason(t, a, r); err != nil {
 			t.Fatalf("Verify() rejected distinct request %d: %v", i, err)
 		}
 	}
@@ -231,14 +251,14 @@ func TestVerifyRecordsOnlyGenuineSignatures(t *testing.T) {
 	forged := replayRequest(t, replayTimestamp, genuine)
 	forged.Header.Set(HeaderSignature, "sha256=not-a-real-signature")
 
-	if err := a.Verify(forged); !errors.Is(err, ErrSignatureMismatch) {
+	if err := verifyReason(t, a, forged); !errors.Is(err, ErrSignatureMismatch) {
 		t.Fatalf("Verify() on a junk signature = %v, want ErrSignatureMismatch", err)
 	}
 	if got := a.replay.entryCount(); got != 0 {
 		t.Fatalf("cache holds %d entries after a request that failed the signature check, want 0", got)
 	}
 
-	if err := a.Verify(replayRequest(t, replayTimestamp, genuine)); err != nil {
+	if err := verifyReason(t, a, replayRequest(t, replayTimestamp, genuine)); err != nil {
 		t.Fatalf("Verify() rejected the genuine request after a forgery raced it with the same bytes: %v", err)
 	}
 }
@@ -269,7 +289,7 @@ func TestVerifyRefusesConcurrentReplays(t *testing.T) {
 		go func() {
 			defer done.Done()
 			start.Wait()
-			errs[i] = a.Verify(requests[i])
+			errs[i] = verifyReason(t, a, requests[i])
 		}()
 	}
 

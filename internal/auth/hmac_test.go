@@ -105,6 +105,27 @@ func requestAt(t *testing.T, timestamp int64, body string) *http.Request {
 	return r
 }
 
+// verifyReason runs Verify and returns the *server-side* reason behind a
+// refusal, which is what the cases in this file are about. What Verify itself
+// returns is opaque and identical for every failure by design; caller_test.go is
+// where that is asserted.
+//
+// It also holds the invariant every case here shares for free: an identity comes
+// back exactly when the request was accepted, so no test in this file can pass
+// against a Verify that names a caller for a request it refused.
+func verifyReason(t *testing.T, a *auth.Authenticator, r *http.Request) error {
+	t.Helper()
+
+	caller, err := a.Verify(r)
+	switch {
+	case err != nil && caller != nil:
+		t.Error("Verify() returned a Caller alongside a denial")
+	case err == nil && caller == nil:
+		t.Error("Verify() accepted a request without naming its caller")
+	}
+	return auth.Reason(err)
+}
+
 func hexPart(t *testing.T, signature string) string {
 	t.Helper()
 
@@ -140,7 +161,7 @@ func TestVerifyAcceptsASignedRequest(t *testing.T) {
 			t.Parallel()
 
 			r := validRequest(t, tt.body)
-			if err := newAuth(t).Verify(r); err != nil {
+			if err := verifyReason(t, newAuth(t), r); err != nil {
 				t.Fatalf("Verify() rejected a correctly signed request: %v", err)
 			}
 
@@ -166,7 +187,7 @@ func TestVerifyCanonicalisesTheTimestamp(t *testing.T) {
 	r := validRequest(t, "")
 	r.Header.Set(auth.HeaderTimestamp, "+"+strconv.FormatInt(testTimestamp, 10))
 
-	if err := newAuth(t).Verify(r); err != nil {
+	if err := verifyReason(t, newAuth(t), r); err != nil {
 		t.Fatalf("Verify() rejected a request whose timestamp header carries a redundant sign: %v", err)
 	}
 }
@@ -198,7 +219,7 @@ func TestVerifyAcceptsTimestampsInsideTheWindow(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if err := newAuthDrifting(t, tt.drift).Verify(requestAt(t, testTimestamp, body)); err != nil {
+			if err := verifyReason(t, newAuthDrifting(t, tt.drift), requestAt(t, testTimestamp, body)); err != nil {
 				t.Fatalf("Verify() rejected a request %v from the daemon's clock: %v", tt.drift, err)
 			}
 		})
@@ -233,7 +254,7 @@ func TestVerifyRejectsTimestampsOutsideTheWindow(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := newAuthDrifting(t, tt.drift).Verify(requestAt(t, testTimestamp, body))
+			err := verifyReason(t, newAuthDrifting(t, tt.drift), requestAt(t, testTimestamp, body))
 			if !errors.Is(err, auth.ErrTimestampOutsideWindow) {
 				t.Fatalf("Verify() error = %v, want %v for a request %v from the daemon's clock",
 					err, auth.ErrTimestampOutsideWindow, tt.drift)
@@ -253,7 +274,7 @@ func TestVerifyRejectsAFarFutureTimestamp(t *testing.T) {
 	const aYear = 365 * 24 * 60 * 60
 
 	r := requestAt(t, testTimestamp+aYear, `{"name":"demo"}`)
-	if err := newAuth(t).Verify(r); !errors.Is(err, auth.ErrTimestampOutsideWindow) {
+	if err := verifyReason(t, newAuth(t), r); !errors.Is(err, auth.ErrTimestampOutsideWindow) {
 		t.Fatalf("Verify() error = %v, want %v: a request signed a year ahead must not be a credential for a year",
 			err, auth.ErrTimestampOutsideWindow)
 	}
@@ -289,7 +310,7 @@ func TestVerifyRejectsExtremeTimestamps(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := newAuth(t).Verify(requestAt(t, tt.timestamp, `{"name":"demo"}`))
+			err := verifyReason(t, newAuth(t), requestAt(t, tt.timestamp, `{"name":"demo"}`))
 			if !errors.Is(err, auth.ErrTimestampOutsideWindow) {
 				t.Fatalf("Verify() error = %v, want %v for timestamp %d", err, auth.ErrTimestampOutsideWindow, tt.timestamp)
 			}
@@ -308,7 +329,7 @@ func TestVerifyChecksTheWindowBeforeTheBody(t *testing.T) {
 	r := requestAt(t, testTimestamp, "")
 	r.Body = io.NopCloser(body)
 
-	if err := newAuthDrifting(t, time.Hour).Verify(r); !errors.Is(err, auth.ErrTimestampOutsideWindow) {
+	if err := verifyReason(t, newAuthDrifting(t, time.Hour), r); !errors.Is(err, auth.ErrTimestampOutsideWindow) {
 		t.Fatalf("Verify() error = %v, want %v", err, auth.ErrTimestampOutsideWindow)
 	}
 	if body.read != 0 {
@@ -481,7 +502,7 @@ func TestVerifyRejects(t *testing.T) {
 			r := validRequest(t, body)
 			tt.mutate(t, r)
 
-			err := newAuth(t).Verify(r)
+			err := verifyReason(t, newAuth(t), r)
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("Verify() error = %v, want %v", err, tt.want)
 			}
@@ -500,7 +521,7 @@ func TestVerifyRebuffersTheBodyAfterAFailure(t *testing.T) {
 	r := validRequest(t, body)
 	r.Header.Set(auth.HeaderSignature, signatureOver(t, otherSecret, testTimestamp, body))
 
-	if err := newAuth(t).Verify(r); !errors.Is(err, auth.ErrSignatureMismatch) {
+	if err := verifyReason(t, newAuth(t), r); !errors.Is(err, auth.ErrSignatureMismatch) {
 		t.Fatalf("Verify() error = %v, want %v", err, auth.ErrSignatureMismatch)
 	}
 
@@ -521,7 +542,7 @@ func TestVerifyTreatsAnAbsentBodyAsEmpty(t *testing.T) {
 	r := validRequest(t, "")
 	r.Body = nil
 
-	if err := newAuth(t).Verify(r); err != nil {
+	if err := verifyReason(t, newAuth(t), r); err != nil {
 		t.Fatalf("Verify() rejected a signed request with no body: %v", err)
 	}
 }
@@ -536,7 +557,7 @@ func TestVerifyStopsReadingAtTheLimit(t *testing.T) {
 	r := validRequest(t, "")
 	r.Body = io.NopCloser(body)
 
-	if err := newAuth(t).Verify(r); !errors.Is(err, auth.ErrBodyTooLarge) {
+	if err := verifyReason(t, newAuth(t), r); !errors.Is(err, auth.ErrBodyTooLarge) {
 		t.Fatalf("Verify() error = %v, want %v", err, auth.ErrBodyTooLarge)
 	}
 	if int64(body.read) > testMaxBody+1 {
@@ -581,7 +602,9 @@ func TestVerifyErrorsRevealNothing(t *testing.T) {
 			signature := r.Header.Get(auth.HeaderSignature)
 			tt.mutate(t, r)
 
-			err := newAuth(t).Verify(r)
+			// The reason, not the denial: the denial is one fixed word, and a
+			// leak would hide in the value that actually reaches the trail.
+			err := verifyReason(t, newAuth(t), r)
 			if err == nil {
 				t.Fatal("Verify() accepted a request the case was built to reject")
 			}
@@ -621,10 +644,10 @@ func TestVerifyIsSafeForConcurrentUse(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			if err := a.Verify(good[i]); err != nil {
+			if err := verifyReason(t, a, good[i]); err != nil {
 				t.Errorf("Verify() rejected a correctly signed request: %v", err)
 			}
-			if err := a.Verify(bad[i]); !errors.Is(err, auth.ErrSignatureMismatch) {
+			if err := verifyReason(t, a, bad[i]); !errors.Is(err, auth.ErrSignatureMismatch) {
 				t.Errorf("Verify() error = %v, want %v", err, auth.ErrSignatureMismatch)
 			}
 		}()
@@ -697,14 +720,14 @@ func TestNewUsesTheHostClock(t *testing.T) {
 	}
 
 	now := time.Now().Unix()
-	if err := a.Verify(requestAt(t, now, "")); err != nil {
+	if err := verifyReason(t, a, requestAt(t, now, "")); err != nil {
 		t.Fatalf("Verify() rejected a request signed at the host's own clock: %v", err)
 	}
 
 	// Measured from that same clock rather than from testTimestamp, so this half
 	// does not quietly depend on how old the fixture instant has become.
 	stale := now - int64(2*testWindow.Seconds())
-	if err := a.Verify(requestAt(t, stale, "")); !errors.Is(err, auth.ErrTimestampOutsideWindow) {
+	if err := verifyReason(t, a, requestAt(t, stale, "")); !errors.Is(err, auth.ErrTimestampOutsideWindow) {
 		t.Fatalf("Verify() error = %v, want %v for a request %v old", err, auth.ErrTimestampOutsideWindow, 2*testWindow)
 	}
 }
@@ -725,7 +748,7 @@ func TestNewCopiesTheSecret(t *testing.T) {
 		secret[i] = 'x'
 	}
 
-	if err := a.Verify(validRequest(t, "")); err != nil {
+	if err := verifyReason(t, a, validRequest(t, "")); err != nil {
 		t.Fatalf("Verify() failed after the caller's secret slice was overwritten: %v", err)
 	}
 }
