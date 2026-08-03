@@ -6,12 +6,26 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/httpapi"
 )
+
+// shutdownBudget is how long the daemon gives itself between a termination
+// signal and exit: the drain, and then a verified teardown of every live
+// session.
+//
+// It is well inside systemd's default TimeoutStopSec of 90 seconds on purpose.
+// The one ending where sessions are certainly left running is a SIGKILL from the
+// service manager, so the daemon must be finished — or have said loudly that it
+// could not finish — before that escalation is due.
+const shutdownBudget = 30 * time.Second
 
 func main() {
 	flag.Parse()
@@ -44,10 +58,20 @@ func main() {
 // and survived: this is the one part of the daemon where refusing to start is
 // still an option.
 //
-// Graceful shutdown — draining the listener and tearing every live session down
-// with its teardown verified — is T037's, and is why Serve is the last call here
-// rather than the only one.
+// Serving then runs until a termination signal arrives or the listener stops on
+// its own, and the ending is Shutdown's: the requests in flight are drained and
+// every live session is torn down with its teardown verified (FR-040). A
+// teardown that could not be confirmed comes back as an error and ends in a
+// non-zero exit, so the host's service manager records a stop that left
+// unsandboxed shells behind rather than a clean one.
 func run(ctx context.Context) error {
+	// SIGINT as well as SIGTERM: an operator running this in a terminal presses
+	// Ctrl-C, and a daemon that reaped its sessions under systemd but not under a
+	// shell would leave the developer host carrying exactly what FR-040 exists to
+	// prevent.
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -64,5 +88,36 @@ func run(ctx context.Context) error {
 	if err := srv.Listen(); err != nil {
 		return err
 	}
-	return srv.Serve()
+
+	serving := make(chan error, 1)
+	go func() { serving <- srv.Serve() }()
+
+	var serveErr error
+	stoppedOnItsOwn := false
+	select {
+	case serveErr = <-serving:
+		// The listener stopped without being asked to. There is nothing left to
+		// drain, but the sessions it started are still on the host and nothing
+		// else is coming for them, so shutdown runs anyway.
+		stoppedOnItsOwn = true
+	case <-ctx.Done():
+		// Restore default signal handling before the slow part. A second SIGTERM
+		// during a shutdown that is not making progress must kill the process,
+		// not be swallowed by a handler that has already fired.
+		stop()
+	}
+
+	// Not derived from ctx's cancellation: by now ctx is the thing that reported
+	// the signal and is already done, and a teardown on a cancelled context would
+	// exec no tmux command at all — the daemon would exit reporting a fleet it
+	// never asked the host about.
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownBudget)
+	defer cancel()
+
+	shutdownErr := srv.Shutdown(shutdownCtx)
+	if !stoppedOnItsOwn {
+		// Shutdown has stopped the server, so Serve has returned or is about to.
+		serveErr = <-serving
+	}
+	return errors.Join(serveErr, shutdownErr)
 }

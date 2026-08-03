@@ -449,6 +449,41 @@ func (m *Manager) Destroy(ctx context.Context, s Session) error {
 	return nil
 }
 
+// DestroyAll tears down every session the daemon holds a record of, verified,
+// and reports which ones the host confirmed gone (FR-040). It is what shutdown
+// is made of.
+//
+// It is owner-blind, and that is the point. Shutdown acts on the daemon's own
+// behalf, so there is no caller whose sessions these are — every record names a
+// tmux session running with --dangerously-skip-permissions, and the process is
+// about to stop being the thing that owns it. A teardown scoped to one caller
+// would leave the rest as exactly the unowned shells Principle VI forbids.
+//
+// Teardown is Manager.Destroy for the reason the reaper's is: tmux answering "I
+// asked" is not tmux answering "it is gone". A session that cannot be confirmed
+// gone keeps its record and comes back in the error, where the shutdown path
+// makes it loud rather than exiting quietly on a host that may still be carrying
+// it.
+//
+// Failures are collected rather than returned at the first one, and for a
+// sharper reason than the reaper's: nothing comes after this. A session skipped
+// because an earlier one could not be confirmed would be left running by a
+// process that is exiting, with no later sweep to catch it.
+func (m *Manager) DestroyAll(ctx context.Context) ([]Session, error) {
+	destroyed := make([]Session, 0, m.store.Len())
+	var failures []error
+
+	for _, s := range m.store.snapshot() {
+		if err := m.Destroy(ctx, s); err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		destroyed = append(destroyed, s)
+	}
+
+	return destroyed, errors.Join(failures...)
+}
+
 // AdoptedSession is one reconciled record together with the only copy of the
 // credential issued for it (FR-021).
 //

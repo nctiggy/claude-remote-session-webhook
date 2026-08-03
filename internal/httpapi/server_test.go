@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -763,5 +764,170 @@ func TestListenReportsABindFailure(t *testing.T) {
 	}
 	if errors.Is(err, ErrNotLoopback) {
 		t.Error("a bind failure was reported as a loopback violation; startup could not tell them apart")
+	}
+}
+
+// killedAndVerified reports whether the fake was asked to kill name and then
+// asked whether it was gone. Both halves matter: a teardown that only killed
+// would be reporting what it asked for rather than what happened, which is the
+// difference FR-040 and Principle VI turn on.
+func killedAndVerified(calls []tmuxctl.Call, name string) (killed, verified bool) {
+	for _, c := range calls {
+		switch {
+		case c.Op == tmuxctl.OpKill && slices.Contains(c.Argv, tmuxctl.SessionTarget(name)):
+			killed = true
+		case c.Op == tmuxctl.OpHas && slices.Contains(c.Argv, tmuxctl.SessionTarget(name)):
+			verified = killed
+		}
+	}
+	return killed, verified
+}
+
+// TestShutdownTearsDownEverySessionWithVerification is FR-040 over a real
+// socket: the daemon stops serving, and every session it was holding is gone
+// from the host before it exits.
+//
+// The second session belongs to another owner on purpose. Shutdown acts on the
+// daemon's own behalf and there is no caller to scope it to — a teardown that
+// swept only one identity's sessions would leave the rest running with
+// --dangerously-skip-permissions and nothing left alive that owns them.
+func TestShutdownTearsDownEverySessionWithVerification(t *testing.T) {
+	t.Parallel()
+
+	const otherOwner auth.CallerID = "a-second-operator"
+
+	s := newAuditedServer(t)
+	mine, _ := s.fixture.plant(t, session.Session{})
+	theirs, _ := s.fixture.plant(t, session.Session{Owner: otherOwner})
+
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen() = %v; want a bound listener", err)
+	}
+	addr := s.Addr().String()
+	served := make(chan error, 1)
+	go func() { served <- s.Serve() }()
+
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() = %v; want a drained listener and an empty host", err)
+	}
+	if err := <-served; err != nil {
+		t.Errorf("Serve() = %v after Shutdown; a deliberate stop is not an error", err)
+	}
+
+	calls := s.fixture.tmux.Calls()
+	for _, live := range []session.Session{mine, theirs} {
+		killed, verified := killedAndVerified(calls, live.TmuxName())
+		if !killed {
+			t.Errorf("session %s owned by %q was never killed at shutdown", live.ID, live.Owner)
+		}
+		if !verified {
+			t.Errorf("session %s owned by %q was killed but never confirmed gone", live.ID, live.Owner)
+		}
+		if has, err := s.fixture.tmux.Has(context.Background(), live.TmuxName()); err != nil || has {
+			t.Errorf("session %s is still on the host after shutdown (present=%v, err=%v)", live.ID, has, err)
+		}
+	}
+	if n := s.fixture.store.Len(); n != 0 {
+		t.Errorf("the store holds %d records after shutdown; a torn-down session keeps none", n)
+	}
+
+	// The socket is the other half of "stopped serving": a request that still
+	// connected here would be one arriving at a daemon whose sessions are gone.
+	client := &http.Client{Timeout: 5 * time.Second}
+	if resp, err := client.Get("http://" + addr + "/sessions"); err == nil {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close the response body: %v", err)
+		}
+		t.Errorf("GET /sessions after Shutdown answered %d; the listener must be closed", resp.StatusCode)
+	}
+}
+
+// TestShutdownIsLoudAboutASessionItCouldNotConfirmGone is the half that must
+// never be swallowed. A kill tmux reported success for, with the session still
+// there afterwards, is a live unsandboxed shell outliving the daemon that owned
+// it — the error goes back to cmd/crswd, which reports it and exits non-zero, so
+// the service manager records a stop that left something behind.
+func TestShutdownIsLoudAboutASessionItCouldNotConfirmGone(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	survivor, _ := s.fixture.plant(t, session.Session{})
+	rest, _ := s.fixture.plant(t, session.Session{})
+	s.fixture.tmux.SurviveKill(survivor.TmuxName())
+
+	err := s.Shutdown(context.Background())
+	if err == nil {
+		t.Fatal("Shutdown() reported success with a session it could not confirm gone still on the host")
+	}
+	if !errors.Is(err, session.ErrOrphanedSession) {
+		t.Errorf("Shutdown() = %v; want an error matching ErrOrphanedSession", err)
+	}
+	if !strings.Contains(err.Error(), survivor.ID) {
+		t.Errorf("Shutdown() = %v; want the id of the session that survived, %q", err, survivor.ID)
+	}
+
+	// The one that could not be confirmed must not take the rest of the fleet
+	// down with it: nothing comes after shutdown, so a session skipped here is a
+	// session left running by a process that is exiting.
+	if _, err := s.fixture.store.Get(rest.ID, auth.CallerOperator); err == nil {
+		t.Errorf("session %s still has a record; one unconfirmed teardown must not stop the sweep", rest.ID)
+	}
+	if has, err := s.fixture.tmux.Has(context.Background(), rest.TmuxName()); err != nil || has {
+		t.Errorf("session %s is still on the host (present=%v, err=%v); the sweep stopped at the survivor", rest.ID, has, err)
+	}
+
+	// And the survivor keeps its record, because the record is the only thing
+	// naming an owner and an id for a session that may still be running.
+	if _, err := s.fixture.store.Get(survivor.ID, auth.CallerOperator); err != nil {
+		t.Errorf("the record for unconfirmed session %s was dropped: %v", survivor.ID, err)
+	}
+}
+
+// TestShutdownReportsAHostItCannotAskAbout: "we could not ask" is not "it is
+// gone". A tmux that cannot answer at shutdown must end in the same loud failure
+// as a session that plainly survived.
+func TestShutdownReportsAHostItCannotAskAbout(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	live, _ := s.fixture.plant(t, session.Session{})
+	// Both questions the verification asks, because either one answering is an
+	// answer: a host that only fails has-session is still one List can confirm.
+	broken := errors.New("tmux: no server running on /tmp/tmux-1000/default")
+	s.fixture.tmux.FailOp(tmuxctl.OpHas, broken)
+	s.fixture.tmux.FailOp(tmuxctl.OpList, broken)
+
+	err := s.Shutdown(context.Background())
+	if err == nil {
+		t.Fatal("Shutdown() reported success on a host it could not ask about")
+	}
+	if !errors.Is(err, broken) {
+		t.Errorf("Shutdown() = %v; want the tmux failure wrapped so an operator can say why", err)
+	}
+	if _, err := s.fixture.store.Get(live.ID, auth.CallerOperator); err != nil {
+		t.Errorf("the record for unverified session %s was dropped: %v", live.ID, err)
+	}
+}
+
+// TestShutdownOnAnIdleDaemonIsClean keeps the ordinary stop ordinary: nothing
+// running, nothing to drain, and no error for an operator to chase.
+func TestShutdownOnAnIdleDaemonIsClean(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen() = %v; want a bound listener", err)
+	}
+	served := make(chan error, 1)
+	go func() { served <- s.Serve() }()
+
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() with no sessions = %v; want a clean stop", err)
+	}
+	if err := <-served; err != nil {
+		t.Errorf("Serve() = %v after Shutdown; want nil", err)
+	}
+	if calls := s.fixture.tmux.Calls(); len(calls) != 0 {
+		t.Errorf("shutting down an idle daemon ran %v; it must cost no tmux command", calls)
 	}
 }

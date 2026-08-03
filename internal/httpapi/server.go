@@ -415,13 +415,59 @@ func (s *Server) Serve() error {
 }
 
 // Close stops the server and its listener immediately, dropping in-flight
-// requests. Graceful shutdown — draining, then reaping every live session with
-// its teardown verified — is T037's, and needs a context this cannot take.
+// requests and leaving every session running. It is the abrupt stop, kept for
+// tests and for a startup that has to unwind; the ending a termination signal
+// gets is Shutdown.
 func (s *Server) Close() error {
 	if err := s.http.Close(); err != nil {
 		return fmt.Errorf("httpapi: close the server: %w", err)
 	}
 	return nil
+}
+
+// shutdownDrain is how long in-flight requests get to finish once shutdown has
+// begun.
+//
+// It is bounded, and deliberately a fraction of the budget a caller passes in,
+// because draining is the merely polite half of shutdown. The half that is not
+// optional is the teardown after it (FR-040): a peer holding a connection open
+// may cost the daemon this long and no longer before the sessions go down
+// anyway, since the alternative is a stalled request keeping unsandboxed shells
+// alive past the moment the daemon that owns them stopped.
+const shutdownDrain = 10 * time.Second
+
+// Shutdown stops serving and then tears every session down with its teardown
+// verified (FR-040). It is what a termination signal ends in.
+//
+// The order is the requirement. Draining first means a prompt already in flight
+// finishes against a session that still exists, rather than being killed
+// mid-request by the teardown behind it; and because http.Shutdown stops
+// accepting first, nothing new can create a session after the sweep has decided
+// what there was to destroy.
+//
+// The drain is bounded separately from the teardown so that one cannot consume
+// the other's budget. A drain that runs out closes what is left rather than
+// waiting: shutdown continues to the teardown either way, and the requests being
+// dropped were about to lose their sessions.
+//
+// Failures are joined and returned rather than logged here. A session the host
+// could not confirm gone is a live unsandboxed shell outliving the daemon, which
+// is the one thing this method exists to prevent — the caller is cmd/crswd,
+// which reports it and exits non-zero, so an operator's service manager records
+// a failed stop instead of a clean one.
+func (s *Server) Shutdown(ctx context.Context) error {
+	drain, cancel := context.WithTimeout(ctx, shutdownDrain)
+	defer cancel()
+
+	var failures []error
+	if err := s.http.Shutdown(drain); err != nil {
+		failures = append(failures, fmt.Errorf("httpapi: drain requests in flight: %w", errors.Join(err, s.http.Close())))
+	}
+
+	if _, err := s.sessions.DestroyAll(ctx); err != nil {
+		failures = append(failures, fmt.Errorf("httpapi: tear every session down before exit: %w", err))
+	}
+	return errors.Join(failures...)
 }
 
 // notImplemented is handlerFor's default, and since T029 gave the sixth route a
