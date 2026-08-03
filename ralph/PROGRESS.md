@@ -3256,3 +3256,249 @@ T024–T042 follow.
 39. **Iteration 6 #6 / … / 21 #37 still stands:** `AGENTS.md`'s command table has no entry
     for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not
     all.
+
+---
+
+## Iteration 23 — 2026-08-03 19:26
+
+**Did:** Completed **T022**. Added `internal/httpapi/sessions.go` (`createSession`,
+`refuseCreate`, `createReason`, `writeJSON`, `Server.failInternal`, `createRequest`,
+`createResponse`, `bodyInternalError`, `timestampFormat`, and four reasons) plus
+`sessions_test.go` — 15 tests. Wired the session manager into `Server`: a new `sessions`
+field, `New` building `session.NewManager(tmuxctl.NewExec(), session.NewStore(),
+cfg.Roots)`, `newServer` taking it as a fifth parameter and refusing nil, and
+`handlerFor` replacing the blanket `notImplemented` registration. Ticked T022 in **both**
+`ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (httpapi 59 top-level tests, 137 counting subtests)
+go test -race -count=1 ./internal/httpapi ./internal/session   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git status                  only the five files after every probe was reverted
+gitleaks (pre-commit)       1 commits scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **The handler pre-checks nothing.** `ValidateName` and `ResolveWorkDir` are reached
+  only through `Manager.Create`; the handler's whole job on a refusal is to *classify*
+  one. A handler that validated first would be a second copy of the allowlist, free to
+  disagree with the one the manager actually enforces — and the manager's order is the
+  security property (validate everything before executing anything), so duplicating the
+  first half of it buys nothing and risks the sequencing.
+- **Every field refusal answers `bodyBadRequest`, and that is the ruling iterations 16
+  #2 and 22 asked for.** One status, one body, one set of headers for a bad name, a path
+  outside an approved root, a symlink escape, a traversal, a file-not-a-directory, and an
+  unknown JSON field alike. `TestEveryRefusedCreateAnswersTheIdenticalResponse` compares
+  all fourteen against each other rather than each against a literal — "no two differ" is
+  the property, not "each looks right". Otherwise the 400 is a filesystem oracle behind
+  one signature: a caller could map the host's directory tree without ever creating a
+  session.
+- **The audit reason is the *sentinel*, never the wrapped error.** `createReason` walks a
+  most-specific-first list of `session` sentinels and returns the value it matched.
+  `internal/session` drops the caller's path today — deliberately, and its comments say
+  so — but the trail's guarantee cannot rest on another package continuing to choose
+  that. Probed: returning `err` instead of `reason` fails ten subtests with
+  `create session: invalid working directory: …` in the reason. The list order is also
+  load-bearing and probed: moving `ErrInvalidName`/`ErrInvalidWorkDir` to the front
+  collapses four distinct reasons into one, because every specific sentinel is wrapped
+  alongside a general one.
+- **A 500 says nothing.** `bodyInternalError` is `{"error":"internal error"}` for a tmux
+  failure and for a possible orphan alike — "tmux: command not found" is a fact about the
+  host and the caller who triggered it is the last party who should have it. The contract
+  gives no body for `500`; this is the spelling chosen, in the shape the other two use.
+- **The orphan case gets its own reason, and the record stays.** `ErrOrphanedSession`
+  maps to `errCreateOrphaned` — a distinct string an operator can grep for — while the
+  caller gets the same detail-free 500. The kept record is `Manager.rollback`'s ruling,
+  not this handler's: the caller holds no token, so the session is drivable by nobody and
+  collectable by the daemon. `TestACreateThatMayHaveLeftAShellRunningSaysSoInTheTrail`
+  pins `Len() == 1`, which is the opposite of every other failure case in the file.
+- **`expires_at` comes off `created.TokenExpiry()`.** Not `CreatedAt.Add(24h)` — that
+  would be a third expression of one instant, and FR-015's "equal by construction" is
+  only true while there is one. Two tests: the literal against the fixed clock, and the
+  arithmetic on the parsed response, so the claim survives a clock change.
+- **`handlerFor` is a switch with a default, not a map.** A map plus a lookup is a route
+  registered with a nil handler the first time someone adds a route and forgets an entry.
+  The default is `notImplemented`, so T024–T029 each move one case.
+
+**Learned (do not rediscover):**
+
+- **Green on the first run again, and probing found a real gap before it found a bad
+  test.** Sixteen mutations. The one that mattered: `WorkDir: req.WorkDir` — echoing the
+  caller's spelling back instead of the resolved path — **passed the entire suite**,
+  because every fixture happened to ask with an already-resolved path. Added
+  `TestTheResponseCarriesTheResolvedPathAndNotTheCallersSpelling` (a symlink *inside* the
+  root pointing at `repo`), which kills it and also pins that tmux is told the resolved
+  path. Generalises iteration 22's lesson: **a fixture that only uses canonical inputs
+  cannot see a handler that skipped canonicalisation.**
+- **The fifteen that behaved:** `expires_at` at 23h (2 tests), `SetSessionID` deleted (1),
+  field refusals answering 500 (17 assertions), the wrapped error as the reason (10),
+  the orphan case deleted (1), `CallerFrom`'s `ok` ignored with an operator default (1),
+  `Content-Type` dropped (1), the reason written into the 500 body (2), the write error
+  swallowed (1), `decode` replaced with a bare `json.NewDecoder` (4 — including the
+  `"owner"` probe), `handlerFor` wired to the wrong route (16), the nil-manager guard
+  deleted (1), the token put in the audit reason (3), the reason list reordered (4), and
+  `201` → `200` (5).
+- **Two sweeps in the older tests had to learn that the routes no longer answer alike.**
+  `reachedStatus` (in `sessions_test.go`) is now the per-route literal both
+  `TestEveryRegisteredRouteIsReachable` and `TestEveryRouteAuditsAnAllowedRequestUnderItsOwnAction`
+  measure against, and `bodyFor` gives `POST /sessions` a real create body so its record
+  stays `allow` rather than a decoder `deny`. **T024–T029 each move one row.**
+- **`TestABodyAtTheLimitIsAcceptedAndOneByteOverIsRefused` now expects 400, not 501**, for
+  the two accepted sizes: a run of `"a"` reaches the create handler and is refused as
+  malformed JSON. The proof is unchanged — only a handler past layer 2 produces a 400 —
+  but the number moved, and the next task that touches a route will move more.
+- **Two refusal cases resolve to the same directory by design**, so the same body, so the
+  same signature: `filepath.Join(repo, "..", "..")` cleans to the parent of the root,
+  which is also the "a path outside every approved root" case. Driving both through one
+  server replays the second. `postSessionsAt` (a signing instant per request) is the fix,
+  and the same trap already bit both route sweeps in earlier iterations — **the signature
+  covers timestamp and body only, so identical bodies need distinct instants.**
+- **`newSessionFixture` resolves `t.TempDir()` through `EvalSymlinks`.** Containment
+  compares two already-canonical paths, and on a host whose temp directory is a symlink
+  an unresolved root would fail every create in the file for a reason unrelated to the
+  code under test.
+- **`testConfig` now carries a root that does not exist** (`/nonexistent-crswd-test-root`),
+  because `New` builds a real `Manager` over `tmuxctl.NewExec()` and `NewManagerWithClock`
+  refuses an empty allowlist. A root nothing can resolve under is the fail-closed spelling
+  of "this server is never asked to create a session" — the tests that do create one build
+  a manager over a real temp directory.
+- **The formatter deleted the orphaned `auth` import mid-probe**, exactly as iterations
+  17–22 recorded. `go build ./...` is what said so.
+
+**Left:** T023 is next (session-scoped resolver in `middleware.go`: bearer token **and**
+owner match, expired tokens refused, a `404` byte-identical for unknown / not-owned /
+wrong-token). It closes US1. Everything it needs now exists: `Store.Get` is owner-scoped
+already, `Session.TokenMatches` is constant-time, `Session.TokenExpiry` is the deadline,
+and `RequestAudit.Deny` is the seam for the reason the client never sees. It should also
+reject a presented token that is not exactly `session.TokenLen` before hashing it
+(finding 13 below). Then T024–T042.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: `POST /sessions` has no rate limit and no concurrency cap yet.**
+   T033 (`CRSW_MAX_SESSIONS`, 429) and T034 (token bucket, 429) are the tasks; until they
+   land, a caller holding the shared secret can create sessions until the host gives out.
+   `cfg.MaxSessions` and `cfg.CreateRatePerMin` are loaded and read by nobody. The
+   contract's `429` row is therefore unreachable, which is the same shape as iteration
+   21 #2's unreachable `400`. **Not shippable before T037 already says this; noting it
+   so the gap is not mistaken for a missing check.**
+2. **New this iteration: the create response is the only place `state` is rendered, and
+   it is always `starting`.** Nothing ever moves a record to `running` — `Store.SetState`
+   has no caller. T031's adoption and the reaper are the obvious owners; until then
+   `running` is a state the API documents and never returns.
+3. **New this iteration: `Server` now holds a `*session.Manager` whose store no other
+   handler can reach.** That is correct today (one handler) and becomes the wiring
+   question for T026–T029: `Store` is reachable only through the Manager, which exposes
+   no list/get. **T026/T027 will need a method on Manager rather than a second field on
+   Server** — two references to one store is how the cap and the reaper end up counting
+   different things.
+4. **New this iteration: `New` builds `tmuxctl.NewExec()` unconditionally**, so
+   constructing a Server implies a real tmux driver even in a process that never serves.
+   Harmless now (nothing executes until a request arrives) but T032 wires `cmd/crswd`,
+   and startup adoption will want the same controller — **it should be built once in
+   `main` and passed in, not built twice**.
+5. **Iteration 22 #2 still stands and is now the sharpest it has been:** nothing forces a
+   handler to use `decode`. `createSession` does; the next five handlers are on their
+   own. A lint rule banning `json.NewDecoder` outside `decode.go` would close it.
+   Probed this iteration — swapping `decode` for a bare `json.NewDecoder` fails four
+   tests, so the *behaviour* is pinned, but only for this one handler.
+6. **Iteration 22 #3 still stands:** an oversize body is refused twice with two different
+   reasons and two different statuses depending on which layer saw it. T038 should decide
+   whether the two strings should be one.
+7. **Iteration 21 #1 / 22 #4 still stands:** the mux's `404`/`405` are `text/plain` while
+   the contract says every response is JSON. **An operator should rule** — no task owns
+   it. Now more visible: this package writes three JSON bodies and the router still
+   writes plain text.
+8. **Iteration 21 #2 / 22 #5 still stands:** the contract's `400` row for an oversize body
+   is unreachable behind layer 2.
+9. **Iteration 21 #3 / 22 #6 still stands:** `session.list`, `session.detail`, and
+   `session.output` are action names iteration 21 chose and `data-model.md` does not
+   carry.
+10. **Iteration 21 #4 / 22 #7 still stands:** `RequestAudit` is not safe for concurrent
+    use, and nothing enforces it. `createSession` touches it on the request's own
+    goroutine.
+11. **Iteration 21 #5 / 22 #8 still stands, and this handler is the first to honour it
+    fully:** every exit path from `createSession` either amends the record or is the
+    success. **The next five handlers still have to remember**; T038's sweep is what makes
+    that a property rather than a habit.
+12. **Iteration 20 #3 / … / 22 #9 still stands:** none of `docs/security.md`'s "Transport
+    & exposure" headers are applied by anything, and no task owns them. `nosniff` matters
+    to a JSON API today, and this package now returns JSON on three code paths.
+13. **Iteration 18 #2 / … / 22 #13 still stands:** nothing bounds the length of a
+    presented bearer token before it is hashed. **T023 should reject anything that is not
+    exactly `session.TokenLen`** — the create response now proves that length is exact.
+14. **Iteration 18 #1 / … / 22 #12 still stands:** `Store.Add` does not require a
+    `TokenHash`. T031.
+15. **Iteration 17 #1 / … / 22 #14 still stands:** the store cannot tell the audit trail
+    *why* a lookup failed; T023 must author the distinction itself, the way
+    `createReason` authors this one.
+16. **Iteration 17 #2 / … / 22 #15 still stands:** `Delete`'s hash scrub is best effort.
+17. **Iteration 17 #3 / … / 22 #16 still stands:** nothing enforces that a `Session.ID`
+    in the store came from `NewID`.
+18. **Iteration 16 #1 / … / 22 #17 still stands:** `ResolveWorkDir` has an unavoidable
+    TOCTOU window before `tmux new-session -c`. This handler is where it is now live.
+19. **Iteration 16 #2 / … / 22 #18 is CLOSED.** The uniform `bodyBadRequest` covers the
+    response half and `createReason` covers the trail half; both are probed.
+20. **Iteration 16 #3 / … / 22 #19 still stands:** nothing re-stats an approved root.
+21. **Iteration 15 #1 / … / 22 #20 still stands:** FR-027's class admits a leading `-`
+    while `tasks.md` T014 calls it hostile. A session named `-rf` is creatable through
+    this handler today; it reaches no argv (targets derive from the ID) but it is a name
+    an operator will paste somewhere eventually.
+22. **Iteration 15 #2 / … / 22 #21 is CLOSED.** `ValidateName`, `ResolveWorkDir`,
+    `NewToken`, `Manager.Create`, `decode`, and `rejectBadRequest` all have a caller now.
+23. **Iteration 13 #1 / … / 22 #22 still stands:** `docs/auth-and-sessions.md`'s samples
+    are stale in three ways.
+24. **Iteration 12 #1 / … / 22 #23 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Run by hand again this iteration, green. Worth an
+    operator doing.
+25. **Iteration 12 #2 / … / 22 #24 still stands:** three specs disagree on `Observe`'s
+    signature.
+26. **Iteration 12 #3 / … / 22 #25 still stands:** the replay cache is unbounded in count.
+27. **Iteration 11 #1 / … / 22 #26 still stands:** the audit trail cannot tell clock drift
+    from a forged future timestamp. T038.
+28. **Iteration 11 #2 / … / 22 #27 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right. Now load-bearing for `expires_at`, which a caller reads.
+29. **Iteration 10 #2 / … / 22 #28 still stands:** the signature covers timestamp and body
+    but not method or path. Bit two tests again this iteration (see Learned).
+30. **Iteration 9 #1 / … / 22 #29 still stands:** `RequestAudit.Deny` takes a free
+    `string`. `createReason` passes only sentinels, but nothing enforces that on the next
+    caller. T038.
+31. **Iteration 8 #2 / … / 22 #30 still stands:** the loud default-root warning goes to
+    stderr while audit records go to stdout. T032.
+32. **Iteration 8 #1 / … / 22 #31 still stands:** `.env.example` does not exist. T040.
+33. **Iteration 7 #1 / … / 22 #32 still stands:** bidi and invisible Unicode are not
+    stripped by `tmuxctl.Strip`, by design. Milestone 2 decides.
+34. **Iteration 6 #2 / … / 22 #33 still stands:** a failed `paste-buffer` leaves caller
+    prompt text in a named tmux buffer. T024 will meet this.
+35. **Iteration 6 #1 / … / 22 #34 still stands:** killing the only session stops the tmux
+    server and `Has` then errors rather than returning false. T028 should use `List`, and
+    should switch `Manager.rollback`'s call with it — **this iteration's
+    `TestATmuxFailureAnswersFiveHundredWithNoDetail` depends on `Has` answering, so the
+    switch will need that test re-read.**
+36. **Iteration 6 #3 / … / 22 #35 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case.
+37. **Iteration 14 #1 / … / 22 #36 still stands:** `git checkout -- <path>` and
+    `git restore` are not in the permission allowlist, so `PROMPT.md` step 6's documented
+    recovery path needs an approval an autonomous run cannot give. Sixteen probes reverted
+    with `Edit` in reverse again this iteration. Also confirmed again: multi-command
+    `&&` chains are accepted, `set -e` script blocks are not, and `/tmp` is unwritable —
+    the commit message went through a `git commit -F -` heredoc.
+38. **Iteration 1 #1 / … / 22 #37 still stands, twenty-third iteration carrying it:**
+    `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook
+    (which ran clean on this iteration's commit). Needs an operator or a task of its own.
+39. **Iteration 2 #2 / … / 22 #38 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again, again only because the finding was written down.
+    Twenty-second iteration of manual compensation for a one-line fix to step 9.
+40. **Iteration 6 #6 / … / 22 #39 still stands:** `AGENTS.md`'s command table has no entry
+    for `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not
+    all.
