@@ -85,7 +85,7 @@ owner plus its clock origin.
 - [x] T020 `internal/httpapi/middleware.go`: authentication on **every** registered route, one audit record per request, uniform `401`. The test must iterate the router's registered routes, not a hand-written list, so a future route cannot be forgotten
 - [x] T021 `internal/httpapi/decode.go`: `MaxBytesReader` + `DisallowUnknownFields`. Tests cover unknown fields, oversize, truncated, and wrong-shape bodies
 - [x] T022 `internal/httpapi/sessions.go`: `POST /sessions` → 201 with the token returned exactly once and `expires_at` exactly 24h after `created_at`
-- [ ] T023 `internal/httpapi/middleware.go`: session-scoped resolver — bearer token **and** owner match, expired tokens refused, returning a `404` **byte-identical** for unknown, not-owned, and wrong-token
+- [x] T023 `internal/httpapi/middleware.go`: session-scoped resolver — bearer token **and** owner match, expired tokens refused, returning a `404` **byte-identical** for unknown, not-owned, and wrong-token
 
 ### US2 — Drive a session and read it back (P2)
 
