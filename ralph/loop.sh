@@ -85,7 +85,11 @@ for (( i=1; i<=MAX_ITERATIONS; i++ )); do
     echo "  (swept uncommitted changes into a commit)"
   fi
 
-  if grep -q "$DONE_SIGNAL" "$PROGRESS_FILE" 2>/dev/null; then
+  # -x -F: the signal must be a line that is EXACTLY the sentinel, which is what
+  # PROMPT.md asks the agent to append. A bare substring grep also matches prose
+  # that merely mentions the sentinel — PROGRESS.md documents it by name — so the
+  # loop declared victory after one iteration with 41 tasks still open.
+  if grep -qxF "$DONE_SIGNAL" "$PROGRESS_FILE" 2>/dev/null; then
     echo
     echo "Found ${DONE_SIGNAL} in ${PROGRESS_FILE}. Plan complete after ${i} iteration(s)."
     exit 0
