@@ -1991,3 +1991,183 @@ must drive a bad name *and* a bad path, or two boundary checks ship dead.
     Fifteenth iteration of manual compensation for a one-line fix to step 9.
 26. **Iteration 6 #6 / … / 15 #23 still stands:** `AGENTS.md`'s command table has no entry for
     `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
+
+---
+
+## Iteration 17 — 2026-08-03 09:57
+
+**Did:** Completed **T016**. Added `internal/session/session.go` (`Session`, `State` and its
+three values, the derived-value methods, and `Store`) plus `session_test.go`. The package is
+now 39 tests / 164 runs. Ticked T016 in **both** `ralph/IMPLEMENTATION_PLAN.md` and
+`specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (session 39 tests / 164 runs, auth, audit, config, tmuxctl)
+go test -race -count=1 ./...   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git status                  clean against HEAD after every probe was reverted
+gitleaks (pre-commit)       1 commits scanned … no leaks found
+```
+
+**Decided (the ruling iterations 13–16 kept forwarding):**
+
+- **`Session.Owner` is typed `auth.CallerID`, so `internal/session` now imports
+  `internal/auth`.** `data-model.md` types it that way and `auth/caller.go`'s own doc comment
+  already says "handlers already compare `session.Owner` against a `CallerID`". `plan.md`'s
+  arrows show no `session → auth` edge, but the three invariants that paragraph actually
+  states — `tmuxctl` imports nothing from the project, `auth` knows nothing about tmux, no
+  package imports `httpapi` — all still hold, and `auth` is a leaf so there is no cycle. Same
+  shape as iteration 16's `session → config` edge for `ApprovedRoot`. The alternative (a plain
+  string plus a conversion at each comparison) puts a cast on the ownership check, which is
+  exactly where a mistake is invisible. **Treat this as settled; do not re-litigate in T017+.**
+
+**Learned (do not rediscover):**
+
+- **Green on the first run again, and again it meant nothing.** Nine mutations, each killed
+  only by the case written for it: owner-blind `Get` (2 subtests), the record returned
+  alongside the not-found error (2), `Touch` without the forward-only guard (1), dead not
+  terminal (1), `TokenHash` without `json:"-"` (3 assertions in one test), `TmuxName` built
+  from `Name` (8 subtests across 2 tests), `TokenExpiry` computing its own 12h (3), `List`
+  unsorted *and* owner-blind (2 tests), `Add` without validation or the duplicate guard (7),
+  and `Delete` tombstoning instead of removing (3). Reverted each with `Edit`;
+  `git status --porcelain` showed only the two new files afterwards.
+- **The one test whose mutation is a compile break, not a failure:
+  `TestStoreGetReturnsACopy`.** Making the store hold `map[string]*Session` — the change that
+  test exists to catch — does not make it *fail*, it makes it *not build* (`got != (Session{})`
+  stops compiling). Recorded so nobody later reads the passing test as evidence a mutation was
+  run against it. The live evidence for the value-semantics claim is
+  `TestStoreIsSafeForConcurrentUse` under `-race`, which does run.
+- **`errcheck` in this repo has `check-blank` on.** `_, _ = st.Get(...)` is a lint failure, not
+  an escape hatch — an ignored error needs a real branch. Cost one gate round trip; T020+ will
+  hit the same thing wiring handlers.
+- **The format-and-lint hook fights a mutation probe that orphans an import.** Deleting the
+  `slices.SortFunc` call from `List` made `goimports` strip `cmp` and `slices` on the *probe*
+  edit, so the revert had to restore the body first and the import block second (a
+  hook-modified region needs a `Read` before the next `Edit` targets it). Probe bodies that
+  drop the last use of an import are more expensive to revert than they look — prefer probes
+  that swap an expression over ones that delete a call.
+- **`Get` takes the owner as a parameter rather than trusting the call site.** That is a
+  deliberate narrowing of what T023 has left to do: "bearer token match **and** owner match"
+  still holds, but the owner half is now impossible to skip. There is no exported owner-blind
+  lookup at all — **T031 (`Adopt`) and T036 (the reaper) will need an unexported one plus an
+  all-owners view, and they should add those, not export `Get`'s twin.** Deliberately not
+  written now: an unexported method with no production caller is dead code the `unused` linter
+  flags.
+- **`Store.Len()` counts every record whatever its state**, including one that went `dead` on
+  its own and has not been reaped yet. **T033's cap is written against that number**, so a
+  fleet of dead-but-unreaped records can refuse a create. That is the fail-closed direction,
+  but T033 should say so on purpose rather than inherit it.
+- **`AbsoluteLifetime` and `IdleTimeout` are constants, not config.** `data-model.md`'s Config
+  table has no env var for either, and Principle VI bounds the blast radius *by construction* —
+  an operator who could widen them could widen that. If T041's deployment work wants them
+  tunable, that needs a spec change first.
+
+**Left:** T017 is next (`internal/session/token.go`: 32 bytes from `crypto/rand` → 64 hex,
+stored only as `sha256.Sum256`, compared with `hmac.Equal`; test asserts the plaintext is
+never retained on the record and that comparison is constant-time). Iteration 14's notes
+apply: use `io.ReadFull`, and **no hex-shaped fixtures** — gitleaks blocks the commit, which
+is why this iteration's test IDs are built with `strings.Repeat` rather than pasted. The
+`TokenHash` field, its `json:"-"` guard, and `TokenExpiry()` are already in place for it.
+Then T018 (`Manager.Create`), T019–T023, and T024–T042. `ValidateName` and `ResolveWorkDir`
+are both still unreferenced; **T022 owns wiring them into `POST /sessions`**.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: the store cannot tell the audit trail *why* a lookup failed.**
+   `Get` collapses unknown-id and wrong-owner into one `ErrSessionNotFound` on purpose
+   (FR-033), but unlike `auth`, which keeps the server-side reason reachable through
+   `Reason(err)`, nothing here preserves the distinction even for the operator. Milestone 1
+   has one caller so a wrong-owner request is unreachable in production; **milestone 2's
+   second identity makes "someone probed another session" a thing worth seeing.** The fix
+   shape already exists in `auth/caller.go` — a `denial`-style wrapper — and **T020/T038 own
+   the ruling**, not this task.
+2. **New this iteration: `Delete`'s hash scrub is best effort and the comment says so.**
+   Overwriting the map value before `delete` reuses the same bucket slot, but Go offers no
+   guarantee about when that memory is reused, and nothing zeroes copies already handed out by
+   `Get`. FR-013's real guarantee is that the plaintext was never stored at all. **No test can
+   assert this**, which is why it is here rather than in a comment only.
+3. **New this iteration: nothing enforces that a `Session.ID` in the store came from `NewID`.**
+   `Add` validates that an id is non-empty, not that it is 32 hex characters, so a future
+   caller could store a record whose `TmuxName()` is not a name tmux will accept. `NewID` is
+   the only producer today and T018 is the only caller planned, so this is a shape worth
+   pinning in T018's test rather than a guard worth adding here.
+4. **Iteration 16 #1 still stands:** `ResolveWorkDir` is a create-time check with an
+   unavoidable TOCTOU window before `tmux new-session -c`. Operator ruling welcome.
+5. **Iteration 16 #2 still stands:** a rejected path is a weak existence oracle; the reason
+   must stay server-side. T020/T022.
+6. **Iteration 16 #3 still stands:** nothing re-stats an approved root, so a root replaced by
+   a symlink after startup narrows silently.
+7. **Iteration 15 #1 / 16 #4 still stands:** FR-027's class admits a leading `-` while
+   `tasks.md` T014 calls it hostile. Resolved in favour of the regexp; worth an operator ruling
+   before milestone 2 renders names and milestone 3 adds rename.
+8. **Iteration 15 #2 / 16 #5 still stands:** neither `ValidateName` nor `ResolveWorkDir` has a
+   caller. T022 owns both.
+9. **Iteration 13 #1 / … / 16 #6 still stands:** `docs/auth-and-sessions.md`'s `Verify` sample
+   is stale in two ways.
+10. **Iteration 13 #2 / … / 16 #7 still stands:** nothing stops a handler from putting
+    `auth.Reason(err)` in a response body. T020 should assert the 401 body is byte-identical
+    across failure modes.
+11. **Iteration 12 #1 / … / 16 #8 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178` runs `go test ./...` only). **This iteration is the first
+    to ship a mutex, so the gap now has teeth** — `TestStoreIsSafeForConcurrentUse` passes
+    locally under `-race` and CI would not notice if it stopped. Worth an operator doing
+    before T033.
+12. **Iteration 12 #2 / … / 16 #9 still stands:** three specs disagree on `Observe`'s
+    signature. The code follows `tasks.md`.
+13. **Iteration 12 #3 / … / 16 #10 still stands:** the replay cache is unbounded in count,
+    only in age. No task owns a cap.
+14. **Iteration 11 #1 / … / 16 #11 still stands:** the audit trail cannot tell clock drift
+    from a forged future timestamp. T038 should decide whether to split the sentinel.
+15. **Iteration 11 #2 / … / 16 #12 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right. **`Store.Touch`'s forward-only rule is a partial mitigation**
+    — a lagging read can no longer shorten a session's idle life — but the absolute deadline
+    still trusts `CreatedAt` outright.
+16. **Iteration 10 #1 / … / 16 #13 still stands:** `contracts/http-api.md` promises `400` for
+    an oversize body but auth runs first. **T020 must decide.**
+17. **Iteration 10 #2 / … / 16 #14 still stands:** the signature covers timestamp and body but
+    not method or path, so a signed body is valid on any route.
+18. **Iteration 9 #1 / … / 16 #15 still stands:** `audit.Record.Reason` can carry arbitrary
+    text. T038 should pass server-authored constants. This iteration adds five more safe
+    candidates: `ErrInvalidSession`, `ErrSessionNotFound`, `ErrSessionExists`,
+    `ErrSessionDead`, and `ErrInvalidState` are fixed strings carrying no caller input —
+    except that `SetState`'s message interpolates the requested state, which is server-chosen
+    today and would not be if a handler ever passed a body field through.
+19. **Iteration 9 #2 / … / 16 #16 still stands:** `audit.Emit`'s error has no handler yet.
+    T020 owns the ruling.
+20. **Iteration 8 #2 / … / 16 #17 still stands:** the loud default-root warning goes to stderr
+    while audit records go to stdout. T032 owns it.
+21. **Iteration 8 #1 / … / 16 #18 still stands:** `.env.example` does not exist, so the
+    `.gitleaks.toml` allowlist entry for it guards nothing. T040.
+22. **Iteration 7 #1 / … / 16 #19 still stands:** bidi and invisible Unicode are not stripped
+    by `tmuxctl.Strip`, by design. Milestone 2 decides. Pane output only.
+23. **Iteration 6 #2 / … / 16 #20 still stands:** a failed `paste-buffer` leaves caller prompt
+    text in a named tmux buffer.
+24. **Iteration 6 #1 / … / 16 #21 still stands:** T028 will report a false failure on the last
+    session — killing the only session stops the tmux server and `Has` then errors rather than
+    returning false. Use `List`.
+25. **Iteration 6 #3 / … / 16 #22 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case.
+26. **Iteration 14 #1 / … / 16 #23 still stands:** `git checkout -- <path>` and `git restore`
+    are not in the permission allowlist, so `PROMPT.md` step 6's documented recovery path needs
+    an approval an autonomous run cannot give. Nine probes reverted with `Edit` in reverse
+    again this iteration, one of them needing two reverts because the formatter had stripped an
+    import in between. Also confirmed again: **a heredoc past a few dozen lines aborts the Bash
+    parser** — this entry went in as two `Edit` appends instead, which worked first time and is
+    the better tool for the job.
+27. **Iteration 1 #1 / … / 16 #24 still stands, seventeenth iteration carrying it:** `loop.sh`'s
+    sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook (which ran clean on
+    this iteration's commit). Needs an operator or a task of its own.
+28. **Iteration 2 #2 / … / 16 #25 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the plan.
+    Ticked both by hand again, again only because the finding was written down. Sixteenth
+    iteration of manual compensation for a one-line fix to step 9.
+29. **Iteration 6 #6 / … / 16 #26 still stands:** `AGENTS.md`'s command table has no entry for
+    `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
