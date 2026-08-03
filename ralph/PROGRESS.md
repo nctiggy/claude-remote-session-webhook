@@ -5138,3 +5138,228 @@ does not require a `TokenHash`) lands squarely in it.
     Thirtieth iteration of manual compensation for a one-line fix to step 9.
 48. **Iteration 6 #6 / … / 30 #46 still stands:** `AGENTS.md`'s command table has no entry for
     `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
+
+## Iteration 32 — 2026-08-03 21:00
+
+**Did:** Completed **T031**, `Manager.Adopt` — startup reconciliation. 164 lines in
+`internal/session/manager.go` (the `AdoptedSession` type, `Adopt`, and `adoptableID`), an
+unexported owner-blind `Store.lookup` in `session.go`, and 449 lines of tests appended to
+`internal/session/manager_test.go` (9 top-level tests, 10 subtests) covering all six cases
+`tasks.md` names plus three more. Ticked T031 in **both** `ralph/IMPLEMENTATION_PLAN.md`
+and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go test -count=1 ./...      OK
+go test -race ./...         OK
+golangci-lint run           OK (no output)
+gofmt -l .                  empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git diff --stat             +630 / −0 across three files — pure addition, no probe left behind
+gitleaks (pre-commit)       1 commit scanned … no leaks found
+```
+
+**Decided (write these down, they are not re-derivable from the code alone):**
+
+- **`adoptableID` requires three signals to agree, not one.** `tasks.md` names only
+  `@crswd-managed`, and the marker is the provenance signal — but a record is built around
+  an id, and the id can only come from the host session's name. So the reserved prefix must
+  be there (or there is no id at all, and `Store.Add` refuses the empty one), and the
+  remainder must be **32 lowercase hex characters**, which is exactly the set `NewID` mints.
+  A marked, prefixed session named anything else was marked by something that is not this
+  daemon, and its "id" would go on to be what API responses and path values are made of.
+  No session the daemon created can fail any of the three, so the check cannot orphan a real
+  survivor — which is the only failure mode that would matter.
+- **A second observation per candidate, and why that does not contradict research D6.** D6's
+  "one exec, not one per session" is about *discovery*: name, creation time and provenance
+  arrive in one `list-sessions -F` instead of a `show-options` per session. Adopt keeps that.
+  What it adds is one `has-session` per candidate before the record exists, because FR-022
+  says a present-but-unusable session must be resolved to a definite state **rather than
+  recorded as healthy**, and a listing alone offers nothing to resolve anything against.
+  `StateRunning` means "confirmed present at the last check" (data-model.md) and this is that
+  check.
+- **The two unknown answers point in opposite directions, on purpose.** `Has` false → no
+  record at all: the window is gone, there is nothing to own and nothing to tear down, and a
+  record for it would be a session nobody can drive answering as though somebody could.
+  `Has` error → reported, not adopted: startup is fatal (T032), so the next boot lists the
+  session again, and adopting on a question the host refused to answer *is* the "recorded as
+  healthy on no evidence" FR-022 names. This is deliberately **not** `rollback`'s rule, where
+  unknown means keep the record — rollback runs inside a live daemon that will keep running,
+  and this runs before the listener binds in a process that is about to exit.
+- **Expired candidates are destroyed through `Manager.Destroy` with a record that was never
+  added to the store.** `Destroy` uses only `s.ID` to build the target, and its final
+  `store.Delete` already tolerates `ErrSessionNotFound` ("a record already gone is not a
+  failure"), so the verified teardown is reused rather than re-implemented. Finding #11 —
+  `Destroy` taking a `Session` rather than an id — is what makes this both possible and
+  slightly uncomfortable.
+- **Failures are collected, not returned at the first one.** One session the host cannot
+  answer for must not leave the others unowned. `errors.Join` carries them all out, and
+  T032 decides they are fatal.
+- **`Name` and `WorkDir` are left empty on an adopted record, deliberately.** Nothing on the
+  host carries the caller's label at all; tmux does know the directory (`#{session_path}`)
+  but `SessionInfo` does not carry it, and widening the `tmuxctl` contract is not this task.
+  An invented value would describe nothing, and the id is the only field a target is ever
+  built from anyway. See finding #2.
+
+**Learned (do not rediscover):**
+
+- **Five probes, all reverted with `Edit` in reverse, all confirming the suite is not
+  vacuous.** (1) `CreatedAt: now` instead of `info.Created` failed six tests including both
+  ceiling cases — the adoption clock is load-bearing in more places than the two that name
+  it. (2) `if false && !info.Managed` failed the prefix-without-marker case. (3) disabling
+  the `store.lookup` guard failed the repeat-adoption test — and note *how*: `Store.Add`'s
+  `ErrSessionExists` caught it, so the invariant has two layers and the test proves the
+  outer one. (4) `if false && !present` failed the vanished-between-the-questions case with
+  both an adoption and a stored record. (5) dropping the id-length check failed the
+  one-character-short case *and* the bare-prefix case, the latter via `Store.Add`'s "an id
+  is required". Still no `git checkout` needed (finding #48).
+- **The fake cannot produce "in the listing, gone when asked again" on its own** — `List` and
+  `Has` read the same map. `vanishingLister` in the test file embeds `*tmuxctl.Fake`,
+  overrides `List` to call through and then `Vanish` the session, and satisfies `Controller`
+  by embedding. That is the only way to state US4 scenario 4 against the current fake, and
+  it is six lines.
+- **`f.tmux.SetNow` is required before `Create` in any adoption test that asserts an
+  instant.** The fake stamps `created` from `time.Now` by default, so a restart test that did
+  not pin it would compare the host's real clock against the fixture's stopped one.
+- **`testID(ch)` (session_test.go) is how this package spells a 32-character id without
+  tripping gitleaks**, and `strings.ToUpper(testID("b"))` gives the wrong-case lookalike for
+  free.
+- **The seeded-session presence check is `f.tmux.WorkDir(name)`'s second return value.**
+  `Seed` leaves `workDir` empty, so the string is useless and the `ok` is the whole answer —
+  that is how "not adopted **and not touched**" is asserted for a lookalike.
+
+**Left:** T032 (wire `Adopt` into `cmd/crswd/main.go` before the listener binds, one
+`startup.adopt` audit record per adopted session, tmux failure fatal), then T033–T042.
+T032 inherits findings #1, #2 and #21 below directly.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: nothing delivers an adopted session's credential to the operator.**
+   `Adopt` returns the plaintext to its caller, but US4 scenario 1 says an adopted session is
+   "destroyable through the API", and every session-scoped route needs that token. T032 may
+   not log it (FR-042, and T039 asserts zero tokens across all records), and milestone 1 has
+   no dashboard to show it in. As it stands an adopted session is owned, listed, capped and
+   reaped, but drivable by nobody — the same end state as a create that failed after tmux had
+   started. **An operator should rule; no task owns it.**
+2. **New this iteration: an adopted record's `Name` and `WorkDir` are empty**, so
+   `GET /sessions` after a restart lists sessions with a blank name and a blank directory.
+   `#{session_path}` would recover the directory as a fourth field on `SessionInfo`; the
+   label would have to be written to a `@crswd-name` option at create time to survive at all.
+   Neither is in any task. **Unassigned.**
+3. **New this iteration: `Adopt` is not safe to call twice concurrently**, and nothing says
+   so. Two passes could both pass the `store.lookup` guard for the same id, and one would
+   then fail `Store.Add` with `ErrSessionExists` — the safe direction, but the losing pass
+   has already minted a token. Startup calls it once, before the listener binds; if the
+   reaper or a future endpoint ever calls it, this needs a mutex.
+4. **Iteration 31 #1 still stands:** `docs/auth-and-sessions.md:135–137` describes a
+   cross-caller isolation test that cannot be written as specified in milestone 1.
+   **An operator should rule; no task owns it.**
+5. **Iteration 31 #2 still stands:** `GET /sessions` is outside every sweep in the isolation
+   suite, because it is caller-scoped rather than session-scoped.
+6. **Iteration 30 #1 / 31 #3 still stands:** `notImplemented` is unreachable dead code.
+7. **Iteration 30 #2 / 31 #4 still stands:** the mux's `405` is `text/plain` with an `Allow`
+   header, contradicting `contracts/http-api.md`. See #24 for the `404` half.
+   **An operator should rule.**
+8. **Iteration 30 #3 / 31 #5 still stands:** the contract's test matrix has no row for
+   destroy-then-destroy.
+9. **Iteration 30 #4 / 31 #6 still stands:** `errDestroyRefused` is unreachable and untested.
+10. **Iteration 29 #1 / … / 31 #7 still stands:** `rollback` verifies with `Has` alone and
+    never calls `confirmGone`, so a failed create on a host where the killed session was the
+    only one reports a **false orphan**. One line plus one test edit. **No task owns it.**
+11. **Iteration 29 #3 / … / 31 #8 still stands, and this iteration leaned on it:** `Destroy`
+    takes a `Session` rather than an id, which is what let `Adopt` tear down an expired
+    candidate with a record the store never held. Convenient here, and still the reason
+    nothing in the type distinguishes a resolved record from a synthesised one.
+12. **Iteration 28 #1 / … / 31 #9 still stands:** the two read routes disagree about which
+    sessions exist. **Unassigned.**
+13. **Iteration 28 #2 / … / 31 #10 still stands:** a detail reports `state` from the record
+    and never asks the host. Adoption now writes `running` only after asking, so an adopted
+    record is the *only* one whose state was ever confirmed.
+14. **Iteration 27 #2 / … / 31 #11 still stands:** the list is unbounded in length.
+15. **Iteration 26 #1 / … / 31 #12 still stands:** nothing bounds the size of a capture.
+16. **Iteration 26 #2 / … / 31 #13 still stands:** `captured_at` is the daemon's clock, not
+    tmux's.
+17. **Iteration 24 #4 / … / 31 #14 still stands:** a session whose window vanished still
+    resolves and answers 500 rather than moving to `dead`. `Store.SetState` **still has no
+    caller outside tests**. T036 or an operator.
+18. **Iteration 25 #2 / … / 31 #15 still stands:** nothing touches the idle clock;
+    `Store.Touch` still has no caller. Adoption sets `LastActivity` once and nothing moves it
+    afterwards, so an adopted session's idle deadline is 60 minutes after the daemon started
+    regardless of use. T036.
+19. **Iteration 25 #1 / … / 31 #16 still stands:** a failed submit can leave prompt text in a
+    named tmux buffer, and **Destroy still does not delete the session's paste buffer**.
+20. **Iteration 23 #1 / … / 31 #17 still stands:** `POST /sessions` has no rate limit and no
+    concurrency cap. Adopted records must count against T033's cap too, or a restart with a
+    full host starts already over it.
+21. **Iteration 23 #4 / … / 31 #18 still stands:** `New` builds `tmuxctl.NewExec()`
+    unconditionally; T032 should build one controller in `main` and pass it in — and it must
+    be the same one `Adopt` runs against, or startup reconciles a different host than the one
+    it serves.
+22. **Iteration 22 #2 / … / 31 #19 still stands:** nothing forces a handler to use `decode`.
+23. **Iteration 22 #3 / … / 31 #20 still stands:** an oversize body is refused twice with two
+    different reasons and two different statuses. T038.
+24. **Iteration 21 #1 / … / 31 #21 still stands:** the mux's own `404` is `text/plain` while
+    the contract says every response is JSON.
+25. **Iteration 21 #2 / … / 31 #22 still stands:** the contract's `400` row for an oversize
+    body is unreachable behind layer 2.
+26. **Iteration 21 #3 / … / 31 #23 still stands:** `session.list`, `session.detail`, and
+    `session.output` are action names iteration 21 chose and `data-model.md` does not carry.
+27. **Iteration 21 #4 / … / 31 #24 still stands:** `RequestAudit` is not safe for concurrent
+    use, and nothing enforces it.
+28. **Iteration 21 #5 / … / 31 #25 still stands:** every exit path amends the record by habit,
+    not by construction. T038.
+29. **Iteration 20 #3 / … / 31 #26 still stands:** none of `docs/security.md`'s "Transport &
+    exposure" headers are applied by anything.
+30. **Iteration 18 #1 / … / 31 #27 still stands:** `Store.Add` does not require a `TokenHash`.
+    T031 was named as its owner and did not change it — `Adopt` sets a hash on every record it
+    adds, but the store still accepts one without, and `hasToken()` remains the only thing
+    between a record with no credential and a caller presenting the zero preimage.
+31. **Iteration 17 #2 / … / 31 #28 still stands:** `Delete`'s hash scrub is best effort.
+32. **Iteration 17 #3 / … / 31 #29 still stands:** nothing enforces that a `Session.ID` in the
+    store came from `NewID` — though `adoptableID` now enforces the shape on the one path
+    that builds an id from the host instead of from `NewID`.
+33. **Iteration 16 #1 / … / 31 #30 still stands:** `ResolveWorkDir` has an unavoidable TOCTOU
+    window before `tmux new-session -c`.
+34. **Iteration 16 #3 / … / 31 #31 still stands:** nothing re-stats an approved root.
+35. **Iteration 15 #1 / … / 31 #32 still stands:** FR-027's class admits a leading `-`.
+36. **Iteration 13 #1 / … / 31 #33 still stands:** `docs/auth-and-sessions.md`'s samples are
+    stale in four ways, and #4 above is a fifth.
+37. **Iteration 12 #1 / … / 31 #34 still stands:** CI never runs `-race`
+    (`.github/workflows/ci.yml:178`). Run by hand again this iteration, green.
+38. **Iteration 12 #2 / … / 31 #35 still stands:** three specs disagree on `Observe`'s
+    signature.
+39. **Iteration 12 #3 / … / 31 #36 still stands:** the replay cache is unbounded in count.
+40. **Iteration 11 #1 / … / 31 #37 still stands:** the audit trail cannot tell clock drift
+    from a forged future timestamp. T038.
+41. **Iteration 11 #2 / … / 31 #38 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right — and adoption now depends on it agreeing with tmux's, since
+    the ceiling compares one clock's `now` against another's `#{session_created}`.
+42. **Iteration 10 #2 / … / 31 #39 still stands:** the signature covers timestamp and body but
+    **not the method or the path**. **No task owns it.**
+43. **Iteration 9 #1 / … / 31 #40 still stands:** `RequestAudit.Deny` takes a free `string`.
+44. **Iteration 8 #2 / … / 31 #41 still stands:** the loud default-root warning goes to stderr
+    while audit records go to stdout. T032.
+45. **Iteration 8 #1 / … / 31 #42 still stands:** `.env.example` does not exist. T040.
+46. **Iteration 7 #1 / … / 31 #43 still stands:** bidi and invisible Unicode are not stripped
+    by `tmuxctl.Strip`, by design. **Milestone 2 decides before rendering.**
+47. **Iteration 6 #3 / … / 31 #44 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case while `exec.go` also matches the
+    missing-socket pair.
+48. **Iteration 14 #1 / … / 31 #45 still stands:** `git checkout --`, `git restore`, and
+    `perl -i` are all outside the permission allowlist, so `PROMPT.md` step 6's documented
+    recovery path needs an approval an autonomous run cannot give. Five probes were reverted
+    with `Edit` in reverse this iteration. **New this iteration: a heredoc — `git commit -F -`
+    or an append to this notebook — is also outside it.** Repeated `-m` flags work for the
+    commit, and the `Edit` tool works for the notebook.
+49. **Iteration 1 #1 / … / 31 #46 still stands, thirty-second iteration carrying it:**
+    `loop.sh`'s sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook (which
+    ran clean on this iteration's commit). Needs an operator or a task of its own.
+50. **Iteration 2 #2 / … / 31 #47 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again, again only because the finding was written down.
+    Thirty-first iteration of manual compensation for a one-line fix to step 9.
+51. **Iteration 6 #6 / … / 31 #48 still stands:** `AGENTS.md`'s command table has no entry for
+    `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
