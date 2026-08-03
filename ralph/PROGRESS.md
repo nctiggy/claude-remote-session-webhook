@@ -1831,3 +1831,163 @@ flagged in iteration 13), T017 (`io.ReadFull`, the per-byte-column test, and no 
     iteration of manual compensation for a one-line fix to step 9.
 23. **Iteration 6 #6 / … / 14 #22 still stands:** `AGENTS.md`'s command table has no entry for
     `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
+
+---
+
+## Iteration 16 — 2026-08-03 09:43
+
+**Did:** Completed **T015**. Added `internal/session/workdir.go` (`ResolveWorkDir`,
+`ErrInvalidWorkDir` plus four reason sentinels, and the unexported `underAnyRoot` /
+`underRoot`) and `workdir_test.go`. The package is now 21 tests / 197 runs, up from
+15 / 73. Ticked T015 in **both** `ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`.
+
+Gate, executed not asserted:
+
+```
+go build ./...              OK
+go vet ./...                OK
+go vet -tags tmux ./...     OK
+go test -count=1 ./...      OK (session 21 tests / 197 runs, auth, audit, config, tmuxctl)
+go test -race -count=1 ./...   OK
+go test -tags tmux ./...    OK (real tmux)
+golangci-lint run           OK
+gofmt -l . / goimports -l . empty
+go.sum                      absent  ✅ zero third-party deps still holds
+git status                  clean against HEAD after every probe was reverted
+gitleaks (pre-commit)       1 commits scanned … no leaks found
+```
+
+**Learned (do not rediscover):**
+
+- **The suite was green on the first run, which is the one result that means nothing.**
+  Seven mutations, each killed only by the case written for it: bare `strings.HasPrefix`
+  (3 subtests, in both tables), containment against the cleaned path instead of the
+  resolved one (4), the `EvalSymlinks` error wrapped verbatim (the canary test), fail-open
+  on unresolvable (1), no `IsAbs` (5), no `IsDir` (1), and the two checks in swapped order
+  (1). Reverted each with `Edit`; `git status --porcelain` showed only the two new files
+  afterwards.
+- **`os.Stat` turns out to be a second gate, and it hides a fail-open.** Probe 4 (fall back
+  to the cleaned path when `EvalSymlinks` errors) killed only the NUL case — a non-existent
+  path and a dangling symlink are still refused, because containment passes on the cleaned
+  spelling and the later `Stat` fails anyway. Only the *reason* changes. Worth knowing for
+  **T028/T031**, which have the same shape: two checks that overlap look like one test
+  covering both until a mutation says otherwise. The reason-per-sentinel table is what made
+  the difference visible at all.
+- **Iteration 15's "a rule needs a reason a test can name" applies twice here, and one of
+  the two was missing on my first pass.** The containment/`IsDir` order is a claim about
+  which reason reaches the audit trail, and nothing observed it until I added *a regular
+  file outside the approved roots* — the case where both rules apply. Probe 7 then failed
+  exactly that subtest and nothing else. **Any comment of the form "X is checked before Y"
+  needs the input where both fire, or it is prose.**
+- **`filepath.Clean` is textual and that is a feature, not a hole.** `<root>/repo/../repo`
+  and `<root>/../code/repo` are accepted, because the rule is where a path *lands*, never
+  what it was spelled with. Both are in the accepted table so a future change cannot start
+  refusing traversal syntax and call it hardening.
+- **The error deliberately drops the `os.PathError`.** It carries the caller's path, and
+  this error is headed for `audit.Record.Reason` (free text — finding #12) and a log line;
+  echoing it would let a caller put arbitrary bytes, newlines included, into the audit
+  trail by naming a directory. `config.resolveRoot` *does* interpolate its paths, and that
+  is correct there: those come from the operator's environment at startup, not off the
+  wire. **Same rule applies to T024's prompt errors and T022's decode errors.**
+- **The degenerate root `/` needed the `TrimSuffix`.** `/` is the one cleaned path that
+  already ends in a separator, so `root + "/"` would be `//` and match nothing — an
+  allowlist of `/` would have silently refused every path. `config` accepts `/` as a root,
+  so this is reachable.
+- **Roots are consumed exactly as `config` resolved them and are deliberately not
+  re-resolved** (data-model.md: a swap between check and spawn is a race a caller wins).
+  `TestResolveWorkDirFailsClosedOnAnUnresolvedRoot` pins the direction that breaks in — a
+  legitimate path under a symlinked root is refused, never a path outside one admitted.
+- **`internal/session` now imports `internal/config`** for `ApprovedRoot`. No cycle
+  (`config` imports only stdlib), and it avoids a duplicate root type. First edge in that
+  direction; T016/T018 will want the same.
+
+**Left:** T016 is next (`internal/session/session.go`: the `Session` model with `Owner`,
+the `starting`/`running`/`dead` states, and the in-memory store; token expiry **derived**
+from `CreatedAt + 24h`, never stored). It still owes the `Owner`-type ruling flagged in
+iteration 13. Then T017 (`io.ReadFull`, the per-byte-column test, no hex fixtures — see
+iteration 14), T018, and T019–T042. `ValidateName` and `ResolveWorkDir` are both written
+and both still unreferenced; **T022 owns wiring them into `POST /sessions`** and its test
+must drive a bad name *and* a bad path, or two boundary checks ship dead.
+
+**Findings (noticed, not fixed):**
+
+1. **New this iteration: `ResolveWorkDir` is a create-time check with an unavoidable TOCTOU
+   window.** Nothing stops the resolved directory from being renamed or replaced with a
+   symlink between the check and `tmux new-session -c`. Closing it properly needs an
+   `openat2(RESOLVE_BENEATH)`-style handle or a re-check inside the spawn, neither of which
+   any task owns, and the fd cannot be handed to tmux anyway. The mitigation on the books is
+   Principle VI's bounded lifetime and verified teardown. **Stated here rather than
+   silently, because the docstring claims it and no test can.** An operator ruling would be
+   welcome; my reading is that it is acceptable for a single-operator daemon whose approved
+   roots are the operator's own directories.
+2. **New this iteration: a rejected path is an existence oracle, weakly.** The reason
+   sentinels distinguish "does not exist" from "outside the roots", so anything that renders
+   a reason to a *caller* would leak whether an arbitrary host path exists.
+   `contracts/http-api.md` answers 400 either way, so today this only reaches the audit
+   record — the same shape as iteration 13 #2 for auth. **T020/T022 must keep the reason
+   server-side**, and finding #4 below already asks for a byte-identical-body assertion.
+3. **New this iteration: nothing enforces that an approved root is not a symlink at the
+   moment of use.** `config` resolves at startup; if a root is *replaced* by a symlink while
+   the daemon runs, every containment check silently narrows (fails closed) rather than
+   widening. Recorded because the failure is invisible — legitimate creates would start
+   returning 400 with no clue why. A startup-time re-stat in T032's adopt path would catch
+   the common case.
+4. **Iteration 15 #1 still stands:** FR-027's class admits a leading `-` while `tasks.md`
+   T014 calls it hostile. Resolved in favour of the regexp (it appears five times); worth an
+   operator ruling before milestone 2 renders names and milestone 3 adds rename.
+5. **Iteration 15 #2 still stands, and now covers two files:** neither `ValidateName` nor
+   `ResolveWorkDir` has a caller. T022 owns both.
+6. **Iteration 13 #1 / 14 #3 / 15 #3 still stands:** `docs/auth-and-sessions.md`'s `Verify`
+   sample is stale in two ways.
+7. **Iteration 13 #2 / 14 #4 / 15 #4 still stands:** nothing stops a handler from putting
+   `auth.Reason(err)` in a response body. T020 should assert the 401 body is byte-identical
+   across failure modes.
+8. **Iteration 12 #1 / 13 #3 / 14 #5 / 15 #5 still stands:** CI never runs `-race`
+   (`.github/workflows/ci.yml:178` runs `go test ./...` only). Worth an operator doing before
+   T033.
+9. **Iteration 12 #2 / … / 15 #6 still stands:** three specs disagree on `Observe`'s
+   signature. The code follows `tasks.md`.
+10. **Iteration 12 #3 / … / 15 #7 still stands:** the replay cache is unbounded in count,
+    only in age. No task owns a cap.
+11. **Iteration 11 #1 / … / 15 #8 still stands:** the audit trail cannot tell clock drift
+    from a forged future timestamp. T038 should decide whether to split the sentinel.
+12. **Iteration 11 #2 / … / 15 #9 still stands:** nothing forces the daemon's clock to be
+    monotonic or roughly right.
+13. **Iteration 10 #1 / … / 15 #10 still stands:** `contracts/http-api.md` promises `400` for
+    an oversize body but auth runs first. **T020 must decide.**
+14. **Iteration 10 #2 / … / 15 #11 still stands:** the signature covers timestamp and body
+    but not method or path, so a signed body is valid on any route.
+15. **Iteration 9 #1 / … / 15 #12 still stands:** `audit.Record.Reason` can carry arbitrary
+    text. T038 should pass server-authored constants. This iteration adds four more
+    candidates: `ErrInvalidWorkDir`'s reasons are fixed strings carrying no caller input by
+    construction, and a test enforces it.
+16. **Iteration 9 #2 / … / 15 #13 still stands:** `audit.Emit`'s error has no handler yet.
+    T020 owns the ruling.
+17. **Iteration 8 #2 / … / 15 #14 still stands:** the loud default-root warning goes to
+    stderr while audit records go to stdout. T032 owns it.
+18. **Iteration 8 #1 / … / 15 #15 still stands:** `.env.example` does not exist, so the
+    `.gitleaks.toml` allowlist entry for it guards nothing. T040.
+19. **Iteration 7 #1 / … / 15 #16 still stands:** bidi and invisible Unicode are not stripped
+    by `tmuxctl.Strip`, by design. Milestone 2 decides. Pane output only — names and now
+    working directories are both closed to them.
+20. **Iteration 6 #2 / … / 15 #17 still stands:** a failed `paste-buffer` leaves caller
+    prompt text in a named tmux buffer.
+21. **Iteration 6 #1 / … / 15 #18 still stands:** T028 will report a false failure on the
+    last session — killing the only session stops the tmux server and `Has` then errors
+    rather than returning false. Use `List`.
+22. **Iteration 6 #3 / … / 15 #19 still stands:** `contracts/tmuxctl.md` names only
+    `no server running` for the empty-server case.
+23. **Iteration 14 #1 / 15 #20 still stands:** `git checkout -- <path>` and `git restore` are
+    not in the permission allowlist, so `PROMPT.md` step 6's documented recovery path needs
+    an approval an autonomous run cannot give. Seven probes reverted with `Edit` in reverse
+    again this iteration. Also confirmed again: `set -e` with `;`-joined commands is refused
+    as a multi-operation command, so the gate runs one command per call.
+24. **Iteration 1 #1 / … / 15 #21 still stands, sixteenth iteration carrying it:** `loop.sh`'s
+    sweep commit uses `--no-verify`, bypassing the gitleaks pre-commit hook (which ran clean
+    on this iteration's commit). Needs an operator or a task of its own.
+25. **Iteration 2 #2 / … / 15 #22 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again, again only because the finding was written down.
+    Fifteenth iteration of manual compensation for a one-line fix to step 9.
+26. **Iteration 6 #6 / … / 15 #23 still stands:** `AGENTS.md`'s command table has no entry for
+    `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all.
