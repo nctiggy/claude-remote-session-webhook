@@ -57,6 +57,62 @@ type createResponse struct {
 	Token string `json:"token"`
 }
 
+// sessionEntry is one session as this API describes it, in the field order
+// contracts/http-api.md prints — the list's element type, and the shape the
+// contract says a detail response repeats.
+//
+// It exists so that what leaves the daemon is a decision made once, in a type
+// whose fields are all there is. session.Session carries a TokenHash and the
+// contract's entry does not; the safety of that is not "remember to leave it
+// out" but that there is nowhere here to put it. The same goes for anything a
+// later field on the record might hold — a record grows, this does not, and a
+// response that should carry more is a contract change with a diff.
+//
+// Every instant is a formatted string for the reason createResponse's are, and
+// expires_at comes off the record's own TokenExpiry so a listed session's
+// deadline is the one the reaper will enforce.
+type sessionEntry struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	WorkDir      string `json:"work_dir"`
+	State        string `json:"state"`
+	CreatedAt    string `json:"created_at"`
+	ExpiresAt    string `json:"expires_at"`
+	LastActivity string `json:"last_activity"`
+
+	// Adopted says the session was reconciled from the host at startup rather
+	// than created through this API (FR-023). It changes no rule — an adopted
+	// session is owned, deadlined, and reaped exactly as any other — and is
+	// here because an operator looking at a fleet after a restart needs to be
+	// able to tell which of these the daemon did not start.
+	Adopted bool `json:"adopted"`
+}
+
+// listResponse is the contract's 200 body for GET /sessions: one object with one
+// array, so that a future addition — a count, a cursor — is a field rather than
+// a change of the document's type.
+type listResponse struct {
+	Sessions []sessionEntry `json:"sessions"`
+}
+
+// entryFor renders one record as the contract's entry. It is the only place a
+// session becomes something a client sees, so the list and T027's detail cannot
+// describe the same session two ways.
+func entryFor(s session.Session) sessionEntry {
+	return sessionEntry{
+		ID:      s.ID,
+		Name:    s.Name,
+		WorkDir: s.WorkDir,
+		State:   string(s.State),
+
+		CreatedAt: s.CreatedAt.UTC().Format(timestampFormat),
+		ExpiresAt: s.TokenExpiry().UTC().Format(timestampFormat),
+
+		LastActivity: s.LastActivity.UTC().Format(timestampFormat),
+		Adopted:      s.Adopted,
+	}
+}
+
 // promptRequest is the fixed shape POST /sessions/{id}/prompt accepts: one
 // field, which is the text to deliver (contracts/http-api.md).
 //
@@ -120,6 +176,14 @@ var (
 	// errResponseUnencodable cannot happen for a struct of strings, and is here
 	// so that it cannot happen *silently* if a later field makes it possible.
 	errResponseUnencodable = errors.New("the response could not be encoded")
+
+	// errListNoCaller is unreachable behind the middleware, and fails closed for
+	// the reason errCreateNoCaller does — more sharply, if anything: the owner is
+	// this route's entire authorisation, so a list reached without one would be
+	// asking for every session owned by the zero CallerID. Store.List answers
+	// that with nothing today, and that is a property of the store rather than a
+	// guarantee this handler is entitled to rest on.
+	errListNoCaller = errors.New("the list handler was reached with no authenticated caller")
 
 	// errPromptNoSession is unreachable behind the layer-3 resolver, for the
 	// reason errCreateNoCaller is unreachable behind layer 2. It fails closed
@@ -247,6 +311,50 @@ func createReason(err error) error {
 		}
 	}
 	return errCreateRefused
+}
+
+// listSessions is GET /sessions: the caller's own fleet and nobody else's
+// (contracts/http-api.md, FR-032).
+//
+// This is the one route that is caller-scoped rather than session-scoped: it
+// names no session, so it presents no bearer token and layer 3 never runs. That
+// makes the owner the whole of its authorisation, which is why the identity
+// comes from the context alone and is passed *into* the lookup rather than being
+// compared against what came back. There is no filtering step here that could be
+// written wrongly, and no place to put one — a caller's sessions are what
+// Manager.List returns for their identity.
+//
+// The response is built field by field through entryFor rather than by
+// marshalling the records. A Session carries the token hash, and the difference
+// between a list that never shows it and one that happens not to today is
+// exactly the difference between a type with no such field and a struct tag
+// somebody could remove (FR-013).
+//
+// Nothing is read from the host. A list is a read of the daemon's own records,
+// so it costs no tmux command and cannot be made slow, or made to fail, by the
+// state of any session in it.
+func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
+	caller, ok := CallerFrom(r.Context())
+	if !ok {
+		s.failInternal(w, r, errListNoCaller)
+		return
+	}
+
+	owned := s.sessions.List(caller.ID)
+
+	// Made rather than declared, so a caller with no sessions is answered with an
+	// empty array and not a null: "you have none" is a fact, and a client that
+	// has to treat the two spellings alike is one this API has made guess.
+	entries := make([]sessionEntry, 0, len(owned))
+	for _, one := range owned {
+		entries = append(entries, entryFor(one))
+	}
+
+	// No SetSessionID. The record says which caller listed and when, because a
+	// list is about no single session — and stamping one of the returned IDs on
+	// it would make the trail claim an operation on a session that was only read
+	// about.
+	s.writeJSON(w, r, http.StatusOK, listResponse{Sessions: entries})
 }
 
 // promptSession is POST /sessions/{id}/prompt: deliver the caller's text into

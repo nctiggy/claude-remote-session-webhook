@@ -288,14 +288,19 @@ func TestEveryLayer2FailureAnswersTheIdenticalResponse(t *testing.T) {
 		answers[name] = rec
 	}
 
-	// The replay has to be made against the same server, after a first use.
+	// The replay has to be made against the same server, after a first use. What
+	// the first use answers is read out of reachedStatus rather than written
+	// here, because the only thing this assertion needs is that it was *allowed*
+	// — T026 moved this route from 501 to 200, and a literal would have made that
+	// look like a failure of the replay cache.
+	listRoute := Route{Method: http.MethodGet, Pattern: "/sessions"}
 	first := httptest.NewRequest(http.MethodGet, "/sessions", nil)
 	signRequest(t, first, nil, testTime)
 	firstAnswer := httptest.NewRecorder()
 	s.ServeHTTP(firstAnswer, first)
-	if firstAnswer.Code != http.StatusNotImplemented {
+	if firstAnswer.Code != reachedStatus[listRoute] {
 		t.Fatalf("the first use of the signed request = %d; want %d, or the replay case proves nothing",
-			firstAnswer.Code, http.StatusNotImplemented)
+			firstAnswer.Code, reachedStatus[listRoute])
 	}
 
 	replay := httptest.NewRequest(http.MethodGet, "/sessions", nil)

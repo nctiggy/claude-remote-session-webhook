@@ -159,13 +159,14 @@ func bodyFor(f sessionFixture, route Route) []byte {
 // bodyFor's body has got past layer 2.
 //
 // It is a literal table rather than one constant because the six no longer
-// answer alike: T022, T024, and T025 gave three of them handlers, so they answer
-// 201, 202, and 200 where the three unimplemented routes still answer 501. Each
-// later task moves one row, and what the sweeps assert through it is unchanged —
-// the request reached a handler, which is only possible through the middleware.
+// answer alike: T022, T024, T025, and T026 gave four of them handlers, so they
+// answer 201, 202, and 200 where the two unimplemented routes still answer 501.
+// Each later task moves one row, and what the sweeps assert through it is
+// unchanged — the request reached a handler, which is only possible through the
+// middleware.
 var reachedStatus = map[Route]int{
 	{Method: http.MethodPost, Pattern: "/sessions"}:             http.StatusCreated,
-	{Method: http.MethodGet, Pattern: "/sessions"}:              http.StatusNotImplemented,
+	{Method: http.MethodGet, Pattern: "/sessions"}:              http.StatusOK,
 	{Method: http.MethodGet, Pattern: "/sessions/{id}"}:         http.StatusNotImplemented,
 	{Method: http.MethodDelete, Pattern: "/sessions/{id}"}:      http.StatusNotImplemented,
 	{Method: http.MethodPost, Pattern: "/sessions/{id}/prompt"}: http.StatusAccepted,
@@ -1361,6 +1362,377 @@ func TestOutputRefusesARequestWithNoResolvedSession(t *testing.T) {
 	}
 	if calls := f.fixture.tmux.Calls(); len(calls) != 0 {
 		t.Errorf("a capture with no resolved session ran %v; want nothing", calls)
+	}
+}
+
+// getSessions drives one signed list through the whole stack — signature,
+// middleware, handler, store — and hands back the raw recorder as well as the
+// decoded body, because half of what this route must be asked is about the bytes
+// on the wire rather than the value a client decodes from them.
+//
+// There is no bearer credential, deliberately: GET /sessions names no session,
+// so it is caller-scoped rather than session-scoped and layer 3 never runs
+// (contracts/http-api.md). The signature is the whole of its authentication and
+// the caller identity behind it is the whole of its authorisation.
+//
+// The instant is a parameter for the reason postSessionsAt takes one: two list
+// requests to the same server carry the same (empty) body, so signed at the same
+// second they would share a signature and the second would be refused as a
+// replay.
+func getSessions(t *testing.T, s *testServer, at time.Time) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, "/sessions", nil)
+	signRequest(t, req, nil, at)
+
+	answer := httptest.NewRecorder()
+	s.ServeHTTP(answer, req)
+
+	var decoded map[string]any
+	if answer.Body.Len() > 0 {
+		if err := json.Unmarshal(answer.Body.Bytes(), &decoded); err != nil {
+			t.Fatalf("the response %q is not JSON: %v", answer.Body, err)
+		}
+	}
+	return answer, decoded
+}
+
+// listed pulls the entries out of a list body, failing rather than returning
+// nothing so that a response with no "sessions" array cannot pass as an empty
+// fleet — which is the one wrong answer this route could give that looks exactly
+// like a right one.
+func listed(t *testing.T, body map[string]any) []map[string]any {
+	t.Helper()
+
+	raw, ok := body["sessions"]
+	if !ok {
+		t.Fatalf("the response has no %q field: %v", "sessions", body)
+	}
+	array, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("sessions = %v (%T); want an array", raw, raw)
+	}
+
+	out := make([]map[string]any, 0, len(array))
+	for i, e := range array {
+		entry, ok := e.(map[string]any)
+		if !ok {
+			t.Fatalf("sessions[%d] = %v (%T); want an object", i, e, e)
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// ids reads the id off each entry, for the tests whose claim is about which
+// sessions came back rather than about what each one says.
+func ids(t *testing.T, entries []map[string]any) []string {
+	t.Helper()
+
+	out := make([]string, 0, len(entries))
+	for i, entry := range entries {
+		id, ok := entry["id"].(string)
+		if !ok {
+			t.Fatalf("sessions[%d].id = %v (%T); want a string", i, entry["id"], entry["id"])
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+// TestListAnswersTheContractResponse is contracts/http-api.md's list example,
+// field by field, against a record whose values are all different from one
+// another — last_activity is deliberately not created_at, so a handler that
+// echoed one for the other would be caught rather than agreed with.
+func TestListAnswersTheContractResponse(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	used := testTime.Add(33 * time.Minute)
+	live, _ := s.fixture.plant(t, session.Session{
+		Name:         "refactor-auth",
+		WorkDir:      s.fixture.repo,
+		State:        session.StateRunning,
+		LastActivity: used,
+	})
+
+	answer, body := getSessions(t, s, testTime)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+	if ct := answer.Header().Get(headerContentType); ct != contentTypeJSON {
+		t.Errorf("Content-Type = %q; want %q — every response is JSON", ct, contentTypeJSON)
+	}
+
+	entries := listed(t, body)
+	if len(entries) != 1 {
+		t.Fatalf("the list carries %d session(s) (%v); want exactly the one planted", len(entries), entries)
+	}
+	entry := entries[0]
+
+	want := map[string]any{
+		"id":            live.ID,
+		"name":          "refactor-auth",
+		"work_dir":      s.fixture.repo,
+		"state":         "running",
+		"created_at":    testTime.Format(time.RFC3339),
+		"expires_at":    testTime.Add(24 * time.Hour).Format(time.RFC3339),
+		"last_activity": used.Format(time.RFC3339),
+		"adopted":       false,
+	}
+	for name, value := range want {
+		if got := entry[name]; got != value {
+			t.Errorf("%s = %v; want %v", name, got, value)
+		}
+	}
+
+	// The contract's field set exactly: an entry carrying anything else is an
+	// entry that has grown a field nobody reviewed, which on this route is how a
+	// hash or a token would arrive.
+	wantFields := slices.Sorted(maps.Keys(want))
+	if fields := slices.Sorted(maps.Keys(entry)); !slices.Equal(fields, wantFields) {
+		t.Errorf("entry fields = %v; want %v", fields, wantFields)
+	}
+	if len(body) != 1 {
+		t.Errorf("the response carries %d fields (%v); the contract defines exactly one", len(body), body)
+	}
+}
+
+// TestListReturnsOnlyTheCallersOwnSessions is FR-032 at this route, and it is
+// the whole of T026. The second owner is synthetic — there is one operator
+// today — but the ownership check is not, and milestone 2's Access identity
+// arrives on a handler that already answers this correctly.
+func TestListReturnsOnlyTheCallersOwnSessions(t *testing.T) {
+	t.Parallel()
+
+	const otherOwner auth.CallerID = "a-second-operator"
+	const otherName = "zzz-other-owners-session-zzz"
+
+	s := newAuditedServer(t)
+	mine, _ := s.fixture.plant(t, session.Session{Name: "mine-first", WorkDir: s.fixture.repo})
+	alsoMine, _ := s.fixture.plant(t, session.Session{
+		Name:      "mine-second",
+		WorkDir:   s.fixture.repo,
+		CreatedAt: testTime.Add(time.Minute),
+	})
+	theirs, _ := s.fixture.plant(t, session.Session{
+		Owner:   otherOwner,
+		Name:    otherName,
+		WorkDir: s.fixture.repo,
+	})
+
+	answer, body := getSessions(t, s, testTime)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+
+	got := ids(t, listed(t, body))
+	if want := []string{mine.ID, alsoMine.ID}; !slices.Equal(got, want) {
+		t.Errorf("the list carries %v; want exactly the caller's own %v", got, want)
+	}
+
+	// Not just absent from the array: absent from the response altogether. An ID
+	// that leaked in a count, a header, or a field nobody looked at would still
+	// be a session the caller may not know exists.
+	outward := answer.Body.String() + " " + fmt.Sprint(answer.Header())
+	if strings.Contains(outward, theirs.ID) {
+		t.Errorf("another owner's session id reached the caller: %q", outward)
+	}
+	if strings.Contains(outward, otherName) {
+		t.Errorf("another owner's session name reached the caller: %q", outward)
+	}
+}
+
+// TestListNeverCarriesATokenOrItsHash is the other half of T026 and FR-013. The
+// plaintext exists only in the create response its owner already has; the hash
+// is the daemon's, and a list that handed it out would be handing out the thing
+// every session-scoped request is checked against.
+func TestListNeverCarriesATokenOrItsHash(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	live, issued := s.fixture.plant(t, session.Session{Name: "probe", WorkDir: s.fixture.repo})
+
+	record, err := s.fixture.store.Get(live.ID, auth.CallerOperator)
+	if err != nil {
+		t.Fatalf("the planted session is not in the store: %v", err)
+	}
+
+	answer, body := getSessions(t, s, testTime)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+
+	for _, entry := range listed(t, body) {
+		if token, ok := entry["token"]; ok {
+			t.Errorf("a list entry carries a token: %v", token)
+		}
+	}
+
+	// Three spellings, because the field set assertion above only catches a field
+	// somebody named honestly. The hash is checked as hex and as its own bytes;
+	// the plaintext is checked because plant issued one and the record must be
+	// the only thing that knows it.
+	for name, needle := range map[string]string{
+		"the plaintext token": issued,
+		"the token hash":      hex.EncodeToString(record.TokenHash[:]),
+	} {
+		if strings.Contains(strings.ToLower(answer.Body.String()), strings.ToLower(needle)) {
+			t.Errorf("the list carries %s: %q", name, answer.Body)
+		}
+	}
+	if bytes.Contains(answer.Body.Bytes(), record.TokenHash[:]) {
+		t.Errorf("the list carries the raw token hash: %q", answer.Body)
+	}
+	if written := s.sink.String(); strings.Contains(written, issued) {
+		t.Errorf("the audit trail carries the token: %q", written)
+	}
+}
+
+// TestAnEmptyFleetIsAnEmptyArray: a caller with no sessions gets [], never null.
+// Go's zero slice marshals as null, so this is the difference between a contract
+// a client can rely on and one it has to defend against — and it is a property
+// of one `make` that nothing else in the file would notice losing.
+func TestAnEmptyFleetIsAnEmptyArray(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	answer, body := getSessions(t, s, testTime)
+
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+	if entries := listed(t, body); len(entries) != 0 {
+		t.Errorf("a fresh server listed %v; want nothing", entries)
+	}
+	if got, want := answer.Body.String(), `{"sessions":[]}`; got != want {
+		t.Errorf("body = %q; want %q — an empty fleet is an empty array, not a null", got, want)
+	}
+}
+
+// TestListIsOldestFirstAndCarriesEachRecordAsItIs pins the two things a client
+// reading this route repeatedly depends on: the order does not change between
+// identical requests — map iteration is randomised, so without the store's sort
+// it would — and each entry says what its own record says, adoption included.
+func TestListIsOldestFirstAndCarriesEachRecordAsItIs(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	oldest, _ := s.fixture.plant(t, session.Session{
+		Name:      "adopted-at-startup",
+		WorkDir:   s.fixture.repo,
+		CreatedAt: testTime.Add(-2 * time.Hour),
+		State:     session.StateRunning,
+		Adopted:   true,
+	})
+	middle, _ := s.fixture.plant(t, session.Session{
+		Name:      "middle",
+		WorkDir:   s.fixture.repo,
+		CreatedAt: testTime.Add(-time.Hour),
+	})
+	newest, _ := s.fixture.plant(t, session.Session{
+		Name:    "newest",
+		WorkDir: s.fixture.repo,
+	})
+
+	answer, body := getSessions(t, s, testTime)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+
+	entries := listed(t, body)
+	if want := []string{oldest.ID, middle.ID, newest.ID}; !slices.Equal(ids(t, entries), want) {
+		t.Fatalf("the list is ordered %v; want oldest first, %v", ids(t, entries), want)
+	}
+	if got := entries[0]["adopted"]; got != true {
+		t.Errorf("adopted = %v; want true — the record says the daemon did not start this one", got)
+	}
+	if got := entries[2]["adopted"]; got != false {
+		t.Errorf("adopted = %v; want false", got)
+	}
+	if got, want := entries[0]["expires_at"], oldest.CreatedAt.Add(24*time.Hour).Format(time.RFC3339); got != want {
+		t.Errorf("expires_at = %v; want %q — the deadline runs from the session's own creation", got, want)
+	}
+}
+
+// TestListIsRecordedOnceUnderNoSessionID is FR-041 for this route. A list acts
+// on no session, so the record names the caller and the action and stops there:
+// stamping one of the returned IDs on it would make the trail claim an operation
+// on a session that was only read about.
+func TestListIsRecordedOnceUnderNoSessionID(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	s.fixture.plant(t, session.Session{Name: "probe", WorkDir: s.fixture.repo})
+
+	answer, _ := getSessions(t, s, testTime)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+
+	rec := s.only(t)
+	if rec["action"] != string(audit.ActionSessionList) {
+		t.Errorf("action = %v; want %q", rec["action"], audit.ActionSessionList)
+	}
+	if rec["decision"] != string(audit.Allow) {
+		t.Errorf("decision = %v; want %q", rec["decision"], audit.Allow)
+	}
+	if want := string(auth.CallerOperator); rec["caller"] != want {
+		t.Errorf("caller = %v; want %q", rec["caller"], want)
+	}
+	if id, ok := rec["session_id"]; ok {
+		t.Errorf("a list recorded a session_id: %v", id)
+	}
+	if reason, ok := rec["reason"]; ok {
+		t.Errorf("an allowed list recorded a reason: %v", reason)
+	}
+	if len(s.failed) != 0 {
+		t.Errorf("the request reported %v; want nothing", s.failed)
+	}
+}
+
+// TestListCostsNoTmuxCommand: a list is a read of the daemon's own records. A
+// handler that asked tmux about each session would make the fleet view fail
+// whenever one window did, and would put the cost of a `list-sessions` exec on a
+// route a dashboard is going to poll.
+func TestListCostsNoTmuxCommand(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	s.fixture.plant(t, session.Session{Name: "one", WorkDir: s.fixture.repo})
+	s.fixture.plant(t, session.Session{Name: "two", WorkDir: s.fixture.repo})
+
+	answer, _ := getSessions(t, s, testTime)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusOK)
+	}
+	if calls := s.fixture.tmux.Calls(); len(calls) != 0 {
+		t.Errorf("the list ran %v; want nothing — it reads records, not the host", calls)
+	}
+}
+
+// TestListRefusesARequestWithNoAuthenticatedCaller is unreachable through the
+// router, which is the point: the handler is checked directly to prove it fails
+// closed rather than listing against an empty identity. Store.List answers the
+// zero CallerID with nothing today, so a handler that trusted that would look
+// correct — until the day something else does.
+func TestListRefusesARequestWithNoAuthenticatedCaller(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	live, _ := s.fixture.plant(t, session.Session{Name: "probe", WorkDir: s.fixture.repo})
+
+	answer := httptest.NewRecorder()
+	s.listSessions(answer, httptest.NewRequest(http.MethodGet, "/sessions", nil))
+
+	if answer.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusInternalServerError)
+	}
+	if got := answer.Body.String(); got != string(bodyInternalError) {
+		t.Errorf("body = %q; want %q", got, bodyInternalError)
+	}
+	if strings.Contains(answer.Body.String(), live.ID) {
+		t.Errorf("a list with no caller answered with a session: %q", answer.Body)
 	}
 }
 

@@ -249,6 +249,24 @@ func (m *Manager) Resolve(id string, owner auth.CallerID, presented string) (Ses
 	return s, nil
 }
 
+// List is every session the caller owns, oldest first (FR-032).
+//
+// It is a method here rather than a handler reaching into the store, for the
+// reason Resolve is: the store is not reachable through a Manager, so every path
+// from a request to a record runs through one of these two calls and both take
+// the owner as a parameter rather than as something a caller site remembers to
+// check. A handler holding a *Store would be a second path, free to forget it.
+//
+// There is no lookup by name, by state, or by anything else, and adding one
+// would need a reason: an owner is the only filter that is also an authorisation
+// (FR-032), and every other one is a way of asking about records that are not
+// the caller's.
+//
+// The records are copies and they carry the token hash, because a Session does.
+// What may leave the daemon is settled at the HTTP boundary, where
+// contracts/http-api.md names the fields — and the hash is not among them.
+func (m *Manager) List(owner auth.CallerID) []Session { return m.store.List(owner) }
+
 // Prompt delivers caller text into a session verbatim and submits it (FR-030).
 //
 // The record is the one Resolve returned, so ownership, the credential, and the

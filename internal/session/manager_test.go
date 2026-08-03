@@ -629,6 +629,36 @@ func TestResolveNamesNoCallerSuppliedTextInItsError(t *testing.T) {
 	}
 }
 
+// List is owner-scoped for the same reason Resolve is, and this is the test that
+// says so at the seam rather than at the handler: a caller sees their own
+// sessions and has no way, through this method, to learn that another owner's
+// exists at all (FR-032). The empty identity is the case worth pinning — a
+// lookup that answered it with everything would turn one missing context value
+// into the whole fleet.
+func TestListIsScopedToItsOwner(t *testing.T) {
+	t.Parallel()
+
+	const otherOwner auth.CallerID = "a-second-operator"
+
+	f := newManagerFixture(t)
+	mine, _ := mustCreate(t, f, f.request())
+
+	theirs := f.request()
+	theirs.Owner = otherOwner
+	theirsCreated, _ := mustCreate(t, f, theirs)
+
+	got := f.mgr.List(auth.CallerOperator)
+	if len(got) != 1 || got[0].ID != mine.ID {
+		t.Fatalf("List(operator) = %v; want exactly the operator's own session %s", got, mine.ID)
+	}
+	if other := f.mgr.List(otherOwner); len(other) != 1 || other[0].ID != theirsCreated.ID {
+		t.Errorf("List(%s) = %v; want exactly that owner's own session %s", otherOwner, other, theirsCreated.ID)
+	}
+	if none := f.mgr.List(""); len(none) != 0 {
+		t.Errorf("List(\"\") = %v; want nothing — an unauthenticated lookup must not be a fleet view", none)
+	}
+}
+
 // Prompt's two commands, in the only order that delivers anything: the bytes
 // reach tmux on stdin, and only then is Return pressed. The payload is one
 // research D4 verified send-keys would mangle, and it must appear on no command
