@@ -318,6 +318,33 @@ func (st *Store) lookup(id string) (Session, bool) {
 	return s, ok
 }
 
+// snapshot is every record the store holds, as copies, in no particular order.
+//
+// It is the owner-blind read lookup's comment promises the reaper, and it is
+// unexported for the same reason: the reaper acts on the daemon's own behalf and
+// has no caller to check a record against, while everything reached from a
+// request goes through Get, which cannot be called without an owner.
+//
+// A copy rather than a callback under the lock, deliberately. Reaping is several
+// tmux commands per session, and a store held locked for the length of one would
+// stall every request behind a host that is slow to answer. The cost is that a
+// record can be deleted between the copy and its teardown — which is the destroy
+// racing the reaper that spec.md names, and Manager.Destroy already ends in
+// success for both of them.
+//
+// Order is unspecified because nothing about a sweep depends on it: each record
+// is judged against its own two deadlines and nothing else's.
+func (st *Store) snapshot() []Session {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+
+	out := make([]Session, 0, len(st.byID))
+	for _, s := range st.byID {
+		out = append(out, s)
+	}
+	return out
+}
+
 // List returns the caller's own sessions, oldest first, as copies.
 //
 // Ordering is by CreatedAt then ID because map iteration is randomised, and a
