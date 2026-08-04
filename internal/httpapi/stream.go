@@ -791,6 +791,24 @@ func (p *panes) watching(id string) int {
 	return shared.watchers
 }
 
+// holds reports whether this session's screen is still in the registry at all,
+// which is deliberately not the question watching answers.
+//
+// Zero watchers and no buffer are the same answer from watching and two very
+// different states of the daemon: a buffer whose release did not run has no
+// watchers and is still a session's screen held in memory for nobody, which is
+// exactly the accumulation docs/security.md §3 forbids and exactly what an
+// assertion counting watchers cannot see. It takes the registry's lock for the
+// reason watching does — the map is written on whichever goroutine net/http gave
+// the handler.
+func (p *panes) holds(id string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	_, ok := p.watched[id]
+	return ok
+}
+
 func (p *panes) detach(id string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

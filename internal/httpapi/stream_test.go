@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1609,6 +1610,34 @@ func assertStreamIsOver(t *testing.T, body *bufio.Reader) {
 	}
 }
 
+// assertStreamStoppedAtShutdown insists the response ended and that whatever was
+// still in flight when it did carried nothing.
+//
+// It is deliberately not assertStreamIsOver, and the difference is hold's own
+// select: when shutdown closes the channel while a tick is already due, both
+// cases are ready and Go picks between them at random, so the last thing on the
+// wire may be one more comment. That changes nothing an operator saw — a comment
+// is not an event and carries no data — but a test forbidding it outright fails
+// one run in several against a daemon behaving exactly as contracts/stream.md
+// describes, which is what it did before this helper existed.
+//
+// What is still forbidden is anything with data in it: a screen delivered after
+// the daemon stopped serving, or the farewell contracts/stream.md declines to
+// promise at shutdown.
+func assertStreamStoppedAtShutdown(t *testing.T, body *bufio.Reader) {
+	t.Helper()
+
+	rest, err := io.ReadAll(body)
+	if err != nil {
+		t.Errorf("the stream did not end cleanly: %v", err)
+	}
+	for _, line := range strings.Split(string(rest), "\n") {
+		if line != "" && !strings.HasPrefix(line, ":") {
+			t.Errorf("the stream wrote %q as the daemon shut down; a tick already due may still write its comment, and nothing else may follow", line)
+		}
+	}
+}
+
 // TestAReapedSessionEndsTheStreamThatWasWatchingIt is FR-034b, SC-015 and US2
 // scenario 7 in one exchange: the reaper takes a session out from under a
 // browser that is watching it, and the browser is told.
@@ -1665,8 +1694,15 @@ func TestAReapedSessionEndsTheStreamThatWasWatchingIt(t *testing.T) {
 	// The buffer goes with the stream that held it. A session's screen is secret
 	// under docs/security.md §3, and one kept for a session that no longer exists
 	// is material a daemon running for weeks accumulates for nobody.
+	//
+	// Both questions are asked, because the count alone answers neither: a
+	// registry that never dropped anything reports zero watchers for a buffer it
+	// is still holding, which is the leak stated rather than the leak refuted.
 	if watchers := f.panes.watching(live.ID); watchers != 0 {
 		t.Errorf("%d watchers still share the screen buffer of a reaped session; want none", watchers)
+	}
+	if f.panes.holds(live.ID) {
+		t.Error("the daemon is still holding the screen of a session it reaped; a buffer with no watchers is a session's output kept for nobody")
 	}
 }
 
@@ -1774,6 +1810,678 @@ func TestShutdownIsNotDelayedByOpenStreams(t *testing.T) {
 	// client relies on instead is the reconnect: to a live daemon it
 	// re-authorises, and to a dead one it fails visibly.
 	for _, body := range bodies {
-		assertStreamIsOver(t, body)
+		assertStreamStoppedAtShutdown(t, body)
+	}
+}
+
+// --- T029: the US2 acceptance suite -------------------------------------------
+//
+// The story's own claims rather than a handler's, made the way an operator would
+// meet them: over a socket, against the number the daemon was configured with,
+// and read back out of the daemon's own records. Each test below is one of the
+// five things T029 names — the cap past CRSW_MAX_STREAMS, two tabs on one
+// session, a browser that vanished, a screen that reaches no record, and the
+// refusal a hostile page earns — plus the one claim the tasks above could only
+// make structurally: that a whole stream request leaves exactly one record
+// behind.
+//
+// What they add over the tests above them is the arrangement rather than the
+// behaviour. T023 asks each check on its own through a recorder, which is the
+// right way to state an ordering and cannot state anything about a daemon that
+// is already busy; these ask what happens when several browsers, a configured
+// bound, and a session that is printing are all in play at once.
+
+// watchingAsConfigured is a serving fleet with nothing replaced but the tick.
+//
+// It is the fixture the cap's acceptance test needs and the one no other test
+// here wants. watchingWithCap installs a cap of its own so that a boundary can
+// be reached with one connection, which is the right trade for a test of the
+// boundary and the wrong one for a test of the *number*: a fixture that injects
+// the limit cannot tell a daemon enforcing CRSW_MAX_STREAMS from one enforcing
+// whatever a test handed it.
+func watchingAsConfigured(t *testing.T) (*fleet, string) {
+	t.Helper()
+
+	f := newFleet(t)
+	f.http.WriteTimeout = writeDeadlineUnderTest
+	f.streamTick = tickUnderTest
+	return f, serve(t, f)
+}
+
+// awaitRecord polls the trail until a record the caller recognises appears.
+//
+// Polling rather than reading once, because the records this suite waits for are
+// written by the middleware *after* the handler returned, and a response in the
+// test's hand does not order that: the daemon writes it on net/http's own
+// goroutine some microseconds later. A record that never comes fails on the
+// budget rather than hanging.
+func awaitRecord(t *testing.T, f *fleet, what string, match func(map[string]any) bool) map[string]any {
+	t.Helper()
+
+	for deadline := time.Now().Add(streamTestBudget); ; {
+		for _, rec := range f.records(t) {
+			if match(rec) {
+				return rec
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no record of %s reached the trail within %v; the trail holds:\n%s", what, streamTestBudget, f.sink.String())
+		}
+		time.Sleep(tickUnderTest)
+	}
+}
+
+// awaitWatchers polls until a session's screen buffer is shared by as many
+// streams as the caller expects.
+//
+// A stream gives up its share when its handler unwinds, which happens on
+// net/http's goroutine some time after the browser went away — there is no event
+// a test can wait on for it, exactly as there is none for the cap's slot.
+func awaitWatchers(t *testing.T, f *fleet, id string, want int) {
+	t.Helper()
+
+	for deadline := time.Now().Add(streamTestBudget); ; {
+		got := f.panes.watching(id)
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the screen of session %s is shared by %d streams; want %d", id, got, want)
+		}
+		time.Sleep(tickUnderTest)
+	}
+}
+
+// awaitScreenDropped polls until the daemon is no longer holding a session's
+// screen at all.
+//
+// It is a different question from awaitWatchers, and the difference is the one
+// that matters here: a buffer nobody is watching and a buffer that is gone are
+// the same count and are not the same daemon. The first is a session's output
+// kept in memory for nobody, which is the material docs/security.md §3 says a
+// long-running daemon must not accumulate.
+func awaitScreenDropped(t *testing.T, f *fleet, id string) {
+	t.Helper()
+
+	for deadline := time.Now().Add(streamTestBudget); ; {
+		if !f.panes.holds(id) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the daemon was still holding the screen of session %s %v after its last watcher went away", id, streamTestBudget)
+		}
+		time.Sleep(tickUnderTest)
+	}
+}
+
+// awaitOpenSlot keeps asking for a stream until the daemon has room for one.
+//
+// The room comes back on the daemon's own initiative, whenever it notices the
+// browser that held the slot is gone. Refusals along the way are the expected
+// answer; anything else fails at once, so a daemon refusing for some other
+// reason is not waited out for the whole budget.
+func awaitOpenSlot(t *testing.T, f *fleet, addr, id string) *http.Response {
+	t.Helper()
+
+	for deadline := time.Now().Add(streamTestBudget); ; {
+		resp := f.watch(t, addr, id) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+		if resp.StatusCode == http.StatusOK {
+			return resp
+		}
+		if resp.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("an open answered %d; want either a stream or the cap's %d", resp.StatusCode, http.StatusTooManyRequests)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the slot the departed browser held was still held %v later", streamTestBudget)
+		}
+		time.Sleep(tickUnderTest)
+	}
+}
+
+// TestEveryOpenPastTheConfiguredCapIsRefusedAndTheRestCarryOn is FR-034e as an
+// operator meets it: the daemon admits exactly the number CRSW_MAX_STREAMS
+// names, refuses the next, and neither closes nor disturbs the ones already
+// running.
+//
+// The number is the configured one rather than a fixture's, which is the whole
+// reason this test exists beside the cap tests above it. Those replace the cap
+// to reach the boundary with one connection; this opens as many streams as the
+// daemon was configured for, so a cap wired to the wrong number — or to nothing
+// — fails here and passes there.
+//
+// "The rest carry on" is the half a boundary test cannot state, and it is the
+// failure that would be worst in practice: a cap that made room by ending the
+// stream somebody was reading would look, from the tab that was evicted, exactly
+// like the session going quiet.
+func TestEveryOpenPastTheConfiguredCapIsRefusedAndTheRestCarryOn(t *testing.T) {
+	t.Parallel()
+
+	const screen = "$ "
+
+	f, addr := watchingAsConfigured(t)
+	limit := f.cfg.MaxStreams
+	if limit < 2 {
+		t.Fatalf("the daemon is configured for %d streams; this test needs one that admits more than a single tab", limit)
+	}
+
+	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), screen)
+
+	opened := time.Now()
+	tabs := make([]*http.Response, 0, limit)
+	bodies := make([]*bufio.Reader, 0, limit)
+	for tab := 1; tab <= limit; tab++ {
+		resp := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("open %d of a daemon configured for %d streams answered %d; want %d",
+				tab, limit, resp.StatusCode, http.StatusOK)
+		}
+		// Read before the next open, so every stream counted is one the daemon is
+		// genuinely serving rather than one it has merely accepted.
+		body := bufio.NewReader(resp.Body)
+		readScreen(t, body, opened, screen)
+		tabs = append(tabs, resp) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+		bodies = append(bodies, body)
+	}
+
+	past := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+	if past.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("the open past %d streams answered %d; want %d", limit, past.StatusCode, http.StatusTooManyRequests)
+	}
+	if body, err := io.ReadAll(past.Body); err != nil || len(body) != 0 {
+		t.Errorf("the refusal carried %q (read error %v); a stream that was never admitted is a response that never started", body, err)
+	}
+	refusal := awaitRecord(t, f, "an open refused for want of room", func(rec map[string]any) bool {
+		return rec["reason"] == errStreamCapReached.Error()
+	})
+	if got, want := refusal["session_id"], live.ID; got != want {
+		t.Errorf("session_id = %v; want %v — a refusal for want of room still says which session went unwatched", got, want)
+	}
+	if got, want := refusal["action"], string(audit.ActionStreamOpen); got != want {
+		t.Errorf("action = %v; want %v", got, want)
+	}
+
+	// Every stream already running is untouched by the refusal.
+	for tab, body := range bodies {
+		if line := readGroup(t, body, opened); line != heartbeatLine && line != screenLine(t, screen) {
+			t.Fatalf("tab %d wrote %q after a later open was refused; the cap refuses the newcomer, never the watcher", tab+1, line)
+		}
+	}
+
+	// And a slot is a slot: one tab leaves, exactly one open is admitted, and the
+	// one after that is refused again.
+	if err := tabs[0].Body.Close(); err != nil {
+		t.Fatalf("close the first tab: %v", err)
+	}
+	freed := awaitOpenSlot(t, f, addr, live.ID) //nolint:bodyclose // every response it opens is closed in t.Cleanup, which the linter cannot see through.
+	readScreen(t, bufio.NewReader(freed.Body), time.Now(), screen)
+
+	full := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+	if full.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("with the freed slot taken, the next open answered %d; want %d — one browser leaving frees one slot, not the bound",
+			full.StatusCode, http.StatusTooManyRequests)
+	}
+}
+
+// TestTwoTabsWatchOneSessionAndOneLeavingLeavesTheOtherWatching is US2 with the
+// operator's real habit in it: the same session open in more than one tab.
+//
+// The claim above it counts execs; this one is about the tabs. Both must see the
+// session change, and — the half nothing else states — one of them closing must
+// leave the other exactly as it was. The shared buffer is what makes that a real
+// question rather than a trivial one: the two streams do not have a screen each,
+// so a release that ran on the wrong count would drop the survivor's buffer with
+// the departed tab's.
+func TestTwoTabsWatchOneSessionAndOneLeavingLeavesTheOtherWatching(t *testing.T) {
+	t.Parallel()
+
+	const (
+		prompt   = "$ "
+		running  = "$ go test ./...\n"
+		finished = "$ go test ./...\nok\tinternal/httpapi\t5.7s\n"
+	)
+
+	f, addr := watching(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), prompt)
+
+	opened := time.Now()
+	first := f.watch(t, addr, live.ID)  //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+	second := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+	for name, resp := range map[string]*http.Response{"the first tab": first, "the second tab": second} {
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s answered %d; want %d", name, resp.StatusCode, http.StatusOK)
+		}
+	}
+
+	firstBody, secondBody := bufio.NewReader(first.Body), bufio.NewReader(second.Body)
+	readScreen(t, firstBody, opened, prompt)
+	readScreen(t, secondBody, opened, prompt)
+
+	f.fixture.tmux.SetPane(live.TmuxName(), running)
+	awaitScreen(t, firstBody, opened, running)
+	awaitScreen(t, secondBody, opened, running)
+
+	if watchers := f.panes.watching(live.ID); watchers != 2 {
+		t.Fatalf("two tabs on one session share the screen between %d streams; want the two that are watching it", watchers)
+	}
+
+	// One tab goes away, and the other is still watching a session that is still
+	// printing. A survivor left with a buffer nobody refills would keep its
+	// connection, keep its heartbeat, and never show another screen — which is
+	// the failure that looks least like a failure.
+	if err := first.Body.Close(); err != nil {
+		t.Fatalf("close the first tab: %v", err)
+	}
+	awaitWatchers(t, f, live.ID, 1)
+	if !f.panes.holds(live.ID) {
+		t.Fatal("one tab leaving dropped the screen the other is still watching")
+	}
+
+	f.fixture.tmux.SetPane(live.TmuxName(), finished)
+	awaitScreen(t, secondBody, opened, finished)
+}
+
+// TestABrowserThatVanishedGivesBackItsSlotAndItsScreen is the edge case the spec
+// names: a browser that goes away without closing anything.
+//
+// The connection is destroyed rather than closed — SetLinger(0) makes the close
+// an RST instead of a FIN — which is a laptop that slept, a network that went, or
+// a process that was killed, and is the case a polite `Close` cannot stand in
+// for. Nothing tells the daemon; it has to notice.
+//
+// Both halves of noticing are asserted, because they are held by different code
+// and leak different things. The cap's slot is an admission that never comes back
+// — a daemon that eventually refuses everybody — and the shared buffer is a
+// session's screen, which is secret under docs/security.md §3 and must not
+// accumulate in a daemon that runs for weeks.
+func TestABrowserThatVanishedGivesBackItsSlotAndItsScreen(t *testing.T) {
+	t.Parallel()
+
+	const screen = "$ "
+
+	f, addr := watchingWithCap(t, 1)
+	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), screen)
+
+	opened := time.Now()
+	resp, vanish := f.watchThatCanVanish(t, addr, live.ID) //nolint:bodyclose // watchThatCanVanish closes it in t.Cleanup, which the linter cannot see through.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /sessions/%s/stream = %d; want %d", live.ID, resp.StatusCode, http.StatusOK)
+	}
+	readScreen(t, bufio.NewReader(resp.Body), opened, screen)
+	if watchers := f.panes.watching(live.ID); watchers != 1 {
+		t.Fatalf("the session being watched is shared by %d streams; want the one that is watching it", watchers)
+	}
+
+	vanish()
+
+	awaitScreenDropped(t, f, live.ID)
+	again := awaitOpenSlot(t, f, addr, live.ID) //nolint:bodyclose // every response it opens is closed in t.Cleanup, which the linter cannot see through.
+	readScreen(t, bufio.NewReader(again.Body), time.Now(), screen)
+}
+
+// watchThatCanVanish opens a stream on a connection the test keeps a handle on,
+// and hands back the way to destroy it.
+//
+// The handle is the point. Closing a response body is a browser closing a tab —
+// the daemon is told, through the request context — and the case this fixture
+// exists for is the one where it is told nothing at all. SetLinger(0) turns the
+// close into a reset, so the connection ends the way a vanished peer's does
+// rather than the way a departing one's does.
+func (f *fleet) watchThatCanVanish(t *testing.T, addr, id string) (*http.Response, func()) {
+	t.Helper()
+
+	var (
+		mu   sync.Mutex
+		conn *net.TCPConn
+	)
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			c, err := (&net.Dialer{}).DialContext(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			tcp, ok := c.(*net.TCPConn)
+			if !ok {
+				return nil, fmt.Errorf("the fixture dialled a %T; want a connection it can destroy", c)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			conn = tcp
+			return tcp, nil
+		},
+	}
+	t.Cleanup(transport.CloseIdleConnections)
+
+	target := "http://" + addr + "/sessions/" + id + "/stream"
+	r, err := http.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatalf("build the stream request: %v", err)
+	}
+	r.Header.Set(headerAccessAssertion, f.keys.mint(t, f.keys.claims()))
+
+	resp, err := (&http.Client{Transport: transport, Timeout: streamTestBudget}).Do(r)
+	if err != nil {
+		t.Fatalf("GET %s: %v", target, err)
+	}
+	t.Cleanup(func() {
+		// Logged rather than failed: by the time this runs the connection under it
+		// has been destroyed on purpose, and a client half that objects to being
+		// closed afterwards is not what the test is about.
+		if err := resp.Body.Close(); err != nil {
+			t.Logf("closing the stream of a destroyed connection: %v", err)
+		}
+	})
+
+	return resp, func() {
+		mu.Lock()
+		defer mu.Unlock()
+
+		if conn == nil {
+			t.Fatal("the fixture never captured a connection, so nothing here vanished")
+		}
+		if err := conn.SetLinger(0); err != nil {
+			t.Fatalf("make the close a reset rather than a graceful shutdown: %v", err)
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatalf("destroy the browser's connection: %v", err)
+		}
+	}
+}
+
+// deadPeer is a browser that went away without closing: a response its writes
+// fail against from a chosen write onwards.
+//
+// It can lift a write deadline, which is what a ResponseRecorder cannot do and
+// what makes openStream here the production one rather than a stand-in.
+type deadPeer struct {
+	header http.Header
+
+	// written is every line group this peer was handed, so a claim can be made
+	// about *which* write found the failure and not only that one did.
+	written []string
+	failAt  int
+	gone    error
+}
+
+func (p *deadPeer) Header() http.Header {
+	if p.header == nil {
+		p.header = make(http.Header)
+	}
+	return p.header
+}
+
+func (p *deadPeer) WriteHeader(int) {}
+func (p *deadPeer) Flush()          {}
+
+func (p *deadPeer) SetWriteDeadline(time.Time) error { return nil }
+
+func (p *deadPeer) Write(b []byte) (int, error) {
+	p.written = append(p.written, string(b))
+	if len(p.written) >= p.failAt {
+		return 0, p.gone
+	}
+	return len(b), nil
+}
+
+// TestAQuietStreamStillFindsAPeerThatWentAway is why the heartbeat exists, said
+// where it can actually be said.
+//
+// The session here prints nothing, ever — which is what a Claude session at a
+// prompt does for minutes at a time, and which the suppression rule turns into a
+// stream with no events to write. Without a write per tick that stream would be
+// silent, and a browser that vanished behind it would hold its slot and its
+// share of a session's screen for as long as the daemon ran, because nothing
+// would ever fail.
+//
+// So the assertion is about the write that found the peer: it is the comment a
+// suppressed tick makes, and the stream stops on it.
+func TestAQuietStreamStillFindsAPeerThatWentAway(t *testing.T) {
+	t.Parallel()
+
+	const screen = "$ "
+
+	// The second write is the first heartbeat: the opening screen goes out, and
+	// then nothing changes for as long as this runs.
+	gone := errors.New("connection reset by peer")
+	peer := &deadPeer{failAt: 2, gone: gone}
+
+	sse, err := openStream(peer)
+	if err != nil {
+		t.Fatalf("openStream = _, %v; want a stream", err)
+	}
+
+	// A backstop rather than a deadline anything is measured against: a hold that
+	// never noticed would otherwise write heartbeats until the package timed out,
+	// which is a failure that says nothing.
+	ctx, cancel := context.WithTimeout(context.Background(), streamTestBudget)
+	defer cancel()
+
+	held := sse.hold(ctx, tickUnderTest, nil, func(context.Context) (string, error) { return screen, nil })
+	if ctx.Err() != nil {
+		t.Fatal("the stream ran until the test's own budget expired; a browser that vanished was never noticed")
+	}
+	if !errors.Is(held, gone) {
+		t.Fatalf("hold() = %v; want the write failure that says nobody is at the other end", held)
+	}
+	if len(peer.written) != peer.failAt {
+		t.Errorf("the stream made %d writes; want %d — a write that failed is a connection with nobody on it, and nothing follows it",
+			len(peer.written), peer.failAt)
+	}
+	if last := peer.written[len(peer.written)-1]; last != string(heartbeat) {
+		t.Errorf("the write that found the peer was %q; want the heartbeat — a screen that never changes is written to by nothing else, which is the whole reason a quiet tick still writes",
+			last)
+	}
+}
+
+// TestOutputWithMarkupAndEscapesArrivesAsTextAndReachesNoRecord is US2's own
+// independent test and FR-035 in one exchange: the distinctive output, watched
+// live, and then the trail read back for any trace of it.
+//
+// The screen is what a session with something to gain would print — a terminal
+// escape, a script element, and a line spelling this transport's own framing —
+// and three claims are made about it at once. It arrives with the escapes gone
+// (FR-029, scenario 3), it arrives with the markup intact as characters rather
+// than as tags (scenario 2, and the client's textContent is the other half), and
+// none of it is anywhere in what the daemon wrote about it.
+//
+// The trail is asked while the daemon has every reason to have written it down:
+// a record was emitted for this very stream, a capture then failed and was
+// reported, and the failure happened with the last good screen still in the
+// shared buffer.
+func TestOutputWithMarkupAndEscapesArrivesAsTextAndReachesNoRecord(t *testing.T) {
+	t.Parallel()
+
+	const (
+		printed = "$ cat exploit.html\n\x1b[31m<script>alert('pwned')</script>\x1b[0m\ndata: \"not an event\"\n$ "
+		text    = "$ cat exploit.html\n<script>alert('pwned')</script>\ndata: \"not an event\"\n$ "
+		canary  = "pwned"
+	)
+
+	f := watchingUnserved(t, config.DefaultMaxStreams)
+	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), printed)
+
+	// The fixture's own recorder appends without a lock, which is not safe while
+	// a stream's ticks are running. Installed before Serve, for the reason
+	// watchingUnserved exists.
+	var (
+		mu       sync.Mutex
+		failures []error
+	)
+	f.report = func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		failures = append(failures, err)
+	}
+	addr := serve(t, f)
+
+	opened := time.Now()
+	resp := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /sessions/%s/stream = %d; want %d", live.ID, resp.StatusCode, http.StatusOK)
+	}
+
+	body := bufio.NewReader(resp.Body)
+	got := decodeScreen(t, body, opened)
+	if got != text {
+		t.Errorf("the wire carried %q; want the screen as text, with the escapes stripped where the capture is read:\n%q", got, text)
+	}
+	if strings.ContainsRune(got, 0x1b) {
+		t.Errorf("an escape sequence reached the browser: %q", got)
+	}
+
+	// A capture that fails while that screen is the newest thing the daemon holds,
+	// which is the moment a report is most tempted to say what it could not read.
+	f.fixture.tmux.FailOp(tmuxctl.OpCapturePane, errors.New("tmux is not answering"))
+	for tick := 1; tick <= ticksWatched; tick++ {
+		readGroup(t, body, opened)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close the stream: %v", err)
+	}
+
+	// The record really was written about this stream, so the silence below is a
+	// daemon that recorded the open without recording the screen rather than a
+	// daemon that recorded nothing.
+	rec := awaitRecord(t, f, "the stream that was opened", func(rec map[string]any) bool {
+		return rec["action"] == string(audit.ActionStreamOpen)
+	})
+	if got, want := rec["decision"], string(audit.Allow); got != want {
+		t.Errorf("decision = %v; want %v", got, want)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(failures) == 0 {
+		t.Fatal("the failing capture was never reported, so nothing here proves a report carries no screen")
+	}
+
+	written := []string{f.sink.String()}
+	for _, err := range failures {
+		written = append(written, err.Error())
+	}
+	for _, line := range written {
+		for what, secret := range map[string]string{
+			"the screen as the session printed it":   printed,
+			"the screen as the browser received it":  text,
+			"a fragment of what the session printed": canary,
+		} {
+			if strings.Contains(line, secret) {
+				t.Errorf("%s reached what the daemon wrote about the stream (FR-035):\n%s", what, line)
+			}
+		}
+	}
+}
+
+// TestTheOpenAHostilePageTriggersIsRefusedWhereTheDashboardsIsServed is FR-034d
+// as the attack it exists for, over the wire.
+//
+// The two requests differ by one header and nothing else. Both carry the
+// operator's own valid identity, because that is the situation: the credential
+// on this door is an ambient cookie, so a page the operator has never seen can
+// trigger a request the edge turns into a perfectly good assertion. What tells
+// the two apart is the browser's own account of where the request came from.
+//
+// The refusal is checked for what it is not as much as for what it is. A hostile
+// page learns nothing from a uniform 401; it would learn that the id resolves —
+// and could then read the screen — from a response that declared itself an event
+// stream.
+func TestTheOpenAHostilePageTriggersIsRefusedWhereTheDashboardsIsServed(t *testing.T) {
+	t.Parallel()
+
+	const screen = "$ ssh production\n"
+
+	f, addr := watching(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), screen)
+
+	hostile := f.watchFrom(t, addr, live.ID, "cross-site") //nolint:bodyclose // watchFrom closes it in t.Cleanup, which the linter cannot see through.
+	if hostile.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("an open the browser called cross-site answered %d; want %d", hostile.StatusCode, http.StatusUnauthorized)
+	}
+	if got := hostile.Header.Get(headerContentType); got == contentTypeEventStream {
+		t.Errorf("the refusal declared itself as %q, which says the id resolved to something", got)
+	}
+	refused, err := io.ReadAll(hostile.Body)
+	if err != nil {
+		t.Fatalf("read the refusal: %v", err)
+	}
+	if string(refused) != string(bodyBrowserRefused) {
+		t.Errorf("the refusal answered %q; want the browser door's one refusal", refused)
+	}
+	if strings.Contains(string(refused), screen) || strings.Contains(string(refused), live.ID) {
+		t.Errorf("the refusal names what it refused:\n%s", refused)
+	}
+	rec := awaitRecord(t, f, "the open refused as cross-site", func(rec map[string]any) bool {
+		return rec["reason"] == errStreamCrossSite.Error()
+	})
+	if got, want := rec["decision"], string(audit.Deny); got != want {
+		t.Errorf("decision = %v; want %v", got, want)
+	}
+
+	// The dashboard's own open, on the same daemon and the same credential. It is
+	// the non-vacuity this test needs: without it, a route that refused every
+	// stream would pass.
+	opened := time.Now()
+	served := f.watchFrom(t, addr, live.ID, secFetchSiteSameOrigin) //nolint:bodyclose // watchFrom closes it in t.Cleanup, which the linter cannot see through.
+	if served.StatusCode != http.StatusOK {
+		t.Fatalf("the dashboard's own open answered %d; want %d", served.StatusCode, http.StatusOK)
+	}
+	readScreen(t, bufio.NewReader(served.Body), opened, screen)
+}
+
+// TestOneStreamRequestLeavesExactlyOneRecordBehind is SC-008 on the one route
+// where it was previously only structural.
+//
+// The record is written at the open (FR-016a) and the middleware's deferred emit
+// runs when the handler unwinds, which for a stream is hours later and on
+// net/http's own goroutine — so a test that read the trail while the stream was
+// open could only ever say "no second record has appeared *yet*". What is needed
+// is a moment that is provably after the handler returned, and Shutdown is one:
+// it drains, and a connection is not drained until the whole handler chain that
+// was serving it — the deferred emit included — has finished.
+//
+// The count is of this route's own action rather than of every line, because
+// shutdown tears the fixture's session down behind the drain and says so.
+func TestOneStreamRequestLeavesExactlyOneRecordBehind(t *testing.T) {
+	t.Parallel()
+
+	const screen = "$ "
+
+	f, addr := watching(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), screen)
+
+	opened := time.Now()
+	resp := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /sessions/%s/stream = %d; want %d", live.ID, resp.StatusCode, http.StatusOK)
+	}
+	body := bufio.NewReader(resp.Body)
+	readScreen(t, body, opened, screen)
+
+	if records := f.records(t); len(records) != 1 {
+		t.Fatalf("a stream that is still open has emitted %d records (%v); want the one written at the open", len(records), records)
+	}
+
+	// The browser goes away, and then the daemon stops.
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close the stream: %v", err)
+	}
+	if err := f.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() = %v; want a clean stop", err)
+	}
+
+	opens := 0
+	for _, rec := range f.records(t) {
+		if rec["action"] == string(audit.ActionStreamOpen) {
+			opens++
+		}
+	}
+	if opens != 1 {
+		t.Errorf("one stream request left %d %s records behind; want exactly one — the close carries no authorisation fact the open did not, and a pair would make this the one door where FR-041 is false",
+			opens, audit.ActionStreamOpen)
 	}
 }

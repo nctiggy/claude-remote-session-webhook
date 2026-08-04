@@ -90,6 +90,12 @@ const (
 	markEmail = "CANARY-EMAIL"
 	markKeyID = "CANARY-KEYID"
 	markPath  = "CANARY-PATH"
+
+	// markSite is the stream's own (T029). Sec-Fetch-Site is what a hostile
+	// page's open is refused by, and the value in it is a header a caller sent —
+	// so a refusal that quoted the reason it gave would be a refusal built from
+	// the request rather than authored by this daemon.
+	markSite = "CANARY-SITE"
 )
 
 // The values themselves.
@@ -155,6 +161,13 @@ const (
 	// redirect before any door runs, so that request never reaches the daemon at
 	// all (see the note in httpapi's handleUnrouted).
 	unclaimedPath = "/" + markPath + "-nothing-serves-this"
+
+	// hostileSite is what a page that is not the dashboard says about itself when
+	// it triggers an open of somebody else's live stream. It is not one of the
+	// four values the Fetch standard defines, which is refused for the same
+	// reason `cross-site` is — anything that is not `same-origin` is — and it is
+	// marked because the daemon is holding it while it decides to refuse.
+	hostileSite = markSite + "-a-page-the-operator-never-opened"
 )
 
 // headerAssertion is where the edge writes the browser's identity.
@@ -164,6 +177,12 @@ const (
 // a fixture built out of the code under test proves only that the code agrees
 // with itself.
 const headerAssertion = "Cf-Access-Jwt-Assertion"
+
+// headerFetchSite is the browser's own account of where a request came from,
+// spelled out here for the reason headerAssertion is: it belongs to the Fetch
+// standard rather than to this daemon, and a fixture taking it from the code
+// under test would prove only that the code agrees with itself.
+const headerFetchSite = "Sec-Fetch-Site"
 
 // leakKeyID is the key id the key server publishes its one key under.
 const leakKeyID = "leak-suite-key-1"
@@ -267,6 +286,42 @@ func (b *brokenWriter) Header() http.Header {
 func (b *brokenWriter) Write([]byte) (int, error) { return 0, errClientGone }
 func (b *brokenWriter) WriteHeader(int)           {}
 
+// streamPeer is a browser watching a session's live output, and it is a writer
+// rather than a recorder for two reasons that are really one.
+//
+// The stream route refuses a response whose write deadline it cannot lift, which
+// every httptest.ResponseRecorder is — fail-closed by design — so a recorder can
+// only ever drive this route's refusals. What this suite needs from it is the
+// other case: the record written at the open, while the daemon is holding a
+// session's entire screen and about to put it on a wire.
+//
+// It goes away after that first screen, by cancelling the request the way a
+// closed tab does. A stream is a response deliberately without an end, and this
+// suite has no clock to move and no socket to close.
+type streamPeer struct {
+	header http.Header
+	body   bytes.Buffer
+	closed func()
+}
+
+func (p *streamPeer) Header() http.Header {
+	if p.header == nil {
+		p.header = make(http.Header)
+	}
+	return p.header
+}
+
+func (p *streamPeer) WriteHeader(int) {}
+func (p *streamPeer) Flush()          {}
+
+func (p *streamPeer) SetWriteDeadline(time.Time) error { return nil }
+
+func (p *streamPeer) Write(b []byte) (int, error) {
+	n, err := p.body.Write(b)
+	p.closed()
+	return n, err
+}
+
 // leakRun is one whole exercise of the daemon: the server, the fake host it
 // stands on, both sinks it writes to, and the evidence that the marked values
 // really did travel.
@@ -304,6 +359,7 @@ type leakRun struct {
 	sweptError string
 	fleetBody  string
 	viewBody   string
+	streamBody string
 }
 
 func leakConfig(root, teamDomain string) *config.Config {
@@ -608,6 +664,53 @@ func (r *leakRun) driveTheBrowserDoor(t *testing.T, id string) {
 		"/", mintAssertion(t, leakKeyID, r.identityClaims(refusedEmail)))
 	r.present(t, http.StatusUnauthorized, "an assertion naming a key nothing published",
 		"/", mintAssertion(t, forgedKeyID, r.identityClaims(allowedEmail)))
+
+	r.watchTheLiveStream(t, id, admitted)
+}
+
+// watchTheLiveStream drives the one route that carries a session's screen for as
+// long as somebody is looking at it (T029, finding 310).
+//
+// It is the browser door's most valuable record and the one this sweep had never
+// read. Every other route here holds pane content for the length of one response;
+// this one is *authorised while holding it*, writes its record at the open rather
+// than at the close (FR-016a), and stamps that record with the session whose
+// screen it is about to deliver — which is the arrangement most likely to end
+// with a screen in the trail, and so the one whose silence is worth asserting.
+//
+// Both answers are driven. The refusal has a caller-authored value in hand while
+// it decides — the fetch-metadata header a hostile page's open carries — and the
+// admission has the screen itself.
+func (r *leakRun) watchTheLiveStream(t *testing.T, id, assertion string) {
+	t.Helper()
+
+	// The refusal first, so that the stream the sweep goes on to read is opened
+	// by a daemon that has already had a reason to write the header down.
+	refused := httptest.NewRequest(http.MethodGet, "/sessions/"+id+"/stream", nil)
+	refused.Header.Set(headerAssertion, assertion)
+	refused.Header.Set(headerFetchSite, hostileSite)
+
+	got := httptest.NewRecorder()
+	r.srv.ServeHTTP(got, refused)
+	if got.Code != http.StatusUnauthorized {
+		t.Fatalf("an open from a page that is not the dashboard answered %d; want %d", got.Code, http.StatusUnauthorized)
+	}
+
+	// And the admitted one. The context is what ends it: the peer cancels as soon
+	// as the first screen has been written, which is the same ending a closed tab
+	// gives and the only one available to a fixture with no socket.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	peer := &streamPeer{closed: cancel}
+	watched := httptest.NewRequest(http.MethodGet, "/sessions/"+id+"/stream", nil).WithContext(ctx)
+	watched.Header.Set(headerAssertion, assertion)
+	r.srv.ServeHTTP(peer, watched)
+
+	r.streamBody = peer.body.String()
+	if r.streamBody == "" {
+		t.Fatal("the stream delivered nothing, so its record's silence about a screen proves nothing")
+	}
 }
 
 // loadTheConfiguration exercises startup.
@@ -888,6 +991,7 @@ func (r *leakRun) marks() []leakMark {
 		{"the same address folded as the allowlist holds it", strings.ToLower(markEmail)},
 		{"a signing key an assertion named", markKeyID},
 		{"a path a caller asked for", markPath},
+		{"the fetch-metadata header a caller sent", markSite},
 	}
 
 	for _, credential := range r.credentials {
@@ -1021,6 +1125,9 @@ func TestTheLeakSuiteReallyDrivesTheDaemon(t *testing.T) {
 		// accepted either would pass on a run where layer 1 never refused
 		// anything at all.
 		"dashboard.view", "dashboard.asset", "access.reject", "route.unknown",
+		// And the live stream (T029), which is the browser door's fifth and the
+		// only record in this list written while the daemon is mid-response.
+		"stream.open",
 	}
 	got := make(map[string]bool)
 	for _, rec := range run.records(t) {
@@ -1053,6 +1160,9 @@ func TestTheLeakSuiteReallyDrivesTheDaemon(t *testing.T) {
 		{"the verified address", markEmail, "the fleet page", run.fleetBody},
 		{"the session name", markName, "the fleet page", run.fleetBody},
 		{"the pane content", markPane, "the session's own page", run.viewBody},
+		// The live stream's own screen, which is the value the record written at
+		// its open was holding when it was written.
+		{"the pane content", markPane, "the live output stream", run.streamBody},
 	} {
 		if !strings.Contains(reached.text, reached.mark) {
 			t.Errorf("%s never reached %s, so its absence from the trail proves nothing", reached.what, reached.where)
