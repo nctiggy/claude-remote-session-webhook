@@ -20,6 +20,7 @@ package httpapi
 // notices.
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"html/template"
@@ -88,6 +89,45 @@ func setBrowserSecurityHeaders(h http.Header) {
 	h.Set(headerContentTypeOptions, contentTypeNosniff)
 	h.Set(headerReferrerPolicy, referrerPolicyNone)
 	h.Set(headerCacheControl, cacheControlNoStore)
+}
+
+// errPageNotRendered is what the trail records when a page could not be built.
+// Like every other reason in this repo it is a constant authored here: the
+// template engine's own error can name a field, a value, or a session, and none
+// of that may reach the journal (FR-035, FR-042).
+var errPageNotRendered = errors.New("the page could not be rendered")
+
+// renderPage executes one page of the set and writes it, and it is the only way
+// a handler on this door answers with a document.
+//
+// The page is built into a buffer first. A response cannot be taken back once
+// the first byte is written — the status line and the headers are gone — so a
+// template that failed halfway would leave a browser holding a truncated
+// document under a 200, which is the one failure that looks like success. The
+// pages this daemon renders are a fleet and one session, so the buffer is small
+// by construction.
+//
+// The failure answers with no body at all. What the template said is
+// server-side detail, and a 500 carrying it would be the one place this door
+// talks about its own internals — to whoever asked. It goes to the trail and to
+// the report channel instead, which is where an operator is already reading.
+//
+// The security headers are not set here. authenticateBrowser writes them before
+// layer 1 has decided anything, so a page and a refusal leave with the identical
+// set and a handler cannot forget headers it never sets.
+func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, page string, data any) {
+	var body bytes.Buffer
+	if err := s.templates.ExecuteTemplate(&body, page, data); err != nil {
+		AuditFrom(r.Context()).Deny(errPageNotRendered.Error())
+		s.report(fmt.Errorf("render the %s page: %w", page, err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set(headerContentType, contentTypeHTML)
+	if _, err := w.Write(body.Bytes()); err != nil {
+		s.report(fmt.Errorf("write the %s page: %w", page, err))
+	}
 }
 
 // templateExt is the only extension the set accepts. A file under templates/

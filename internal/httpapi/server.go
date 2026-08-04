@@ -137,6 +137,17 @@ type Server struct {
 	// rate limit that does not limit the rate.
 	creates *limiter
 
+	// clock is what the dashboard derives a display state and an age from, and it
+	// is the host clock in production — the same one the session manager stamps a
+	// record with and the reaper enforces a deadline against (FR-019c).
+	//
+	// A field rather than a constructor parameter because it is a test seam and
+	// not a choice a caller has: newServer chooses systemClock, as newLimiter and
+	// NewManager do, so there is no way to build a daemon whose dashboard reads a
+	// different clock from its reaper. A fixture that pins one must pin the other,
+	// or the page will disagree with the record the manager wrote.
+	clock clock
+
 	// report is where a failure with nowhere else to go is written — the audit
 	// sink itself failing, or a response that could not be written. A field so
 	// a test can read what was reported rather than watch stderr.
@@ -305,6 +316,7 @@ func newServer(
 		templates: templates,
 		sessions:  sessions,
 		creates:   creates,
+		clock:     systemClock{},
 		report:    reportToStderr,
 	}
 
@@ -313,6 +325,7 @@ func newServer(
 			return nil, err
 		}
 	}
+	s.handleBrowser(patternFleet, audit.ActionDashboardView, s.dashboard)
 	s.handleUnrouted()
 	return s, nil
 }
@@ -351,6 +364,24 @@ func (s *Server) handleUnrouted() {
 		seen[r.Pattern] = true
 		s.mux.Handle(r.Pattern, s.authenticate(audit.ActionUnknownRoute, unknown))
 	}
+}
+
+// handleBrowser is the browser door's equivalent of handle: the one place a
+// dashboard route reaches the mux, so a page cannot be registered without layer 1
+// in front of it or without an action to be recorded under (FR-016).
+//
+// The action is a parameter rather than a lookup in a table beside the pattern,
+// because on this door it is a property of what is being served and not of the
+// path — a page, an asset, a path nothing claims — and browser.go reads it to
+// decide which response may be cached.
+//
+// Nothing is appended to s.registered, deliberately. That list is
+// contracts/http-api.md's closed set of six operations, and the sweeps that prove
+// milestone 1's responses are unchanged (FR-014) drive every route in it as an
+// API request; a browser route among them would be swept as though a signature
+// were the thing that authorises it.
+func (s *Server) handleBrowser(pattern string, action audit.Action, h http.HandlerFunc) {
+	s.mux.Handle(pattern, s.authenticateBrowser(action, h))
 }
 
 // handlerFor is where a route acquires its behaviour, and it is a switch with a

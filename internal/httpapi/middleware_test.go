@@ -197,6 +197,7 @@ func newAuditedServerWith(t *testing.T, browser layer1) *testServer {
 		t.Fatalf("newServer = _, %v; want a server", err)
 	}
 
+	pinClock(s)
 	ts := &testServer{Server: s, sink: buf, fixture: fixture}
 	s.report = func(err error) { ts.failed = append(ts.failed, err) }
 	return ts

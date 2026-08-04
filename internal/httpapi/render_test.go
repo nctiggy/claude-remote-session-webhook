@@ -18,7 +18,9 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/web"
 )
 
@@ -61,16 +63,20 @@ func TestNewServerParsesTheEmbeddedTemplateSet(t *testing.T) {
 	}
 }
 
-// TestEmbeddedTemplatesRenderThePlaceholderPage proves the embedded page is a
-// template that executes and not merely one that parses. The placeholder is
-// US1's to replace; what must survive is that it references no external origin,
-// because docs/security.md's CSP is sent unmodified and a CDN reference would
-// fail in a browser rather than in review (SC-005 asserts this properly in T017).
-func TestEmbeddedTemplatesRenderThePlaceholderPage(t *testing.T) {
+// TestEmbeddedTemplatesRenderTheFleetPage proves the embedded page is a template
+// that executes and not merely one that parses. It rendered a placeholder against
+// no data until T014 gave it the fleet to render; what has survived that is the
+// claim it was always making — the page references no external origin, because
+// docs/security.md's CSP is sent unmodified and a CDN reference would fail in a
+// browser rather than in review (SC-005 asserts this properly in T017).
+func TestEmbeddedTemplatesRenderTheFleetPage(t *testing.T) {
 	t.Parallel()
 
 	var page strings.Builder
-	if err := newTestServer(t, loopbackListen).templates.ExecuteTemplate(&page, "dashboard", nil); err != nil {
+	if err := newTestServer(t, loopbackListen).templates.ExecuteTemplate(&page, "dashboard", fleetView{
+		Operator: &access.VerifiedOperator{Email: testOperatorEmail, Owner: auth.CallerOperator},
+		Empty:    emptyView{Title: emptyFleetTitle, Body: emptyFleetBody},
+	}); err != nil {
 		t.Fatalf("execute the dashboard template: %v", err)
 	}
 	rendered := page.String()

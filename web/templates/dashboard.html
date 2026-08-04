@@ -1,16 +1,23 @@
 {{/*
-  Placeholder. T013 builds the canonical partials and T014 renders the real
-  fleet through this page; T002 needed one page that parses so the set at
-  construction is a set and not an empty map.
+  The fleet — GET / (contracts/dashboard.md). It composes the canonical
+  components and adds no session summary of its own: the card is the only place
+  one is composed (docs/components.md), so a second spelling here would be a
+  second card.
 
-  What is already load-bearing here, and must survive US1: no inline <script>,
-  no inline <style>, and no external origin. The CSP in docs/security.md is sent
-  unmodified, so anything of the three would fail in the browser rather than in
-  review. The stylesheet is the embedded asset, referenced by path.
+  Load-bearing, and inherited from the placeholder this replaced: no inline
+  <script>, no inline <style>, and no external origin. The CSP in
+  docs/security.md is sent unmodified, so any of the three would fail in a
+  browser rather than in review. The stylesheet is the embedded asset, referenced
+  by path.
 
   No colour, size, or font is expressed here at all — design-system.md's first
-  non-negotiable is that they live in tokens, and this page has nothing to say
-  about them.
+  non-negotiable is that they live in tokens, and a page has nothing to say about
+  them.
+
+  There is no <form>, no submit control, and no reference to any of the six API
+  operations. The dashboard is read-only (FR-022) and that is structural rather
+  than a rendering choice: the browser door serves GET only, and a browser holds
+  no shared secret to sign a mutation with.
 */}}<!doctype html>
 <html lang="en">
 <head>
@@ -20,9 +27,23 @@
 <link rel="stylesheet" href="/static/crswd.css">
 </head>
 <body>
-<main>
-<h1>crswd</h1>
-<p>Session control is not rendered yet.</p>
-</main>
+{{ template "header" .Operator }}
+<main class="shell">
+{{/*
+  The summary before any detail — a dashboard is scanned, not read
+  (docs/design-system.md's layout). Each count is derived from the cards below
+  it, so the row cannot claim a fleet the grid does not show.
+
+  It renders only alongside the grid. With nothing owned there is no detail for a
+  summary to come before, and a row of zeroes above the empty state would be
+  detail where FR-021 asks for an explanation.
+*/}}{{ if .Sessions }}<ul class="summary">
+{{ range .Summary }}<li class="summary-state">{{ template "status-pill" .State }} <span class="summary-count">{{ .Count }}</span></li>
+{{ end }}</ul>
+<div class="grid">
+{{ range .Sessions }}{{ template "session-card" . }}
+{{ end }}</div>
+{{ else }}{{ template "empty" .Empty }}
+{{ end }}</main>
 </body>
 </html>

@@ -42,8 +42,17 @@ func newTestServer(t *testing.T, listen string) *Server {
 	if err != nil {
 		t.Fatalf("newServer(%q) = _, %v; want a server", listen, err)
 	}
+	pinClock(s)
 	return s
 }
+
+// pinClock stands the server where the session fixture's manager already stands.
+//
+// The two clocks are one host clock in production, and a fixture that pinned only
+// the manager would leave the dashboard deriving a display state and an age from
+// the wall clock against a record stamped in 2026 — every session idle, every age
+// counted in days, and a test that fails or passes depending on the day it runs.
+func pinClock(s *Server) { s.clock = fixedClock{at: testTime} }
 
 // TestNewRegistersExactlyTheContractRoutes pins FR-006: six operations and no
 // others, in particular no unauthenticated health, status, metrics, or version
@@ -118,11 +127,18 @@ func TestEveryRegisteredRouteIsReachable(t *testing.T) {
 // TestNoRouteOutsideTheContractIsServed is the other half of FR-006. A health or
 // metrics route is the classic accidental exemption, and on this daemon an
 // exempt route is an unauthenticated door to unsandboxed execution.
+//
+// `GET /` was in this list and is not any more. It is not an exemption: it is the
+// fleet page, which contracts/dashboard.md's route table gives to the **browser**
+// door, so it is served by layer 1 rather than by a signature and answers a
+// signed API request with the browser door's refusal. The API's own six routes
+// are what this test is about and they are untouched (FR-014); that `GET /` is
+// now the browser's is asserted in dashboard_test.go, where the identity that
+// opens it lives.
 func TestNoRouteOutsideTheContractIsServed(t *testing.T) {
 	t.Parallel()
 
 	unserved := []struct{ method, path string }{
-		{"GET", "/"},
 		{"GET", "/healthz"},
 		{"GET", "/health"},
 		{"GET", "/status"},
