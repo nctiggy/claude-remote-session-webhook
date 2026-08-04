@@ -57,6 +57,34 @@ func (s State) Valid() bool {
 	return false
 }
 
+// DisplayState is how the dashboard labels a session, derived at render time and
+// never stored (FR-019a).
+//
+// It is a second vocabulary because the first one cannot answer the question an
+// operator is actually asking. The daemon writes only StateStarting and
+// StateRunning, SetState has no production caller, and a destroyed session is
+// deleted rather than marked — so a dashboard that rendered State directly would
+// show one label for the whole life of every session, and never the one fact
+// worth showing: that this session is minutes from being reaped.
+//
+// There is no dead member, because a dead session has no record to render — the
+// reaper and Destroy both delete (FR-019b). needs-auth keeps its token in the
+// design system and arrives with milestone 4's device-code relay; a state
+// produced before it can be rendered would be a label nothing knows how to draw.
+type DisplayState string
+
+const (
+	// DisplayRunning is a session still inside its idle bound. StateStarting
+	// displays this way too: the distinction lasts one tmux exec, and it is not
+	// one an operator watching a fleet could act on.
+	DisplayRunning DisplayState = "running"
+
+	// DisplayIdle is a session the idle bound has caught up with. It is still
+	// alive — the reaper sweeps every SweepInterval rather than continuously —
+	// and this label is what tells an operator it is about to stop being.
+	DisplayIdle DisplayState = "idle"
+)
+
 // Session is the daemon's record of one live Claude Code session, held in memory
 // for the process lifetime. There is no schema and no file on disk — restart
 // recovery comes from adopting live tmux sessions (FR-021), not from storage.
@@ -145,6 +173,25 @@ func (s Session) AbsoluteDeadline() time.Time { return s.CreatedAt.Add(AbsoluteL
 
 // IdleDeadline is when the session dies for want of a request (FR-038).
 func (s Session) IdleDeadline() time.Time { return s.LastActivity.Add(IdleTimeout) }
+
+// DisplayState is the label the dashboard shows for this session at now
+// (FR-019b).
+//
+// The comparison is against IdleDeadline — the reaper's own method, not a second
+// constant that agrees with IdleTimeout today — which is the whole of FR-019c:
+// the dashboard and the sweep put one question to one clock, so a session the
+// reaper is about to take cannot read as running. The boundary falls on the same
+// side as expiredAt's, too: at the deadline the session is already idle, exactly
+// as at the deadline it is already reapable.
+//
+// State is not consulted at all. Reading it is what FR-019a forbids, and both
+// values it can hold in production are this method's running anyway.
+func (s Session) DisplayState(now time.Time) DisplayState {
+	if !now.Before(s.IdleDeadline()) {
+		return DisplayIdle
+	}
+	return DisplayRunning
+}
 
 // TokenExpiry is when the bearer token stops being accepted (FR-015).
 //

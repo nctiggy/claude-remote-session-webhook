@@ -346,6 +346,133 @@ func TestStateValid(t *testing.T) {
 	}
 }
 
+// FR-019a–c: the label is derived from the clock at the reaper's own threshold,
+// and the boundary belongs to idle.
+func TestDisplayStateDerivesIdleFromTheIdleDeadline(t *testing.T) {
+	t.Parallel()
+
+	s := newTestSession(testID("1"), auth.CallerOperator)
+	deadline := s.IdleDeadline()
+
+	tests := []struct {
+		name string
+		now  time.Time
+		want DisplayState
+	}{
+		{name: "the instant of the last request", now: s.LastActivity, want: DisplayRunning},
+		{name: "a minute of idleness", now: s.LastActivity.Add(time.Minute), want: DisplayRunning},
+		{name: "one nanosecond before the deadline", now: deadline.Add(-time.Nanosecond), want: DisplayRunning},
+		{name: "exactly at the deadline", now: deadline, want: DisplayIdle},
+		{name: "one nanosecond after the deadline", now: deadline.Add(time.Nanosecond), want: DisplayIdle},
+		{name: "a sweep interval after the deadline", now: deadline.Add(SweepInterval), want: DisplayIdle},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := s.DisplayState(tc.now); got != tc.want {
+				t.Errorf("DisplayState(%v) = %q, want %q", tc.now, got, tc.want)
+			}
+		})
+	}
+
+	// The tokens in docs/design-system.md's state table, transcribed. The CSS
+	// custom properties are named after these, so a constant renamed here is a
+	// card that loses its state colour without anything failing.
+	for state, want := range map[DisplayState]string{
+		DisplayRunning: "running",
+		DisplayIdle:    "idle",
+	} {
+		if string(state) != want {
+			t.Errorf("display state constant = %q, want %q", string(state), want)
+		}
+	}
+}
+
+// The threshold moves with the idle clock, because it is the idle clock. A
+// derivation measuring from CreatedAt would agree with this one until the first
+// request and then never again.
+func TestDisplayStateFollowsLastActivityAndNotCreation(t *testing.T) {
+	t.Parallel()
+
+	s := newTestSession(testID("2"), auth.CallerOperator)
+	now := s.CreatedAt.Add(IdleTimeout)
+
+	if got := s.DisplayState(now); got != DisplayIdle {
+		t.Errorf("DisplayState() on an untouched session = %q, want %q", got, DisplayIdle)
+	}
+
+	// One request, which in production is Store.Touch, and the same instant
+	// reads running again.
+	s.LastActivity = s.CreatedAt.Add(30 * time.Minute)
+	if got := s.DisplayState(now); got != DisplayRunning {
+		t.Errorf("DisplayState() after activity = %q, want %q", got, DisplayRunning)
+	}
+}
+
+// FR-019a: the stored lifecycle field takes no part in the derivation. StateDead
+// is included precisely because it has no production caller — a switch on State
+// is the implementation this forbids, and it would pass every other test here.
+func TestDisplayStateIgnoresTheStoredLifecycleField(t *testing.T) {
+	t.Parallel()
+
+	base := newTestSession(testID("3"), auth.CallerOperator)
+
+	tests := []struct {
+		name string
+		now  time.Time
+		want DisplayState
+	}{
+		{name: "inside the idle bound", now: base.IdleDeadline().Add(-time.Minute), want: DisplayRunning},
+		{name: "past the idle bound", now: base.IdleDeadline(), want: DisplayIdle},
+	}
+
+	for _, state := range []State{StateStarting, StateRunning, StateDead} {
+		for _, tc := range tests {
+			t.Run(fmt.Sprintf("%s/%s", state, tc.name), func(t *testing.T) {
+				t.Parallel()
+
+				s := base
+				s.State = state
+
+				if got := s.DisplayState(tc.now); got != tc.want {
+					t.Errorf("DisplayState() on a %q record = %q, want %q", state, got, tc.want)
+				}
+			})
+		}
+	}
+}
+
+// FR-019c stated as the property it exists for: the dashboard says idle about
+// exactly the sessions the reaper's sweep would take for idleness. Two constants
+// that agree today satisfy every other test in this file and fail this one the
+// day one of them is edited.
+func TestDisplayStateAndTheReaperAgreeOnIdle(t *testing.T) {
+	t.Parallel()
+
+	s := newTestSession(testID("4"), auth.CallerOperator)
+
+	// Every instant stays inside the ceiling: past the absolute deadline the
+	// reaper names the bound that cannot be renewed, and the dashboard has
+	// nothing to render at all, because the sweep has deleted the record.
+	for _, now := range []time.Time{
+		s.LastActivity,
+		s.IdleDeadline().Add(-time.Nanosecond),
+		s.IdleDeadline(),
+		s.IdleDeadline().Add(time.Hour),
+	} {
+		if !now.Before(s.AbsoluteDeadline()) {
+			t.Fatalf("test instant %v is past the absolute deadline %v; the premise no longer holds", now, s.AbsoluteDeadline())
+		}
+
+		reaperSaysIdle := expiredAt(s, now) == ExpiryIdle
+		if dashboardSaysIdle := s.DisplayState(now) == DisplayIdle; dashboardSaysIdle != reaperSaysIdle {
+			t.Errorf("at %v the dashboard says idle=%v and the reaper says idle=%v", now, dashboardSaysIdle, reaperSaysIdle)
+		}
+	}
+}
+
 func TestStoreAddRejectsAMalformedRecord(t *testing.T) {
 	t.Parallel()
 
