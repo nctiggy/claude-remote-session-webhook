@@ -7,9 +7,14 @@ a `*.example.com` hostname. Each session runs in a tmux window with
 `--dangerously-skip-permissions`. Two clients: a browser UI behind Cloudflare Access
 (Google identity), and a companion Claude skill authenticating by HMAC signature.
 
-> **Status: milestone 1 in progress.** The daemon core — config, `tmuxctl`, session
-> CRUD, HMAC auth, the audit log, and the reaper — is built and tested. There is no
-> UI and no Cloudflare Access validation yet; both are milestone 2.
+> **Status: milestones 1 and 2 complete.** The daemon core — config, `tmuxctl`,
+> session CRUD, HMAC auth, the audit log, and the reaper — ships alongside
+> daemon-side Cloudflare Access validation and a read-only dashboard with live
+> session output. Both doors are real: a browser is admitted by Google identity and
+> then re-verified by the daemon, and the API client is admitted by an Access
+> service token and then checked by signature, timestamp, replay and per-session
+> token. Create, destroy, rename and compact from the browser are milestone 3; the
+> device-code login relay is milestone 4.
 
 ---
 
@@ -172,9 +177,18 @@ what order, and why three settings in the unit are load-bearing.
 hostname, tunnel ID, Access AUD tag, allowed email, or path appears in it — those
 come from the environment or 1Password at deploy time.
 
-> **Milestone 1 is not ready for a public hostname.** Cloudflare Access JWT
-> validation lands in milestone 2; until then HMAC on the API is the only check,
-> and Access is what keeps unauthenticated traffic off the box. Demo it locally.
+> **A public hostname needs an Access application in front of it, with two
+> policies.** The daemon validates the assertion the edge forwards — pinned
+> audience, pinned algorithm, and its own copy of the allowlist — so the edge and
+> the daemon each get a say. But the daemon can only check an assertion the edge
+> actually wrote: put a hostname in front of this without an Access application and
+> layer 1 has nothing to verify, leaving HMAC alone between the internet and
+> unsandboxed execution.
+>
+> The two policies are an identity policy for the browser and a **Service Auth**
+> policy for the API client, on the same application. Access needs at least one
+> Allow policy alongside Service Auth, or it never issues a usable assertion. See
+> `deploy/README.md`.
 
 ```bash
 go build -o ~/bin/crswd ./cmd/crswd

@@ -223,6 +223,41 @@
       }
       live.close();
     });
+
+    /*
+     * A stream that was refused, rather than one that ended.
+     *
+     * EventSource reports a dropped connection and a refused one through the same
+     * handler, and the difference is readyState: CONNECTING means it will retry
+     * on its own, which is the case this deliberately leaves alone. CLOSED means
+     * it has given up — the daemon answered something that is not a stream, and
+     * the browser will not ask again. That happens for every refusal the contract
+     * defines: 429 past CRSW_MAX_STREAMS, 404 on a reload after the session was
+     * reaped, 500 when the write deadline could not be lifted.
+     *
+     * Saying so is the whole point. The failure mode this repairs is the one
+     * FR-033 already argues about the *ended* case: a pane that simply stops
+     * updating looks exactly like a session sitting quietly at a prompt. An
+     * operator who believes that about a session which is in fact running — and
+     * running with --dangerously-skip-permissions — has been misled by the one
+     * surface whose entire job is telling them what is on their host.
+     *
+     * The ended note wins if it is already showing: a session that ended and then
+     * failed to reconnect ended, and that is the more useful of the two sentences.
+     */
+    live.onerror = () => {
+      if (live.readyState !== EventSource.CLOSED) {
+        return;
+      }
+      const ended = document.getElementById(pane.dataset.ended);
+      if (ended && !ended.hidden) {
+        return;
+      }
+      const note = document.getElementById(pane.dataset.stalled);
+      if (note) {
+        note.hidden = false;
+      }
+    };
   };
 
   for (const pane of document.querySelectorAll('pre.pane[data-stream]')) {

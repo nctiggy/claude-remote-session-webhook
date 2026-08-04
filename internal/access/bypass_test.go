@@ -101,19 +101,24 @@ func TestBypassAdmitsWithoutReadingTheAssertion(t *testing.T) {
 	}
 }
 
-// TestBypassIdentityCannotBeARealMailbox pins the choice of address, not the
-// address itself.
+// TestBypassIdentityIsAMarkerAndNotAnAddress pins what the header shows when
+// layer 1 is off.
 //
-// .invalid is reserved by RFC 2606 and can never be delivered to, so no operator
-// can have put it on the real allowlist. A later edit to something plausible —
-// dev@example.com, or the author's own address — would make the development
-// identity collide with a configured one, and the dashboard header would then
-// greet a real person's name on a daemon that verified nobody.
-func TestBypassIdentityCannotBeARealMailbox(t *testing.T) {
+// contracts/access-jwt.md asks for "an explicit bypass marker, never a fabricated
+// email", and the reason is FR-020: the header exists so it is never ambiguous
+// whose credentials are driving unsandboxed sessions on this host. Under the
+// bypass the truthful answer is nobody's. An email-shaped string reads at a
+// glance as a person the daemon verified — even in a reserved domain, which the
+// operator glancing at a header is not parsing for.
+//
+// Asserting the absence of "@" rather than the presence of particular words is
+// deliberate: it is the property that makes the value unable to be an address at
+// all, so no later edit toward something plausible can pass this.
+func TestBypassIdentityIsAMarkerAndNotAnAddress(t *testing.T) {
 	t.Parallel()
 
-	if !strings.HasSuffix(bypassEmail, ".invalid") {
-		t.Fatalf("bypassEmail = %q, want an address in the reserved .invalid domain", bypassEmail)
+	if strings.Contains(bypassEmail, "@") {
+		t.Fatalf("bypassEmail = %q, want a marker rather than anything address-shaped", bypassEmail)
 	}
 	if mustAllowlist(t, testEmail).permits(bypassEmail) {
 		t.Fatal("the development identity is admitted by a real allowlist")

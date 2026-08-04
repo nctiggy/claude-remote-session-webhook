@@ -21,6 +21,7 @@ import (
 	"html/template"
 	"net"
 	"net/http"
+	"path"
 	"slices"
 	"strings"
 	"sync"
@@ -421,6 +422,14 @@ func newServer(
 		report:     reportToStderr,
 	}
 
+	// The Server, not the mux. ServeHTTP refuses a non-clean path before the mux
+	// can answer it with net/http's own cleanPath 301 — a redirect that runs
+	// ahead of layer 1, ahead of the audit middleware, and without the headers a
+	// refusal must carry. Handing the mux straight to http.Server would leave that
+	// hole open on the listener while every test driving s.ServeHTTP saw it
+	// closed, which is the worst of both.
+	s.http.Handler = s
+
 	for _, r := range routes {
 		if err := s.handle(r, s.handlerFor(r)); err != nil {
 			return nil, err
@@ -585,7 +594,49 @@ func (s *Server) Routes() []Route { return slices.Clone(s.registered) }
 
 // ServeHTTP makes the Server the handler it wires, so that a test — and any
 // future wrapper — can drive a route through httptest without binding a socket.
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
+//
+// It refuses a non-clean path itself rather than letting the mux answer, because
+// ServeMux applies its own cleanPath redirect *before* it matches a pattern. A
+// request for `//sessions` or `/static/../sessions` was therefore answered by
+// net/http with a bare 301 — ahead of layer 1, ahead of the audit middleware, and
+// carrying none of the headers docs/security.md requires on a refusal. That is a
+// hole in FR-016's "one record per request": a scan of the listener using only
+// non-clean paths produced no trail at all, which is precisely the traffic
+// route.unknown exists to record.
+//
+// Refusing rather than redirecting is deliberate. A redirect would send the
+// caller somewhere the signature it computed no longer covers — milestone 1 signs
+// EscapedPath, so a client that followed one would fail layer 2 for a reason it
+// could not see. There is no legitimate caller of a non-clean path here: the
+// dashboard emits none, and the API client signs the path it sends.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if p := r.URL.EscapedPath(); p != "" && p != cleanPath(p) {
+		s.authenticateBrowser(audit.ActionUnknownRoute, http.HandlerFunc(s.notFound)).ServeHTTP(w, r)
+		return
+	}
+	s.mux.ServeHTTP(w, r)
+}
+
+// cleanPath is net/http's own normalisation, reproduced because the version in
+// net/http is unexported and this needs to ask the same question the mux would
+// ask a moment later. Matching its answer is the point: a path this calls clean
+// and the mux does not would be a request refused here that would have been
+// served, and the reverse would leave the hole open.
+func cleanPath(p string) string {
+	if p == "" {
+		return "/"
+	}
+	if p[0] != '/' {
+		p = "/" + p
+	}
+	np := path.Clean(p)
+	// path.Clean removes a trailing slash except for the root; the mux keeps one
+	// that was there, so restore it before comparing.
+	if p[len(p)-1] == '/' && np != "/" {
+		np += "/"
+	}
+	return np
+}
 
 // reasonAdopted is the server-authored account of a startup adoption. Like every
 // other reason in the trail it is a constant in this repo, built from nothing the

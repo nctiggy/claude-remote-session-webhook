@@ -55,6 +55,7 @@
   accessibility floor asks of anything an operator has to scroll; the focus ring
   is the design system's own. It is deliberately not a live region: announcing
   every terminal line is unusable, and docs/components.md says so.
-*/}}{{ if .Unread }}<p class="pane-note">The screen could not be read from the host just now. Nothing was changed by asking for it.</p>{{ else }}<pre class="pane" id="pane-{{ .ID }}" tabindex="0" data-stream="/sessions/{{ .ID }}/stream" data-ended="pane-ended-{{ .ID }}">{{ .Text }}</pre>
-<p class="pane-note" id="pane-ended-{{ .ID }}" hidden>This session has ended. The screen above is the last one it printed.</p>{{ end }}
+*/}}{{ if .Unread }}<p class="pane-note">The screen could not be read from the host just now. Nothing was changed by asking for it.</p>{{ else }}<pre class="pane" id="pane-{{ .ID }}" tabindex="0" data-stream="/sessions/{{ .ID }}/stream" data-ended="pane-ended-{{ .ID }}" data-stalled="pane-stalled-{{ .ID }}">{{ .Text }}</pre>
+<p class="pane-note" id="pane-ended-{{ .ID }}" hidden>This session has ended. The screen above is the last one it printed.</p>
+<p class="pane-note" id="pane-stalled-{{ .ID }}" hidden>Live updates stopped, and the session did not say it had ended. The screen above is the last one that arrived. Reload to try again.</p>{{ end }}
 <p class="pane-note">This is the live screen, not scrollback. Attach to the session on the host to read what came before it.</p>

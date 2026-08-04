@@ -17,13 +17,18 @@ import (
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 )
 
-// bypassEmail is the address the bypass hands on in place of one the edge
-// verified.
+// bypassEmail is what the bypass hands on in place of the address the edge would
+// have verified.
 //
-// The .invalid top-level domain is reserved by RFC 2606 and can never be
-// delivered to, so this cannot collide with an address an operator put on the
-// real allowlist, and it reads in the dashboard header as what it is: a
-// development artifact rather than a person the daemon verified. It is
+// It is deliberately **not** an address. contracts/access-jwt.md asks for "an
+// explicit bypass marker, never a fabricated email", and the reason is FR-020:
+// the header exists so it is never ambiguous whose credentials are driving
+// unsandboxed sessions on this host. Under the bypass the truthful answer is
+// nobody's, and an email-shaped string — however reserved its domain — reads at a
+// glance as a person the daemon checked. This reads as the absence of one.
+//
+// It cannot collide with a real allowlist entry because it contains a space and
+// no "@", so it is not an address any allowlist could hold. It is
 // deliberately not configurable — an identity the operator could set here would
 // be the bypass quietly growing into a login form, which is layer 1 rebuilt
 // badly rather than skipped.
@@ -36,7 +41,7 @@ import (
 // with no build tag and the scan would not notice.
 //
 //nolint:gosec // G101 false positive: an address in a reserved domain, not a credential.
-const bypassEmail = "dev-bypass@dev.invalid"
+const bypassEmail = "NOBODY — layer 1 bypassed (dev build)"
 
 // errBypassUnannounced refuses the request the bypass would otherwise have
 // admitted, because it could not write FR-040's warning.
