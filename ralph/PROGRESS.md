@@ -10611,3 +10611,136 @@ exact statuses and bodies), then **T021** (`go test -tags quickstart ./cmd/crswd
 unchanged — see finding 211, and 59 #225 on the port collision with the live daemon),
 then T022–T029 (US2, the stream) and T030–T034 (docs, `.env.example`, quickstart). Plus
 the four unowned findings above (202, 214, 223, 231) and the new suite-runtime cost (250).
+
+---
+
+## Iteration 63 (milestone 2, iteration 20) — 2026-08-04 08:07
+
+**Did:** **T020** — the non-regression guard. US4's first proof. Two sweeps in
+`internal/httpapi/server_test.go`, under a `--- T020` heading, each presenting one door's
+credential to the *other* door's routes.
+
+**What was added:**
+
+- `frozenAnswers`: milestone 1's six operations with their exact status **and their exact
+  response body**, written out as `contracts/http-api.md` prints them. Only one value in
+  the six bodies cannot be a literal (`work_dir`, a per-run temp directory), so the table
+  is a function of the fixture; `frozenEntry` spells the list/detail object once, for the
+  reason the contract gives it one shape.
+- `frozenRequest`: `requestFor` with the session **planted at a fixed ID**
+  (`frozenSessionID = hostID("a")`), a fixed name, the pinned clock's instants, and the
+  contract's own example pane set on the fake. A body compared byte for byte cannot name
+  a random ID.
+- `TestTheSixOperationsAnswerTheContractsBytesWhateverBrowserCredentialArrives` — the six
+  routes × four browser credentials: **none**, a forged assertion, a verified operator's
+  assertion, and **the service token the API client is admitted by** (FR-013c). Each row
+  also pins the audit action, which is the half a status cannot give.
+- `TestTheBrowserSurfaceIsServedWhateverSignatureItCarries` — `browserSurface` × four
+  layer-2 credentials: none (the yardstick, and what a browser can actually send), one
+  layer 2 would accept, one it would refuse for skew, one it would refuse as forged.
+  Status, **body and headers** compared against the no-signature answer, plus one record
+  per request under the row's own action.
+- `canonicaliseMinted` + `idShape`: the create is the one operation whose response carries
+  values nothing planted. Token first, then ID — 64 hex characters contain 32.
+
+**Mutation-tested.** Four mutations. The two that matter were caught by **nothing else in
+the repo**:
+
+1. **The API door validating an assertion only when one is present**
+   (`if a := r.Header.Get(headerAccessAssertion); a != "" { s.browser.Verify(...) }`) —
+   caught **only** by the forged-assertion and service-token rows. Everything else in the
+   repo passed, because before this iteration no test ever presented a browser credential
+   to the API door. In production the edge writes that header on **every** call the real
+   client makes, so this mutation is a total API outage that the suite called green.
+2. **The browser door validating a signature only when one is present** — the mirror
+   image, caught **only** by the new browser sweep's stale and forged rows. Every existing
+   browser test sends no signature at all, so all of them passed.
+3. **`created_at` and `expires_at` swapped in `sessionEntry`'s field order** — caught only
+   by the freeze table. `encoding/json` follows struct order, and no field-by-field
+   assertion in the repo can see a reordering.
+4. `adopted` given `omitempty` — caught here *and* by three existing tests
+   (`TestListAnswersTheContractResponse`, `TestDetailAnswersTheContractResponse`,
+   `TestListIsOldestFirstAndCarriesEachRecordAsItIs`). Recorded as the control: not every
+   byte-level change needed a new test.
+
+Two cruder first attempts were **discarded rather than kept**: "the API door refuses when
+no assertion is present" broke ~150 tests, and "the browser door requires a valid
+signature" broke 24. A mutation half the suite catches says nothing about the test being
+written for it.
+
+**Learned:**
+
+1. **The sharp form of an FR-012 regression is conditional, not absolute.** A door that
+   demands the other door's credential is caught by everything; a door that *validates it
+   when offered* is caught by nothing, because every fixture in the repo offers exactly
+   one credential. The rows that matter are the ones carrying a credential the door has
+   no business reading — and the service token is the one that arrives in real traffic.
+2. **A field-by-field response test is not a byte test.** Mutation 3 is the general case:
+   `TestListAnswersTheContractResponse` reads the fields it names, so field *order* — the
+   one thing a client's parser can be strict about — was uncovered until this table
+   existed. FR-015 says "response bodies", and that had never been read literally.
+3. **A frozen body forces the fixture to be deterministic, which is itself the work.**
+   Planting at a fixed ID, a fixed name, the pinned clock and a set pane is what turned
+   five of the six rows into literals; only the create mints anything, and normalising
+   *that* row alone keeps the other five asserting that the response names **this**
+   session rather than some 32-hex value.
+4. `frozenAnswers` is keyed by `Route` and its length is checked against `routes`, so a
+   seventh operation cannot be added without freezing its body — the same shape T019's
+   `browserSurface` control has.
+
+**Findings:**
+
+258. **The API door has never been tested with a browser credential on it, and the browser
+    door has never been tested with a signature on it** — closed by this task, recorded
+    because it is the fourth time this milestone a load-bearing property turned out to be
+    uncovered while everything around it was heavily tested (60 #234, 61 #240, 62 #251).
+    The pattern is now unmistakable: **a fixture that supplies exactly the credential the
+    code wants cannot see code that reads a credential it should ignore.**
+259. **`TestTheAPIDoorIsUnaffectedByTheUnroutedMove` and
+    `TestTheSignedAPIIsUnaffectedWhenTheKeysCannotBeObtained` both assert `reachedStatus`
+    and the JSON content type, and neither reads a body.** They are about routing and
+    about an outage, and both say so; noting it because between them they *look* like the
+    FR-015 guarantee and are not. The freeze table is the only thing in the repo that
+    compares a success body byte for byte.
+260. **Iteration 14 #1 / … / 62 #252 still stands:** `git checkout --`, `git restore`,
+    `sed -i` and `cp` are outside the permission allowlist, so four mutations cost eight
+    Edit round trips. New data point: **`sed -n '/pattern/,/^}/p'` was refused** by the
+    permission layer as "potentially dangerous" while `grep -n ... -A 45` did the same job
+    and was allowed — reach for `grep -A` first. `git commit` with repeated `-m` flags
+    worked again (62 #252's workaround).
+261. **Iteration 1 #1 / … / 62 #253 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the hook:
+    "no leaks found".)
+262. **Iteration 2 #2 / … / 62 #254 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+263. **Iteration 6 #6 / … / 62 #255 still stands:** `AGENTS.md`'s command table names none
+    of `go test -tags tmux ./...`, `go test -tags quickstart ./cmd/crswd`, or
+    `go test -tags dev ./...`. **T032.** `dev` **was** run this iteration and passes.
+    `tmux` and `quickstart` were not, for the standing reasons (real tmux on the host
+    running the live daemon; the quickstart suite collides with that daemon's port,
+    59 #225). This task adds tests to one file and changes no production code — the four
+    mutations were reverted and `git diff --stat` before the commit showed only
+    `internal/httpapi/server_test.go`.
+264. **`deploy/README.md`'s four-variable trap (44 #84 / … / 62 #256) still stands.**
+    **T033.**
+265. **Findings 202–205, 211–216, 223 and 231–233 are unchanged.** Still unowned by any
+    task: the missing `GET /sessions/{id}/view` page every card links to (202), the
+    **unregistered `GET /static/crswd.css`** that leaves every browser unstyled (223), the
+    unbuilt rain loop / unwritten `web/static/crswd.js` (214), and the leak suite's
+    blindness to the browser door (231). Also open: `Manager.List`'s clock-neutrality
+    covered only from another package (203), a component test not being a call-site test
+    (204/233), `Server` and `Manager` holding separate clocks (205), the milestone-1 test
+    row that moved rather than weakened (211, for **T021** — next), the `Cache-Control`
+    default resolved inside a contract silence (**T031**), the missing `--dev-auth-bypass`
+    flag (**T034**), the pane styling deferred to **T026** (215), the untokenised values in
+    `docs/design-system.md` (216), `Store.SetState` uncalled and contradicted, and `View`'s
+    deliberate silence about `AbsoluteDeadline` (**T028**). Suite runtime (250) is
+    unchanged at ~5.3s, all of it still the silent-key-source test.
+
+**Left:** **T021** is the last item before the milestone's shipping point: run
+`go test -tags quickstart ./cmd/crswd` and confirm milestone 1's acceptance suite passes
+unchanged — see finding 211 (the row that moved rather than weakened) and 59 #225 (the
+quickstart suite collides with the live daemon's port, so it needs the daemon stopped or
+the port overridden). Then T022–T029 (US2, the stream) and T030–T034 (docs,
+`.env.example`, quickstart). Plus the four unowned findings above (202, 214, 223, 231).
