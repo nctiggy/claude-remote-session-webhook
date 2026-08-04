@@ -1,0 +1,28 @@
+{{/*
+  Placeholder. T013 builds the canonical partials and T014 renders the real
+  fleet through this page; T002 needed one page that parses so the set at
+  construction is a set and not an empty map.
+
+  What is already load-bearing here, and must survive US1: no inline <script>,
+  no inline <style>, and no external origin. The CSP in docs/security.md is sent
+  unmodified, so anything of the three would fail in the browser rather than in
+  review. The stylesheet is the embedded asset, referenced by path.
+
+  No colour, size, or font is expressed here at all — design-system.md's first
+  non-negotiable is that they live in tokens, and this page has nothing to say
+  about them.
+*/}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>crswd — session control</title>
+<link rel="stylesheet" href="/static/crswd.css">
+</head>
+<body>
+<main>
+<h1>crswd</h1>
+<p>Session control is not rendered yet.</p>
+</main>
+</body>
+</html>

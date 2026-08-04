@@ -1,0 +1,9 @@
+/*
+ * Placeholder. T015 writes this stylesheet from the tokens in
+ * docs/design-system.md — every colour, size, and font in the dashboard lives
+ * here or it does not exist.
+ *
+ * The file is committed empty of rules rather than deferred to that task
+ * because a //go:embed pattern matching nothing is a build failure, so
+ * web/static/ has to hold something for the tree to embed at all.
+ */

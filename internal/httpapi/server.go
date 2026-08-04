@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html/template"
 	"net"
 	"net/http"
 	"slices"
@@ -29,6 +30,7 @@ import (
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
+	"github.com/nctiggy/claude-remote-session-webhook/web"
 )
 
 // Server timeouts. net/http applies none of these by default, so one stalled
@@ -109,6 +111,11 @@ type Server struct {
 	// trail is the audit sink. One record per request (FR-041), emitted by the
 	// middleware.
 	trail *audit.Logger
+
+	// templates is the dashboard's template set, parsed from the embedded tree
+	// once at construction (see render.go). It is read-only from here on, so
+	// every handler executes the same set that startup proved compiles.
+	templates *template.Template
 
 	// sessions is the daemon's session store and tmux driver. It is the only
 	// thing in this package that can cause execution on the host, which is why
@@ -237,6 +244,14 @@ func newServer(
 		return nil, err
 	}
 
+	// Deliberately after every configuration check above. This one refuses a
+	// broken build rather than a mistyped variable, and an operator working
+	// through their environment should not meet it first.
+	templates, err := parseTemplates(web.Templates)
+	if err != nil {
+		return nil, err
+	}
+
 	mux := http.NewServeMux()
 	s := &Server{
 		cfg: cfg,
@@ -249,12 +264,13 @@ func newServer(
 			IdleTimeout:       idleTimeout,
 			MaxHeaderBytes:    maxHeaderBytes,
 		},
-		listen:   listen,
-		authn:    authn,
-		trail:    trail,
-		sessions: sessions,
-		creates:  creates,
-		report:   reportToStderr,
+		listen:    listen,
+		authn:     authn,
+		trail:     trail,
+		templates: templates,
+		sessions:  sessions,
+		creates:   creates,
+		report:    reportToStderr,
 	}
 
 	for _, r := range routes {
