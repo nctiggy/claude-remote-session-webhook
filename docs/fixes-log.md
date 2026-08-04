@@ -26,3 +26,4 @@ is a signal that something needs a real design change rather than a fifth patch.
 - 2026-08-04 — A session whose tmux session died out of band kept a live card on the fleet; a failed capture now asks confirmGone and drops the record only when the host affirms the session is gone. (#21)
 - 2026-08-04 — Reduced motion removed the rain but left the two hover fades running; the media query now resets transitions universally. (#23)
 - 2026-08-04 — Every daemon drove tmux's shared default server, so a second one adopted the first's sessions and reaped them on shutdown; each daemon now gets its own server, named from its listen address, and refuses the default. (#22)
+- 2026-08-04 — A pre-v2 golangci-lint does not reject the v2 `.golangci.yml`: it runs zero linters and exits 0, so local lint reads green having checked nothing; quickstart now says so and gives the version check. The SessionStart banner for it is still owed — this runner cannot write under `.claude/`. (#26)
