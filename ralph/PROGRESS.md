@@ -8378,3 +8378,137 @@ assertion is refused at the dashboard. The fixtures it needs are in `verify_test
     `TestQuickstartStory1StartupFailures`'s two hard-coded `:8765` cases fail their
     post-refusal bind check while all ten refusals exit 1 with the right message. Still
     **T021's**.
+
+---
+
+## Iteration 48 (milestone 2, iteration 5) — 2026-08-04 04:43
+
+**Did:** **T005** — `internal/access/claims.go`: steps 6 to 10 of
+`contracts/access-jwt.md`. `Validator.verifiedClaims(ctx, assertion)` composes T004's
+`signedClaims` with a decode of the payload and four checks — issuer equality, the
+audience tag, the validity window with the fixed 60s leeway, and a **required
+non-empty `email`**. `Validator` gained `issuer`, `aud` and `clock`; `New` is now
+`New(teamDomain, aud)`.
+
+**Shape, and the reasons behind the non-obvious parts:**
+
+- **Step 10 is a requirement, not an objection.** `if strings.TrimSpace(email) == ""
+  → refuse`. The inverted spelling ("refuse an email that is present and disallowed")
+  admits every service-token assertion — which is what **every API call the operator's
+  client makes** carries — and passes every test that only presents an identity token.
+  The first row of `TestClaimsRefuseAnAssertionThatNamesNoPerson` is a genuine
+  service-token assertion, and it is the row that tells the two spellings apart.
+- **`sub` and `common_name` are deliberately *not* in `claimSet`**, though research D2
+  documents both and they are what actually distinguishes the shapes. Reading them
+  invites the rule to be written as a discrimination between shapes, and a shape test
+  only refuses the shapes it was taught. The email is the only thing the check reads.
+- **The issuer is `keys.origin`, read back off the key set.** `newKeySet` already
+  normalises the configured value; taking the issuer from the same normalisation makes
+  data-model's one-configured-value rule true by construction rather than by two
+  callers agreeing. `keySet` gained the `origin` field for exactly this.
+- **`exp` is required; `nbf` and `iat` are checked only when present.** The asymmetry
+  is principled: a missing expiry defeats a check that has to *pass* (nothing can show
+  the token is current), while "not in the future" cannot be violated by an absent
+  value. Both documented shapes carry all three anyway.
+- **Times are `*int64`.** Absent and zero are different answers — 1970 is an expiry
+  that has passed, a missing `exp` is a token that never expires. A fractional
+  NumericDate (RFC 7519 permits one; the edge has never sent one) fails the decode and
+  is refused as malformed.
+- **`audience` has its own `UnmarshalJSON`** for the array form and the bare-string
+  form. Anything else — a number, an object, an array of numbers — fails the decode
+  rather than reading as "no audience", so the journal keeps "malformed" apart from
+  "another application's tag".
+- **Eight new sentinels, none carrying a claim value.** The audience, the issuer and
+  the address are the edge's words about a person, and an error string here goes to the
+  journal.
+
+Gate, executed not asserted:
+
+```
+go build ./...                          OK
+go vet ./...                            OK
+go vet -tags tmux ./...                 OK
+go vet -tags quickstart ./cmd/crswd     OK
+go test -count=1 ./...                  OK
+go test -count=1 -tags tmux ./...       OK (real tmux on this host)
+go test -count=1 -race ./internal/access  OK
+go test -tags quickstart ./cmd/crswd    12 of 13 stories — finding 78 exactly, reproduced
+golangci-lint run                       OK
+gofmt -l .                              empty
+go.sum                                  absent  ✅
+```
+
+**Learned:**
+
+1. **Mutation-testing paid a third time, five for five.** Deleting the email check →
+   all five rows of the no-person test. Disabling `rsa.VerifyPKCS1v15` → the ordering
+   test plus both forged-signature rows. Doubling the leeway → *only* the
+   `exp = now - 60s` row, which is why the boundary rows exist. `len(aud) > 0 &&` in
+   front of the audience check → the absent and empty-array rows. `EqualFold` on the
+   issuer → the upper-case row. Every mutation that a distant-value table would have
+   missed was caught by a row sitting exactly on the boundary.
+2. **The claims fixtures are `map[string]any`, not a struct.** "Absent" is a case only
+   a map can express — a struct cannot tell `"email":""` from no `email` member — and
+   absent-vs-empty is the entire subject of this task. `with`/`without` clone, so table
+   rows cannot edit each other's base.
+3. **`json.Unmarshal` of `null` into a struct is a no-op, not an error.** A payload of
+   `null` therefore reaches the issuer check and is refused there, not as malformed.
+   Recorded in the table with that expectation rather than papered over.
+4. **`verify_test.go`'s `identityClaims` const stays valid** because `signedClaims`
+   still never reads the claims: its `"iss":"https://team.cloudflareaccess.com"` does
+   not match the test validator's loopback issuer, and no test that uses it goes past
+   step 5. Do not "fix" it — that mismatch is a property.
+5. **The type is `claimSet`, not `claims`**, to sit beside `keySet` and `jwkSet` — and
+   because `signedClaims` already has a local variable named `claims` that would shadow
+   the type inside the one function that must not be confused about it.
+
+**Left:** T006–T034. Next is **T006**: `internal/access/allowlist.go` — step 11, the
+daemon's own re-check of the gate, with the refused address never reaching the trail.
+It needs `New`'s third argument (`config.AccessAllowedEmails`), the lowercasing that
+`data-model.md` puts on `VerifiedOperator.Email`, and it is where
+`VerifiedOperator{Email, Owner: auth.CallerOperator}` is finally produced. The fixtures
+are in `claims_test.go`: `identityMembers`, `serviceTokenMembers`, `with`, `without`,
+`mintClaims`, `testAUD`, `testEmail`.
+
+**Findings:**
+
+112. **`New` still has no production caller — finding 94's second half, now two tasks
+    old.** It is `New(teamDomain, aud)` today and becomes `New(teamDomain, aud,
+    allowedEmails)` in T006. **T009 must pass `cfg.AccessTeamDomain`, `cfg.AccessAUD`
+    and `cfg.AccessAllowedEmails` to it**, or `internal/access` ships exactly as
+    milestone 1's reaper did: implemented, tested, never called.
+113. **Nothing yet emits the `access.reject` record these errors exist for** (46 #95,
+    47 #104, unchanged). T005 adds eight more sentinels to the list T008/T009 must map
+    to a repo-authored reason constant: `errClaimsMalformed`, `errIssuerMismatch`,
+    `errAudienceMismatch`, `errNoExpiry`, `errExpired`, `errNotYetValid`,
+    `errIssuedInTheFuture`, `errNoEmail`. **`errNoEmail` is the one an operator will
+    actually see in the journal every day** — it is what a mis-routed API call produces
+    — so the reason constant for it should read as "this was a service token", not as
+    "malformed".
+114. **The 60s leeway is now spelled in two places that must not drift**: `clockLeeway`
+    in `claims.go` and the boundary rows in `claims_test.go`, which are written against
+    `keysTimestamp` rather than against the constant, on purpose — a test that computes
+    its boundary from the constant moves when the constant does and asserts nothing.
+115. **Iteration 14 #1 / … / 47 #105 still stands:** `git checkout --`, `git restore`,
+    `perl -i`, heredocs, `git worktree add` and `pkill` remain outside the permission
+    allowlist. New this iteration: **a compound command ending in a failing `ls` reads
+    as a refusal**, so `cmd; ls go.sum` reported exit 2 and briefly looked like a lint
+    failure. Run the gate commands one at a time.
+116. **Iteration 1 #1 / … / 47 #106 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the
+    hook: "no leaks found".)
+117. **Iteration 2 #2 / … / 47 #107 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+118. **Iteration 6 #6 / … / 47 #108 still stands:** `AGENTS.md`'s command table still
+    names neither `go test -tags tmux ./...` nor `go test -tags quickstart ./cmd/crswd`.
+    **T032.**
+119. **Iteration 44 #79 / … / 47 #109 still stands:** `.golangci.yml`'s `run.build-tags`
+    lists `tmux` only, so T007's `//go:build dev` files will be invisible to the linter.
+    Do it inside T007.
+120. **`deploy/README.md`'s four-variable trap (44 #84 / … / 47 #110) still stands.**
+    **T033.**
+121. **Finding 78 reproduces a fifth time**, unchanged and untouched by this task: the
+    deployed daemon holds `127.0.0.1:8765`, so `TestQuickstartStory1StartupFailures`'s
+    two hard-coded `:8765` cases fail their post-refusal bind check while all ten
+    refusals exit 1 with the right message. Still **T021's**.
