@@ -8011,3 +8011,126 @@ parsing at construction in `internal/httpapi/render.go`.
     `~/.config/crswd/env`.** Following it now produces a daemon that refuses to start. The
     example unit carries the full four-line recipe, and **T033** owns the README — but if
     this branch is deployed before T033 lands, that is the trap.
+
+---
+
+## Iteration 45 (milestone 2, iteration 2) — 2026-08-04 03:17
+
+**Did:** **T002** — the `web/` tree, the embed, and the template set parsed at
+construction. `newServer` now calls `parseTemplates(web.Templates)` after every
+configuration check and before it registers a route, so a template that does not
+compile is a daemon that does not start: the error travels newServer → `httpapi.New`
+→ `run` → `main`'s `log.Fatalf`, and no listener is ever bound.
+
+**The embed could not go where `tasks.md` put it, and this is not a judgement call.**
+A `//go:embed` pattern may not name a path outside the directory tree of the file
+carrying it. `web/` is at the repository root (`AGENTS.md`'s project map) and
+`internal/httpapi/` is not above it, so `render.go` cannot embed it. The directives
+live in **`web/embed.go`** (`package web`, two `embed.FS` vars) and `render.go` does
+the parsing, which is the property T002 is actually about. This is exactly the
+dependency `plan.md` already draws — `httpapi → web (embedded assets)` — so nothing
+was invented; only the line holding the directive moved. Do not "fix" this back.
+
+Shape of the set, and why:
+
+- **One associated set**, not one template per file, so a page can reach the partials
+  `docs/components.md` defines.
+- **Named by base name with `.html` dropped** — `partials/status-pill.html` is
+  `"status-pill"`. That is the spelling `components.md` already uses at its call
+  sites, so T013's partials work as documented.
+- **Two files claiming one name refuse.** That is the cost of base names, and
+  `html/template`'s own `ParseFS` pays it by letting the last file win *in silence* —
+  a partial shadowed by a page is a component nobody can see is unused.
+- **A file under `templates/` that is not `.html` refuses** rather than being skipped.
+  Silently ignoring `dashboard.tmpl` is a page that renders as nothing.
+- **`fs.FS` is a parameter**, which is the only seam that can prove the refusals: a
+  compiled-in tree can never exhibit a broken template, so the negatives run against
+  `fstest.MapFS`.
+
+`web/templates/dashboard.html` and `web/static/crswd.css` are placeholders — T013–T015
+write the real markup and every token. What is already load-bearing in them: no inline
+`<script>`, no inline `<style>`, no external origin (the CSP is sent unmodified), and
+no colour, size or font expressed anywhere. `crswd.js` is deliberately **not** created:
+`//go:embed static` needs one file, the stylesheet is it, and a stub script with no
+caller is the shelf code the plan warns about. T026 creates it.
+
+Gate, executed not asserted:
+
+```
+go build ./...                          OK
+go vet ./...                            OK
+go vet -tags tmux ./...                 OK
+go test -count=1 ./...                  OK
+go test -count=1 -tags tmux ./...       OK (real tmux on this host)
+go test -count=1 -race ./internal/httpapi  OK
+go test -tags quickstart ./cmd/crswd    12 of 13 stories — finding 78 exactly, reproduced
+golangci-lint run                       OK
+gofmt -l .                              empty
+go.sum                                  absent  ✅
+```
+
+**Learned:**
+
+1. **`//go:embed` cannot look upwards.** Any future asset tree outside a package's own
+   directory needs a Go file *inside* that tree. This is the single constraint that
+   shaped this task, and it is worth reading before writing a task that says "embed X
+   in Y".
+2. **`go build ./...` stays green with a syntactically broken template** — templates are
+   data, not code. Verified by breaking `dashboard.html` deliberately: build passed,
+   construction refused with `parse templates/dashboard.html: template: dashboard:24:
+   bad character U+003C '<'`. So the build is *not* the gate for `web/`; the constructor
+   is, which is the entire reason T002 exists.
+3. **`html/template` catches an unknown function at parse time**, not at execute time
+   (`{{ dict … }}` refuses in `parseTemplates`). So a `dict`-style helper — which
+   `components.md`'s empty-state sample uses — must be registered with `Funcs` *before*
+   the file is parsed. T013 will hit this; it is a `template.New("").Funcs(...)` call in
+   `parseTemplates`, not a new file.
+4. **`unused` does not flag `Server.templates`** even though only a test reads it today,
+   because golangci-lint lints test files too. A field wired but read only by production
+   code that has not been written yet stays clean; that is not licence to leave it that
+   way past T014.
+5. **Finding 78 reproduces exactly**, and the daemon under `crswd.service` is still the
+   cause: `TestQuickstartStory1StartupFailures`'s two hard-coded `:8765` cases fail their
+   post-refusal bind check while every one of the ten refusals is correct and exits 1.
+   Unchanged by this task, and still T021's.
+
+**Left:** T003–T034. Next is **T003**: `internal/access/keys.go`, the signing-key set —
+fetch, cache, refetch only on an unknown kid with a floor, and refuse when the keys
+cannot be obtained.
+
+**Findings:**
+
+85. **The template naming convention is now decided, and `docs/components.md` disagrees
+    with itself about paths.** Its inventory table names files (`partials/empty.html`)
+    while its sample invokes `{{ template "empty" … }}`. Both are true under this set —
+    the file is at that path, the name is the base — but nothing in the document says so.
+    **T013 should add one line to `components.md`** stating the rule, or the first
+    iteration to write a partial will guess.
+86. **`components.md` says partials are "swapped by htmx", and there is no htmx.** The CSP
+    permits `script-src 'self'` only, `research.md` D9 embeds exactly two assets, and
+    milestone 2 has no mutating browser route to swap anything into. The document
+    describes a dependency this milestone does not have and cannot fetch. **Unowned** —
+    T030/T031 amend the auth and security docs, no task amends `components.md`.
+87. **The end-to-end proof that a broken template stops the *binary* could not be run.**
+    Starting the built daemon by hand needs `CRSW_*` on the command line, and an
+    environment-prefixed invocation is outside the permission allowlist (finding 80's
+    family). The refusal was demonstrated at `newServer`, and the chain to `log.Fatalf`
+    is three visible returns in `cmd/crswd/main.go`, but it was reasoned rather than run.
+88. **Iteration 14 #1 / … / 44 #80 still stands:** `git checkout --`, `git restore`,
+    `perl -i`, heredocs and `git worktree add` remain outside the permission allowlist.
+    New this iteration: a heredoc could not be used for the commit message either — the
+    guard reads `{{ … "…" }}` inside one as expansion obfuscation — so the message went
+    through a file in the gitignored `.ralph-tmp/`, which then had to be removed by hand
+    to leave the tree clean.
+89. **Iteration 1 #1 / … / 44 #81 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the hook:
+    "no leaks found".)
+90. **Iteration 2 #2 / … / 44 #82 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+91. **Iteration 6 #6 / … / 44 #83 still stands:** `AGENTS.md`'s command table still names
+    neither `go test -tags tmux ./...` nor `go test -tags quickstart ./cmd/crswd`. **T032.**
+92. **Iteration 44 #79 still stands:** `.golangci.yml`'s `run.build-tags` lists `tmux`
+    only, so T007's `//go:build dev` files will be invisible to the linter. Do it inside
+    T007.
+93. **`deploy/README.md`'s four-variable trap (44 #84) still stands.** **T033.**
