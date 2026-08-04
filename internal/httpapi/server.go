@@ -40,9 +40,11 @@ import (
 // any request this daemon actually serves, since every handler is a tmux exec or
 // an in-memory read, and short enough that a stall is bounded.
 //
-// Milestone 2's SSE streaming cannot live under WriteTimeout and will need its
-// own answer — a per-route override or a hijacked deadline — rather than this
-// value being raised for everything.
+// WriteTimeout is what milestone 2's SSE streaming cannot live under, and the
+// answer is in stream.go rather than here: that handler lifts the deadline on
+// its own response with http.NewResponseController (research D3). Zeroing this
+// value would have been the same line of code and would have taken the deadline
+// off all six routes below to serve one route above them.
 const (
 	// readHeaderTimeout also closes the Slowloris class outright (gosec G112).
 	readHeaderTimeout = 5 * time.Second
@@ -136,6 +138,19 @@ type Server struct {
 	// two independent memories of how fast a caller has been asking, which is a
 	// rate limit that does not limit the rate.
 	creates *limiter
+
+	// streamTick is how often an open stream writes (contracts/stream.md). It is
+	// a field for the reason clock, listen and report are: a test seam that is
+	// not a choice a caller has, since newServer chooses streamInterval and
+	// nothing outside this package can name the field.
+	//
+	// The clock above cannot serve here and a fixture must not try. A stream is
+	// real elapsed time on a real socket — what it is written against is the
+	// server's own write deadline, which net/http sets from the host clock — so a
+	// test that pinned time would be testing something other than the thing that
+	// breaks. Shortening this is what keeps a stream's behaviour costing
+	// milliseconds instead of seconds.
+	streamTick time.Duration
 
 	// clock is what the dashboard derives a display state and an age from, and it
 	// is the host clock in production — the same one the session manager stamps a
@@ -317,15 +332,16 @@ func newServer(
 			IdleTimeout:       idleTimeout,
 			MaxHeaderBytes:    maxHeaderBytes,
 		},
-		listen:    listen,
-		authn:     authn,
-		browser:   browser,
-		trail:     trail,
-		templates: templates,
-		sessions:  sessions,
-		creates:   creates,
-		clock:     systemClock{},
-		report:    reportToStderr,
+		listen:     listen,
+		authn:      authn,
+		browser:    browser,
+		trail:      trail,
+		templates:  templates,
+		sessions:   sessions,
+		creates:    creates,
+		streamTick: streamInterval,
+		clock:      systemClock{},
+		report:     reportToStderr,
 	}
 
 	for _, r := range routes {
@@ -342,6 +358,13 @@ func newServer(
 	// closed set of six operations, each authorised by a signature, and this is
 	// neither.
 	s.handleBrowser(patternSessionView, audit.ActionDashboardView, s.sessionPage)
+	// The live half of that page, on the same door and under an action of its
+	// own: a stream is not a page, and an operator counting who read a session's
+	// output must not be counting page loads with it. It is registered here for
+	// the reason the two pages are — s.registered is the API's closed set of six
+	// operations, and a route authorised by an identity rather than a signature
+	// is not one of them.
+	s.handleBrowser(patternSessionStream, audit.ActionStreamOpen, s.sessionStream)
 	// One route per embedded asset, so `/static/` names exactly the files the
 	// binary carries and a path that is not one of them is a path nothing claims
 	// (contracts/dashboard.md's route table; see loadAssets for why a wildcard is
