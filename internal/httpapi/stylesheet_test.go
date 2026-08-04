@@ -442,8 +442,9 @@ func TestTheRainLoopDrawsWithTokensAndNothingElse(t *testing.T) {
 //
 // The forbidden half is the load-bearing one. `clearRect` would erase the trail
 // that *is* the effect; `innerHTML` is the assignment docs/security.md forbids
-// outright on this door's client half, and it is worth refusing here before T026
-// adds the pane — everything a Claude session prints arrives through this file.
+// outright on this door's client half, and it holds for the whole file because
+// everything a Claude session prints now arrives through it — the pane's own
+// rules are below.
 func TestTheRainLoopIsTheEffectTheDesignSystemDescribes(t *testing.T) {
 	t.Parallel()
 
@@ -469,6 +470,74 @@ func TestTheRainLoopIsTheEffectTheDesignSystemDescribes(t *testing.T) {
 		if strings.Contains(source, what) {
 			t.Errorf("crswd.js carries %q: %s", what, why)
 		}
+	}
+}
+
+// TestTheStreamClientReplacesTheScreenWithText is the browser half of the
+// project's one XSS surface, held at the file the assignment lives in.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed
+// — the same footing every other assertion in this file stands on. What makes
+// them worth making anyway is that the server half is already proved elsewhere:
+// the wire carries a JSON string of the whole screen (stream_test.go), and this
+// is the only place that says what is done with it once it arrives.
+//
+// The sinks sweep is the strong claim. A list of forbidden spellings is a list
+// somebody has to keep up to date; asserting that *every* content assignment in
+// the file is `textContent =` fails on the next sink somebody invents, and on
+// the `+=` that would quietly turn a repainting screen into an appended
+// transcript (FR-031a).
+func TestTheStreamClientReplacesTheScreenWithText(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+	required := map[string]string{
+		"EventSource":   "the live half attaches to the stream the pane's hook names (contracts/stream.md)",
+		"JSON.parse":    "each event carries the whole screen as one JSON string, so parsing is the framing",
+		"scrollLeft":    "FR-032 in the axis a screen wider than the pane scrolls in, as well as the obvious one",
+		"textContent =": "the parsed value reaches the document as text and by no other route",
+	}
+	for want, why := range required {
+		if !strings.Contains(source, want) {
+			t.Errorf("crswd.js does not carry %q: %s", want, why)
+		}
+	}
+
+	// The file has to *look for* the hook, and this is the direction the whole
+	// task can be lost in silently: a stream client that is written, correct, and
+	// never called is exactly the failure this plan warns about — the code exists
+	// and nothing calls it. A query naming the attribute the pane renders is as
+	// close to "something calls it" as a language Go cannot execute allows.
+	// No backreference for the quote: RE2 has none, and a selector spelled with
+	// one quote and closed with the other is not a thing this file can hold.
+	query := regexp.MustCompile(`querySelectorAll\(\s*['"][^'"]*data-stream[^'"]*['"]\s*\)`)
+	if query.FindString(source) == "" {
+		t.Error("crswd.js never queries the document for a pane carrying data-stream, so no pane is ever attached to its stream")
+	}
+
+	sink := regexp.MustCompile(`\.\s*(innerHTML|outerHTML|innerText|textContent|nodeValue|srcdoc)\s*(\+?=)[^=]`)
+	writes := sink.FindAllStringSubmatch(source, -1)
+	if len(writes) == 0 {
+		t.Fatal("crswd.js puts content into no element at all, so nothing here is updating a pane")
+	}
+	for _, write := range writes {
+		if write[1] != "textContent" || write[2] != "=" {
+			t.Errorf("crswd.js writes .%s %s …; textContent = is the one permitted spelling (docs/security.md, FR-031a)", write[1], write[2])
+		}
+	}
+
+	// FR-032 is an order and not a mention. An offset read *after* the screen was
+	// replaced is the offset the browser already clamped against an empty box, so
+	// restoring it would put the operator back at the top of a screen they had
+	// scrolled through — the yank the requirement is about, performed carefully.
+	read := strings.Index(source, "= pane.scrollTop")
+	replace := strings.Index(source, "pane.textContent =")
+	restore := strings.Index(source, "pane.scrollTop =")
+	switch {
+	case read < 0 || replace < 0 || restore < 0:
+		t.Fatalf("crswd.js does not read the scroll offset (%d), replace the screen (%d) and put the offset back (%d)", read, replace, restore)
+	case read > replace || replace > restore:
+		t.Errorf("crswd.js reads the scroll offset at %d, replaces the screen at %d and restores at %d; the read has to come first and the restore last, or the offset restored is the clamped one", read, replace, restore)
 	}
 }
 

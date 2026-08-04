@@ -461,6 +461,47 @@ func TestEveryPageLoadsTheLoopThatDrivesItsRain(t *testing.T) {
 	}
 }
 
+// TestThePaneNamesTheStreamItsLiveHalfReads is the linkage above in the pane's
+// direction, and it loses just as silently: the markup, the route and the script
+// are three files that have to agree about one address, and when they do not the
+// pane renders perfectly and simply never updates.
+//
+// The address is derived from the pattern the server registers rather than
+// spelled again here. A renamed route would otherwise leave every test in this
+// package passing and every open pane pointed at a 404 — which EventSource then
+// reconnects to forever, turning the dashboard into a polite scanner of its own
+// daemon.
+func TestThePaneNamesTheStreamItsLiveHalfReads(t *testing.T) {
+	t.Parallel()
+
+	card := ownedCard()
+	pane := renderComponent(t, "pane", paneView{ID: card.ID, Text: "$ go test ./..."})
+
+	hook := regexp.MustCompile(`data-stream="([^"]*)"`).FindStringSubmatch(pane)
+	if hook == nil {
+		t.Fatalf("the pane renders no data-stream hook, so nothing tells the live half which stream to read:\n%s", pane)
+	}
+	if want := strings.Replace(strings.TrimPrefix(patternSessionStream, "GET "), "{"+pathValueID+"}", card.ID, 1); hook[1] != want {
+		t.Errorf("the pane streams from %q and the daemon serves %q", hook[1], want)
+	}
+
+	// FR-034: the path to the session and nothing else. A credential here would
+	// be the key to an unsandboxed shell, in an address the edge, the tunnel and
+	// the browser's own history each write down.
+	if strings.ContainsAny(hook[1], "?#") {
+		t.Errorf("the pane's stream address carries more than the path to the session (%q)", hook[1])
+	}
+
+	// A screen nobody could read carries no hook, because the element the live
+	// half attaches to is precisely the one that case does not render. Pinned
+	// rather than left to be noticed: a pane that streamed into the note would be
+	// a page arguing with itself, so this is where that has to be decided again
+	// rather than acquired by accident.
+	if unread := renderComponent(t, "pane", paneView{ID: card.ID, Unread: true}); strings.Contains(unread, "data-stream") {
+		t.Errorf("a pane saying the screen could not be read opens a stream anyway:\n%s", unread)
+	}
+}
+
 // TestEveryCanonicalComponentIsAPartial is FR-024 held by the shape of the tree:
 // pages compose components, components live in one place, and a second card is a
 // defect visible by inspection. It is a test rather than a convention because

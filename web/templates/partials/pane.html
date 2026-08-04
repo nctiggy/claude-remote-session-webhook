@@ -18,14 +18,28 @@
   plausible-looking placeholder FR-018a forbids, made about output instead of
   about a name.
 
-  There is no data-stream attribute yet. The route it would name arrives with US2
-  (contracts/stream.md), and an element pointing at an address nothing serves is
-  the dead link this page was written to end — T026 adds the hook and the loop
-  that reads it together.
+  data-stream is the whole of what the live half is told: the address of this
+  session's stream (contracts/stream.md), carried on the element it updates. It
+  is an attribute rather than a constant in crswd.js because that file is one
+  embedded asset served to every page, and which pane to watch is a fact about
+  this page — an attribute is the only way a script with no session in it can
+  learn one, and the CSP forbids the inline script that would otherwise say it.
+
+  The address carries the session id and no credential (FR-034, FR-034a). What
+  authorises the stream is the ambient cookie the browser sends and the ownership
+  check the daemon re-runs against its own records; a token here would be the key
+  to an unsandboxed shell sitting in a URL that the edge, the tunnel and the
+  browser's own history each write down.
+
+  A screen that could not be read carries no hook and so gets no stream: the
+  element the live half attaches to is exactly the one this template did not
+  render. That is the same discipline as the sentence it renders instead — the
+  operator reloads, which costs one capture, rather than watching a pane fill in
+  underneath a note saying it could not be read.
 
   tabindex makes the scroll container reachable by keyboard, which the
   accessibility floor asks of anything an operator has to scroll; the focus ring
   is the design system's own. It is deliberately not a live region: announcing
   every terminal line is unusable, and docs/components.md says so.
-*/}}{{ if .Unread }}<p class="pane-note">The screen could not be read from the host just now. Nothing was changed by asking for it.</p>{{ else }}<pre class="pane" id="pane-{{ .ID }}" tabindex="0">{{ .Text }}</pre>{{ end }}
+*/}}{{ if .Unread }}<p class="pane-note">The screen could not be read from the host just now. Nothing was changed by asking for it.</p>{{ else }}<pre class="pane" id="pane-{{ .ID }}" tabindex="0" data-stream="/sessions/{{ .ID }}/stream">{{ .Text }}</pre>{{ end }}
 <p class="pane-note">This is the live screen, not scrollback. Attach to the session on the host to read what came before it.</p>

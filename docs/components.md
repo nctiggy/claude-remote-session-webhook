@@ -84,7 +84,7 @@ Live terminal output, streamed over SSE.
 
 ```gotemplate
 {{/* The initial screen. Server-rendered, escaped by html/template. */}}
-<pre class="pane" id="pane-{{ .ID }}" data-stream="/sessions/{{ .ID }}/stream">{{ .PaneText }}</pre>
+<pre class="pane" id="pane-{{ .ID }}" tabindex="0" data-stream="/sessions/{{ .ID }}/stream">{{ .Text }}</pre>
 ```
 
 ```js
@@ -97,8 +97,21 @@ Live terminal output, streamed over SSE.
 // and this is the project's only XSS surface. JSON.parse yields a string, and
 // the only thing done with a string is assign it — there is no path from here
 // to markup, which is what "closed by construction" means.
-new EventSource(pane.dataset.stream).onmessage = (e) => {
-  pane.textContent = JSON.parse(e.data);
+const live = new EventSource(pane.dataset.stream);
+live.onmessage = (e) => {
+  const screen = JSON.parse(e.data);
+
+  // The pane is its own scroll container, and replacing its content empties it
+  // for an instant — long enough for the browser to clamp the offset against a
+  // box with nothing in it. So the reader's place is read here and put back
+  // below, rather than followed to a "bottom" a repainting screen never has.
+  const top = pane.scrollTop;
+  const left = pane.scrollLeft;
+
+  pane.textContent = screen;
+
+  pane.scrollTop = top;
+  pane.scrollLeft = left;
 };
 ```
 
