@@ -7,6 +7,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -1190,5 +1191,361 @@ func TestShutdownOnAnIdleDaemonIsClean(t *testing.T) {
 	}
 	if calls := s.fixture.tmux.Calls(); len(calls) != 0 {
 		t.Errorf("shutting down an idle daemon ran %v; it must cost no tmux command", calls)
+	}
+}
+
+// --- T020: two doors on one hostname, each refusing by its own check only ----
+//
+// FR-012's failure is a quiet one. A daemon that refused an API request for
+// carrying no browser identity, or a browser request for carrying no signature,
+// still serves both doors perfectly to a caller holding both credentials — and
+// every caller in this suite before now has held exactly the one credential its
+// door wanted. What follows presents each door's credential to the *other*
+// door's routes and requires the answer not to move.
+//
+// FR-015 is the other half and it is a claim about bytes rather than behaviour:
+// the six operations answer exactly what contracts/http-api.md froze, from
+// before this milestone put a second door on the same hostname. A client written
+// against milestone 1 is the thing being protected, so the bodies below are
+// written out as that client receives them.
+
+// The values contracts/http-api.md uses in its own examples, so the frozen
+// bodies can be read against the contract line by line.
+const (
+	frozenName = "refactor-auth"
+
+	// The contract's example pane, tab and newline included. Both survive
+	// tmuxctl.Strip, which is what makes them worth having here: a response body
+	// this test compares byte for byte is also the only place the escaping of
+	// pane content into JSON is pinned.
+	frozenPane = "$ go test ./...\nok  \tinternal/auth\t0.012s\n"
+
+	// The fixture's instant and the absolute deadline 24 hours after it, spelled
+	// out rather than computed from session.AbsoluteLifetime. A body built by
+	// re-running the arithmetic under test would agree with the code whatever the
+	// code did; these two strings say what the caller is promised.
+	frozenCreatedAt = "2026-08-02T21:34:40Z"
+	frozenExpiresAt = "2026-08-03T21:34:40Z"
+)
+
+// frozenSessionID is the session every session-scoped row addresses. It is
+// planted rather than generated because a body compared byte for byte cannot
+// name a random ID — and pinning it is also what keeps the comparison sharp: a
+// detail response describing the wrong session would differ here rather than
+// being normalised away.
+var frozenSessionID = hostID("a")
+
+// The two values in a frozen body that cannot be literals, replaced by their
+// shape before the comparison. Only a create mints anything (FR-013), and the
+// substitution is itself an assertion: a token that was not 64 hex characters,
+// or an ID that was not 32, leaves the placeholder unwritten and the comparison
+// fails with the raw body in the message.
+const (
+	idPlaceholder    = "<32 hex>"
+	tokenPlaceholder = "<64 hex>"
+)
+
+// idShape is a session ID on the wire. tokenShape, declared above, is the
+// credential; it is applied first because 64 hex characters contain 32.
+var idShape = regexp.MustCompile(`[0-9a-f]{32}`)
+
+func canonicaliseMinted(body string) string {
+	return idShape.ReplaceAllString(tokenShape.ReplaceAllString(body, tokenPlaceholder), idPlaceholder)
+}
+
+// frozenAnswer is what one of milestone 1's six operations answers: the status,
+// and the response verbatim.
+//
+// body is a function of the fixture because exactly one value in these bodies
+// cannot be a literal — work_dir is the approved root the test was given, which
+// is a temp directory chosen per run. Everything else is fixed by the plant, by
+// the pinned clock, or by the contract.
+type frozenAnswer struct {
+	status int
+	body   func(f sessionFixture) string
+
+	// mints says this operation's response carries values the daemon generated
+	// rather than values a fixture planted: the new session's ID and the only
+	// copy of its token. That row is compared after canonicaliseMinted; no other
+	// row is normalised at all.
+	mints bool
+}
+
+// frozenEntry is the one object contracts/http-api.md defines for both the list
+// and the detail response. It is spelled once here for the reason the contract
+// gives it one shape: a daemon that let the two drift is the regression this
+// table exists to catch, and two literals could drift with it.
+func frozenEntry(f sessionFixture) string {
+	return `{"id":"` + frozenSessionID + `","name":"` + frozenName + `","work_dir":"` + f.repo +
+		`","state":"running","created_at":"` + frozenCreatedAt + `","expires_at":"` + frozenExpiresAt +
+		`","last_activity":"` + frozenCreatedAt + `","adopted":false}`
+}
+
+var frozenAnswers = map[Route]frozenAnswer{
+	{Method: http.MethodPost, Pattern: "/sessions"}: {
+		status: http.StatusCreated,
+		mints:  true,
+		body: func(f sessionFixture) string {
+			return `{"id":"` + idPlaceholder + `","name":"` + frozenName + `","work_dir":"` + f.repo +
+				`","state":"starting","created_at":"` + frozenCreatedAt + `","expires_at":"` + frozenExpiresAt +
+				`","token":"` + tokenPlaceholder + `"}`
+		},
+	},
+	{Method: http.MethodGet, Pattern: "/sessions"}: {
+		status: http.StatusOK,
+		body:   func(f sessionFixture) string { return `{"sessions":[` + frozenEntry(f) + `]}` },
+	},
+	{Method: http.MethodGet, Pattern: "/sessions/{id}"}: {
+		status: http.StatusOK,
+		body:   frozenEntry,
+	},
+	{Method: http.MethodDelete, Pattern: "/sessions/{id}"}: {
+		status: http.StatusOK,
+		body:   func(sessionFixture) string { return `{"id":"` + frozenSessionID + `","destroyed":true}` },
+	},
+	{Method: http.MethodPost, Pattern: "/sessions/{id}/prompt"}: {
+		status: http.StatusAccepted,
+		body:   func(sessionFixture) string { return `{"id":"` + frozenSessionID + `","delivered":true}` },
+	},
+	{Method: http.MethodGet, Pattern: "/sessions/{id}/output"}: {
+		status: http.StatusOK,
+		body: func(sessionFixture) string {
+			return `{"id":"` + frozenSessionID + `","captured_at":"` + frozenCreatedAt +
+				`","text":"$ go test ./...\nok  \tinternal/auth\t0.012s\n"}`
+		},
+	},
+}
+
+// frozenRequest is the signed request one frozen row is driven by: requestFor
+// with the session planted at a fixed ID and a known pane, so the response is a
+// literal rather than something read back out of the code that produced it.
+//
+// The session is planted for every route, including the two that do not address
+// one. The list needs it to have an entry to render, and the create is unharmed
+// by it — a second session exists on the host, and the 201 describes only the
+// one that was just made.
+func frozenRequest(t *testing.T, f *fleet, route Route) *http.Request {
+	t.Helper()
+
+	planted, issued := f.fixture.plant(t, session.Session{
+		ID:           frozenSessionID,
+		Name:         frozenName,
+		WorkDir:      f.fixture.repo,
+		State:        session.StateRunning,
+		CreatedAt:    testTime,
+		LastActivity: testTime,
+	})
+	f.fixture.tmux.SetPane(planted.TmuxName(), frozenPane)
+
+	body := bodyFor(f.fixture, route)
+	req := httptest.NewRequest(route.Method, strings.ReplaceAll(route.Pattern, "{id}", planted.ID), bytes.NewReader(body))
+	signRequest(t, req, body, testTime)
+	if route.SessionScoped() {
+		// After signing, because the signature covers the timestamp and the body
+		// and nothing else — layer 3 is a separate credential, not part of one.
+		req.Header.Set(headerAuthorization, bearerScheme+issued)
+	}
+	return req
+}
+
+// TestTheSixOperationsAnswerTheContractsBytesWhateverBrowserCredentialArrives is
+// FR-015 and the API half of FR-012 in one sweep, because they are one claim
+// from the client's side: the operation answers what it always answered, and no
+// browser credential — present, absent, forged, or genuine — changes a byte of
+// it.
+//
+// The four presentations are chosen for what each would break. `none at all` is
+// the production shape and is what an API door that had grown an identity check
+// would refuse. `a forged assertion` is the row a *lenient* such check would
+// still pass, since layer 1 would be reached and would refuse. `the service
+// token` is the one malformed-looking assertion that arrives in normal operation
+// (FR-013c): the edge writes it on every call the real client makes, the
+// dashboard must refuse it, and this door must not notice it at all.
+//
+// The door behind this fixture is a real *access.Validator over a local key
+// pair, not the stub that admits nobody, so each of those rows is genuinely
+// distinguishable to a daemon that looked.
+func TestTheSixOperationsAnswerTheContractsBytesWhateverBrowserCredentialArrives(t *testing.T) {
+	t.Parallel()
+
+	if len(frozenAnswers) != len(routes) {
+		t.Fatalf("%d frozen answers for %d contract routes; every operation's response is frozen, or the sweep passes by not looking",
+			len(frozenAnswers), len(routes))
+	}
+
+	presentations := map[string]func(t *testing.T, f *fleet) string{
+		"none at all":        func(*testing.T, *fleet) string { return absent },
+		"a forged assertion": func(*testing.T, *fleet) string { return "not.a.jwt" },
+		"a verified operator's own assertion": func(t *testing.T, f *fleet) string {
+			return f.keys.mint(t, f.keys.claims())
+		},
+		"the service token the API client is admitted by": func(t *testing.T, f *fleet) string {
+			return f.keys.mint(t, f.keys.serviceTokenClaims())
+		},
+	}
+
+	for name, credential := range presentations {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, route := range routes {
+				want, ok := frozenAnswers[route]
+				if !ok {
+					t.Fatalf("%s has no frozen answer; a seventh operation is a change to milestone 1's contract", route)
+				}
+
+				// One server per row: the bodies below are byte-exact, and a
+				// destroy or a create that ran against a fixture another row had
+				// already changed would be comparing against a different fleet.
+				f := newFleet(t)
+				req := frozenRequest(t, f, route)
+				if c := credential(t, f); c != absent {
+					req.Header.Set(headerAccessAssertion, c)
+				}
+
+				w := httptest.NewRecorder()
+				f.ServeHTTP(w, req)
+
+				got := w.Body.String()
+				if want.mints {
+					got = canonicaliseMinted(got)
+				}
+				if w.Code != want.status {
+					t.Errorf("%s = %d; want %d — this door reads no assertion, so nothing a browser carries may move it:\n%s",
+						route, w.Code, want.status, got)
+				}
+				if body := want.body(f.fixture); got != body {
+					t.Errorf("%s answered\n\t%s\nwant\n\t%s\n— a client written against milestone 1 receives the second", route, got, body)
+				}
+				if ct := w.Header().Get(headerContentType); ct != contentTypeJSON {
+					t.Errorf("%s answered as %q; want %q", route, ct, contentTypeJSON)
+				}
+
+				// Which door answered, which no status can say: this fixture's
+				// browser door refuses a forgery and admits a genuine assertion,
+				// so a contract route that had moved behind it would answer
+				// plausibly for two of these four rows and record route.unknown
+				// for all of them.
+				rec := f.only(t)
+				if got, want := rec["action"], string(routeActions[route]); got != want {
+					t.Errorf("%s recorded as %v; want %v — this operation is the API door's", route, got, want)
+				}
+				if got, want := rec["decision"], string(audit.Allow); got != want {
+					t.Errorf("%s recorded %v; want %v — the request was authenticated and served", route, got, want)
+				}
+			}
+		})
+	}
+}
+
+// browserAnswer drives one browser-surface row as the verified operator, plus
+// whatever layer-2 credential the caller chose to attach. The assertion is
+// always genuine; what varies is the credential belonging to the other door.
+func browserAnswer(t *testing.T, f *fleet, b browserRequest, present func(*testing.T, *http.Request)) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := httptest.NewRequest(b.method, b.target, nil)
+	r.Header.Set(headerAccessAssertion, f.keys.mint(t, f.keys.claims()))
+	present(t, r)
+
+	w := httptest.NewRecorder()
+	f.ServeHTTP(w, r)
+	return w
+}
+
+// TestTheBrowserSurfaceIsServedWhateverSignatureItCarries is FR-012 from the
+// other side, and the presentations are picked the same way: by what each one
+// would break.
+//
+// `none at all` is what a browser can actually send — no page could require a
+// signature and still be openable — and it is the yardstick every other row is
+// compared against. The two *invalid* signatures are the sharper half: a door
+// that had grown a layer-2 check would refuse them, while a valid signature
+// would sail through and leave the suite green. And the valid one is not merely
+// a control: a dashboard route that answered a signature would be the daemon
+// reachable by anyone holding the shared secret rather than by a verified
+// person, which is the failure dashboard_test.go names on the refusal path.
+//
+// Bodies and headers are compared, not just statuses. Every row here answers 200
+// or 404 by design, so a status alone would not notice a page served with the
+// wrong door's headers on it.
+func TestTheBrowserSurfaceIsServedWhateverSignatureItCarries(t *testing.T) {
+	t.Parallel()
+
+	signatures := []struct {
+		name    string
+		present func(*testing.T, *http.Request)
+	}{
+		{"none at all", func(*testing.T, *http.Request) {}},
+		{"one layer 2 would accept", func(t *testing.T, r *http.Request) {
+			signRequest(t, r, nil, testTime)
+		}},
+		{"one layer 2 would refuse for its skew", func(t *testing.T, r *http.Request) {
+			signRequest(t, r, nil, testTime.Add(-2*time.Hour))
+		}},
+		{"one layer 2 would refuse as forged", func(t *testing.T, r *http.Request) {
+			signRequest(t, r, nil, testTime)
+			r.Header.Set(auth.HeaderSignature, "sha256="+strings.Repeat("0", 64))
+		}},
+	}
+
+	f := newFleet(t)
+	planted, _ := f.fixture.plant(t, session.Session{Name: "a session no signature was needed to see", WorkDir: f.fixture.repo})
+	rows := browserSurface(planted.ID)
+
+	for _, row := range rows {
+		var want *httptest.ResponseRecorder
+		for _, sig := range signatures {
+			got := browserAnswer(t, f, row, sig.present)
+
+			if want == nil {
+				// The yardstick, and the sweep's non-vacuity with it: a row that
+				// answered the door's refusal to a browser carrying nothing but
+				// its identity would make every comparison below trivially true.
+				if got.Code != row.served {
+					t.Fatalf("%s with %s = %d; want %d — this door asks for no signature:\n%s",
+						row.name, sig.name, got.Code, row.served, got.Body.String())
+				}
+				want = got
+				continue
+			}
+
+			if got.Code != want.Code {
+				t.Errorf("%s with %s = %d; with no signature at all it is %d — a browser cannot sign, so neither answer may depend on one",
+					row.name, sig.name, got.Code, want.Code)
+			}
+			if got.Body.String() != want.Body.String() {
+				t.Errorf("%s with %s answered\n\t%s\nand with no signature at all\n\t%s",
+					row.name, sig.name, got.Body.String(), want.Body.String())
+			}
+			if !maps.EqualFunc(got.Header(), want.Header(), func(a, b []string) bool {
+				return strings.Join(a, "\x00") == strings.Join(b, "\x00")
+			}) {
+				t.Errorf("%s with %s answered with headers %v, and with no signature at all %v",
+					row.name, sig.name, got.Header(), want.Header())
+			}
+		}
+	}
+
+	// One record per request, each naming what this door served rather than what
+	// the other door would have refused. auth.reject appearing here would be
+	// layer 2 running on a route that never asked for it, which is the whole
+	// mistake — and it would be invisible above, since a refusal this uniform is
+	// identical whichever door wrote it.
+	records := f.records(t)
+	if len(records) != len(rows)*len(signatures) {
+		t.Fatalf("%d requests emitted %d audit records; FR-016 requires exactly one each",
+			len(rows)*len(signatures), len(records))
+	}
+	for i, row := range rows {
+		for j, sig := range signatures {
+			rec := records[i*len(signatures)+j]
+			if got, want := rec["action"], string(row.action); got != want {
+				t.Errorf("%s with %s recorded as %v; want %v", row.name, sig.name, got, want)
+			}
+			if got, want := rec["decision"], string(audit.Allow); row.served == http.StatusOK && got != want {
+				t.Errorf("%s with %s recorded %v; want %v — the operator was verified and served", row.name, sig.name, got, want)
+			}
+		}
 	}
 }
