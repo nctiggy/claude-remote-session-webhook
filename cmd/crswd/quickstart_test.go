@@ -1381,7 +1381,9 @@ func TestQuickstartStory4Restart(t *testing.T) {
 //
 // Started and stopped for real rather than reasoned about, because the argument
 // that it cannot happen is precisely the argument that was wrong.
-func TestQuickstartASecondDaemonLeavesTheFirstsSessionsAlone(t *testing.T) {
+// The name is kept short on purpose: t.TempDir() builds it into TMUX_TMPDIR, and
+// the socket path underneath it has to stay inside sun_path's 108 bytes.
+func TestQuickstartSecondDaemonSparesTheFirst(t *testing.T) {
 	h := newHost(t)
 
 	a := h.start(nil)
@@ -1393,8 +1395,10 @@ func TestQuickstartASecondDaemonLeavesTheFirstsSessionsAlone(t *testing.T) {
 	// A second daemon, on its own free port — the developer's dev build next to
 	// the real one.
 	b := h.start(nil)
+	// Not fatal: a shared server is the bug, and the assertions below are what
+	// say what it costs. Stopping here would report the cause and hide the harm.
 	if b.socket == a.socket {
-		t.Fatalf("both daemons drive %s; a shared tmux server is the bug itself", b.socket)
+		t.Errorf("both daemons drive %s; a shared tmux server is the bug itself", b.socket)
 	}
 
 	// B adopts nothing, because there is nothing of A's it can reach. Asserted
