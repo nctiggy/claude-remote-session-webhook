@@ -65,6 +65,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 )
 
 // shimReady is what the stand-in prints once it is reading. The harness waits
@@ -95,9 +97,19 @@ type host struct {
 	shimDir string
 	dir     string
 
-	// socket is where the daemon's default-socket resolution lands once
-	// TMUX_TMPDIR is honoured: $TMUX_TMPDIR/tmux-$UID/default. This file
-	// addresses that server with -S rather than inheriting its way to it.
+	// socketDir is $TMUX_TMPDIR/tmux-$UID, the directory every server this run
+	// starts puts its socket in.
+	socketDir string
+
+	// defaultSocket is where a tmux client with no -L lands once TMUX_TMPDIR is
+	// honoured: $TMUX_TMPDIR/tmux-$UID/default. Nothing the daemon starts goes
+	// there any more — it names its own server with -L (#22) — but it is still
+	// what assertIsolated probes, because the environment is what that checks.
+	defaultSocket string
+
+	// socket is the server this file's own tmux commands address with -S: the
+	// one the most recently started daemon drives. Set by startBinary, since the
+	// name derives from the address that daemon listens on.
 	socket string
 
 	// home is the HOME the daemon runs with, and it is empty of shell startup
@@ -148,7 +160,13 @@ func newHost(t *testing.T) *host {
 			t.Fatalf("make %s: %v", d, err)
 		}
 	}
-	h.socket = filepath.Join(socketDir, "default")
+	h.socketDir = socketDir
+	h.defaultSocket = filepath.Join(socketDir, "default")
+
+	// Until a daemon starts there is no daemon server to address. Pointing at
+	// the default one means a stray call reads "no server running" rather than
+	// an empty string tmux would take as a relative path.
+	h.socket = h.defaultSocket
 
 	h.writeShim()
 	h.build()
@@ -174,11 +192,20 @@ func newHost(t *testing.T) *host {
 	h.assertIsolated()
 
 	t.Cleanup(func() {
-		// Reaches only this run's server: -S names it, and that path is under
-		// t.TempDir().
-		out, err := h.tmux("kill-server")
-		if err != nil && !strings.Contains(out, "no server running") && !strings.Contains(out, "No such file") {
-			t.Logf("cleanup kill-server: %v: %s", err, out)
+		// Every socket in this run's directory, not just the last daemon's: a
+		// test may start several daemons, and since #22 each one has a server of
+		// its own. Reaches only this run's servers — the directory is under
+		// t.TempDir() and -S names each path explicitly.
+		entries, err := os.ReadDir(socketDir)
+		if err != nil {
+			t.Logf("cleanup: read %s: %v", socketDir, err)
+			return
+		}
+		for _, entry := range entries {
+			out, err := h.tmuxOn(filepath.Join(socketDir, entry.Name()), "kill-server")
+			if err != nil && !strings.Contains(out, "no server running") && !strings.Contains(out, "No such file") {
+				t.Logf("cleanup kill-server on %s: %v: %s", entry.Name(), err, out)
+			}
 		}
 	})
 	return h
@@ -223,7 +250,7 @@ func (h *host) assertIsolated() {
 	}
 
 	got := strings.TrimSpace(string(out))
-	if got != h.socket {
+	if got != h.defaultSocket {
 		h.t.Fatalf("the daemon's environment resolves to %s, want %s.\n"+
 			"tmux ignores TMUX_TMPDIR when TMUX is set; refusing to run, because the "+
 			"cleanup would kill the operator's tmux server and every session on this host.",
@@ -321,23 +348,50 @@ func (h *host) env(over map[string]string) []string {
 // rest.
 const unset = "\x00unset\x00"
 
-// tmux runs one tmux command against this run's own server, named explicitly
-// with -S. The socket is in the argv rather than the environment so that a
+// tmux runs one tmux command against the server the most recently started
+// daemon drives.
+func (h *host) tmux(args ...string) (string, error) {
+	return h.tmuxOn(h.socket, args...)
+}
+
+// tmuxOn runs one tmux command against the named server, named explicitly with
+// -S. The socket is in the argv rather than the environment so that a
 // kill-server here cannot reach the operator's sessions even if the environment
 // is wrong — the failure mode this file was written to stop causing.
-func (h *host) tmux(args ...string) (string, error) {
-	cmd := exec.Command("tmux", append([]string{"-S", h.socket}, args...)...) //nolint:gosec // socket is under t.TempDir()
+func (h *host) tmuxOn(socket string, args ...string) (string, error) {
+	cmd := exec.Command("tmux", append([]string{"-S", socket}, args...)...) //nolint:gosec // socket is under t.TempDir()
 	cmd.Env = h.env(nil)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 
-// sessionNames is `tmux ls` reduced to the names, with an absent server read as
-// an empty fleet — which is what it means.
+// socketFor is where a daemon listening on addr puts its tmux server. It calls
+// the daemon's own derivation rather than repeating it, so a test cannot pass by
+// agreeing with a copy of the rule that has since changed.
+func (h *host) socketFor(addr string) string {
+	return filepath.Join(h.socketDir, tmuxctl.SocketFor(addr))
+}
+
+// sessionNames is `tmux ls` on the most recently started daemon's server.
 func (h *host) sessionNames() []string {
 	h.t.Helper()
+	return h.namesOn(h.socket)
+}
 
-	out, err := h.tmux("list-sessions", "-F", "#{session_name}")
+// sessionNames is this daemon's own fleet, whichever daemon started last. The
+// two-daemon story is the only caller, and it is the one that would silently
+// pass if it read the wrong server.
+func (d *daemon) sessionNames() []string {
+	d.t.Helper()
+	return d.h.namesOn(d.socket)
+}
+
+// namesOn is `tmux ls` reduced to the names, with an absent server read as
+// an empty fleet — which is what it means.
+func (h *host) namesOn(socket string) []string {
+	h.t.Helper()
+
+	out, err := h.tmuxOn(socket, "list-sessions", "-F", "#{session_name}")
 	if err != nil {
 		if strings.Contains(out, "no server running") || strings.Contains(out, "No such file") {
 			return nil
@@ -407,6 +461,10 @@ type daemon struct {
 	cmd  *exec.Cmd
 	addr string
 
+	// socket is the tmux server this daemon drives, which since #22 is its own:
+	// the name is derived from addr, so no two daemons share one.
+	socket string
+
 	// trail holds stdout and stderr together. The audit records are stdout and
 	// the default-root warning is stderr; under the systemd unit both land in
 	// the same journal, so reading them from one file is what an operator sees.
@@ -450,7 +508,12 @@ func (h *host) startBinary(bin string, over map[string]string, args ...string) *
 		h.t.Fatalf("start the daemon: %v", err)
 	}
 
-	d := &daemon{t: h.t, h: h, cmd: cmd, addr: addr, trail: trail, done: make(chan error, 1)}
+	d := &daemon{t: h.t, h: h, cmd: cmd, addr: addr, socket: h.socketFor(addr), trail: trail, done: make(chan error, 1)}
+
+	// The harness's own tmux commands follow the daemon just started, which is
+	// the one every single-daemon story here is about. A story with two daemons
+	// addresses each through d.sessionNames.
+	h.socket = d.socket
 	go func() {
 		err := cmd.Wait()
 		_ = f.Close()
@@ -1302,6 +1365,69 @@ func TestQuickstartStory4Restart(t *testing.T) {
 	}
 	if !h.hasSession(lookalike) {
 		t.Errorf("shutdown destroyed %s, which the daemon never owned", lookalike)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Two daemons on one host (#22)
+// ---------------------------------------------------------------------------
+
+// The failure this is the guard for: on tmux's shared default server, daemon B
+// cannot tell daemon A's sessions from its own — they carry the crswd- prefix
+// and @crswd-managed, which is the whole adoption signal — so B adopts them at
+// startup and its own graceful shutdown reaps them, with verified teardown,
+// exactly as designed. Starting and stopping a dev build alongside the real
+// daemon destroyed live unsandboxed work sessions, silently, on both sides.
+//
+// Started and stopped for real rather than reasoned about, because the argument
+// that it cannot happen is precisely the argument that was wrong.
+func TestQuickstartASecondDaemonLeavesTheFirstsSessionsAlone(t *testing.T) {
+	h := newHost(t)
+
+	a := h.start(nil)
+	first := a.createSession("held-by-a")
+	if !slices.Contains(a.sessionNames(), "crswd-"+first.ID) {
+		t.Fatalf("daemon A's own session is not on its server: %v", a.sessionNames())
+	}
+
+	// A second daemon, on its own free port — the developer's dev build next to
+	// the real one.
+	b := h.start(nil)
+	if b.socket == a.socket {
+		t.Fatalf("both daemons drive %s; a shared tmux server is the bug itself", b.socket)
+	}
+
+	// B adopts nothing, because there is nothing of A's it can reach. Asserted
+	// on the server and through the API: the record and the session have to
+	// agree, or shutdown reaps from one list what the other still holds.
+	if got := b.sessionNames(); len(got) != 0 {
+		t.Errorf("daemon B's server holds %v, want nothing of daemon A's", got)
+	}
+	var listed struct {
+		Sessions []json.RawMessage `json:"sessions"`
+	}
+	list := b.call(http.MethodGet, "/sessions", "", "")
+	if err := json.Unmarshal(list.Body, &listed); err != nil {
+		t.Fatalf("decode daemon B's list: %v: %s", err, list.Body)
+	}
+	if len(listed.Sessions) != 0 {
+		t.Errorf("daemon B adopted %d sessions at startup, want 0: %s", len(listed.Sessions), list.Body)
+	}
+
+	// The destructive half: a graceful shutdown, which reaps everything the
+	// daemon believes it owns.
+	if err := b.stop(syscall.SIGTERM); err != nil {
+		t.Errorf("SIGTERM to daemon B: %v\n%s", err, b.readTrail())
+	}
+
+	if !slices.Contains(a.sessionNames(), "crswd-"+first.ID) {
+		t.Fatalf("daemon B's shutdown destroyed daemon A's session; A's server now holds %v", a.sessionNames())
+	}
+
+	// Alive, not merely listed: A's record and the session behind it both
+	// survived, so A is not left holding a record for a session that is gone.
+	if resp := a.call(http.MethodGet, "/sessions/"+first.ID+"/output", "", first.Token); resp.Status != http.StatusOK {
+		t.Errorf("daemon A's session after B came and went = %d, want 200: %s", resp.Status, resp.Body)
 	}
 }
 
