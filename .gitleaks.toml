@@ -34,7 +34,15 @@ paths = [
   '''^deploy/README\.md$''',
   '''^docs/.*\.md$''',
 ]
-# The all-zero tunnel ID used throughout the examples.
 regexes = [
+  # The all-zero tunnel ID used throughout the examples.
   '''00000000-0000-0000-0000-000000000000''',
+
+  # Unsigned `alg: none` JWTs. These are test fixtures for the one attack layer 1
+  # must refuse, and they are safe to allow *by construction* rather than by
+  # assertion: the pattern requires the header to decode to {"alg":"none"} and the
+  # signature segment to be empty, so a matching string authenticates nothing. A
+  # real assertion — signed, RS256 — does not match and is still caught, including
+  # inside a test file, which is the point of not allowlisting the path instead.
+  '''eyJhbGciOiJub25lIn0\.[A-Za-z0-9_-]+\.$''',
 ]
