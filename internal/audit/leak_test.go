@@ -317,6 +317,7 @@ func leakConfig(root, teamDomain string) *config.Config {
 
 		Roots:       []config.ApprovedRoot{{Path: root}},
 		MaxSessions: config.DefaultMaxSessions,
+		MaxStreams:  config.DefaultMaxStreams,
 
 		// A create budget nothing here can exhaust. A 429 in this suite would
 		// mean a request never reached the operation it was meant to drive.

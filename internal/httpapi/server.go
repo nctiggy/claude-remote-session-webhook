@@ -139,6 +139,16 @@ type Server struct {
 	// rate limit that does not limit the rate.
 	creates *limiter
 
+	// streams is the bound on how many output streams may be open at once
+	// (FR-034e). One per server for the reason there is one create limiter: two
+	// would be two independent counts of the same connections, which is a cap
+	// that does not cap.
+	//
+	// It is built from the Config rather than injected, like the approved roots
+	// and the session cap and unlike the clock or the listener: a caller may say
+	// where tmux and the trail are, never how bounded the daemon is.
+	streams *streamCap
+
 	// streamTick is how often an open stream writes (contracts/stream.md). It is
 	// a field for the reason clock, listen and report are: a test seam that is
 	// not a choice a caller has, since newServer chooses streamInterval and
@@ -304,6 +314,14 @@ func newServer(
 		return nil, err
 	}
 
+	// The last of the configured bounds, and a startup failure like the rest of
+	// them: a daemon that does not know how many streams it may serve does not
+	// get to serve any.
+	streams, err := newStreamCap(cfg.MaxStreams)
+	if err != nil {
+		return nil, err
+	}
+
 	// Deliberately after every configuration check above. This one refuses a
 	// broken build rather than a mistyped variable, and an operator working
 	// through their environment should not meet it first.
@@ -339,6 +357,7 @@ func newServer(
 		templates:  templates,
 		sessions:   sessions,
 		creates:    creates,
+		streams:    streams,
 		streamTick: streamInterval,
 		clock:      systemClock{},
 		report:     reportToStderr,

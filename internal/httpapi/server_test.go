@@ -599,6 +599,15 @@ func TestNewRefusesMissingDependencies(t *testing.T) {
 		"no create rate limiter": func() (*Server, error) {
 			return newServer(cfg, net.Listen, testAuth(t), testBrowser(), testTrail(t), mgr, nil)
 		},
+		// A stream cap of zero is Principle VI's bound set to "refuse everything"
+		// rather than missing, and it is still a startup failure: the dashboard
+		// would serve every card, every session page, and open none of their
+		// streams — a daemon whose defect is discovered one click at a time.
+		"a stream cap that admits nothing": func() (*Server, error) {
+			capless := *cfg
+			capless.MaxStreams = 0
+			return newServer(&capless, net.Listen, testAuth(t), testBrowser(), testTrail(t), mgr, lim())
+		},
 		"no shared secret": func() (*Server, error) { return New(&config.Config{Listen: loopbackListen, MaxBodyBytes: 64}) },
 		"no body size cap": func() (*Server, error) {
 			return New(&config.Config{Listen: loopbackListen, SharedSecret: testSecret()})

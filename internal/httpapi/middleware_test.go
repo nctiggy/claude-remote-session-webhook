@@ -64,6 +64,12 @@ func testConfig(listen string) *config.Config {
 		// sessions is not a daemon.
 		MaxSessions: config.DefaultMaxSessions,
 
+		// The production default again, and refused for the same reason a zero
+		// MaxSessions is: a daemon that may open no stream serves a dashboard
+		// whose every card links to a page whose live half never starts. Tests
+		// about the cap set their own — see watchingWithCap in stream_test.go.
+		MaxStreams: config.DefaultMaxStreams,
+
 		// Deliberately not the production default, which is the opposite choice
 		// from MaxSessions above and for the same reason: quickstart.md's cap
 		// check needs six creates through one server to reach the cap, and a
