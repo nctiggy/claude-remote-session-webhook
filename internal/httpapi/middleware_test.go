@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -167,7 +168,7 @@ func signRequest(t *testing.T, r *http.Request, body []byte, at time.Time) {
 // the Logger writing into it.
 type testServer struct {
 	*Server
-	sink   *bytes.Buffer
+	sink   *syncSink
 	failed []error
 
 	// fixture is the session half — the tmux fake, the store, and the real
@@ -187,7 +188,7 @@ func newAuditedServer(t *testing.T) *testServer {
 func newAuditedServerWith(t *testing.T, browser layer1) *testServer {
 	t.Helper()
 
-	buf := &bytes.Buffer{}
+	buf := &syncSink{}
 	fixture := newSessionFixture(t)
 	cfg := testConfig(loopbackListen)
 	s, err := newServer(
@@ -207,6 +208,33 @@ func newAuditedServerWith(t *testing.T, browser layer1) *testServer {
 	ts := &testServer{Server: s, sink: buf, fixture: fixture}
 	s.report = func(err error) { ts.failed = append(ts.failed, err) }
 	return ts
+}
+
+// syncSink is the buffer the trail is written into, guarded.
+//
+// A plain bytes.Buffer served every milestone 1 test, because a request there
+// has written its record by the time the response the test is holding exists.
+// The stream broke that: its record is written at the open (FR-016a) and the
+// handler goes on running on net/http's own goroutine for as long as the browser
+// watches, so a test that reads the trail while a stream is open is reading a
+// buffer another goroutine wrote into with nothing ordering the two. The lock is
+// that ordering. Without it the suite carries a data race that only -race
+// reports, and only for the tests bold enough to look while a stream is live.
+type syncSink struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncSink) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
 }
 
 // records decodes everything written to the trail so far.

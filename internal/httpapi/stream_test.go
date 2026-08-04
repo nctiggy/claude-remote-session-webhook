@@ -1436,3 +1436,110 @@ func TestTheScreenOnTheWireIsTheScreenTheSessionPrinted(t *testing.T) {
 	// screen like that rather than ending on one.
 	readHeartbeat(t, body, opened)
 }
+
+// --- T027: the record, written at the open ------------------------------------
+//
+// FR-016a's whole claim, in the two halves it has: the record is on the trail
+// while the stream is still running, and the stream still produces exactly one.
+
+// TestTheStreamsRecordIsOnTheTrailWhileTheStreamIsStillOpen is the claim
+// itself, and it is only a claim at all because it is made *during* the stream.
+//
+// Milestone 1's shape — the middleware emitting on the way out — is correct for
+// six routes that answer in a millisecond and wrong for one that answers for
+// hours. A daemon that dies mid-stream under it leaves nothing behind saying a
+// session's screen was being read, which is the fact an incident review most
+// needs from this route and the only fact it uniquely has.
+//
+// The group read off the wire is what makes the assertion after it meaningful:
+// it is written by the loop that runs after the open, so a trail read once it
+// has arrived is a trail read while the response is genuinely still being
+// served.
+func TestTheStreamsRecordIsOnTheTrailWhileTheStreamIsStillOpen(t *testing.T) {
+	t.Parallel()
+
+	const screen = "$ go test ./...\nok\tinternal/httpapi\t5.4s\n"
+
+	f, addr := watching(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), screen)
+
+	opened := time.Now()
+	resp := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /sessions/%s/stream = %d; want %d", live.ID, resp.StatusCode, http.StatusOK)
+	}
+
+	body := bufio.NewReader(resp.Body)
+	readScreen(t, body, opened, screen)
+
+	records := f.records(t)
+	if len(records) != 1 {
+		t.Fatalf("a stream that is still open has emitted %d audit records (%v); want exactly one, written at the open",
+			len(records), records)
+	}
+	rec := records[0]
+	if got, want := rec["action"], string(audit.ActionStreamOpen); got != want {
+		t.Errorf("action = %v; want %v", got, want)
+	}
+	if got, want := rec["decision"], string(audit.Allow); got != want {
+		t.Errorf("decision = %v; want %v — the record carries the authorisation decision the open made", got, want)
+	}
+	if got, want := rec["session_id"], live.ID; got != want {
+		t.Errorf("session_id = %v; want %v — the id off the daemon's own record", got, want)
+	}
+	if got, want := rec["caller"], string(auth.CallerOperator); got != want {
+		t.Errorf("caller = %v; want %v — the server-derived owner, never the verified address", got, want)
+	}
+
+	// And it carries none of what the stream carries. The screen went over the
+	// wire in the group read above, which is the only place in this daemon it may
+	// appear (FR-035, FR-042).
+	if trail := f.sink.String(); strings.Contains(trail, screen) || strings.Contains(trail, live.Name) {
+		t.Errorf("the trail carries what the stream is showing:\n%s", trail)
+	}
+
+	// The stream is still delivering after the record was written, which is what
+	// separates "emitted at the open" from "emitted because it ended".
+	readHeartbeat(t, body, opened)
+}
+
+// TestARecordAlreadyWrittenIsNotWrittenAgainWhenTheHandlerReturns is the other
+// half: one record per stream request, and no close record
+// (contracts/stream.md, SC-008).
+//
+// It is stated here rather than over the wire because the second emit is the
+// middleware's deferred one, which runs after the handler has unwound on
+// net/http's own goroutine — there is no event a test can wait on for it, so a
+// wire test could only ever say "no second record had appeared yet". What the
+// guarantee actually rests on is that the record is written at most once, which
+// is a property of the pair below and is exactly what this drives.
+//
+// The amendment between the two emits is the trap that comes with emitting
+// early, pinned so it stays a known rule rather than a surprise: a handler that
+// denies after emitting has denied nobody.
+func TestARecordAlreadyWrittenIsNotWrittenAgainWhenTheHandlerReturns(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	ra := &RequestAudit{rec: audit.Record{
+		Action:   audit.ActionStreamOpen,
+		Caller:   string(auth.CallerOperator),
+		Decision: audit.Allow,
+	}}
+
+	s.emit(ra)
+	ra.Deny(errStreamCapReached.Error())
+	s.emit(ra)
+
+	rec := s.only(t)
+	if got, want := rec["decision"], string(audit.Allow); got != want {
+		t.Errorf("decision = %v; want %v — the record on the trail is the one written at the open", got, want)
+	}
+	if reason, ok := rec["reason"]; ok {
+		t.Errorf("reason = %v; want none — an amendment after the emit reaches nobody", reason)
+	}
+	if len(s.failed) != 0 {
+		t.Errorf("a second emit reported %v; want nothing — writing once is not a failure", s.failed)
+	}
+}

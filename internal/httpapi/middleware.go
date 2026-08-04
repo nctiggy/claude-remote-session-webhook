@@ -97,7 +97,20 @@ const (
 //
 // Not safe for concurrent use: it belongs to one request, on the goroutine
 // net/http gave that request.
-type RequestAudit struct{ rec audit.Record }
+type RequestAudit struct {
+	rec audit.Record
+
+	// emitted is what keeps "exactly one record" true for a handler that writes
+	// its own record before it returns. The stream is the one that does
+	// (FR-016a): a response lasting hours cannot wait for the emit above, so it
+	// emits at the open, and this is what stops the middleware writing a second
+	// record hours later saying the same thing.
+	//
+	// The consequence is an ordering rule for any handler that emits early:
+	// everything the record is to say has to be said first, because an amendment
+	// after the emit changes nothing that reaches the trail.
+	emitted bool
+}
 
 // SetSessionID records which session the request acted on.
 //
@@ -325,7 +338,7 @@ func (s *Server) writeUnauthorized(w http.ResponseWriter) {
 	}
 }
 
-// emit writes the request's one record.
+// emit writes the request's one record, and writes it once.
 //
 // A failed write does not change the response, and that is deliberate. The
 // answer a caller gets must depend on the request alone: a 500 that appeared
@@ -333,7 +346,23 @@ func (s *Server) writeUnauthorized(w http.ResponseWriter) {
 // the trail into a side channel. What it does instead is refuse to be silent —
 // FR-041 makes the record mandatory, so a daemon that cannot write one is broken
 // and its operator has to find out from somewhere.
+//
+// Writing at most once is what lets a handler put its record on the trail at the
+// moment the decision is made rather than when it returns (FR-016a). Both
+// middlewares still defer this call on every path out, including a panic, so the
+// count is exactly one whether the handler emitted or not — and the guard lives
+// here rather than at the one call site that needs it, because "exactly one
+// record per request" is this function's invariant and not a rule a handler is
+// trusted to keep.
+//
+// The nil case is a handler called outside either door, which every other method
+// on *RequestAudit already tolerates for the same reason.
 func (s *Server) emit(ra *RequestAudit) {
+	if ra == nil || ra.emitted {
+		return
+	}
+	ra.emitted = true
+
 	if err := s.trail.Emit(ra.rec); err != nil {
 		s.report(err)
 	}

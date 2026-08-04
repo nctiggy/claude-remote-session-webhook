@@ -27,12 +27,13 @@ package httpapi
 // by whatever it happens to contain — and what it contains is whatever an
 // unsandboxed program chose to print.
 //
-// One thing this route still owes contracts/stream.md: the record emitted at
-// open rather than at close, which is T027's. It cost nothing while the payload
-// above was a placeholder and costs something now — a stream carries a session's
-// screen from this file onwards, so a daemon that dies mid-stream leaves no
-// trace that output was being read. That is exactly milestone 1's behaviour and
-// exactly what FR-016a exists to change.
+// The trail is written at the open, and this is the one route on either door
+// that does not leave that to the middleware's deferred emit (FR-016a). A
+// response deliberately without an end cannot be recorded when the handler
+// returns: that moment is hours away, is whenever the browser goes away, and
+// never arrives at all if the daemon dies first — which would leave no trace
+// that a session's screen was being read. One record per stream request,
+// carrying the authorisation decision, and none at the close.
 
 import (
 	"context"
@@ -256,6 +257,24 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+
+	// The record goes on the trail here, at the open, rather than when this
+	// handler returns (FR-016a). Everything above this line has either denied and
+	// returned or is the decision this record carries, and everything below it is
+	// the stream itself — so this is the last instant at which the trail can be
+	// written and still be written promptly.
+	//
+	// After the open rather than before it, so that a response which could not be
+	// turned into a stream is still recorded as the refusal it is: that path
+	// denies and returns above, and its record is emitted by the middleware
+	// microseconds later, which for a request that ended is the same instant.
+	//
+	// Nothing below amends the record, and nothing may: after this call an
+	// amendment reaches nobody. There is deliberately no second record when the
+	// stream ends (contracts/stream.md) — the close carries no authorisation fact
+	// the open did not, and a pair would make this the one door where exactly one
+	// record per request is false.
+	s.emit(AuditFrom(r.Context()))
 
 	// The shared buffer, taken after the response is a stream so that an open
 	// which never became one neither creates one nor drops one. Deferred for the
