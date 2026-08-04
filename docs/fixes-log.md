@@ -26,3 +26,4 @@ is a signal that something needs a real design change rather than a fifth patch.
 - 2026-08-04 — A session whose tmux session died out of band kept a live card on the fleet; a failed capture now asks confirmGone and drops the record only when the host affirms the session is gone. (#21)
 - 2026-08-04 — Reduced motion removed the rain but left the two hover fades running; the media query now resets transitions universally. (#23)
 - 2026-08-04 — Every daemon drove tmux's shared default server, so a second one adopted the first's sessions and reaped them on shutdown; each daemon now gets its own server, named from its listen address, and refuses the default. (#22)
+- 2026-08-04 — The claude-fix lane could only print a compare link, so its `Closes #N` survived merge solely by the goodwill of whoever clicked it; `.github/scripts/open-pr.sh` now opens the PR itself, and needs a workflow step wired by hand because an App token without `workflows` scope cannot land one. (#30)
