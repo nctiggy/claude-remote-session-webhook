@@ -59,6 +59,35 @@ mkdir -p ~/.config/crswd
 `Environment=` in a unit is the wrong place for it regardless of this repo:
 anyone who can run `systemctl --user show crswd` can read it back.
 
+### The Access service token
+
+Cloudflare Access sits in front of the hostname and refuses the API client as
+readily as a stranger, so the client presents a **service token** at the edge —
+two headers, alongside the signature it already sends. The daemon never reads
+them; the edge does, and layers 2 and 3 are still enforced behind it.
+
+The same 1Password item carries all three values, so one item rebuilds the whole
+deployment:
+
+```bash
+op read 'op://Lobster/crswd/shared-secret'          # the daemon's HMAC key
+op read 'op://Lobster/crswd/access-client-id'       # CF-Access-Client-Id
+op read 'op://Lobster/crswd/access-client-secret'   # CF-Access-Client-Secret
+```
+
+A client call therefore carries four headers: the two Access ones the edge
+consumes, and the timestamp and signature the daemon checks. Dropping the Access
+pair gets a 302 to the login page and the daemon is never reached; dropping the
+signature gets past the edge and a uniform 401 from the daemon. Both are worth
+trying once — the second is the layering doing its job, and a deployment where it
+returns 200 is misconfigured.
+
+The client id is not a secret. The client secret is shown **once**, when the token
+is created, and is unrecoverable afterwards — regenerate the token if it is lost.
+The shared secret is worse: nothing can regenerate it, and losing it invalidates
+every live session token. It exists in exactly two places, 1Password and
+`~/.config/crswd/env`, and that is deliberate.
+
 ## Reading the audit trail
 
 Audit records are structured JSON on stdout, so systemd's journal is the whole
