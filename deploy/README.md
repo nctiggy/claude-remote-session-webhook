@@ -117,6 +117,40 @@ The shared secret is worse: nothing can regenerate it, and losing it invalidates
 every live session token. It exists in exactly two places, 1Password and
 `~/.config/crswd/env`, and that is deliberate.
 
+## Driving the API from a shell
+
+`deploy/crswd-api` is the whole client: four headers and one signature line. It
+runs on macOS or Linux, called from bash or zsh, and reads all three credentials
+from 1Password at call time so none of them lives in a file or a history entry.
+
+```bash
+install -m 0755 deploy/crswd-api ~/bin/crswd-api
+
+crswd-api GET    /sessions
+crswd-api POST   /sessions '{"name":"demo","work_dir":"'"$HOME"'/code/some-repo"}'
+crswd-api POST   /sessions/<id>/prompt '{"text":"run the tests"}' <token>
+crswd-api GET    /sessions/<id>/output '' <token>
+crswd-api DELETE /sessions/<id>        '' <token>
+```
+
+`CRSWD_HOST` and `CRSWD_OP_ITEM` override the hostname and the vault item.
+
+Three portability hazards it exists to avoid, each of which cost real time:
+
+- **The request path is `reqpath`, never `path`.** In zsh, `path` is tied to
+  `PATH`; a function doing `local path=/sessions` sets `PATH=/sessions` for the
+  length of the call, and every external command disappears. The symptom —
+  `command not found: date` — looks nothing like the cause.
+- **`PATH` is appended to, never prepended.** Prepending `/usr/bin` would shadow
+  Homebrew's tools on a Mac.
+- **A script, not a shell function.** The shebang fixes the interpreter, so the
+  caller's shell cannot change how it parses.
+
+Running it **on the daemon's host** is the better default. It reads the HMAC
+shared secret, and that is the one credential that cannot be regenerated without
+invalidating every live session token — running it elsewhere puts a second copy
+of it on a second machine.
+
 ## Reading the audit trail
 
 Audit records are structured JSON on stdout, so systemd's journal is the whole

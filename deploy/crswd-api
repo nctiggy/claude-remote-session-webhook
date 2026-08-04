@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# crswd API client — works from macOS or Linux, called from any shell.
+#
+#   crswd-api GET    /sessions
+#   crswd-api POST   /sessions '{"name":"demo","work_dir":"/home/nctiggy/code/x"}'
+#   crswd-api POST   /sessions/<id>/prompt '{"text":"hi"}' <token>
+#   crswd-api GET    /sessions/<id>/output '' <token>
+#   crswd-api DELETE /sessions/<id>        '' <token>
+#
+# Four headers on every call. Two admit you at Cloudflare's edge; two prove the
+# request to the daemon. The edge deciding you may knock never substitutes for
+# the daemon deciding you may come in — drop the signature and you still get 401.
+#
+# Portability notes, each of which was a real hazard:
+#   - The request path is `reqpath`, never `path`. In zsh `path` is tied to PATH,
+#     so `local path=/sessions` silently sets PATH=/sessions and every external
+#     command vanishes for the length of the call.
+#   - PATH is only APPENDED to. Prepending would shadow Homebrew's tools with
+#     /usr/bin versions on a Mac, which is the opposite of helpful.
+#   - `date +%s` and `awk '{print $NF}'` behave the same under BSD and GNU, and
+#     the hex digest is the last field for both OpenSSL and LibreSSL output.
+#   - bash 3.2 compatible, which is what macOS ships as /bin/bash.
+set -eu
+export PATH="${PATH:-}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+usage() { sed -n '4,10p' "$0" | sed 's/^# \{0,1\}//'; }
+case "${1-}" in
+  -h|--help) usage; exit 0 ;;
+  "")        usage >&2; exit 2 ;;
+esac
+
+missing=""
+for tool in op curl openssl awk date; do
+  command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+done
+if [ -n "$missing" ]; then
+  echo "crswd-api: not on PATH:$missing" >&2
+  echo "  op is the 1Password CLI — brew install 1password-cli, then enable" >&2
+  echo "  'Integrate with 1Password CLI' in the desktop app's Developer settings." >&2
+  exit 1
+fi
+
+method="$1"
+reqpath="${2:?usage: crswd-api METHOD PATH [BODY] [BEARER]}"
+body="${3-}"
+bearer="${4-}"
+host="${CRSWD_HOST:-https://crswd.craigcloud.io}"
+vault="${CRSWD_OP_ITEM:-op://Lobster/crswd}"
+
+sec=$(op read "$vault/shared-secret") || { echo "crswd-api: could not read $vault/shared-secret" >&2; exit 1; }
+cid=$(op read "$vault/access-client-id")
+csec=$(op read "$vault/access-client-secret")
+ts=$(date +%s)
+
+# METHOD \n PATH \n timestamp . body — the request line is signed, so one signed
+# read is not a valid destroy at the same instant.
+sig=$(printf '%s\n%s\n%s.%s' "$method" "$reqpath" "$ts" "$body" \
+      | openssl dgst -sha256 -hmac "$sec" | awk '{print $NF}')
+
+set -- -sS -X "$method" "$host$reqpath" \
+  -H "CF-Access-Client-Id: $cid" \
+  -H "CF-Access-Client-Secret: $csec" \
+  -H "X-CRSW-Timestamp: $ts" \
+  -H "X-CRSW-Signature: sha256=$sig"
+[ -n "$bearer" ] && set -- "$@" -H "Authorization: Bearer $bearer"
+[ -n "$body" ] && set -- "$@" -H "Content-Type: application/json" -d "$body"
+curl "$@"
+echo
