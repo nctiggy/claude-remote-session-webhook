@@ -76,7 +76,7 @@ func newTestValidator(t *testing.T, srv *keyServer, clk clock) *Validator {
 	t.Helper()
 
 	keys := mustKeySet(t, srv.URL(), clk)
-	return &Validator{keys: keys, issuer: keys.origin, aud: testAUD, clock: clk}
+	return &Validator{keys: keys, issuer: keys.origin, aud: testAUD, allowed: mustAllowlist(t, testEmail), clock: clk}
 }
 
 // publishing returns a key server holding the one key the daemon trusts, and a
@@ -404,7 +404,7 @@ func TestNewWiresTheKeySet(t *testing.T) {
 	key := signingKey(t, 0)
 	srv := newKeyServer(t, keySetJSON(jwkFor(t, "k1", &key.PublicKey)))
 
-	v, err := New(srv.URL(), testAUD)
+	v, err := New(srv.URL(), testAUD, []string{testEmail})
 	if err != nil {
 		t.Fatalf("New(%q): %v", srv.URL(), err)
 	}
@@ -424,7 +424,7 @@ func TestNewRefusesAnUnusableTeamDomain(t *testing.T) {
 	t.Parallel()
 
 	for _, domain := range []string{"", "team.cloudflareaccess.com", "https://", "ftp://team.cloudflareaccess.com"} {
-		v, err := New(domain, testAUD)
+		v, err := New(domain, testAUD, []string{testEmail})
 		if err == nil {
 			t.Fatalf("New(%q, %q) built %v, want a refusal", domain, testAUD, v)
 		}
@@ -437,7 +437,7 @@ func TestNewRefusesAnUnusableTeamDomain(t *testing.T) {
 func TestNewRefusesAnEmptyAudience(t *testing.T) {
 	t.Parallel()
 
-	if v, err := New("https://team.cloudflareaccess.com", ""); err == nil {
+	if v, err := New("https://team.cloudflareaccess.com", "", []string{testEmail}); err == nil {
 		t.Fatalf("New with no audience built %v, want a refusal", v)
 	}
 }

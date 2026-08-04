@@ -125,7 +125,8 @@ func (a *audience) UnmarshalJSON(data []byte) error {
 //
 // The composition is the ordering property: claims are read only after the
 // signature says who wrote them, and there is no second path that reads them
-// earlier. The allowlist is step 11 and joins in T006.
+// earlier. Step 11 — the allowlist — is Verify's, which composes this the same
+// way and is the only exported way in.
 func (v *Validator) verifiedClaims(ctx context.Context, assertion string) (*claimSet, error) {
 	payload, err := v.signedClaims(ctx, assertion)
 	if err != nil {

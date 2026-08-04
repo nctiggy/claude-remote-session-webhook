@@ -80,6 +80,10 @@ type Validator struct {
 	// thing that names *this* one.
 	aud string
 
+	// allowed is the daemon's own copy of the addresses it serves
+	// (config.AccessAllowedEmails), and the last check of the sequence.
+	allowed allowlist
+
 	// clock is the same clock the key set measures its refetch floor on, so a
 	// suite can settle the floor and a token's validity window at one instant.
 	// It is a field rather than a call to time.Now for that reason alone.
@@ -94,8 +98,12 @@ type Validator struct {
 // It takes the team domain for the same reason newKeySet does: the issuer the
 // assertion must name and the origin the keys come from are two readings of one
 // configured value, and the issuer here is literally the key set's own origin.
-// The allowlist joins in T006.
-func New(teamDomain, aud string) (*Validator, error) {
+//
+// Every argument is refused when it is unusable, because a layer-1 value that
+// cannot do its job is a startup failure and not a runtime one (FR-011). A
+// daemon that binds a listener and then refuses every browser is harder to
+// diagnose than one that never started.
+func New(teamDomain, aud string, allowedEmails []string) (*Validator, error) {
 	// The audience is the one layer-1 value with no derivation and no default:
 	// an empty one would compare equal to an assertion carrying an empty tag,
 	// which is a pin that pins nothing (FR-011).
@@ -103,12 +111,17 @@ func New(teamDomain, aud string) (*Validator, error) {
 		return nil, errors.New("access: no audience configured for the Access assertions; refusing to start")
 	}
 
+	allowed, err := newAllowlist(allowedEmails)
+	if err != nil {
+		return nil, err
+	}
+
 	clk := systemClock{}
 	keys, err := newKeySet(teamDomain, clk)
 	if err != nil {
 		return nil, err
 	}
-	return &Validator{keys: keys, issuer: keys.origin, aud: aud, clock: clk}, nil
+	return &Validator{keys: keys, issuer: keys.origin, aud: aud, allowed: allowed, clock: clk}, nil
 }
 
 // joseHeader is the two fields verification cannot proceed without, plus the one
