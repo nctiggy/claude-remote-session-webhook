@@ -8909,3 +8909,169 @@ four constants this iteration added.
     daemon holds `127.0.0.1:8765`, so `TestQuickstartStory1StartupFailures`'s two
     hard-coded `:8765` cases fail their post-refusal bind check while all ten refusals
     exit 1 with the right message. The other twelve stories pass. Still **T021's**.
+
+---
+
+## Iteration 52 (milestone 2, iteration 9) — 2026-08-04 05:31
+
+**Did:** **T009**, opening US1 — the browser door in `internal/httpapi/browser.go`:
+`authenticateBrowser`, layer 1 on whatever it wraps, one audit record per request, one
+uniform 401. Plus the wiring it needs: `Server` gained a `browser layer1` field,
+`newServer` a seventh parameter it refuses nil, and `NewWith` the first production call
+to `access.New` (five tasks after that constructor landed — finding 144, closed).
+
+**Shape, and the reasons behind the non-obvious parts:**
+
+- **The door is written against an interface, not `*access.Validator`.** `layer1` is
+  declared in `browser.go` with the same signature `bypass_dev.go` asserts both
+  `*Validator` and `*Bypass` against, so the dev bypass is *this* door with a different
+  thing behind it rather than a second authorisation path (51 #8's own reasoning, now
+  honoured on the consuming side).
+- **`newServer` takes layer 1 as a parameter; `NewWith` builds it from the Config.** The
+  parameter is the seam the bypass will plug into — `config.WithAccessBypassActive`
+  leaves the three `CRSW_ACCESS_*` values empty and `access.New` rightly refuses them, so
+  a bypassed daemon cannot come through `NewWith`'s line. `newServer` refuses a nil
+  validator like it refuses a nil authenticator, and `TestNewRefusesMissingDependencies`
+  gained a `no access validator` row.
+- **`access.New` is built *last* of the four collaborators in `NewWith`, deliberately.**
+  Built first, it changed which message a milestone 1 environment with two defects
+  reports: `TestNewRefusesMissingDependencies/no approved roots` still failed, but on the
+  audience rather than on the roots. Every one of these is a startup failure; the order
+  only decides which one an operator meets first, and preserving milestone 1's answer
+  keeps four existing cases honest instead of merely passing.
+- **The trail reason is `err.Error()` from `internal/access`, not a mapping table.** That
+  package documents at four separate sites that every error it returns is a sentinel
+  authored there carrying no byte of the assertion, no kid, no claim value, and not the
+  refused address — `keys.go:73` even names T009 as the reader. The `resolveReason`-style
+  table milestone 1 uses for `internal/session` needs *exported* sentinels, and
+  `internal/access` keeps its fourteen unexported on purpose: a caller that could branch
+  on which check refused is one honest-looking branch from putting it in the response.
+  So the mapping finding 144 asked for is the package's own discipline, held by
+  `TestBrowserDoorTrailCarriesNothingTheCallerWrote` rather than by a second list.
+- **The refusal body is HTML and deliberately not the API door's JSON.** FR-010's
+  uniformity is *within* a door, which is where an attacker probing it lives, and the
+  caller on this one is a person looking at a browser. It references no stylesheet, no
+  script and no external origin, so it renders identically with the CSP T010 adds and
+  without it.
+- **`operatorContextKey` is its own key, not `callerContextKey` reused.** A request comes
+  through one door; a handler reading whichever value happened to be present would be one
+  reachable by the wrong credential.
+- **The trail's `caller` is `operator.Owner`, never the verified address.** The address is
+  a claim value (FR-035), and the owner constant is what the ownership check compares —
+  so a session created through the API is one the dashboard will show (FR-037a).
+
+Gate, executed not asserted, one command at a time (finding 115):
+
+```
+go build ./...                            OK
+go build -tags dev ./...                  OK
+go vet ./...                              OK
+go test ./... -count=1                    OK
+golangci-lint run                         OK (silent)
+gofmt -l .                                OK (silent)
+go test -tags dev ./... -count=1          OK
+go test -tags tmux ./... -count=1         OK
+go test -race ./internal/httpapi ./internal/audit  OK
+go test -tags quickstart ./cmd/crswd      12 of 13 stories — finding 78 exactly, again
+go.sum                                    absent  ✅
+```
+
+**Eight mutations, each applied and reverted, to prove the tests are not decorative:**
+
+1. `http.Error(w, err.Error(), 401)` in place of `s.refuseBrowser(w)` — the classic
+   mistake, and the whole reason FR-010 is written down → both the byte-identity sweep
+   and the reason-stays-server-side test.
+2. Reason flattened to one constant → `TestBrowserDoorKeepsTheReasonServerSide`. This is
+   the mutation the uniformity test *cannot* catch, which is why that test exists.
+3. `ra.rec.Caller = operator.Email` → the admit test twice: on the caller field, and on
+   the trail carrying the verified address.
+4. `Decision: audit.Allow` as the record's starting value → all twenty refusal rows.
+5. Dropping the `operator == nil` fail-closed branch → nil-pointer panic on the
+   "named nobody" row. Unreachable in production, caught anyway.
+6. Reading `Cf-Access-Authenticated-User-Email` instead of the assertion header → the
+   admit test, and the reason test (everything became "carries no Access assertion").
+7. `newServer`'s `browser == nil` case removed →
+   `TestNewRefusesMissingDependencies/no_access_validator`.
+8. Reason built as `err.Error() + ": " + assertion` →
+   `TestBrowserDoorTrailCarriesNothingTheCallerWrote`, seventeen rows at once.
+
+**Learned:**
+
+1. **`testConfig` and `leakConfig` had to grow the three `CRSW_ACCESS_*` values**, because
+   `New` now builds a validator from them and both fixtures are hand-written Configs that
+   `config.Load` would never produce. That is the failure mode `testConfig`'s own
+   `MaxSessions` comment warns about, arriving one milestone later. Any future fixture
+   Config needs them too.
+2. **A real validator in a test costs one 2048-bit key pair, not one per case.** The key
+   pairs are a package-level `sync.OnceValues`; each case builds its own `httptest` key
+   server and its own `access.Validator` around the *same* pair, so no case is admitted or
+   refused because of what a previous one left in the key cache — and the whole file runs
+   in 0.25s. The unpublished second key is what makes "signed by a key the edge does not
+   publish" a genuine forgery rather than a mangled byte.
+3. **`errcheck` with `check-type-assertions: true` fails `x, _ := m["k"].(string)`.** Two
+   assertions in the new test tripped it. The fix is to name the boolean and act on it,
+   which is better anyway: a missing `reason` key and an empty one are different defects.
+4. **`alg: none` needs a non-empty signature segment to reach step 3.** The classic
+   two-dots-and-nothing form is refused at step 2 as a malformed shape, which proves the
+   shape check and not the algorithm check. Signing it properly and then lying in the
+   header is what exercises the inversion the hand-rolled validator exists for.
+5. **`http.Header` compares cleanly with `maps.EqualFunc`** over joined values — the
+   byte-identity sweep needed *headers* included, and a header naming the check is the
+   same disclosure as a body naming it.
+
+**Left:** T010–T034. Next is **T010**: the security headers in
+`internal/httpapi/render.go` — the CSP from `docs/security.md` verbatim, `nosniff`,
+`no-referrer`, HSTS, `Cache-Control: no-store` on pages, and **zero**
+`Access-Control-Allow-*` on any route of either door, swept across every registered
+route.
+
+**Findings:**
+
+151. **The browser door is implemented and nothing calls it yet**, which is the plan's own
+    ordering (T014 registers `GET /`, T016 moves the catch-all) and not an oversight —
+    but the plan's rule is "a task is not done when the code exists, it is done when
+    something calls it", so **T014 and T016 must not treat T009 as closing anything**.
+    `authenticateBrowser` is exercised only by `browser_test.go` today. Nothing in Go will
+    remind whoever writes those tasks: an unexported method used from a `_test.go` file is
+    not an `unused` finding.
+152. **T010's header work must reach `refuseBrowser`, not only the page handlers.**
+    contracts/dashboard.md says *every* browser-door response carries the four headers —
+    "pages, assets, refusals, the not-found page". Today `refuseBrowser` sets
+    `Content-Type` and nothing else. `TestBrowserDoorRefusesEveryFailureIdentically`
+    compares the whole header map across every failure, so it will keep passing whatever
+    T010 adds, and will fail the moment T010 adds a header to *some* refusals.
+153. **Finding 133's `--dev-auth-bypass` flag still does not exist, and the seam for it
+    now does.** `newServer` takes layer 1 as a parameter, so the remaining work is
+    `cmd/crswd` only: a `//go:build dev` / `//go:build !dev` pair registering the flag, a
+    call to `config.WithAccessBypassActive()` (still no production caller), and
+    `access.NewBypass(cfg.Listen, os.Stderr)` built **instead of** the Validator — which
+    means a dev-build path around `NewWith`, since that function builds a Validator
+    unconditionally. Quickstart Story 5's first and last commands need it (finding 135);
+    it is verified in **T034**.
+154. **`leak_test.go`'s `want` list still names only milestone 1's nine actions** (143,
+    unchanged). `access.reject` now has a production caller, so the leak sweep could drive
+    it today; `dashboard.view`, `dashboard.asset` and `stream.open` still cannot. Belongs
+    to **T017** and **T029**.
+155. **Iteration 14 #1 / … / 51 #145 still stands:** `git checkout --`, `git restore`,
+    `perl -i`, heredocs and `sed -i` remain outside the permission allowlist. Eight
+    mutations were applied and reverted with the Edit tool — two round trips each. New
+    this iteration: a heredoc *did* work for `git commit -F -`, which is the first time
+    one has been permitted; the parser refuses them when they carry the tool's own
+    argument text, not when they feed stdin to a command.
+156. **Iteration 1 #1 / … / 51 #146 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the hook:
+    "no leaks found".)
+157. **Iteration 2 #2 / … / 51 #147 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+158. **Iteration 6 #6 / … / 51 #148 still stands:** `AGENTS.md`'s command table names none
+    of `go test -tags tmux ./...`, `go test -tags quickstart ./cmd/crswd`, or
+    `go test -tags dev ./...`. **T032.**
+159. **`deploy/README.md`'s four-variable trap (44 #84 / … / 51 #149) still stands.**
+    **T033.**
+160. **Finding 78 reproduces a ninth time**, untouched by this task: the deployed daemon
+    holds `127.0.0.1:8765`, so `TestQuickstartStory1StartupFailures`'s two hard-coded
+    `:8765` cases fail their post-refusal bind check while all ten refusals exit 1 with
+    the right message. The other twelve stories pass — including all six operations under
+    a daemon that now builds a validator at startup, which is the non-regression signal
+    T020 will assert deliberately. Still **T021's**.
