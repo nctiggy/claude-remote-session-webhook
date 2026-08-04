@@ -12107,3 +12107,62 @@ and `go test -tags quickstart ./cmd/crswd`), **T033** (`.env.example` and `deplo
 owe `CRSW_ACCESS_TEAM_DOMAIN`, `CRSW_ACCESS_AUD`, `CRSW_ACCESS_ALLOWED_EMAILS`,
 `CRSW_MAX_STREAMS` — names only), and **T034** (the quickstart end to end, which must deal
 with #266/#292). Then the milestone is done.
+
+## Iteration 77 (milestone 2, iteration 34) — 2026-08-04 11:22
+
+**Did:** **T031** — `docs/security.md`, the second of the four Ship-it documents. The
+two-door table gained the Access **service token** and a fourth column separating what the
+edge admits from what the daemon then checks, plus the "no email" trap stated in the binding
+doc for the first time. The header section gained `Cache-Control` (with the two-asset
+exemption), a new **The header that must never appear** subsection carrying the
+`Access-Control-Allow-*` rule and why the absence is the protection, and the stream's
+`Sec-Fetch-Site` refusal — present-and-wrong refuses, absent does not. Two lines added to the
+pre-merge checklist. No code changed; build/vet/test/lint green and unchanged.
+
+**Three things the next documentation task should not re-derive:**
+
+1. **`contracts/dashboard.md` had already assigned `Cache-Control` to this file.** Line 84 of
+   that contract says in terms: "This header belongs in `docs/security.md`'s table when it is
+   amended for this milestone (the spec already schedules that amendment for the CORS rule)."
+   So the row is not scope creep, it is a deferred obligation being collected. The same
+   paragraph is where the `no-cache` + ETag asset exemption is specified.
+2. **The doc said "htmx and the stylesheet are served from `self`" and nothing serves htmx.**
+   `web/static/` holds exactly `crswd.css` and `crswd.js`; `assetContentTypes` admits `.css`
+   and `.js` and makes a third kind a startup failure. Corrected in passing to name what the
+   binary embeds, phrased so it still binds if milestone 3 adds a library — that milestone is
+   where a mutating affordance first needs one (`partials_test.go`'s `mutationMarkup` is the
+   test that keeps `hx-post` out today).
+3. **§1's snippet is the API door and now says so.** Its comment claimed "Every handler
+   starts this way. No exceptions" while the browser door's handlers begin at
+   `authenticateBrowser` with no `s.auth.Verify` anywhere. Narrowed to "Every API handler"
+   with a paragraph saying the browser door asks the same two questions with the other door's
+   credential — the questions are what generalise, not the code.
+
+**Findings:**
+
+321. **The stream cap is absent from `docs/security.md`'s "Rate limiting & audit".** That
+    section says "Cap concurrent sessions; refuse past the cap rather than degrading the
+    host" and this milestone added a second cap of exactly that kind — `CRSW_MAX_STREAMS`,
+    global, refusing with 429 (FR-034e, constitution VI). It is documented in
+    `docs/auth-and-sessions.md` and will be named in `.env.example` by T033, but the binding
+    doc's own cap sentence still knows about one cap. Not fixed: T031's scope is the two-door
+    table and the cross-origin headers, and widening a binding doc past its task is how the
+    other three Ship-it tasks stop being reviewable. One clause, unowned.
+322. **319 is unchanged and now applies to two files.** Nothing checks that `docs/`
+    describes the code; both amendments this milestone made were true when written and have
+    no guard keeping them so. Every rule added to either doc *is* independently tested in Go
+    (`TestNoResponseOnEitherDoorCarriesACORSHeader`, `TestTheAPIDoorGainsNoBrowserHeaders`,
+    `TestTheStreamRefusesAnOpenTheBrowserCallsCrossSite`, `internal/access`) — the gap is the
+    link from doc to test, not the test.
+323. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307,
+    311–318 are unchanged**, including 317 (a capture failure reports what the host said, on
+    the stream, the session page and the API's `/output`) and 306, which still needs the
+    operator's answer. The `IMPLEMENTATION_PLAN.md` / `tasks.md` duplicate checkbox state was
+    again ticked in both by hand.
+
+**Left:** **T032** (`AGENTS.md`'s command table owes `go test -tags tmux ./...` and
+`go test -tags quickstart ./cmd/crswd` — "Test (all)" names neither suite that touches real
+tmux), **T033** (`.env.example` and `deploy/README.md` owe `CRSW_ACCESS_TEAM_DOMAIN`,
+`CRSW_ACCESS_AUD`, `CRSW_ACCESS_ALLOWED_EMAILS`, `CRSW_MAX_STREAMS` — names only), and
+**T034** (the quickstart end to end, which must deal with #266/#292). Then the milestone is
+done.
