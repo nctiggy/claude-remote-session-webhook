@@ -47,9 +47,21 @@ func newFleet(t *testing.T) *fleet {
 // and a page that needed a signature would be a page no browser could open.
 func (f *fleet) open(t *testing.T, target string) *httptest.ResponseRecorder {
 	t.Helper()
+	return f.openWith(t, target, f.keys.mint(t, f.keys.claims()))
+}
+
+// openWith is open with the credential chosen rather than minted, which every
+// page test here has no use for — they all want the identity assertion open
+// mints — and which the browser door's own tests need: theirs are claims about
+// *which* assertion arrived. An assertion of absent sends no header at all, the
+// same distinction door.request draws.
+func (f *fleet) openWith(t *testing.T, target, assertion string) *httptest.ResponseRecorder {
+	t.Helper()
 
 	r := httptest.NewRequest(http.MethodGet, target, nil)
-	r.Header.Set(headerAccessAssertion, f.keys.mint(t, f.keys.claims()))
+	if assertion != absent {
+		r.Header.Set(headerAccessAssertion, assertion)
+	}
 
 	w := httptest.NewRecorder()
 	f.ServeHTTP(w, r)

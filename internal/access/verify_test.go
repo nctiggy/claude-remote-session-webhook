@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"strings"
@@ -439,5 +440,293 @@ func TestNewRefusesAnEmptyAudience(t *testing.T) {
 
 	if v, err := New("https://team.cloudflareaccess.com", "", []string{testEmail}); err == nil {
 		t.Fatalf("New with no audience built %v, want a refusal", v)
+	}
+}
+
+// --- The contract's negative sweep -------------------------------------------
+//
+// contracts/access-jwt.md's test table, row by row, presented to Verify — the
+// one exported way into this package and the only one the browser door calls.
+//
+// Every row is covered in pieces already: steps 1 to 5 against signedClaims
+// above, steps 6 to 10 in claims_test.go against verifiedClaims, step 11 in
+// allowlist_test.go. What no other test makes is the whole-table claim, and it
+// is two claims rather than one:
+//
+//   - each documented failure is refused *through the composition*, at the step
+//     the contract names it at. A check that had moved ahead of another, or that
+//     a later one masked, still refuses — so a sweep asserting only "refused"
+//     would watch the ordering rot and stay green. The want column is what makes
+//     each row a claim about its own step.
+//   - no reason carries a byte the caller wrote. internal/httpapi/browser.go
+//     records err.Error() straight into the audit trail *because* this package
+//     promises exactly that, and until now the promise was a comment in the file
+//     relying on it. An assertion, an address, or a key id in the journal is a
+//     caller choosing what the operator's log says (FR-035, FR-042).
+//
+// The uniform 401 those reasons never reach is the browser door's, and is
+// asserted there (FR-010, SC-001).
+
+// The values these rows plant where a forger would. Each is distinctive enough
+// that finding one in a refusal is unambiguous rather than a coincidence of
+// English — which is what lets the caller-authored check below be a search.
+const (
+	forgedKeyID    = "a-key-id-the-edge-never-published"
+	forgedIssuer   = "https://a-team-that-is-not-this-one.cloudflareaccess.com"
+	forgedAudience = "an-application-this-daemon-is-not"
+	forgedEmail    = "intruder@example.invalid"
+)
+
+// identityPayload is identityMembers as the payload bytes, so a row can pair a
+// genuine claim set with a JOSE header no correct signer would ever emit.
+func identityPayload(t *testing.T, v *Validator) string {
+	t.Helper()
+
+	payload, err := json.Marshal(identityMembers(v))
+	if err != nil {
+		t.Fatalf("marshalling the sweep's claims: %v", err)
+	}
+	return string(payload)
+}
+
+// contractRow is one row of the contract's test table.
+type contractRow struct {
+	name string
+
+	// spoil builds what this row presents, given the validator it is presented
+	// to and the key the edge publishes. Every row starts from an assertion that
+	// validator admits and changes exactly one thing, so a refusal can only be
+	// the thing the row is named for.
+	spoil func(t *testing.T, v *Validator, key *rsa.PrivateKey) string
+
+	// want is the step the contract refuses this row at.
+	want error
+}
+
+func contractRows() []contractRow {
+	genuine := func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+		t.Helper()
+		return mintClaims(t, key, identityMembers(v))
+	}
+	segments := func(t *testing.T, v *Validator, key *rsa.PrivateKey) []string {
+		t.Helper()
+		return strings.Split(genuine(t, v, key), ".")
+	}
+
+	return []contractRow{{
+		name:  "no assertion at all",
+		spoil: func(*testing.T, *Validator, *rsa.PrivateKey) string { return "" },
+		want:  errAssertionMissing,
+	}, {
+		name:  "one segment",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string { return segments(t, v, key)[0] },
+		want:  errAssertionMalformed,
+	}, {
+		name: "two segments",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			parts := segments(t, v, key)
+			return parts[0] + "." + parts[1]
+		},
+		want: errAssertionMalformed,
+	}, {
+		name: "four segments",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			parts := segments(t, v, key)
+			return strings.Join(parts, ".") + "." + parts[2]
+		},
+		want: errAssertionMalformed,
+	}, {
+		name: "a JOSE header that is not base64url",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			parts := segments(t, v, key)
+			return "not base64url!." + parts[1] + "." + parts[2]
+		},
+		want: errAssertionMalformed,
+	}, {
+		name: "a payload that is not base64url",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			parts := segments(t, v, key)
+			return parts[0] + ".not base64url!." + parts[2]
+		},
+		want: errAssertionMalformed,
+	}, {
+		name: "a signature that is not base64url",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			parts := segments(t, v, key)
+			return parts[0] + "." + parts[1] + ".not base64url!"
+		},
+		want: errAssertionMalformed,
+	}, {
+		name: "a JOSE header that is not JSON",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			parts := segments(t, v, key)
+			return b64url([]byte("RS256")) + "." + parts[1] + "." + parts[2]
+		},
+		want: errJOSEHeaderMalformed,
+	}, {
+		// Carrying a real signature, so the refusal is step 3 reading alg and not
+		// step 2 noticing an empty third segment. The historical break is a
+		// verifier that skipped verification because the token asked it to.
+		name: "alg: none",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			return mint(t, key, `{"alg":"none","kid":"k1","typ":"JWT"}`, identityPayload(t, v))
+		},
+		want: errAlgorithmRefused,
+	}, {
+		// Key confusion in one row: signed with nothing but the public key every
+		// deployment publishes, and valid to any verifier that lets the token
+		// choose which algorithm checks it.
+		name: "alg: HS256, signed with the published key as an HMAC secret",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			return mintHS256(t, &key.PublicKey, `{"alg":"HS256","kid":"k1","typ":"JWT"}`, identityPayload(t, v))
+		},
+		want: errAlgorithmRefused,
+	}, {
+		name: "alg: RS384",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			return mint(t, key, `{"alg":"RS384","kid":"k1","typ":"JWT"}`, identityPayload(t, v))
+		},
+		want: errAlgorithmRefused,
+	}, {
+		name: "a crit parameter",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			return mint(t, key, `{"alg":"RS256","kid":"k1","crit":["b64"]}`, identityPayload(t, v))
+		},
+		want: errCriticalExtension,
+	}, {
+		name: "no key id at all",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			return mint(t, key, `{"alg":"RS256","typ":"JWT"}`, identityPayload(t, v))
+		},
+		want: errKeyIDMissing,
+	}, {
+		name: "a key id the edge does not publish",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			return mint(t, key, `{"alg":"RS256","kid":"`+forgedKeyID+`","typ":"JWT"}`, identityPayload(t, v))
+		},
+		want: errKeyIDUnknown,
+	}, {
+		name: "signed by a key the edge does not publish",
+		spoil: func(t *testing.T, v *Validator, _ *rsa.PrivateKey) string {
+			return mintClaims(t, signingKey(t, 1), identityMembers(v))
+		},
+		want: errSignatureInvalid,
+	}, {
+		name: "a payload edited after signing",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			parts := segments(t, v, key)
+			forged, err := json.Marshal(with(identityMembers(v), "email", forgedEmail))
+			if err != nil {
+				t.Fatalf("marshalling the forged claims: %v", err)
+			}
+			return parts[0] + "." + b64url(forged) + "." + parts[2]
+		},
+		want: errSignatureInvalid,
+	}, {
+		name: "claims that are not JSON",
+		spoil: func(t *testing.T, _ *Validator, key *rsa.PrivateKey) string {
+			return mintPayload(t, key, "the edge signed this, and it is still not a claim set")
+		},
+		want: errClaimsMalformed,
+	}, {
+		name: "another team's issuer",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			return mintClaims(t, key, with(identityMembers(v), "iss", forgedIssuer))
+		},
+		want: errIssuerMismatch,
+	}, {
+		// A genuine assertion, minted by this edge for another application the
+		// same account protects. The signing keys are per account, so the audience
+		// is the only thing that makes it not this daemon's.
+		name: "another application's audience",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			return mintClaims(t, key, with(identityMembers(v), "aud", []any{forgedAudience}))
+		},
+		want: errAudienceMismatch,
+	}, {
+		name: "expired an hour ago",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			return mintClaims(t, key, with(identityMembers(v), "exp", keysTimestamp-3600))
+		},
+		want: errExpired,
+	}, {
+		name: "not valid until tomorrow",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			return mintClaims(t, key, with(identityMembers(v), "nbf", keysTimestamp+86400))
+		},
+		want: errNotYetValid,
+	}, {
+		name: "issued tomorrow",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			return mintClaims(t, key, with(identityMembers(v), "iat", keysTimestamp+86400))
+		},
+		want: errIssuedInTheFuture,
+	}, {
+		// The row that tells the two spellings of step 10 apart (FR-013c). Nothing
+		// about it is forged, and the operator's own client produces one on every
+		// call.
+		name: "a valid service-token assertion",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			return mintClaims(t, key, serviceTokenMembers(v))
+		},
+		want: errNoEmail,
+	}, {
+		name: "an address the allowlist does not hold",
+		spoil: func(t *testing.T, v *Validator, key *rsa.PrivateKey) string {
+			return mintClaims(t, key, with(identityMembers(v), "email", forgedEmail))
+		},
+		want: errEmailNotAllowed,
+	}}
+}
+
+// callerAuthored is everything about one presented assertion that a caller,
+// rather than this repository, chose the bytes of.
+//
+// The segments are listed as well as the whole, because a reason that quoted the
+// offending part rather than the lot would still be the caller writing the
+// journal — which is the failure this looks for.
+func callerAuthored(v *Validator, assertion string) []string {
+	written := []string{testEmail, v.issuer, forgedKeyID, forgedIssuer, forgedAudience, forgedEmail}
+	if assertion != "" {
+		written = append(written, assertion)
+		for _, segment := range strings.Split(assertion, ".") {
+			if segment != "" {
+				written = append(written, segment)
+			}
+		}
+	}
+	return written
+}
+
+// TestVerifyRefusesEveryRowOfTheContract is the sweep.
+func TestVerifyRefusesEveryRowOfTheContract(t *testing.T) {
+	t.Parallel()
+
+	for _, row := range contractRows() {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+
+			key := signingKey(t, 0)
+			v := admitting(t, key, testEmail)
+
+			// Non-vacuity, per row rather than once for the table: each row spoils
+			// an assertion built from this fixture, so a fixture that had stopped
+			// being admissible would make every row below pass for a reason that
+			// has nothing to do with what it is named for.
+			if _, err := v.Verify(context.Background(), mintClaims(t, key, identityMembers(v))); err != nil {
+				t.Fatalf("the assertion this row spoils is not one the daemon admits: %v", err)
+			}
+
+			assertion := row.spoil(t, v, key)
+			operator, err := v.Verify(context.Background(), assertion)
+			if operator != nil || !errors.Is(err, row.want) {
+				t.Fatalf("Verify = %+v, %v; want no operator and %v", operator, err, row.want)
+			}
+			for _, written := range callerAuthored(v, assertion) {
+				if strings.Contains(err.Error(), written) {
+					t.Errorf("the refusal reads %q, carrying %q — bytes the caller wrote, in the reason the trail records", err, written)
+				}
+			}
+		})
 	}
 }

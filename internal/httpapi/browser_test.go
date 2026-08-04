@@ -32,6 +32,7 @@ import (
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 )
 
 // testKeys generates the two key pairs this file signs with, once for the whole
@@ -69,6 +70,15 @@ const (
 	// this daemon serves them.
 	testOperatorEmail = "operator@example.com"
 	testStrangerEmail = "someone-else@example.com"
+
+	// testServiceTokenName is what the edge writes in place of an email when the
+	// caller is a machine holding a service token — the shape every API call the
+	// operator's own client makes arrives in.
+	testServiceTokenName = "0123456789abcdef.access"
+
+	// testForgedKeyID is a key id nothing publishes, and the one part of a JOSE
+	// header a forger picks freely. Named so the trail can be searched for it.
+	testForgedKeyID = "a-key-id-nothing-published"
 )
 
 // keyServer is a stand-in for the edge's published key set, plus the private key
@@ -89,9 +99,24 @@ type keyServer struct {
 func newKeyServer(t *testing.T) *keyServer {
 	t.Helper()
 
-	published, unpublished := testKeys()
-	body := jwkSetJSON(t, testKeyID, &published.PublicKey)
+	published, _ := testKeys()
+	return serving(t, jwkSetJSON(t, testKeyID, &published.PublicKey))
+}
 
+// newEmptyKeyServer publishes a key set holding no usable key. The fetch
+// succeeds and yields nothing, which contracts/access-jwt.md treats as keys
+// unobtainable rather than as an empty set of things to check against —
+// a distinction with the whole of FR-009 behind it.
+func newEmptyKeyServer(t *testing.T) *keyServer {
+	t.Helper()
+	return serving(t, []byte(`{"keys":[]}`))
+}
+
+// serving starts a key server answering every fetch with one fixed body.
+func serving(t *testing.T, body []byte) *keyServer {
+	t.Helper()
+
+	published, unpublished := testKeys()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set(headerContentType, contentTypeJSON)
 		if _, err := w.Write(body); err != nil {
@@ -145,6 +170,19 @@ func (k *keyServer) claims() map[string]any {
 	}
 }
 
+// serviceTokenClaims is the other documented assertion shape (research D2), and
+// the one that matters: **every API call the operator's own client makes
+// produces one of these** once the daemon is behind the edge. It is genuine,
+// signed by the same key, minted for the same application — and it names a
+// machine rather than a person.
+func (k *keyServer) serviceTokenClaims() map[string]any {
+	claims := k.claims()
+	delete(claims, "email")
+	claims["sub"] = ""
+	claims["common_name"] = testServiceTokenName
+	return claims
+}
+
 // header is the JOSE header of a genuine assertion.
 func joseHeaderFor(kid string) map[string]any {
 	return map[string]any{"alg": "RS256", "kid": kid, "typ": "JWT"}
@@ -162,7 +200,20 @@ func (k *keyServer) mint(t *testing.T, claims map[string]any) string {
 func signAssertion(t *testing.T, key *rsa.PrivateKey, header, claims map[string]any) string {
 	t.Helper()
 
-	signed := segment(t, header) + "." + segment(t, claims)
+	encoded, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("encode the test assertion's claims: %v", err)
+	}
+	return signPayload(t, key, header, string(encoded))
+}
+
+// signPayload signs a payload that is not necessarily JSON at all, which is the
+// only way step 6 is reachable from outside: the signature has to be genuine
+// before anything reads what it covers.
+func signPayload(t *testing.T, key *rsa.PrivateKey, header map[string]any, payload string) string {
+	t.Helper()
+
+	signed := segment(t, header) + "." + base64.RawURLEncoding.EncodeToString([]byte(payload))
 	digest := sha256.Sum256([]byte(signed))
 	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
 	if err != nil {
@@ -294,50 +345,134 @@ func TestBrowserDoorAdmitsAVerifiedOperator(t *testing.T) {
 // because of what a previous one left in the key cache.
 type browserFailure struct {
 	name string
-	// door is what the case is presented to, and assertion is what it is
-	// presented with.
-	door      func(t *testing.T) *door
+
+	// keys is this row's edge: the key server its assertion is minted from *and*
+	// the one the validator behind its door reads.
+	//
+	// One server for both, which is not tidiness. An assertion minted against a
+	// second key server names that server's origin as its issuer, so a row meaning
+	// to present an expired assertion is refused for its issuer instead — and
+	// every refusal looks the same from outside, so the row goes on passing while
+	// testing a check it was not written for.
+	keys func(t *testing.T) *keyServer
+
+	// door overrides what stands behind the door, for the two paths that have no
+	// validator at all. Nil is the ordinary arrangement: a validator over keys.
+	door func(t *testing.T, k *keyServer) *door
+
 	assertion func(t *testing.T, k *keyServer) string
+
+	// step names the check that must refuse this row, and is what the trail is
+	// read against: rows sharing a step must record the same reason, and rows
+	// with different steps must never record the same one. It is a label for the
+	// test's own use — nothing in the daemon has a value like it, and no caller
+	// ever learns which one applied.
+	step string
 }
 
-// browserFailures is the refusal table. The eleven steps of
-// contracts/access-jwt.md are represented here, plus the keys-unobtainable case
-// and the two fail-closed paths newServer makes unreachable from outside.
+// present drives this row through its own door, and hands back the door, what
+// was presented to it, and what came back — the trail, the input and the
+// response being the three things the claims below are made of.
+func (c browserFailure) present(t *testing.T) (*door, string, *httptest.ResponseRecorder) {
+	t.Helper()
+
+	keys := c.keys(t)
+	build := c.door
+	if build == nil {
+		build = func(t *testing.T, k *keyServer) *door { t.Helper(); return newDoor(t, k.validator(t)) }
+	}
+
+	d := build(t, keys)
+	assertion := c.assertion(t, keys)
+	return d, assertion, d.request(assertion)
+}
+
+// browserFailures is contracts/access-jwt.md's test table, presented to the
+// browser door: every one of the eleven steps, the two keys-unobtainable
+// shapes, and the two fail-closed paths newServer makes unreachable from
+// outside.
 //
-// It is not the contract's full sweep — that is T018's, in this file — but every
-// row is a genuinely valid assertion spoiled in exactly one way, which is what
-// makes "all of these answer identically" a claim about the door rather than
-// about malformed input.
+// Every row is a genuinely valid assertion spoiled in exactly one way, minted
+// from a local key pair rather than approximated. That is what makes the three
+// claims below claims about the door — a table of malformed strings would prove
+// only that garbage is refused, which was never in doubt. What is in doubt is
+// whether a *valid* assertion for another audience, another team, another
+// person, or another kind of caller altogether is told apart from the
+// operator's, and whether the telling apart leaks.
 func browserFailures() []browserFailure {
-	live := func(t *testing.T) *door { t.Helper(); return newDoor(t, newKeyServer(t).validator(t)) }
+	genuine := func(t *testing.T, k *keyServer) []string {
+		t.Helper()
+		return strings.Split(k.mint(t, k.claims()), ".")
+	}
 
 	return []browserFailure{{
 		name:      "no header at all",
-		door:      live,
+		step:      "no assertion",
+		keys:      newKeyServer,
 		assertion: func(*testing.T, *keyServer) string { return absent },
 	}, {
 		name:      "an empty header",
-		door:      live,
+		step:      "no assertion",
+		keys:      newKeyServer,
 		assertion: func(*testing.T, *keyServer) string { return "" },
 	}, {
-		name: "two segments",
-		door: live,
+		name: "one segment",
+		step: "not three segments",
+		keys: newKeyServer,
 		assertion: func(t *testing.T, k *keyServer) string {
-			parts := strings.Split(k.mint(t, k.claims()), ".")
+			return genuine(t, k)[0]
+		},
+	}, {
+		name: "two segments",
+		step: "not three segments",
+		keys: newKeyServer,
+		assertion: func(t *testing.T, k *keyServer) string {
+			parts := genuine(t, k)
 			return parts[0] + "." + parts[1]
 		},
 	}, {
-		name: "a payload that is not base64url",
-		door: live,
+		name: "four segments",
+		step: "not three segments",
+		keys: newKeyServer,
 		assertion: func(t *testing.T, k *keyServer) string {
-			parts := strings.Split(k.mint(t, k.claims()), ".")
-			return parts[0] + ".not base64url.\n" + parts[2]
+			parts := genuine(t, k)
+			return strings.Join(parts, ".") + "." + parts[2]
+		},
+	}, {
+		// The three forgeries below carry no `.` of their own, which is the whole
+		// difference between reaching the decoder and being counted. A segment
+		// spelled "not base64url.\n" is four segments, so the row named for the
+		// decoder is refused by the segment count — and passes, since one refusal
+		// is indistinguishable from another from outside.
+		name: "a JOSE header that is not base64url",
+		step: "the header is not base64url",
+		keys: newKeyServer,
+		assertion: func(t *testing.T, k *keyServer) string {
+			parts := genuine(t, k)
+			return "not base64url!" + "." + parts[1] + "." + parts[2]
+		},
+	}, {
+		name: "a payload that is not base64url",
+		step: "the payload is not base64url",
+		keys: newKeyServer,
+		assertion: func(t *testing.T, k *keyServer) string {
+			parts := genuine(t, k)
+			return parts[0] + "." + "not base64url!" + "." + parts[2]
+		},
+	}, {
+		name: "a signature that is not base64url",
+		step: "the signature is not base64url",
+		keys: newKeyServer,
+		assertion: func(t *testing.T, k *keyServer) string {
+			parts := genuine(t, k)
+			return parts[0] + "." + parts[1] + "." + "not base64url!"
 		},
 	}, {
 		name: "a JOSE header that is not JSON",
-		door: live,
+		step: "the header is not JSON",
+		keys: newKeyServer,
 		assertion: func(t *testing.T, k *keyServer) string {
-			parts := strings.Split(k.mint(t, k.claims()), ".")
+			parts := genuine(t, k)
 			return base64.RawURLEncoding.EncodeToString([]byte("not json")) + "." + parts[1] + "." + parts[2]
 		},
 	}, {
@@ -345,7 +480,8 @@ func browserFailures() []browserFailure {
 		// reading of alg and not step 2's shape check. The historical break is a
 		// verifier that skipped verification because the token asked it to.
 		name: "alg: none",
-		door: live,
+		step: "the algorithm",
+		keys: newKeyServer,
 		assertion: func(t *testing.T, k *keyServer) string {
 			header := joseHeaderFor(testKeyID)
 			header["alg"] = "none"
@@ -356,7 +492,8 @@ func browserFailures() []browserFailure {
 		// HMAC secret. It is refused before any cryptography runs, because there
 		// is one verifier and nothing to select with.
 		name: "alg: HS256, signed with the public key as an HMAC secret",
-		door: live,
+		step: "the algorithm",
+		keys: newKeyServer,
 		assertion: func(t *testing.T, k *keyServer) string {
 			header := joseHeaderFor(testKeyID)
 			header["alg"] = "HS256"
@@ -372,37 +509,76 @@ func browserFailures() []browserFailure {
 			return signed + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 		},
 	}, {
+		// Named by the contract alongside none and HS256, because the rule is one
+		// accepted algorithm rather than a list of refused ones: RS384 is signed
+		// by the very key the edge publishes, and is still not what this validator
+		// verifies.
+		name: "alg: RS384",
+		step: "the algorithm",
+		keys: newKeyServer,
+		assertion: func(t *testing.T, k *keyServer) string {
+			header := joseHeaderFor(testKeyID)
+			header["alg"] = "RS384"
+			return signAssertion(t, k.published, header, k.claims())
+		},
+	}, {
 		name: "a crit parameter",
-		door: live,
+		step: "a critical extension",
+		keys: newKeyServer,
 		assertion: func(t *testing.T, k *keyServer) string {
 			header := joseHeaderFor(testKeyID)
 			header["crit"] = []string{"b64"}
 			return signAssertion(t, k.published, header, k.claims())
 		},
 	}, {
-		name: "a key id the edge does not publish",
-		door: live,
+		// Picking "the only key in the set" on the caller's behalf would be the
+		// verifier deciding from attacker input, so no kid is its own refusal
+		// rather than a default.
+		name: "no key id at all",
+		step: "no key id",
+		keys: newKeyServer,
 		assertion: func(t *testing.T, k *keyServer) string {
-			return signAssertion(t, k.published, joseHeaderFor("a-key-id-nothing-published"), k.claims())
+			header := joseHeaderFor(testKeyID)
+			delete(header, "kid")
+			return signAssertion(t, k.published, header, k.claims())
+		},
+	}, {
+		name: "a key id the edge does not publish",
+		step: "an unknown key id",
+		keys: newKeyServer,
+		assertion: func(t *testing.T, k *keyServer) string {
+			return signAssertion(t, k.published, joseHeaderFor(testForgedKeyID), k.claims())
 		},
 	}, {
 		name: "signed by a key the edge does not publish",
-		door: live,
+		step: "the signature",
+		keys: newKeyServer,
 		assertion: func(t *testing.T, k *keyServer) string {
 			return signAssertion(t, k.unpublished, joseHeaderFor(testKeyID), k.claims())
 		},
 	}, {
 		name: "a payload tampered with after signing",
-		door: live,
+		step: "the signature",
+		keys: newKeyServer,
 		assertion: func(t *testing.T, k *keyServer) string {
-			parts := strings.Split(k.mint(t, k.claims()), ".")
+			parts := genuine(t, k)
 			forged := k.claims()
 			forged["email"] = testStrangerEmail
 			return parts[0] + "." + segment(t, forged) + "." + parts[2]
 		},
 	}, {
+		// Step 6, which is reachable only with a genuine signature over it: until
+		// then the payload is attacker-authored bytes nothing has parsed.
+		name: "claims that are not JSON",
+		step: "the claims are not JSON",
+		keys: newKeyServer,
+		assertion: func(t *testing.T, k *keyServer) string {
+			return signPayload(t, k.published, joseHeaderFor(testKeyID), "the edge signed this, and it is still not a claim set")
+		},
+	}, {
 		name: "an expired assertion",
-		door: live,
+		step: "expired",
+		keys: newKeyServer,
 		assertion: func(t *testing.T, k *keyServer) string {
 			claims := k.claims()
 			claims["exp"] = time.Now().Add(-time.Hour).Unix()
@@ -410,15 +586,28 @@ func browserFailures() []browserFailure {
 		},
 	}, {
 		name: "an assertion whose validity has not begun",
-		door: live,
+		step: "not yet valid",
+		keys: newKeyServer,
 		assertion: func(t *testing.T, k *keyServer) string {
 			claims := k.claims()
 			claims["nbf"] = time.Now().Add(time.Hour).Unix()
 			return k.mint(t, claims)
 		},
 	}, {
+		// The other direction of FR-006, and the one a validator that only ever
+		// asked "has this expired" would admit.
+		name: "an assertion issued in the future",
+		step: "issued in the future",
+		keys: newKeyServer,
+		assertion: func(t *testing.T, k *keyServer) string {
+			claims := k.claims()
+			claims["iat"] = time.Now().Add(time.Hour).Unix()
+			return k.mint(t, claims)
+		},
+	}, {
 		name: "the wrong audience",
-		door: live,
+		step: "the audience",
+		keys: newKeyServer,
 		assertion: func(t *testing.T, k *keyServer) string {
 			claims := k.claims()
 			claims["aud"] = []string{testOtherAUD}
@@ -426,7 +615,8 @@ func browserFailures() []browserFailure {
 		},
 	}, {
 		name: "the wrong issuer",
-		door: live,
+		step: "the issuer",
+		keys: newKeyServer,
 		assertion: func(t *testing.T, k *keyServer) string {
 			claims := k.claims()
 			claims["iss"] = "https://another-team.cloudflareaccess.com"
@@ -436,19 +626,18 @@ func browserFailures() []browserFailure {
 		// The negative that tells the two allowlist spellings apart (FR-013c).
 		// Every API call the operator's own client makes produces one of these,
 		// and a check written as "refuse an email that is present and not
-		// allowed" admits all of them to the dashboard.
+		// allowed" admits all of them to the dashboard. Presented to a dashboard
+		// *route* as well, below, which is where the requirement is written.
 		name: "a valid service-token assertion",
-		door: live,
+		step: "no email",
+		keys: newKeyServer,
 		assertion: func(t *testing.T, k *keyServer) string {
-			claims := k.claims()
-			delete(claims, "email")
-			claims["sub"] = ""
-			claims["common_name"] = "0123456789abcdef.access"
-			return k.mint(t, claims)
+			return k.mint(t, k.serviceTokenClaims())
 		},
 	}, {
 		name: "an address the allowlist does not hold",
-		door: live,
+		step: "the allowlist",
+		keys: newKeyServer,
 		assertion: func(t *testing.T, k *keyServer) string {
 			claims := k.claims()
 			claims["email"] = testStrangerEmail
@@ -458,7 +647,19 @@ func browserFailures() []browserFailure {
 		// FR-009: an identity that cannot be verified is not an identity. The
 		// assertion is perfectly good; the keys to check it against are gone.
 		name: "keys that cannot be obtained",
-		door: func(t *testing.T) *door { t.Helper(); return newDoor(t, newDeadKeyServer(t).validator(t)) },
+		step: "the keys cannot be reached",
+		keys: newDeadKeyServer,
+		assertion: func(t *testing.T, k *keyServer) string {
+			return k.mint(t, k.claims())
+		},
+	}, {
+		// The same rule with the key source answering perfectly well. A fetch
+		// yielding no usable key is a failed fetch, not a set that happens to
+		// match nothing — the second reading refuses the same request today and
+		// stops meaning fail-closed the moment a caller can influence the set.
+		name: "a key set holding no usable key",
+		step: "the key set holds nothing",
+		keys: newEmptyKeyServer,
 		assertion: func(t *testing.T, k *keyServer) string {
 			return k.mint(t, k.claims())
 		},
@@ -467,11 +668,15 @@ func browserFailures() []browserFailure {
 		// because fail-closed is only a property if it holds where it should not
 		// be needed.
 		name:      "layer 1 that named nobody and gave no reason",
-		door:      func(t *testing.T) *door { t.Helper(); return newDoor(t, stubLayer1{}) },
+		step:      "layer 1 named nobody",
+		keys:      newKeyServer,
+		door:      func(t *testing.T, _ *keyServer) *door { t.Helper(); return newDoor(t, stubLayer1{}) },
 		assertion: func(t *testing.T, k *keyServer) string { return k.mint(t, k.claims()) },
 	}, {
 		name: "no layer 1 behind the door at all",
-		door: func(t *testing.T) *door {
+		step: "no layer 1 at all",
+		keys: newKeyServer,
+		door: func(t *testing.T, _ *keyServer) *door {
 			t.Helper()
 			d := newDoor(t, testBrowser())
 			d.browser = nil
@@ -479,6 +684,26 @@ func browserFailures() []browserFailure {
 		},
 		assertion: func(t *testing.T, k *keyServer) string { return k.mint(t, k.claims()) },
 	}}
+}
+
+// TestTheSweepPresentsAssertionsThatWouldOtherwiseBeAdmitted is the sweep's
+// non-vacuity, and it is not a formality.
+//
+// Every row above spoils the assertion this fixture mints. If that assertion had
+// stopped being one the door admits — an expiry that drifted, an allowlist that
+// no longer holds the fixture's address — all thirty rows would still be refused
+// and every claim made about them would be about nothing. The uniformity claim
+// in particular would pass on a door that refused the operator too.
+func TestTheSweepPresentsAssertionsThatWouldOtherwiseBeAdmitted(t *testing.T) {
+	t.Parallel()
+
+	keys := newKeyServer(t)
+	d := newDoor(t, keys.validator(t))
+
+	if w := d.request(keys.mint(t, keys.claims())); w.Code != http.StatusOK {
+		t.Fatalf("the assertion every row of the sweep spoils was answered %d (%s); want %d",
+			w.Code, w.Body.String(), http.StatusOK)
+	}
 }
 
 // TestBrowserDoorRefusesEveryFailureIdentically is FR-010 and SC-001: status,
@@ -500,9 +725,7 @@ func TestBrowserDoorRefusesEveryFailureIdentically(t *testing.T) {
 
 	var answers []answer
 	for _, c := range browserFailures() {
-		keys := newKeyServer(t)
-		d := c.door(t)
-		w := d.request(c.assertion(t, keys))
+		d, _, w := c.present(t)
 
 		if d.served != 0 {
 			t.Errorf("%s: the handler behind the door ran; a refused request must not reach it", c.name)
@@ -538,9 +761,7 @@ func TestBrowserDoorRecordsOneRejectionPerRefusal(t *testing.T) {
 	t.Parallel()
 
 	for _, c := range browserFailures() {
-		keys := newKeyServer(t)
-		d := c.door(t)
-		d.request(c.assertion(t, keys))
+		d, _, _ := c.present(t)
 
 		rec := d.only(t)
 		if got, want := rec["action"], string(audit.ActionAccessReject); got != want {
@@ -566,37 +787,46 @@ func TestBrowserDoorRecordsOneRejectionPerRefusal(t *testing.T) {
 // half a uniform response alone does not prove: the door must know *why* it
 // refused even though it never says so.
 //
-// Two causes that answer identically must still be told apart in the trail. A
-// door that flattened every refusal to one string would pass the uniformity test
-// above and leave an operator with no way to tell a misconfigured audience from
-// an attack.
+// The sweep answers every row with the same bytes. The trail must not: two rows
+// refused at the same step record the same reason, and two rows refused at
+// different steps never do. A door that flattened every refusal to one string
+// would pass the uniformity test above and leave an operator with no way to tell
+// a misconfigured audience from an attack — and one that recorded the step it
+// reached rather than the check that failed would pass a spot check of two rows
+// while collapsing a dozen others.
 func TestBrowserDoorKeepsTheReasonServerSide(t *testing.T) {
 	t.Parallel()
 
-	keys := newKeyServer(t)
-	claims := keys.claims()
-	claims["aud"] = []string{testOtherAUD}
+	// The row that first recorded each reason, so a collision names both.
+	type refusal struct{ row, reason string }
+	byStep := map[string]refusal{}
 
-	reasons := map[string]string{}
-	for name, assertion := range map[string]string{
-		"absent":         absent,
-		"wrong audience": keys.mint(t, claims),
-	} {
-		d := newDoor(t, newKeyServer(t).validator(t))
-		w := d.request(assertion)
+	for _, c := range browserFailures() {
+		d, _, w := c.present(t)
 
 		if body := w.Body.String(); body != string(bodyBrowserRefused) {
-			t.Fatalf("%s answered %q; want the one refusal body", name, body)
+			t.Fatalf("%s answered %q; want the one refusal body", c.name, body)
 		}
 		reason, ok := d.only(t)["reason"].(string)
-		if !ok {
-			t.Fatalf("%s: the record carries no reason", name)
+		if !ok || strings.TrimSpace(reason) == "" {
+			t.Errorf("%s: the record carries no reason", c.name)
+			continue
 		}
-		reasons[name] = reason
-	}
 
-	if reasons["absent"] == reasons["wrong audience"] {
-		t.Errorf("both refusals were recorded as %q; the response is uniform, the record must not be", reasons["absent"])
+		if first, seen := byStep[c.step]; seen {
+			if reason != first.reason {
+				t.Errorf("%s and %s are both refused at %s, but recorded %q and %q; one cause reads as two in the journal",
+					c.name, first.row, c.step, reason, first.reason)
+			}
+			continue
+		}
+		for step, first := range byStep {
+			if first.reason == reason {
+				t.Errorf("%s (%s) and %s (%s) both recorded %q; the response is uniform, the record must not be",
+					c.name, c.step, first.row, step, reason)
+			}
+		}
+		byStep[c.step] = refusal{row: c.name, reason: reason}
 	}
 }
 
@@ -611,19 +841,106 @@ func TestBrowserDoorTrailCarriesNothingTheCallerWrote(t *testing.T) {
 	t.Parallel()
 
 	for _, c := range browserFailures() {
-		keys := newKeyServer(t)
-		d := c.door(t)
-		assertion := c.assertion(t, keys)
-		d.request(assertion)
+		d, assertion, _ := c.present(t)
 
 		trail := d.sink.String()
-		for _, secret := range []string{assertion, testOperatorEmail, testStrangerEmail, testKeyID, testAUD} {
+		for _, secret := range []string{
+			assertion,
+			testOperatorEmail, testStrangerEmail,
+			testKeyID, testForgedKeyID, testAUD, testOtherAUD,
+			// The service token's own name. It is the machine's identifier at the
+			// edge, which makes it the one caller-authored value that reads like
+			// something worth keeping — and the trail already names the door.
+			testServiceTokenName,
+		} {
 			if secret == absent || secret == "" {
 				continue
 			}
 			if strings.Contains(trail, secret) {
 				t.Errorf("%s: the trail carries %q, which the caller supplied:\n%s", c.name, secret, trail)
 			}
+		}
+	}
+}
+
+// TestTheDashboardRefusesAValidServiceTokenAssertion is FR-013c at the route the
+// requirement is written about, and the one row of the sweep that cannot be made
+// at the door alone.
+//
+// The row above presents this assertion to authenticateBrowser in isolation.
+// This presents it to GET / — the real router, the real fleet handler, a real
+// session behind it — because what is being guarded against is not a door that
+// admits nobody. It is the *dashboard* served to a credential that identifies a
+// machine: signature valid, audience valid, issuer valid, inside its validity,
+// and no email for a check to object to. Every API call the operator's own
+// client makes carries one of these once the daemon is behind the edge, so the
+// wrong spelling of step 10 puts the fleet on the far side of the operator's own
+// automation — and puts it there permanently, since nothing about that assertion
+// ever expires in a way an operator would notice.
+func TestTheDashboardRefusesAValidServiceTokenAssertion(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	planted, _ := f.fixture.plant(t, session.Session{Name: "a name no machine may read", WorkDir: f.fixture.repo})
+
+	// Non-vacuity first, and at this route rather than in principle: the page
+	// this refusal withholds is a page that exists and really names the session.
+	if page := f.view(t).Body.String(); !strings.Contains(page, planted.Name) {
+		t.Fatalf("the fleet does not show the session a service token must not see:\n%s", page)
+	}
+
+	assertion := f.keys.mint(t, f.keys.serviceTokenClaims())
+	w := f.openWith(t, "/", assertion)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("GET / with a valid service-token assertion = %d (%s); want %d",
+			w.Code, w.Body.String(), http.StatusUnauthorized)
+	}
+	body := w.Body.String()
+	if body != string(bodyBrowserRefused) {
+		t.Errorf("GET / answered a service token with %q; want the browser door's one refusal", body)
+	}
+	for _, withheld := range []string{planted.ID, planted.Name, f.fixture.repo} {
+		if strings.Contains(body, withheld) {
+			t.Errorf("the refusal carries %q, from the fleet the service token asked for:\n%s", withheld, body)
+		}
+	}
+
+	// The same bytes a caller carrying no credential at all receives, at the same
+	// route (SC-001). A refusal that differed by so much as a header would tell
+	// the operator's own client that its token is *nearly* enough, which is the
+	// first half of knowing what to forge next.
+	stranger := f.openWith(t, "/", absent)
+	if stranger.Code != w.Code || stranger.Body.String() != body {
+		t.Errorf("a service token was answered %d %q and no credential at all %d %q; the two must be indistinguishable",
+			w.Code, body, stranger.Code, stranger.Body.String())
+	}
+	if !maps.EqualFunc(stranger.Header(), w.Header(), func(a, b []string) bool {
+		return strings.Join(a, "\x00") == strings.Join(b, "\x00")
+	}) {
+		t.Errorf("a service token was answered with headers %v and no credential at all with %v",
+			w.Header(), stranger.Header())
+	}
+
+	// One record per request, the two refusals recorded as this door's own
+	// rejection, and nothing the machine wrote kept: its assertion is the largest
+	// piece of caller-authored text the daemon receives, and its common_name is
+	// the one value in there that reads like something worth logging.
+	records := f.records(t)
+	if len(records) != 3 {
+		t.Fatalf("three requests emitted %d audit records (%v); want one each", len(records), records)
+	}
+	for _, rec := range records[1:] {
+		if got, want := rec["action"], string(audit.ActionAccessReject); got != want {
+			t.Errorf("action = %v; want %v", got, want)
+		}
+		if got, want := rec["decision"], string(audit.Deny); got != want {
+			t.Errorf("decision = %v; want %v", got, want)
+		}
+	}
+	for _, secret := range []string{assertion, testServiceTokenName, planted.Name} {
+		if strings.Contains(f.sink.String(), secret) {
+			t.Errorf("the trail carries %q:\n%s", secret, f.sink.String())
 		}
 	}
 }
