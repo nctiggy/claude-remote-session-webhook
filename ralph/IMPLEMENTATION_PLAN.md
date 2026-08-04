@@ -124,7 +124,7 @@ wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and stop.
 - [x] T026 `web/templates/partials/pane.html` and `web/static/crswd.js`: `pane.textContent = JSON.parse(e.data)` — **the screen is replaced, not appended**, and updating never moves the reader's scroll position. `docs/components.md` was corrected twice for this
 - [x] T027 Emit the audit record at stream **open**, carrying the authorisation decision. Milestone 1 emits after the handler returns, which for a stream lasting hours leaves no trace until it ends
 - [x] T028 Lifecycle: re-evaluate authorisation rather than establishing it once; stop and say so when the session ends; **never advance the idle clock**; never delay teardown or shutdown. Watching is not driving
-- [ ] T029 US2 acceptance suite: the cap refuses past `CRSW_MAX_STREAMS`, two tabs both work, a vanished browser is cleaned up, and session output appears in **zero** audit records or log lines
+- [x] T029 US2 acceptance suite: the cap refuses past `CRSW_MAX_STREAMS`, two tabs both work, a vanished browser is cleaned up, and session output appears in **zero** audit records or log lines
 
 ### Ship it
 

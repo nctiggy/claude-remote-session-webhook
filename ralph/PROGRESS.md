@@ -11940,3 +11940,116 @@ re-evaluation-every-tick shape; T031 owes `docs/security.md` the `Sec-Fetch-Site
 exists only in the spec and this file — `.env.example`, and the quickstart run, which must
 deal with #266/#292). Plus the unowned findings above, and the design decision 306 needs from
 the operator.
+
+---
+
+## Iteration 75 (milestone 2, iteration 32) — 2026-08-04 11:10
+
+**Did:** **T029** — the US2 acceptance suite. Seven tests at the story's own altitude, in
+`internal/httpapi/stream_test.go` under their own heading: the cap driven at the number the
+daemon was *configured* with (`f.cfg.MaxStreams`, not a fixture's) with the refusal past it,
+every earlier stream still delivering, and one leaving freeing exactly one slot; two tabs on
+one session where one closing leaves the other watching a session that is still printing; a
+browser destroyed rather than closed, whose slot and screen buffer both come back; the
+heartbeat finding a peer whose writes fail on a session that prints nothing; markup and ANSI
+escapes arriving as text with nothing of them in the trail or a report; the open a hostile
+page triggers refused where the dashboard's own is served; and one stream request leaving
+exactly one record. `internal/audit/leak_test.go` now drives `stream.open` too (finding 310).
+
+**Four things the next iteration should not have to re-derive:**
+
+1. **`panes.watching(id) == 0` cannot fail for the leak it describes.** It returns 0 both for
+   a buffer that was dropped and for one still in the map with no watchers — and the second
+   is precisely the leak (a session's screen held for nobody). A mutation making `detach`
+   never `delete` passed every existing assertion. `panes.holds(id)` is new for this, is the
+   only production code this task added, and the same line went into T028's
+   `TestAReapedSessionEndsTheStreamThatWasWatchingIt`, where the claim was inert for the same
+   reason. Both now catch that mutation.
+2. **Shutdown is the signal finding 309 said did not exist.** `http.Server.Shutdown` returns
+   once every connection has gone idle, and a connection is not idle until the whole handler
+   chain serving it has returned — the middleware's deferred emit included. So "no close
+   record" is now stated over the wire and not only structurally: removing the `ra.emitted`
+   guard makes `TestOneStreamRequestLeavesExactlyOneRecordBehind` report two `stream.open`
+   records. The count filters by action, because Shutdown tears the fixture's session down
+   behind the drain and says so on the same trail.
+3. **A recorder can drive the stream's *refusals* and never its admission, which is what the
+   leak suite needed a writer for.** `streamPeer` in `leak_test.go` implements
+   `SetWriteDeadline` and `Flush` and cancels the request from inside its first `Write`, so
+   the handler writes one screen and unwinds with no clock to move and no socket to bind.
+   That is the only arrangement in which the sweep can read a record that was written *while*
+   the daemon held a whole screen.
+4. **A vanished browser is a `SetLinger(0)` close on a connection the test kept a handle on**
+   (`fleet.watchThatCanVanish`, via a `Transport.DialContext` that captures the `*net.TCPConn`).
+   Closing a response body is a browser closing a tab — the daemon is told, through the
+   request context — and the case the spec names is the one where it is told nothing. What
+   the test asserts is that the daemon noticed, not *how*: an RST is visible to the read side
+   too, so the heartbeat's own claim is made where it can be made, against a writer whose
+   writes fail (`deadPeer`).
+
+**Learned (do not rediscover):**
+
+1. **`bash` here refuses `git stash`, `git checkout HEAD --` and `cp` to `/tmp`.** Comparing
+   behaviour against `HEAD` inside an iteration is not available; what worked instead was
+   running the suspect test alone with `-count`, which isolates it from everything this task
+   added.
+2. **`bodyclose` follows the value, not the call.** `tabs = append(tabs, resp)` is flagged
+   even when the `f.watch` that produced `resp` already carries a `//nolint:bodyclose`. The
+   directive has to go on the line the linter names.
+3. **A helper that returns a response needs its own nolint at each call site** — `awaitOpenSlot`
+   is flagged where it is called, not where it opens.
+
+**Mutations, all caught:**
+
+1. The cap off by one (`c.open >= c.limit+1`) → `TestEveryOpenPastTheConfiguredCap...`
+   ("the open past 10 streams answered 200").
+2. `detach` never deleting → the two new buffer assertions **and** T028's reaped test, which
+   before this iteration passed under it.
+3. The heartbeat replaced with `return nil` → `TestAQuietStreamStillFindsAPeerThatWentAway`,
+   on the budget: a quiet stream that writes nothing never learns its peer is gone.
+4. `Strip` removed from `Manager.Output` → the escapes arrived at the browser.
+5. `crossSite` admitting `cross-site` → the hostile-page test.
+6. The `ra.emitted` guard removed → two `stream.open` records over the wire.
+7. The cross-site refusal quoting `Sec-Fetch-Site` back → the leak suite, on the new
+   `CANARY-SITE` mark.
+
+**Findings:**
+
+316. **Fixed in the quick-fix lane (`docs/fixes-log.md`): `TestShutdownIsNotDelayedByOpenStreams`
+    failed about one run in twenty, with or without `-race`.** `hold` selects on the ticker
+    and on `closing`, and when both are ready Go picks at random — so one last heartbeat can
+    follow the shutdown, which `assertStreamIsOver` forbade outright. It is not the flake in
+    303 and it is not caused by this task: it reproduces with `-count=50` on that test alone.
+    `assertStreamStoppedAtShutdown` now forbids *data* after shutdown rather than bytes, and
+    still fails if `hold` is changed to send a farewell.
+317. **A capture failure reports what the host said, on both the stream and the session
+    page.** `stream.go`'s "capture the screen for the stream of session %s: %w" and
+    `dashboard.go:279`'s equivalent wrap the tmux error, and `leak_test.go` marks exactly that
+    (`markHostError`) as forbidden in the trail *and* the logs — but it drives neither path
+    with a failing capture, so the question has never been asked. This iteration deliberately
+    did **not** ask it: driving it would turn an unowned, pre-existing question into a red
+    test, and answering it is a decision about whether a host's own error text is secret.
+    Unowned. Note the API's `/output` route is in the same position.
+318. **Findings 203–205, 216, 275, 278, 280–283, 285–288, 292–293, 298, 300–301, 303–307,
+    311–315 are unchanged**, minus 309 and 310, which this iteration closed, and minus the
+    remaining half of 285. Still unowned: the untokenised values in `docs/design-system.md`
+    (216), the unaudited `cleanPath` redirect (275), the rain being unverifiable from Go (278),
+    the scanline overlay (280, needing the operator's answer at 306), the session page being a
+    dead end (282), the page with no live stream after a failed first capture (305), a stream
+    that ends leaving a stale page (313), `testServer.failed` not being lock-safe while a
+    stream is open (298), and the `-race` flake in 303 — which did **not** fire this
+    iteration; `-race` on `internal/httpapi` is clean at ~6.1s across three runs. The
+    duplicate checkbox state in `IMPLEMENTATION_PLAN.md` and `tasks.md` was again ticked in
+    both by hand. `internal/httpapi` is ~5.8s; the seven new tests add ~0.4s in parallel, and
+    the leak suite is unchanged at ~0.2s.
+
+**Left:** **US2 is complete** — T022–T029 are all green, and with them every user story in the
+milestone. What remains is Ship it: **T030** (`docs/auth-and-sessions.md` — it still says there
+are no browser sessions and no human login form, its layer-1 sample uses a JWT library, its
+two-door table has no service token, and it owes the stream-authorisation rule *and* the
+re-evaluation-every-tick shape), **T031** (`docs/security.md` — the two-door table predates the
+service token, the header table says nothing about cross-origin headers, and the
+`Sec-Fetch-Site` rule exists only in the spec and this file), **T032** (`AGENTS.md`'s command
+table owes `go test -tags tmux ./...` and `go test -tags quickstart ./cmd/crswd`), **T033**
+(`.env.example` and `deploy/README.md`), and **T034** (the quickstart run end to end, which
+must deal with #266/#292). Plus the unowned findings above — 317 is new — and the design
+decision 306 needs from the operator.
