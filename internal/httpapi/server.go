@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
@@ -107,6 +108,12 @@ type Server struct {
 	// per server — two would be two independent memories of which signatures
 	// have been seen, which is a replay cache that does not refuse replays.
 	authn *auth.Authenticator
+
+	// browser is layer 1, applied to every dashboard route by
+	// authenticateBrowser. One per server for a reason of the same shape: it
+	// holds the cached signing key set, and a second one would be a second cache
+	// — which is a key set fetched per door rather than per rotation (FR-008).
+	browser layer1
 
 	// trail is the audit sink. One record per request (FR-041), emitted by the
 	// middleware.
@@ -205,13 +212,34 @@ func NewWith(cfg *config.Config, tmux tmuxctl.Controller, trail *audit.Logger) (
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the create rate limiter: %w", err)
 	}
-	return newServer(cfg, net.Listen, authn, trail, sessions, creates)
+	// Built from the Config for the reason the roots and the caps are: layer 1's
+	// audience, issuer and allowlist are constraints, not collaborators, so a
+	// caller may say where tmux and the trail are and never how bounded the
+	// daemon is. It opens no connection here — the key set is fetched when an
+	// assertion first names a key, never at startup and never per request.
+	//
+	// Last of the four deliberately, so that a milestone 1 environment with a
+	// second defect in it still reports that defect first. Every one of these is
+	// a startup failure, and the order only decides which message an operator
+	// working through their configuration meets first.
+	//
+	// The development bypass is the one thing that cannot come through this line,
+	// since config.WithAccessBypassActive leaves these three values empty and
+	// access.New rightly refuses them. It is built instead of a Validator, never
+	// alongside one, by the //go:build dev half of cmd/crswd — which does not
+	// exist yet, and is why newServer takes layer 1 as a parameter.
+	browser, err := access.New(cfg.AccessTeamDomain, cfg.AccessAUD, cfg.AccessAllowedEmails)
+	if err != nil {
+		return nil, fmt.Errorf("httpapi: build the Access assertion validator: %w", err)
+	}
+	return newServer(cfg, net.Listen, authn, browser, trail, sessions, creates)
 }
 
 func newServer(
 	cfg *config.Config,
 	listen func(network, address string) (net.Listener, error),
 	authn *auth.Authenticator,
+	browser layer1,
 	trail *audit.Logger,
 	sessions *session.Manager,
 	creates *limiter,
@@ -226,6 +254,12 @@ func newServer(
 		// authentication at all, which docs/security.md §4 ranks as worse than
 		// one that does not start.
 		return nil, errors.New("httpapi: no authenticator provided; refusing to start")
+	case browser == nil:
+		// The same ruling one line up, for the other door. A server that starts
+		// without layer 1 serves the dashboard to whoever reaches the listener,
+		// and the browser door's own middleware refusing a nil validator is the
+		// backstop for a wiring mistake — not a licence to make one.
+		return nil, errors.New("httpapi: no Access assertion validator provided; refusing to start")
 	case trail == nil:
 		return nil, errors.New("httpapi: no audit sink provided; refusing to start")
 	case sessions == nil:
@@ -266,6 +300,7 @@ func newServer(
 		},
 		listen:    listen,
 		authn:     authn,
+		browser:   browser,
 		trail:     trail,
 		templates: templates,
 		sessions:  sessions,

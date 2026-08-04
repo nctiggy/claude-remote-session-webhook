@@ -77,6 +77,12 @@ const (
 	callerContextKey contextKey = iota
 	auditContextKey
 	sessionContextKey
+
+	// operatorContextKey is the browser door's equivalent of callerContextKey
+	// and is deliberately not the same key: a request comes through one door,
+	// and a handler that read whichever value happened to be present would be
+	// one that could be reached by the wrong credential. See browser.go.
+	operatorContextKey
 )
 
 // RequestAudit is the single record a request will produce, held open while the

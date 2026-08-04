@@ -37,7 +37,7 @@ const loopbackListen = "127.0.0.1:0"
 func newTestServer(t *testing.T, listen string) *Server {
 	t.Helper()
 	cfg := testConfig(listen)
-	s, err := newServer(cfg, net.Listen, testAuth(t), testTrail(t), newSessionFixture(t).mgr,
+	s, err := newServer(cfg, net.Listen, testAuth(t), testBrowser(), testTrail(t), newSessionFixture(t).mgr,
 		testLimiter(t, cfg.CreateRatePerMin, fixedClock{at: testTime}))
 	if err != nil {
 		t.Fatalf("newServer(%q) = _, %v; want a server", listen, err)
@@ -363,17 +363,29 @@ func TestNewRefusesMissingDependencies(t *testing.T) {
 	mgr := newSessionFixture(t).mgr
 	lim := func() *limiter { return testLimiter(t, cfg.CreateRatePerMin, fixedClock{at: testTime}) }
 	cases := map[string]func() (*Server, error){
-		"no config":        func() (*Server, error) { return New(nil) },
-		"no listen source": func() (*Server, error) { return newServer(cfg, nil, testAuth(t), testTrail(t), mgr, lim()) },
-		"no authenticator": func() (*Server, error) { return newServer(cfg, net.Listen, nil, testTrail(t), mgr, lim()) },
-		"no audit sink":    func() (*Server, error) { return newServer(cfg, net.Listen, testAuth(t), nil, mgr, lim()) },
+		"no config": func() (*Server, error) { return New(nil) },
+		"no listen source": func() (*Server, error) {
+			return newServer(cfg, nil, testAuth(t), testBrowser(), testTrail(t), mgr, lim())
+		},
+		"no authenticator": func() (*Server, error) {
+			return newServer(cfg, net.Listen, nil, testBrowser(), testTrail(t), mgr, lim())
+		},
+		// A dashboard served with no layer 1 behind it is the whole of milestone
+		// 2 missing, and the failure mode is a browser admitted rather than a
+		// route that 500s — so it is a startup refusal like the one above it.
+		"no access validator": func() (*Server, error) {
+			return newServer(cfg, net.Listen, testAuth(t), nil, testTrail(t), mgr, lim())
+		},
+		"no audit sink": func() (*Server, error) {
+			return newServer(cfg, net.Listen, testAuth(t), testBrowser(), nil, mgr, lim())
+		},
 		"no session manager": func() (*Server, error) {
-			return newServer(cfg, net.Listen, testAuth(t), testTrail(t), nil, lim())
+			return newServer(cfg, net.Listen, testAuth(t), testBrowser(), testTrail(t), nil, lim())
 		},
 		// A create route with no budget behind it is FR-037's bound missing on
 		// the one operation that spawns a process.
 		"no create rate limiter": func() (*Server, error) {
-			return newServer(cfg, net.Listen, testAuth(t), testTrail(t), mgr, nil)
+			return newServer(cfg, net.Listen, testAuth(t), testBrowser(), testTrail(t), mgr, nil)
 		},
 		"no shared secret": func() (*Server, error) { return New(&config.Config{Listen: loopbackListen, MaxBodyBytes: 64}) },
 		"no body size cap": func() (*Server, error) {
@@ -521,7 +533,7 @@ func TestListenRefusesAndClosesAListenerThatIsNotOnLoopback(t *testing.T) {
 			ln := &fakeListener{addr: c.addr}
 			s, err := newServer(testConfig(loopbackListen), func(string, string) (net.Listener, error) {
 				return ln, nil
-			}, testAuth(t), testTrail(t), newSessionFixture(t).mgr,
+			}, testAuth(t), testBrowser(), testTrail(t), newSessionFixture(t).mgr,
 				testLimiter(t, config.DefaultCreateRatePerMin, fixedClock{at: testTime}))
 			if err != nil {
 				t.Fatalf("newServer = _, %v; want a server", err)
@@ -790,7 +802,7 @@ func TestListenReportsABindFailure(t *testing.T) {
 	want := errors.New("address already in use")
 	s, err := newServer(testConfig(loopbackListen), func(string, string) (net.Listener, error) {
 		return nil, want
-	}, testAuth(t), testTrail(t), newSessionFixture(t).mgr,
+	}, testAuth(t), testBrowser(), testTrail(t), newSessionFixture(t).mgr,
 		testLimiter(t, config.DefaultCreateRatePerMin, fixedClock{at: testTime}))
 	if err != nil {
 		t.Fatalf("newServer = _, %v; want a server", err)

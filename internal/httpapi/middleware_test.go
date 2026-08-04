@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
@@ -70,6 +71,19 @@ func testConfig(listen string) *config.Config {
 		// burst instead. Tests about the rate build their own limiter — see
 		// ratelimit_test.go.
 		CreateRatePerMin: rateNotUnderTest,
+
+		// Layer 1's configuration, which config.Load has demanded since T001 and
+		// New now builds a validator from. The team domain carries its scheme
+		// because that is the normalised form loadTeamDomain returns, and a
+		// fixture spelled the way no Load ever spells it is the thing the
+		// MaxSessions note above warns about.
+		//
+		// The values need only be well-formed: nothing built through this fixture
+		// presents an assertion, and browser_test.go points a validator at a key
+		// server it controls rather than at this hostname.
+		AccessTeamDomain:    "https://example-team.cloudflareaccess.com",
+		AccessAUD:           "test-only-audience-tag",
+		AccessAllowedEmails: []string{"operator@example.com"},
 	}
 }
 
@@ -90,6 +104,33 @@ func testAuth(t *testing.T) *auth.Authenticator {
 	}
 	return a
 }
+
+// errStubRefuses is what testBrowser's layer 1 answers with. It is spelled here
+// rather than reused from internal/access because that package's sentinels are
+// unexported on purpose — a caller that could name which check refused is one
+// step from putting it in a response.
+var errStubRefuses = errors.New("the stub layer 1 admits nobody")
+
+// stubLayer1 is a browser door with a fixed answer, for the tests that are not
+// about layer 1 but still have to build a Server.
+type stubLayer1 struct {
+	operator *access.VerifiedOperator
+	err      error
+}
+
+func (s stubLayer1) Verify(context.Context, string) (*access.VerifiedOperator, error) {
+	return s.operator, s.err
+}
+
+// testBrowser is the layer 1 a milestone 1 test gets: something non-nil for
+// newServer to accept, which admits nobody.
+//
+// Refusing rather than admitting is the deliberate default. Every test in this
+// file drives the API door, where an assertion is neither read nor required
+// (FR-012), so a fixture that admitted every browser could only ever make a
+// future dashboard test pass for a reason it had not earned. browser_test.go
+// builds a real *access.Validator over a locally generated key pair.
+func testBrowser() layer1 { return stubLayer1{err: errStubRefuses} }
 
 func testTrail(t *testing.T) *audit.Logger {
 	t.Helper()
@@ -131,6 +172,14 @@ type testServer struct {
 
 func newAuditedServer(t *testing.T) *testServer {
 	t.Helper()
+	return newAuditedServerWith(t, testBrowser())
+}
+
+// newAuditedServerWith is newAuditedServer with layer 1 chosen by the caller,
+// which is what browser_test.go needs and no test of the API door does: that
+// door reads no assertion, so the validator behind it never runs.
+func newAuditedServerWith(t *testing.T, browser layer1) *testServer {
+	t.Helper()
 
 	buf := &bytes.Buffer{}
 	fixture := newSessionFixture(t)
@@ -139,6 +188,7 @@ func newAuditedServer(t *testing.T) *testServer {
 		cfg,
 		net.Listen,
 		testAuth(t),
+		browser,
 		audit.NewTo(buf, func() time.Time { return testTime }),
 		fixture.mgr,
 		testLimiter(t, cfg.CreateRatePerMin, fixedClock{at: testTime}),

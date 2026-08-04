@@ -202,6 +202,16 @@ func leakConfig(root string) *config.Config {
 		// A create budget nothing here can exhaust. A 429 in this suite would
 		// mean a request never reached the operation it was meant to drive.
 		CreateRatePerMin: 1000,
+
+		// Layer 1's configuration, which httpapi.New now builds a validator
+		// from. Well-formed and nothing more: this suite drives the API door,
+		// which reads no assertion, so the validator built from these is never
+		// asked anything and never opens a connection. When the browser door's
+		// own operations join driveEveryOperation (T017), an assertion these
+		// values would actually admit is what that task has to mint.
+		AccessTeamDomain:    "https://example-team.cloudflareaccess.com",
+		AccessAUD:           "leak-suite-audience-tag",
+		AccessAllowedEmails: []string{"operator@example.com"},
 	}
 }
 
