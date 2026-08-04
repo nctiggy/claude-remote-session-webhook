@@ -12,6 +12,7 @@
 package httpapi
 
 import (
+	"errors"
 	"io"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
@@ -40,7 +41,17 @@ import (
 // returns a server at all, so the one build that authenticates nobody cannot be
 // the one build that is reachable off-host.
 func NewWithBypass(cfg *config.Config, warn io.Writer) (*Server, error) {
-	return newWithLayer1(cfg, tmuxctl.NewExec(), audit.New(), func(c *config.Config) (layer1, error) {
+	if cfg == nil {
+		return nil, errors.New("httpapi: nil config")
+	}
+	// Its own tmux server, for the reason New gives — and this is the build a
+	// developer runs *alongside* the real daemon to check a template change,
+	// which is precisely the case #22 describes.
+	tmux, err := tmuxctl.NewExec(tmuxctl.SocketFor(cfg.Listen))
+	if err != nil {
+		return nil, err
+	}
+	return newWithLayer1(cfg, tmux, audit.New(), func(c *config.Config) (layer1, error) {
 		b, err := access.NewBypass(c.Listen, warn)
 		if err != nil {
 			// Untyped nil for the reason verifiedLayer1 returns one.

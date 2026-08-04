@@ -232,7 +232,18 @@ type Server struct {
 // the clock it was given, which is what makes the limiter's behaviour testable
 // without elapsed time.
 func New(cfg *config.Config) (*Server, error) {
-	return NewWith(cfg, tmuxctl.NewExec(), audit.New())
+	if cfg == nil {
+		return nil, errors.New("httpapi: nil config")
+	}
+	// One tmux server per daemon, named after the address this one listens on.
+	// Two daemons sharing tmux's default server cannot tell each other's
+	// sessions apart, so the second adopts the first's and reaps them on
+	// shutdown (#22).
+	tmux, err := tmuxctl.NewExec(tmuxctl.SocketFor(cfg.Listen))
+	if err != nil {
+		return nil, err
+	}
+	return NewWith(cfg, tmux, audit.New())
 }
 
 // NewWith is New with the two collaborators that reach outside the process
