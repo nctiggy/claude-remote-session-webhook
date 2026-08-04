@@ -8512,3 +8512,139 @@ are in `claims_test.go`: `identityMembers`, `serviceTokenMembers`, `with`, `with
     deployed daemon holds `127.0.0.1:8765`, so `TestQuickstartStory1StartupFailures`'s
     two hard-coded `:8765` cases fail their post-refusal bind check while all ten
     refusals exit 1 with the right message. Still **T021's**.
+
+---
+
+## Iteration 49 (milestone 2, iteration 6) — 2026-08-04 04:52
+
+**Did:** **T006** — `internal/access/allowlist.go`: step 11 of
+`contracts/access-jwt.md`, the daemon's own re-check of the gate. An unexported
+`allowlist` (a `map[string]struct{}`) normalised once by `newAllowlist`, a `permits`
+membership test on the lowercased claim, and the exported `Verify(ctx, assertion)
+(*VerifiedOperator, error)` that composes T005's `verifiedClaims` with it. `New` is
+now `New(teamDomain, aud, allowedEmails)` and refuses a list naming nobody.
+
+**Shape, and the reasons behind the non-obvious parts:**
+
+- **`Verify` is the package's only exported way in**, and that is the ordering
+  property made structural: an address is read only after the signature, the
+  audience, the issuer, the validity window and the requirement of a person have
+  passed, because there is no other exported entry point that could skip them.
+- **`VerifiedOperator` lives here, not in `verify.go`.** Step 11 is where layer 1
+  concludes, so the conclusion sits with the check that admits it. `Owner` is the
+  constant `auth.CallerOperator` — research D7's split: the allowlist is
+  configuration, the mapping is code.
+- **`Email` comes back as the edge wrote it.** `data-model.md` puts the lowercasing
+  on the *comparison*, so the header will greet the operator by the spelling the edge
+  verified. Both mutation 1 and mutation 5 hit this from opposite directions.
+- **Configured entries are trimmed; the claimed address is not.** An entry is
+  something a person typed into an env var, where a space after a comma is a typing
+  artefact. A claim is the edge's word about a verified identity, and an address the
+  edge wrote with a space in it is not the address on the list. `config` already
+  trims and refuses interior whitespace; repeating the trim here costs one call and
+  makes `New`'s contract hold whatever eventually calls it.
+- **Equality, never a prefix, a domain match, or a subaddress fold.** Mutation 3
+  (`HasPrefix`) was caught by three rows that exist only for it. Subaddressing is
+  Google's delivery rule, not the operator's configuration: folding it would make
+  every plus-address at the domain the operator.
+- **The refusal names no address**, asserted against the whole address *and each half
+  of it* — a reason built with `fmt.Errorf` and only the domain is still the caller's
+  bytes in the journal.
+- **An allowlist naming nobody is a startup failure**, like the empty audience beside
+  it. The alternative is a daemon that binds a listener and refuses every browser,
+  diagnosed by an operator locked out of their own host.
+
+Gate, executed not asserted, one command at a time (finding 115):
+
+```
+go build ./...                          OK
+go vet ./...                            OK
+go vet -tags tmux ./...                 OK
+go vet -tags quickstart ./cmd/crswd     OK
+go test -count=1 ./...                  OK
+go test -count=1 -tags tmux ./...       OK (real tmux on this host)
+go test -count=1 -race ./internal/access  OK
+go test -tags quickstart ./cmd/crswd    12 of 13 stories — finding 78 exactly, reproduced
+golangci-lint run                       OK
+gofmt -l .                              empty
+go.sum                                  absent  ✅
+```
+
+**Learned:**
+
+1. **Mutation-testing paid a fourth time, seven for seven.** Dropping `ToLower` on the
+   claim → the two case-folded rows. Never running the check → 12 rows across four
+   tests. `HasPrefix` instead of map lookup → *only* the three suffix-shaped rows,
+   which is exactly why "another person at the same domain" is not enough on its own.
+   Dropping the empty-list refusal → the `nil` and `[]string{}` rows. Omitting `Owner`
+   and lowercasing `Email` into the conclusion → three rows. `fmt.Errorf("%w: %s")` on
+   the refusal → the trail test. Dropping `TrimSpace` from `normaliseAddress` → the
+   blank-entry row and the spaced-entry row.
+2. **`TestNewWiresTheAllowlist` is the one test in the package on the host clock**, and
+   it has to be: `New` chooses `systemClock`, and every other fixture's validity window
+   is expressed against `keysTimestamp` (1785706480, already in the past). Its claims
+   are minted with `exp`/`iat` from `time.Now()`. If a future task adds a second
+   `New`-level test, do the same — do not move `keysTimestamp`.
+3. **The service-token row had to be re-asserted on `Verify`.** `claims_test.go` proves
+   step 10 refuses it at `verifiedClaims`; the exported path is what T009 calls, and a
+   step 11 written as the inverted spelling would be a change *there*. The row costs
+   four lines and covers the seam between the two.
+4. **Adding a field to `Validator` means editing exactly one test fixture**
+   (`newTestValidator` in `verify_test.go`), because every test builds validators
+   through it or through `publishing`. That is worth preserving — `mustAllowlist` was
+   added there rather than a map literal so a test list is normalised as a configured
+   one is.
+
+**Left:** T007–T034. Next is **T007**: `internal/access/bypass_{dev,prod}.go` — the
+development bypass, `//go:build dev` / `//go:build !dev`, skipping layer 1 only,
+refusing off loopback, warning every request, and absent from the shipping build. Note
+finding 122 below before starting it.
+
+**Findings:**
+
+122. **`New` now refuses an empty allowlist, and under the dev bypass `config` returns
+    an empty one** (`loadAllowedEmails` yields `nil` when `bypassed`). **T007 must not
+    construct a `Validator` on the bypass path** — or must build one only when the
+    bypass is off — or a dev build with the bypass active fails startup on the very
+    values FR-042 says are not demanded. The same applies to `CRSW_ACCESS_AUD`
+    (already refused since T004) and the team domain. This is a wiring rule for T007
+    and T009, not a reason to soften `New`: FR-011 wants the refusal when layer 1 is
+    real.
+123. **`New` still has no production caller — finding 94, now three tasks old** (47 #112).
+    It is `New(teamDomain, aud, allowedEmails)` and is now feature-complete for
+    layer 1; **T009 must pass `cfg.AccessTeamDomain`, `cfg.AccessAUD` and
+    `cfg.AccessAllowedEmails` to it and call `Verify`**, or `internal/access` ships
+    exactly as milestone 1's reaper did: implemented, tested, never called.
+124. **Nothing yet emits the `access.reject` record these errors exist for** (46 #95,
+    47 #104, 48 #113, unchanged). T006 adds the last sentinel, `errEmailNotAllowed`,
+    bringing the list T008/T009 must map to repo-authored reason constants to
+    fourteen. None carries the assertion, a claim, a key id, or an address.
+125. **`data-model.md` says allowlist entries are "lowercased at load" without saying
+    *whose* load.** `config.loadAllowedEmails` (T001) trims and refuses whitespace but
+    does **not** lowercase; `newAllowlist` does. Both readings satisfy the document
+    and the normalisation now happens exactly once, at the point of use. Recorded so a
+    later iteration does not "fix" `config` and create a second normalisation that can
+    drift from this one.
+126. **Iteration 14 #1 / … / 48 #115 still stands:** `git checkout --`, `git restore`,
+    `perl -i`, heredocs, `git worktree add` and `pkill` remain outside the permission
+    allowlist. This iteration applied and reverted all seven mutations with the Edit
+    tool — two round trips each, but it works.
+127. **Iteration 1 #1 / … / 48 #116 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the
+    hook: "no leaks found".)
+128. **Iteration 2 #2 / … / 48 #117 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+129. **Iteration 6 #6 / … / 48 #118 still stands:** `AGENTS.md`'s command table still
+    names neither `go test -tags tmux ./...` nor `go test -tags quickstart ./cmd/crswd`.
+    **T032.**
+130. **Iteration 44 #79 / … / 48 #119 still stands:** `.golangci.yml`'s `run.build-tags`
+    lists `tmux` only, so T007's `//go:build dev` files will be invisible to the linter.
+    Do it inside T007.
+131. **`deploy/README.md`'s four-variable trap (44 #84 / … / 48 #120) still stands.**
+    **T033.**
+132. **Finding 78 reproduces a sixth time**, unchanged and untouched by this task: the
+    deployed daemon holds `127.0.0.1:8765`, so `TestQuickstartStory1StartupFailures`'s
+    two hard-coded `:8765` cases fail their post-refusal bind check while all ten
+    refusals exit 1 with the right message. The other twelve stories pass. Still
+    **T021's**.
