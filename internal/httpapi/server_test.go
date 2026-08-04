@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -152,10 +153,11 @@ func TestNoRouteOutsideTheContractIsServed(t *testing.T) {
 
 	s := newTestServer(t, loopbackListen)
 	for _, u := range unserved {
-		// Unauthenticated: the uniform 401, not a 404. Every request now passes
-		// through layer 2 before the router can answer, so a caller without the
-		// secret cannot tell a path that exists from one that does not — the same
-		// enumeration FR-033 closes for session IDs, closed for the route table.
+		// Unauthenticated: the uniform 401, not a 404. Every request passes
+		// through a door before the router can answer, so a caller with no
+		// credential cannot tell a path that exists from one that does not — the
+		// same enumeration FR-033 closes for session IDs, closed for the route
+		// table.
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, httptest.NewRequest(u.method, u.path, nil))
 
@@ -164,21 +166,24 @@ func TestNoRouteOutsideTheContractIsServed(t *testing.T) {
 				u.method, u.path, rec.Code, http.StatusUnauthorized)
 		}
 
-		// Authenticated: the uniform 404, and still no handler. This is the half
-		// FR-006 is about — nothing outside the six routes may be *served*.
+		// Signed, and still refused, because since T016 an unrouted path is the
+		// browser door's (FR-013d) and a layer-2 signature is not an identity.
+		// This fixture's layer 1 admits nobody, so what a signed probe reaches is
+		// that door's one uniform refusal — which is the half FR-006 is about:
+		// nothing outside the six routes may be *served*, whatever it presents.
 		signed := httptest.NewRequest(u.method, u.path, nil)
 		signRequest(t, signed, nil, testTime)
 
 		rec = httptest.NewRecorder()
 		s.ServeHTTP(rec, signed)
 
-		if rec.Code != http.StatusNotFound {
+		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s %s signed = %d; want %d — nothing outside the six contract routes may be served",
-				u.method, u.path, rec.Code, http.StatusNotFound)
+				u.method, u.path, rec.Code, http.StatusUnauthorized)
 		}
-		if body := rec.Body.String(); body != string(bodyNotFound) {
-			t.Errorf("%s %s signed body = %q; want %q — an unknown route answers as an unknown session does",
-				u.method, u.path, body, bodyNotFound)
+		if body := rec.Body.String(); body != string(bodyBrowserRefused) {
+			t.Errorf("%s %s signed body = %q; want the browser door's one refusal — no handler may run here",
+				u.method, u.path, body)
 		}
 	}
 }
@@ -190,10 +195,12 @@ func TestNoRouteOutsideTheContractIsServed(t *testing.T) {
 // It no longer asserts ServeMux's own 405. That answer carried an `Allow` header
 // naming the methods the path *does* serve, unauthenticated — a route table
 // anyone who could reach the listener could read off. A method the contract does
-// not define now answers exactly as a path that does not exist: 401 without the
-// secret, the uniform 404 with it. The mistake this guards against is unchanged —
-// a handler registered for a verb the contract does not define — and is now
-// caught by the 404 body rather than by a status only the mux could produce.
+// not define now answers exactly as a path that does not exist, which since T016
+// means the browser door answers it (FR-013d): the uniform refusal here, because
+// this fixture's layer 1 admits nobody. The mistake this guards against is
+// unchanged — a handler registered for a verb the contract does not define — and
+// is caught by the refusal body rather than by a status only the mux could
+// produce.
 func TestAMethodTheContractDoesNotDefineIsRefused(t *testing.T) {
 	t.Parallel()
 
@@ -225,9 +232,197 @@ func TestAMethodTheContractDoesNotDefineIsRefused(t *testing.T) {
 		rec = httptest.NewRecorder()
 		s.ServeHTTP(rec, signed)
 
-		if rec.Code != http.StatusNotFound {
+		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s %s signed = %d; want %d — the contract defines no such operation, so it must reach no handler",
-				r.method, r.path, rec.Code, http.StatusNotFound)
+				r.method, r.path, rec.Code, http.StatusUnauthorized)
+		}
+		if body := rec.Body.String(); body != string(bodyBrowserRefused) {
+			t.Errorf("%s %s signed body = %q; want the browser door's one refusal — a method the contract does not define reaches nothing",
+				r.method, r.path, body)
+		}
+		if allow := rec.Header().Get("Allow"); allow != "" {
+			t.Errorf("%s %s signed carried Allow: %q — the route table is not something a caller is owed on either door",
+				r.method, r.path, allow)
+		}
+	}
+}
+
+// TestAnUnroutedPathIsAnsweredByTheDashboardsNotFound is FR-013d: the one
+// deliberate change this milestone makes to what milestone 1 answered.
+//
+// A verified operator who mistypes a URL was receiving `{"error":"not found"}`
+// from an interface they never used. What they get now is a page in the
+// dashboard's own dress, carrying the identity every other page carries — and it
+// is a 404 as well as a page, because a mistyped address that answered 200 would
+// be a success no one asked for.
+//
+// The wrong-method case is here for a reason of its own. ServeMux answers 405
+// whenever any pattern matches the path, so a route table with only `/` in it
+// would never reach this handler for `PUT /sessions` — and 405 carries an
+// `Allow` header, which is the route table handed to whoever asked.
+func TestAnUnroutedPathIsAnsweredByTheDashboardsNotFound(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct{ method, path string }{
+		"a path nothing claims":           {http.MethodGet, "/not-a-route"},
+		"a path below one that is served": {http.MethodGet, "/sessions/abc/pane"},
+		"a method no route answers":       {http.MethodPut, "/sessions"},
+		"a method no route answers, at /": {http.MethodPost, "/"},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFleet(t)
+			r := httptest.NewRequest(c.method, c.path, nil)
+			r.Header.Set(headerAccessAssertion, f.keys.mint(t, f.keys.claims()))
+
+			w := httptest.NewRecorder()
+			f.ServeHTTP(w, r)
+
+			body := w.Body.String()
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("%s %s = %d; want %d:\n%s", c.method, c.path, w.Code, http.StatusNotFound, body)
+			}
+			if got := w.Header().Get(headerContentType); got != contentTypeHTML {
+				t.Errorf("%s %s answered as %q; want %q — this door answers a person with a document", c.method, c.path, got, contentTypeHTML)
+			}
+			if allow := w.Header().Get("Allow"); allow != "" {
+				t.Errorf("%s %s carried Allow: %q — that is the route table, and no answer here may name it", c.method, c.path, allow)
+			}
+
+			// The page, the identity on it, and the interface it did not come
+			// from. The last is the whole of FR-013d's complaint.
+			for _, want := range []string{notFoundTitle, notFoundBody, testOperatorEmail} {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s %s does not render %q:\n%s", c.method, c.path, want, body)
+				}
+			}
+			if strings.Contains(body, string(bodyNotFound)) {
+				t.Errorf("%s %s answered with the API's refusal body; FR-013d exists because a browser never used that interface:\n%s", c.method, c.path, body)
+			}
+			// Not the fleet either: `GET /` is confined by `{$}`, and a page that
+			// answered every unrouted path with the fleet would be showing a
+			// session list under an address that does not exist.
+			if strings.Contains(body, emptyFleetTitle) {
+				t.Errorf("%s %s was answered with the fleet page:\n%s", c.method, c.path, body)
+			}
+
+			rec := f.only(t)
+			if got, want := rec["action"], string(audit.ActionUnknownRoute); got != want {
+				t.Errorf("action = %v; want %v — the door that answers changed, the trail's name for it did not", got, want)
+			}
+			if got, want := rec["decision"], string(audit.Deny); got != want {
+				t.Errorf("decision = %v; want %v — the request was authenticated and still not served", got, want)
+			}
+		})
+	}
+}
+
+// TestAnUnroutedPathTellsAnUnverifiedCallerNothing is the other half of FR-013d,
+// and it is what makes the page above safe to serve.
+//
+// Moving unrouted paths to the browser door would be a disclosure if the door
+// answered them distinguishably: a scanner could then map the route table by
+// comparing refusals. Layer 1 runs first, so every one of these is the same
+// bytes as the refusal the fleet's own path gives — the difference between a
+// path this daemon serves and one it does not is kept in the trail, where the
+// operator can read it and the caller cannot.
+func TestAnUnroutedPathTellsAnUnverifiedCallerNothing(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	answer := func(name, method, path string, present func(*http.Request)) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, nil)
+		present(r)
+
+		w := httptest.NewRecorder()
+		f.ServeHTTP(w, r)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("%s = %d; want %d:\n%s", name, w.Code, http.StatusUnauthorized, w.Body.String())
+		}
+		return w
+	}
+
+	// The yardstick: a route this daemon really serves, refused.
+	want := answer("the fleet path with no assertion", http.MethodGet, "/", func(*http.Request) {})
+
+	cases := map[string]func(*http.Request){
+		"no credential at all": func(*http.Request) {},
+		// A real API client that mistyped a path. Its signature is valid and
+		// still not an identity, which is FR-012 from this side: this door
+		// refuses only by the check that applies to it.
+		"the API's own signature": func(r *http.Request) { signRequest(t, r, nil, testTime) },
+		"a forged assertion":      func(r *http.Request) { r.Header.Set(headerAccessAssertion, "not.a.jwt") },
+	}
+
+	for name, present := range cases {
+		got := answer(name, http.MethodGet, "/not-a-route", present)
+		if got.Body.String() != want.Body.String() {
+			t.Errorf("%s on an unrouted path answered %q, and the fleet's own path answers %q; the route table is not something a stranger is owed",
+				name, got.Body.String(), want.Body.String())
+		}
+		if !maps.EqualFunc(got.Header(), want.Header(), func(a, b []string) bool { return strings.Join(a, "\x00") == strings.Join(b, "\x00") }) {
+			t.Errorf("%s on an unrouted path answered with headers %v, and the fleet's own path answers with %v",
+				name, got.Header(), want.Header())
+		}
+	}
+
+	// One record per request, each naming the layer that refused — which the
+	// caller was told nothing about.
+	for _, rec := range f.records(t) {
+		if got, want := rec["action"], string(audit.ActionAccessReject); got != want {
+			t.Errorf("action = %v; want %v — layer 1 refused before the path was ever a question", got, want)
+		}
+	}
+}
+
+// TestTheAPIDoorIsUnaffectedByTheUnroutedMove is the regression the change above
+// could cause and nothing else would notice.
+//
+// The catch-all registers a method-less pattern for every path a route uses, to
+// take the wrong-method case away from ServeMux's 405. Those patterns sit on the
+// browser door now, so a mistake in their specificity would move a *contract*
+// route onto it — and a signed API request would then be refused for carrying no
+// browser identity, which is exactly what FR-012 forbids. The audit action is
+// the sharper half of the assertion: a route answered by the catch-all would
+// record route.unknown rather than its own name.
+func TestTheAPIDoorIsUnaffectedByTheUnroutedMove(t *testing.T) {
+	t.Parallel()
+
+	// The contract's own table, not s.Routes(): a route the catch-all swallowed
+	// because it was never registered would be missing from the server's list,
+	// and this sweep would then pass by not looking at it.
+	registered := routes
+	if len(registered) == 0 {
+		t.Fatal("the contract names no routes, so this sweep would pass vacuously")
+	}
+
+	s := newAuditedServer(t)
+	for i, route := range registered {
+		// A distinct instant per route: the signature covers the timestamp and
+		// the body, so identical empty-bodied requests would share one and the
+		// replay cache would refuse the second.
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, requestFor(t, s, route, testTime.Add(-time.Duration(i)*time.Second)))
+
+		if want := reachedStatus[route]; w.Code != want {
+			t.Errorf("%s = %d; want %d — the request carried no browser identity, and this door never asks for one", route, w.Code, want)
+		}
+		if got := w.Header().Get(headerContentType); got != contentTypeJSON {
+			t.Errorf("%s answered as %q; want %q — milestone 1's responses are frozen byte for byte", route, got, contentTypeJSON)
+		}
+	}
+
+	got := s.records(t)
+	if len(got) != len(registered) {
+		t.Fatalf("%d records for %d requests; FR-041 requires exactly one each", len(got), len(registered))
+	}
+	for i, route := range registered {
+		if want := string(routeActions[route]); got[i]["action"] != want {
+			t.Errorf("%s recorded as %v; want %v — a contract route answered by the catch-all would say %q",
+				route, got[i]["action"], want, audit.ActionUnknownRoute)
 		}
 	}
 }

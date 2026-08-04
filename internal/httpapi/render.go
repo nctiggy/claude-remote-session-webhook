@@ -112,10 +112,16 @@ var errPageNotRendered = errors.New("the page could not be rendered")
 // talks about its own internals — to whoever asked. It goes to the trail and to
 // the report channel instead, which is where an operator is already reading.
 //
+// The status is a parameter because not every page on this door is a 200: the
+// not-found page is a page *and* a refusal (FR-013d), and a renderer that always
+// wrote 200 would answer a mistyped URL with a success. It is written after the
+// template has succeeded, for the reason the buffer exists — a status line
+// cannot be taken back either.
+//
 // The security headers are not set here. authenticateBrowser writes them before
 // layer 1 has decided anything, so a page and a refusal leave with the identical
 // set and a handler cannot forget headers it never sets.
-func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, page string, data any) {
+func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, status int, page string, data any) {
 	var body bytes.Buffer
 	if err := s.templates.ExecuteTemplate(&body, page, data); err != nil {
 		AuditFrom(r.Context()).Deny(errPageNotRendered.Error())
@@ -125,6 +131,7 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, page string,
 	}
 
 	w.Header().Set(headerContentType, contentTypeHTML)
+	w.WriteHeader(status)
 	if _, err := w.Write(body.Bytes()); err != nil {
 		s.report(fmt.Errorf("write the %s page: %w", page, err))
 	}

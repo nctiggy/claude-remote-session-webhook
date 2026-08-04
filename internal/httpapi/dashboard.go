@@ -31,10 +31,11 @@ import (
 // patternFleet is the fleet page's route, and the `{$}` in it is load-bearing.
 //
 // `GET /` is a subtree pattern in net/http's router: it would match every
-// unrouted GET path as well and answer each one with the fleet page. Moving
-// unrouted paths to this door is FR-013d's deliberate change and T016's to make;
-// it must not happen here by accident, and `{$}` is what confines this route to
-// the one path the contract gives it.
+// unrouted GET path as well and answer each one with the fleet page — a session
+// list rendered under an address that does not exist. T016 moved those paths
+// onto this same door (FR-013d), which is what makes the `{$}` load-bearing
+// rather than tidy: the fleet and the not-found page are now neighbours, and
+// this is the only thing that decides which of the two a path reaches.
 const patternFleet = "GET /{$}"
 
 // errDashboardNoOperator is the fail-closed reason for a page reached with no
@@ -119,7 +120,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 
 	// No SetSessionID: this page is about the fleet and not about one session,
 	// and data-model.md carries session_id on the single-session view alone.
-	s.renderPage(w, r, "dashboard", s.fleet(operator))
+	s.renderPage(w, r, http.StatusOK, "dashboard", s.fleet(operator))
 }
 
 // fleet reads the viewer's own sessions and projects them into the page.

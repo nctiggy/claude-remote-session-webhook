@@ -82,6 +82,76 @@ var (
 	errBrowserVerifiedNobody = errors.New("layer 1 named no operator and gave no reason")
 )
 
+// errScopeNoRoute is a request the contract has no route for — an unknown path,
+// or a method a known path does not answer.
+//
+// It is milestone 1's own sentinel, moved here rather than reworded, because
+// FR-013d changes the door that answers such a request and not what the trail
+// says about it: an operator grepping their journal for this reason finds the
+// same events after the move as before it (data-model.md).
+var errScopeNoRoute = errors.New("no route in the contract matches this request")
+
+// The not-found page's copy, supplied at the call site the way
+// docs/components.md documents the empty state's parameters.
+//
+// The body says what a mistyped URL did rather than what to do about it. This
+// door serves no navigation affordance — the empty state's action parameter is
+// absent here for the reason it is absent on the fleet (FR-024a) — and an
+// operator who has just been told a page does not exist is owed the one fact
+// this daemon can state: asking for it touched nothing.
+const (
+	notFoundTitle = "No such page"
+	notFoundBody  = "This daemon serves nothing at that address. Nothing on the host was touched by asking for it."
+)
+
+// notFoundView is the not-found page's composition: the header every page
+// carries, and the canonical empty state carrying the explanation.
+type notFoundView struct {
+	// Operator is the identity layer 1 verified, passed straight to the header
+	// component — the same pointer OperatorFrom returned, never a copy (FR-020,
+	// FR-036).
+	Operator *access.VerifiedOperator
+
+	// Message is the empty state's parameters. The component is reused rather
+	// than reproduced: an explanation where content would be is what it is for,
+	// and a second one would be the second component docs/components.md forbids.
+	Message emptyView
+}
+
+// notFound answers a request matching no route in either table (FR-013d).
+//
+// It is a page and a 404 together. Milestone 1 answered these through the API
+// door with the uniform JSON not-found, which a browser renders as raw text from
+// an interface its operator never used; the six operations and their responses
+// are untouched by the move (FR-014), because no route in the contract reaches
+// this handler.
+//
+// A stranger never sees it. The door in front runs first, so an unverified
+// caller receives the same uniform refusal every other browser route gives them
+// and learns nothing about which paths this daemon really serves — which is why
+// serving a distinguishable page to a *verified* operator discloses nothing.
+//
+// The refusal is recorded before the page is rendered, so a page that then fails
+// to render replaces the reason with its own rather than the other way round.
+func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {
+	operator, ok := OperatorFrom(r.Context())
+	if !ok {
+		AuditFrom(r.Context()).Deny(errDashboardNoOperator.Error())
+		s.refuseBrowser(w)
+		return
+	}
+
+	// A refusal in the trail even though layer 1 admitted the caller: the request
+	// was authenticated and still not served, which is what milestone 1 recorded
+	// for the same event and what an operator counting unserved requests reads.
+	AuditFrom(r.Context()).Deny(errScopeNoRoute.Error())
+
+	s.renderPage(w, r, http.StatusNotFound, "not-found", notFoundView{
+		Operator: operator,
+		Message:  emptyView{Title: notFoundTitle, Body: notFoundBody},
+	})
+}
+
 // OperatorFrom reports the identity layer 1 verified for this request.
 //
 // It is the only way a dashboard handler learns who is looking, and what it

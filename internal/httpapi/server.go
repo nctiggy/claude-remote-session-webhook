@@ -330,8 +330,8 @@ func newServer(
 	return s, nil
 }
 
-// handleUnrouted puts every request that matches no route behind the same
-// authentication and the same trail as one that does.
+// handleUnrouted puts every request that matches no route behind a door and the
+// same trail as one that does.
 //
 // Without it, ServeMux answered them itself and the daemon never saw them: an
 // unknown path got `404 page not found` as text/plain, a wrong method got 405
@@ -341,28 +341,36 @@ func newServer(
 // (FR-041 says one record per request) and a way to map the route table without
 // holding the secret, which is the enumeration FR-033 closes everywhere else.
 //
-// Two kinds of pattern are needed. `/` catches paths nothing claims. A
-// method-less pattern for each path a route uses catches the wrong-method case,
-// because ServeMux answers 405 itself whenever some pattern matches the path —
-// falling through to `/` never happens. A method-ful pattern is the more
-// specific of the two, so the real routes still win for the methods they serve.
+// The door it puts them behind is the **browser's** (FR-013d), which is the one
+// deliberate behaviour change this milestone makes to milestone 1's contract. A
+// signed-in operator who mistypes a URL was receiving the API's raw JSON
+// refusal, which is neither useful nor from an interface they ever used; they
+// now get the dashboard's own not-found page. A caller layer 1 does not verify
+// gets that door's one uniform refusal, so a scanner still learns nothing —
+// and the six operations are untouched, because none of them reaches here.
 //
-// Everything here answers the uniform 404 that an unknown session gets. A caller
-// without the secret is told nothing, and a caller with it learns only that this
-// is not a route — which the contract already says.
+// Two kinds of pattern are registered. `/` catches paths nothing claims — as a
+// subtree pattern, which is why the fleet's own route carries `{$}` (see
+// patternFleet). A method-less pattern for each path a route uses is the second
+// belt on the wrong-method case: ServeMux answers 405 itself, with an `Allow`
+// header naming the route table, whenever a pattern matches the path but not the
+// method. Milestone 1's comment here said those patterns were what prevented
+// that. They are not — `/` carries no method, so it already matches `PUT
+// /sessions` and no 405 is ever reached; deleting the loop below changes no
+// response this suite can observe. They stay because the guarantee they hold is
+// one the catch-all's shape must not be able to lose quietly, and a method-ful
+// pattern is the more specific of the two, so the contract's own routes still
+// win for the methods they serve — which is what keeps this change off the API
+// door entirely.
 func (s *Server) handleUnrouted() {
-	unknown := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.refuseSession(w, r, errScopeNoRoute)
-	})
-
 	seen := map[string]bool{"/": true}
-	s.mux.Handle("/", s.authenticate(audit.ActionUnknownRoute, unknown))
+	s.handleBrowser("/", audit.ActionUnknownRoute, s.notFound)
 	for _, r := range routes {
 		if seen[r.Pattern] {
 			continue
 		}
 		seen[r.Pattern] = true
-		s.mux.Handle(r.Pattern, s.authenticate(audit.ActionUnknownRoute, unknown))
+		s.handleBrowser(r.Pattern, audit.ActionUnknownRoute, s.notFound)
 	}
 }
 

@@ -374,9 +374,11 @@ func apiResponses(t *testing.T) map[string]*httptest.ResponseRecorder {
 }
 
 // unroutedResponses drives the two shapes of request the contract has no route
-// for. They are the catch-all's, which milestone 1 answers through the API door
-// and T016 moves to the browser door — so they are swept for the absence that
-// holds on both doors and not for either door's headers.
+// for. Since T016 they are the browser door's (FR-013d), and each is driven both
+// bare and signed because a layer-2 signature is not an identity: this fixture's
+// layer 1 admits nobody, so all four are that door's uniform refusal. They are
+// swept for the absence that holds on both doors rather than for either door's
+// headers, which browserResponses covers with a door it can admit through.
 func unroutedResponses(t *testing.T) map[string]*httptest.ResponseRecorder {
 	t.Helper()
 

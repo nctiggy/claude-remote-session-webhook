@@ -1,0 +1,36 @@
+{{/*
+  The not-found page — what the browser door answers a path nothing claims with
+  (FR-013d, contracts/dashboard.md). Milestone 1 answered these through the API
+  door, so a signed-in operator who mistyped a URL received a refusal from an
+  interface they never used; this is the page that replaces it.
+
+  It composes the same header and the same empty state the fleet does. The empty
+  state is docs/components.md's canonical "full-strength rain field plus one
+  sans-serif explanation", and an explanation where content would be is exactly
+  what this page is — a second component saying the same thing differently is the
+  defect that document exists to prevent.
+
+  The header carries the verified identity here for the reason it does on every
+  other page: it is never ambiguous whose credentials are driving sessions on
+  this host. A caller who has not been verified never reaches this page at all —
+  layer 1 answers them with the door's one uniform refusal, so nothing about the
+  route table is disclosed by what renders here.
+
+  Load-bearing, and the same three absences the fleet page carries: no inline
+  <script>, no inline <style>, and no external origin. The stylesheet is the
+  embedded asset, referenced by path.
+*/}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>crswd — not found</title>
+<link rel="stylesheet" href="/static/crswd.css">
+</head>
+<body>
+{{ template "header" .Operator }}
+<main class="shell">
+{{ template "empty" .Message }}
+</main>
+</body>
+</html>

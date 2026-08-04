@@ -469,9 +469,10 @@ func TestTheFleetIsServedByTheBrowserDoorAndNotTheAPIs(t *testing.T) {
 // TestOnlyTheFleetPathIsTheFleetPage keeps the `{$}` in the route pattern.
 //
 // Without it `GET /` is a subtree pattern: every unrouted GET path would be
-// answered with the fleet page, which is not this route's to decide. Moving
-// unrouted paths to this door is FR-013d's and T016's, and until then they keep
-// milestone 1's answer.
+// answered with the fleet page — someone else's sessions rendered under the URL
+// they mistyped. T016 moved those paths onto this same door, which makes the
+// confinement matter more rather than less: both routes are now the browser's,
+// and only the `{$}` decides which of the two a path reaches.
 func TestOnlyTheFleetPathIsTheFleetPage(t *testing.T) {
 	t.Parallel()
 
@@ -525,7 +526,7 @@ func TestAPageThatCannotBeRenderedTellsTheCallerNothing(t *testing.T) {
 			r.Header.Set(headerAccessAssertion, f.keys.mint(t, f.keys.claims()))
 
 			w := httptest.NewRecorder()
-			f.renderPage(w, r, page(f), struct{}{})
+			f.renderPage(w, r, http.StatusOK, page(f), struct{}{})
 
 			if w.Code != http.StatusInternalServerError {
 				t.Errorf("%s answered %d; want %d", name, w.Code, http.StatusInternalServerError)
