@@ -8256,3 +8256,125 @@ parsed only after the signature verifies. The fixtures it needs are already in
 102. **Finding 78 reproduces a third time**, unchanged and untouched by this task:
     `TestQuickstartStory1StartupFailures`'s two hard-coded `:8765` cases fail their
     post-refusal bind check while the deployed daemon holds that port. Still **T021's**.
+
+---
+
+## Iteration 47 (milestone 2, iteration 4) — 2026-08-04 04:32
+
+**Did:** **T004** — `internal/access/verify.go`: steps 1 to 5 of the sequence in
+`contracts/access-jwt.md`. `Validator.signedClaims(ctx, assertion)` refuses an empty
+assertion, refuses anything that is not three non-empty `RawURLEncoding` segments,
+reads the JOSE header only to refuse an `alg` that is not byte-for-byte `RS256` and to
+refuse any `crit`, resolves the `kid` through T003's key set, verifies
+`rsa.VerifyPKCS1v15` over SHA-256 of the first two segments **as received** — and
+returns the claim bytes **unparsed**. `New(teamDomain)` builds the validator and wires
+this package's `systemClock` into the key set, so T003's cache now has a production
+constructor (finding 94's first half).
+
+**Shape, and the reasons behind the non-obvious parts:**
+
+- **`signedClaims` is the name because that is the whole return value**: bytes the
+  edge's signature covers, and no opinion about what they say. Steps 6–11 are T005's,
+  and the ordering property is that they cannot run early — a correctly signed payload
+  of `this is not JSON` verifies here, which is a test.
+- **`crit` is a `json.RawMessage`, not a `[]string`.** Presence is the entire check, and
+  a typed field reads `"crit":null` and `"crit":7` as *absent*. Both are announcements
+  of an extension; all five spellings are refused.
+- **Unknown JOSE members are ignored**, unlike every request body this daemon decodes
+  (`docs/security.md` §2). A real Access header carries `typ`, and RFC 7515 makes
+  unrecognised-but-uncritical parameters passable — `crit` is precisely the parameter
+  that says otherwise. Same reasoning as `jwkSet` in T003.
+- **The signing input is sliced out of the assertion** (`assertion[:len(p0)+1+len(p1)]`),
+  never rejoined from decoded parts. Mutating this to re-marshal the parsed header broke
+  five tests, which is the point of the fixture headers carrying odd spacing.
+- **Five sentinels, none carrying a byte of the assertion**: `errAssertionMissing`,
+  `errAssertionMalformed` (+ `errJOSEHeaderMalformed` wrapping it, so the journal can
+  tell "never a JWS" from "a JWS whose header is not JSON"), `errAlgorithmRefused`,
+  `errCriticalExtension`, `errSignatureInvalid`. `rsa`'s own verification error is
+  dropped: it is one constant carrying nothing new.
+
+Gate, executed not asserted:
+
+```
+go build ./...                          OK
+go vet ./...                            OK
+go vet -tags tmux ./...                 OK
+go vet -tags quickstart ./cmd/crswd     OK
+go test -count=1 ./...                  OK
+go test -count=1 -tags tmux ./...       OK (real tmux on this host)
+go test -count=1 -race ./internal/access  OK
+go test -tags quickstart ./cmd/crswd    12 of 13 stories — finding 78 exactly, reproduced
+golangci-lint run                       OK
+gofmt -l .                              empty
+go.sum                                  absent  ✅
+```
+
+**Learned:**
+
+1. **Mutation-testing paid again, four for four.** `EqualFold`+`TrimSpace` on `alg` →
+   the lower-case and leading-space cases fail. Deleting the `crit` check → all five.
+   Re-marshalling the header before hashing → five tests including the positive.
+   **Moving the `alg`/`crit` checks after the key lookup → caught only by the
+   `fetchCount() != 0` assertions**, which is why those two lines are in the test at
+   all: without them the ordering half of the contract is untested, since a refusal
+   after a fetch is still a refusal.
+2. **`alg: none` in the wild is refused at step 2, not step 3.** An unsigned JWS is
+   written `header.payload.` with an *empty* third segment, and the shape gate takes it
+   first. So the `alg` table has to sign its `none` cases with a real RS256 signature to
+   reach the algorithm check at all — otherwise the test passes for the wrong reason.
+   Both spellings are covered.
+3. **A test that warms the cache and then wants a refetch must advance the clock.** The
+   unknown-kid case cost 1 fetch, not 2, until `clk.Advance(refetchFloor)` went in — the
+   floor had swallowed it and `errRefetchFloored` wraps `errKeyIDUnknown`, so `errors.Is`
+   still passed. A fetch **count** is what tells those two apart; the error alone cannot.
+4. **`unused` is satisfied by a test caller**, so an unexported method with no production
+   caller lints clean (iteration 45 #4, confirmed again). That is not licence: `New` has
+   no production caller until **T009**, and it is the whole of finding 94.
+5. **`New`'s signature will change twice more** — T005 needs the AUD and the issuer,
+   T006 the allowlist. It takes only the team domain today because that is all steps 1–5
+   read, and inventing the rest would be inventing requirements. Nothing outside the
+   package calls it yet, so the change is free.
+
+**Left:** T005–T034. Next is **T005**: `internal/access/claims.go` — both assertion
+shapes, `aud`/`iss`/`exp`/`nbf`/`iat` with the fixed 60s leeway, and the positively
+stated rule that a non-empty allowlisted `email` is required, so a service-token
+assertion is refused at the dashboard. The fixtures it needs are in `verify_test.go`:
+`mint`, `joseRS256`, `identityClaims`, `publishing`, `newTestValidator`.
+
+**Findings:**
+
+103. **The `clock` interface is now the seam for the time claims too, and T005 must not
+    add a second one.** `systemClock` lives in `keys.go` beside it and is wired in
+    exactly one place (`New`). `exp`/`nbf`/`iat` must be measured on the validator's
+    clock, not `time.Now()`, or the whole suite has to sleep — and `stepClock` in
+    `keys_test.go` already settles both the refetch floor and a token's validity window
+    at one instant.
+104. **Nothing yet emits the `access.reject` record these errors exist for** (46 #95,
+    unchanged). T004 adds five more sentinels to the list T008/T009 must map to a
+    repo-authored reason constant. None of them carries the assertion, a claim, or a
+    key id — keep it that way when mapping them.
+105. **Iteration 14 #1 / … / 46 #96 still stands:** `git checkout --`, `git restore`,
+    `perl -i`, heredocs, `git worktree add` and `pkill` remain outside the permission
+    allowlist. This iteration hit it again: a heredoc'd `python3 -` script to mutate the
+    source was refused, so the four mutations were applied and reverted with the Edit
+    tool instead. That works and is arguably safer, but it is two round trips per
+    mutation.
+106. **Iteration 1 #1 / … / 46 #97 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the
+    hook: "no leaks found".)
+107. **Iteration 2 #2 / … / 46 #98 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+108. **Iteration 6 #6 / … / 46 #99 still stands:** `AGENTS.md`'s command table still
+    names neither `go test -tags tmux ./...` nor `go test -tags quickstart ./cmd/crswd`.
+    **T032.**
+109. **Iteration 44 #79 / … / 46 #100 still stands:** `.golangci.yml`'s `run.build-tags`
+    lists `tmux` only, so T007's `//go:build dev` files will be invisible to the linter.
+    Do it inside T007.
+110. **`deploy/README.md`'s four-variable trap (44 #84 / … / 46 #101) still stands.**
+    **T033.**
+111. **Finding 78 reproduces a fourth time**, unchanged and untouched by this task: the
+    deployed daemon (pid 993) holds `127.0.0.1:8765`, so
+    `TestQuickstartStory1StartupFailures`'s two hard-coded `:8765` cases fail their
+    post-refusal bind check while all ten refusals exit 1 with the right message. Still
+    **T021's**.
