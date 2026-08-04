@@ -14,12 +14,12 @@ satisfy.
 |---|---|---|
 | Go 1.23+ | `go version` | ✅ go1.24.0 (compiles the 1.23 module) |
 | tmux | `tmux -V` | ✅ tmux 3.4 |
-| `golangci-lint` v1.62 | `golangci-lint --version` | ❌ **not installed** — see below |
+| `golangci-lint` v2.12.2 | `golangci-lint --version` | ❌ **not installed** — see below |
 | `goimports` | `which goimports` | ❌ **not installed** |
 
 ```bash
 # Install the two missing tools before claiming lint is green.
-go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.62.2
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 go install golang.org/x/tools/cmd/goimports@latest
 export PATH="$PATH:$(go env GOPATH)/bin"
 ```

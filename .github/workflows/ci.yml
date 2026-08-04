@@ -165,9 +165,15 @@ jobs:
 
       - name: Lint
         if: steps.stack.outputs.present == 'true'
-        uses: golangci/golangci-lint-action@v6
+        # Pinned to a commit SHA, not a tag: a tag can be moved, which is what
+        # CodeQL's actions/unpinned-tag rule is about. The tag it resolves to is
+        # in the comment so a human can still read what this is.
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
-          version: v1.62
+          # v2, because the action refuses v1 outright from v7 onward:
+          # "golangci-lint v1 is not supported by golangci-lint-action >= v7".
+          # .golangci.yml is the v2 schema to match; the two move together.
+          version: v2.12.2
 
       - name: Typecheck
         if: steps.stack.outputs.present == 'true'

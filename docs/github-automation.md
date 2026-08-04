@@ -93,7 +93,8 @@ Two decisions are worth stating, because both look like fussiness until they bit
 **Why pin at all.** Left unset, the run takes `claude-code-action`'s default, which
 resolves through the OAuth token to whatever the CLI defaults to *at the time it
 runs*. That can move between action versions or subscription changes with no commit
-to point at. `go 1.23` and `golangci-lint v1.62` are pinned for the same reason. On a
+to point at. `go 1.23` and `golangci-lint v2.12.2` are pinned for the same reason, and both
+actions are pinned to commit SHAs rather than tags. On a
 repo where a request that passes authentication is unsandboxed code execution, which
 model wrote a PR belongs in the diff.
 

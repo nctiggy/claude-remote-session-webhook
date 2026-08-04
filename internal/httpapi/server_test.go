@@ -1006,7 +1006,7 @@ func TestReconcileIsFatalWhenTheTrailCannotBeWritten(t *testing.T) {
 	seedSurvivor(t, s, hostID("f"), testTime.Add(-time.Hour))
 
 	want := errors.New("stdout is closed")
-	s.Server.trail = audit.NewTo(brokenSink{err: want}, func() time.Time { return testTime })
+	s.trail = audit.NewTo(brokenSink{err: want}, func() time.Time { return testTime })
 
 	err := s.Reconcile(context.Background())
 	if err == nil {

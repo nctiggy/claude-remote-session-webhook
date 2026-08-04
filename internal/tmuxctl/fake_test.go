@@ -494,7 +494,10 @@ func TestFakeIsSafeForConcurrentUse(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			name := fakeName + "-" + string(rune('a'+i))
+			// Indexed rather than 'a'+i: the alphabet is visibly as long as
+			// workers, so the name stays in [a-z] by construction rather than by
+			// the reader checking the bound (gosec G115).
+			name := fakeName + "-" + string("abcdefghijklmnop"[i])
 			if err := f.New(ctx, name, fakeWorkDir); err != nil {
 				t.Errorf("New(%s): %v", name, err)
 				return

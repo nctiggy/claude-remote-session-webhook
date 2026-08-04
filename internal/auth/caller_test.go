@@ -93,8 +93,16 @@ func TestCallerIdentityIgnoresTheRequest(t *testing.T) {
 			claim: func(r *http.Request) { r.SetBasicAuth(attackerMarker, "not-a-real-password") },
 		},
 		{
-			name:  "a cookie",
-			claim: func(r *http.Request) { r.AddCookie(&http.Cookie{Name: "caller", Value: attackerMarker}) },
+			name: "a cookie",
+			claim: func(r *http.Request) {
+				// Attributes set only to satisfy gosec G124. What this case asserts
+				// is that a cookie names nobody, and a hardened cookie names nobody
+				// just as loudly as a sloppy one.
+				r.AddCookie(&http.Cookie{
+					Name: "caller", Value: attackerMarker,
+					HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode,
+				})
+			},
 		},
 		{
 			// Signed, so the daemon really did agree to these bytes — and they

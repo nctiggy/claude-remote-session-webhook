@@ -1703,7 +1703,7 @@ type vanishingLister struct {
 
 func (v vanishingLister) List(ctx context.Context) ([]tmuxctl.SessionInfo, error) {
 	infos, err := v.Fake.List(ctx)
-	v.Fake.Vanish(v.name)
+	v.Vanish(v.name)
 	return infos, err
 }
 

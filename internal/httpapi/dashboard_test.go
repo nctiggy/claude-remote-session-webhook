@@ -550,7 +550,7 @@ func TestAPageThatCannotBeRenderedTellsTheCallerNothing(t *testing.T) {
 	cases := map[string]func(f *fleet) string{
 		"a page the set does not define": func(*fleet) string { return "not-a-page" },
 		"a page that fails halfway through": func(f *fleet) string {
-			f.Server.templates = broken
+			f.templates = broken
 			return "halts"
 		},
 	}
