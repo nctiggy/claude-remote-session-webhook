@@ -255,6 +255,59 @@ func TestReducedMotionRemovesTheRain(t *testing.T) {
 	}
 }
 
+// transitionDecl is a declaration that animates a property change, and its
+// value.
+var transitionDecl = regexp.MustCompile(`(?i)transition\s*:\s*([^;}]+)`)
+
+// TestReducedMotionStopsEveryTransition is the rest of SC-011. The rain is the
+// page's only vestibular hazard and the test above already removes it; the two
+// hover fades are 0.12s colour changes and not the motion WCAG 2.3.3 is about,
+// so this is not the accessibility failure it would look like.
+//
+// What it holds is that the answer stops being a judgement call. A reset under
+// the universal selector means "does the preference cover everything?" is read
+// off the stylesheet rather than argued from the list of rules that happen to
+// transition today — and the next hover fade someone writes is covered by the
+// rule already being there rather than by their remembering this block exists.
+func TestReducedMotionStopsEveryTransition(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+	if len(transitionDecl.FindAllString(source, -1)) == 0 {
+		t.Fatal("crswd.css transitions nothing at all, so there is nothing here for the preference to answer")
+	}
+
+	reduced := blockFor(t, source, "@media (prefers-reduced-motion: reduce)")
+
+	var universal string
+	for _, chunk := range strings.Split(reduced, "}") {
+		selector, body, ok := strings.Cut(chunk, "{")
+		if !ok {
+			continue
+		}
+		for _, part := range strings.Split(selector, ",") {
+			if strings.TrimSpace(part) == "*" {
+				universal = body
+			}
+		}
+	}
+	if universal == "" {
+		t.Fatalf("the reduced-motion block carries no universal rule: %q", reduced)
+	}
+	if !regexp.MustCompile(`(?i)transition\s*:\s*none`).MatchString(universal) {
+		t.Errorf("the reduced-motion block's universal rule does not set transition: none, so a rule elsewhere in the file still animates under the preference: %q", universal)
+	}
+
+	// And nothing inside the block puts a duration back. Shortening a transition
+	// is the answer this rule exists instead of: a preference asking for no
+	// motion is not asking for less of it.
+	for _, decl := range transitionDecl.FindAllStringSubmatch(reduced, -1) {
+		if value := strings.TrimSpace(decl[1]); !strings.EqualFold(value, "none") {
+			t.Errorf("the reduced-motion block sets transition: %s; the preference is answered by removing the transition, not by shortening it", value)
+		}
+	}
+}
+
 // TestEveryDocumentedStateHasARule is the design system's state table held as
 // code. needs-auth and dead render in no milestone this list reaches, and the
 // pill is the component that must not need editing when they arrive.
