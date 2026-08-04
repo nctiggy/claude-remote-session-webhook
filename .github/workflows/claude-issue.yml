@@ -126,6 +126,20 @@ jobs:
             8. Open a pull request that closes the issue. The description must state:
                what was wrong, what you changed, and how you verified it.
 
+            COMMIT AND PUSH AS YOU GO. Do not save the first commit for the end.
+            The moment you have a coherent increment — the change itself, then each
+            test, then the docs line — commit it and push the branch. A turn budget
+            is a real bound and you may hit it: a pushed branch is then partial work
+            somebody can finish, and an unpushed one is nothing at all. Issue #22
+            cost eleven minutes of correct, gate-green work this way — the right
+            diagnosis, the fix, and its unit tests, all discarded because the first
+            commit had not happened yet.
+
+            An incomplete branch is not a failure to hide. Push it, then say plainly
+            in the PR (or the issue, if you never reached a PR) which numbered steps
+            above you completed and which you did not. A partial PR clearly labelled
+            is worth far more than a clean slate.
+
             Hard limits:
             - Never push to main. PR only.
             - Never commit a secret.
