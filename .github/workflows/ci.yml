@@ -150,7 +150,7 @@ jobs:
             echo "No stack manifest yet. Fill in the AGENTS.md commands and these steps."
           fi
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         if: steps.stack.outputs.present == 'true'
         with:
           # Match the dev host. With CI older than local, a 1.24-only stdlib call
