@@ -9504,3 +9504,173 @@ absent parameter, not deleted code.
     milestone-1-only action list (**T017**/**T029**), the missing `--dev-auth-bypass` flag
     (**T034**), `DisplayState` with no production caller (**T014**), and `Store.SetState`
     now uncalled *and* contradicted by the derived display state.
+
+---
+
+## Iteration 56 (milestone 2, iteration 13) — 2026-08-04 06:16
+
+**Did:** **T013** — the five canonical components in `web/templates/partials/`:
+`header.html`, `status-pill.html`, `session-card.html`, `empty.html`, `rain.html`. Plus
+`internal/httpapi/view.go` (the components' typed parameter lists) and eight tests in
+`internal/httpapi/partials_test.go`.
+
+**Shape, and the reasons behind the non-obvious parts:**
+
+- **`docs/components.md`'s `dict(...)` call sites cannot be used, and this is not a
+  choice this iteration made.** T002 parses the set with **no function map**, and
+  `TestParseTemplatesRefuses` has a row asserting that `{{ dict "a" 1 }}` stops the
+  daemon at construction. So a component's parameters are the fields of the value it
+  executes against, which is why `view.go` exists at all. See finding 189.
+- **`view.go` rather than fixtures in the test.** The partials are useless without a
+  data shape, and leaving it implicit invites T014 to invent a second one — in
+  particular to drop the `Actions` field, which is the one thing FR-024a is about.
+  `sessionView`, `emptyView`, `actionView`; the header takes the
+  `*access.VerifiedOperator` layer 1 already built and the pill takes
+  `session.DisplayState`, so neither gets a projection whose only job is to copy a field.
+- **The action row is guarded, and the second test is the one that matters.** Asserting
+  that no action renders is satisfied by a component with *no action row at all* — which
+  is exactly the outcome FR-024a forbids. `TestTheActionRowIsAnAbsentParameterAndNotDeletedMarkup`
+  renders each component twice, with and without the parameter, and only the second
+  render tells "absent parameter" apart from "deleted markup".
+- **The row's body is the container and nothing else.** What goes inside is
+  `docs/components.md`'s Button, which FR-024a forbids building now — and it could not be
+  referenced either: html/template's escape analysis walks **unreached branches**, so a
+  `{{ template "button" . }}` inside an untaken `{{ with }}` still fails at first execute
+  when `button` is undefined.
+- **`pill-{{ . }}` and `{{ . }}`, never a two-armed conditional.** Iteration 54's learning
+  3. The label is text because colour is reinforcement (FR-019), and the class is derived
+  from the same value, so `needs-auth` and `dead` render without an edit here — the
+  `needs-auth` test row is what notices if someone replaces the derivation.
+- **The card renders the ID as well as linking it.** Without it every adopted card would
+  read identically, since `no name recorded` is the same string for all of them. The ID
+  carries no credential (data-model.md), and the browser already receives it in the href.
+- **Absence is structural, not copy.** `TestTheCardStatesWhatTheDaemonDoesNotKnow` counts
+  `card-unknown` slots and asserts the value slots (`card-name`, `card-path`) are absent,
+  rather than pinning the sentence — and asserts the unknown span is not *empty*, which
+  is the failure that renders as a blank card rather than as a statement.
+- **The template sweep reads past `{{/* … */}}`.** Comments are dropped before a byte is
+  rendered, and every partial here explains its rule by naming the thing it must not
+  contain — `dashboard.html`'s own placeholder comment says "no inline `<script>`" and
+  fails the sweep unless comments are stripped first. See learning 2.
+
+Gate, executed not asserted, one command at a time (finding 115):
+
+```
+go build ./...                            OK
+go build -tags dev ./...                  OK
+go vet ./...                              OK
+go test ./... -count=1                    OK
+golangci-lint run                         OK (silent)
+gofmt -l .                                OK (silent)
+go test -tags dev ./... -count=1          OK
+go test -tags tmux ./... -count=1         OK
+go test -race ./internal/httpapi          OK
+go.sum                                    absent  ✅
+```
+
+`go test -tags quickstart ./cmd/crswd` was not run: nothing here touches `cmd/crswd`, and
+finding 78 makes its result known in advance. It is **T021's**.
+
+**Eight mutations, each applied and reverted:**
+
+1. The `{{ with .Actions }}` guard removed, so the row always renders → the action-row
+   test's *without* half. It also failed all four rows of the escaping test, which is how
+   finding 194 was found.
+2. The action row deleted entirely — **FR-024a's actual failure mode** → the action-row
+   test's *with* half **and nothing else in the repository**. This is the mutation the
+   whole second render exists for.
+3. `pill-running` hard-coded in the class → the `idle` and `needs-auth` rows.
+4. The pill's label removed, leaving colour alone → all three rows. Design-system
+   non-negotiable 5.
+5. The card's `{{ if .Name }}` removed, so an absent name renders an empty element →
+   `TestTheCardStatesWhatTheDaemonDoesNotKnow` alone.
+6. `data-lead="#0f0" data-column="14px"` on the rain canvas → the token sweep, naming both
+   the file and the two literals.
+7. `{{ template "rain" }}` added to the session card → the reading-content test. The rain
+   is permitted behind the header and the empty state and nowhere else.
+8. The header's `{{ .Email }}` replaced with the literal `operator` → the header test.
+
+**Learned:**
+
+1. **html/template does not escape `{{ }}` in *data*.** A session named `{{ .TokenHash }}`
+   renders those characters verbatim — data is never re-parsed as a template — so a
+   payload with no HTML metacharacter legitimately appears unchanged. A test row asserting
+   "the raw bytes never appear" only holds for payloads carrying `<`, `>` or `"`. That row
+   was dropped rather than papered over.
+2. **A source sweep over templates must strip `{{/* … */}}` first.** Otherwise a partial
+   that documents "no inline `<script>`" fails the very rule it is documenting. The
+   stripped form is what ships, so this weakens nothing.
+3. **Escape analysis walks unreached branches.** `{{ with .X }}{{ template "y" . }}{{ end }}`
+   fails at first execute if `y` is undefined, even when `.X` is always empty — which is
+   why the action row's container is empty rather than referencing a Button that does not
+   exist yet.
+4. **A method-name/type-name collision is fine but an element-opener denylist is not.**
+   Mutation 1 showed the escaping test's `<div` check was really an assertion about the
+   card's own markup; it fails the day milestone 3 fills the action row, for a reason that
+   has nothing to do with escaping. Narrowed to `<script`, `<img`, `<svg` and `<iframe` —
+   elements the card never renders itself, so their presence can only be the payload's.
+
+**Left:** T014–T034. Next is **T014**: `GET /` in `internal/httpapi/dashboard.go` — the
+summary row before any detail, one card per owned session, read through `Manager.View` /
+`Manager.List` and projected into `sessionView`.
+
+**Findings:**
+
+189. **`docs/components.md`'s documented call sites do not work in this repo.** Every one
+    of them is `{{ template "x" (dict …) }}`, and this template set is parsed with no
+    function map — deliberately, per T002, whose `TestParseTemplatesRefuses` pins that an
+    unknown function stops the daemon at construction. A milestone-3 author copying a call
+    site out of the binding document verbatim gets a startup failure. No task schedules an
+    amendment to `components.md` (T030 and T031 cover the auth and security docs only), so
+    this needs one — or a `dict` helper, which would reopen a decision T002 closed.
+190. **No task in the milestone-2 list registers `GET /sessions/{id}/view`.**
+    `contracts/dashboard.md` puts it in the route table, says "cards link to the session
+    view", and describes the page (the same card above the pane); T026 builds
+    `pane.html`; T014 implements `GET /` only. The card built here links to it, so until
+    something registers it the link lands on T016's browser-door not-found page. **T014 or
+    T026 should pick it up, or it needs a task of its own** — the page is where the pane
+    and the "live screen, not scrollback" statement (FR-032a) are supposed to live.
+191. **The empty state's documented copy names the action FR-024a removes.**
+    `docs/components.md` gives the body as "Nothing is executing on this host right now.
+    Start one to open a Claude session in a tmux window." **T014** supplies Title and Body
+    at the call site and must not lift that second sentence verbatim: there is no button
+    to start one, and a browser could not sign the request if there were.
+192. **`sessionView`, `emptyView` and `actionView` have no production caller yet** — the
+    same shape as `DisplayState` at T011 (172) and `View` at T012 (182). The plan's rule
+    is satisfied at **T014**, which must project through these types and read through
+    `Manager.View`/`Manager.List`, never `Store.lookup`. If T014 defines its own view
+    struct, this task bought nothing and the `Actions` parameter FR-024a asks for
+    disappears with it.
+193. **The card's link is the only thing in the tree pointing at an unregistered route.**
+    Noted separately from 190 because it is the visible consequence: a signed-in operator
+    clicking a card today gets a not-found. Acceptable while US1 is incomplete, but it is
+    a broken link in the MVP if 190 is not closed before the milestone ships.
+194. **The escaping test's element denylist was coupled to the card's own markup**, found
+    by mutation 1 and fixed in the same iteration. Recorded because the same trap is
+    waiting in T017's page-level sweeps: a denylist of markup is an assertion about what
+    the page renders, and it goes stale the moment the page renders more.
+195. **Iteration 14 #1 / … / 55 #183 still stands:** `git checkout --`, `git restore`,
+    `perl -i` and `sed -i` are outside the permission allowlist, so eight mutations cost
+    sixteen Edit round trips. Iteration 54's route — a single `Edit` anchored on the
+    previous entry's last finding — worked again for this entry.
+196. **Iteration 1 #1 / … / 55 #184 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the hook:
+    "no leaks found".)
+197. **Iteration 2 #2 / … / 55 #185 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+198. **Iteration 6 #6 / … / 55 #186 still stands:** `AGENTS.md`'s command table names none
+    of `go test -tags tmux ./...`, `go test -tags quickstart ./cmd/crswd`, or
+    `go test -tags dev ./...`. **T032.**
+199. **`deploy/README.md`'s four-variable trap (44 #84 / … / 55 #187) still stands.**
+    **T033.**
+200. **Findings 161–165, 172–173 and 180–182 are untouched by this task** and still stand:
+    the `Cache-Control` default resolved inside a contract silence (**T031**), no
+    registered route on the browser door yet (**T014**/**T016**), `leak_test.go`'s
+    milestone-1-only action list (**T017**/**T029**), the missing `--dev-auth-bypass` flag
+    (**T034**), `Store.SetState` uncalled and contradicted, `Resolve`'s single-test idle
+    clock, and `View`'s deliberate silence about `AbsoluteDeadline` (**T028**). The CSP
+    finding (163) is **half closed**: there is now markup that renders under it, and the
+    sweep added here refuses an inline script, an inline style and an external origin in
+    any template — but nothing has yet been loaded in a real browser, so **T017** still
+    owns the runtime half.
