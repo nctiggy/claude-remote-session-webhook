@@ -12053,3 +12053,57 @@ table owes `go test -tags tmux ./...` and `go test -tags quickstart ./cmd/crswd`
 (`.env.example` and `deploy/README.md`), and **T034** (the quickstart run end to end, which
 must deal with #266/#292). Plus the unowned findings above — 317 is new — and the design
 decision 306 needs from the operator.
+
+## Iteration 76 (milestone 2, iteration 33) — 2026-08-04 11:18
+
+**Did:** **T030** — `docs/auth-and-sessions.md`, the first of the four Ship-it documents.
+Rewrote the opening claim ("no browser sessions and no human login form"), replaced the
+layer-1 sample's `jwt.Parse` with the hand-rolled sequence `internal/access` actually runs,
+added a **Two doors, one hostname** table carrying the service token, and wrote the
+stream-authorisation rule into the doc for the first time — it existed only in `spec.md`
+(FR-034 and parts) and in `contracts/stream.md`. Also: three new rows in Lifetimes (assertion
+leeway 60s, refetch floor 60s, stream tick 1s), seven new checklist items, and the teardown
+bullet now says an open stream ends *itself* within one interval rather than being found by
+teardown. No code changed; build/vet/test/lint green and unchanged.
+
+**Three things the next documentation task should not re-derive:**
+
+1. **The opening claim was half true and the interesting half survives.** There is still no
+   browser session *in the daemon* — `VerifiedOperator` is derived per request and never
+   stored (`internal/access/allowlist.go:79`), and that is what closes the expiry/fixation
+   questions. The amendment says the login form is the edge's and the daemon keeps nothing,
+   rather than simply deleting the sentence.
+2. **The doc's dev-bypass paragraph named a `--dev-auth-bypass` flag that has never
+   existed.** The bypass is selected by `//go:build dev` and built with
+   `access.NewBypass(listen, warn)`; `cmd/crswd` still has **no** dev half, so nothing
+   constructs it outside tests (`internal/httpapi/server.go:286-290` says so). Corrected in
+   passing because the same paragraph's next sentence already required the build tag — the
+   flag name contradicted it.
+3. **T031's material is genuinely separate.** `docs/security.md`'s two-door table is at
+   `docs/security.md:22`, and its header table says nothing about cross-origin headers. This
+   iteration deliberately did not touch that file; the CORS rule is stated here in the stream
+   section, and T031 owes it in the header table where an implementer reading about headers
+   will look.
+
+**Findings:**
+
+319. **`docs/auth-and-sessions.md` is prose, and nothing enforces it.** Constitution V says a
+    rule that lives only in prose is a suggestion. Every rule added here *is* independently
+    tested in Go (`internal/access`, `stream_test.go`, the CORS sweep in `render_test.go`),
+    so the doc is a true description today — but there is no check that keeps the two in step,
+    and this iteration only fixed the drift that had already happened over one milestone.
+    Unowned. The cheapest guard would be a link-and-claim test over `docs/`, which is a
+    decision about how much ceremony a four-file docs tree deserves, not a task.
+320. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307,
+    311–318 are unchanged**, including 317 (a capture failure reports what the host said, on
+    the stream, the session page **and** the API's `/output`) and 306, which still needs the
+    operator's answer. The `IMPLEMENTATION_PLAN.md` / `tasks.md` duplicate checkbox state was
+    again ticked in both by hand.
+
+**Left:** **T031** (`docs/security.md` — the two-door table predates the service token, the
+header table owes the cross-origin rule, and the `Sec-Fetch-Site` rule still lives only in the
+spec and now this doc), **T032** (`AGENTS.md`'s command table owes `go test -tags tmux ./...`
+and `go test -tags quickstart ./cmd/crswd`), **T033** (`.env.example` and `deploy/README.md`
+owe `CRSW_ACCESS_TEAM_DOMAIN`, `CRSW_ACCESS_AUD`, `CRSW_ACCESS_ALLOWED_EMAILS`,
+`CRSW_MAX_STREAMS` — names only), and **T034** (the quickstart end to end, which must deal
+with #266/#292). Then the milestone is done.
