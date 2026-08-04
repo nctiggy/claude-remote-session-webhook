@@ -149,6 +149,13 @@ type Server struct {
 	// where tmux and the trail are, never how bounded the daemon is.
 	streams *streamCap
 
+	// panes is the shared screen buffer per watched session, and it is one per
+	// server for a reason the two bounds above do not have: two registries would
+	// be two buffers for the same session, which is two capture-pane execs a
+	// second where contracts/stream.md allows one. The cap counts connections;
+	// this is what makes the cost model count sessions.
+	panes *panes
+
 	// streamTick is how often an open stream writes (contracts/stream.md). It is
 	// a field for the reason clock, listen and report are: a test seam that is
 	// not a choice a caller has, since newServer chooses streamInterval and
@@ -358,6 +365,7 @@ func newServer(
 		sessions:   sessions,
 		creates:    creates,
 		streams:    streams,
+		panes:      newPanes(),
 		streamTick: streamInterval,
 		clock:      systemClock{},
 		report:     reportToStderr,

@@ -18,13 +18,15 @@ package httpapi
 // be the same line of code and would take the protection off every route that
 // still wants it.
 //
-// What a stream carries is deliberately not here yet. A stream opened by this
-// file writes heartbeat comments and nothing else: the capture loop is T024 and
-// the framing that makes a payload's shape independent of its content is T025,
-// so no byte a session printed crosses this transport before the task that makes
-// crossing it safe has landed. What *is* here is everything a stream that
-// carried a screen would need to already be true — the four-step open sequence
-// in front of it, the response's own description of itself, and the deadline.
+// *When* a stream writes is here; *what* it writes is not, and the gap is
+// deliberate. The capture loop below reads each watched session once per tick
+// into a buffer every stream on that session shares, and writes an event only
+// when the screen differs from the one that stream last sent — but the event's
+// payload is a placeholder rather than the screen. Framing is T025: SSE's wire
+// format is line-oriented, so a screen put into a `data:` field before the
+// encoding that makes framing independent of content has landed is a screen
+// framed by nobody. Until it lands no byte a session printed crosses this
+// transport, and the buffer that task will marshal is already here.
 //
 // One thing this route still owes contracts/stream.md, owned by a later task
 // and not a disclosure while the stream carries no output: the record emitted at
@@ -39,6 +41,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 )
 
 // patternSessionStream is the stream's route, spelled through pathValueID like
@@ -83,6 +87,28 @@ const (
 // tick is what turns a dead peer into a write error, and it is also what keeps
 // an idle proxy at the edge from severing a stream that is working perfectly.
 var heartbeat = []byte(":\n\n")
+
+// screenChanged is what a tick writes instead of the heartbeat when the capture
+// differs from the screen that stream last sent.
+//
+// **The payload is a placeholder and not the screen**, which is the one thing
+// about this constant worth reading twice. What decides *when* an event is
+// written is here; what an event *carries* is T025, because SSE's wire format is
+// line-oriented and a screen is inherently multi-line — a raw newline inside a
+// `data:` field starts a new field, a lone `\r` is corrupted in the rejoin, and
+// a line the session printed beginning `event:` would be a session choosing this
+// daemon's framing. The encoding that makes all three impossible is one
+// json.Marshal, and it belongs to the task that also proves it against exactly
+// those payloads. Until then the buffer below holds the screen and the wire does
+// not.
+//
+// It is an unnamed event, like the one contracts/stream.md frames, so that
+// landing the framing changes the payload and nothing else. An empty `data:`
+// field would have said the same thing with no placeholder at all, and is not an
+// option: EventSource drops an event whose data buffer is empty rather than
+// dispatching it, so a stream written that way would be a stream no browser
+// hears.
+var screenChanged = []byte("data: changed\n\n")
 
 // The refusals this route records, authored here.
 //
@@ -201,7 +227,15 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := sse.hold(r.Context(), s.streamTick); err != nil {
+	// The shared buffer, taken after the response is a stream so that an open
+	// which never became one neither creates one nor drops one. Deferred for the
+	// reason the slot is: a buffer left behind by one forgotten return is a
+	// session's screen held in memory for as long as the daemon runs, and pane
+	// content is secret under docs/security.md §3.
+	shared, unwatch := s.panes.attach(live.ID)
+	defer unwatch()
+
+	if err := sse.hold(r.Context(), s.streamTick, s.reader(live, shared)); err != nil {
 		// A peer that closed cleanly ends through the context and returns no
 		// error at all, so what reaches here is a write that failed against a
 		// connection nobody closed — the vanished browser the heartbeat exists to
@@ -209,6 +243,45 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 		// request, so it goes where a failure with nowhere else to go goes, and
 		// never into the response.
 		s.report(fmt.Errorf("write the output stream for session %s: %w", live.ID, err))
+	}
+}
+
+// reader is what one held stream reads its screen from: the buffer shared by
+// every stream watching this session, the capture that fills it, and the single
+// report an outage earns.
+//
+// The capture goes through Manager.Output rather than the controller, which is
+// what keeps one stripper rather than a second that agrees today (FR-029) — and
+// what keeps the stream off the idle clock, since Output takes the record it was
+// given and reaches no store (FR-034f). Watching is not driving, on every tick
+// and not only at the open.
+//
+// Failures are reported once per outage rather than once per tick. A session
+// whose window has gone answers every capture the same way, and a stream
+// reporting each of them fills an operator's journal at one line a second for as
+// long as the tab stays open — which buries the first line, the only one that
+// says anything. The flag is per stream because it belongs to the reporting and
+// not to the screen: two tabs on one dead session are two reports, which is a
+// number an operator can read, and the state that would make it one is state the
+// shared buffer would then have to unwind on every attach.
+func (s *Server) reader(live session.Session, shared *pane) func(context.Context) (string, error) {
+	failing := false
+	return func(ctx context.Context) (string, error) {
+		screen, err := shared.current(ctx, s.streamTick, func(ctx context.Context) (string, error) {
+			capture, err := s.sessions.Output(ctx, live)
+			return capture.Text, err
+		})
+		switch {
+		case err == nil:
+			failing = false
+		case !failing:
+			failing = true
+			// Wrapped with the id off the daemon's own record and never with what
+			// was read: a partial capture in an error string is pane content in
+			// whatever records the error (FR-042).
+			s.report(fmt.Errorf("capture the screen for the stream of session %s: %w", live.ID, err))
+		}
+		return screen, err
 	}
 }
 
@@ -329,6 +402,19 @@ func (c *streamCap) free() {
 type stream struct {
 	w  http.ResponseWriter
 	rc *http.ResponseController
+
+	// sent is the screen this stream last put on the wire, and everSent says
+	// whether it ever put one there. The pair is what suppression compares
+	// against, and it is per stream rather than per session on purpose: two tabs
+	// that attached a second apart have seen different screens, and a shared
+	// "last sent" would silence the one that is behind.
+	//
+	// everSent is not a check for an empty screen. A session that has printed
+	// nothing has an empty screen, and "" is a screen this stream must send once
+	// — collapsing the two would leave a fresh tab on a quiet session with no
+	// event at all until something happened to print.
+	sent     string
+	everSent bool
 }
 
 // openStream turns a response into an SSE stream: it lifts the write deadline,
@@ -366,29 +452,79 @@ func openStream(w http.ResponseWriter) (*stream, error) {
 }
 
 // hold keeps the stream open until the request ends or a write fails, writing
-// one heartbeat per tick.
+// exactly one thing per tick.
 //
 // Exactly one write per tick is the invariant contracts/stream.md asks for, and
-// the capture loop keeps it by choosing between an event and a comment rather
-// than by adding a second write (T024).
+// tick keeps it by choosing between an event and a comment rather than by adding
+// a second write.
+//
+// The opening screen is written before the first tick, and it is the one write
+// here that is not one. A browser attaches to this stream from a page that was
+// rendered with a capture of its own, and a stream that waited out its first
+// interval would leave that capture the newest thing the operator has for a
+// whole second — while the screen it would have sent has already been read into
+// the shared buffer by whoever else is watching. Nothing is written when that
+// first capture fails: the heartbeat is a tick's answer to a quiet screen, and
+// this is not a tick.
 //
 // A cancelled context is the ordinary ending and not a failure: it is what a
 // closed tab, a dropped connection, and a closed server all arrive as, and every
 // one of them means this response is over.
-func (s *stream) hold(ctx context.Context, every time.Duration) error {
-	tick := time.NewTicker(every)
-	defer tick.Stop()
+func (s *stream) hold(ctx context.Context, every time.Duration, read func(context.Context) (string, error)) error {
+	if screen, err := read(ctx); err == nil {
+		if err := s.send(screen); err != nil {
+			return err
+		}
+	}
+
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-tick.C:
-			if err := s.write(heartbeat); err != nil {
+		case <-ticker.C:
+			if err := s.tick(ctx, read); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+// tick writes the event when the screen changed since this stream last sent one,
+// and the heartbeat comment when it did not (research D5).
+//
+// Suppression is the point rather than an optimisation. A session idling at a
+// prompt repaints nothing, and a tick that re-sent the identical screen would
+// push it to every open tab every second for as long as the tab lives — burning
+// an exec, a write, and a wake-up on each for zero information. What the tab
+// needs from a quiet second is only that the connection is still there, which is
+// what a comment says and an event does not.
+//
+// A capture that failed is a suppressed tick and not the end of the stream. The
+// window may have gone between one tick and the next, and tmux may answer again
+// a second later; what turns a session that really ended into a closed stream is
+// the re-evaluation against the daemon's own records that T028 owns, never one
+// exec that did not answer.
+func (s *stream) tick(ctx context.Context, read func(context.Context) (string, error)) error {
+	screen, err := read(ctx)
+	if err != nil || (s.everSent && screen == s.sent) {
+		return s.write(heartbeat)
+	}
+	return s.send(screen)
+}
+
+// send puts the changed screen on the wire and remembers it, which is what makes
+// the next identical capture a heartbeat.
+//
+// It records what was sent before the write rather than after. A write that
+// fails ends the stream, so there is no next comparison for the difference to
+// matter to — and recording afterwards would mean a partially written event was
+// remembered as unsent, which on a transport that retried would send it twice.
+func (s *stream) send(screen string) error {
+	s.sent, s.everSent = screen, true
+	return s.write(screenChanged)
 }
 
 // write puts one SSE line group on the wire and flushes it.
@@ -408,4 +544,146 @@ func (s *stream) flush() error {
 		return fmt.Errorf("flush the stream: %w", err)
 	}
 	return nil
+}
+
+// panes is the daemon's set of shared screen buffers: one per session somebody
+// is watching, and none for a session nobody is.
+//
+// It exists because the cap and the cost model count different things
+// (contracts/stream.md). CRSW_MAX_STREAMS bounds *connections*, which is what a
+// browser opens; the work a watched session costs this host is one capture-pane
+// exec per *session* per interval, which is what tmux is asked for. Ten tabs on
+// one session must be one exec a second and not ten — otherwise a single
+// operator with a tiling window manager is a load generator, and the bound
+// Principle VI calls non-negotiable bounds the wrong quantity.
+//
+// A buffer is dropped when its last watcher leaves rather than kept against the
+// next one. It holds a session's screen, which is secret under
+// docs/security.md §3 and is exactly the material a long-running daemon must not
+// accumulate — and the screen it would have kept is stale by then anyway, since
+// what makes a reading worth reusing is that it was taken this second.
+type panes struct {
+	mu      sync.Mutex
+	watched map[string]*pane
+}
+
+func newPanes() *panes {
+	return &panes{watched: make(map[string]*pane)}
+}
+
+// attach hands back this session's buffer — creating it if this is the first
+// stream to watch the session — and the release that drops it when the last
+// stream leaves.
+//
+// The release is returned rather than being a second method for the reason the
+// cap's is, and it runs at most once for the same reason: a release that ran
+// twice would drop a buffer other streams are still sharing, and the tick after
+// it would exec against a buffer nobody else can see. That is not a correctness
+// failure the way a double-released slot is — it costs execs, not admissions —
+// which is precisely why it would go unnoticed.
+func (p *panes) attach(id string) (shared *pane, release func()) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	shared, ok := p.watched[id]
+	if !ok {
+		shared = &pane{}
+		p.watched[id] = shared
+	}
+	shared.watchers++
+
+	var once sync.Once
+	return shared, func() { once.Do(func() { p.detach(id) }) }
+}
+
+func (p *panes) detach(id string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	shared, ok := p.watched[id]
+	if !ok {
+		return
+	}
+	shared.watchers--
+	if shared.watchers <= 0 {
+		delete(p.watched, id)
+	}
+}
+
+// pane is one watched session's screen, shared by every stream watching it: the
+// last reading, when it was taken, and how it went.
+type pane struct {
+	// watchers is guarded by the registry's mutex rather than by mu below,
+	// because it is the registry's bookkeeping and not the screen's: attaching
+	// and dropping a buffer has to be one critical section with the count, or two
+	// streams racing the last detach both find zero and the second deletes a
+	// buffer the first has just recreated.
+	watchers int
+
+	mu     sync.Mutex
+	screen string
+	err    error
+
+	// taken is when the reading was *started*, not when it came back, and the
+	// difference is the cadence rather than pedantry: a window measured from the
+	// answer makes the period the interval plus however long tmux took, which is
+	// always longer than the interval a ticker running at the interval fires at —
+	// so every other tick would find the buffer a hair's breadth inside the window
+	// and the screen would update at half the rate it was configured to.
+	//
+	// It is the host clock rather than the Server's, deliberately. The stream's
+	// whole cadence is real elapsed time on a real socket, and a fixture that
+	// pinned this would freeze every reading as fresh forever and never exec
+	// twice, which is the opposite of what a test of the interval is for. What a
+	// test shortens instead is the interval itself, which is Server.streamTick and
+	// already a seam.
+	taken time.Time
+}
+
+// current returns the session's screen, capturing it only when the last reading
+// is older than interval.
+//
+// The capture happens with the lock held, which is what makes "one exec per
+// session per interval" true rather than likely. Two ticks arriving together
+// would otherwise both find the buffer stale and both exec; here the second
+// waits out the first, then finds the reading it was about to take.
+//
+// The reading is cached whether it succeeded or failed, so an outage costs one
+// exec per interval like a working session does — a session whose window has
+// gone is the case where an uncached failure would have every watcher exec
+// against a tmux that is already answering slowly.
+//
+// A failure that is this caller's own cancelled request is the one thing not
+// cached. It is a fact about one connection that closed rather than about the
+// session, and leaving it in the buffer would hand every other stream on this
+// session an error from a browser that is not theirs.
+func (p *pane) current(ctx context.Context, interval time.Duration, capture func(context.Context) (string, error)) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !p.taken.IsZero() && time.Since(p.taken) < interval {
+		return p.screen, p.err
+	}
+	previous := p.taken
+	p.taken = time.Now()
+
+	screen, err := capture(ctx)
+	switch {
+	case err != nil && ctx.Err() != nil:
+		// This caller's own request ended mid-capture. The window goes back where
+		// it was rather than counting, so the next watcher to ask reads the session
+		// instead of being told for a whole interval what one closed browser found.
+		p.taken = previous
+		return "", err
+	case err != nil:
+		// The last good screen is left where it is rather than cleared. Nothing
+		// reads it while err is set, and a transient failure that emptied the
+		// buffer would make the recapture after it look like a change — which on
+		// this transport is an event saying the screen went blank and came back.
+		p.err = err
+		return "", err
+	}
+
+	p.screen, p.err = screen, nil
+	return screen, nil
 }

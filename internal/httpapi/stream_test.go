@@ -14,6 +14,7 @@ package httpapi
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,6 +29,7 @@ import (
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 )
 
 const (
@@ -49,7 +51,28 @@ const (
 	// streamTestBudget bounds every exchange here, so a stream that never
 	// delivers fails the test rather than hanging until the package times out.
 	streamTestBudget = 10 * time.Second
+
+	// ticksWatched is how many line groups a suppression claim reads before it is
+	// made. It is well past the two a change can take to be noticed — the tick
+	// that finds the buffer still inside its window, and the one that reads the
+	// session — so a stream that resent a screen it had already sent has several
+	// chances to do it.
+	ticksWatched = 10
 )
+
+// The two things a tick can write, as they arrive on the wire. Derived from the
+// constants rather than spelled again here, so a change to either moves these
+// with it, and split at the first newline because readGroup reads a group's
+// first line and its terminator apart.
+var (
+	heartbeatLine = firstLine(heartbeat)
+	screenLine    = firstLine(screenChanged)
+)
+
+func firstLine(group []byte) string {
+	line, _, _ := strings.Cut(string(group), "\n")
+	return line + "\n"
+}
 
 // watching is a fleet serving on a real loopback socket, with the write deadline
 // and the tick shortened, and its address.
@@ -68,10 +91,31 @@ func watching(t *testing.T) (*fleet, string) {
 func watchingWithCap(t *testing.T, limit int) (*fleet, string) {
 	t.Helper()
 
+	f := watchingUnserved(t, limit)
+	return f, serve(t, f)
+}
+
+// watchingUnserved is the fleet the two above build, before anything is bound to
+// a socket.
+//
+// It is a seam rather than a convenience. Every field on a Server is read-only
+// once it is serving, and a stream's ticks run on a goroutine of net/http's for
+// as long as the connection lives — so a test that must change something the
+// handler reads (the failure reporter, below) has to change it before Serve, or
+// it is writing a field another goroutine is reading.
+func watchingUnserved(t *testing.T, limit int) *fleet {
+	t.Helper()
+
 	f := newFleet(t)
 	f.http.WriteTimeout = writeDeadlineUnderTest
 	f.streamTick = tickUnderTest
 	f.streams = mustStreamCap(t, limit)
+	return f
+}
+
+// serve binds a prepared fleet and hands back its address.
+func serve(t *testing.T, f *fleet) string {
+	t.Helper()
 
 	if err := f.Listen(); err != nil {
 		t.Fatalf("Listen() = %v; want a bound listener", err)
@@ -87,7 +131,7 @@ func watchingWithCap(t *testing.T, limit int) (*fleet, string) {
 		}
 	})
 
-	return f, f.Addr().String()
+	return f.Addr().String()
 }
 
 // mustStreamCap builds a cap of the given size, since a limit is only a limit if
@@ -167,26 +211,74 @@ func (f *fleet) askToWatch(t *testing.T, id, assertion, site string) *httptest.R
 	return w
 }
 
-// readHeartbeat reads one whole SSE comment off the wire — the `:` line and the
-// blank line that ends the group — failing the test if the stream stopped
-// instead.
+// readGroup reads one whole SSE line group off the wire — its first line and the
+// blank line that ends it — and hands back the first line, failing the test if
+// the stream stopped instead.
 //
-// It asserts the wire format rather than the constant behind it (a comment is a
-// line beginning `:`, and every line group ends with a blank line;
-// contracts/stream.md). Reading both lines is what keeps the count honest: a
-// caller asking for three heartbeats must not be handed one comment and its own
-// terminator. Anything else arriving is a failure of its own — this transport
-// carries heartbeats and nothing else until the framing task lands, and a screen
-// appearing before then would be a screen framed by nobody.
+// It reads a *group* rather than a line because that is what keeps a count
+// honest: a caller asking for three heartbeats must not be handed one comment
+// and its own terminator. Every group this transport writes is two lines, since
+// the two things a tick can write are a comment and a one-field event
+// (contracts/stream.md).
+func readGroup(t *testing.T, body *bufio.Reader, opened time.Time) string {
+	t.Helper()
+
+	first := readStreamLine(t, body, opened)
+	if line := readStreamLine(t, body, opened); line != "\n" {
+		t.Fatalf("%q was followed by %q; an SSE line group ends with a blank line", first, line)
+	}
+	return first
+}
+
+// readHeartbeat reads one group and insists it was the suppressed-tick comment.
+//
+// It asserts the wire format rather than the constant behind it: a comment is a
+// line beginning `:`, and a stream that wrote an event here wrote one for a
+// screen that did not change.
 func readHeartbeat(t *testing.T, body *bufio.Reader, opened time.Time) {
 	t.Helper()
 
-	if line := readStreamLine(t, body, opened); line != ":\n" {
-		t.Fatalf("the stream wrote %q; this transport carries heartbeats and nothing else", line)
+	if line := readGroup(t, body, opened); line != heartbeatLine {
+		t.Fatalf("the stream wrote %q; want the heartbeat a tick writes when the screen has not changed", line)
 	}
-	if line := readStreamLine(t, body, opened); line != "\n" {
-		t.Fatalf("the heartbeat was followed by %q; an SSE line group ends with a blank line", line)
+}
+
+// readScreen reads one group and insists it was the changed-screen event.
+//
+// The payload it expects is the placeholder rather than a screen, and that is
+// the assertion rather than a concession: T024 decides *when* an event is
+// written and T025 decides what it carries, so a test that accepted any `data:`
+// line would go on passing through the change that puts an unframed screen on a
+// line-oriented wire.
+func readScreen(t *testing.T, body *bufio.Reader, opened time.Time) {
+	t.Helper()
+
+	if line := readGroup(t, body, opened); line != screenLine {
+		t.Fatalf("the stream wrote %q; want %q", line, screenLine)
 	}
+}
+
+// awaitScreen reads groups until the changed-screen event arrives, and reports
+// how many heartbeats preceded it.
+//
+// A change is not expected on the very next group: the tick after a screen
+// changed may find the shared buffer still inside its interval, in which case
+// the reading that notices is one tick later. What is bounded is how long that
+// may take, which is what ticksWatched is.
+func awaitScreen(t *testing.T, body *bufio.Reader, opened time.Time) int {
+	t.Helper()
+
+	for quiet := 0; quiet < ticksWatched; quiet++ {
+		switch line := readGroup(t, body, opened); line {
+		case screenLine:
+			return quiet
+		case heartbeatLine:
+		default:
+			t.Fatalf("the stream wrote %q; want either the heartbeat or the changed-screen event", line)
+		}
+	}
+	t.Fatalf("a screen that changed went unsent for %d ticks", ticksWatched)
+	return 0
 }
 
 func readStreamLine(t *testing.T, body *bufio.Reader, opened time.Time) string {
@@ -241,6 +333,7 @@ func TestTheStreamOutlivesTheWriteDeadlineTheOtherRoutesKeep(t *testing.T) {
 	// the instant net/http would have closed this connection. Every read past
 	// that instant is one the unlifted deadline would have turned into an error.
 	body := bufio.NewReader(resp.Body)
+	readScreen(t, body, opened) // the opening screen, which precedes the first tick
 	deadline := opened.Add(writeDeadlineUnderTest)
 	for late := 0; late < heartbeatsPastTheDeadline; {
 		readHeartbeat(t, body, opened)
@@ -555,7 +648,9 @@ func TestAStreamOpenedFromTheDashboardItselfIsServed(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("a same-origin open answered %d; want %d", resp.StatusCode, http.StatusOK)
 	}
-	readHeartbeat(t, bufio.NewReader(resp.Body), opened)
+	body := bufio.NewReader(resp.Body)
+	readScreen(t, body, opened)
+	readHeartbeat(t, body, opened)
 }
 
 // TestTheStreamCapIsAskedLastOfAll is step four, and it is a test of the order
@@ -747,7 +842,7 @@ func TestAClosedStreamGivesItsSlotBack(t *testing.T) {
 	if first.StatusCode != http.StatusOK {
 		t.Fatalf("the first open answered %d; want %d", first.StatusCode, http.StatusOK)
 	}
-	readHeartbeat(t, bufio.NewReader(first.Body), opened)
+	readScreen(t, bufio.NewReader(first.Body), opened)
 
 	// The second tab, on a daemon with room for one.
 	second := f.watch(t, addr, live.ID) //nolint:bodyclose // watchFrom closes it in t.Cleanup, which the linter cannot see through.
@@ -765,7 +860,7 @@ func TestAClosedStreamGivesItsSlotBack(t *testing.T) {
 	for deadline := time.Now().Add(streamTestBudget); ; {
 		third := f.watch(t, addr, live.ID) //nolint:bodyclose // watchFrom closes it in t.Cleanup, which the linter cannot see through.
 		if third.StatusCode == http.StatusOK {
-			readHeartbeat(t, bufio.NewReader(third.Body), time.Now())
+			readScreen(t, bufio.NewReader(third.Body), time.Now())
 			return
 		}
 		if time.Now().After(deadline) {
@@ -773,5 +868,368 @@ func TestAClosedStreamGivesItsSlotBack(t *testing.T) {
 				streamTestBudget, third.StatusCode)
 		}
 		time.Sleep(tickUnderTest)
+	}
+}
+
+// --- T024: the capture loop, and what it does not send ------------------------
+//
+// One reading per watched session per interval, an event only when the screen
+// differs from the one this stream last sent, and the heartbeat on every other
+// tick (research D5). What an event *carries* is T025's and deliberately absent:
+// readScreen insists on the placeholder, so the change that puts an unframed
+// screen on a line-oriented wire fails here rather than passing quietly.
+
+// TestAnUnchangedScreenIsNeverSentTwice is the suppression rule (research D5),
+// and it is the reason the loop is not simply "capture and write".
+//
+// A Claude session idling at a prompt repaints nothing for minutes at a time. A
+// tick that re-sent the identical screen would push it to every open tab every
+// second for as long as the tab lives — an exec, a write and a wake-up each, for
+// zero information, on a connection whose whole purpose is to be quiet until
+// something happens.
+func TestAnUnchangedScreenIsNeverSentTwice(t *testing.T) {
+	t.Parallel()
+
+	f, addr := watching(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), "$ go test ./...\nok\tinternal/access\t0.31s\n")
+
+	opened := time.Now()
+	resp := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /sessions/%s/stream = %d; want %d", live.ID, resp.StatusCode, http.StatusOK)
+	}
+
+	body := bufio.NewReader(resp.Body)
+	readScreen(t, body, opened)
+
+	for tick := 1; tick <= ticksWatched; tick++ {
+		if line := readGroup(t, body, opened); line != heartbeatLine {
+			t.Fatalf("tick %d of a session that printed nothing wrote %q; want the heartbeat — an unchanged screen is not re-sent",
+				tick, line)
+		}
+	}
+}
+
+// TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval is the other half of the
+// cadence rule, and the one a suppression test cannot state.
+//
+// A browser attaches to this stream from a page rendered with a capture of its
+// own. A stream that waited out its first interval would leave that capture the
+// newest thing the operator has for a whole second, on a page whose entire
+// purpose is to be live — while the screen it would have sent is already in the
+// shared buffer, put there by the open itself.
+func TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval(t *testing.T) {
+	t.Parallel()
+
+	f, addr := watching(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), "a screen the page already rendered")
+
+	opened := time.Now()
+	resp := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /sessions/%s/stream = %d; want %d", live.ID, resp.StatusCode, http.StatusOK)
+	}
+
+	readScreen(t, bufio.NewReader(resp.Body), opened)
+	if waited := time.Since(opened); waited >= tickUnderTest {
+		t.Errorf("the opening screen arrived %v after the open, which is past the %v interval; it must not wait for a tick",
+			waited.Round(time.Millisecond), tickUnderTest)
+	}
+}
+
+// TestAChangedScreenIsSentOnceAndThenSuppressed is the event half: exactly one
+// event per change, and nothing after it until the next one.
+//
+// Both halves are the claim. A loop that sent on every tick would pass a test
+// that only asked whether the change arrived, and a loop that never sent would
+// pass one that only counted heartbeats.
+func TestAChangedScreenIsSentOnceAndThenSuppressed(t *testing.T) {
+	t.Parallel()
+
+	f, addr := watching(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), "$ ")
+
+	opened := time.Now()
+	resp := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /sessions/%s/stream = %d; want %d", live.ID, resp.StatusCode, http.StatusOK)
+	}
+
+	body := bufio.NewReader(resp.Body)
+	readScreen(t, body, opened)
+
+	f.fixture.tmux.SetPane(live.TmuxName(), "$ go test ./...\n")
+
+	// At most one quiet tick before it: the only thing that can suppress the
+	// reading is the shared buffer still being inside its interval, and one
+	// stream's ticks are an interval apart, so it cannot happen twice running.
+	// More than that is a loop reading the session less often than it ticks.
+	if quiet := awaitScreen(t, body, opened); quiet > 1 {
+		t.Errorf("a screen that changed went unsent for %d ticks before it arrived; want at most 1", quiet)
+	}
+
+	for tick := 1; tick <= ticksWatched; tick++ {
+		if line := readGroup(t, body, opened); line != heartbeatLine {
+			t.Fatalf("the screen changed once and was sent again on tick %d as %q; want exactly one event per change",
+				tick, line)
+		}
+	}
+}
+
+// TestTwoTabsOnOneSessionCostOneReadingBetweenThem is the cost model
+// contracts/stream.md splits from the cap: CRSW_MAX_STREAMS counts connections,
+// and the work a watched session costs this host counts sessions.
+//
+// Ten tabs on one session must be one capture-pane a second and not ten, or a
+// single operator with a tiling window manager is a load generator and the bound
+// Principle VI calls non-negotiable bounds the wrong quantity.
+//
+// The bound asserted is one the buffer guarantees by construction rather than
+// one this host happened to produce: readings are separated by at least the
+// interval, so however many streams are attached, a stretch of D can hold no
+// more than D/interval of them. Without the sharing the same stretch costs twice
+// that, which is what makes the assertion discriminate.
+func TestTwoTabsOnOneSessionCostOneReadingBetweenThem(t *testing.T) {
+	t.Parallel()
+
+	f, addr := watching(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), "$ ")
+
+	opened := time.Now()
+	first := f.watch(t, addr, live.ID)  //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+	second := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+	for name, resp := range map[string]*http.Response{"the first tab": first, "the second tab": second} {
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s answered %d; want %d", name, resp.StatusCode, http.StatusOK)
+		}
+	}
+
+	firstBody, secondBody := bufio.NewReader(first.Body), bufio.NewReader(second.Body)
+	readScreen(t, firstBody, opened)
+	readScreen(t, secondBody, opened)
+
+	// Both tabs see the change, which is the half saying the sharing did not
+	// silence one of them.
+	f.fixture.tmux.SetPane(live.TmuxName(), "$ go test ./...\n")
+	awaitScreen(t, firstBody, opened)
+	awaitScreen(t, secondBody, opened)
+
+	// Twice ticksWatched, so that the count the sharing produces and the count two
+	// independent buffers would produce are far enough apart that neither the
+	// scheduler nor a loaded host can put one where the other belongs.
+	for tick := 1; tick <= 2*ticksWatched; tick++ {
+		readGroup(t, firstBody, opened)
+		readGroup(t, secondBody, opened)
+	}
+	watched := time.Since(opened)
+
+	captures := 0
+	for _, c := range f.fixture.tmux.Calls() {
+		if c.Op == tmuxctl.OpCapturePane {
+			captures++
+		}
+	}
+	// Three of slack: the reading the open made before any interval had begun, the
+	// one in flight while the count is taken, and the truncation in the division.
+	if want := int(watched/tickUnderTest) + 3; captures > want {
+		t.Errorf("two tabs watching one session for %v cost %d captures; want at most %d — the cap counts connections, the exec counts sessions",
+			watched.Round(time.Millisecond), captures, want)
+	}
+}
+
+// TestAScreenThatCannotBeReadIsSuppressedAndReportedOnce is the failing capture:
+// the window went away, or tmux stopped answering.
+//
+// It is a suppressed tick and not the end of the stream, because an exec that did
+// not answer is not a session that ended — that judgement is made against the
+// daemon's own records, and it is T028's. What it must never be is an event: a
+// stream that sent an empty screen on a failed capture would be telling the
+// operator their session had wiped itself.
+//
+// Reported once rather than once per tick. The same failure repeats every second
+// for as long as the tab stays open, and a journal filling at that rate buries
+// the first line, which is the only one that says anything.
+func TestAScreenThatCannotBeReadIsSuppressedAndReportedOnce(t *testing.T) {
+	t.Parallel()
+
+	f := watchingUnserved(t, config.DefaultMaxStreams)
+	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
+
+	// The fixture's own recorder appends without a lock, which is safe for a
+	// handler running inside ServeHTTP on the test's goroutine and is not safe for
+	// a stream's ticks. Installed before Serve, for the reason watchingUnserved
+	// exists.
+	var (
+		mu       sync.Mutex
+		failures []error
+	)
+	f.report = func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		failures = append(failures, err)
+	}
+	addr := serve(t, f)
+
+	broken := errors.New("tmux is not answering")
+	f.fixture.tmux.FailOp(tmuxctl.OpCapturePane, broken)
+
+	opened := time.Now()
+	resp := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /sessions/%s/stream = %d; want %d — an unreadable screen is not a refusal", live.ID, resp.StatusCode, http.StatusOK)
+	}
+
+	body := bufio.NewReader(resp.Body)
+	for tick := 1; tick <= ticksWatched; tick++ {
+		if line := readGroup(t, body, opened); line != heartbeatLine {
+			t.Fatalf("a stream that could not read the screen wrote %q on tick %d; a capture that failed is a suppressed tick",
+				line, tick)
+		}
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close the stream: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(failures) != 1 {
+		t.Fatalf("%d ticks of an unreadable screen were reported %d times; want exactly 1 — an operator has to be able to find the first",
+			ticksWatched, len(failures))
+	}
+	if !errors.Is(failures[0], broken) {
+		t.Errorf("reported %v; want what tmux said, wrapped", failures[0])
+	}
+	if got := failures[0].Error(); !strings.Contains(got, live.ID) {
+		t.Errorf("reported %q; it names no session, and an operator reading it has nothing to act on", got)
+	}
+}
+
+// TestOneReadingFillsEveryWatcherWithinTheInterval is the buffer's own claim,
+// stated without a socket or a stopwatch: the interval decides how often the
+// session is read, and the number of watchers decides nothing.
+func TestOneReadingFillsEveryWatcherWithinTheInterval(t *testing.T) {
+	t.Parallel()
+
+	var (
+		shared   pane
+		captures int
+	)
+	read := func(context.Context) (string, error) {
+		captures++
+		return fmt.Sprintf("reading %d", captures), nil
+	}
+
+	// An interval nothing in a test can outlast, so every ask inside it is the
+	// same ask.
+	for watcher := 1; watcher <= ticksWatched; watcher++ {
+		screen, err := shared.current(context.Background(), time.Hour, read)
+		if err != nil {
+			t.Fatalf("watcher %d: current() = _, %v; want the shared reading", watcher, err)
+		}
+		if screen != "reading 1" {
+			t.Errorf("watcher %d read %q; want the reading the first watcher took", watcher, screen)
+		}
+	}
+	if captures != 1 {
+		t.Errorf("%d watchers inside one interval cost %d captures; want 1", ticksWatched, captures)
+	}
+
+	// And an interval that has already elapsed reads the session again, or the
+	// buffer above is not a cache but a freeze.
+	if _, err := shared.current(context.Background(), 0, read); err != nil {
+		t.Fatalf("current() past the interval = _, %v; want a fresh reading", err)
+	}
+	if captures != 2 {
+		t.Errorf("an ask past the interval cost %d captures in total; want 2", captures)
+	}
+}
+
+// TestWatchersRacingAStaleBufferReadTheSessionOnce is the same claim under
+// contention, which the sequential one above cannot make.
+//
+// The staleness check and the reading have to be one critical section. Split
+// into "is it stale?" and then "read it", every watcher that arrived while the
+// first was still waiting on tmux would find the buffer stale and exec too —
+// which is the N-tabs-N-execs failure the buffer exists to prevent, appearing
+// only when the host is slow enough for it to matter.
+//
+// Rounds rather than one shot, for the reason the stream cap's race test has
+// them: the window is a few instructions wide, and a suite that catches this
+// only under -race is a suite that does not catch it.
+func TestWatchersRacingAStaleBufferReadTheSessionOnce(t *testing.T) {
+	t.Parallel()
+
+	const (
+		watchers = 64
+		rounds   = 200
+	)
+
+	for round := range rounds {
+		var (
+			shared   pane
+			captures atomic.Int64
+			start    sync.WaitGroup
+			done     sync.WaitGroup
+		)
+		read := func(context.Context) (string, error) {
+			captures.Add(1)
+			return "one screen", nil
+		}
+		start.Add(1)
+		for range watchers {
+			done.Add(1)
+			go func() {
+				defer done.Done()
+				start.Wait()
+				if _, err := shared.current(context.Background(), time.Hour, read); err != nil {
+					t.Errorf("current() = _, %v; want the shared reading", err)
+				}
+			}()
+		}
+		start.Done()
+		done.Wait()
+
+		if got := captures.Load(); got != 1 {
+			t.Fatalf("round %d: %d watchers racing an empty buffer read the session %d times; want exactly 1",
+				round, watchers, got)
+		}
+	}
+}
+
+// TestASharedScreenIsDroppedWhenItsLastWatcherLeaves is the buffer's lifetime.
+//
+// A screen is whatever the session printed, which is anything on the host, and
+// it is secret under docs/security.md §3. A registry that kept one per session
+// anybody had ever watched would be a daemon accumulating exactly that material
+// for as long as it runs — and the reading it kept would be stale anyway, since
+// what makes one worth sharing is that it was taken this second.
+func TestASharedScreenIsDroppedWhenItsLastWatcherLeaves(t *testing.T) {
+	t.Parallel()
+
+	const id = "0123456789abcdef0123456789abcdef"
+	p := newPanes()
+
+	first, leaveFirst := p.attach(id)
+	second, leaveSecond := p.attach(id)
+	if first != second {
+		t.Fatal("two streams watching one session were handed two buffers; then each of them reads the session on its own")
+	}
+
+	// Twice, because a release that ran twice would drop a buffer another stream
+	// is still sharing — which costs execs rather than correctness, and so would
+	// go unnoticed.
+	leaveFirst()
+	leaveFirst()
+	if _, watched := p.watched[id]; !watched {
+		t.Fatal("the buffer was dropped while a stream was still watching")
+	}
+
+	leaveSecond()
+	if _, watched := p.watched[id]; watched {
+		t.Error("the buffer outlived its last watcher; a session's screen may not accumulate in a daemon that runs for weeks")
 	}
 }
