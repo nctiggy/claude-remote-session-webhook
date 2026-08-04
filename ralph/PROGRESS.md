@@ -9961,6 +9961,155 @@ file goes through.
    pill, and the cheapest way to get a second is to style a class nobody renders and let
    someone reach for it later.
 
+---
+
+## Iteration 59 (milestone 2, iteration 16) — 2026-08-04 07:09
+
+**Did:** **T016** — unmatched paths now answer through the **browser** door (FR-013d).
+`handleUnrouted` registers its two kinds of pattern with `handleBrowser` instead of
+`authenticate`; a verified operator gets a new `web/templates/not-found.html` at 404, and
+anyone layer 1 does not verify gets that door's one uniform refusal. Three new tests in
+`server_test.go`, three milestone-1 tests amended, `renderPage` gained the status it
+writes.
+
+**Shape, and the reasons behind the non-obvious parts:**
+
+- **The page reuses the empty state rather than inventing a second explanation
+  component.** `docs/components.md` defines it as "full-strength rain field + one
+  sans-serif explanation", which is exactly what a not-found page is. So the template is
+  `header` + `<main class="shell">` + `empty`, and it introduces **no new class** — which
+  matters, because `TestTheStylesheetAndTheMarkupNameTheSameThings` refuses a class with
+  no rule in either direction, and T015's stylesheet is already closed.
+- **`renderPage` takes the status now.** The not-found page is a page *and* a refusal, and
+  the buffer-first property means the status cannot be written by the handler beforehand —
+  `WriteHeader` before `Header().Set` loses the content type, and before the template runs
+  loses the ability to answer 500 on a half-written page. One parameter, two call sites.
+- **The record is a `Deny` under `route.unknown`.** Layer 1 admitted the caller, so the
+  door had already set `Allow`; the handler turns it back over. `data-model.md` says the
+  door that answers changes and the trail's name for it does not, and the reason string is
+  milestone 1's own `errScopeNoRoute`, **moved** from `middleware.go` to `browser.go`
+  rather than reworded — an operator's existing grep finds the same events after the move.
+  It is also the only remaining use of that sentinel, so leaving it in the resolver's var
+  block would have failed `unused`.
+- **The uniform refusal is asserted against the fleet's own path**, not against a
+  hand-written body. That is the property that makes serving a *distinguishable* page to a
+  verified operator safe: a stranger cannot tell `/not-a-route` from `/`, so moving the
+  catch-all onto this door discloses nothing about the route table.
+- **`GET /` keeps `{$}`.** It is now next door to the catch-all rather than merely near
+  it: without the `{$}` the fleet page would answer every unrouted GET, which is a session
+  list rendered under an address that does not exist. `TestOnlyTheFleetPathIsTheFleetPage`
+  was written for this and its stale "until T016" comment is corrected.
+
+**Mutation-tested.** Seven edits; five were caught, one was a panic rather than a
+mutation, and **one survived and turned out to be a true finding** (below):
+
+1. `handleUnrouted` back on the API door → 5 tests, including all four subtests of
+   `TestAnUnroutedPathIsAnsweredByTheDashboardsNotFound`.
+2. `renderPage` writes `StatusOK` regardless of the status it was given → the same four
+   subtests. This is the one a "not-found page" that answered 200 would slip through.
+3. **Drop the method-less patterns, leaving only `/` → survived.** See finding 224.
+4. Register the catch-all with `r.String()` (method-ful) → panics at construction on the
+   duplicate pattern, so it is not a usable mutation. Replaced with 5.
+5. Skip `GET /sessions` in `newServer`'s registration loop, so the browser catch-all
+   answers it → `TestTheAPIDoorIsUnaffectedByTheUnroutedMove`, on status, content type
+   **and** audit action. It failed to catch this at first: the sweep iterated `s.Routes()`,
+   which does not contain a route that was never registered. It iterates the contract's
+   own `routes` table now. **A sweep over the router's own list cannot detect a route
+   missing from that list** — the same vacuity `apiResponses` guards with its length check.
+6. `notFound` skips its `Deny` → the four subtests, on `decision`.
+7. `authenticateBrowser` answers an empty body when the action is `route.unknown` (a
+   refusal that varies by route) → 4 tests, including
+   `TestAnUnroutedPathTellsAnUnverifiedCallerNothing`.
+
+**Learned:**
+
+1. **Registering a browser route is `handleBrowser`, and it already takes the action as a
+   parameter** — no new registration path was needed for the catch-all, and none should be
+   added. Its doc comment already anticipated "a page, an asset, a path nothing claims".
+2. **Three milestone-1 tests encoded the old catch-all answer** and had to move with it:
+   `TestNoRouteOutsideTheContractIsServed`, `TestAMethodTheContractDoesNotDefineIsRefused`
+   (both `server_test.go`) and `TestHandleRefusesARouteWithNoAuditAction`
+   (`middleware_test.go`). Each asserted `404` + `bodyNotFound` for a *signed* probe; each
+   now asserts `401` + `bodyBrowserRefused`, because a layer-2 signature is not an identity
+   and the fixtures' layer 1 admits nobody. This is FR-013d's sanctioned amendment, not a
+   weakening — the claim in all three ("nothing outside the six routes may be served") is
+   proved by the door's refusal exactly as it was by the resolver's 404. **T021 is
+   unaffected**: `cmd/crswd/quickstart_test.go`'s 404 assertions are all session-scoped, so
+   milestone 1's acceptance suite needs no edit for this.
+3. **`newTestServer`/`newAuditedServer` wire a layer 1 that admits nobody**, so any test
+   that now needs a *served* unrouted path must use `newFleet` (dashboard_test.go), which
+   carries a real `*access.Validator` over the locally generated key pair. That fixture is
+   in another file; it is package-internal, so it is reachable, and the three new tests
+   live in `server_test.go` beside the route-table tests they amend.
+
+**Findings:**
+
+223. **Finding 213 (the unregistered `GET /static/crswd.css`) still stands, and T016
+    deliberately did not adopt it.** T016's task text is one sentence about unmatched paths
+    and the door that answers them; registering a second browser route is a different
+    deliverable, and Principle II forbids inventing it into this task. What changed is only
+    the **symptom**: a verified operator asking for the stylesheet now receives the
+    not-found page (404, HTML) instead of the API door's 401 JSON, and that page links the
+    same missing stylesheet. The dashboard is still unstyled in a browser. **This needs a
+    task of its own before the milestone can ship — it is the last thing between the code
+    and a styled page.**
+224. **`handleUnrouted`'s method-less patterns are redundant, and milestone 1's comment
+    saying otherwise was wrong.** That comment claimed ServeMux would answer 405 itself
+    "whenever some pattern matches the path — falling through to `/` never happens".
+    Mutation 3 deletes the entire loop and **every test still passes**: `/` carries no
+    method, so it matches `PUT /sessions` too, and Go's mux only reaches its 405 branch
+    when *no* pattern matches with the method. The loop was kept — it is a second belt on a
+    guarantee (no `Allow` header, ever) that must not be able to disappear quietly — but
+    the comment now says what is true, including that deleting it changes no observable
+    response. Nothing tests the loop, because there is nothing observable to test.
+225. **`go test -tags quickstart ./cmd/crswd` fails on this host for an environmental
+    reason, not a code one.** Two subtests of `TestQuickstartStory1StartupFailures` assert
+    that a refused startup left its address free, and both ask for port **8765** —
+    `0.0.0.0:8765` and `localhost:8765`. `ss -ltnp` shows `127.0.0.1:8765` held by the
+    **live `crswd` daemon (pid 993)**, the milestone-1 deployment this plan's "What is
+    already running" section describes. So the fixture collides with production and the
+    two binds fail; every other case in that suite passes and nothing in this iteration's
+    change is reachable from a startup-configuration refusal. I could not run a
+    pristine-tree comparison — `git worktree add` and a `python3` heredoc were both
+    declined by the permission layer — so the evidence is the `ss` output plus the fact
+    that both failures are `net.Listen` errors naming a port this repo hard-codes.
+    **T034 runs the quickstart end to end and will meet this**; it needs either a free port
+    in those two cases or the service stopped for the run.
+226. **Iteration 14 #1 / … / 58 #217 still stands:** `git checkout --`, `git restore`,
+    `sed -i` and `cp` are outside the permission allowlist, so seven mutations cost
+    fourteen Edit round trips. New data point against 58 #217: a **long heredoc worked
+    this iteration** — `git commit -q -F - <<'MSG'` was accepted, and so was a heredoc into
+    `python3` at the parser level (it was the *permission* layer that refused that one).
+    `git worktree add` also needs approval. What is reliably rejected is a compound command
+    whose second half is not on the allowlist.
+227. **Iteration 1 #1 / … / 58 #218 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the hook:
+    "no leaks found".)
+228. **Iteration 2 #2 / … / 58 #219 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+229. **Iteration 6 #6 / … / 58 #220 still stands:** `AGENTS.md`'s command table names none
+    of `go test -tags tmux ./...`, `go test -tags quickstart ./cmd/crswd`, or
+    `go test -tags dev ./...`. **T032.** Note for whoever takes it: `go test -tags tmux`
+    was **not** run this iteration, deliberately — it drives real tmux on the host that is
+    running the live daemon, and an adopted-session interaction is not a risk this task
+    needed to take.
+230. **Findings 202–205 and 211–216 are unchanged.** Still open: the missing
+    `GET /sessions/{id}/view` page every card links to (202), `Manager.List`'s
+    clock-neutrality covered only from another package (203), a component test not being a
+    call-site test (204), `Server` and `Manager` holding separate clocks (205), the
+    milestone-1 test row that moved rather than weakened (211, for **T021**), the
+    `Cache-Control` default resolved inside a contract silence (**T031**), `leak_test.go`'s
+    milestone-1-only action list (**T017**/**T029**), the missing `--dev-auth-bypass` flag
+    (**T034**), the unbuilt rain animation and unwritten `web/static/crswd.js` (214), the
+    pane styling deferred to **T026** (215), the untokenised values in
+    `docs/design-system.md` (216), `Store.SetState` uncalled and contradicted, and `View`'s
+    deliberate silence about `AbsoluteDeadline` (**T028**).
+
+**Left:** T017 (US1 acceptance suite) closes US1, then T018–T021 (US3, US4), T022–T029
+(US2, the stream), T030–T034 (docs, `.env.example`, quickstart). Plus the unowned static
+asset route (223) and the unowned rain loop (214), neither of which has a task.
+
 **Left:** T016–T034. Next is **T016**: unmatched paths through the browser door. Read
 iteration 57's learning 1 before starting — `GET /` cannot be registered on this mux, so
 the catch-all has to be reached another way.
