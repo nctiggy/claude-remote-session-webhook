@@ -109,7 +109,7 @@ rather than silently absent from the list.
 
 **Independent Test**: Present every shape of bad assertion directly to the daemon's listener and get the same refusal for each, with the reason server-side only.
 
-- [ ] T018 [US3] Add the full negative sweep in `internal/access/verify_test.go` and `internal/httpapi/browser_test.go`, covering every row of [contracts/access-jwt.md](./contracts/access-jwt.md)'s test table: absent, malformed, not three segments, expired, future-dated, wrong signature, `alg: none`, `alg: HS256`, unknown `kid`, wrong `aud`, wrong `iss`, disallowed email, and **a valid service-token assertion presented to the dashboard**. Assert all responses are byte-identical (SC-001) and that the audit trail records the distinct reason for each while the caller learns nothing.
+- [x] T018 [US3] Add the full negative sweep in `internal/access/verify_test.go` and `internal/httpapi/browser_test.go`, covering every row of [contracts/access-jwt.md](./contracts/access-jwt.md)'s test table: absent, malformed, not three segments, expired, future-dated, wrong signature, `alg: none`, `alg: HS256`, unknown `kid`, wrong `aud`, wrong `iss`, disallowed email, and **a valid service-token assertion presented to the dashboard**. Assert all responses are byte-identical (SC-001) and that the audit trail records the distinct reason for each while the caller learns nothing.
 - [ ] T019 [US3] Assert the fail-closed path end to end in `internal/httpapi/browser_test.go`: with the key set unobtainable, every browser request is refused rather than admitted (FR-009, SC-013), and the daemon does not crash or hang waiting on it.
 
 **Checkpoint**: layer 1 is proven, not asserted.

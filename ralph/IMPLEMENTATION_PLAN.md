@@ -100,7 +100,7 @@ wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and stop.
 
 ### US3 — A browser that should not be here gets nothing (P3)
 
-- [ ] T018 The full negative sweep from `contracts/access-jwt.md`: absent, malformed, expired, future-dated, wrong signature, `alg: none`, `alg: HS256`, unknown kid, wrong aud, wrong iss, disallowed email, and **a valid service-token assertion presented to the dashboard**. All byte-identical; the reason server-side only
+- [x] T018 The full negative sweep from `contracts/access-jwt.md`: absent, malformed, expired, future-dated, wrong signature, `alg: none`, `alg: HS256`, unknown kid, wrong aud, wrong iss, disallowed email, and **a valid service-token assertion presented to the dashboard**. All byte-identical; the reason server-side only
 - [ ] T019 Fail-closed end to end: with the key set unobtainable every browser request is refused rather than admitted, and the daemon neither crashes nor hangs
 
 ### US4 — My existing API client keeps working (P4)

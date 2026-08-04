@@ -10333,3 +10333,143 @@ dashboard) and **T019** (fail-closed with the key set unobtainable), then T020�
 T022–T029 (US2, the stream), T030–T034 (docs, `.env.example`, quickstart). Plus the three
 unowned findings above (202, 214, 223) and the leak suite's browser door (231), none of
 which has a task.
+
+---
+
+## Iteration 61 (milestone 2, iteration 18) — 2026-08-04 07:39
+
+**Did:** **T018** — `contracts/access-jwt.md`'s test table swept in full, at both layers.
+The table was already covered *in pieces*: steps 1–5 in `verify_test.go` against
+`signedClaims`, 6–10 in `claims_test.go` against `verifiedClaims`, 11 in
+`allowlist_test.go`, and a 20-row subset at the browser door. Nothing made the
+whole-table claim, and **two rows had been passing for reasons unrelated to their
+names** (see findings 240 and 241). US3's first half is now real.
+
+**What was added:**
+
+- `internal/access/verify_test.go`: `TestVerifyRefusesEveryRowOfTheContract`, 24 rows
+  through **`Verify`** — the one exported way in and the only one the door calls. Two
+  claims per row, not one: it is refused **at the step the contract names**
+  (`errors.Is` against the sentinel, so a check that moved ahead of another or was
+  masked by a later one shows up, where "refused" alone would not), and the reason
+  **carries no byte the caller wrote**. That second one had never been tested anywhere:
+  `browser.go` records `err.Error()` straight into the journal *because* this package
+  promises it, and the promise was a comment in the file relying on it.
+- `internal/httpapi/browser_test.go`: `browserFailures()` completed to every contract
+  row — `alg: RS384`, no `kid` at all, a claim set that is not JSON, an `iat` in the
+  future, a key set that fetches empty, and the three malformed-segment shapes. 30 rows.
+- **The service-token assertion presented to a dashboard *route***, which is what T018
+  and FR-013c actually ask for and what the door in isolation cannot claim:
+  `TestTheDashboardRefusesAValidServiceTokenAssertion` drives `GET /` through the real
+  router with a real session planted behind it, and requires the answer to be the same
+  bytes — headers included — as a request carrying no credential at all.
+- `TestBrowserDoorKeepsTheReasonServerSide` widened from two rows to the table. Each row
+  now names the `step` that must refuse it; rows sharing a step must record the same
+  reason and rows at different steps must never record the same one. Uniform response,
+  distinguishable journal — 21 distinct causes, 21 distinct reasons.
+- `TestTheSweepPresentsAssertionsThatWouldOtherwiseBeAdmitted`: the table's non-vacuity.
+  Every row spoils one fixture; if that fixture stopped being admissible, all 30 rows
+  would still be refused and every claim about them would be about nothing.
+
+**Mutation-tested.** Seven mutations, all caught:
+
+1. **The wrong spelling of step 10** — `errNoEmail` deleted and step 11 rewritten as
+   "refuse an email that is *present* and disallowed" → caught by the access sweep, the
+   door table, the reason-distinctness test, **and the new dashboard-route test**. This
+   is the defect FR-013c exists for, and it is now held at the route.
+2. `iat`-in-the-future check disabled → the access sweep and three door tests. **Before
+   this task the door table had no `iat` row at all**, so the door half was new coverage.
+3. `RS384` accepted alongside `RS256` → the access sweep and three door tests.
+4. Every refusal flattened to one recorded reason → the distinctness test alone.
+5. The assertion appended to the recorded reason → the trail test, the distinctness
+   test, and the dashboard-route test.
+6. The refused address wrapped into `errEmailNotAllowed` → the access sweep's
+   caller-authored check and `TestAllowlistRefusalNamesNoAddress`.
+7. An empty key set treated as a successful fetch → **the distinctness test**, because
+   the empty set then refuses as `errKeyIDUnknown` and collides with the ordinary
+   unknown-kid row. Fail-closed and "this kid is not in a good set" must not read alike.
+
+**Learned:**
+
+1. **A fixture that mints against one key server and presents to another is refused for
+   its issuer, silently.** `keyServer.claims()` writes `iss: k.origin`, so the two-server
+   arrangement made every claim-level row a test of step 7. This is the failure mode a
+   uniform refusal *creates*: nothing about the response tells a test which check ran, so
+   the only way to catch it is to require the trail's reasons to be distinct — which is
+   exactly what caught it. Worth remembering for T023 and T029, where the stream's open
+   sequence has the same shape.
+2. **A malformed-segment fixture must not contain a `.`.** `"not base64url.\n"` is two
+   segments, so the row named for the decoder was refused by the segment count. Both the
+   old payload row and my two new ones had it.
+3. **`present` on the row, not in the loop.** Folding "build the key server, build the
+   door, mint, request" into one method is what made the one-server rule enforceable in
+   a single place rather than repeated correctly in four drivers and wrongly in none.
+4. The access sweep pins *which* sentinel; the door sweep pins *distinctness*. That split
+   is deliberate — `browser_test.go` already documents why the door may not name
+   `internal/access`'s sentinels (a caller that could name the check is one step from
+   putting it in a response), and the distinctness test catches drift between the two
+   tables anyway: a door row that started refusing at the wrong step collides with the
+   row that owns that step.
+
+**Findings:**
+
+240. **Every claim-level row of the door's refusal table was refused at step 7, not at
+    its own step** — fixed here, recorded because it is the second time this milestone a
+    test has passed for the wrong reason (iteration 60's mutation 4 was the first). The
+    cause: `browserFailures`'s driver did `keys := newKeyServer(t); d := c.door(t)`,
+    where `c.door` built a *second* key server. Same published key, so the signature
+    verified; different origin, so `iss` never matched. Rows for expired, `nbf`,
+    audience, service-token and allowlist have never exercised their own checks since
+    T009. **Nothing in the suite could have caught this except a claim about the trail**,
+    which is the argument for writing that claim at every door.
+241. **`"not base64url.\n"` as a forged segment never reaches the base64url decoder.**
+    Pre-existing in the payload row since T009. Same class as 240: refused, so green.
+242. **The empty-key-set row is T018's, but T019 still owns the end-to-end claim.** The
+    contract's test table lists "key set fetched but empty" as its own row, so it joined
+    the sweep; **T019** is still "every browser request refused, and the daemon neither
+    crashes nor hangs" across the routes, which nothing here asserts.
+243. **`internal/access`'s two test-key fixtures are unrelated to `internal/httpapi`'s.**
+    `access` has `signingKeys` (two keys, `signingKey(t, n)`); `httpapi` has `testKeys`
+    (published + unpublished). Both are `sync.OnceValue`d 2048-bit pairs, and a future
+    task tempted to share them cannot — the httpapi one is package-internal by design, in
+    the same way finding 231's leak suite cannot reach it. Recorded because the sweep now
+    exists in both packages and reads like it should be one thing.
+244. **Iteration 14 #1 / … / 60 #234 still stands:** `git checkout --`, `git restore`,
+    `sed -i` and `cp` are outside the permission allowlist, so seven mutations cost
+    fourteen Edit round trips. New data point: a **`python3` heredoc doing 26 in-place
+    replacements was refused by the permission layer** (the parser accepted it; 59 #226
+    saw the same split), and so was `git add -A && git commit` as a compound — but
+    `Edit` with `replace_all` did the same 26 substitutions in one call, which is the
+    workaround to reach for first next time.
+245. **Iteration 1 #1 / … / 60 #235 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the
+    hook: "no leaks found".)
+246. **Iteration 2 #2 / … / 60 #236 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+247. **Iteration 6 #6 / … / 60 #237 still stands:** `AGENTS.md`'s command table names none
+    of `go test -tags tmux ./...`, `go test -tags quickstart ./cmd/crswd`, or
+    `go test -tags dev ./...`. **T032.** `dev` **was** run this iteration and passes —
+    this task touches `internal/access`, where the bypass lives behind that tag. `tmux`
+    and `quickstart` were not, for the standing reasons (real tmux on the host running
+    the live daemon; the quickstart suite collides with that daemon's port, 59 #225).
+248. **`deploy/README.md`'s four-variable trap (44 #84 / … / 60 #238) still stands.**
+    **T033.**
+249. **Findings 202–205, 211–216, 223 and 231–233 are unchanged.** Still unowned by any
+    task: the missing `GET /sessions/{id}/view` page every card links to (202), the
+    **unregistered `GET /static/crswd.css`** that leaves every browser unstyled (223),
+    the unbuilt rain loop / unwritten `web/static/crswd.js` (214), and the leak suite's
+    blindness to the browser door (231). Also open: `Manager.List`'s clock-neutrality
+    covered only from another package (203), a component test not being a call-site test
+    (204/233), `Server` and `Manager` holding separate clocks (205), the milestone-1 test
+    row that moved rather than weakened (211, for **T021**), the `Cache-Control` default
+    resolved inside a contract silence (**T031**), the missing `--dev-auth-bypass` flag
+    (**T034**), the pane styling deferred to **T026** (215), the untokenised values in
+    `docs/design-system.md` (216), `Store.SetState` uncalled and contradicted, and
+    `View`'s deliberate silence about `AbsoluteDeadline` (**T028**).
+
+**Left:** **T019** (fail-closed end to end with the key set unobtainable — the sweep's
+`keys: newDeadKeyServer` and `keys: newEmptyKeyServer` rows are the door-level half;
+T019 is the route-level one, plus "does not crash or hang"), then T020–T021 (US4),
+T022–T029 (US2, the stream), T030–T034 (docs, `.env.example`, quickstart). Plus the four
+unowned findings above (202, 214, 223, 231).
