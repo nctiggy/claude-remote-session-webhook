@@ -47,7 +47,7 @@ credentials are driving sessions on this host.
 hostname safe to create, which is what unblocks everything after it.
 
 **Independent Test**: With a valid Access assertion, load the dashboard and see every
-session the daemon knows about, each with a state label. With no assertion, with a
+session the viewer owns, each with a state label. With no assertion, with a
 forged one, and with one minted for a different Access application, get nothing.
 
 **Acceptance Scenarios**:
@@ -55,8 +55,9 @@ forged one, and with one minted for a different Access application, get nothing.
 1. **Given** a browser carrying a valid Access assertion for an allowed identity,
    **When** the dashboard is loaded, **Then** it renders a state summary followed by one
    card per session, and the operator's own identity appears in the header.
-2. **Given** sessions in different states, **When** the dashboard renders, **Then** each
-   card carries a **text** state label, not colour alone.
+2. **Given** one session used a moment ago and another untouched for longer than the idle
+   threshold, **When** the dashboard renders, **Then** the first reads *running* and the
+   second reads *idle*, each as a **text** label rather than colour alone.
 3. **Given** no sessions at all, **When** the dashboard is loaded, **Then** an empty
    state explains that nothing is executing on this host, rather than an empty page.
 4. **Given** a request with no Access assertion, **When** it reaches the daemon,
@@ -99,10 +100,11 @@ visible text and nothing executes.
    and nothing is interpreted as markup.
 3. **Given** output containing terminal escape sequences, **When** it renders, **Then**
    the escapes are gone and the readable text remains.
-4. **Given** the operator has scrolled up within the output, **When** new output
-   arrives, **Then** the viewport stays where they put it.
-5. **Given** the operator is at the bottom of the output, **When** new output arrives,
-   **Then** the view follows it.
+4. **Given** the operator has scrolled within the output, **When** the screen updates,
+   **Then** the viewport is not moved for them.
+5. **Given** a session whose program repaints its whole screen — a progress indicator, a
+   redraw, a cleared display — **When** the update arrives, **Then** the view shows the
+   new screen without accumulating duplicated or torn-apart lines from the redraw.
 6. **Given** a live view of a session, **When** that session is destroyed or expires,
    **Then** the view says so plainly rather than silently freezing.
 7. **Given** a live view left open, **When** it is open for longer than a session's idle
@@ -153,14 +155,19 @@ how it signs a request.
 be a regression dressed as a feature. It sits at P4 because it is preservation rather
 than new capability, but a failure here is worse than any missing dashboard.
 
-**Independent Test**: Take the exact request-signing procedure milestone 1 documents,
-run it against the deployed hostname, and complete a create → list → destroy cycle
-without modification.
+**Independent Test**: Take the exact request-signing procedure milestone 1 documents and
+complete a create → list → destroy cycle against the daemon's own listener with no
+modification whatsoever. Then repeat it through the public hostname with only the edge
+service-token headers added, and get the same results.
 
 **Acceptance Scenarios**:
 
-1. **Given** a correctly signed API request, **When** it is sent to the same hostname the
-   dashboard uses, **Then** it is served exactly as milestone 1 served it.
+1. **Given** a correctly signed API request carrying the edge service token, **When** it
+   is sent to the same hostname the dashboard uses, **Then** it is served exactly as
+   milestone 1 served it.
+1a. **Given** the same request without the service token, **When** it is sent to that
+   hostname, **Then** it is refused by the edge and never reaches the daemon — no path on
+   the hostname is edge-exempt.
 2. **Given** the signing procedure from milestone 1's contract, **When** it is used
    unchanged, **Then** it still produces an accepted signature.
 3. **Given** an API request carrying no browser identity at all, **When** it is sent,
@@ -219,8 +226,9 @@ request.
   session is watched from two tabs; many sessions are watched at once; the daemon is
   asked to shut down while streams are open.
 - **Fleet**: zero sessions; one session; more sessions than fit on a screen; a session
-  whose name or working directory is long enough to break a layout; a session in every
-  state at once.
+  whose name or working directory is long enough to break a layout; a session one second
+  either side of the idle threshold; a session adopted after a restart, carrying no name
+  and no working directory.
 - **Coexistence**: an API request that also happens to carry a browser assertion; a
   browser request to an API path; a dashboard request to a path that does not exist.
 - **Motion and accessibility**: reduced-motion is requested; the page is driven entirely
@@ -235,8 +243,11 @@ request.
 - **FR-001**: The daemon MUST validate the identity assertion Cloudflare Access forwards,
   on every browser request. A header is trivially forgeable by anything that can reach
   the listener; the signature is what makes it evidence.
-- **FR-002**: Validation MUST verify the assertion's signature against the identity
-  provider's published signing keys for this specific application.
+- **FR-002**: Validation MUST verify the assertion's signature against **the edge's own
+  published signing keys for this account**. These are the edge's keys, not the identity
+  provider's — the identity provider signs nothing the daemon ever sees, and the keys are
+  per-account rather than per-application. What pins the assertion to *this* application
+  is the audience in FR-003.
 - **FR-003**: The daemon MUST pin the expected audience. Without it, an assertion minted
   for any other application in the same account would validate here.
 - **FR-004**: The daemon MUST pin the accepted signing algorithm and MUST reject any
@@ -274,20 +285,64 @@ request.
   admitted a request: a browser request is validated at layer 1, an API request at layers
   2 and 3. The edge deciding who may knock never substitutes for the daemon deciding who
   is allowed in.
-- **FR-014**: Milestone 1's request-signing procedure MUST remain unchanged. A client
-  written against the shipped contract MUST work without modification.
+- **FR-013c**: A request admitted by the service token carries an assertion with **no
+  identity claim** — it names a credential, not a person. The daemon MUST refuse such an
+  assertion for the dashboard, and MUST NOT treat the absence of an identity as an
+  allowlist match. This is the one malformed-looking assertion that will arrive in normal
+  operation, every time the API client calls.
+- **FR-013d**: A request to a path the daemon serves no route for MUST be answered by the
+  door that owns the dashboard, not by the API's refusal. A signed-in browser that
+  mistypes a URL currently receives the API's raw refusal body, which is neither useful
+  nor consistent with the interface it came from.
+- **FR-014**: Milestone 1's request-signing procedure and its daemon-side contract MUST
+  remain unchanged: the signed payload, the headers the daemon reads, and every response
+  it returns are fixed. A client written against the shipped contract MUST work without
+  modification **against the daemon's own listener**.
+- **FR-014a**: Reaching the daemon through the public hostname additionally requires the
+  edge admission of FR-013a, so the deployed client gains the service-token headers. This
+  is a change to what the client sends *the edge*, not to what it sends the daemon, and
+  the distinction is the whole reason FR-014 is scoped to the listener. An implementation
+  MUST NOT resolve the difference by weakening either side — no edge bypass, no change to
+  the signing payload.
 - **FR-015**: Milestone 1's six operations MUST keep their existing behaviour, status
   codes, and response bodies.
 - **FR-016**: The audit trail MUST keep emitting exactly one record per request, in the
   existing shape, for browser requests as well as API ones.
+- **FR-016a**: A long-lived stream MUST be recorded when it **opens**, carrying the
+  authorisation decision, rather than only when it closes. Milestone 1 emits its record
+  after the handler returns, which for a stream lasting hours means a daemon that dies
+  mid-stream leaves no trace that session output was being read. Whether a second record
+  marks the close is this milestone's choice, but the open MUST be recorded and the total
+  MUST be stated rather than left to whatever the existing mechanism happens to do.
 
 #### The dashboard
 
-- **FR-017**: The dashboard MUST show every session the daemon knows about, with a state
-  summary before any detail.
+- **FR-017**: The dashboard MUST show every session **the viewer owns**, with a state
+  summary before any detail. By FR-037a that is every session in practice, but the
+  dashboard MUST reach them through the same owner-scoped read the API uses — never an
+  owner-blind one. Milestone 1 keeps its only owner-blind lookup unexported on purpose;
+  exporting it to satisfy this requirement would break the isolation rule
+  `docs/auth-and-sessions.md` calls non-negotiable.
 - **FR-018**: Each session MUST show its name, state, working directory, and age.
+- **FR-018a**: A session adopted after a daemon restart has **no name and no working
+  directory** — milestone 1 records neither, on purpose, because nothing on the host
+  carries them. The dashboard MUST render that absence as an explicit, readable statement
+  that the value is unknown, and MUST NOT invent a placeholder that reads like a real
+  value. This is a routine state after any restart, not an edge case.
 - **FR-019**: Every state MUST carry a **text label**. Colour is reinforcement and MUST
   NOT be the only signal.
+- **FR-019a**: Display state MUST be **derived at render time** from the session record,
+  not read from a stored lifecycle field. The daemon writes only `starting` and
+  `running`, has no production path that writes any other value, and deletes records
+  rather than marking them dead — so a dashboard that rendered the stored field directly
+  would show one label forever.
+- **FR-019b**: The derivation is: **idle** when the session has had no activity for
+  longer than the idle threshold the reaper enforces, and **running** otherwise.
+  `starting` is displayed as running — the distinction is momentary and invisible to an
+  operator. `dead` is never displayed, because a dead session has no record to render.
+- **FR-019c**: The idle threshold used for display MUST be the same value the reaper
+  enforces, taken from one place. A dashboard saying "running" about a session the reaper
+  is about to destroy is worse than no label at all.
 - **FR-020**: The header MUST show the operator's verified identity, taken from the
   validated assertion and never from anything the request supplies.
 - **FR-021**: With no sessions, the dashboard MUST render an explanatory empty state
@@ -296,8 +351,15 @@ request.
   rename, or compact, and MUST NOT reach any route that performs them.
 - **FR-023**: All styling MUST come from the tokens in the design system. No hard-coded
   colour, size, or font may appear in a template.
-- **FR-024**: The dashboard MUST reuse the canonical components already defined. A second
-  card, pill, or button is a defect.
+- **FR-024**: The dashboard MUST reuse the canonical components defined in
+  `docs/components.md`, which this milestone creates for the first time — they exist as
+  prose, not yet as code. A second card, pill, or button is a defect.
+- **FR-024a**: The canonical session card and empty state are documented **with action
+  affordances** — destroy, compact, rename, "start a session". Those MUST NOT be built in
+  this milestone (FR-022). A browser cannot sign an API request, so they would be
+  non-functional as well as out of scope. The components MUST be created such that the
+  action row is a parameter that is simply absent here, not deleted code milestone 3 has
+  to restore.
 - **FR-025**: Every asset MUST be served by the daemon itself. No external origin may be
   referenced — no CDN, no remote font, no third-party script.
 - **FR-026**: The daemon MUST send the response headers named in the security document,
@@ -313,8 +375,18 @@ request.
 - **FR-030**: Session names and working directories MUST be rendered as text on the same
   terms as output — a caller chose them.
 - **FR-031**: Output MUST update live, without the operator reloading.
-- **FR-032**: The view MUST follow new output only when the operator is already at the
-  bottom of it.
+- **FR-031a**: The view MUST present the session's **current screen**, replaced on each
+  update — not a growing transcript. What is being watched is a full-screen terminal
+  program that repaints in place; successive captures are redraws, not new lines.
+  Reconstructing an append-only transcript by diffing redraws would produce spurious
+  lines from every cursor move, progress spinner and repaint, and is the single most
+  likely place for this milestone to lose days.
+- **FR-032**: The view MUST NOT move the operator's scroll position when the screen
+  updates. A screen that repaints has no "bottom" to follow, so the requirement is that
+  updating never yanks the viewport — not that it tracks new output.
+- **FR-032a**: The dashboard MUST make plain that it shows the live screen and not
+  scrollback. Attaching to the session on the host is what shows history, and an
+  interface that silently implies otherwise is one an operator will trust wrongly.
 - **FR-033**: When a watched session ends, the view MUST say so rather than silently
   stopping.
 - **FR-034**: A live view MUST be authorised by the **validated layer-1 identity plus an
@@ -330,6 +402,25 @@ request.
 - **FR-034b**: The stream's authorisation MUST be re-evaluated, not merely established:
   if the session ends, expires, or ceases to be the viewer's, the stream MUST stop
   delivering output.
+- **FR-034c**: The daemon MUST NOT emit any cross-origin resource-sharing response
+  header on any route. The browser's layer-1 credential is a cookie and therefore
+  ambient: it rides on requests a hostile third-party page triggers, and the edge will
+  convert those into a valid assertion. Same-origin policy is what stops that page
+  *reading* the result, and it holds only while the daemon never opts out of it. This is
+  the one protection the per-session token would also have provided — a header credential
+  forces a preflight, a cookie does not — so declining the token (FR-034a) makes this
+  requirement load-bearing rather than tidy.
+- **FR-034d**: A stream MUST be refused when the request indicates a cross-site
+  initiator, where the browser supplies that signal.
+- **FR-034e**: The daemon MUST cap concurrent output streams and refuse past the cap
+  rather than degrading the host. Each stream is a long-lived connection doing periodic
+  work against the host; unbounded streams are the same local denial of service the
+  session cap exists to prevent (Principle VI).
+- **FR-034f**: An open stream MUST NOT delay session teardown or daemon shutdown, and
+  MUST NOT advance a session's idle clock. Watching is not driving: a stream that
+  postponed the idle deadline would let a forgotten browser tab hold an unsandboxed shell
+  open indefinitely. Milestone 1 advances that clock in the single place a request
+  resolves to a session, and this milestone adds a second path that must not.
 - **FR-035**: Session output MUST NOT appear in any audit record or log line, exactly as
   in milestone 1.
 
@@ -341,13 +432,17 @@ request.
   the session's recorded owner.
 - **FR-037a**: The allowlisted browser identity and the API's shared-secret identity MUST
   resolve to the **same owner**, so a session created through the API is one the
-  dashboard owns and can read. The mapping MUST be configuration, not a value either
-  request supplies.
+  dashboard owns and can read. The owner MUST be derived server-side by construction and
+  MUST NOT be a value either request supplies. It MUST NOT be an operator-settable knob
+  either: milestone 1 makes the API's owner a constant precisely so there is no second
+  place for identity to disagree, and a setting whose only correct value is that constant
+  is a way to produce an empty dashboard with every test passing.
 - **FR-037b**: The ownership comparison MUST still be performed on every session-scoped
   request. It is not skipped on the grounds that there is currently one subject — a check
   that is removed because it always passes is a check that will not be there when a
-  second identity arrives. Tests MUST continue to exercise a cross-owner refusal with a
-  synthetic second owner, as milestone 1 does.
+  second identity arrives. A cross-owner refusal MUST be exercised with a synthetic second
+  owner **through the dashboard's own path**; pointing at milestone 1's existing API test
+  does not satisfy this, because it is the dashboard's route that is new.
 
 #### Local development
 
@@ -358,6 +453,9 @@ request.
 - **FR-041**: The bypass MUST be **absent** from the shipping artifact — excluded at
   build time, not merely defaulted off. A production artifact that can disable
   authentication by flag is a backdoor.
+- **FR-042**: With the bypass active, the daemon MUST NOT require the layer-1
+  configuration FR-011 makes fatal when absent. Demanding an audience and an issuer that
+  the bypass then ignores would make local development need a Cloudflare account.
 
 ### Key Entities
 
@@ -407,14 +505,18 @@ request.
   layer-1 configuration value.
 - **SC-014**: A request carrying neither an accepted browser identity nor a valid
   service-token admission is refused at the edge before reaching the daemon, for every
-  path on the hostname — zero paths are edge-exempt.
+  path on the hostname — zero paths are edge-exempt. **This is deployment behaviour and
+  is verified against the running hostname, not by a test in this repository**, since the
+  edge is configured outside it. It is therefore explicitly exempt from SC-017 and
+  belongs on the deployment checklist.
 - **SC-015**: A live stream stops delivering within one polling interval of the session
   ending, expiring, or ceasing to be the viewer's, in 100% of cases.
 - **SC-016**: A session created through the API is visible and readable in the dashboard
   without any change to how it was created, and a session belonging to a synthetic second
   owner is refused to the dashboard identically to a session that does not exist.
-- **SC-017**: Build, test, and lint all pass, and every behaviour above is covered by a
-  test that fails when the behaviour is removed — including the negative cases.
+- **SC-017**: Build, test, and lint all pass, and every behaviour above **except SC-014**
+  is covered by a test that fails when the behaviour is removed — including the negative
+  cases. SC-014 is edge configuration and has no in-repository test that could fail.
 
 ## Assumptions
 
@@ -441,6 +543,21 @@ Three ambiguities were surfaced rather than guessed at, and answered by the oper
   owner — a check removed because it always passes is one that will not be there when a
   second identity arrives. (FR-037a, FR-037b.)
 
+Two further decisions were taken on the same day, after a cross-model review of this
+specification found that both were unimplementable as originally written:
+
+- **Display state is derived, not stored.** The daemon writes only `starting` and
+  `running` — `SetState` has no production caller and dead records are deleted rather
+  than marked — so the four display states the design system defines cannot all occur.
+  The dashboard derives **idle** from last activity against the reaper's own threshold and
+  shows everything else as **running**; `dead` is never rendered because such a session
+  has no record. `docs/design-system.md` is amended to describe those states rather than
+  four that cannot all happen. (FR-019a–c.)
+- **The pane shows the current screen, replaced on each update.** The original spec
+  modelled output as an append-only line stream, which a full-screen terminal program is
+  not. Diffing repaints into appended lines is fragile in a way that would have surfaced
+  late and expensively. (FR-031a, FR-032, FR-032a.)
+
 ### Assumed defaults
 
 - **The dashboard is read-only in the strict sense**: it performs no state-changing
@@ -456,7 +573,9 @@ Three ambiguities were surfaced rather than guessed at, and answered by the oper
 - **Live output is delivered by a streaming connection from daemon to browser**, as the
   project README anticipates. The mechanism is a planning decision; what this spec
   requires is that output appears without a reload and is authorised per FR-034.
-- **Output is delivered as whole lines.** Partial-line updates are not required.
+- **Output is delivered as whole screens**, replacing what was shown. This follows from
+  the decision recorded below and from what a Claude Code session actually is: a
+  full-screen program, not a log.
 - **No persistence is added.** The dashboard reads the same in-memory records the API
   serves; nothing is written to disk.
 - **The tunnel and the Access application are configured outside this repository**, by
@@ -473,6 +592,36 @@ Three ambiguities were surfaced rather than guessed at, and answered by the oper
   provider and the operator's address allowed.
 - Reachability from the daemon to the identity provider's published signing keys.
 
+## Documents this milestone must amend
+
+These are binding, and this milestone makes each of them wrong. Amending them is in
+scope, not follow-up work — a binding document that contradicts the running system is
+worse than none, because it is followed.
+
+- **`docs/components.md`** — its canonical pane viewer used htmx's `sse-swap` with
+  `hx-swap="beforeend"`, which inserts the payload as markup and is exactly what
+  `docs/security.md` forbids. **Already corrected** as part of this specification, because
+  leaving it would have had FR-024 instructing an implementer to open the project's only
+  XSS surface. The correction is the reason FR-024 and FR-028 are now jointly satisfiable.
+- **`docs/auth-and-sessions.md`** — opens "There are no browser sessions and no human
+  login form." This milestone creates both. Its two-door table also has no service token,
+  and the stream-authorisation rule (FR-034 and its parts) exists only in this spec until
+  that document carries it.
+- **`docs/security.md`** — its two-door table predates the service token, and its header
+  table says nothing about cross-origin headers, which FR-034c now makes load-bearing.
+
+## Dependencies added
+
+Verifying a signed assertion and fetching a rotating key set is not something the standard
+library does. Milestone 1 shipped with **zero** third-party dependencies and
+`docs/security.md` §5 says to keep it that way, requiring justification for each addition:
+what does it do that the standard library cannot?
+
+This milestone must answer that in its plan rather than have an implementation quietly
+vendor a library. Whichever way it goes — a dependency with a written justification, or a
+narrow hand-rolled verification of one algorithm against a cached key set — it is a
+deliberate decision recorded in the plan, and `go.sum` appearing without one is a defect.
+
 ## Out of Scope
 
 - Create, destroy, rename, and compact from the dashboard — milestone 3.
@@ -482,5 +631,10 @@ Three ambiguities were surfaced rather than guessed at, and answered by the oper
   exists.
 - Persisting session records, dashboard state, or output history to disk.
 - Any change to milestone 1's signing procedure, operations, or audit record shape.
+- Any write action from the browser. Milestone 3 adds them, and it will need a
+  cross-site-request answer of its own: this milestone's streams are authorised by an
+  ambient cookie, which is safe **only** because every mutating route requires a signature
+  a browser cannot produce. That reasoning does not survive the first browser-driven
+  write, and milestone 3 must not inherit it by assumption.
 - Mobile-specific layouts beyond the single responsive breakpoint the design system
   already defines.

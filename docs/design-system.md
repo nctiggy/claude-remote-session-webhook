@@ -73,15 +73,27 @@ clear WCAG AA. Any new pairing must be measured, not eyeballed.
 Semantic colour is **separate from the accent** and deliberately not monochrome —
 legibility at a glance beats theme purity:
 
-| State | Token | Value | Why this colour |
-|---|---|---|---|
-| `running` | `--state-running` | `#00ff41` | Alive, the phosphor itself |
-| `idle` | `--state-idle` | `#3fa85c` | Alive but waiting — dimmer, not absent |
-| `needs-auth` | `--state-auth` | `#ffb000` | Amber phosphor. In-world: real terminals had amber |
-| `dead` | `--state-dead` | `#ff4d4d` | The red pill — the one non-green the palette has earned |
+| State | Token | Value | Why this colour | Rendered when |
+|---|---|---|---|---|
+| `running` | `--state-running` | `#00ff41` | Alive, the phosphor itself | **Milestone 2** |
+| `idle` | `--state-idle` | `#3fa85c` | Alive but waiting — dimmer, not absent | **Milestone 2** |
+| `needs-auth` | `--state-auth` | `#ffb000` | Amber phosphor. In-world: real terminals had amber | Milestone 4 |
+| `dead` | `--state-dead` | `#ff4d4d` | The red pill — the one non-green the palette has earned | Not currently reachable |
 
 Do not invent a parallel palette for state, and do not fold state back into green
 for the sake of the theme. A dead session that reads as green is a bug.
+
+**Display state is derived, not stored.** The daemon writes only `starting` and
+`running` to a record, and deletes a record rather than marking it dead, so the
+interface computes what to show: **idle** when a session has had no activity for
+longer than the reaper's own idle threshold, **running** otherwise. `starting` has
+no token and never appears — the distinction from `running` lasts milliseconds and
+means nothing to an operator watching a fleet.
+
+`needs-auth` and `dead` keep their tokens and must keep working in the status
+component. `needs-auth` arrives with the device-code relay; `dead` is unreachable
+today because destroyed and reaped sessions leave no record, and a state that
+renders wrongly the first time it occurs is a defect that ships in silence.
 
 ## Typography
 

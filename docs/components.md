@@ -83,12 +83,29 @@ Rules:
 Live terminal output, streamed over SSE.
 
 ```gotemplate
-<pre class="pane" hx-ext="sse" sse-connect="/sessions/{{ .ID }}/stream"
-     sse-swap="line" hx-swap="beforeend">{{ .PaneText }}</pre>
+{{/* The initial screen. Server-rendered, escaped by html/template. */}}
+<pre class="pane" id="pane-{{ .ID }}" data-stream="/sessions/{{ .ID }}/stream">{{ .PaneText }}</pre>
 ```
 
+```js
+// The live half. textContent, never innerHTML — the payload is untrusted bytes
+// from the host, and this is the project's only XSS surface.
+new EventSource(pane.dataset.stream).onmessage = (e) => {
+  pane.appendChild(document.createTextNode(e.data + "\n"));
+};
+```
+
+> **Do not use htmx's `sse-swap` / `hx-swap="beforeend"` for pane output.** That
+> inserts the payload **as markup**, which is precisely what `security.md`
+> forbids: *"never `hx-swap` a raw pane payload into the DOM as markup — stream it
+> into a `<pre>` as text."* This snippet used to show exactly that, and it was
+> wrong: a session printing `<img src=x onerror=...>` would have executed it. htmx
+> is still the right tool for the rest of the dashboard; pane output is the one
+> place it must not do the swapping.
+
 Rules — these are security rules as much as design rules:
-- **Text nodes only.** Never `safeHTML`, never `template.HTML`, never `innerHTML`.
+- **Text nodes only.** Never `safeHTML`, never `template.HTML`, never `innerHTML`,
+  and never an htmx swap that treats the payload as markup.
 - ANSI is stripped server-side before it reaches the template.
 - The container scrolls, the page does not. Fixed height, `overflow-y: auto`.
 - Auto-scroll to the bottom only when the user is already at the bottom — yanking
