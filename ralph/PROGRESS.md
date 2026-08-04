@@ -11835,3 +11835,108 @@ anything to that handler's record. Then T029 (the acceptance suite, which also o
 `docs/security.md` the `Sec-Fetch-Site` rule, which exists only in the spec and this file —
 `.env.example`, and the quickstart run, which must deal with #266/#292). Plus the unowned
 findings above, and the design decision 306 needs from the operator.
+
+---
+
+## Iteration 74 (milestone 2, iteration 31) — 2026-08-04 10:50
+
+**Did:** **T028** — the stream lifecycle. `reader` now re-evaluates authorisation before
+every capture (`Manager.View(live.ID, owner)`, which touches no clock) and captures through
+the record *that* ask returned rather than the one the open closed over; a view that fails
+returns `errWatchedSessionEnded`, which `hold` answers with the terminal event and then
+stops. `Server` gained a `closing` channel that `Shutdown` closes **before** the drain, so
+an endless response no longer eats the 10s budget the six short routes and the verified
+teardown are waiting on. `pane.html` renders a hidden `.pane-note` and names it in
+`data-ended`; `crswd.js` listens for the named `end` event, reveals the note and calls
+`close()`. Findings 296 and 299 are closed; `docs/components.md`'s pane snippet was amended
+again (finding 307's precedent — it is binding and its snippets get copied).
+
+**Four things the next iteration should not have to re-derive:**
+
+1. **The end is a *named* event and the screen is not.** `event: end` / `data: "ended"`
+   is the only named event on this route, which is exactly what stops a session ending its
+   own stream by printing those bytes — every screen arrives unnamed whatever it contains,
+   and the client listens by name. `awaitEnd` in the test file spells the three lines by
+   hand for the reason `TestAScreenIsFramedAsOneJSONString` spells its table: a client that
+   is not this repo reads them.
+2. **The end carries no audit record.** Iteration 73's learning 2 is why: the record was
+   written at the open and after that emit an amendment reaches nobody, so "no close record"
+   (contracts/stream.md, SC-008) survives this task by not being touched. `hold` reports
+   nothing and wraps nothing on the ended path — a session that ended is the ordinary end of
+   a stream, not a failure of one.
+3. **A failed capture and a vanished session are deliberately two different errors.** tmux
+   not answering is a suppressed tick (the window may answer a second later); a record the
+   daemon no longer holds is not coming back. Collapsing them would either end streams on
+   every hiccup or never end them at all. `tick` passes the second back and answers the
+   first with a heartbeat.
+4. **`panes.watching(id)` exists for the assertion and takes the registry's mutex.** The map
+   is written on net/http's goroutine, so a test reading it after a socket EOF is a data race
+   the detector will not forgive — there is no happens-before edge through a socket. The
+   pre-existing `TestASharedScreenIsDroppedWhenItsLastWatcherLeaves` reads the map directly
+   only because it never leaves one goroutine.
+
+**Learned (do not rediscover):**
+
+1. **`bash` here refuses a heredoc containing a brace next to a quote** ("expansion
+   obfuscation") — iteration 72's learning 5 is true only for prose. Go source with
+   `map[string]string{"x": ...}` in it cannot be appended with `cat >>`; use the Edit tool
+   with the file's last lines as the anchor instead.
+2. **The reaper is drivable from an `httpapi` test without waiting or moving a clock**:
+   plant with `LastActivity: idleAt(testTime)`, then `session.NewReaper(f.fixture.mgr,
+   testTrail(t))` and `Sweep(ctx)`. `Manager.View` deliberately does not expire anything, so
+   a session past its idle bound still opens a stream — the sweep is what ends it, which is
+   precisely US2 scenario 7.
+3. **A shutdown mutation costs 10 real seconds to observe.** Without the `closing` select,
+   `http.Shutdown` waits out `shutdownDrain` and then reports `context deadline exceeded`;
+   the test catches it on the error as well as on the clock, so the slow path is only ever
+   the failing one.
+
+**Mutations, all four caught:**
+
+1. Re-evaluation removed (`current := live`) → `TestAReapedSessionEndsTheStreamThatWasWatchingIt`
+   ("no terminal event arrived within 10 writes").
+2. The `closing` select made a channel nobody closes → `TestShutdownIsNotDelayedByOpenStreams`,
+   after 10.2s, on the drain's own deadline.
+3. `s.end()` replaced with `return nil` → the same reaped test, now on EOF: the stream
+   stopped in silence, which is the failure FR-033 is about.
+4. A `store.Touch` added inside `Manager.View` → `TestWatchingASessionNeverAdvancesItsIdleClock`
+   ("moved the idle clock from 21:33:40 to 21:34:40").
+
+**Findings:**
+
+312. **Nothing proves the client's `end` handler runs, because Go cannot execute it.** The
+    assertions are a source sweep (`addEventListener('end'`, `.close()`, `dataset.ended`, and
+    exactly one `pane.textContent =` so the note is not written over the screen). That is the
+    same footing every claim about `crswd.js` stands on and the same gap finding 278 records
+    for the rain — worth knowing before anyone reads the suite as proving the browser closes.
+313. **A stream that ends does not remove the session's card from the fleet page**, and the
+    session page it was opened from goes on rendering a session that no longer exists until
+    the operator reloads. The pane says the session ended, which is FR-033 satisfied where the
+    requirement points; the rest of the page is stale. Unowned — related to 282 and 305, and
+    the honest repair for all three is a page that re-renders rather than parts that argue.
+314. **`Server.Close` does not end streams; only `Shutdown` does.** Close tears the
+    connections down, so the streams die by cancelled context anyway — but the two paths now
+    differ, and a future caller reaching for the abrupt stop gets no farewell and no ordered
+    ending. Deliberate (FR-034f names shutdown) and cheap to change if it ever matters.
+315. **Findings 203–205, 216, 275, 278, 280–283, 285–288, 292–293, 298, 300–301, 303–307,
+    309–311 are unchanged**, minus 296 and 299 which this iteration closed. Still unowned:
+    the untokenised values in `docs/design-system.md` (216), the unaudited `cleanPath`
+    redirect (275), the rain being unverifiable from Go (278), the scanline overlay (280,
+    needing the operator's answer at 306), the session page being a dead end (282), the page
+    with no live stream after a failed first capture (305), `testServer.failed` not being
+    lock-safe while a stream is open (298), and the `-race` flake in 303 — which did **not**
+    fire this iteration; `-race` on the package is clean at ~6.9s. The duplicate checkbox
+    state in `IMPLEMENTATION_PLAN.md` and `tasks.md` was again ticked in both by hand.
+    `internal/httpapi` is ~5.7s; the three new socket tests add ~0.4s in parallel.
+
+**Left:** **T029** — the US2 acceptance suite: the cap past `CRSW_MAX_STREAMS`, two tabs on
+one session, a vanished browser cleaned up, the cross-site refusal, and **zero** session
+output in any audit record or log line. It also owes finding 310 (`stream.open` has never been
+driven through `internal/audit/leak_test.go`), finding 309 (an over-the-wire "exactly one
+record" assertion needs a signal the handler returned; the cap's slot comes back *before* the
+deferred emit), and is where 303 could be settled. Then T030–T034 (docs — T030 now also owes
+`docs/auth-and-sessions.md` the stream-authorisation rule *and* this iteration's
+re-evaluation-every-tick shape; T031 owes `docs/security.md` the `Sec-Fetch-Site` rule, which
+exists only in the spec and this file — `.env.example`, and the quickstart run, which must
+deal with #266/#292). Plus the unowned findings above, and the design decision 306 needs from
+the operator.
