@@ -7890,4 +7890,124 @@ operator's tmux session           still alive after the full run  ✅
     no entry for `go test -tags tmux ./...`, and now none for `go test -tags quickstart ./cmd/crswd`
     either. "Test (all)" names neither of the two suites that touch real tmux.
 
-RALPH_COMPLETE
+RALPH_COMPLETE — milestone 1, T001–T042. Retired to prose by milestone 2's first
+iteration: `loop.sh` matches the sentinel as a whole line (`grep -qxF`), so left as
+it was it would have stopped the loop after one iteration of a 34-task plan. The
+line stays here because this file is append-only and the completion it records is
+true; it is the *signal* that has been spent, not the fact.
+
+---
+
+## Iteration 44 (milestone 2, iteration 1) — 2026-08-04 03:07
+
+**Did:** **T001** — the layer-1 configuration. `internal/config/config.go` now loads
+`CRSW_ACCESS_TEAM_DOMAIN`, `CRSW_ACCESS_AUD`, `CRSW_ACCESS_ALLOWED_EMAILS` (each fatal
+when absent, FR-011) and `CRSW_MAX_STREAMS` (default 10). `config.Load()` is already
+wired into `cmd/crswd/main.go`, so this is live at startup, not shelf code.
+
+Shape of the three, and why:
+
+- **Team domain** normalises to an origin — `strings.ToLower` on the host, no path,
+  query, fragment or credentials. One configured value because the issuer *is* that
+  string and the key set is fetched from it; two variables could name authorities that
+  do not belong to each other. `http://` is refused unless the host is a **loopback IP
+  literal** (not a name — `localhost` can be pointed anywhere, the same rule
+  `CRSW_LISTEN` already applies). That carve-out is what lets `quickstart.md` run a key
+  server on `127.0.0.1:8099` with no Cloudflare account.
+- **AUD**: non-emptiness only. It is compared for equality and never parsed, so pinning
+  Cloudflare's 64-hex format would add nothing and would break on the day they change it.
+- **Allowed emails**: comma-separated, at least one, entries trimmed; an empty entry or
+  one containing whitespace refuses. The whitespace case is the separator typed wrong,
+  and left to run it fails *silently* — the operator is refused by their own allowlist.
+
+**No layer-1 value ever appears in an error string.** The variable name is what an
+operator needs; the value is what they already typed, and a startup error lives in the
+journal for as long as the host keeps logs. `url.Parse`'s error is deliberately answered
+rather than wrapped, because `url.Error` carries the input. `Config.String()` counts the
+allowed addresses instead of listing them. Both are asserted, the first across every row
+of the reject table.
+
+**FR-042** is `config.WithAccessBypassActive()`, a variadic `Option` on `Load`/`LoadFrom`
+so no existing call site changed. It lifts the requirement to be *present*, never to be
+*valid* — a malformed value that is set still refuses, since the operator meant it and
+will one day run without the bypass. Deliberately **no `AccessBypassed` field on
+`Config`**: a bypass boolean sitting in the shipping build's config struct is exactly the
+"defaulted off" backdoor FR-041 forbids, and the first task that needed it would read it
+as a switch. T007 owns the bypass's representation, under `//go:build dev`.
+
+Gate, executed not asserted:
+
+```
+go build ./...                          OK
+go vet ./...                            OK
+go vet -tags tmux ./...                 OK
+go vet -tags quickstart ./cmd/crswd     OK
+go test -count=1 ./...                  OK
+go test -count=1 -tags tmux ./...       OK (real tmux on this host)
+go test -tags quickstart ./cmd/crswd    12 of 13 stories — see finding 78, not this change
+golangci-lint run                       OK
+gofmt -l .                              empty
+go.sum                                  absent  ✅
+```
+
+**Learned:**
+
+1. **`internal/config` owns four files, not one, and two of them police files outside the
+   package.** `envexample_test.go` parses `config.go`'s AST and demands every `CRSW_`
+   constant appear in `.env.example`; `deployexample_test.go` demands every one be *set*
+   in `deploy/crswd.example.service`. Adding an env var to this package therefore breaks
+   its own tests until both files move with it. Budget for that in T033 — half of it is
+   already done, and only `deploy/README.md` is left there.
+2. **Three of the four values must not be committed, so the unit's "every variable, inline"
+   rule needed a second exception.** They join `CRSW_SHARED_SECRET` in the
+   `EnvironmentFile`. Rather than weaken the check, `deploymentSpecific()` now requires the
+   opposite pair of properties: never `Environment=`, always *named* somewhere in the unit.
+   The file stays the one place the whole configuration is visible, which was the point of
+   the original rule.
+3. **Startup order decides which refusal an operator sees.** The layer-1 loaders run after
+   secret → roots → listen → the numeric bounds, so milestone 1's error messages are
+   unchanged for every configuration that was already wrong.
+4. **Two existing suites drive real startup and had to gain the values**: `internal/audit`'s
+   leak run (`loadTheConfiguration`) and `cmd/crswd/quickstart_test.go`'s harness `env()`.
+   No story or assertion was edited — only the environment the daemon is started in, which
+   is the change FR-011 *is*.
+
+**Left:** T002–T034. Next is **T002**: the `web/` tree, `go:embed`, and template-set
+parsing at construction in `internal/httpapi/render.go`.
+
+**Findings:**
+
+78. **`go test -tags quickstart ./cmd/crswd` fails on this host while the deployed daemon
+    is running — and it is a defect in the test, not the environment.**
+    `TestQuickstartStory1StartupFailures` hard-codes `0.0.0.0:8765` and `localhost:8765`
+    for its two listener cases (every other case uses `freePort(t)`), then proves nothing
+    bound by binding that literal address itself. `crswd.service` holds `127.0.0.1:8765`,
+    so both binds return `EADDRINUSE` and the story fails. Evidence: `ss -ltnp` shows
+    `127.0.0.1:8765 users:(("crswd",pid=80510))`; all ten cases exited non-zero with the
+    right refusal, and the only errors were the two post-refusal bind checks. **This is
+    T021's to fix** — bind-check the address the case actually asked for on a free port,
+    or skip the check when the port is held by something the test did not start. Iteration
+    43 got 13/13, so the daemon was presumably stopped then; do not read that as
+    disagreement.
+79. **`.golangci.yml`'s `run.build-tags` lists `tmux` only.** T007's `//go:build dev` files
+    will be invisible to the linter — locally and in CI — unless `dev` is added there. The
+    file's own comment says any future build tag needs adding for exactly this reason.
+    Worth doing inside T007 rather than discovering it in review.
+80. **Iteration 14 #1 / … / 43 #74 still stands:** `git checkout --`, `git restore`,
+    `perl -i` and heredocs remain outside the permission allowlist. New this iteration:
+    `git worktree add` is refused too, so an autonomous run cannot stand up a clean tree at
+    `HEAD` to prove a failure is pre-existing — finding 78 had to be argued from evidence
+    rather than demonstrated by re-running.
+81. **Iteration 1 #1 / … / 43 #75 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the hook:
+    "no leaks found".)
+82. **Iteration 2 #2 / … / 43 #76 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again — now for a second milestone.
+83. **Iteration 6 #6 / … / 43 #77 still stands, and is now a task:** `AGENTS.md`'s command
+    table still names neither `go test -tags tmux ./...` nor
+    `go test -tags quickstart ./cmd/crswd`. Milestone 2 books it as **T032**.
+84. **`deploy/README.md` still tells an operator to write only `CRSW_SHARED_SECRET` into
+    `~/.config/crswd/env`.** Following it now produces a daemon that refuses to start. The
+    example unit carries the full four-line recipe, and **T033** owns the README — but if
+    this branch is deployed before T033 lands, that is the trap.

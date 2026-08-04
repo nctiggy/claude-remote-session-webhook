@@ -74,7 +74,7 @@ wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and stop.
 
 ### Setup
 
-- [ ] T001 `internal/config/config.go`: add `CRSW_ACCESS_TEAM_DOMAIN`, `CRSW_ACCESS_AUD`, `CRSW_ACCESS_ALLOWED_EMAILS`, `CRSW_MAX_STREAMS`. Fatal when absent or malformed, except under the dev bypass. Table test every case
+- [x] T001 `internal/config/config.go`: add `CRSW_ACCESS_TEAM_DOMAIN`, `CRSW_ACCESS_AUD`, `CRSW_ACCESS_ALLOWED_EMAILS`, `CRSW_MAX_STREAMS`. Fatal when absent or malformed, except under the dev bypass. Table test every case
 - [ ] T002 `web/` tree plus `go:embed` and template-set parsing in `internal/httpapi/render.go`, so a broken template fails at startup rather than on a request
 
 ### Foundation — layer 1 (`internal/access`) and the audit actions
