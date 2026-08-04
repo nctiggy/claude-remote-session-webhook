@@ -33,8 +33,15 @@ type fleet struct {
 
 func newFleet(t *testing.T) *fleet {
 	t.Helper()
+	return newFleetWith(t, newKeyServer(t))
+}
 
-	keys := newKeyServer(t)
+// newFleetWith is newFleet with the edge chosen by the caller, which the
+// fail-closed suite in browser_test.go needs and no page test here does: every
+// claim in this file is about what a served page says, and a fleet whose signing
+// keys cannot be obtained serves none.
+func newFleetWith(t *testing.T, keys *keyServer) *fleet {
+	t.Helper()
 	return &fleet{testServer: newAuditedServerWith(t, keys.validator(t)), keys: keys}
 }
 

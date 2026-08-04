@@ -26,6 +26,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -140,6 +141,52 @@ func newDeadKeyServer(t *testing.T) *keyServer {
 	srv.Close()
 
 	return &keyServer{published: published, unpublished: unpublished, origin: origin}
+}
+
+// newRefusingKeyServer is a key source that is up, answering, and answering with
+// something that is not a key set — and counting what it was asked for.
+//
+// The count is the point. Every other unobtainable-keys fixture here proves a
+// request is refused; this one is what tells "the daemon asked once" apart from
+// "the daemon asked once per request", which is the difference between an outage
+// the daemon rides out and an outage it amplifies.
+func newRefusingKeyServer(t *testing.T) (*keyServer, *atomic.Int64) {
+	t.Helper()
+
+	fetches := &atomic.Int64{}
+	published, unpublished := testKeys()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fetches.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+
+	return &keyServer{published: published, unpublished: unpublished, origin: srv.URL}, fetches
+}
+
+// newSilentKeyServer accepts the connection and then says nothing: the provider
+// that is wedged rather than the one that is gone.
+//
+// newDeadKeyServer cannot stand in for it. A refused connection comes back in
+// microseconds, so a daemon with no bound on the fetch at all passes every case
+// built on one; only a socket that stays open and stays quiet asks whether the
+// request ever ends.
+func newSilentKeyServer(t *testing.T) *keyServer {
+	t.Helper()
+
+	published, unpublished := testKeys()
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		<-release
+	}))
+
+	// Registered before the release, so it runs after it: cleanups run in
+	// reverse, Close waits for the handler above to return, and a handler still
+	// blocked on release would wedge the test run rather than fail it.
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+
+	return &keyServer{published: published, unpublished: unpublished, origin: srv.URL}
 }
 
 // validator builds layer 1 against this key server, exactly as NewWith builds
@@ -959,5 +1006,352 @@ func TestOperatorFromReportsNoOperatorWithoutTheDoor(t *testing.T) {
 	ctx := context.WithValue(context.Background(), "operator", &access.VerifiedOperator{Email: testStrangerEmail, Owner: auth.CallerOperator})
 	if op, ok := OperatorFrom(ctx); ok {
 		t.Errorf("a value planted under a string key reported operator %v; want none", op)
+	}
+}
+
+// --- T019: fail-closed, end to end ------------------------------------------
+//
+// The sweep above presents thirty spoiled assertions to authenticateBrowser in
+// isolation, two of which carry keys that cannot be obtained. What a door in
+// isolation cannot say is what the outage does to *the daemon*: which routes it
+// closes, whether the pages that are not the fleet close with them, what each
+// refused request costs, whether the other door goes down with it, and whether a
+// request against a key source that accepts the connection and then says nothing
+// ever comes back at all. Those are FR-009's real claims, and every one of them
+// is about a route.
+
+// browserRequest is one of the requests the browser door answers. Every row is
+// a request this daemon really serves — the fleet's own page, and the paths
+// FR-013d moved onto this door — so that "refused when the keys are gone" is a
+// claim about something. The API's six operations are not here: they are the
+// other door's, and what the outage does to them is asserted separately.
+type browserRequest struct {
+	name, method, target string
+
+	// action is what the trail calls this request when the keys *are*
+	// obtainable, and it is the row's proof that it reaches this door at all. A
+	// row that had quietly moved to the API door would still be refused in the
+	// sweep below — for having no signature, which has nothing to do with the
+	// key set — and nothing about a 401 would say so.
+	action audit.Action
+
+	// served is the status an admitted request receives. A 404 page counts as
+	// served: the door ran, the handler ran, and the operator was told
+	// something. The failure this suite exists for is precisely the one where a
+	// refusal is mistaken for an answer.
+	served int
+}
+
+// browserSurface is that door's whole surface, written out rather than derived,
+// because the thing being asserted is which door each path is on — and deriving
+// the list from the router would make the sweep agree with whatever the router
+// currently does. The control below is what keeps a hand-written table honest.
+func browserSurface(sessionID string) []browserRequest {
+	return []browserRequest{{
+		name:   "the fleet",
+		method: http.MethodGet,
+		target: "/",
+		action: audit.ActionDashboardView,
+		served: http.StatusOK,
+	}, {
+		// The address every session card links to. Nothing serves it yet, which
+		// makes it the not-found page today and a real page in milestone 3; on
+		// either side of that it is a browser route, and this row asserts the
+		// thing that must not change — that it is refused when layer 1 cannot
+		// verify anyone.
+		name:   "the page a card links to",
+		method: http.MethodGet,
+		target: "/sessions/" + sessionID + "/view",
+		action: audit.ActionUnknownRoute,
+		served: http.StatusNotFound,
+	}, {
+		name:   "a path nothing claims",
+		method: http.MethodGet,
+		target: "/not-a-route",
+		action: audit.ActionUnknownRoute,
+		served: http.StatusNotFound,
+	}, {
+		// A contract *path* with a method the contract does not answer: the one
+		// browser row that shares a pattern with the API door, and so the one
+		// most able to end up on the wrong side of it.
+		name:   "a method no route answers",
+		method: http.MethodPut,
+		target: "/sessions",
+		action: audit.ActionUnknownRoute,
+		served: http.StatusNotFound,
+	}}
+}
+
+// ask drives one row at a fleet carrying whatever credential it was given.
+func (b browserRequest) ask(t *testing.T, f *fleet, assertion string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := httptest.NewRequest(b.method, b.target, nil)
+	if assertion != absent {
+		r.Header.Set(headerAccessAssertion, assertion)
+	}
+
+	w := httptest.NewRecorder()
+	f.ServeHTTP(w, r)
+	return w
+}
+
+// TestTheBrowserSurfaceIsServedWhenTheKeysCanBeObtained is the fail-closed
+// claim's non-vacuity, and it is the argument
+// TestTheSweepPresentsAssertionsThatWouldOtherwiseBeAdmitted makes about the
+// door's own table, made about the routes instead.
+//
+// It pins each row's audit action as well as its status. That is the half a
+// status cannot give: a row that stopped reaching the browser door — a pattern
+// that lost to the API door's, a catch-all that stopped catching — would be
+// refused in the sweep below just the same, and the sweep would go on passing
+// while asserting nothing about layer 1.
+func TestTheBrowserSurfaceIsServedWhenTheKeysCanBeObtained(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	planted, _ := f.fixture.plant(t, session.Session{Name: "a session an outage must not reveal", WorkDir: f.fixture.repo})
+
+	rows := browserSurface(planted.ID)
+	for _, row := range rows {
+		w := row.ask(t, f, f.keys.mint(t, f.keys.claims()))
+
+		if w.Code != row.served {
+			t.Errorf("%s: %s %s = %d; want %d:\n%s", row.name, row.method, row.target, w.Code, row.served, w.Body.String())
+		}
+		if got := w.Header().Get(headerContentType); got != contentTypeHTML {
+			t.Errorf("%s: answered as %q; want %q — this door answers a person with a document", row.name, got, contentTypeHTML)
+		}
+	}
+
+	records := f.records(t)
+	if len(records) != len(rows) {
+		t.Fatalf("%d requests emitted %d audit records (%v); want one each", len(rows), len(records), records)
+	}
+	for i, row := range rows {
+		if got, want := records[i]["action"], string(row.action); got != want {
+			t.Errorf("%s recorded as %v; want %v — this row does not reach the browser door, so nothing said about it below is about layer 1",
+				row.name, got, want)
+		}
+	}
+
+	// And the fleet really carries what the refusals below have to withhold.
+	if page := f.view(t).Body.String(); !strings.Contains(page, planted.Name) {
+		t.Errorf("the fleet does not name the session the outage must withhold:\n%s", page)
+	}
+}
+
+// TestEveryBrowserRequestIsRefusedWhenTheKeysCannotBeObtained is FR-009 at the
+// routes rather than at the door: with the edge's signing keys unobtainable,
+// every page this daemon serves answers the one uniform refusal, and the handler
+// behind it does not run.
+//
+// The assertion presented is genuine — minted by this fleet's own key server,
+// inside its validity, naming the allowlisted operator, and served by the
+// control above. The only thing wrong with any of these requests is that the
+// daemon cannot obtain the keys to check it against, which is the whole of "an
+// identity that cannot be verified is not an identity". The tempting failure is
+// the opposite reading, where a validator that cannot check an assertion decides
+// it has nothing to object to.
+//
+// Two shapes of unobtainable, because they fail in different places and only one
+// of them looks like an outage: a key source nothing answers on, and one that
+// answers perfectly with a set holding no usable key.
+func TestEveryBrowserRequestIsRefusedWhenTheKeysCannotBeObtained(t *testing.T) {
+	t.Parallel()
+
+	for name, newKeys := range map[string]func(*testing.T) *keyServer{
+		"a key source that cannot be reached": newDeadKeyServer,
+		"a key set holding no usable key":     newEmptyKeyServer,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFleetWith(t, newKeys(t))
+			planted, _ := f.fixture.plant(t, session.Session{Name: "a session an outage must not reveal", WorkDir: f.fixture.repo})
+
+			rows := browserSurface(planted.ID)
+			var first *httptest.ResponseRecorder
+			for _, row := range rows {
+				w := row.ask(t, f, f.keys.mint(t, f.keys.claims()))
+
+				if w.Code != http.StatusUnauthorized {
+					t.Fatalf("%s: %s %s = %d; want %d:\n%s", row.name, row.method, row.target, w.Code, http.StatusUnauthorized, w.Body.String())
+				}
+				body := w.Body.String()
+				if body != string(bodyBrowserRefused) {
+					t.Errorf("%s answered %q; want the browser door's one refusal", row.name, body)
+				}
+				// The fleet's own contents, and the not-found page's copy. The
+				// second is the quieter disclosure: an answer that told a stranger
+				// which paths this daemon does not serve would be the route table,
+				// handed out during the one failure where nobody is verified.
+				for _, withheld := range []string{planted.ID, planted.Name, f.fixture.repo, notFoundTitle} {
+					if strings.Contains(body, withheld) {
+						t.Errorf("%s: the refusal carries %q:\n%s", row.name, withheld, body)
+					}
+				}
+
+				if first == nil {
+					first = w
+					continue
+				}
+				// Uniform across routes, not merely across failures (SC-001). The
+				// door's own table proves one path answers every spoiled assertion
+				// alike; this proves the pages do not differ from each other, which
+				// is what a scanner comparing two addresses would read.
+				if !maps.EqualFunc(w.Header(), first.Header(), func(a, b []string) bool { return strings.Join(a, "\x00") == strings.Join(b, "\x00") }) {
+					t.Errorf("%s answered with headers %v, and %s with %v; the difference between two addresses is not something a stranger is owed",
+						row.name, w.Header(), rows[0].name, first.Header())
+				}
+			}
+
+			records := f.records(t)
+			if len(records) != len(rows) {
+				t.Fatalf("%d requests emitted %d audit records (%v); FR-041 requires exactly one each", len(rows), len(records), records)
+			}
+			for i, row := range rows {
+				if got, want := records[i]["action"], string(audit.ActionAccessReject); got != want {
+					t.Errorf("%s recorded as %v; want %v", row.name, got, want)
+				}
+				if got, want := records[i]["decision"], string(audit.Deny); got != want {
+					t.Errorf("%s recorded decision %v; want %v", row.name, got, want)
+				}
+				if got, want := records[i]["caller"], audit.CallerUnknown; got != want {
+					t.Errorf("%s recorded caller %v; want %v — no identity was established, so none may be named", row.name, got, want)
+				}
+			}
+			if trail := f.sink.String(); strings.Contains(trail, planted.Name) {
+				t.Errorf("the trail carries the session the outage withheld:\n%s", trail)
+			}
+		})
+	}
+}
+
+// TestAnUnobtainableKeySetCostsOneFetchAndNoStartup is the "does not crash" half
+// of the claim, in the two places a fail-closed path usually goes wrong.
+//
+// Startup first. SC-013 makes a missing or invalid layer-1 *configuration* a
+// startup failure; whether the key source is answering this morning is not
+// configuration, and a daemon that fetched at boot would refuse to start
+// whenever its identity provider was having a bad one — taking the API door,
+// which needs none of this, down beside the dashboard it cannot serve.
+//
+// Then the cost of each refusal. Anyone who can reach the listener can ask for
+// the dashboard as often as they like, so a fetch per refused request would turn
+// an outage at the edge into a load generator pointed at it, and would make
+// every one of those requests wait out a fresh timeout of its own. The refetch
+// floor is what prevents both, and this is the only place it is asserted through
+// a route.
+func TestAnUnobtainableKeySetCostsOneFetchAndNoStartup(t *testing.T) {
+	t.Parallel()
+
+	keys, fetches := newRefusingKeyServer(t)
+	f := newFleetWith(t, keys)
+
+	if got := fetches.Load(); got != 0 {
+		t.Errorf("the daemon asked the key source %d times before any request arrived; reachability is not configuration, and a daemon that fetches at startup does not start during an outage", got)
+	}
+
+	const asks = 5
+	for i := range asks {
+		w := f.openWith(t, "/", f.keys.mint(t, f.keys.claims()))
+
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("request %d = %d; want %d:\n%s", i+1, w.Code, http.StatusUnauthorized, w.Body.String())
+		}
+		if body := w.Body.String(); body != string(bodyBrowserRefused) {
+			t.Fatalf("request %d answered %q; want the browser door's one refusal", i+1, body)
+		}
+	}
+
+	if got := fetches.Load(); got != 1 {
+		t.Errorf("%d refused requests asked the key source %d times; want 1 — the refetch floor is what keeps an outage from being amplified by whoever is knocking", asks, got)
+	}
+}
+
+// TestABrowserRequestIsAnsweredWhenTheKeySourceNeverAnswers is the "does not
+// hang" half, and the case no other fixture here can stand in for: a socket that
+// accepts and then stays quiet is what an identity provider looks like when it
+// is wedged rather than down, and it is the shape that turns a refusal into a
+// request that never ends.
+//
+// Nothing in this package bounds it. The bound is internal/access's own client
+// timeout, and this is the only test in the repository that would notice its
+// removal — which is also why this test is the slowest one in the package: it
+// waits for that timeout to elapse. The deadline below is deliberately far
+// larger, because what is being asserted is that *a* bound exists and not what
+// it is; a test tightened to the current value would fail on a busy machine and
+// would have to be relaxed by whoever was least able to tell a hang from a
+// hiccup.
+func TestABrowserRequestIsAnsweredWhenTheKeySourceNeverAnswers(t *testing.T) {
+	t.Parallel()
+
+	f := newFleetWith(t, newSilentKeyServer(t))
+
+	// Minted here rather than inside the goroutine: mint fails the test on error,
+	// and t.Fatalf may only be called from the goroutine running the test.
+	assertion := f.keys.mint(t, f.keys.claims())
+
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Header.Set(headerAccessAssertion, assertion)
+
+		w := httptest.NewRecorder()
+		f.ServeHTTP(w, r)
+		answered <- w
+	}()
+
+	const wedged = 60 * time.Second
+	select {
+	case w := <-answered:
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("GET / against a silent key source = %d; want %d:\n%s", w.Code, http.StatusUnauthorized, w.Body.String())
+		}
+		if body := w.Body.String(); body != string(bodyBrowserRefused) {
+			t.Errorf("GET / against a silent key source answered %q; want the browser door's one refusal", body)
+		}
+	case <-time.After(wedged):
+		t.Fatalf("GET / has been waiting on a silent key source for %s; the request never comes back, which is a daemon that hangs rather than one that refuses", wedged)
+	}
+}
+
+// TestTheSignedAPIIsUnaffectedWhenTheKeysCannotBeObtained is what "the daemon
+// does not crash" means to the caller who is not looking at a browser.
+//
+// An outage at the identity provider closes the dashboard, because the
+// dashboard's whole credential is an assertion nothing can check. It must close
+// nothing else: the six operations are authorised by a signature this daemon
+// verifies with a secret it already holds, and they neither read an assertion
+// nor wait on one (FR-012). T020 owns the general form of that claim — each door
+// refuses only by the check that applies to it — and this is that claim during
+// the one failure that could plausibly cross the two doors.
+//
+// The browser request first, so the sweep is not passing because the outage was
+// never happening.
+func TestTheSignedAPIIsUnaffectedWhenTheKeysCannotBeObtained(t *testing.T) {
+	t.Parallel()
+
+	f := newFleetWith(t, newDeadKeyServer(t))
+
+	if w := f.openWith(t, "/", f.keys.mint(t, f.keys.claims())); w.Code != http.StatusUnauthorized {
+		t.Fatalf("GET / = %d; want %d — the keys are obtainable after all, so nothing below is about an outage", w.Code, http.StatusUnauthorized)
+	}
+
+	for i, route := range routes {
+		// A distinct instant per route: the signature covers the timestamp and
+		// the body, so two identical empty-bodied requests would share one and
+		// the replay cache would refuse the second.
+		w := httptest.NewRecorder()
+		f.ServeHTTP(w, requestFor(t, f.testServer, route, testTime.Add(-time.Duration(i)*time.Second)))
+
+		if want := reachedStatus[route]; w.Code != want {
+			t.Errorf("%s = %d; want %d — this door reads no assertion, so an unobtainable key set is not its business:\n%s",
+				route, w.Code, want, w.Body.String())
+		}
+		if got := w.Header().Get(headerContentType); got != contentTypeJSON {
+			t.Errorf("%s answered as %q; want %q — milestone 1's responses are frozen byte for byte", route, got, contentTypeJSON)
+		}
 	}
 }
