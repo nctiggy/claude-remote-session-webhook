@@ -10889,3 +10889,125 @@ timeout from the six routes milestone 1 shipped with it. Then T023–T029 (the r
 which the plan says carries nearly all of the milestone's unresolved risk) and T030–T034
 (docs, `.env.example`, the quickstart run — which must deal with #266). Plus the four
 unowned findings above (202, 214, 223, 231).
+
+---
+
+## Iteration 65 (milestone 2, iteration 22) — 2026-08-04 08:33
+
+**Did:** **T021a** — registered the embedded static assets on the browser door and wrote
+`web/static/crswd.js`. This closes findings **223** and **214** together, which is the
+first time in this milestone a browser would actually see the dashboard the design system
+describes: the stylesheet was written (T015), embedded (T002), swept for tokens and
+cross-checked against the markup, and **never served**; the rain canvas was rendered
+(T013) and positioned at both permitted opacities, and nothing ever drew into it.
+
+**One literal route per asset, not `/static/{path}`.** The task list sketches a wildcard;
+`contracts/dashboard.md`'s route table names the two literal paths, and the literal form is
+strictly stronger. net/http **unescapes a wildcard's value**, so
+`/static/..%2ftemplates%2fdashboard.html` arrives as a single segment holding
+`../templates/dashboard.html` and the handler is left validating a caller-supplied path —
+the check `docs/security.md` §2 says to avoid *needing*. With literal patterns there is
+nothing to traverse: a path that is not exactly one of the embedded files matches no asset
+route, falls to the catch-all, and is answered as a page nothing claims. `loadAssets`
+walks `web.Static` at construction and refuses a file it cannot type or one nested deeper
+than the route that would name it, on the same terms `parseTemplates` refuses a broken
+template.
+
+**`Cache-Control: no-cache` plus a content ETag**, resolving the silence iteration 55
+left (its learning 2: "whoever registers the asset route may add a real caching policy").
+The contract exempts the assets from `no-store` and names no replacement. A `max-age`
+would be wrong here: the URLs carry **no fingerprint**, so a freshness lifetime lets a
+browser run the previous binary's `crswd.js` against this one's markup, and that script is
+the whole of the dashboard's client code. The tag is a sha256 of the embedded bytes,
+`http.ServeContent` answers `If-None-Match` with a 304, and staleness is impossible.
+
+**The rain loop reads the stylesheet's tokens at runtime.** A canvas is painted from
+strings in a script, so Principle VII has no CSS to be swept out of — `getComputedStyle`
+on `:root` is what keeps `--phosphor`, `--text`, `--mono`, `--fs-body` and the new
+`--rain-wipe` (the `rgba(5,7,5,.22)` the design system already names, tokenised here the
+way the typography values were) the single source. `stylesheet_test.go` holds both halves:
+no literal colour in the script, and every `--token` it reads really declared in the token
+block.
+
+**Mutations, all caught:**
+
+1. The registration loop removed → `TestTheEmbeddedAssetsAreServedThroughTheBrowserDoor`,
+   `TestEveryEmbeddedAssetHasARoute`, and **two tests I did not write** —
+   `TestTheBrowserSurfaceIsServedWhenTheKeysCanBeObtained` and T020's
+   `TestTheBrowserSurfaceIsServedWhateverSignatureItCarries`, because the asset rows were
+   added to `browserSurface`.
+2. Assets registered on the mux **directly**, bypassing layer 1 → four tests including
+   `TestEveryBrowserRequestIsRefusedWhenTheKeysCannotBeObtained` (both outage shapes).
+   This is the "behind layer 1" half of the task.
+3. `Content-Type: text/plain` and the ETag dropped → the serving test plus the surface
+   sweep's new `contentType` column.
+4. An inline `<script>` and a `<script src>` without `defer` added to `not-found.html` →
+   `TestEveryScriptATemplateLoadsIsAnEmbeddedAssetAndNeverAnInlineOne`, three lines.
+5. The page's `<script>` reference deleted → `TestEveryPageLoadsTheLoopThatDrivesItsRain`.
+6. `--rain-wipe` renamed in the script only → both new stylesheet tests.
+7. `loadAssets` accepting any file anywhere → `TestLoadAssetsRefuses`, two rows.
+
+**Learned:**
+
+1. **`forbiddenInTemplates`'s `<script` row had to go, and could not simply be relaxed.**
+   RE2 has no lookahead, so "a script element that is not `src="/static/…"`" is not
+   expressible as one pattern. It is now a test of its own that matches whole elements —
+   body must be empty, attributes must be exactly `src="/static/<file>.js" defer`, and the
+   file must exist in `web.Static`. That is a *stronger* enforcement than the old row: it
+   also catches an unclosed element (opener count vs pair count) and a reference to an
+   asset that is not embedded.
+2. **The JS sweeps must strip comments first.** The first run failed on the file's own
+   prose — `crswd.js` explains that it wipes "rather than `clearRect`" and will use
+   `textContent` and "never `innerHTML`". `jsComment` mirrors `cssComment`, for the reason
+   given there: every file in this repo names the thing it must not contain.
+3. **`fs.WalkDir` is lexically ordered, which decides which refusal a table row sees.**
+   `TestLoadAssetsRefuses`' first row had `crswd.json` and `logo.svg` in one tree and got
+   the `.json` refusal; a row asserting on a message must contain exactly one bad file.
+
+**Findings:**
+
+275. **A path with a literal `..` is answered by net/http *before* any door runs, and is
+    never audited.** `GET /static/../templates/dashboard.html` returns a `301` to
+    `/templates/dashboard.html` from `ServeMux.findHandler`'s `cleanPath` redirect, with
+    **no audit record emitted** — verified by counting records across the traversal table.
+    Nothing leaks (the redirect target is itself a path nothing claims, and this table
+    asserts it 404s), but `handleUnrouted`'s comment says milestone 1's unaudited
+    "non-clean path got a 301 with a Location" was closed by moving unrouted paths onto
+    this door, and **that half was not closed** — the redirect precedes pattern matching
+    entirely. FR-041 says one record per request. Fixing it means wrapping the mux rather
+    than registering another pattern, so it is deliberately not done here. **Unowned.**
+276. **`TestOnlyAServedAssetMayBeStored` now describes the door and not the response.** It
+    asserts an admitted asset request leaves the door with *no* `Cache-Control` at all,
+    which is still true — `authenticateBrowser` deletes the `no-store` default — but the
+    real `/static/crswd.css` response carries `no-cache` because `serveAsset` sets it
+    after. Two levels, one header. Worth knowing before editing either: the door decides
+    *whether* an asset may be stored, the handler decides *on what terms*. If **T031**
+    writes the cache rule into `docs/security.md` (161), it should say both.
+277. **`browserSurface` gained a `contentType` column**, so the fail-closed suite now
+    covers the two assets as well. Noted because an earlier iteration recorded that the
+    table has *no* asset row "because there is no asset route" — that reason is gone.
+278. **The rain is unverified in a browser.** Go cannot execute JavaScript, so what is held
+    here is structural: the tokens it reads exist, it names `requestAnimationFrame`,
+    `canvas.rain` and `prefers-reduced-motion`, and it carries no `clearRect`, `innerHTML`
+    or `eval(`. Whether it *looks* like rain is for **T034**'s quickstart run, which walks
+    the dashboard by hand. Same for the 304: the conditional request is tested, the
+    browser's use of it is not.
+279. **Findings 202–205, 211–216 and 231–233 are unchanged**, minus the two this iteration
+    closed (214, 223). Still unowned: `Manager.List`'s clock-neutrality covered only from
+    another package (203), a component test not being a call-site test (204/233), `Server`
+    and `Manager` holding separate clocks (205), the untokenised values in
+    `docs/design-system.md` (216), `Store.SetState` uncalled and contradicted. Now owned by
+    the two tasks that follow this one: the missing `GET /sessions/{id}/view` (202 →
+    **T021b**) and the leak suite's blindness to the browser door (231 → **T021c**).
+    Iteration 1 #1 / 64 #270 (`loop.sh`'s `--no-verify` sweep commit) and 64 #271
+    (duplicate checkbox state, ticked in both files by hand again) still stand. Suite
+    runtime is now ~5.4s.
+
+**Left:** **T021b** — `GET /sessions/{id}/view`, the page every session card already links
+to (`session-card.html` line 26), owner-scoped through `Manager.View` so watching does not
+advance the idle clock, rendering the card header plus the pane partial. It must exist
+before T026 attaches the stream to it, and `browserSurface`'s "the page a card links to"
+row expects `route.unknown`/404 today — that row moves to `dashboard.view`/200 when the
+page lands. Then **T021c** (the leak suite over the browser door), T022–T029 (US2, the
+stream), and T030–T034 (docs, `.env.example`, the quickstart run — which must deal with
+#266). Plus the unowned findings above, now including **275**.
