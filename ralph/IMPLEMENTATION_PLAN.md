@@ -66,23 +66,23 @@ owner plus its clock origin.
 - [x] T004 `internal/tmuxctl/fake.go`: in-memory `Controller` recording exact argv, able to simulate kill-succeeds-but-still-present, self-vanished sessions, a lookalike in `List`, a 25-hour-old session, and exec failure distinct from absence
 - [x] T005 `internal/tmuxctl/exec.go`: real controller over `exec.Command`, argv slices only. `Paste` uses `load-buffer -b <buf> -` with the payload on **stdin** plus `paste-buffer -d`; `capture-pane -p` **without `-e`**; `Has` distinguishes exit-1 from exec failure; `List` treats "no server running" as empty. Integration test behind `//go:build tmux` on an isolated socket
 - [x] T006 `internal/tmuxctl/ansi.go`: defensive control-sequence stripper with golden-file tests in `testdata/`
-- [ ] T007 `internal/config/config.go`: load from environment. `CRSW_SHARED_SECRET` required — **startup fails** if unset or under 32 bytes. `CRSW_ALLOWED_ROOTS` optional, defaulting to `$HOME/code` with a **loud warning on every defaulted start**. Non-loopback `CRSW_LISTEN` is fatal. Table test every case
-- [ ] T008 `internal/audit/audit.go`: structured JSON on stdout via `log/slog`, as a **fixed struct** — no `map[string]any`, no `slog.Any` passthrough, so the record shape cannot carry arbitrary data
+- [x] T007 `internal/config/config.go`: load from environment. `CRSW_SHARED_SECRET` required — **startup fails** if unset or under 32 bytes. `CRSW_ALLOWED_ROOTS` optional, defaulting to `$HOME/code` with a **loud warning on every defaulted start**. Non-loopback `CRSW_LISTEN` is fatal. Table test every case
+- [x] T008 `internal/audit/audit.go`: structured JSON on stdout via `log/slog`, as a **fixed struct** — no `map[string]any`, no `slog.Any` passthrough, so the record shape cannot carry arbitrary data
 
 ### US1 — Start a session from a signed request (P1, MVP)
 
-- [ ] T009 `internal/auth/hmac.go`: HMAC-SHA256 over `timestamp + "." + rawBody` with `hmac.Equal`, body re-buffered for the handler. Tests: valid, bad signature, tampered body, missing headers
-- [ ] T010 `internal/auth/hmac.go`: 300s timestamp window enforced in **both** directions against an injected `Clock`; test proves a far-future timestamp is rejected
-- [ ] T011 `internal/auth/replay.go`: replay cache keyed on signature, TTL `2 × skew`, with `Observe` checking and recording in **one** critical section; test proves a second use is refused and two concurrent replays yield one winner
-- [ ] T012 `internal/auth/caller.go`: `Caller` identity derived server-side only, plus one opaque error so no caller learns which check failed
-- [ ] T013 `internal/session/id.go`: IDs from `crypto/rand`, 16 bytes → 32 lowercase hex (**not** `crypto/rand.Text` — it needs a `go 1.24` directive; go.mod deliberately declares 1.23.0). Test asserts shape, non-sequential, non-colliding
-- [ ] T014 `internal/session/name.go`: name validation `^[a-zA-Z0-9-]{1,64}$`, rejecting `:` and `.` explicitly — they address a different tmux target. Hostile table test
-- [ ] T015 `internal/session/workdir.go`: `filepath.Clean` + `EvalSymlinks` (failing closed), then containment under an approved root **at a path-separator boundary**. Tests cover `..`, absolute escapes, a symlink pointing outside, and the prefix trap where `/home/u/codeEVIL` must fail against `/home/u/code`
-- [ ] T016 `internal/session/session.go`: `Session` model with `Owner`, the `starting`/`running`/`dead` states, and the in-memory store. Token expiry is **derived** from `CreatedAt + 24h`, never stored separately
-- [ ] T017 `internal/session/token.go`: per-session bearer tokens from `crypto/rand`, returned once, stored as SHA-256, compared with `hmac.Equal`. Test asserts the plaintext is never persisted
-- [ ] T018 `internal/session/manager.go`: `Manager.Create` — tmux session `crswd-<id>` in the validated directory, set `@crswd-managed` and `@crswd-owner`, then send `claude --dangerously-skip-permissions` as keys. Test asserts call order and that the target derives only from the ID
-- [ ] T019 `internal/httpapi/server.go`: `ServeMux` with Go 1.22 method+wildcard patterns, server timeouts, and a startup assertion that the listen address is **loopback**
-- [ ] T020 `internal/httpapi/middleware.go`: authentication on **every** registered route, one audit record per request, uniform `401`. The test must iterate the router's registered routes, not a hand-written list, so a future route cannot be forgotten
+- [x] T009 `internal/auth/hmac.go`: HMAC-SHA256 over `timestamp + "." + rawBody` with `hmac.Equal`, body re-buffered for the handler. Tests: valid, bad signature, tampered body, missing headers
+- [x] T010 `internal/auth/hmac.go`: 300s timestamp window enforced in **both** directions against an injected `Clock`; test proves a far-future timestamp is rejected
+- [x] T011 `internal/auth/replay.go`: replay cache keyed on signature, TTL `2 × skew`, with `Observe` checking and recording in **one** critical section; test proves a second use is refused and two concurrent replays yield one winner
+- [x] T012 `internal/auth/caller.go`: `Caller` identity derived server-side only, plus one opaque error so no caller learns which check failed
+- [x] T013 `internal/session/id.go`: IDs from `crypto/rand`, 16 bytes → 32 lowercase hex (**not** `crypto/rand.Text` — it needs a `go 1.24` directive; go.mod deliberately declares 1.23.0). Test asserts shape, non-sequential, non-colliding
+- [x] T014 `internal/session/name.go`: name validation `^[a-zA-Z0-9-]{1,64}$`, rejecting `:` and `.` explicitly — they address a different tmux target. Hostile table test
+- [x] T015 `internal/session/workdir.go`: `filepath.Clean` + `EvalSymlinks` (failing closed), then containment under an approved root **at a path-separator boundary**. Tests cover `..`, absolute escapes, a symlink pointing outside, and the prefix trap where `/home/u/codeEVIL` must fail against `/home/u/code`
+- [x] T016 `internal/session/session.go`: `Session` model with `Owner`, the `starting`/`running`/`dead` states, and the in-memory store. Token expiry is **derived** from `CreatedAt + 24h`, never stored separately
+- [x] T017 `internal/session/token.go`: per-session bearer tokens from `crypto/rand`, returned once, stored as SHA-256, compared with `hmac.Equal`. Test asserts the plaintext is never persisted
+- [x] T018 `internal/session/manager.go`: `Manager.Create` — tmux session `crswd-<id>` in the validated directory, set `@crswd-managed` and `@crswd-owner`, then send `claude --dangerously-skip-permissions` as keys. Test asserts call order and that the target derives only from the ID
+- [x] T019 `internal/httpapi/server.go`: `ServeMux` with Go 1.22 method+wildcard patterns, server timeouts, and a startup assertion that the listen address is **loopback**
+- [x] T020 `internal/httpapi/middleware.go`: authentication on **every** registered route, one audit record per request, uniform `401`. The test must iterate the router's registered routes, not a hand-written list, so a future route cannot be forgotten
 - [ ] T021 `internal/httpapi/decode.go`: `MaxBytesReader` + `DisallowUnknownFields`. Tests cover unknown fields, oversize, truncated, and wrong-shape bodies
 - [ ] T022 `internal/httpapi/sessions.go`: `POST /sessions` → 201 with the token returned exactly once and `expires_at` exactly 24h after `created_at`
 - [ ] T023 `internal/httpapi/middleware.go`: session-scoped resolver — bearer token **and** owner match, expired tokens refused, returning a `404` **byte-identical** for unknown, not-owned, and wrong-token

@@ -57,9 +57,13 @@ for (( i=1; i<=MAX_ITERATIONS; i++ )); do
   # Fresh process = fresh context. Settings are passed explicitly so the repo
   # hooks (danger-guard, format-and-lint) apply to autonomous runs too.
   set +e
+  # stdin is redirected from /dev/null: with no terminal attached (cron, nohup,
+  # a background job), claude waits ~3s for stdin that never arrives and warns.
+  # Harmless but noisy, and it makes real failures harder to spot in the log.
   claude -p "$(cat "$PROMPT_FILE")" \
     --permission-mode acceptEdits \
-    --settings .claude/settings.json
+    --settings .claude/settings.json \
+    < /dev/null
   rc=$?
   set -e
 
