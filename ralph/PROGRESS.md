@@ -9359,3 +9359,148 @@ go.sum                                    absent  ✅
     registered route on the browser door yet (**T014**/**T016**), the CSP that nothing
     renders under yet (**T013**/**T015**/**T017**), `leak_test.go`'s milestone-1-only
     action list (**T017**/**T029**), and the missing `--dev-auth-bypass` flag (**T034**).
+
+---
+
+## Iteration 55 (milestone 2, iteration 12) — 2026-08-04 05:58
+
+**Did:** **T012** — `Manager.View(id, owner) (Session, error)` in
+`internal/session/manager.go`: the owner-scoped read that does **not** advance the idle
+clock, for the dashboard (T014) and the stream (T023/T028) to reach records through. Plus
+the two comment amendments the task names. Five tests in `manager_test.go`.
+
+**Shape, and the reasons behind the non-obvious parts:**
+
+- **Named `View`, matching `contracts/dashboard.md`'s "the clock-neutral single read" and
+  the `/sessions/{id}/view` route.** No spec names the method, so this is this iteration's
+  choice; T014 and T023 should use it rather than adding a second one.
+- **Three checks, not five.** `store.Get(id, owner)` (unknown id and someone else's id are
+  one answer from one lookup) and the `StateDead` refusal. What is deliberately absent:
+  - **No credential check.** A browser holds no per-session token — the plan's resolved
+    decision is that a verified identity plus ownership *is* the distinction the token
+    exists to make. So `View` takes no third argument, and there is no way to call it
+    with one.
+  - **No expiry check, and this was the one real judgement call.** `Resolve` refuses past
+    `TokenExpiry`, but what expires there is the *credential*, and `View` presents none.
+    A session's own life is ended by the reaper, which deletes the record — so a session
+    past a bound stops being viewable by ceasing to exist. The alternative (refusing past
+    `AbsoluteDeadline`) would hide a live unsandboxed shell from the operator for up to
+    one `SweepInterval`, which is the worse lie for a read-only view. Written into the doc
+    comment so T028 does not have to re-derive it. **See finding 181 — T028 must decide
+    the same question for the stream's per-tick re-evaluation, where SC-015 may want a
+    tighter answer than "the record vanished".**
+- **The property holds by construction, not by discipline.** `View` takes no clock reading
+  at all, so there is nothing in the method to hand to `Touch`. That is why it is a second
+  method rather than a `touch bool` parameter on `Resolve`.
+- **Both stale comments amended.** `Resolve`'s "this is the one place a request becomes a
+  session" is now "the only path that *drives*", with a paragraph naming the re-touch as
+  the failure the asymmetry exists to prevent. `List`'s "one of these two calls" is now
+  three. `Store.Get`'s and `lookup`'s comments needed nothing: they say request-reachable
+  paths go through `Get`, which `View` does.
+
+Gate, executed not asserted, one command at a time (finding 115):
+
+```
+go build ./...                            OK
+go build -tags dev ./...                  OK
+go vet ./...                              OK
+go test ./... -count=1                    OK
+golangci-lint run                         OK (silent)
+gofmt -l .                                OK (silent)
+go test -tags dev ./... -count=1          OK
+go test -tags tmux ./... -count=1         OK
+go test -race ./internal/session          OK
+go.sum                                    absent  ✅
+```
+
+`go test -tags quickstart ./cmd/crswd` was not run: nothing here touches `cmd/crswd`, and
+finding 78 makes its result known in advance. It is **T021's**.
+
+**Five mutations, each applied and reverted:**
+
+1. `View` calls `store.Touch(s.ID, m.clock.Now())` before returning — the exact "fix" the
+   amended comment warns against → `TestViewLeavesTheIdleClockWhereResolveMovesIt` **and**
+   `TestASessionWatchedWithoutPauseIsStillReapedOnTime`. Two tests, because the second one
+   states the consequence (the reaper still takes it) rather than the mechanism.
+2. `store.lookup(id)` instead of `store.Get(id, owner)` — the owner-blind read
+   milestone 1 keeps unexported → the `another owner entirely` and `no owner at all` rows.
+   Note the other two rows pass, which is why an owner-scoped read needs *both* negative
+   rows and not just a happy path.
+3. The error wrapped as `"view session %s: %w"` → `TestViewNamesNoCallerSuppliedTextInItsError`
+   alone. FR-042.
+4. The `StateDead` branch removed → `TestViewRefusesADeadSession` alone.
+5. **`Resolve`'s own `store.Touch` call removed** → `TestViewLeavesTheIdleClockWhereResolveMovesIt`
+   **and nothing else in the repository**. See finding 180.
+
+**Learned:**
+
+1. **Milestone 1's idle-clock advance had no test until this one.** Mutation 5 deletes the
+   `Touch` from `Resolve` and the entire suite stays green except the new contrast test.
+   That is why this task's test asserts *both* halves on one record rather than only that
+   `View` leaves the clock alone: the one-sided version would also pass against a daemon
+   whose idle clock had stopped working for everybody, which is a session that never gets
+   reaped.
+2. **A stopped clock at `contractCreatedAt` makes the two paths indistinguishable.**
+   `Store.Touch` only moves forward, and `newManagerFixture`'s clock stands exactly where
+   the record was written, so `Resolve` through `f.mgr` is a no-op on `LastActivity`. The
+   contrast test builds its manager with `f.managerAt(t, f.store, f.now.Add(30*time.Minute))`.
+   Same trap as finding "a fixture whose `CreatedAt == LastActivity` hides the idle clock"
+   (iteration 54, mutation 3) — one fixture, two ways to be fooled by it.
+3. **`mustStored` is now the way to observe the clock.** Every read in this package hands
+   back a *copy*, so asserting on a returned `Session` says nothing about what was written.
+   The helper reads through `f.store.Get` and is next to the View tests; T014's and T023's
+   tests will want it.
+4. **`expiredAt` is reachable from `manager_test.go`** (same package, `reaper.go` is
+   internal to it), which is what let the watched-forever test be judged by the reaper's
+   own function rather than by a recomputed deadline that would agree with a broken `View`.
+
+**Left:** T013–T034. Next is **T013**: the canonical partials in `web/templates/partials/`
+— header, status pill, session card, empty state, rain canvas — with the action rows as an
+absent parameter, not deleted code.
+
+**Findings:**
+
+180. **`Manager.Resolve`'s `store.Touch` is covered by exactly one test, and it is the one
+    added this iteration.** Deleting that call leaves every other test in the repo green
+    (mutation 5). The idle clock is what stops a forgotten session living forever, so the
+    thinnest coverage in the package sits under the bound Principle VI calls
+    non-negotiable. Not fixed here — a dedicated `TestResolveAdvancesTheIdleClock` is
+    milestone-1 territory and this task's contrast test already pins it — but if a later
+    iteration ever splits or renames these tests, that coverage must not go with them.
+181. **`View` deliberately does not refuse a session past its `AbsoluteDeadline`, and
+    T028 must decide whether the stream agrees.** The reasoning is in the doc comment: the
+    credential expires, the session is ended by the reaper. The consequence is that a
+    record past its ceiling stays viewable for up to one `SweepInterval` (30s), while the
+    API refuses to drive it from the deadline instant. `contracts/stream.md` says a
+    "destroyed, reaped, or **expired**" session stops delivering within one polling
+    interval (SC-015), and if that clock starts at *expiry* rather than at *the record
+    being deleted*, the stream's per-tick re-evaluation needs its own `expiredAt` check —
+    which is **T028's**, not this read's.
+182. **`View` has no production caller yet**, exactly as `DisplayState` had none at T011
+    (finding 172). The plan's rule — a task is done when something calls it — is satisfied
+    at **T014**, which must read through `Manager.View`/`Manager.List` and never
+    `Store.lookup`. If T014 reaches for the store directly, this task bought nothing.
+183. **Iteration 14 #1 / … / 54 #174 still stands:** `git checkout --`, `git restore`,
+    `perl -i` and `sed -i` are outside the permission allowlist, so five mutations cost ten
+    Edit round trips. Iteration 54's route — a single `Edit` anchored on the previous
+    entry's last finding — worked again for this entry and is what the next iteration
+    should use. `cp` is also outside the allowlist, so there is no scratch-copy route
+    either.
+184. **Iteration 1 #1 / … / 54 #175 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the hook:
+    "no leaks found".)
+185. **Iteration 2 #2 / … / 54 #176 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+186. **Iteration 6 #6 / … / 54 #177 still stands:** `AGENTS.md`'s command table names none
+    of `go test -tags tmux ./...`, `go test -tags quickstart ./cmd/crswd`, or
+    `go test -tags dev ./...`. **T032.**
+187. **`deploy/README.md`'s four-variable trap (44 #84 / … / 54 #178) still stands.**
+    **T033.**
+188. **Findings 161–165 (iteration 53) and 172–173 (iteration 54) are untouched by this
+    task** and still stand: the `Cache-Control` default resolved inside a contract silence
+    (**T031**), no registered route on the browser door yet (**T014**/**T016**), the CSP
+    nothing renders under yet (**T013**/**T015**/**T017**), `leak_test.go`'s
+    milestone-1-only action list (**T017**/**T029**), the missing `--dev-auth-bypass` flag
+    (**T034**), `DisplayState` with no production caller (**T014**), and `Store.SetState`
+    now uncalled *and* contradicted by the derived display state.
