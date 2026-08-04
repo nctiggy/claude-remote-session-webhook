@@ -11758,3 +11758,80 @@ settled). Then T030–T034 (docs — T031 also owes `docs/security.md` the `Sec-
 which exists only in the spec and this file — `.env.example`, and the quickstart run, which
 must deal with #266/#292). Plus the unowned findings above, and the design decision 306 needs
 from the operator.
+
+---
+
+## Iteration 73 (milestone 2, iteration 30) — 2026-08-04 10:33
+
+**Did:** **T027** — the `stream.open` record now lands at the open. `sessionStream` calls
+`s.emit(AuditFrom(r.Context()))` the moment `openStream` succeeds, and `Server.emit` gained an
+at-most-once guard so the middleware's deferred call — untouched, still on every path out
+including a panic — writes nothing a second time. One record per stream request, carrying the
+authorisation decision, no close record. Findings 290, 295 and 302 are closed.
+
+**Three things the next iteration should not have to re-derive:**
+
+1. **The emit sits *after* `openStream`, not after the cap.** "The authorisation decision" is
+   settled one line earlier, so after the cap looks like the faithful reading — it is not.
+   The failed-open path denies with `errStreamNotOpened` and returns, and
+   `TestAStreamThatCannotLiftItsWriteDeadlineIsNotServed` asserts that reason is on the trail.
+   Emitting before it would drop that amendment on the floor and turn a recorded 500 into an
+   unexplained `allow`. Placed after the open, the two readings agree: a request that ended
+   has its record written by the middleware microseconds later, which for a request that
+   ended *is* the open.
+2. **The guard belongs on `emit`, not at the call site.** "Exactly one record per request" is
+   that function's invariant (FR-041), and a handler-side `if !emitted` would be a rule each
+   future early-emitting handler has to remember. The cost is a real trap, pinned by
+   `TestARecordAlreadyWrittenIsNotWrittenAgainWhenTheHandlerReturns`: **after the emit, an
+   amendment reaches nobody.** A handler that emits early must say everything first. T028 is
+   the next handler in this file and will be tempted — re-evaluation runs *after* the emit,
+   so whatever it wants to record about a stream that ended cannot go on this record.
+3. **The fixture's audit sink is now `syncSink`, a mutex over `bytes.Buffer`.** The only way
+   to state FR-016a at all is to read the trail *while* the stream is open, and the record is
+   written on net/http's goroutine — a plain buffer there is a data race `-race` reports.
+   Every call site was already `.sink.String()`, so the swap was mechanical. This is
+   finding 298's sibling; `testServer.failed` still has the same hazard and is still unfixed.
+
+**Mutations, both caught:**
+
+1. The emit call removed from `sessionStream` →
+   `TestTheStreamsRecordIsOnTheTrailWhileTheStreamIsStillOpen` ("0 audit records"). Note this
+   test only fails *because* it reads the trail mid-stream — the same test written after the
+   close passes against milestone 1's behaviour and asserts nothing.
+2. The `ra.emitted` half of the guard removed →
+   `TestARecordAlreadyWrittenIsNotWrittenAgainWhenTheHandlerReturns` (two records, the second
+   a `deny`), which is exactly the close-record shape contracts/stream.md rules out.
+
+**Findings:**
+
+309. **The "no close record" half is proved structurally, not over the wire.** The second
+    emit is the middleware's deferred one, which runs after the handler unwinds on net/http's
+    goroutine, and there is no event a test can wait on for it — a wire test could only ever
+    say "no second record had appeared *yet*". The guarantee actually rests on `emit` writing
+    at most once, which is what the unit test drives. Worth knowing before **T029** writes the
+    acceptance suite: an over-the-wire "exactly one record per stream" assertion needs a
+    signal that the handler returned, and the only one available today is the cap's slot
+    coming back, which is released *before* the deferred emit runs.
+310. **`stream.open` still never reaches `internal/audit/leak_test.go`.** Finding 285's
+    remaining half, unchanged and still **T029**'s. The record now carries a `session_id` on
+    every admitted open, which is the shape the leak corpus should be driving.
+311. **Findings 203–205, 216, 275, 278, 280–283, 285–288, 292–293, 296, 298–301, 303, 305–307
+    are unchanged**, minus 290/295/302 which this iteration closed. Still unowned: the
+    untokenised values in `docs/design-system.md` (216), the unaudited `cleanPath` redirect
+    (275), the rain being unverifiable from Go (278), the scanline overlay (280, needing the
+    operator's answer at 306), the session page being a dead end (282), the page with no live
+    stream after a failed first capture (305), `testServer.failed` not being lock-safe while a
+    stream is open (298), and the `-race` flake in 303 — which did **not** fire this
+    iteration; `-race` on the package is clean at ~7.2s. The duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `tasks.md` was again ticked in both by hand.
+    `internal/httpapi` is ~5.6s.
+
+**Left:** **T028** — the stream lifecycle: re-evaluate authorisation every tick rather than
+establishing it once, the terminal event and `close()` in `crswd.js` (iteration 72's decision
+3), never advancing the idle clock, never delaying teardown or shutdown, and the shared buffer
+dropped when the *session* ends (findings 296 and 299). Read learning 2 above before adding
+anything to that handler's record. Then T029 (the acceptance suite, which also owes findings
+310 and 309, and is where 303 could be settled). Then T030–T034 (docs — T031 also owes
+`docs/security.md` the `Sec-Fetch-Site` rule, which exists only in the spec and this file —
+`.env.example`, and the quickstart run, which must deal with #266/#292). Plus the unowned
+findings above, and the design decision 306 needs from the operator.
