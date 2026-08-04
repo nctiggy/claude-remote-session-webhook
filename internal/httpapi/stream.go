@@ -364,7 +364,10 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 // The capture goes through Manager.Output rather than the controller, which is
 // what keeps one stripper rather than a second that agrees today (FR-029) — and
 // what keeps the stream off the idle clock, since Output takes the record it was
-// given and reaches no store (FR-034f). View does not advance it either, by
+// given and advances nothing on it (FR-034f). The one write it may make is the
+// opposite of an extension: a session the host has confirmed is gone loses its
+// record there, and the next tick's re-evaluation turns that into this stream's
+// terminal event (#21). View does not advance it either, by
 // construction rather than by argument, so watching is not driving on every tick
 // and not only at the open.
 //

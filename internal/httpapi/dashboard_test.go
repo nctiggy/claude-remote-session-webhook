@@ -745,6 +745,60 @@ func TestTheSessionPageStatesAScreenItCouldNotRead(t *testing.T) {
 	}
 }
 
+// TestTheSessionPageAnswersNotFoundOnceTheHostSaysTheSessionIsGone is issue #21:
+// a session whose tmux session died out of band — a host reboot, a tmux server
+// restart, an operator's own kill-session — kept a live card on the fleet, and
+// its page answered with the note written for a host that could not be asked
+// *just now*. The daemon had never asked.
+//
+// It asks now, and the answer is the whole difference. A session the host says
+// is not there loses its record, so this page owes what an id that never existed
+// is owed: the uniform 404, with the card and the pane note both gone, and the
+// fleet stops drawing it on the very next load rather than at the reaper's
+// convenience an hour later.
+func TestTheSessionPageAnswersNotFoundOnceTheHostSaysTheSessionIsGone(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "died on its own", WorkDir: f.fixture.repo})
+	// No kill and no destroy: the session goes the way one whose host restarted
+	// goes, leaving the daemon holding a record for a window nobody killed.
+	f.fixture.tmux.Vanish(live.TmuxName())
+
+	w := f.open(t, "/sessions/"+live.ID+"/view")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("GET the page of a session the host no longer has = %d; want %d", w.Code, http.StatusNotFound)
+	}
+
+	page := w.Body.String()
+	if !strings.Contains(page, notFoundTitle) {
+		t.Errorf("the page is not the uniform not-found page:\n%s", page)
+	}
+	// The pane note is the copy this issue is about: "just now" and "nothing was
+	// changed by asking" are true of a host that hiccupped and false of a session
+	// that is over, and it must not be what a permanent condition renders.
+	for _, withheld := range []string{live.Name, "could not be read"} {
+		if strings.Contains(page, withheld) {
+			t.Errorf("the page still carries %q, describing a session this daemon no longer has:\n%s", withheld, page)
+		}
+	}
+
+	// The record and the token hash it carried are gone, which is FR-020's
+	// ending reached on FR-019's evidence.
+	if _, err := f.fixture.store.Get(live.ID, auth.CallerOperator); !errors.Is(err, session.ErrSessionNotFound) {
+		t.Errorf("the record outlived the session the host confirmed gone: Get() = _, %v, want %v", err, session.ErrSessionNotFound)
+	}
+	if fleet := f.view(t).Body.String(); strings.Contains(fleet, live.ID) {
+		t.Errorf("the fleet still renders a card for a session that is not on the host:\n%s", fleet)
+	}
+
+	// Which of the "no such session" cases it really was is the operator's, in
+	// the trail, and never the caller's (FR-042, SC-016).
+	if trail := f.sink.String(); !strings.Contains(trail, session.ErrSessionDead.Error()) {
+		t.Errorf("the trail does not record that the session was already gone:\n%s", trail)
+	}
+}
+
 // TestOpeningASessionPageLeavesTheIdleClockWhereItWas is FR-034f at the second
 // production caller of the non-touching read, and the one the requirement was
 // written about: a browser tab left open on a session nobody is driving must not

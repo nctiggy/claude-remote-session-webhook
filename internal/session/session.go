@@ -225,8 +225,11 @@ var (
 	// not 400.
 	ErrTooManySessions = errors.New("the concurrent-session cap is reached")
 
-	// ErrSessionDead marks an attempt to move a terminal record. Dead is the
-	// end of the state machine in data-model.md.
+	// ErrSessionDead marks an attempt to move a terminal record, and — from
+	// Manager.Output — a session the host has just confirmed is no longer there
+	// (#21). One sentinel for both, because it is one fact to every caller:
+	// dead is the end of the state machine in data-model.md, and a dead session
+	// is answered exactly as an id nobody was ever issued is.
 	ErrSessionDead = errors.New("session is dead")
 
 	// ErrCredentialNotPending marks a claim on a session whose credential has

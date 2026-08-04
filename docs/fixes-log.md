@@ -23,3 +23,4 @@ is a signal that something needs a real design change rather than a fifth patch.
 
 - 2026-08-02 — claude-remote-session-webhook initialized from ai-project-template.
 - 2026-08-04 — TestShutdownIsNotDelayedByOpenStreams failed ~1 run in 20: hold's select picks at random when a tick and the shutdown are both ready, so one last heartbeat may follow; it now forbids data after shutdown rather than bytes. (T029)
+- 2026-08-04 — A session whose tmux session died out of band kept a live card on the fleet; a failed capture now asks confirmGone and drops the record only when the host affirms the session is gone. (#21)
