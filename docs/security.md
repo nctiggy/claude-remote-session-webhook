@@ -15,15 +15,30 @@ vulnerability in a feature — it is total host compromise.
 Assume the endpoint is being scanned. It is on the public internet under a
 predictable hostname.
 
-There are **two front doors**, and each needs its own answer to "who is this?":
+There are **two front doors**, on one hostname, behind one Access application with two
+edge policies. **No path gets an edge bypass**, and each door still needs its own
+answer to "who is this?" behind the edge:
 
-| Door | Caller | Authenticated by |
-|---|---|---|
-| Web dashboard | A browser, operated by a human | Cloudflare Access (Google IdP) → signed JWT header, validated by the daemon |
-| API | The companion Claude skill, or any script | HMAC-SHA256 request signature |
+| Door | Caller | Admitted at the edge by | Checked by the daemon |
+|---|---|---|---|
+| Web dashboard | A browser, operated by a human | The identity policy: Google IdP, one allowlisted address | Layer 1 — the forwarded `Cf-Access-Jwt-Assertion` is genuine, is the **identity** shape, and names an allowlisted email |
+| API | The companion Claude skill, or any script | An Access **service token**, sent as `CF-Access-Client-Id` + `CF-Access-Client-Secret` | HMAC-SHA256 signature, timestamp, replay, per-session token. The assertion is ignored entirely |
+
+The two shapes are not interchangeable. A service token's assertion carries
+`common_name`, an empty `sub`, and **no email** — so "no email" must never read as
+"allow", or every API call the operator makes is also admitted to the dashboard. A
+service-token assertion presented to the browser door is refused exactly as a
+stranger's is.
 
 Neither door is allowed to skip the daemon-side check. Cloudflare Access failing
 open, or a tunnel misconfiguration, must not become an unauthenticated session.
+
+**Each door refuses only by the check that applies to it.** A browser request is never
+refused for carrying no signature, and an API request is never refused for carrying no
+identity — adding either check to the other door breaks a working client to enforce
+something that door does not use. Both doors resolve to one owner by construction, so
+the ownership check below runs on every request through either.
+[`docs/auth-and-sessions.md`](./auth-and-sessions.md) has the full layering.
 
 ## Non-negotiables
 
@@ -33,7 +48,7 @@ is no client to trust — the Claude skill is just another HTTP caller, and anyo
 write one.
 
 ```go
-// Every handler starts this way. No exceptions, no "internal" routes.
+// Every API handler starts this way. No exceptions, no "internal" routes.
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
     caller, err := s.auth.Verify(r) // signature + timestamp + replay check
     if err != nil {
@@ -50,6 +65,11 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
     ...
 }
 ```
+
+That is the API door. The browser door asks the same two questions with the other
+door's credential — validate the assertion, then check ownership — and answers with
+the same uniform refusal. What changes is the credential, never the questions, and
+neither door has a route exempt from either.
 
 Check **ownership**, not just authentication. "Is this caller authenticated?" is not
 the same question as "does this caller own session `a3f9`?" Session IDs must be
@@ -120,16 +140,59 @@ internet → Cloudflare edge (TLS, Access) → tunnel (outbound) → 127.0.0.1:P
 
 If a change would make the daemon listen on `0.0.0.0`, that change is wrong.
 
+### Response headers
+
+Every **browser-door** response carries all of these — pages, static assets, refusals,
+and the not-found page alike. A refusal that carried a different set would be a refusal
+that tells a stranger which paths this daemon really serves:
+
 | Header | Value |
 |---|---|
 | `Content-Security-Policy` | `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'` |
 | `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` |
 | `X-Content-Type-Options` | `nosniff` |
 | `Referrer-Policy` | `no-referrer` |
+| `Cache-Control` | `no-store` — with exactly one exemption, below |
 
-No `unsafe-inline`, no CDN. htmx and the stylesheet are served from `self`, embedded
-in the binary via `go:embed`. If a change needs `unsafe-inline` to work, the change
-is wrong.
+No `unsafe-inline`, no CDN. The stylesheet and the dashboard's script are served from
+`self`, embedded in the binary via `go:embed`; a client-side library would be too, and
+never from a CDN. If a change needs `unsafe-inline` to work, the change is wrong.
+
+`no-store` is the default rather than the exception, because a page, a stream, and an
+authorisation decision are all things a cached copy outlives: pages carry session
+names, working directories, and pane content, all secret under §3. **The two embedded
+static assets are the only exemption** — they hold no session data, and they are served
+`no-cache` with an entity tag rather than a lifetime, so a browser revalidates instead
+of running the previous binary's script against this one's markup.
+
+The API door's responses gain none of these headers. Every byte a milestone 1 client
+sees is frozen, and a header is part of a response.
+
+### The header that must never appear
+
+| Header | Rule |
+|---|---|
+| `Access-Control-Allow-*` | **Never sent. Any of them, on any route, on either door.** |
+
+This is load-bearing, not hygiene. The browser's credential is a cookie and therefore
+**ambient**: it rides on requests a hostile third-party page triggers, and the edge
+converts those into a valid assertion the daemon accepts. Same-origin policy is the
+only thing stopping that page from *reading* the response, and it holds exactly as long
+as the daemon never opts out of it. The per-session bearer token would have provided
+this a second way — a header credential forces a preflight, a cookie does not — but a
+browser stream cannot carry one, so the absence *is* the protection.
+
+**Assert the absence.** Sweep every registered route on both doors and require zero
+such headers. An absence nothing checks is one convenience header away from gone, and
+there is deliberately no CORS helper in the codebase to reach for.
+
+The request side of the same rule: a live output stream is refused when the browser
+itself reports a cross-site initiator — `Sec-Fetch-Site` present and anything other
+than `same-origin`. **Present-and-wrong refuses; absent does not**: browsers send the
+header and non-browser clients do not, so requiring it would refuse the callers it was
+never about while adding nothing against the one it is. The refusal is decided before
+any session is looked up, and the header's value is caller-authored text that never
+reaches a log line or an audit record.
 
 ## Rendering session output (the one XSS surface)
 
@@ -172,3 +235,5 @@ web page it fetched — reaches the dashboard. **All of it is untrusted.**
 - [ ] No session output, prompt, or token in any log line
 - [ ] Listener still bound to loopback
 - [ ] No new dependency without justification
+- [ ] No `Access-Control-Allow-*` on any route, either door — swept, not assumed
+- [ ] Browser-door responses all carry the header set above, refusals included
