@@ -205,6 +205,103 @@ func TestTheCardStatesWhatTheDaemonDoesNotKnow(t *testing.T) {
 	}
 }
 
+// The three shapes the assertions below read out of a rendered card: any link,
+// the heading that has to hold it, and the paragraph the identifier is rendered
+// into once it is no longer the link itself.
+var (
+	cardAnchor        = regexp.MustCompile(`(?s)<a\b([^>]*)>(.*?)</a>`)
+	cardHeading       = regexp.MustCompile(`(?s)<h2[^>]*\bclass="card-heading"[^>]*>(.*?)</h2>`)
+	cardIdentifier    = regexp.MustCompile(`(?s)<p[^>]*\bclass="card-id"[^>]*>(.*?)</p>`)
+	cardDescribedBy   = regexp.MustCompile(`aria-describedby="([^"]*)"`)
+	cardDescriptionOf = func(id string) *regexp.Regexp {
+		return regexp.MustCompile(`<[a-z][a-z0-9]*[^>]*\bid="` + regexp.QuoteMeta(id) + `"[^>]*>([^<]*)<`)
+	}
+)
+
+// TestTheCardLinksTheNameAndNotOnlyTheIdentifier is issue #16.
+//
+// The accessibility floor was already met before this: the identifier was a real
+// <a>, focus-ringed, in tab order, and every card was reachable. What was wrong
+// was the affordance. The card reads as clickable end to end, the heading is the
+// session's name, and the only thing that opened the session was the 32-character
+// hex — so a mouse aimed at the obvious target hit nothing and a keyboard landed
+// on the least human-readable string on the card.
+//
+// One link and not two. A card that linked the name and went on linking the hex
+// would put two identical destinations next to each other in every link list,
+// which reads worse than the arrangement being fixed rather than better.
+func TestTheCardLinksTheNameAndNotOnlyTheIdentifier(t *testing.T) {
+	t.Parallel()
+
+	card := ownedCard()
+	got := renderComponent(t, "session-card", card)
+
+	anchors := cardAnchor.FindAllStringSubmatch(got, -1)
+	if len(anchors) != 1 {
+		t.Fatalf("the card renders %d links; one session is one destination:\n%s", len(anchors), got)
+	}
+	attributes, text := anchors[0][1], anchors[0][2]
+
+	if target := "/sessions/" + card.ID + "/view"; !strings.Contains(attributes, `href="`+target+`"`) {
+		t.Errorf("the card's link does not open %s:\n%s", target, got)
+	}
+	if !strings.Contains(text, card.Name) {
+		t.Errorf("the card's link reads %q and the session is called %q; the name is what an operator reads and aims at:\n%s", text, card.Name, got)
+	}
+	if strings.Contains(text, card.ID) {
+		t.Errorf("the identifier is the link's own text; it is the handle, not the label:\n%s", got)
+	}
+
+	heading := cardHeading.FindStringSubmatch(got)
+	if heading == nil {
+		t.Fatalf("the card renders no heading:\n%s", got)
+	}
+	if !strings.Contains(heading[1], "<a") {
+		t.Errorf("the card's heading is not the link, so the name is still inert:\n%s", got)
+	}
+
+	// Still rendered, and now as text. It is the only handle a session with no
+	// name has, so linking the name must not have cost the card the identifier.
+	identifier := cardIdentifier.FindStringSubmatch(got)
+	if identifier == nil || strings.TrimSpace(identifier[1]) != card.ID {
+		t.Errorf("the card does not render the identifier as text; a session with no name would have no handle left:\n%s", got)
+	}
+}
+
+// TestTheLinkOnACardWithNoNameIsStillToldApartFromEveryOther is the half of the
+// change above that loses silently.
+//
+// A session adopted after a restart has no name (FR-018a), so its heading — and
+// therefore its link — reads "no name recorded". That is the whole fleet after
+// every restart, and a link list of identical sentences pointing at different
+// unsandboxed shells is a worse card than the one that linked the hex. The
+// identifier the card already renders is what tells them apart, and it says so
+// in markup rather than by being adjacent.
+func TestTheLinkOnACardWithNoNameIsStillToldApartFromEveryOther(t *testing.T) {
+	t.Parallel()
+
+	adopted := ownedCard()
+	adopted.Name = ""
+	got := renderComponent(t, "session-card", adopted)
+
+	anchors := cardAnchor.FindAllStringSubmatch(got, -1)
+	if len(anchors) != 1 {
+		t.Fatalf("a card with no name renders %d links; an adopted session is reachable like any other:\n%s", len(anchors), got)
+	}
+
+	describes := cardDescribedBy.FindStringSubmatch(anchors[0][1])
+	if describes == nil {
+		t.Fatalf("the link reads %q and carries nothing else; every adopted card in the fleet would announce that same sentence:\n%s", strings.TrimSpace(anchors[0][2]), got)
+	}
+	described := cardDescriptionOf(describes[1]).FindStringSubmatch(got)
+	if described == nil {
+		t.Fatalf("the link is described by %q and the card renders no element with that id:\n%s", describes[1], got)
+	}
+	if strings.TrimSpace(described[1]) != adopted.ID {
+		t.Errorf("the link's description reads %q; the identifier is the only thing that separates two adopted cards:\n%s", strings.TrimSpace(described[1]), got)
+	}
+}
+
 // TestTheStatusPillAlwaysCarriesItsLabelAsText is FR-019 and the design system's
 // fifth non-negotiable: colour is reinforcement, never the only signal. Both
 // states this milestone derives are green, so colour alone does not distinguish

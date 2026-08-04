@@ -262,14 +262,19 @@ body {
   color: var(--dim);
 }
 
+/* The link is the heading, so it takes the heading's colour and weight rather
+   than restating them — the underline is the affordance and the card's own
+   hover is the feedback. Block, so the name inside it can be truncated by a box
+   the grid track is allowed to make narrower than its content. */
 .card-link {
-  color: var(--dim);
+  display: block;
+  color: inherit;
   text-decoration-color: var(--edge-bright);
-  transition: color var(--transition);
+  transition: text-decoration-color var(--transition);
 }
 
 .card-link:hover {
-  color: var(--text);
+  text-decoration-color: currentcolor;
 }
 
 .card-meta {
