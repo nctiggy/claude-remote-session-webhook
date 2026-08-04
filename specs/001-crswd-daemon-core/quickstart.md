@@ -28,6 +28,21 @@ Until these exist, `.claude/hooks/format-and-lint.sh` no-ops and `golangci-lint 
 cannot run at all — "lint passed" would mean "lint did not execute". CI enforces both
 regardless ([research D12](./research.md)).
 
+**An older `golangci-lint` on PATH is worse than none: it passes silently.**
+`.golangci.yml` is the **v2 config schema**, and a v1 binary does not reject it. It
+reads the file, recognises nothing in it, runs **zero linters**, and exits 0 with no
+output — indistinguishable from a clean run. So check the major version, not merely
+that the command resolves:
+
+```bash
+golangci-lint --version   # must report v2.x
+```
+
+If it reports v1, every local `golangci-lint run` has been a false green. Reinstall the
+pin above and make sure `$(go env GOPATH)/bin` precedes whatever directory holds the old
+copy (commonly `~/bin` or `/usr/local/bin`) on your PATH. CI is unaffected — it installs
+v2.12.2 itself — so this fails only locally, and only quietly.
+
 ---
 
 ## The gate — every change must pass all four
