@@ -146,6 +146,23 @@ func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {
 	// for the same event and what an operator counting unserved requests reads.
 	AuditFrom(r.Context()).Deny(errScopeNoRoute.Error())
 
+	s.renderNotFound(w, r, operator)
+}
+
+// renderNotFound writes this door's 404 — the page a request that reached no
+// route and a request that reached no session are both answered with.
+//
+// One page because there is one answer. The single-session view gives an id that
+// never existed, one the viewer does not own, and one whose session is already
+// gone the same uniform 404 (FR-037b, SC-016), and the difference between those
+// three and "no such route at all" is no more a caller's to have: each is a fact
+// about what exists on this host. Which of them it really was is on the record
+// the middleware emits, where the operator can read it.
+//
+// The copy says what asking did rather than what to do about it, and it is true
+// of every one of those cases: this daemon serves nothing at that address, and
+// nothing on the host was touched by asking.
+func (s *Server) renderNotFound(w http.ResponseWriter, r *http.Request, operator *access.VerifiedOperator) {
 	s.renderPage(w, r, http.StatusNotFound, "not-found", notFoundView{
 		Operator: operator,
 		Message:  emptyView{Title: notFoundTitle, Body: notFoundBody},

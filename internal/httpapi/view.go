@@ -61,6 +61,39 @@ type sessionView struct {
 	Actions []actionView
 }
 
+// paneView is the pane viewer's parameters (docs/components.md): one session's
+// screen as the single-session page renders it, before anything live is
+// attached to it.
+type paneView struct {
+	// ID is the session the screen belongs to, and it names the element rather
+	// than the session for the caller's benefit: the live half finds the pane by
+	// it (T026). It carries no credential, which is why a URL may hold one and
+	// why the card is allowed to link here at all.
+	ID string
+
+	// Text is the whole screen as of this request, captured through the manager
+	// so that terminal escapes were stripped where output leaves
+	// internal/session (FR-029) rather than by a second stripper here. It
+	// reaches the page as a text node and never as markup — everything a Claude
+	// session prints arrives in this field, which makes it the project's one XSS
+	// surface, closed by html/template rather than by sanitising (FR-028,
+	// Constitution VII).
+	//
+	// It is the current screen and not a transcript (FR-031a). What replaces it
+	// on each update is the same whole screen, which is why there is one field
+	// here and no accumulator.
+	Text string
+
+	// Unread says the host could not be asked for the screen.
+	//
+	// It is a state of its own rather than an empty Text, because "the session
+	// has printed nothing" and "nobody could read what it printed" are different
+	// facts and a blank pane would assert the first. It is FR-018a's discipline
+	// — state the absence, never render something that reads like a value —
+	// applied to the screen instead of to a name.
+	Unread bool
+}
+
 // emptyView is what the fleet page renders instead of a grid when the viewer
 // owns no sessions (FR-021).
 type emptyView struct {

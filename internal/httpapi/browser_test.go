@@ -1080,16 +1080,16 @@ func browserSurface(sessionID string) []browserRequest {
 		served:      http.StatusOK,
 		contentType: contentTypeJS,
 	}, {
-		// The address every session card links to. Nothing serves it yet, which
-		// makes it the not-found page today and a real page in milestone 3; on
-		// either side of that it is a browser route, and this row asserts the
-		// thing that must not change — that it is refused when layer 1 cannot
-		// verify anyone.
+		// The address every session card links to, which since T021b is a page
+		// this daemon really serves. That is what makes the row worth having: it
+		// renders a session's name, its working directory and its whole screen,
+		// so it is the response with the most to withhold when layer 1 cannot
+		// verify anyone — and the sweep below asserts it withholds all of it.
 		name:        "the page a card links to",
 		method:      http.MethodGet,
 		target:      "/sessions/" + sessionID + "/view",
-		action:      audit.ActionUnknownRoute,
-		served:      http.StatusNotFound,
+		action:      audit.ActionDashboardView,
+		served:      http.StatusOK,
 		contentType: contentTypeHTML,
 	}, {
 		name:        "a path nothing claims",

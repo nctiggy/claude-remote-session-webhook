@@ -286,8 +286,16 @@ func TestTheRainCarriesNoInformationAndStaysOffReadingContent(t *testing.T) {
 			t.Errorf("%s renders no rain canvas, and the design system puts one there:\n%s", name, markup)
 		}
 	}
-	if card := renderComponent(t, "session-card", ownedCard()); strings.Contains(card, `class="rain"`) {
-		t.Errorf("the session card renders rain behind reading content:\n%s", card)
+	forbidden := map[string]string{
+		"the session card": renderComponent(t, "session-card", ownedCard()),
+		// The clearest case of reading content there is: a screen an operator is
+		// reading, in the one component whose whole content came from the host.
+		"the pane viewer": renderComponent(t, "pane", paneView{ID: ownedCard().ID, Text: "$ go test ./..."}),
+	}
+	for name, markup := range forbidden {
+		if strings.Contains(markup, `class="rain"`) {
+			t.Errorf("%s renders rain behind reading content:\n%s", name, markup)
+		}
 	}
 }
 
@@ -461,7 +469,7 @@ func TestEveryCanonicalComponentIsAPartial(t *testing.T) {
 	t.Parallel()
 
 	set := newTestServer(t, loopbackListen).templates
-	for _, component := range []string{"header", "status-pill", "session-card", "empty", "rain"} {
+	for _, component := range []string{"header", "status-pill", "session-card", "empty", "rain", "pane"} {
 		if set.Lookup(component) == nil {
 			t.Errorf("the template set defines no %q component", component)
 		}
@@ -472,7 +480,7 @@ func TestEveryCanonicalComponentIsAPartial(t *testing.T) {
 			return err
 		}
 		switch name := strings.TrimSuffix(path.Base(p), templateExt); name {
-		case "header", "status-pill", "session-card", "empty", "rain":
+		case "header", "status-pill", "session-card", "empty", "rain", "pane":
 			if dir := path.Dir(p); dir != "templates/partials" {
 				t.Errorf("the %s component lives in %s; docs/components.md puts every one of them in templates/partials", name, dir)
 			}

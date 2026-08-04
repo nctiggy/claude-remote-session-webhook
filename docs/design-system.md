@@ -207,3 +207,8 @@ breakpoints is enough for one operator on a laptop and a phone.
 
 Wide content — panes, tables — scrolls inside its own `overflow-x: auto` container.
 The page body never scrolls sideways.
+
+The pane viewer is that container in both axes: a fixed block size of
+`--pane-h: 30rem` with `overflow: auto`, so a screen scrolls inside the pane and
+never moves the page around it (`components.md`: the container scrolls, the page
+does not).

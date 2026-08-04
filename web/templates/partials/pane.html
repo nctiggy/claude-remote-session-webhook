@@ -1,0 +1,31 @@
+{{/*
+  Pane viewer — one session's live screen, rendered as text (docs/components.md).
+
+  A <pre> holding a text node, and nothing else, ever. Everything a Claude
+  session prints arrives in this element, so html/template's escaping is the
+  whole of the defence and it is closed by construction rather than by
+  sanitising: no template.HTML, no safeHTML helper, and no htmx swap anywhere
+  near it (FR-028, docs/security.md, Constitution VII). The live half assigns
+  textContent for exactly the same reason (T026).
+
+  The screen is *replaced* on each update rather than appended to (FR-031a). A
+  Claude session is a full-screen program that repaints in place, so successive
+  captures are redraws and a transcript stitched out of them would carry a torn
+  line from every cursor move and every spinner.
+
+  A screen nobody could read is stated rather than drawn as an empty pane: an
+  empty <pre> would claim the session has printed nothing, which is the
+  plausible-looking placeholder FR-018a forbids, made about output instead of
+  about a name.
+
+  There is no data-stream attribute yet. The route it would name arrives with US2
+  (contracts/stream.md), and an element pointing at an address nothing serves is
+  the dead link this page was written to end — T026 adds the hook and the loop
+  that reads it together.
+
+  tabindex makes the scroll container reachable by keyboard, which the
+  accessibility floor asks of anything an operator has to scroll; the focus ring
+  is the design system's own. It is deliberately not a live region: announcing
+  every terminal line is unusable, and docs/components.md says so.
+*/}}{{ if .Unread }}<p class="pane-note">The screen could not be read from the host just now. Nothing was changed by asking for it.</p>{{ else }}<pre class="pane" id="pane-{{ .ID }}" tabindex="0">{{ .Text }}</pre>{{ end }}
+<p class="pane-note">This is the live screen, not scrollback. Attach to the session on the host to read what came before it.</p>

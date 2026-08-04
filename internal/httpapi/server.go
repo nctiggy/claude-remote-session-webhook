@@ -334,6 +334,14 @@ func newServer(
 		}
 	}
 	s.handleBrowser(patternFleet, audit.ActionDashboardView, s.dashboard)
+	// The page every card on the fleet links to, on the same door and under the
+	// same action: both are pages, and what tells them apart in the trail is the
+	// session_id this one stamps on its own record (data-model.md). It is
+	// registered here rather than added to `routes` for the reason handleBrowser
+	// appends nothing to s.registered — that table is contracts/http-api.md's
+	// closed set of six operations, each authorised by a signature, and this is
+	// neither.
+	s.handleBrowser(patternSessionView, audit.ActionDashboardView, s.sessionPage)
 	// One route per embedded asset, so `/static/` names exactly the files the
 	// binary carries and a path that is not one of them is a path nothing claims
 	// (contracts/dashboard.md's route table; see loadAssets for why a wildcard is

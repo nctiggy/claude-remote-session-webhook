@@ -65,6 +65,8 @@
   --lh-body: 1.5;
   --fs-prose: .86rem;
   --fs-label: .66rem; /* the table gives a .64–.68rem range; this is inside it */
+  --fs-pane: 12.5px;
+  --lh-pane: 1.45;
   --ls-brand: .22em;
   --ls-eyebrow: .2em;
   --ls-label: .14em;
@@ -88,6 +90,7 @@
 
   --shell-max: 1160px;
   --card-min: 310px;
+  --pane-h: 30rem;
 
   /* The rain's two permitted strengths. Opacity belongs to the surface the
      canvas sits in rather than to the canvas, so it is selected by ancestor. */
@@ -339,6 +342,39 @@ body {
 
 .pill-dead {
   --pill-state: var(--state-dead);
+}
+
+/* The pane viewer. The container is styled and the content never is — the
+   design system's fourth non-negotiable, which is a security rule wearing design
+   clothes: what is inside this element is a text node the host wrote.
+
+   It is its own scroll container in both axes (the layout rule for wide
+   content, and components.md's fixed height), so the screen scrolls and the
+   page does not. Ligatures are off because they misrepresent terminal text, and
+   the tab stop is the terminal's rather than the browser's default. */
+.pane {
+  overflow: auto;
+  max-block-size: var(--pane-h);
+  margin: 0;
+  padding: var(--s3);
+  background: var(--surface);
+  border: var(--edge-width) solid var(--edge);
+  border-radius: var(--r);
+  font: var(--fs-pane)/var(--lh-pane) var(--mono);
+  font-variant-ligatures: none;
+  white-space: pre;
+  tab-size: 4;
+}
+
+/* What the page says about the pane, rather than what the session said: prose a
+   human wrote, so it is set in sans on the same terms as an absent value on a
+   card. It carries the live-screen statement FR-032a asks for, and the sentence
+   that stands in for a screen nobody could read. */
+.pane-note {
+  margin: var(--s3) 0 0;
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: var(--fs-prose);
 }
 
 /* The one surface where the rain runs at full strength: nothing competes with

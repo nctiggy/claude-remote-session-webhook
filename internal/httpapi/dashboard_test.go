@@ -11,6 +11,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -22,6 +23,7 @@ import (
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 )
 
 // fleet is a server whose browser door admits a real assertion, together with the
@@ -614,6 +616,211 @@ func TestFormatAgeIsCoarseAndReadable(t *testing.T) {
 	}
 }
 
+// viewOf opens one session's page as the verified operator would, and insists it
+// was served — every claim below it is about what that page says.
+func (f *fleet) viewOf(t *testing.T, id string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	w := f.open(t, "/sessions/"+id+"/view")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /sessions/%s/view = %d (%s); want %d", id, w.Code, w.Body.String(), http.StatusOK)
+	}
+	return w
+}
+
+// paneBody isolates what one session's pane element holds, so an assertion about
+// the *screen* cannot be satisfied by markup elsewhere on the page — the same
+// reason cardFor exists, for the element whose content came from the host.
+func paneBody(t *testing.T, page, id string) string {
+	t.Helper()
+
+	opener := `<pre class="pane" id="pane-` + id + `"`
+	_, after, ok := strings.Cut(page, opener)
+	if !ok {
+		t.Fatalf("the page renders no pane element for session %s:\n%s", id, page)
+	}
+	// Past the rest of the opening tag, which carries attributes this daemon
+	// wrote, and up to the close.
+	_, body, _ := strings.Cut(after, ">")
+	body, _, _ = strings.Cut(body, "</pre>")
+	return body
+}
+
+// TestTheSessionPageRendersTheCardAndTheScreen is the page itself: the address
+// every card links to, serving the card again above the screen the session
+// currently holds.
+//
+// The screen is the assertion that matters. It is host-authored bytes reaching a
+// browser, so the payload here is the one docs/security.md is written about, and
+// three things are asserted rather than one: the raw markup never appears, no
+// element it could have opened is in the output, and the harmless text around it
+// is still visible — rendered as text rather than dropped, which is the
+// difference between escaping and sanitising.
+func TestTheSessionPageRendersTheCardAndTheScreen(t *testing.T) {
+	t.Parallel()
+
+	const screen = "$ echo \"<script>alert(1)</script> <img src=x onerror=alert(2)>\"\nrunning tests…"
+
+	f := newFleet(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "refactor the reaper", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), screen)
+
+	page := f.viewOf(t, live.ID).Body.String()
+
+	// The card, composed by the same component the fleet composes it with, so
+	// the two pages cannot describe one session differently.
+	card := cardFor(t, page, live.ID)
+	for _, want := range []string{live.Name, f.fixture.repo, string(session.DisplayRunning)} {
+		if !strings.Contains(card, want) {
+			t.Errorf("the card on the session page does not carry %q:\n%s", want, card)
+		}
+	}
+
+	// The screen, as text. The structural claim is the strong one: a text node
+	// that went through html/template carries no angle bracket at all, so a pane
+	// holding one is a pane that opened an element the host wrote (FR-028).
+	pane := paneBody(t, page, live.ID)
+	if strings.ContainsAny(pane, "<>") {
+		t.Errorf("the pane carries an angle bracket, so something the session printed reached the page as markup:\n%s", pane)
+	}
+	// And the operator still sees what was really printed, rather than a
+	// sanitised version of it — the difference escaping makes.
+	for _, visible := range []string{"&lt;script&gt;alert(1)&lt;/script&gt;", "onerror=alert(2)", "running tests…"} {
+		if !strings.Contains(pane, visible) {
+			t.Errorf("the pane does not render %q; escaping shows what the session printed, it does not drop it:\n%s", visible, pane)
+		}
+	}
+
+	// FR-032a at the call site: the page says what it is showing. An interface
+	// that let an operator read a repainting screen as a transcript is one they
+	// will trust wrongly.
+	if !strings.Contains(page, "not scrollback") {
+		t.Errorf("the page never says it shows the live screen rather than scrollback (FR-032a):\n%s", page)
+	}
+
+	// FR-024a and FR-022 on this page as well as on the fleet: the card takes an
+	// action row as a parameter and this page passes none either.
+	if strings.Contains(page, "card-actions") {
+		t.Errorf("the session page rendered an action row; the dashboard is read-only in this milestone:\n%s", page)
+	}
+	for _, offer := range mutationMarkup {
+		if strings.Contains(strings.ToLower(page), offer) {
+			t.Errorf("the session page offers %q; the browser door serves GET only and no page holds a secret to sign with:\n%s", offer, page)
+		}
+	}
+}
+
+// TestTheSessionPageStatesAScreenItCouldNotRead is the failure this page can
+// really meet: the record resolves, and the tmux exec behind the pane does not.
+//
+// A blank pane would be the wrong answer twice over — it claims the session
+// printed nothing, and it hides a host that stopped answering. The card above is
+// still true, so the page is still served; what changes is that the pane says so.
+func TestTheSessionPageStatesAScreenItCouldNotRead(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "still listed", WorkDir: f.fixture.repo})
+	f.fixture.tmux.FailOp(tmuxctl.OpCapturePane, errors.New("no server running on /tmp/tmux-1000/default"))
+
+	page := f.viewOf(t, live.ID).Body.String()
+
+	if !strings.Contains(page, "could not be read") {
+		t.Errorf("a screen the host could not be asked for renders as nothing at all:\n%s", page)
+	}
+	if strings.Contains(page, "<pre") {
+		t.Errorf("the page rendered an empty pane rather than saying the screen is unknown; a blank <pre> claims the session printed nothing:\n%s", page)
+	}
+	// The card is the reason the page is still served, so it has to be on it.
+	if !strings.Contains(page, live.Name) {
+		t.Errorf("the page dropped the card as well as the screen:\n%s", page)
+	}
+	// The host's own account of the failure is for the operator, never for the
+	// caller and never for the trail.
+	if len(f.failed) != 1 {
+		t.Errorf("an unreadable screen was reported %d times; want exactly 1 — an operator has to be able to find it", len(f.failed))
+	}
+	if trail := f.sink.String(); strings.Contains(trail, "tmux") {
+		t.Errorf("the trail carries tmux's account of the failure:\n%s", trail)
+	}
+}
+
+// TestOpeningASessionPageLeavesTheIdleClockWhereItWas is FR-034f at the second
+// production caller of the non-touching read, and the one the requirement was
+// written about: a browser tab left open on a session nobody is driving must not
+// postpone its idle deadline, or a forgotten tab holds an unsandboxed shell open
+// for as long as it lives.
+//
+// The record is read back out of the store rather than off the page, because
+// every read in this package hands back a copy.
+func TestOpeningASessionPageLeavesTheIdleClockWhereItWas(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	// Behind the fixture's clock deliberately: Store.Touch only moves forward, so
+	// a record stamped at the manager's own instant would make a touch invisible.
+	stale, _ := f.fixture.plant(t, session.Session{Name: "watched", LastActivity: idleAt(testTime)})
+
+	before, err := f.fixture.store.Get(stale.ID, auth.CallerOperator)
+	if err != nil {
+		t.Fatalf("read the planted session back: %v", err)
+	}
+	f.viewOf(t, stale.ID)
+
+	after, err := f.fixture.store.Get(stale.ID, auth.CallerOperator)
+	if err != nil {
+		t.Fatalf("read the session back after the page was served: %v", err)
+	}
+	if !after.LastActivity.Equal(before.LastActivity) {
+		t.Errorf("opening the page of session %s moved its idle clock from %v to %v; watching is not driving (FR-034f)",
+			stale.ID, before.LastActivity, after.LastActivity)
+	}
+}
+
+// TestTheSessionPagesRecordNamesTheSessionAndNothingItRendered is the trail's
+// half of this route: data-model.md puts session_id on this page's record and on
+// no other dashboard route's, and nothing the page was made of may join it.
+func TestTheSessionPagesRecordNamesTheSessionAndNothingItRendered(t *testing.T) {
+	t.Parallel()
+
+	const (
+		chosenName = "a-name-a-caller-chose"
+		chosenPath = "/srv/a-directory-a-caller-named"
+		printed    = "a-line-the-session-printed"
+	)
+
+	f := newFleet(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: chosenName, WorkDir: chosenPath})
+	f.fixture.tmux.SetPane(live.TmuxName(), printed)
+
+	page := f.viewOf(t, live.ID).Body.String()
+	for _, rendered := range []string{chosenName, chosenPath, printed, testOperatorEmail} {
+		if !strings.Contains(page, rendered) {
+			t.Fatalf("the page never rendered %q, so its absence from the trail proves nothing:\n%s", rendered, page)
+		}
+	}
+
+	record := f.only(t)
+	if got, want := record["action"], string(audit.ActionDashboardView); got != want {
+		t.Errorf("the session page was recorded as %v; want %v", got, want)
+	}
+	if got := record["session_id"]; got != live.ID {
+		t.Errorf("the record names session %v; want %v — the id comes off the daemon's own record", got, live.ID)
+	}
+
+	trail := f.sink.String()
+	for _, secret := range []struct{ what, value string }{
+		{"the session name a caller chose", chosenName},
+		{"the working directory a caller chose", chosenPath},
+		{"what the session printed", printed},
+		{"the address the edge verified", testOperatorEmail},
+	} {
+		if strings.Contains(trail, secret.value) {
+			t.Errorf("the trail carries %s; a record holds what the daemon derived and never what it rendered (FR-035):\n%s", secret.what, trail)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The US1 acceptance suite (T017)
 //
@@ -665,7 +872,12 @@ func TestNoPageThisMilestoneServesFetchesFromAnotherOrigin(t *testing.T) {
 	)
 
 	f := newFleet(t)
-	f.fixture.plant(t, session.Session{Name: nameLikeAScript, WorkDir: pathLikeAHost})
+	hostile, _ := f.fixture.plant(t, session.Session{Name: nameLikeAScript, WorkDir: pathLikeAHost})
+	// The screen is the other half of the same sweep on the session's own page:
+	// what a session prints is the one text on this dashboard that nobody chose
+	// at all, and a page that put it in a fetching position would be fetching
+	// from wherever the host said.
+	f.fixture.tmux.SetPane(hostile.TmuxName(), `<link rel="stylesheet" href="https://cdn.example.net/theme.css">`)
 
 	loaded := f.view(t).Body.String()
 	// Without this the case is a page with no caller text on it, which every one
@@ -685,6 +897,7 @@ func TestNoPageThisMilestoneServesFetchesFromAnotherOrigin(t *testing.T) {
 		"the fleet, rendering caller text that reads like a reference": loaded,
 		"an empty fleet":     newFleet(t).view(t).Body.String(),
 		"the not-found page": notFound.Body.String(),
+		"a session's page, rendering a screen that reads like a stylesheet": f.viewOf(t, hostile.ID).Body.String(),
 	}
 
 	for what, page := range pages {
@@ -840,13 +1053,18 @@ func TestASecondOwnersSessionIsInvisibleThroughTheDashboardsOwnRoute(t *testing.
 			withTheirs.Body.String(), withNothing.Body.String())
 	}
 
-	// The address every card links to, which no route serves yet: today both of
-	// these are the browser door's not-found page. The assertion is a guard
-	// rather than a proof — it will become FR-037b's own the moment
-	// GET /sessions/{id}/view exists, and until then it holds that the link
-	// target discloses nothing about which identifiers are real.
+	// The page the card links to, which since T021b really serves a session the
+	// viewer owns — so this is now FR-037b's own assertion on that route rather
+	// than the guard it was while nothing answered there. Three requests, because
+	// two of them alone are passed by a page that says "not yours" politely: a
+	// session held by someone else, an id that never existed, and a path this
+	// daemon has no route for at all must be one answer.
 	unknown := strings.Repeat("c", session.IDLen)
 	notMine, neverExisted := held.open(t, "/sessions/"+theirs.ID+"/view"), held.open(t, "/sessions/"+unknown+"/view")
+	if notMine.Code != http.StatusNotFound {
+		t.Errorf("another owner's session answers %d; want %d — it is not this viewer's to know about",
+			notMine.Code, http.StatusNotFound)
+	}
 	if notMine.Code != neverExisted.Code {
 		t.Errorf("another owner's session answers %d and one that never existed answers %d; the difference is what enumeration is made of",
 			notMine.Code, neverExisted.Code)
@@ -855,8 +1073,20 @@ func TestASecondOwnersSessionIsInvisibleThroughTheDashboardsOwnRoute(t *testing.
 		t.Errorf("another owner's session and one that never existed answer differently:\ngot:\n%s\nwant:\n%s",
 			notMine.Body.String(), neverExisted.Body.String())
 	}
+	if noRoute := held.open(t, "/not-a-route"); notMine.Body.String() != noRoute.Body.String() {
+		t.Errorf("a session this viewer may not see answers differently from a path nothing claims:\ngot:\n%s\nwant:\n%s",
+			notMine.Body.String(), noRoute.Body.String())
+	}
 	if strings.Contains(notMine.Body.String(), theirs.Name) {
 		t.Errorf("the answer for another owner's session names it:\n%s", notMine.Body.String())
+	}
+
+	// Non-vacuity: the same route, for a session this viewer does own, is a page.
+	// Without it every comparison above is satisfied by a route that refuses
+	// everyone.
+	mine, _ := held.fixture.plant(t, session.Session{Name: "mine to watch", WorkDir: held.fixture.repo})
+	if page := held.viewOf(t, mine.ID).Body.String(); !strings.Contains(page, mine.Name) {
+		t.Errorf("the viewer's own session does not render on the route that withholds the stranger's:\n%s", page)
 	}
 }
 
