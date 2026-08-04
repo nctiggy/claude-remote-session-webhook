@@ -806,6 +806,174 @@ func TestResolveNamesNoCallerSuppliedTextInItsError(t *testing.T) {
 	}
 }
 
+// TestViewIsOwnerScopedWithNoCredentialToPresent is the whole of the watcher's
+// authorisation at this seam: the record exists and it is the caller's, and
+// there is no third argument because a browser holds no per-session token
+// (FR-017). Every refusal is ErrSessionNotFound, so "no such session", "not
+// yours", and "you skipped authentication" are one answer from one lookup —
+// milestone 1's enumeration rule, unchanged by the second door.
+func TestViewIsOwnerScopedWithNoCredentialToPresent(t *testing.T) {
+	t.Parallel()
+
+	const otherOwner auth.CallerID = "a-second-operator"
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+
+	cases := map[string]struct {
+		id    string
+		owner auth.CallerID
+		want  error
+	}{
+		"the owner of the session":    {s.ID, auth.CallerOperator, nil},
+		"an id that was never issued": {"0123456789abcdef0123456789abcdef", auth.CallerOperator, ErrSessionNotFound},
+		// FR-037b's synthetic second owner, at the seam the dashboard reads
+		// through. The check runs even though production has one identity: a
+		// check removed because it always passes is a check that will not be
+		// there when a second one arrives.
+		"another owner entirely": {s.ID, otherOwner, ErrSessionNotFound},
+		// Unreachable behind the browser door, and refused rather than trusted:
+		// an empty identity must not be a skeleton key if it ever gets here.
+		"no owner at all": {s.ID, "", ErrSessionNotFound},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := f.mgr.View(c.id, c.owner)
+			if !errors.Is(err, c.want) {
+				t.Fatalf("View() = _, %v; want %v", err, c.want)
+			}
+			if c.want != nil {
+				if got.ID != "" {
+					t.Errorf("View() returned session %q alongside a refusal", got.ID)
+				}
+				return
+			}
+			if got.ID != s.ID || got.Owner != s.Owner {
+				t.Errorf("View() = %+v; want the record for %s owned by %s", got, s.ID, s.Owner)
+			}
+		})
+	}
+}
+
+// TestViewRefusesADeadSession keeps data-model.md's terminal state terminal on
+// the browser's path too. A record whose session is confirmed gone answers
+// exactly as an unknown id does (FR-033), so the dashboard cannot render a
+// window that no longer exists.
+func TestViewRefusesADeadSession(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+
+	if _, err := f.mgr.View(s.ID, auth.CallerOperator); err != nil {
+		t.Fatalf("View() before the session died = _, %v; want the record", err)
+	}
+	if err := f.store.SetState(s.ID, StateDead); err != nil {
+		t.Fatalf("SetState(dead) unexpected error: %v", err)
+	}
+	if _, err := f.mgr.View(s.ID, auth.CallerOperator); !errors.Is(err, ErrSessionDead) {
+		t.Fatalf("View() on a dead session = _, %v; want %v", err, ErrSessionDead)
+	}
+}
+
+// TestViewLeavesTheIdleClockWhereResolveMovesIt is FR-034f stated as the
+// difference between the two paths, because that is what makes it checkable: the
+// same record, the same daemon clock, one read that drives and one that watches.
+// Asserting only that View leaves the clock alone would also pass against a
+// Touch that had stopped working for everyone.
+func TestViewLeavesTheIdleClockWhereResolveMovesIt(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, tok := mustCreate(t, f, f.request())
+
+	// Later than creation on purpose. Store.Touch only ever moves the clock
+	// forward, so a daemon whose clock stood still where the record was written
+	// would make both paths look identical and prove nothing.
+	later := f.now.Add(30 * time.Minute)
+	mgr := f.managerAt(t, f.store, later)
+
+	got, err := mgr.View(s.ID, auth.CallerOperator)
+	if err != nil {
+		t.Fatalf("View() unexpected error: %v", err)
+	}
+	if !got.LastActivity.Equal(f.now) {
+		t.Errorf("View() returned LastActivity %v; want the record as written, %v", got.LastActivity, f.now)
+	}
+	if stored := mustStored(t, f, s.ID); !stored.LastActivity.Equal(f.now) {
+		t.Errorf("View() moved the stored idle clock to %v; want it left at %v", stored.LastActivity, f.now)
+	}
+
+	if _, err := mgr.Resolve(s.ID, auth.CallerOperator, tok); err != nil {
+		t.Fatalf("Resolve() unexpected error: %v", err)
+	}
+	if stored := mustStored(t, f, s.ID); !stored.LastActivity.Equal(later) {
+		t.Errorf("Resolve() left the idle clock at %v; the driving path must still advance it to %v", stored.LastActivity, later)
+	}
+}
+
+// TestASessionWatchedWithoutPauseIsStillReapedOnTime is US2 scenario 7 at the
+// only seam that can enforce it, and it is the reason View exists at all: a
+// browser tab that never stops watching must not keep an unsandboxed shell alive
+// (Principle VI). The reaper's own expiredAt is the judge — a test that recomputed
+// the deadline itself would agree with a View that had started touching the clock.
+func TestASessionWatchedWithoutPauseIsStillReapedOnTime(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+
+	// A tab open across the whole idle window, watching far more often than the
+	// stream's one-second tick would.
+	for at := f.now; at.Before(f.now.Add(IdleTimeout)); at = at.Add(time.Minute) {
+		if _, err := f.managerAt(t, f.store, at).View(s.ID, auth.CallerOperator); err != nil {
+			t.Fatalf("View() at %v unexpected error: %v", at, err)
+		}
+	}
+
+	stored := mustStored(t, f, s.ID)
+	deadline := f.now.Add(IdleTimeout)
+	if !stored.IdleDeadline().Equal(deadline) {
+		t.Fatalf("after an hour of watching the idle deadline is %v; want it unmoved at %v", stored.IdleDeadline(), deadline)
+	}
+	if got := expiredAt(stored, deadline); got != ExpiryIdle {
+		t.Errorf("the reaper calls a continuously watched session %q at its idle deadline; want %q", got, ExpiryIdle)
+	}
+}
+
+// TestViewNamesNoCallerSuppliedTextInItsError is FR-042 on the second path from
+// a request to a record, for the reason it holds on the first: the id is bytes
+// the caller chose, and an error built with %w around it puts a hostile string
+// into the audit trail the moment a handler records it.
+func TestViewNamesNoCallerSuppliedTextInItsError(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	_, err := f.mgr.View(hostileLabel, auth.CallerOperator)
+	if err == nil {
+		t.Fatal("View() accepted an id nothing was ever issued for")
+	}
+	if strings.Contains(err.Error(), hostileLabel) {
+		t.Errorf("View() error %q carries the caller's own text", err)
+	}
+}
+
+// mustStored is the record as the store holds it, which is the only place the
+// idle clock can be observed: every read hands back a copy, so asserting on a
+// returned Session would say nothing about what was written.
+func mustStored(t *testing.T, f managerFixture, id string) Session {
+	t.Helper()
+
+	s, err := f.store.Get(id, auth.CallerOperator)
+	if err != nil {
+		t.Fatalf("the store no longer holds session %s: %v", id, err)
+	}
+	return s
+}
+
 // List is owner-scoped for the same reason Resolve is, and this is the test that
 // says so at the seam rather than at the handler: a caller sees their own
 // sessions and has no way, through this method, to learn that another owner's

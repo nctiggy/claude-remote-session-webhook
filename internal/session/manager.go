@@ -271,11 +271,20 @@ func (m *Manager) Resolve(id string, owner auth.CallerID, presented string) (Ses
 		return Session{}, fmt.Errorf("resolve session: %w", ErrSessionDead)
 	}
 
-	// The idle clock moves here, and only here, because this is the one place a
-	// request becomes a session — every session-scoped route reaches its record
-	// through this call and nothing else can. A handler doing it instead would be
-	// a rule each new route has to remember, and the cost of forgetting is a live
-	// session the reaper destroys out from under an operator who is using it.
+	// The idle clock moves here, and only here. This is no longer the only path
+	// from a request to a session — View is a second one, for callers that watch
+	// rather than drive — but it is the only path that drives, and every route
+	// that acts on a session still reaches its record through this call. A
+	// handler touching the clock instead would be a rule each new route has to
+	// remember, and the cost of forgetting is a live session the reaper destroys
+	// out from under an operator who is using it.
+	//
+	// The asymmetry between the two is deliberate and must not be tidied away.
+	// View is *required* not to touch the clock (FR-034f): a browser tab left
+	// open on a session nobody is driving would otherwise postpone its idle
+	// deadline for as long as the tab lived, which is the bound Principle VI
+	// calls non-negotiable. An iteration that "fixes" the inconsistency by adding
+	// the touch to View is the failure this paragraph exists to prevent.
 	//
 	// After the checks, never before: a request that failed the owner or the
 	// credential is not activity on the session, and letting it postpone the
@@ -294,13 +303,60 @@ func (m *Manager) Resolve(id string, owner auth.CallerID, presented string) (Ses
 	return s, nil
 }
 
+// View is the read a watcher gets: the record must exist and must be the
+// caller's own, and the call changes nothing about it. It is how the dashboard
+// and the output stream reach a session (FR-017, FR-034f).
+//
+// It is Resolve without two of its checks, and both omissions are decisions
+// rather than shortcuts.
+//
+// No credential is checked, because a browser holds none — and must not. A
+// per-session token would have to ride in the URL or sit in script the page can
+// read, and neither is a place to keep the credential to an unsandboxed shell.
+// What authorises this call instead is the validated Access identity the browser
+// door established, plus the ownership Store.Get enforces right here, both
+// re-evaluated per request rather than established once. That pair is *more*
+// specific than layer 2's shared secret, not less: the per-session token exists
+// to tell apart callers who all authenticate as one secret, and a verified
+// person who owns the session is already told apart.
+//
+// The idle clock is *not advanced*, which is the whole reason this is a second
+// method rather than a flag on Resolve. Watching is not driving (FR-034f). The
+// property holds by construction — there is no clock reading in this method to
+// hand to Touch — rather than by every call site passing the right argument.
+//
+// Nothing expires here either, and that is not an omission: what Resolve
+// refuses past a deadline is the *credential*, and this call presents none. A
+// session's own life is ended by the reaper, which deletes the record — so a
+// session past a bound stops being viewable by ceasing to exist, and until that
+// sweep the dashboard shows an unsandboxed shell that is genuinely still
+// running. Hiding it would be the one lie a read-only view cannot afford.
+func (m *Manager) View(id string, owner auth.CallerID) (Session, error) {
+	// Ownership is not a step here any more than it is in Resolve: Store.Get
+	// takes the owner, so an unknown id and someone else's id are one answer from
+	// one lookup (FR-032, FR-033). Nothing is wrapped with the id — it is
+	// caller-supplied text and the trail may not carry it (FR-042).
+	s, err := m.store.Get(id, owner)
+	if err != nil {
+		return Session{}, fmt.Errorf("view session: %w", err)
+	}
+	// A dead record answers exactly as an unknown id does (data-model.md), the
+	// same answer Resolve gives it. The sentinel is distinct for the trail and
+	// for nothing else: the caller gets one uniform refusal for all three.
+	if s.State == StateDead {
+		return Session{}, fmt.Errorf("view session: %w", ErrSessionDead)
+	}
+	return s, nil
+}
+
 // List is every session the caller owns, oldest first (FR-032).
 //
 // It is a method here rather than a handler reaching into the store, for the
 // reason Resolve is: the store is not reachable through a Manager, so every path
-// from a request to a record runs through one of these two calls and both take
-// the owner as a parameter rather than as something a caller site remembers to
-// check. A handler holding a *Store would be a second path, free to forget it.
+// from a request to a record runs through one of these three calls — Resolve,
+// View, or this one — and every one of them takes the owner as a parameter
+// rather than as something a call site remembers to check. A handler holding a
+// *Store would be a fourth path, free to forget it.
 //
 // There is no lookup by name, by state, or by anything else, and adding one
 // would need a reason: an owner is the only filter that is also an authorisation
