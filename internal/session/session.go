@@ -57,6 +57,34 @@ func (s State) Valid() bool {
 	return false
 }
 
+// DisplayState is how the dashboard labels a session, derived at render time and
+// never stored (FR-019a).
+//
+// It is a second vocabulary because the first one cannot answer the question an
+// operator is actually asking. The daemon writes only StateStarting and
+// StateRunning, SetState has no production caller, and a destroyed session is
+// deleted rather than marked — so a dashboard that rendered State directly would
+// show one label for the whole life of every session, and never the one fact
+// worth showing: that this session is minutes from being reaped.
+//
+// There is no dead member, because a dead session has no record to render — the
+// reaper and Destroy both delete (FR-019b). needs-auth keeps its token in the
+// design system and arrives with milestone 4's device-code relay; a state
+// produced before it can be rendered would be a label nothing knows how to draw.
+type DisplayState string
+
+const (
+	// DisplayRunning is a session still inside its idle bound. StateStarting
+	// displays this way too: the distinction lasts one tmux exec, and it is not
+	// one an operator watching a fleet could act on.
+	DisplayRunning DisplayState = "running"
+
+	// DisplayIdle is a session the idle bound has caught up with. It is still
+	// alive — the reaper sweeps every SweepInterval rather than continuously —
+	// and this label is what tells an operator it is about to stop being.
+	DisplayIdle DisplayState = "idle"
+)
+
 // Session is the daemon's record of one live Claude Code session, held in memory
 // for the process lifetime. There is no schema and no file on disk — restart
 // recovery comes from adopting live tmux sessions (FR-021), not from storage.
@@ -109,6 +137,20 @@ type Session struct {
 	// an adopted session is subject to the same ownership check and the same
 	// timeouts as any other (FR-023).
 	Adopted bool
+
+	// CredentialPending marks a session whose bearer token has not been handed
+	// to anyone yet, which only adoption produces. A create returns its token in
+	// the same response that mints it; adoption has no response to put one in,
+	// because it happens at startup with nobody asking.
+	//
+	// While it is set, TokenHash is the hash of a token that was generated and
+	// immediately discarded, so no credential a caller can present will match —
+	// the session is owned, listed, capped and reapable, and nothing can drive
+	// it. ClaimPending is what ends that: it mints the real token, returns it
+	// once, and clears this. Minting late rather than at adoption is what keeps
+	// FR-013's "never stored" true — a plaintext token held from startup until
+	// somebody asked for it would be exactly the storage that forbids.
+	CredentialPending bool `json:"-"`
 }
 
 // TmuxName is the host session name this record addresses.
@@ -131,6 +173,25 @@ func (s Session) AbsoluteDeadline() time.Time { return s.CreatedAt.Add(AbsoluteL
 
 // IdleDeadline is when the session dies for want of a request (FR-038).
 func (s Session) IdleDeadline() time.Time { return s.LastActivity.Add(IdleTimeout) }
+
+// DisplayState is the label the dashboard shows for this session at now
+// (FR-019b).
+//
+// The comparison is against IdleDeadline — the reaper's own method, not a second
+// constant that agrees with IdleTimeout today — which is the whole of FR-019c:
+// the dashboard and the sweep put one question to one clock, so a session the
+// reaper is about to take cannot read as running. The boundary falls on the same
+// side as expiredAt's, too: at the deadline the session is already idle, exactly
+// as at the deadline it is already reapable.
+//
+// State is not consulted at all. Reading it is what FR-019a forbids, and both
+// values it can hold in production are this method's running anyway.
+func (s Session) DisplayState(now time.Time) DisplayState {
+	if !now.Before(s.IdleDeadline()) {
+		return DisplayIdle
+	}
+	return DisplayRunning
+}
 
 // TokenExpiry is when the bearer token stops being accepted (FR-015).
 //
@@ -157,9 +218,23 @@ var (
 	// overwritten holds the token hash its owner is holding the token for.
 	ErrSessionExists = errors.New("session already exists")
 
+	// ErrTooManySessions refuses a create that would put the daemon over
+	// CRSW_MAX_SESSIONS (FR-036). It is the one refusal in this package that is
+	// about the host rather than about the request: nothing the caller sent is
+	// wrong, there is simply no room, which is why the handler answers 429 and
+	// not 400.
+	ErrTooManySessions = errors.New("the concurrent-session cap is reached")
+
 	// ErrSessionDead marks an attempt to move a terminal record. Dead is the
 	// end of the state machine in data-model.md.
 	ErrSessionDead = errors.New("session is dead")
+
+	// ErrCredentialNotPending marks a claim on a session whose credential has
+	// already been handed out. It is not reachable through the API — ClaimPending
+	// only ever asks about sessions it has just seen are pending — and exists so
+	// that a future caller reaching SetCredential twice fails loudly rather than
+	// silently invalidating a token somebody is using.
+	ErrCredentialNotPending = errors.New("session credential is not pending")
 
 	// ErrInvalidSession wraps every malformed-record rejection from Add.
 	ErrInvalidSession = errors.New("invalid session record")
@@ -192,6 +267,14 @@ func NewStore() *Store {
 // carry a deadline in the year 1. Both fail closed, and neither should be
 // reachable — so the store refuses them here rather than letting a caller
 // discover which way they fail.
+//
+// It is deliberately uncapped, and adoption is its only caller. FR-036 caps
+// *creation*; a session the host is already running has to be taken back
+// whatever the count says, because refusing it there would leave a live
+// unsandboxed shell with no owner, no deadline and no reaper — which is the one
+// outcome Principle VI ranks above being over the cap. An adopted record still
+// counts against every later create, since AddCapped counts records and not
+// creates.
 func (st *Store) Add(s Session) error {
 	if err := validate(s); err != nil {
 		return err
@@ -200,6 +283,39 @@ func (st *Store) Add(s Session) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
+	return st.addLocked(s)
+}
+
+// AddCapped records a new session unless the store already holds limit of them
+// (FR-036). It is what Manager.Create adds through.
+//
+// The count and the insert are one critical section, and that is the whole
+// reason this exists rather than a Len check in the manager: two creates racing
+// at the boundary would both read limit-1, both find room, and both insert. No
+// caller can close that window, because it is between the two calls rather than
+// inside either — so the check belongs where the lock already is.
+//
+// A limit below 1 refuses everything. config.Load makes a cap under 1 fatal and
+// NewManagerWithClock refuses one as well, so this is the third answer to a
+// question that should never be asked, and it is the fail-closed one: a daemon
+// that does not know how many sessions it may run does not get to run any.
+func (st *Store) AddCapped(s Session, limit int) error {
+	if err := validate(s); err != nil {
+		return err
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	if len(st.byID) >= limit {
+		return fmt.Errorf("add session: %w", ErrTooManySessions)
+	}
+	return st.addLocked(s)
+}
+
+// addLocked is the insert both add paths end in. The caller holds the write
+// lock, which is what lets AddCapped count and insert without a gap.
+func (st *Store) addLocked(s Session) error {
 	if _, ok := st.byID[s.ID]; ok {
 		return fmt.Errorf("add session: %w", ErrSessionExists)
 	}
@@ -253,6 +369,50 @@ func (st *Store) Get(id string, owner auth.CallerID) (Session, error) {
 	return s, nil
 }
 
+// lookup is the owner-blind read Get's comment promises reconciliation and the
+// reaper: both act on the daemon's own behalf, and neither has a caller to check
+// a record against.
+//
+// It is unexported so that this stays true by construction rather than by
+// habit. Everything reached from a request goes through Get, which takes an
+// owner and cannot be called without one — a caller-facing path that wanted this
+// instead would have to be written inside this package, where the reason it may
+// not is written down.
+func (st *Store) lookup(id string) (Session, bool) {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+
+	s, ok := st.byID[id]
+	return s, ok
+}
+
+// snapshot is every record the store holds, as copies, in no particular order.
+//
+// It is the owner-blind read lookup's comment promises the reaper, and it is
+// unexported for the same reason: the reaper acts on the daemon's own behalf and
+// has no caller to check a record against, while everything reached from a
+// request goes through Get, which cannot be called without an owner.
+//
+// A copy rather than a callback under the lock, deliberately. Reaping is several
+// tmux commands per session, and a store held locked for the length of one would
+// stall every request behind a host that is slow to answer. The cost is that a
+// record can be deleted between the copy and its teardown — which is the destroy
+// racing the reaper that spec.md names, and Manager.Destroy already ends in
+// success for both of them.
+//
+// Order is unspecified because nothing about a sweep depends on it: each record
+// is judged against its own two deadlines and nothing else's.
+func (st *Store) snapshot() []Session {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+
+	out := make([]Session, 0, len(st.byID))
+	for _, s := range st.byID {
+		out = append(out, s)
+	}
+	return out
+}
+
 // List returns the caller's own sessions, oldest first, as copies.
 //
 // Ordering is by CreatedAt then ID because map iteration is randomised, and a
@@ -281,8 +441,12 @@ func (st *Store) List(owner auth.CallerID) []Session {
 	return out
 }
 
-// Len is the number of records held, whatever their state and owner. It is what
-// the concurrent-session cap counts (FR-036).
+// Len is the number of records held, whatever their state and owner — the same
+// count AddCapped enforces the cap on (FR-036).
+//
+// It is a read and nothing more. The cap itself is not enforced through it, for
+// the reason AddCapped exists: a caller that read this and then added would have
+// a window between the two where another create could fit.
 func (st *Store) Len() int {
 	st.mu.RLock()
 	defer st.mu.RUnlock()
@@ -340,6 +504,33 @@ func (st *Store) Touch(id string, now time.Time) error {
 		s.LastActivity = now
 		st.byID[id] = s
 	}
+	return nil
+}
+
+// SetCredential replaces a record's token hash and clears CredentialPending. It
+// is how an adopted session acquires the one credential it will ever have.
+//
+// It refuses a session that is not pending, so a second claim cannot rotate a
+// credential that has already been handed out — that would let anyone able to
+// call the route invalidate a token another client is holding, and would make
+// "returned once" (FR-013) mean "returned once per caller who asks".
+func (st *Store) SetCredential(id string, hash [32]byte) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	s, ok := st.byID[id]
+	if !ok {
+		return fmt.Errorf("set credential: %w", ErrSessionNotFound)
+	}
+	if s.State == StateDead {
+		return fmt.Errorf("set credential: %w", ErrSessionDead)
+	}
+	if !s.CredentialPending {
+		return fmt.Errorf("set credential: %w", ErrCredentialNotPending)
+	}
+	s.TokenHash = hash
+	s.CredentialPending = false
+	st.byID[id] = s
 	return nil
 }
 

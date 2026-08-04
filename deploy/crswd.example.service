@@ -4,6 +4,12 @@
 # A user unit, not a system one, on purpose: sessions should run as you, with your
 # environment and your repo access — not as root. Running this as root would hand
 # every session root on the host.
+#
+# A user manager stops when your last login session ends, and the whole point of
+# this daemon is reaching the host when you are not sitting at it. Enable
+# lingering once, or the service is up only while you happen to be logged in:
+#
+#   loginctl enable-linger "$USER"
 
 [Unit]
 Description=Claude remote session webhook daemon
@@ -13,34 +19,108 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/bin/crswd --listen 127.0.0.1:8787
 
-# Secrets come from a file that lives OUTSIDE the repo and is mode 0600.
-# Populate it from 1Password at deploy time; never commit it.
-#   op read "op://Lobster/crswd/shared-secret" > ~/.config/crswd/env
+# No flags. The daemon defines none — configuration is environment-only and read
+# once, before it binds or spawns anything — and flag.Parse rejects a flag it does
+# not know, so an ExecStart carrying one does not start at all.
+ExecStart=%h/bin/crswd
+
+# The audit trail is structured JSON on stdout, so where stdout goes is where the
+# trail is kept. Stated rather than inherited from a distro default, because
+# "what happened" depends on it:
+#
+#   journalctl --user -u crswd -o cat | jq .
+StandardOutput=journal
+StandardError=journal
+
+# Four values come from a file OUTSIDE the repo, mode 0600, written at deploy
+# time. EnvironmentFile parses NAME=value lines, so write the assignments and not
+# the bare values:
+#
+#   mkdir -p ~/.config/crswd
+#   ( umask 077
+#     printf 'CRSW_SHARED_SECRET=%s\n' "$(op read 'op://Lobster/crswd/shared-secret')"
+#     printf 'CRSW_ACCESS_TEAM_DOMAIN=%s\n' '<team>.cloudflareaccess.com'
+#     printf 'CRSW_ACCESS_AUD=%s\n'         '<the Access application AUD tag>'
+#     printf 'CRSW_ACCESS_ALLOWED_EMAILS=%s\n' '<you@example.com>'
+#   ) > ~/.config/crswd/env
+#
+# All four are required and the daemon refuses to start without them: the secret
+# is layer 2, and the other three are what layer 1 verifies a browser's Access
+# assertion against — a daemon that cannot check who the browser is has no
+# browser door at all. `.env.example` describes each one.
+#
+# Never `Environment=` any of them in this file. A unit's contents are readable
+# by anyone who can run `systemctl --user show crswd`, and this example is
+# committed to a public repository — a value typed here is published forever.
+# The secret is the obvious case; the other three name a Cloudflare team, an
+# application, and a person.
 EnvironmentFile=%h/.config/crswd/env
 
-# Non-secret configuration can live here inline.
+# The rest, inline. This is every remaining variable the daemon reads, and each
+# value shown is the daemon's own default, so a line deleted here changes
+# nothing. `.env.example` says what each one refuses to start on.
 Environment=CRSW_ALLOWED_ROOTS=%h/code
-Environment=CRSW_SESSION_CAP=8
-Environment=CRSW_IDLE_TIMEOUT=60m
-Environment=CRSW_ABSOLUTE_LIFETIME=24h
+Environment=CRSW_LISTEN=127.0.0.1:8765
+Environment=CRSW_MAX_SESSIONS=5
+Environment=CRSW_CREATE_RATE_PER_MIN=6
+Environment=CRSW_MAX_BODY_BYTES=65536
+Environment=CRSW_MAX_STREAMS=10
+
+# There is no unit setting for the idle timeout (60m), the absolute session
+# lifetime (24h) or the signed-request timestamp window (300s). They are
+# constants in the code: they bound the host, and a deployment that could widen
+# them from a unit file could unbound it. Do not add one here expecting it to be
+# read — nothing reads it, and nothing tells you so.
 
 Restart=on-failure
 RestartSec=5s
 
-# Hardening. Note these protect the HOST FROM THE DAEMON, not sessions from each
-# other — sessions run with --dangerously-skip-permissions by design, and anything
-# the daemon can reach, a session can reach. Keep ALLOWED_ROOTS narrow; that is the
-# real control. See constitution Principle VI.
+# Longer than the daemon's own 30s shutdown budget (cmd/crswd/main.go), so the
+# deadline that fires is the daemon's own. The single ending that certainly
+# leaves unsandboxed shells running on the host is a SIGKILL from systemd
+# part-way through a verified teardown.
+TimeoutStopSec=45s
+
+# tmux is not a child to be reaped along with the unit. A tmux server this daemon
+# starts lands in the unit's cgroup, so the default KillMode=control-group would
+# destroy every session on any restart — precisely the sessions Manager.Adopt
+# exists to take ownership of again.
+#
+# Killing them is not the safer reading either, because it only works when the
+# daemon happened to start the server: attach to tmux from your own shell first
+# and the server is outside this cgroup entirely, where systemd's kill never
+# reaches it. Teardown here is the daemon's verified teardown, on purpose, rather
+# than systemd's approximation of one.
+KillMode=process
+
+# Hardening — read what it does not do before adding to it. These protect the
+# HOST FROM THE DAEMON. None of them sandboxes a session: sessions run
+# `claude --dangerously-skip-permissions` as you, so anything the daemon can
+# reach, a session can reach. CRSW_ALLOWED_ROOTS is the real control; keep it
+# narrow. See constitution Principle VI.
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=%h/code %h/.config/crswd %h/.claude
+RestrictSUIDSGID=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
-RestrictSUIDSGID=true
+ProtectSystem=full
+
+# Deliberately absent. Each of these breaks the tool rather than bounding it, and
+# all three read as obvious additions to anyone hardening this by habit:
+#
+#   PrivateTmp=true      tmux's socket directory is /tmp/tmux-$UID unless
+#                        TMUX_TMPDIR says otherwise. A private /tmp puts the
+#                        daemon's tmux server where your own shell cannot see it,
+#                        so `tmux attach` stops working and you get two servers
+#                        where there should be one. Attaching by hand is why this
+#                        daemon uses tmux at all.
+#   ProtectHome=         Claude Code reads and writes ~/.claude, ~/.claude.json
+#                        and ~/.cache. A read-only home breaks sessions in ways
+#                        that surface as unrelated errors inside the pane.
+#   ProtectSystem=strict mounts the whole hierarchy read-only, so every directory
+#                        tmux and Claude Code write to has to be handed back one
+#                        at a time with ReadWritePaths — a list that fails at run
+#                        time, in a pane, rather than at install time.
 
 [Install]
 WantedBy=default.target

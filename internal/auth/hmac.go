@@ -50,6 +50,11 @@ const (
 	// beginning with digits cannot be shifted into the timestamp and still
 	// produce the same payload.
 	payloadSeparator = "."
+
+	// fieldSeparator ends the method and the path. A newline cannot occur in
+	// either — Go rejects both before a handler ever sees them — so no caller
+	// can slide the boundary and make one field absorb another.
+	fieldSeparator = "\n"
 )
 
 // maxSkew is the window either side of the daemon's own clock within which a
@@ -168,7 +173,10 @@ func (a *Authenticator) Verify(r *http.Request) (*Caller, error) {
 		return nil, deny(err)
 	}
 
-	want, err := a.sign(timestamp, body)
+	// r.URL.EscapedPath() rather than r.URL.Path: the caller signed the bytes it
+	// put on the wire, and decoding first would let two different request lines
+	// sign the same.
+	want, err := a.sign(r.Method, r.URL.EscapedPath(), timestamp, body)
 	if err != nil {
 		return nil, deny(err)
 	}
@@ -235,13 +243,26 @@ func (a *Authenticator) readBody(r *http.Request) ([]byte, error) {
 	return body, nil
 }
 
-// sign builds the expected header value for a timestamp and body.
+// sign builds the expected header value for a request.
+//
+// The payload is METHOD "\n" PATH "\n" timestamp "." body. Method and path are
+// in it because a signature has to name what it authorizes: over the timestamp
+// and body alone, one signed GET /sessions is a valid DELETE /sessions/{id} at
+// the same instant, since both carry an empty body. Only the replay cache stood
+// between those, and only if the original request actually arrived — an
+// attacker who blocks it and substitutes their own method and path inherits the
+// signature. It also made the daemon refuse itself: two empty-body reads in the
+// same second signed identically, so the second came back 401.
 //
 // The timestamp is re-rendered from the parsed value rather than copied out of
 // the header, so one instant has exactly one signed spelling and a padded or
 // signed variant cannot become a second valid form of the same request.
-func (a *Authenticator) sign(timestamp int64, body []byte) (string, error) {
-	payload := make([]byte, 0, len(payloadSeparator)+len(body)+20)
+func (a *Authenticator) sign(method, path string, timestamp int64, body []byte) (string, error) {
+	payload := make([]byte, 0, len(method)+len(path)+2*len(fieldSeparator)+len(payloadSeparator)+len(body)+20)
+	payload = append(payload, method...)
+	payload = append(payload, fieldSeparator...)
+	payload = append(payload, path...)
+	payload = append(payload, fieldSeparator...)
 	payload = strconv.AppendInt(payload, timestamp, 10)
 	payload = append(payload, payloadSeparator...)
 	payload = append(payload, body...)

@@ -1,0 +1,476 @@
+/*
+ * crswd.css — every colour, size, font and motion the dashboard has.
+ *
+ * docs/design-system.md's first non-negotiable is that a value not in that
+ * document does not exist, so this file is in two halves: one token block that
+ * transcribes it, and rules that reference tokens and nothing else. A colour, a
+ * length, or a font family below the token block is the defect the sweep in
+ * stylesheet_test.go exists to find.
+ *
+ * The breakpoint is the one deliberate exception, and it is a property of CSS
+ * rather than a choice: a media query is evaluated before custom properties
+ * resolve, so `@media (max-width: var(--bp))` is not valid CSS at all. The one
+ * length the design system names there has to be a literal, and the sweep
+ * asserts there is exactly one of them.
+ *
+ * Selectors follow web/templates rather than the other way round. The
+ * components are canonical (docs/components.md), so a class here that no
+ * template renders is styling for a component somebody invented, and a class a
+ * template renders with no rule here is the unstyled dashboard this task is
+ * for. Both directions are held by a test.
+ */
+
+/*
+ * Single theme, by choice: the tokens are pinned across every data-theme
+ * because a light-mode Matrix would misrepresent the product. This shape is
+ * what stops a viewer toggle from half-applying them.
+ */
+:root,
+:root[data-theme="dark"],
+:root[data-theme="light"] {
+  /* The ground is near-black with a green bias, not pure black, so the
+     phosphor sits inside the palette rather than on top of it. */
+  --ground: #050705;
+  --surface: #0a0f0a;
+  --surface-lift: #101710;
+  --edge: #17331f;
+  --edge-bright: #1f5c33;
+
+  /* Body text is --text, never --phosphor: full-saturation green as running
+     text is fatiguing, and if everything glows nothing does. */
+  --text: #c6f7d0;
+  --dim: #6f9c7c;
+  --phosphor: #00ff41;
+
+  /* Semantic colour, deliberately not folded back into green — a dead session
+     that reads as green is a bug. Two of these render in no milestone yet and
+     are declared anyway, because a state that renders wrongly the first time it
+     occurs is a defect that ships in silence. */
+  --state-running: #00ff41;
+  --state-idle: #3fa85c;
+  --state-auth: #ffb000;
+  --state-dead: #ff4d4d;
+
+  /* Mono is what the machine says; sans is what a human wrote. No webfont URL:
+     the policy in docs/security.md permits no CDN, so a linked face would fail
+     silently and fall back. */
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Mono", Menlo, Consolas, monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  /* The roles in the design system's typography table. Named here because that
+     table gives every value but no token name, and rule 1 is about the values. */
+  --fs-brand: 1.05rem;
+  --fs-eyebrow: .72rem;
+  --fs-body: 14px;
+  --lh-body: 1.5;
+  --fs-prose: .86rem;
+  --fs-label: .66rem; /* the table gives a .64–.68rem range; this is inside it */
+  --fs-pane: 12.5px;
+  --lh-pane: 1.45;
+  --ls-brand: .22em;
+  --ls-eyebrow: .2em;
+  --ls-label: .14em;
+
+  --s1: .25rem;
+  --s2: .5rem;
+  --s3: .75rem;
+  --s4: 1rem;
+  --s5: 1.5rem;
+  --s6: 2rem;
+  --s7: 3rem;
+
+  --r: 3px; /* terminals are not rounded */
+  --edge-width: 1px;
+  --transition: .12s ease;
+
+  /* The focus rule verbatim, with its two lengths named so the sweep can hold
+     for the whole file rather than for all of it but one rule. */
+  --focus-width: 2px;
+  --focus-offset: 2px;
+
+  --shell-max: 1160px;
+  --card-min: 310px;
+  --pane-h: 30rem;
+
+  /* The rain's two permitted strengths. Opacity belongs to the surface the
+     canvas sits in rather than to the canvas, so it is selected by ancestor. */
+  --rain-ambient: .16;
+  --rain-full: .5;
+
+  /* The wipe the rain is cleared with each frame — the design system gives this
+     value and no name for it, like the typography above. No CSS rule reads it:
+     crswd.js does, so that the one colour a canvas draws with is a token here
+     rather than a string in a script no sweep can see. */
+  --rain-wipe: rgba(5, 7, 5, .22);
+
+  /* Elevation is --surface-lift and borders, never a shadow. This one is
+     typographic — the brand's phosphor glow, which the type table asks for. */
+  --glow: 0 0 var(--s2) var(--phosphor);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  /* Scrollbars and any platform chrome in the same world as the page, without
+     a token spent on either. */
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--text);
+  font: var(--fs-body)/var(--lh-body) var(--mono);
+}
+
+/* Header — sticky, brand left, identity right, rain behind it. */
+.masthead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  overflow: hidden;
+  background: var(--surface);
+  border-block-end: var(--edge-width) solid var(--edge);
+}
+
+.masthead-bar {
+  position: relative; /* over the one canvas the header is allowed to carry */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s3) var(--s4);
+  max-inline-size: var(--shell-max);
+  margin-inline: auto;
+  padding: var(--s3) var(--s5);
+}
+
+.brand {
+  margin: 0;
+  color: var(--phosphor);
+  font-size: var(--fs-brand);
+  font-weight: 700;
+  letter-spacing: var(--ls-brand);
+  text-transform: uppercase;
+  text-shadow: var(--glow);
+}
+
+.brand-tag {
+  margin-inline-start: var(--s3);
+  color: var(--dim);
+  font-size: var(--fs-eyebrow);
+  font-weight: 600;
+  letter-spacing: var(--ls-eyebrow);
+  text-shadow: none; /* the eyebrow beside the brand does not glow with it */
+}
+
+/* Whose credentials are driving sessions on this host. Long addresses truncate
+   rather than push the brand off the bar; the title attribute carries the rest. */
+.operator {
+  margin: 0;
+  overflow: hidden;
+  color: var(--dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell {
+  max-inline-size: var(--shell-max);
+  margin-inline: auto;
+  padding: var(--s5);
+}
+
+/* The summary comes before any detail — a dashboard is scanned, not read. */
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  margin: 0 0 var(--s5);
+  padding: 0;
+  list-style: none;
+}
+
+.summary-state {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  background: var(--surface);
+  border: var(--edge-width) solid var(--edge);
+  border-radius: var(--r);
+}
+
+.summary-count {
+  font-weight: 700;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--card-min), 1fr));
+  gap: var(--s4);
+}
+
+/* Grid rather than flex so a long name or path can be truncated inside a track
+   that is allowed to be narrower than its content (minmax(0, 1fr)). */
+.card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s3);
+  padding: var(--s4);
+  background: var(--surface);
+  border: var(--edge-width) solid var(--edge);
+  border-radius: var(--r);
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.card:hover {
+  background: var(--surface-lift);
+  border-color: var(--edge-bright);
+}
+
+.card-heading {
+  margin: 0;
+  font-size: inherit;
+  font-weight: 700;
+}
+
+/* Caller-supplied text: a 64-character name breaks the layout's line, never
+   the layout. The full value is in the title attribute the template renders. */
+.card-name,
+.card-path {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A value the daemon does not have reads as a sentence a human wrote — dim,
+   sans, italic — so it can never be mistaken for a real name or a real path. */
+.card-unknown {
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: var(--fs-prose);
+  font-style: italic;
+}
+
+.card-id {
+  margin: 0;
+  color: var(--dim);
+}
+
+.card-link {
+  color: var(--dim);
+  text-decoration-color: var(--edge-bright);
+  transition: color var(--transition);
+}
+
+.card-link:hover {
+  color: var(--text);
+}
+
+.card-meta {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--s1) var(--s3);
+  margin: 0;
+}
+
+.card-meta dt {
+  color: var(--dim);
+  font-size: var(--fs-eyebrow);
+  font-weight: 600;
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+}
+
+.card-meta dd {
+  min-inline-size: 0;
+  margin: 0;
+}
+
+/* Milestone 3's buttons go inside this row. The row is the whole of what this
+   milestone can build (FR-024a), and it renders only for a card handed one. */
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+/* The one way session state is rendered anywhere. The label is always text and
+   always present; the dot is reinforcement, never the state itself. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start; /* ignored inside the summary's flex row, on purpose */
+  gap: var(--s2);
+  padding: var(--s1) var(--s2);
+  border: var(--edge-width) solid var(--edge-bright);
+  border-radius: var(--r);
+  color: var(--text);
+  font-size: var(--fs-label);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+}
+
+.pill::before {
+  content: "";
+  inline-size: var(--s2);
+  block-size: var(--s2);
+  background: var(--pill-state, var(--dim));
+  border-radius: var(--r);
+}
+
+/* Two of these four states cannot occur yet. They are here because the pill is
+   the component that has to keep working when they arrive — needs-auth with
+   milestone 4's device-code relay, dead the day a record can be dead — and a
+   state whose first render is its first test is a state that renders wrongly. */
+.pill-running {
+  --pill-state: var(--state-running);
+}
+
+.pill-idle {
+  --pill-state: var(--state-idle);
+}
+
+.pill-needs-auth {
+  --pill-state: var(--state-auth);
+}
+
+.pill-dead {
+  --pill-state: var(--state-dead);
+}
+
+/* The pane viewer. The container is styled and the content never is — the
+   design system's fourth non-negotiable, which is a security rule wearing design
+   clothes: what is inside this element is a text node the host wrote.
+
+   It is its own scroll container in both axes (the layout rule for wide
+   content, and components.md's fixed height), so the screen scrolls and the
+   page does not. Ligatures are off because they misrepresent terminal text, and
+   the tab stop is the terminal's rather than the browser's default. */
+.pane {
+  overflow: auto;
+  max-block-size: var(--pane-h);
+  margin: 0;
+  padding: var(--s3);
+  background: var(--surface);
+  border: var(--edge-width) solid var(--edge);
+  border-radius: var(--r);
+  font: var(--fs-pane)/var(--lh-pane) var(--mono);
+  font-variant-ligatures: none;
+  white-space: pre;
+  tab-size: 4;
+}
+
+/* What the page says about the pane, rather than what the session said: prose a
+   human wrote, so it is set in sans on the same terms as an absent value on a
+   card. It carries the live-screen statement FR-032a asks for, and the sentence
+   that stands in for a screen nobody could read. */
+.pane-note {
+  margin: var(--s3) 0 0;
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: var(--fs-prose);
+}
+
+/* The one surface where the rain runs at full strength: nothing competes with
+   it here, so it fills the void instead of leaving a shrug. */
+.empty {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  padding: var(--s7) var(--s5);
+  border: var(--edge-width) solid var(--edge);
+  border-radius: var(--r);
+}
+
+.empty-message {
+  position: relative;
+  /* Two cards wide, so the measure comes from the grid's own token rather than
+     from a width invented for one paragraph. */
+  inline-size: min(100%, calc(var(--card-min) * 2));
+  padding: var(--s6);
+  text-align: center;
+  /* Burned through the rain with a vignette so the copy never fights glyphs. */
+  background: radial-gradient(closest-side, var(--ground), transparent);
+}
+
+.empty-title {
+  margin: 0 0 var(--s3);
+  font-size: var(--fs-brand);
+  font-weight: 700;
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+}
+
+/* Prose a human wrote, so it is set in sans — the same rule that makes an
+   absent value on a card read as a sentence and not as data. */
+.empty-body {
+  margin: 0;
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: var(--fs-prose);
+}
+
+.empty-action {
+  display: flex;
+  justify-content: center;
+  gap: var(--s2);
+  margin-block-start: var(--s5);
+}
+
+/* Decoration and nothing else: it carries no information, takes no pointer,
+   and appears only inside the two ancestors below. */
+.rain {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  pointer-events: none;
+}
+
+.masthead .rain {
+  opacity: var(--rain-ambient);
+}
+
+.empty .rain {
+  opacity: var(--rain-full);
+}
+
+/* Never removed without a replacement. */
+:focus-visible {
+  outline: var(--focus-width) solid var(--phosphor);
+  outline-offset: var(--focus-offset);
+}
+
+/* The single breakpoint: the summary drops to two columns and the tagline
+   hides. One operator, a laptop and a phone — two breakpoints would be one
+   more than either needs. */
+@media (max-width: 780px) {
+  .shell {
+    padding: var(--s4);
+  }
+
+  .summary {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .brand-tag {
+    display: none;
+  }
+}
+
+/* Removed entirely rather than slowed: the canvas leaves the layout, so the
+   shared animation loop finds nothing to draw into and the message the rain sat
+   behind is all that remains. */
+@media (prefers-reduced-motion: reduce) {
+  .rain {
+    display: none;
+  }
+}

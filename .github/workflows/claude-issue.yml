@@ -58,7 +58,20 @@ jobs:
 
           # Keep the agent bounded. A runaway loop on a runner is expensive
           # and produces an unreviewable diff.
-          claude_args: --max-turns 25
+          #
+          # The model is pinned here rather than left to the action's default,
+          # for the reason golangci-lint and Go are pinned: a default that moves
+          # between action versions or subscription changes would quietly alter
+          # how this automation reasons, with no commit to point at. On a repo
+          # where a request that passes authentication is unsandboxed code
+          # execution, "which model wrote this PR" belongs in the diff.
+          #
+          # It is NOT set in .claude/settings.json, which this step also passes.
+          # That file governs interactive sessions too, and an operator switching
+          # models by hand should not be fighting the automation's choice. The
+          # action declares no `model` input, so it rides in claude_args as the
+          # CLI flag it is.
+          claude_args: --max-turns 25 --model claude-opus-5
 
           branch_prefix: claude/issue-
           track_progress: true

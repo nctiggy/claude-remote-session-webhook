@@ -317,7 +317,11 @@ prompt text, no pane content, no credential, and no secret material.
 #### Request authentication (layer 2)
 
 - **FR-007**: Every registered route MUST require a valid request signature computed
-  over the request timestamp and the raw request body together. No route is exempt.
+  over the request method, path, timestamp, and raw body together. No route is
+  exempt. The method and path are covered so that a signature names the request it
+  authorizes: over the timestamp and body alone, every empty-body request at one
+  instant signs identically, so one signed read is a valid destroy in the same
+  second and a client reading twice in one second is refused as a replay.
 - **FR-008**: The daemon MUST reject any request whose timestamp differs from its own
   clock by more than 300 seconds **in either direction**.
 - **FR-009**: The daemon MUST compare signatures in constant time.
@@ -366,7 +370,11 @@ prompt text, no pane content, no credential, and no secret material.
 - **FR-021**: On startup the daemon MUST reconcile with the host: every live session
   bearing its reserved prefix that has no in-memory record MUST be taken under
   management, with a freshly issued credential. Credentials issued before the restart
-  are unrecoverable by design.
+  are unrecoverable by design. The fresh credential MUST reach the session's owner:
+  reconciliation happens with no request in flight, so it is delivered in the first
+  session list the owner requests, exactly once, and never stored as plaintext in the
+  meantime. Until it is claimed the session is owned, listed, capped, and reapable, and
+  no credential drives it.
 - **FR-022**: Reconciliation MUST NOT adopt a host session that merely resembles the
   prefix but was not created by the daemon, and MUST resolve a present-but-unusable
   session to a definite state rather than recording it as healthy.

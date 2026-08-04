@@ -1,0 +1,40 @@
+{{/*
+  One session — GET /sessions/{id}/view (contracts/dashboard.md). This is the
+  page every card on the fleet already links to, and it composes rather than
+  invents: the same header, the same canonical session card, and the pane viewer
+  beneath it. A second spelling of a session's summary here would be the second
+  card docs/components.md exists to prevent — the fleet and this page describe
+  one session from one projection.
+
+  Load-bearing, and the same three absences the other two pages carry: no inline
+  <script>, no inline <style>, and no external origin. The policy in
+  docs/security.md is sent unmodified, so each of the three would fail in a
+  browser rather than in review. The script is the embedded asset that drives the
+  rain the header renders a canvas for, and it has to be a file for exactly the
+  reason an inline one would fail.
+
+  The title names no session. A name is caller-supplied text (FR-030) and
+  escaping would render it safely, but a browser tab gains nothing from it that
+  the card below does not say better — and a title is the one place on a page
+  where text is read out of its context.
+
+  No rain sits behind the card or the pane. The design system permits the effect
+  behind the header and in the empty state and nowhere else, and a screen an
+  operator is reading is the clearest case of reading content there is.
+*/}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>crswd — session</title>
+<link rel="stylesheet" href="/static/crswd.css">
+<script src="/static/crswd.js" defer></script>
+</head>
+<body>
+{{ template "header" .Operator }}
+<main class="shell">
+{{ template "session-card" .Session }}
+{{ template "pane" .Pane }}
+</main>
+</body>
+</html>

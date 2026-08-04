@@ -1,0 +1,46 @@
+{{/*
+  Session card — the only place a session's summary is composed
+  (docs/components.md). The fleet and the single-session view both render this
+  one, so the two cannot drift into describing the same session differently.
+
+  Name and working directory are caller-supplied (FR-030) and reach the page as
+  text nodes through html/template's escaping, on exactly the terms pane output
+  does (FR-028). Nothing here opts out of that: no template.HTML, no safeHTML
+  helper, not for a link and not for colour. There is no valid reason, and
+  docs/security.md says so in terms.
+
+  Either may be absent, which is routine rather than exceptional — a session
+  adopted after a restart has neither, because milestone 1 records neither, on
+  purpose, since nothing on the host carries them (FR-018a). The absence renders
+  as a statement that the value is unknown, in the dim sans-serif the design
+  system reserves for prose a human wrote, and never as a placeholder that reads
+  like a real name or a real path: a card showing an invented directory is
+  telling an operator something false about an unsandboxed shell.
+
+  The identifier is rendered as well as linked. It is the only handle a session
+  with no name has — without it every adopted card would read identically — and
+  it carries no credential, which is the same reason a stream URL may hold one.
+*/}}<article class="card">
+<h2 class="card-heading">{{ if .Name }}<span class="card-name" title="{{ .Name }}">{{ .Name }}</span>{{ else }}<span class="card-unknown">no name recorded</span>{{ end }}</h2>
+{{ template "status-pill" .DisplayState }}
+<p class="card-id"><a class="card-link" href="/sessions/{{ .ID }}/view" title="{{ .ID }}">{{ .ID }}</a></p>
+<dl class="card-meta">
+<dt>working directory</dt>
+<dd>{{ if .WorkDir }}<span class="card-path" title="{{ .WorkDir }}">{{ .WorkDir }}</span>{{ else }}<span class="card-unknown">no working directory recorded</span>{{ end }}</dd>
+<dt>age</dt>
+<dd>{{ .Age }}</dd>
+</dl>
+{{/*
+  The action row is a parameter this milestone passes none of (FR-024a). The
+  dashboard is read-only (FR-022), and a browser holds no shared secret, so
+  destroy, compact and rename would be non-functional here as well as out of
+  scope.
+
+  It is guarded rather than removed so milestone 3 puts buttons inside a row
+  that already exists instead of restoring markup this one deleted. What goes
+  inside is docs/components.md's Button, which FR-024a forbids building now —
+  so the container is the whole of what this milestone can build, and the two
+  action-row tests prove both halves: nothing renders without the parameter,
+  and the row renders with it.
+*/}}{{ with .Actions }}<div class="card-actions"></div>{{ end }}
+</article>

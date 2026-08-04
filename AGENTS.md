@@ -37,14 +37,30 @@ Keep this table honest. A stale command here costs more than a missing one.
 |---|---|
 | Install | `go mod download` |
 | Build | `go build ./...` |
-| Test (all) | `go test ./...` |
+| Test (default build) | `go test ./...` |
 | Test (single) | `go test ./internal/auth -run TestVerify` |
+| Test (real tmux) | `go test -tags tmux ./...` |
+| Test (acceptance) | `go test -tags quickstart ./cmd/crswd` |
+| Test (dev bypass) | `go test -tags dev ./...` |
 | Lint | `golangci-lint run` |
 | Format | `gofmt -w . && goimports -w .` |
 | Typecheck | `go vet ./...` |
 
 **Definition of done** — a change is not done until build, test, and lint all pass.
-CI runs exactly these commands; do not hand-wave them locally.
+CI runs the untagged commands above and nothing else; do not hand-wave them locally.
+
+**A build tag hides a file from the default build, so a tagged suite reports nothing
+whether or not it still compiles.** `go test ./...` does not reach these three, and
+neither does CI. Run the one that matches what you touched:
+
+| Tag | Covers | Needs |
+|---|---|---|
+| `tmux` | `internal/tmuxctl` driven against the real binary | `tmux` installed. Each test gets a private `-L` socket, never the operator's server |
+| `quickstart` | `cmd/crswd` acceptance — a real build, a real port, real tmux | `tmux`, and `127.0.0.1:8765` free: the deployed daemon holds it and two startup cases bind that exact port |
+| `dev` | `internal/access`'s loopback auth bypass, which is absent from the shipping build | nothing |
+
+`go vet -tags <tag> ./...` compiles a tagged suite without running it — the cheap check
+when its environment is not available.
 
 ---
 
@@ -78,6 +94,7 @@ Do not read all of these. Read the one that matches what you are about to change
 |---|---|
 | Signing, tokens, Google/Access login, session lifecycle | `docs/auth-and-sessions.md` |
 | Request input, authz, secrets, routes, exposure, rendering pane output | `docs/security.md` |
+| Writing or changing any Go | `docs/conventions.md` |
 | Layout, spacing, colour, any CSS | `docs/design-system.md` |
 | A session card, status pill, pane viewer, action button | `docs/components.md` |
 | Anything at all | this file |
@@ -89,34 +106,17 @@ unsandboxed code execution on the host. Read them before touching any handler.
 
 ## Conventions
 
-**Naming** — standard Go. Packages lowercase and singular; no `util`/`common`.
-```
-package session       // files: manager.go, manager_test.go
-func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, error)
-```
+Standard Go, with the detail and the examples in
+[`docs/conventions.md`](docs/conventions.md). The rules themselves:
 
-**Errors** — never swallow. Wrap with `%w` and context; return, do not log-and-continue.
-```go
-if err := m.tmux.Kill(ctx, s.Target()); err != nil {
-    return fmt.Errorf("kill session %s: %w", s.ID, err)  // never a bare `return err`
-}
-```
-Sentinel errors for conditions callers branch on (`ErrSessionNotFound`), checked with
-`errors.Is`. Never put a secret, prompt, or pane content in an error string.
-
-**Tests** — table-driven, `t.Parallel()`, no network, no real tmux (`tmuxctl` is an
-interface). Every PR needs a test that fails without the change. Auth and session
-code also needs the **negative** cases: bad signature, stale timestamp, replay, wrong owner.
-```go
-req := signedRequest(t, a, `{"cwd":"/repo"}`)
-mustVerify(t, a, req)                            // first use passes
-if _, err := a.Verify(clone(t, req)); err == nil {
-    t.Fatal("replayed request was accepted")     // this is the whole point
-}
-```
-
-**Comments** — explain *why*, never *what*. If the code needs a "what" comment,
-rewrite the code.
+- **Naming** — packages lowercase and singular; no `util`/`common`.
+- **Errors** — never swallow. Wrap with `%w` and context; return, do not
+  log-and-continue. Sentinels for what callers branch on, checked with `errors.Is`.
+  Never a secret, prompt, or pane content in an error string.
+- **Tests** — table-driven, `t.Parallel()`, no network, no real tmux. Every PR needs
+  a test that fails without the change; auth and session code needs the negative
+  cases too — bad signature, stale timestamp, replay, wrong owner.
+- **Comments** — explain *why*, never *what*.
 
 ---
 

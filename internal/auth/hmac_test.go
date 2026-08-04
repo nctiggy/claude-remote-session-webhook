@@ -46,9 +46,28 @@ const testMaxBody int64 = 4096
 // the package would mirror a bug in the payload layout instead of catching it.
 func signatureOver(t *testing.T, secret string, timestamp int64, body string) string {
 	t.Helper()
+	return signatureOverRequest(t, secret, testMethod, testPath, timestamp, body)
+}
+
+// testMethod and testPath are what every fixture in this package is built with.
+// They are named so that the one case which needs a *different* request line can
+// say so, rather than every call site repeating the common one.
+const (
+	testMethod = http.MethodPost
+	testPath   = "/sessions"
+)
+
+// signatureOverRequest is the payload layout written out from the contract:
+// METHOD "\n" PATH "\n" timestamp "." body. Method and path are in it so a
+// signature names what it authorizes — without them a signed read of one route
+// is a valid write to another at the same instant, and two empty-body reads in
+// the same second collide into one signature the replay cache then refuses.
+func signatureOverRequest(t *testing.T, secret, method, path string, timestamp int64, body string) string {
+	t.Helper()
 
 	mac := hmac.New(sha256.New, []byte(secret))
-	if _, err := io.WriteString(mac, strconv.FormatInt(timestamp, 10)+"."+body); err != nil {
+	payload := method + "\n" + path + "\n" + strconv.FormatInt(timestamp, 10) + "." + body
+	if _, err := io.WriteString(mac, payload); err != nil {
 		t.Fatalf("building the signature fixture: %v", err)
 	}
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))

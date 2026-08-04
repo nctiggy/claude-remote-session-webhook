@@ -83,16 +83,75 @@ Rules:
 Live terminal output, streamed over SSE.
 
 ```gotemplate
-<pre class="pane" hx-ext="sse" sse-connect="/sessions/{{ .ID }}/stream"
-     sse-swap="line" hx-swap="beforeend">{{ .PaneText }}</pre>
+{{/* The initial screen. Server-rendered, escaped by html/template. */}}
+<pre class="pane" id="pane-{{ .ID }}" tabindex="0" data-stream="/sessions/{{ .ID }}/stream" data-ended="pane-ended-{{ .ID }}">{{ .Text }}</pre>
+{{/* Revealed when the daemon says the session ended. The copy lives here, not
+     in the script: what the interface says to a person belongs to a template. */}}
+<p class="pane-note" id="pane-ended-{{ .ID }}" hidden>This session has ended. The screen above is the last one it printed.</p>
 ```
 
+```js
+// The live half. Each event carries the WHOLE current screen as a JSON string,
+// and replaces what was there — a Claude session is a full-screen program that
+// repaints in place, not a log that appends. Reconstructing a transcript by
+// diffing redraws produces torn lines from every cursor move and spinner.
+//
+// textContent, never innerHTML: the payload is untrusted bytes from the host,
+// and this is the project's only XSS surface. JSON.parse yields a string, and
+// the only thing done with a string is assign it — there is no path from here
+// to markup, which is what "closed by construction" means.
+const live = new EventSource(pane.dataset.stream);
+live.onmessage = (e) => {
+  const screen = JSON.parse(e.data);
+
+  // The pane is its own scroll container, and replacing its content empties it
+  // for an instant — long enough for the browser to clamp the offset against a
+  // box with nothing in it. So the reader's place is read here and put back
+  // below, rather than followed to a "bottom" a repainting screen never has.
+  const top = pane.scrollTop;
+  const left = pane.scrollLeft;
+
+  pane.textContent = screen;
+
+  pane.scrollTop = top;
+  pane.scrollLeft = left;
+};
+
+// The session ending is the daemon's one NAMED event, so a session cannot
+// announce its own by printing the bytes of one — every screen arrives unnamed.
+// The close is not politeness: without it EventSource reconnects for as long as
+// the tab lives, and each reconnection after the end is answered with the
+// uniform 404, which is the dashboard scanning its own daemon.
+live.addEventListener('end', () => {
+  const note = document.getElementById(pane.dataset.ended);
+  if (note) {
+    note.hidden = false;
+  }
+  live.close();
+});
+```
+
+> **Do not use htmx's `sse-swap` / `hx-swap="beforeend"` for pane output.** That
+> inserts the payload **as markup**, which is precisely what `security.md`
+> forbids: *"never `hx-swap` a raw pane payload into the DOM as markup — stream it
+> into a `<pre>` as text."* This snippet used to show exactly that, and it was
+> wrong: a session printing `<img src=x onerror=...>` would have executed it. htmx
+> is still the right tool for the rest of the dashboard; pane output is the one
+> place it must not do the swapping.
+
 Rules — these are security rules as much as design rules:
-- **Text nodes only.** Never `safeHTML`, never `template.HTML`, never `innerHTML`.
+- **Text nodes only.** Never `safeHTML`, never `template.HTML`, never `innerHTML`,
+  and never an htmx swap that treats the payload as markup.
 - ANSI is stripped server-side before it reaches the template.
 - The container scrolls, the page does not. Fixed height, `overflow-y: auto`.
-- Auto-scroll to the bottom only when the user is already at the bottom — yanking
-  the viewport while someone is reading scrollback is hostile.
+- **The pane shows the live screen, not scrollback.** A repainting screen has no
+  "bottom" to follow, so an update must never move the viewport for the reader.
+  History is what `tmux attach` is for, and the interface should say so rather
+  than imply a transcript it does not keep.
+- **A stream that stops says why.** When the watched session ends, the note beside
+  the pane is revealed and the source is closed. Updates that simply cease look
+  exactly like a session sitting quietly at a prompt, and the last screen stays on
+  the page rather than being replaced by the sentence about it.
 - No animation on new lines.
 
 ## Form

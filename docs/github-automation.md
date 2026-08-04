@@ -84,6 +84,31 @@ through.
 
 ---
 
+## 2a. Which model the automation uses
+
+Pinned in `claude-issue.yml` as `claude_args: --max-turns 25 --model claude-opus-5`.
+
+Two decisions are worth stating, because both look like fussiness until they bite:
+
+**Why pin at all.** Left unset, the run takes `claude-code-action`'s default, which
+resolves through the OAuth token to whatever the CLI defaults to *at the time it
+runs*. That can move between action versions or subscription changes with no commit
+to point at. `go 1.23` and `golangci-lint v1.62` are pinned for the same reason. On a
+repo where a request that passes authentication is unsandboxed code execution, which
+model wrote a PR belongs in the diff.
+
+**Why here and not `.claude/settings.json`.** That file is passed to the action too,
+and a `"model"` key in it would work — but it also governs every interactive session
+in this repo, and an operator switching models by hand should not be fighting the
+automation's choice. The automation and a human at a terminal have different needs;
+pinning the workflow gets reproducibility without imposing it on people.
+
+The action declares no `model` input — 32 inputs and that is not one of them — so the
+value rides in `claude_args`, which is documented as arguments passed straight to the
+CLI. If a future version adds a real input, move it and delete this paragraph.
+
+---
+
 ## 3. Labels
 
 Create the trigger label (name must match the workflow's `if:` exactly):

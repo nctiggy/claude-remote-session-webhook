@@ -22,12 +22,15 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 )
 
 // testMaxBody is deliberately far below the 64 KiB default so the oversize case
@@ -43,13 +46,58 @@ var testTime = time.Unix(1785706480, 0).UTC()
 // to let one into the repository.
 func testSecret() []byte { return []byte("test-only-shared-secret-32-bytes") }
 
+// testRoot is the allowlist entry a fixture Config carries so that New can build
+// a session manager at all. It is deliberately a path that does not exist: a
+// server built through New here is never asked to create a session, and a root
+// nothing can resolve under is the spelling of that which fails closed. The
+// tests that do create a session build a manager over a real temp directory —
+// see newSessionFixture.
+const testRoot = "/nonexistent-crswd-test-root"
+
 func testConfig(listen string) *config.Config {
 	return &config.Config{
 		Listen:       listen,
 		SharedSecret: testSecret(),
 		MaxBodyBytes: testMaxBody,
+		Roots:        []config.ApprovedRoot{{Path: testRoot}},
+		// The production default. A zero here would be a Config no Load ever
+		// produced, and New refuses one — a session manager that may run no
+		// sessions is not a daemon.
+		MaxSessions: config.DefaultMaxSessions,
+
+		// The production default again, and refused for the same reason a zero
+		// MaxSessions is: a daemon that may open no stream serves a dashboard
+		// whose every card links to a page whose live half never starts. Tests
+		// about the cap set their own — see watchingWithCap in stream_test.go.
+		MaxStreams: config.DefaultMaxStreams,
+
+		// Deliberately not the production default, which is the opposite choice
+		// from MaxSessions above and for the same reason: quickstart.md's cap
+		// check needs six creates through one server to reach the cap, and a
+		// fixture carrying the real rate would refuse the fourth of them as a
+		// burst instead. Tests about the rate build their own limiter — see
+		// ratelimit_test.go.
+		CreateRatePerMin: rateNotUnderTest,
+
+		// Layer 1's configuration, which config.Load has demanded since T001 and
+		// New now builds a validator from. The team domain carries its scheme
+		// because that is the normalised form loadTeamDomain returns, and a
+		// fixture spelled the way no Load ever spells it is the thing the
+		// MaxSessions note above warns about.
+		//
+		// The values need only be well-formed: nothing built through this fixture
+		// presents an assertion, and browser_test.go points a validator at a key
+		// server it controls rather than at this hostname.
+		AccessTeamDomain:    "https://example-team.cloudflareaccess.com",
+		AccessAUD:           "test-only-audience-tag",
+		AccessAllowedEmails: []string{"operator@example.com"},
 	}
 }
+
+// rateNotUnderTest is a create budget no test in this package can exhaust by
+// accident, so that a 429 anywhere else is the concurrent-session cap and
+// nothing else.
+const rateNotUnderTest = 1000
 
 type fixedClock struct{ at time.Time }
 
@@ -63,6 +111,33 @@ func testAuth(t *testing.T) *auth.Authenticator {
 	}
 	return a
 }
+
+// errStubRefuses is what testBrowser's layer 1 answers with. It is spelled here
+// rather than reused from internal/access because that package's sentinels are
+// unexported on purpose — a caller that could name which check refused is one
+// step from putting it in a response.
+var errStubRefuses = errors.New("the stub layer 1 admits nobody")
+
+// stubLayer1 is a browser door with a fixed answer, for the tests that are not
+// about layer 1 but still have to build a Server.
+type stubLayer1 struct {
+	operator *access.VerifiedOperator
+	err      error
+}
+
+func (s stubLayer1) Verify(context.Context, string) (*access.VerifiedOperator, error) {
+	return s.operator, s.err
+}
+
+// testBrowser is the layer 1 a milestone 1 test gets: something non-nil for
+// newServer to accept, which admits nobody.
+//
+// Refusing rather than admitting is the deliberate default. Every test in this
+// file drives the API door, where an assertion is neither read nor required
+// (FR-012), so a fixture that admitted every browser could only ever make a
+// future dashboard test pass for a reason it had not earned. browser_test.go
+// builds a real *access.Validator over a locally generated key pair.
+func testBrowser() layer1 { return stubLayer1{err: errStubRefuses} }
 
 func testTrail(t *testing.T) *audit.Logger {
 	t.Helper()
@@ -78,7 +153,9 @@ func signRequest(t *testing.T, r *http.Request, body []byte, at time.Time) {
 
 	ts := strconv.FormatInt(at.Unix(), 10)
 	mac := hmac.New(sha256.New, testSecret())
-	if _, err := mac.Write([]byte(ts + "." + string(body))); err != nil {
+	// METHOD "\n" PATH "\n" timestamp "." body — the signature names what it
+	// authorizes, so one signed read is not a valid destroy at the same instant.
+	if _, err := mac.Write([]byte(r.Method + "\n" + r.URL.EscapedPath() + "\n" + ts + "." + string(body))); err != nil {
 		t.Fatalf("sign the test request: %v", err)
 	}
 
@@ -91,27 +168,73 @@ func signRequest(t *testing.T, r *http.Request, body []byte, at time.Time) {
 // the Logger writing into it.
 type testServer struct {
 	*Server
-	sink   *bytes.Buffer
+	sink   *syncSink
 	failed []error
+
+	// fixture is the session half — the tmux fake, the store, and the real
+	// approved root the manager was built on. Named for what it is rather than
+	// shadowing Server.sessions, which is the Manager standing on it.
+	fixture sessionFixture
 }
 
 func newAuditedServer(t *testing.T) *testServer {
 	t.Helper()
+	return newAuditedServerWith(t, testBrowser())
+}
 
-	buf := &bytes.Buffer{}
+// newAuditedServerWith is newAuditedServer with layer 1 chosen by the caller,
+// which is what browser_test.go needs and no test of the API door does: that
+// door reads no assertion, so the validator behind it never runs.
+func newAuditedServerWith(t *testing.T, browser layer1) *testServer {
+	t.Helper()
+
+	buf := &syncSink{}
+	fixture := newSessionFixture(t)
+	cfg := testConfig(loopbackListen)
 	s, err := newServer(
-		testConfig(loopbackListen),
+		cfg,
 		net.Listen,
 		testAuth(t),
+		browser,
 		audit.NewTo(buf, func() time.Time { return testTime }),
+		fixture.mgr,
+		testLimiter(t, cfg.CreateRatePerMin, fixedClock{at: testTime}),
 	)
 	if err != nil {
 		t.Fatalf("newServer = _, %v; want a server", err)
 	}
 
-	ts := &testServer{Server: s, sink: buf}
+	pinClock(s)
+	ts := &testServer{Server: s, sink: buf, fixture: fixture}
 	s.report = func(err error) { ts.failed = append(ts.failed, err) }
 	return ts
+}
+
+// syncSink is the buffer the trail is written into, guarded.
+//
+// A plain bytes.Buffer served every milestone 1 test, because a request there
+// has written its record by the time the response the test is holding exists.
+// The stream broke that: its record is written at the open (FR-016a) and the
+// handler goes on running on net/http's own goroutine for as long as the browser
+// watches, so a test that reads the trail while a stream is open is reading a
+// buffer another goroutine wrote into with nothing ordering the two. The lock is
+// that ordering. Without it the suite carries a data race that only -race
+// reports, and only for the tests bold enough to look while a stream is live.
+type syncSink struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncSink) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
 }
 
 // records decodes everything written to the trail so far.
@@ -145,9 +268,38 @@ func (s *testServer) only(t *testing.T) map[string]any {
 }
 
 // pathFor fills the {id} wildcard with something ID-shaped. No session exists,
-// which is fine: every test here stops at or just past the middleware.
+// which is fine for a request that is meant to be refused before anything looks
+// one up.
 func pathFor(route Route) string {
 	return strings.ReplaceAll(route.Pattern, "{id}", "0123456789abcdef0123456789abcdef")
+}
+
+// requestFor builds the signed request a sweep needs to reach a route's handler.
+//
+// Since T023 a session-scoped route stops at the layer-3 resolver unless the
+// request names a session the caller owns and carries the credential issued for
+// it, so this plants one and presents it. That keeps the sweeps asserting what
+// they always asserted — the handler was reached, which is only possible through
+// the middleware — rather than being weakened to accept the resolver's 404.
+func requestFor(t *testing.T, s *testServer, route Route, at time.Time) *http.Request {
+	t.Helper()
+
+	path, credential := pathFor(route), ""
+	if route.SessionScoped() {
+		live, issued := s.fixture.plant(t, session.Session{})
+		path = strings.ReplaceAll(route.Pattern, "{id}", live.ID)
+		credential = bearerScheme + issued
+	}
+
+	body := bodyFor(s.fixture, route)
+	req := httptest.NewRequest(route.Method, path, bytes.NewReader(body))
+	signRequest(t, req, body, at)
+	if credential != "" {
+		// After signing, because the signature covers the timestamp and the body
+		// and nothing else — layer 3 is a separate credential, not part of one.
+		req.Header.Set(headerAuthorization, credential)
+	}
+	return req
 }
 
 // TestEveryRegisteredRouteRefusesAnUnauthenticatedRequest is the sweep FR-007
@@ -242,14 +394,19 @@ func TestEveryLayer2FailureAnswersTheIdenticalResponse(t *testing.T) {
 		answers[name] = rec
 	}
 
-	// The replay has to be made against the same server, after a first use.
+	// The replay has to be made against the same server, after a first use. What
+	// the first use answers is read out of reachedStatus rather than written
+	// here, because the only thing this assertion needs is that it was *allowed*
+	// — T026 moved this route from 501 to 200, and a literal would have made that
+	// look like a failure of the replay cache.
+	listRoute := Route{Method: http.MethodGet, Pattern: "/sessions"}
 	first := httptest.NewRequest(http.MethodGet, "/sessions", nil)
 	signRequest(t, first, nil, testTime)
 	firstAnswer := httptest.NewRecorder()
 	s.ServeHTTP(firstAnswer, first)
-	if firstAnswer.Code != http.StatusNotImplemented {
+	if firstAnswer.Code != reachedStatus[listRoute] {
 		t.Fatalf("the first use of the signed request = %d; want %d, or the replay case proves nothing",
-			firstAnswer.Code, http.StatusNotImplemented)
+			firstAnswer.Code, reachedStatus[listRoute])
 	}
 
 	replay := httptest.NewRequest(http.MethodGet, "/sessions", nil)
@@ -373,17 +530,16 @@ func TestEveryRouteAuditsAnAllowedRequestUnderItsOwnAction(t *testing.T) {
 			t.Parallel()
 
 			s := newAuditedServer(t)
-			req := httptest.NewRequest(route.Method, pathFor(route), nil)
 			// A distinct instant per route: the signature covers the timestamp
 			// and the body only, so six identical empty-bodied requests would
 			// share a signature and all but the first would be replays.
-			signRequest(t, req, nil, testTime.Add(-time.Duration(i)*time.Second))
+			req := requestFor(t, s, route, testTime.Add(-time.Duration(i)*time.Second))
 
 			rec := httptest.NewRecorder()
 			s.ServeHTTP(rec, req)
-			if rec.Code != http.StatusNotImplemented {
+			if want := reachedStatus[route]; rec.Code != want {
 				t.Fatalf("%s = %d; want %d — a signed request must reach the handler",
-					route, rec.Code, http.StatusNotImplemented)
+					route, rec.Code, want)
 			}
 
 			got := s.only(t)
@@ -462,10 +618,21 @@ func TestHandleRefusesARouteWithNoAuditAction(t *testing.T) {
 		t.Errorf("the refused route was still recorded: %d routes, was %d", after, before)
 	}
 
+	// Signed, because a registered /healthz would be an API route and layer 2 is
+	// what gates one: had handle wired it, this request would reach its handler
+	// and answer 501. It does not, so the catch-all answers instead — and since
+	// T016 that catch-all is the browser door, whose uniform refusal is what a
+	// request carrying only a signature gets (FR-013d).
+	signed := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	signRequest(t, signed, nil, testTime)
+
 	rec := httptest.NewRecorder()
-	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-	if rec.Code != http.StatusNotFound {
+	s.ServeHTTP(rec, signed)
+	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("GET /healthz = %d; the refused route reached the mux anyway", rec.Code)
+	}
+	if body := rec.Body.String(); body != string(bodyBrowserRefused) {
+		t.Errorf("GET /healthz body = %q; want the browser door's one refusal — nothing but the catch-all is there", body)
 	}
 }
 
@@ -585,6 +752,467 @@ func TestAPanickingHandlerStillProducesARecord(t *testing.T) {
 	}
 }
 
+// scopedRoute is the route the layer-3 tests drive. Any of the four would do —
+// TestEverySessionScopedRouteIsBehindTheResolver sweeps them all — and this one
+// is the read, so a case that somehow got past the resolver would be asking for
+// another session's detail, which is the failure SC-005 is about.
+var scopedRoute = Route{Method: http.MethodGet, Pattern: "/sessions/{id}"}
+
+// scopedRequest is one request against a session ID with a bearer credential of
+// the caller's choosing, signed at a distinct instant so that several of them
+// can be driven through one server without the second becoming a replay.
+func scopedRequest(t *testing.T, id, presented string, at time.Time) *http.Request {
+	t.Helper()
+
+	req := httptest.NewRequest(scopedRoute.Method, "/sessions/"+id, nil)
+	signRequest(t, req, nil, at)
+	if presented != "" {
+		req.Header.Set(headerAuthorization, bearerScheme+presented)
+	}
+	return req
+}
+
+// layer3Failures is every way a session-scoped request can fail authorisation,
+// each built against the same server so the answers are comparable.
+//
+// The synthetic second owner is how a single-operator milestone tests
+// cross-owner isolation at all: the ownership check exists from day one
+// (Resolved decisions, IMPLEMENTATION_PLAN.md) precisely so that milestone 2's
+// second identity does not arrive to find it missing.
+func layer3Failures(t *testing.T, s *testServer) map[string]*http.Request {
+	t.Helper()
+
+	const otherOwner auth.CallerID = "a-second-operator"
+
+	mine, issued := s.fixture.plant(t, session.Session{})
+	theirs, theirCredential := s.fixture.plant(t, session.Session{Owner: otherOwner})
+	expired, expiredCredential := s.fixture.plant(t, session.Session{
+		// Created 25 hours ago on the fixture's fixed clock, so its 24-hour
+		// deadline is an hour in the past at testTime.
+		CreatedAt: testTime.Add(-25 * time.Hour),
+	})
+	atTheDeadline, deadlineCredential := s.fixture.plant(t, session.Session{
+		CreatedAt: testTime.Add(-session.AbsoluteLifetime),
+	})
+	dead, deadCredential := s.fixture.plant(t, session.Session{State: session.StateDead})
+
+	// An ID of the right shape that was never issued. The unknown-ID answer is
+	// the one every other case here must be indistinguishable from.
+	unknown, err := session.NewID()
+	if err != nil {
+		t.Fatalf("session.NewID = _, %v; want an id", err)
+	}
+
+	// Spelled in words rather than hex: gitleaks refuses a hex run of credential
+	// length into the repository, and this is a value whose *rejection* is the
+	// point.
+	const neverIssued = "a-value-that-was-never-issued-for-any-session"
+
+	at := func(i int) time.Time { return testTime.Add(-time.Duration(i) * time.Second) }
+	return map[string]*http.Request{
+		"an unknown session":              scopedRequest(t, unknown, issued, at(1)),
+		"another owner's session":         scopedRequest(t, theirs.ID, theirCredential, at(2)),
+		"another owner's id, own token":   scopedRequest(t, theirs.ID, issued, at(3)),
+		"own id, another session's token": scopedRequest(t, mine.ID, theirCredential, at(4)),
+		"a credential never issued":       scopedRequest(t, mine.ID, neverIssued, at(5)),
+		"no credential at all":            scopedRequest(t, mine.ID, "", at(6)),
+		"an expired credential":           scopedRequest(t, expired.ID, expiredCredential, at(7)),
+		"a credential at the deadline":    scopedRequest(t, atTheDeadline.ID, deadlineCredential, at(8)),
+		"a dead session":                  scopedRequest(t, dead.ID, deadCredential, at(9)),
+	}
+}
+
+// TestEveryLayer3FailureAnswersTheIdenticalNotFound is FR-033 stated as bytes,
+// and it is the reason the resolver has one exit rather than five.
+//
+// An unknown ID, someone else's ID, the right ID with the wrong credential, and
+// a credential that has aged out must be one answer. Any difference — a status,
+// a body, a header, a Content-Length — is an oracle that turns a session ID into
+// something worth guessing at, and behind an ID is an unsandboxed shell.
+func TestEveryLayer3FailureAnswersTheIdenticalNotFound(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	answers := map[string]*httptest.ResponseRecorder{}
+	for name, req := range layer3Failures(t, s) {
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+		answers[name] = rec
+	}
+
+	for name, rec := range answers {
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s = %d; want %d", name, rec.Code, http.StatusNotFound)
+		}
+		if got := rec.Body.String(); got != string(bodyNotFound) {
+			t.Errorf("%s body = %q; want %q", name, got, bodyNotFound)
+		}
+		if got := rec.Header().Get(headerContentType); got != contentTypeJSON {
+			t.Errorf("%s Content-Type = %q; want %q", name, got, contentTypeJSON)
+		}
+	}
+
+	// Not "each looks right" but "no two differ", headers included.
+	names := slices.Sorted(maps.Keys(answers))
+	for _, name := range names[1:] {
+		a, b := answers[names[0]], answers[name]
+		if !reflect.DeepEqual(a.Header(), b.Header()) {
+			t.Errorf("%q answered with headers %v but %q answered with %v; the refusal must be uniform",
+				names[0], a.Header(), name, b.Header())
+		}
+		if !bytes.Equal(a.Body.Bytes(), b.Body.Bytes()) {
+			t.Errorf("%q answered %q but %q answered %q; the refusal must be uniform",
+				names[0], a.Body, name, b.Body)
+		}
+	}
+}
+
+// TestALayer3RefusalTellsTheCallerNothingAboutWhichCheckFailed is the other half
+// of FR-033: the reason is recorded, and the recording must not travel out with
+// the response.
+func TestALayer3RefusalTellsTheCallerNothingAboutWhichCheckFailed(t *testing.T) {
+	t.Parallel()
+
+	leaks := []string{"owner", "expired", "credential", "token", "dead", "match", "session id"}
+
+	s := newAuditedServer(t)
+	for name, req := range layer3Failures(t, s) {
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+
+		answer := strings.ToLower(rec.Body.String() + " " + fmt.Sprint(rec.Header()))
+		for _, word := range leaks {
+			if strings.Contains(answer, word) {
+				t.Errorf("the refusal for %s mentions %q: %q", name, word, answer)
+			}
+		}
+	}
+}
+
+// TestALayer3RefusalIsAuditedWithItsRealReason pins the pairing the uniform 404
+// is really about: one answer outward, the specific cause recorded inward. Every
+// reason here is a fixed string authored in this repo — never the {id} the
+// caller sent, which is why the record is worth having at all (FR-042).
+func TestALayer3RefusalIsAuditedWithItsRealReason(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		plant  session.Session
+		mutate func(id, issued string) (string, string)
+		reason error
+	}{
+		"an unknown session": {
+			mutate: func(_, issued string) (string, string) {
+				return "0123456789abcdef0123456789abcdef", issued
+			},
+			reason: session.ErrSessionNotFound,
+		},
+		"another owner's session": {
+			plant:  session.Session{Owner: "a-second-operator"},
+			reason: session.ErrSessionNotFound,
+		},
+		"a credential never issued": {
+			mutate: func(id, _ string) (string, string) {
+				return id, "a-value-that-was-never-issued-for-any-session"
+			},
+			reason: session.ErrTokenMismatch,
+		},
+		"no credential at all": {
+			mutate: func(id, _ string) (string, string) { return id, "" },
+			reason: errScopeNoCredential,
+		},
+		"an expired credential": {
+			plant:  session.Session{CreatedAt: testTime.Add(-25 * time.Hour)},
+			reason: session.ErrTokenExpired,
+		},
+		"a dead session": {
+			plant:  session.Session{State: session.StateDead},
+			reason: session.ErrSessionDead,
+		},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			s := newAuditedServer(t)
+			planted, issued := s.fixture.plant(t, c.plant)
+			id, presented := planted.ID, issued
+			if c.mutate != nil {
+				id, presented = c.mutate(planted.ID, issued)
+			}
+			s.ServeHTTP(httptest.NewRecorder(), scopedRequest(t, id, presented, testTime))
+
+			rec := s.only(t)
+			if rec["decision"] != string(audit.Deny) {
+				t.Errorf("decision = %v; want %q", rec["decision"], audit.Deny)
+			}
+			if rec["reason"] != c.reason.Error() {
+				t.Errorf("reason = %v; want %q", rec["reason"], c.reason)
+			}
+			// The action stays the operation that was attempted: a refused read
+			// is still a read, and renaming it would hide it from the operator
+			// grepping for one.
+			if rec["action"] != string(audit.ActionSessionDetail) {
+				t.Errorf("action = %v; want %q", rec["action"], audit.ActionSessionDetail)
+			}
+			if got, ok := rec["session_id"]; ok && got != planted.ID {
+				t.Errorf("session_id = %v; a refusal may record the daemon's own id or none, never %q", got, id)
+			}
+		})
+	}
+}
+
+// TestTheResolvedSessionReachesTheHandler covers the seam T024–T029 build on. A
+// handler must take the session from here and never from the path (FR-034).
+func TestTheResolvedSessionReachesTheHandler(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	planted, issued := s.fixture.plant(t, session.Session{})
+
+	var got session.Session
+	var ok bool
+	probe := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		got, ok = SessionFrom(r.Context())
+	})
+
+	req := scopedRequest(t, planted.ID, issued, testTime)
+	req.SetPathValue(pathValueID, planted.ID)
+	s.authenticate(audit.ActionSessionDetail, s.resolveSession(probe)).ServeHTTP(httptest.NewRecorder(), req)
+
+	if !ok {
+		t.Fatal("the handler found no session in the request context")
+	}
+	if got.ID != planted.ID {
+		t.Errorf("session = %q; want %q", got.ID, planted.ID)
+	}
+	if got.Owner != auth.CallerOperator {
+		t.Errorf("owner = %q; want %q — the handler was handed a record it may act on", got.Owner, auth.CallerOperator)
+	}
+	if got.TokenHash != planted.TokenHash {
+		t.Error("the handler was handed a record whose credential hash is not the planted one")
+	}
+}
+
+func TestSessionFromAnUnresolvedContextReportsNoSession(t *testing.T) {
+	t.Parallel()
+
+	if got, ok := SessionFrom(context.Background()); ok || got.ID != "" {
+		t.Errorf("SessionFrom(background) = %v, %v; want the zero session, false", got, ok)
+	}
+	//nolint:staticcheck // SA1029 is the point: a key of another type must not be readable as ours.
+	ctx := context.WithValue(context.Background(), "session", session.Session{ID: "impostor"})
+	if got, ok := SessionFrom(ctx); ok || got.ID != "" {
+		t.Errorf("a session planted under a foreign key was read back as %v, %v", got, ok)
+	}
+}
+
+// TestTheResolvedSessionIsAuditedUnderTheDaemonsOwnID is FR-042 at the one place
+// the trail could most easily pick up caller bytes: the {id} in the path.
+func TestTheResolvedSessionIsAuditedUnderTheDaemonsOwnID(t *testing.T) {
+	t.Parallel()
+
+	s := newAuditedServer(t)
+	planted, issued := s.fixture.plant(t, session.Session{})
+	s.ServeHTTP(httptest.NewRecorder(), scopedRequest(t, planted.ID, issued, testTime))
+
+	rec := s.only(t)
+	if rec["session_id"] != planted.ID {
+		t.Errorf("session_id = %v; want %q", rec["session_id"], planted.ID)
+	}
+	if rec["decision"] != string(audit.Allow) {
+		t.Errorf("decision = %v; want %q — the credential matched", rec["decision"], audit.Allow)
+	}
+	if written := s.sink.String(); strings.Contains(written, issued) {
+		t.Errorf("the audit trail carries the bearer credential: %q", written)
+	}
+}
+
+// TestEverySessionScopedRouteIsBehindTheResolver sweeps the real router for the
+// same reason the layer-2 sweep does: FR-014 admits no exempt {id} route, and a
+// hand-written list is exactly what a seventh one would be forgotten from. Here
+// a forgotten route is a session drivable by anyone holding the shared secret.
+func TestEverySessionScopedRouteIsBehindTheResolver(t *testing.T) {
+	t.Parallel()
+
+	scoped := 0
+	for i, route := range newTestServer(t, loopbackListen).Routes() {
+		if !route.SessionScoped() {
+			continue
+		}
+		scoped++
+
+		t.Run(route.String(), func(t *testing.T) {
+			t.Parallel()
+
+			s := newAuditedServer(t)
+			planted, _ := s.fixture.plant(t, session.Session{})
+
+			// Signed, owned, and pointed at a real session — everything except
+			// the session credential. Only layer 3 can refuse this.
+			body := bodyFor(s.fixture, route)
+			path := strings.ReplaceAll(route.Pattern, "{id}", planted.ID)
+			req := httptest.NewRequest(route.Method, path, bytes.NewReader(body))
+			signRequest(t, req, body, testTime.Add(-time.Duration(i)*time.Second))
+
+			rec := httptest.NewRecorder()
+			s.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("%s with no bearer credential = %d; want %d — the route is not behind the resolver",
+					route, rec.Code, http.StatusNotFound)
+			}
+			if got := rec.Body.String(); got != string(bodyNotFound) {
+				t.Errorf("%s body = %q; want %q", route, got, bodyNotFound)
+			}
+		})
+	}
+
+	if scoped == 0 {
+		t.Fatal("the router registered no session-scoped routes, so this sweep would pass vacuously")
+	}
+}
+
+// TestAnUnscopedRouteNeedsNoSessionCredential is the complement: layer 3 applies
+// to the routes that name a session and to no others. POST /sessions cannot
+// require a session credential — it is where the credential comes from — and
+// GET /sessions is scoped to the caller rather than to a session.
+func TestAnUnscopedRouteNeedsNoSessionCredential(t *testing.T) {
+	t.Parallel()
+
+	for i, route := range newTestServer(t, loopbackListen).Routes() {
+		if route.SessionScoped() {
+			continue
+		}
+
+		t.Run(route.String(), func(t *testing.T) {
+			t.Parallel()
+
+			s := newAuditedServer(t)
+			body := bodyFor(s.fixture, route)
+			req := httptest.NewRequest(route.Method, route.Pattern, bytes.NewReader(body))
+			signRequest(t, req, body, testTime.Add(-time.Duration(i)*time.Second))
+
+			rec := httptest.NewRecorder()
+			s.ServeHTTP(rec, req)
+
+			if want := reachedStatus[route]; rec.Code != want {
+				t.Errorf("%s with no bearer credential = %d; want %d — the route is not session-scoped",
+					route, rec.Code, want)
+			}
+		})
+	}
+}
+
+// TestTheCredentialSchemeIsReadStrictly pins how the Authorization header is
+// parsed. The scheme is case-insensitive per RFC 7235; everything else about the
+// value is not, because a second accepted spelling of a credential is a second
+// credential.
+func TestTheCredentialSchemeIsReadStrictly(t *testing.T) {
+	t.Parallel()
+
+	accepted := map[string]func(issued string) string{
+		"the scheme as written": func(issued string) string { return "Bearer " + issued },
+		"a lowercase scheme":    func(issued string) string { return "bearer " + issued },
+		"an uppercase scheme":   func(issued string) string { return "BEARER " + issued },
+	}
+	refused := map[string]func(issued string) string{
+		"no scheme at all":       func(issued string) string { return issued },
+		"another scheme":         func(issued string) string { return "Token " + issued },
+		"basic credentials":      func(issued string) string { return "Basic " + issued },
+		"no separating space":    func(issued string) string { return "Bearer" + issued },
+		"two separating spaces":  func(issued string) string { return "Bearer  " + issued },
+		"a trailing space":       func(issued string) string { return "Bearer " + issued + " " },
+		"the scheme and nothing": func(string) string { return "Bearer " },
+		"an empty header":        func(string) string { return "" },
+	}
+
+	drive := func(t *testing.T, header func(issued string) string) int {
+		t.Helper()
+
+		s := newAuditedServer(t)
+		planted, issued := s.fixture.plant(t, session.Session{})
+
+		req := httptest.NewRequest(scopedRoute.Method, "/sessions/"+planted.ID, nil)
+		signRequest(t, req, nil, testTime)
+		req.Header.Set(headerAuthorization, header(issued))
+
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// Read out of reachedStatus rather than written here, so that a task giving
+	// this route a different answer moves one row instead of teaching a layer-3
+	// test what a handler returns. What is asserted is unchanged: the request got
+	// past the resolver, which only the issued credential can do.
+	for name, header := range accepted {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got, want := drive(t, header), reachedStatus[scopedRoute]
+			if got != want {
+				t.Errorf("%s = %d; want %d — the credential is the one that was issued",
+					name, got, want)
+			}
+		})
+	}
+	for name, header := range refused {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := drive(t, header); got != http.StatusNotFound {
+				t.Errorf("%s = %d; want %d", name, got, http.StatusNotFound)
+			}
+		})
+	}
+}
+
+// TestACredentialIsAcceptedUntilTheDeadlineAndNotAtIt pins the boundary FR-015
+// turns on, on both sides. The session and its credential end at the same
+// instant by construction; this is that instant asserted rather than assumed.
+func TestACredentialIsAcceptedUntilTheDeadlineAndNotAtIt(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		age  time.Duration
+		want int
+	}{
+		"a second inside the lifetime": {
+			age: session.AbsoluteLifetime - time.Second,
+			// The handler's own answer, read out of reachedStatus for the reason
+			// TestTheCredentialSchemeIsReadStrictly reads it: what this case
+			// asserts is that the credential was still accepted, not what the
+			// route does afterwards.
+			want: reachedStatus[scopedRoute],
+		},
+		"exactly at the deadline": {
+			age:  session.AbsoluteLifetime,
+			want: http.StatusNotFound,
+		},
+		"a second past it": {
+			age:  session.AbsoluteLifetime + time.Second,
+			want: http.StatusNotFound,
+		},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			s := newAuditedServer(t)
+			planted, issued := s.fixture.plant(t, session.Session{CreatedAt: testTime.Add(-c.age)})
+
+			rec := httptest.NewRecorder()
+			s.ServeHTTP(rec, scopedRequest(t, planted.ID, issued, testTime))
+
+			if rec.Code != c.want {
+				t.Errorf("a session created %v ago = %d; want %d", c.age, rec.Code, c.want)
+			}
+		})
+	}
+}
+
 // brokenSink is an audit destination that cannot be written to — a closed
 // stdout, a full pipe.
 type brokenSink struct{ err error }
@@ -638,8 +1266,12 @@ func TestABodyAtTheLimitIsAcceptedAndOneByteOverIsRefused(t *testing.T) {
 		size int
 		want int
 	}{
-		"one byte under the limit": {size: testMaxBody - 1, want: http.StatusNotImplemented},
-		"exactly at the limit":     {size: testMaxBody, want: http.StatusNotImplemented},
+		// A body that is inside the limit reaches the create handler, which
+		// refuses a run of "a" as malformed JSON. The 400 is the evidence the
+		// test wants — only a handler past layer 2 produces one — and the 401
+		// below is the evidence that one byte more never got that far.
+		"one byte under the limit": {size: testMaxBody - 1, want: http.StatusBadRequest},
+		"exactly at the limit":     {size: testMaxBody, want: http.StatusBadRequest},
 		"one byte over the limit":  {size: testMaxBody + 1, want: http.StatusUnauthorized},
 	}
 

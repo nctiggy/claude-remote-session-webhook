@@ -61,7 +61,9 @@ crswd_call() {  # crswd_call METHOD PATH [JSON_BODY] [BEARER]
   local method="$1" path="$2" body="${3-}" bearer="${4-}"
   local ts sig
   ts=$(date +%s)
-  sig=$(printf '%s.%s' "$ts" "$body" \
+  # METHOD "\n" PATH "\n" timestamp "." body — the request line is signed too, so
+  # one signed read is not a valid destroy at the same instant.
+  sig=$(printf '%s\n%s\n%s.%s' "$method" "$path" "$ts" "$body" \
         | openssl dgst -sha256 -hmac "$CRSW_SHARED_SECRET" -hex \
         | awk '{print $NF}')
   curl -sS -X "$method" "http://127.0.0.1:8765$path" \
@@ -95,7 +97,7 @@ tmux has-session -t "=crswd-<id>" && echo "live"
 # unsigned
 curl -sS -i -X POST http://127.0.0.1:8765/sessions -d '{"name":"x","work_dir":"'"$HOME"'/code"}'
 # tampered body (sign one thing, send another)
-ts=$(date +%s); sig=$(printf '%s.%s' "$ts" '{"name":"a"}' | openssl dgst -sha256 -hmac "$CRSW_SHARED_SECRET" -hex | awk '{print $NF}')
+ts=$(date +%s); sig=$(printf 'POST\n/sessions\n%s.%s' "$ts" '{"name":"a"}' | openssl dgst -sha256 -hmac "$CRSW_SHARED_SECRET" -hex | awk '{print $NF}')
 curl -sS -i -X POST http://127.0.0.1:8765/sessions -H "X-CRSW-Timestamp: $ts" \
   -H "X-CRSW-Signature: sha256=$sig" -d '{"name":"b","work_dir":"/tmp"}'
 ```

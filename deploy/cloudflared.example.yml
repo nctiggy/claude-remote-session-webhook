@@ -3,6 +3,12 @@
 #
 # The tunnel dials OUT to Cloudflare. No inbound port is opened on the host or the
 # router, and the daemon itself only ever listens on loopback.
+#
+# The tunnel is reachability, not authentication. In milestone 1 the daemon does
+# not validate a Cloudflare Access JWT — HMAC on the API is the only check there
+# is — so the hostname below is world-reachable the moment this is running. Put
+# an Access application in front of it, and read "Not shippable before T037" in
+# ralph/IMPLEMENTATION_PLAN.md before pointing a public name at this at all.
 
 tunnel: 00000000-0000-0000-0000-000000000000        # your tunnel ID
 credentials-file: /home/YOURUSER/.cloudflared/00000000-0000-0000-0000-000000000000.json
@@ -14,7 +20,10 @@ originRequest:
 
 ingress:
   - hostname: crswd.example.com                     # your hostname
-    service: http://127.0.0.1:8787                  # must be loopback
+    # Must be the same address as CRSW_LISTEN, and both are the daemon's default.
+    # Loopback only: the tunnel is meant to be the single path in, and an origin
+    # on any other address would quietly be a second one.
+    service: http://127.0.0.1:8765
 
   # Everything else is refused. Without this the tunnel would happily proxy
   # anything, which is the opposite of the point.

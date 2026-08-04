@@ -1,0 +1,22 @@
+{{/*
+  Header — product identity left, operator identity right, ambient rain behind
+  (docs/components.md). Every page carries it, which is what makes the design
+  system's second non-negotiable hold: it is never ambiguous whose credentials
+  are driving sessions on this host.
+
+  This executes against the VerifiedOperator layer 1 built for the request, not
+  against the request (FR-020, FR-036). That is the whole of the identity rule
+  and it is structural rather than remembered: no request-supplied value is in
+  scope here, so there is nothing for a future edit to reach for by accident.
+
+  The address is escaped like every other text node anyway. It arrived inside a
+  signature the edge wrote rather than from a caller, so escaping it is defence
+  in depth — but it is the primary defence for everything else this dashboard
+  renders, and a template carrying one exception is a template someone copies.
+*/}}<header class="masthead">
+{{ template "rain" }}
+<div class="masthead-bar">
+<h1 class="brand">crswd <span class="brand-tag">session control</span></h1>
+<p class="operator" title="{{ .Email }}">{{ .Email }}</p>
+</div>
+</header>

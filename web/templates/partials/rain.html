@@ -1,0 +1,17 @@
+{{/*
+  Rain canvas — docs/design-system.md's signature effect, and the only decorative
+  element in the dashboard. Permitted behind the header and in the empty state,
+  and nowhere else: never behind reading content, because content sitting on it
+  means the rain is in the wrong place.
+
+  It takes no parameter, and its strength is not one either. Opacity belongs to
+  the surface a canvas sits in rather than to the canvas, so crswd.css selects it
+  by ancestor — every colour, size and opacity lives in a token (FR-023), and the
+  policy in docs/security.md forbids the inline attribute that would otherwise
+  carry one.
+
+  aria-hidden because it carries no information at all; one shared class because
+  the design system drives every .rain canvas from a single animation loop, and
+  because a reduced-motion preference has to be able to remove all of them by
+  removing one rule.
+*/}}<canvas class="rain" aria-hidden="true"></canvas>

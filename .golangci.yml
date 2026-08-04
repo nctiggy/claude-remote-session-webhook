@@ -14,6 +14,14 @@ run:
   # adding here for the same reason.
   build-tags:
     - tmux
+    # T007's //go:build dev half — the development bypass, which is the one
+    # file in the tree that turns authentication off. Unlinted is precisely
+    # what it must not be. Its counterpart, bypass_prod.go, goes invisible in
+    # exchange, and that is affordable only because it declares nothing at all:
+    # bypass_build_test.go carries no tag and fails if it ever declares
+    # anything, so the file this list stops linting is one no linter has work
+    # to do on.
+    - dev
 
 linters:
   disable-all: true

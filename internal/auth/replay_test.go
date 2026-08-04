@@ -74,7 +74,9 @@ func replaySignatureOver(t *testing.T, timestamp int64, body string) string {
 	t.Helper()
 
 	mac := hmac.New(sha256.New, []byte(replaySecret))
-	if _, err := io.WriteString(mac, strconv.FormatInt(timestamp, 10)+"."+body); err != nil {
+	// METHOD "\n" PATH "\n" timestamp "." body, matching replayRequest below.
+	payload := http.MethodPost + "\n" + "/sessions" + "\n" + strconv.FormatInt(timestamp, 10) + "." + body
+	if _, err := io.WriteString(mac, payload); err != nil {
 		t.Fatalf("building the signature fixture: %v", err)
 	}
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
