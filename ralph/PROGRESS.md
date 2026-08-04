@@ -11650,3 +11650,111 @@ and 299) and T029 (the acceptance suite, which should also drive `stream.open` t
 could be settled). Then T030–T034 (docs — T031 also owes `docs/security.md` the
 `Sec-Fetch-Site` rule, which exists only in the spec and this file — `.env.example`, and the
 quickstart run, which must deal with #266/#292). Plus the unowned findings above.
+
+---
+
+## Iteration 72 (milestone 2, iteration 29) — 2026-08-04 10:26
+
+**Did:** **T026** — the pane's live half, which is the first thing in this milestone that
+puts a session's screen into a document. `web/templates/partials/pane.html` renders
+`data-stream="/sessions/{id}/stream"` on the `<pre>`, and `crswd.js` attaches one
+`EventSource` per pane carrying the hook: `pane.textContent = JSON.parse(e.data)`, the whole
+screen replaced, with both scroll offsets read before the assignment and put back after it.
+The wire T025 framed is now read by something.
+
+**Three decisions the next iteration should not have to re-take:**
+
+1. **The scroll offsets are saved and restored rather than left alone.** FR-032 reads like an
+   absence ("never move the viewport"), so doing nothing looks like the answer — it is not.
+   The pane is its own scroll container, and replacing its content empties it for an instant,
+   which is long enough for the browser to clamp the offset against a box with nothing in it.
+   Doing nothing therefore *is* the yank. Reading before and restoring after is the whole of
+   the requirement, and the test pins the **order**, since an offset read after the
+   replacement is the clamped one and restoring it changes nothing.
+2. **A pane whose first capture failed carries no hook, and so gets no stream.** The element
+   the live half attaches to is exactly the one the unreadable case does not render. The
+   operator reloads, which costs one capture — the alternative is a pane filling in
+   underneath a sentence saying it could not be read. Finding 305 below; pinned by an
+   assertion so a later change to it is a decision rather than an accident.
+3. **The terminal `event: end` is deliberately not handled here.** contracts/stream.md's end
+   event and the `close()` FR-033 asks for are T028's half ("say so in the view"), and
+   nothing sends one yet. `watch` keeps the source in a named `const live` so T028 adds a
+   handler and a `close()` rather than restructuring the function. Until then a dropped
+   connection is EventSource's own reconnect, which opens a new request that is authorised
+   from scratch — the contract's own rule, not a gap.
+
+**Learned (do not rediscover):**
+
+1. **Go cannot execute this file, so every claim is about the bytes a browser is handed** —
+   the footing the stylesheet tests already stand on. The one that is worth more than a
+   keyword list is a **sink sweep**: every `.innerHTML` / `.outerHTML` / `.innerText` /
+   `.textContent` / `.nodeValue` / `.srcdoc` assignment in the file must be exactly
+   `textContent =`. A list of forbidden spellings only fails on the ones already thought of;
+   this fails on the next sink somebody invents, and on the `+=` that would quietly turn a
+   repainting screen into an appended transcript.
+2. **"Written but never called" needed an assertion of its own** — the plan's own convention,
+   and the rain has no equivalent (finding 278). A correct `watch` that nothing invokes
+   passes every keyword check. The stand-in is a regex insisting the file
+   `querySelectorAll`s a selector naming `data-stream`; deleting the bootstrap loop fails it.
+3. **RE2 has no backreferences.** `querySelectorAll\((['"])…\1\)` panics inside
+   `regexp.MustCompile`, i.e. at run time and not at compile time. Spell `['"]` at both ends.
+4. **`script(t)` strips comments before every assertion**, so prose in `crswd.js` may name
+   `innerHTML` freely — and, in the other direction, a required string only passes when it is
+   in the code. That is what makes `"data-stream"`-style requirements meaningful here.
+5. **Heredocs do work in this session** (`cat >> file <<'EOF'`), contrary to iteration 71's
+   learning 5 — a quoted delimiter also keeps backticks literal, which is what makes a long
+   notebook entry writable in one call. `sed -i` and `cp` were not retried.
+
+**Mutations, all caught:**
+
+1. The hook pointed at `/sessions/{id}/output` → `TestThePaneNamesTheStreamItsLiveHalfReads`,
+   which derives the address from `patternSessionStream` and names both.
+2. `pane.textContent += screen` → the sink sweep, the required `textContent =`, and the order
+   check, three failures for one edit.
+3. `pane.innerHTML = screen` → the sink sweep and the file-wide `innerHTML` refusal that has
+   been in `TestTheRainLoopIsTheEffectTheDesignSystemDescribes` since T021a.
+4. The offsets read *after* the replacement → the order check ("the read has to come first
+   and the restore last").
+5. The bootstrap loop deleted (`void watch;`) → the `querySelectorAll` assertion.
+
+**Findings:**
+
+305. **A first capture that failed leaves the page with no live stream at all.** The pane
+    element carries the hook, and the unreadable case renders a note instead of the element,
+    so nothing attaches and the screen never arrives without a reload. Deliberate (decision 2
+    above) and asserted, so it cannot change by accident — but it is a real dead end for a
+    session whose window was momentarily unreadable, and the honest repair is a page that
+    re-renders rather than a pane that argues with its own note. Unowned.
+306. **NEEDS CLARIFICATION — the scanline overlay (finding 280) still cannot be written, and
+    T026 is where it was expected to be.** `docs/design-system.md` asks for a
+    `repeating-linear-gradient` at 3% opacity on the pane viewer only, as a `::after`,
+    removed under `prefers-reduced-motion` — and names **no colour and no period**. Both are
+    values that would have to be invented, which Principle II forbids and which T026's entry
+    in `tasks.md` does not ask for (it is about the stream client, and says nothing about
+    styling). The pane is complete without it. **The operator has to either add the two
+    values to `docs/design-system.md` or record the effect as dropped**; until then 280 and
+    this stay open and unowned, and no iteration should quietly pick a colour.
+307. **`docs/components.md`'s pane snippet was amended to match what ships** — the markup line
+    had `.PaneText` and no `tabindex`, and the JS showed the assignment without the scroll
+    save/restore. That document is binding and its snippets get copied, so a third correction
+    was cheaper than the copy. It is now the same shape as `pane.html` and `crswd.js`.
+308. **Findings 203–205, 216, 275, 278, 280–283, 285–288, 290, 292–293, 295–296, 298–304 are
+    unchanged.** Still unowned: the untokenised values in `docs/design-system.md` (216), the
+    unaudited `cleanPath` redirect (275), the rain being unverifiable from Go (278), the
+    scanline overlay (280, now 306), the session page being a dead end (282 — note the pane
+    on it now updates, which is the half T026 could close), `testServer.failed` not being
+    lock-safe while a stream is open (298), and the `-race` flake in 303. The duplicate
+    checkbox state in `IMPLEMENTATION_PLAN.md` and `tasks.md` was again ticked in both by
+    hand. `internal/httpapi` is ~5.5s and the new tests add nothing measurable — both are
+    source sweeps over embedded files. `-race` on the package is clean at ~6.8s.
+
+**Left:** **T027** — the `stream.open` record at open rather than at close, carrying the
+authorisation decision, one record per stream request and no close record (findings 290, 295,
+302). Then T028 (lifecycle: re-evaluation every tick, the terminal event, `close()` in
+`crswd.js` — decision 3 above — and the buffer dropped when the *session* ends; findings 296
+and 299) and T029 (the acceptance suite, which should also drive `stream.open` through
+`internal/audit/leak_test.go` — finding 285's remaining half — and is where 303 could be
+settled). Then T030–T034 (docs — T031 also owes `docs/security.md` the `Sec-Fetch-Site` rule,
+which exists only in the spec and this file — `.env.example`, and the quickstart run, which
+must deal with #266/#292). Plus the unowned findings above, and the design decision 306 needs
+from the operator.
