@@ -10,6 +10,7 @@ package tmuxctl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,7 +33,23 @@ const (
 	stubCodeEnv   = "CRSWD_TEST_STUB_CODE"
 )
 
-var _ Controller = NewExec()
+var _ Controller = (*Exec)(nil)
+
+// execSocket is the server name every stubbed Exec below drives. Production
+// derives one from the listen address; these tests only need a fixed one that
+// is not tmux's default.
+const execSocket = "crswd-127-0-0-1-8765"
+
+// newStubExec is the Exec the stub on PATH answers for.
+func newStubExec(t *testing.T) *Exec {
+	t.Helper()
+
+	e, err := NewExec(execSocket)
+	if err != nil {
+		t.Fatalf("NewExec: %v", err)
+	}
+	return e
+}
 
 // TestMain doubles as the stub's entry point. The check has to happen before
 // m.Run parses flags, because the child is handed tmux's arguments, not Go's.
@@ -162,7 +179,7 @@ func noTmux(t *testing.T) {
 func TestExecSendsTheContractArgv(t *testing.T) {
 	ctx := context.Background()
 	recorded := stub{}.install(t)
-	e := NewExec()
+	e := newStubExec(t)
 
 	if err := e.New(ctx, execName, execWorkDir); err != nil {
 		t.Fatalf("New: %v", err)
@@ -190,15 +207,15 @@ func TestExecSendsTheContractArgv(t *testing.T) {
 	}
 
 	want := []stubCall{
-		{Argv: []string{"tmux", "new-session", "-d", "-s", execName, "-c", execWorkDir}},
-		{Argv: []string{"tmux", "set-option", "-t", "=" + execName + ":", "@crswd-managed", "1"}},
-		{Argv: []string{"tmux", "send-keys", "-t", "=" + execName + ":", "--", "Enter"}},
-		{Argv: []string{"tmux", "load-buffer", "-b", execName, "-"}, Stdin: []byte("hello")},
-		{Argv: []string{"tmux", "paste-buffer", "-d", "-b", execName, "-t", "=" + execName + ":"}},
-		{Argv: []string{"tmux", "capture-pane", "-p", "-t", "=" + execName + ":"}},
-		{Argv: []string{"tmux", "kill-session", "-t", "=" + execName}},
-		{Argv: []string{"tmux", "has-session", "-t", "=" + execName}},
-		{Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}"}},
+		{Argv: []string{"tmux", "-L", execSocket, "new-session", "-d", "-s", execName, "-c", execWorkDir}},
+		{Argv: []string{"tmux", "-L", execSocket, "set-option", "-t", "=" + execName + ":", "@crswd-managed", "1"}},
+		{Argv: []string{"tmux", "-L", execSocket, "send-keys", "-t", "=" + execName + ":", "--", "Enter"}},
+		{Argv: []string{"tmux", "-L", execSocket, "load-buffer", "-b", execName, "-"}, Stdin: []byte("hello")},
+		{Argv: []string{"tmux", "-L", execSocket, "paste-buffer", "-d", "-b", execName, "-t", "=" + execName + ":"}},
+		{Argv: []string{"tmux", "-L", execSocket, "capture-pane", "-p", "-t", "=" + execName + ":"}},
+		{Argv: []string{"tmux", "-L", execSocket, "kill-session", "-t", "=" + execName}},
+		{Argv: []string{"tmux", "-L", execSocket, "has-session", "-t", "=" + execName}},
+		{Argv: []string{"tmux", "-L", execSocket, "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}"}},
 	}
 
 	got := recorded(t)
@@ -233,7 +250,7 @@ func TestExecPasteKeepsCallerTextOffTheCommandLine(t *testing.T) {
 		t.Run(fmt.Sprintf("%q", payload), func(t *testing.T) {
 			recorded := stub{}.install(t)
 
-			if err := NewExec().Paste(context.Background(), execName, []byte(payload)); err != nil {
+			if err := newStubExec(t).Paste(context.Background(), execName, []byte(payload)); err != nil {
 				t.Fatalf("Paste: %v", err)
 			}
 
@@ -259,7 +276,7 @@ func TestExecCapturePaneReturnsTmuxOutputVerbatim(t *testing.T) {
 	const pane = "$ echo hi\nhi\n$ \n"
 	stub{stdout: pane}.install(t)
 
-	got, err := NewExec().CapturePane(context.Background(), execName)
+	got, err := newStubExec(t).CapturePane(context.Background(), execName)
 	if err != nil {
 		t.Fatalf("CapturePane: %v", err)
 	}
@@ -271,7 +288,7 @@ func TestExecCapturePaneReturnsTmuxOutputVerbatim(t *testing.T) {
 func TestExecHasReportsPresence(t *testing.T) {
 	stub{code: 0}.install(t)
 
-	got, err := NewExec().Has(context.Background(), execName)
+	got, err := newStubExec(t).Has(context.Background(), execName)
 	if err != nil {
 		t.Fatalf("Has: %v", err)
 	}
@@ -283,7 +300,7 @@ func TestExecHasReportsPresence(t *testing.T) {
 func TestExecHasReportsAbsence(t *testing.T) {
 	stub{code: 1, stderr: "can't find session: " + execName}.install(t)
 
-	got, err := NewExec().Has(context.Background(), execName)
+	got, err := newStubExec(t).Has(context.Background(), execName)
 	if err != nil {
 		t.Fatalf("Has: %v", err)
 	}
@@ -317,7 +334,7 @@ func TestExecHasRefusesToGuessWhenTmuxFails(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.setup(t)
 
-			got, err := NewExec().Has(context.Background(), execName)
+			got, err := newStubExec(t).Has(context.Background(), execName)
 			if err == nil {
 				t.Fatalf("Has = (%v, nil), want an error — tmux never answered", got)
 			}
@@ -346,7 +363,7 @@ func TestExecListTreatsNoServerAsEmpty(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			stub{code: 1, stderr: tc.stderr}.install(t)
 
-			got, err := NewExec().List(context.Background())
+			got, err := newStubExec(t).List(context.Background())
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
@@ -393,7 +410,7 @@ func TestExecListDoesNotSwallowOtherFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.setup(t)
 
-			got, err := NewExec().List(context.Background())
+			got, err := newStubExec(t).List(context.Background())
 			if err == nil {
 				t.Fatalf("List = (%v, nil), want an error", got)
 			}
@@ -407,7 +424,7 @@ func TestExecListDoesNotSwallowOtherFailures(t *testing.T) {
 func TestExecListParsesTmuxOutput(t *testing.T) {
 	stub{stdout: "crswd-abc123|1785706480|1\ncrswd-abc123-decoy|1785706480|\nnotours|1785706480|\n"}.install(t)
 
-	got, err := NewExec().List(context.Background())
+	got, err := newStubExec(t).List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -525,18 +542,85 @@ func TestParseSessions(t *testing.T) {
 	}
 }
 
-// The socket is the only global flag, and it exists so the integration tests'
-// kill-server cannot reach the operator's own sessions. Production leaves it
-// empty and must therefore add nothing at all.
+// The socket is the only global flag, and every command carries it: a daemon on
+// tmux's shared default server cannot tell another daemon's sessions from its
+// own, adopts them, and reaps them on shutdown (#22).
 func TestExecSocketSelection(t *testing.T) {
 	t.Parallel()
 
-	if got := NewExec().args([]string{"has-session"}); !slices.Equal(got, []string{"has-session"}) {
-		t.Errorf("default server args = %q, want the command unchanged", got)
-	}
 	e := &Exec{socket: "crswd-test"}
 	want := []string{"-L", "crswd-test", "has-session"}
 	if got := e.args([]string{"has-session"}); !slices.Equal(got, want) {
 		t.Errorf("isolated server args = %q, want %q", got, want)
+	}
+}
+
+// The refusal that makes the isolation structural rather than remembered. An
+// Exec without a server name has nowhere to fall back to, because the only
+// fallback tmux offers is the shared default server.
+func TestExecRefusesTheDefaultServer(t *testing.T) {
+	t.Parallel()
+
+	if _, err := NewExec(""); !errors.Is(err, ErrNoSocket) {
+		t.Errorf("NewExec(\"\") error = %v, want ErrNoSocket", err)
+	}
+
+	got, err := NewExec("crswd-127-0-0-1-8765")
+	if err != nil {
+		t.Fatalf("NewExec: %v", err)
+	}
+	if got.socket != "crswd-127-0-0-1-8765" {
+		t.Errorf("socket = %q, want the name it was given", got.socket)
+	}
+}
+
+// A struct literal is one keystroke away from NewExec, so the zero value must
+// refuse too — otherwise the constructor is the only thing standing between a
+// future caller and the operator's own tmux server.
+func TestExecZeroValueRunsNothing(t *testing.T) {
+	// Not parallel: install mutates the environment. If the guard ever fails
+	// open, the stub records the call and this test says so.
+	recorded := stub{}.install(t)
+
+	var e Exec
+	if err := e.Kill(context.Background(), execName); !errors.Is(err, ErrNoSocket) {
+		t.Fatalf("Kill on a zero Exec = %v, want ErrNoSocket", err)
+	}
+	//nolint:gosec // same path as the read above: install(t) set it from this test's own t.TempDir
+	if _, err := os.Stat(os.Getenv(stubRecordEnv)); !os.IsNotExist(err) {
+		t.Errorf("the zero Exec executed tmux: %v", recorded(t))
+	}
+}
+
+// The listen address is the daemon's identity — two daemons cannot share one —
+// so the server name derived from it must differ whenever the address does, and
+// must not change between restarts of the same daemon.
+func TestSocketForIsPerAddressAndStable(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"":               "",
+		"127.0.0.1:8765": "crswd-127-0-0-1-8765",
+		"127.0.0.1:8766": "crswd-127-0-0-1-8766",
+		"127.0.0.2:8765": "crswd-127-0-0-2-8765",
+		"[::1]:8765":     "crswd----1--8765",
+	}
+	for listen, want := range cases {
+		if got := SocketFor(listen); got != want {
+			t.Errorf("SocketFor(%q) = %q, want %q", listen, got, want)
+		}
+		if got := SocketFor(listen); got != want {
+			t.Errorf("SocketFor(%q) is not stable: %q then %q", listen, want, got)
+		}
+	}
+
+	// The name becomes a filename under tmux's socket directory, so anything
+	// that is not a letter or a digit has to be gone.
+	for _, r := range SocketFor("127.0.0.1:8765") {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+		default:
+			t.Errorf("SocketFor produced %q, which is not usable as a filename", r)
+		}
 	}
 }

@@ -17,16 +17,55 @@ import (
 // defence against drift: a fake whose argv matches the contract while this file
 // quietly diverges would turn every argv assertion in the daemon into decoration.
 type Exec struct {
-	// socket selects a tmux server with -L. Empty means tmux's default server,
-	// which is the only one the daemon ever drives. The //go:build tmux tests
-	// set it so their kill-server physically cannot reach the operator's own
-	// sessions — isolation carried in the argv, not in an environment variable
-	// that would isolate them right up until it silently did not.
+	// socket selects a tmux server with -L, and is never empty: an Exec built
+	// without one refuses to run rather than falling back to tmux's default
+	// server. That default is shared by every tmux client on the host, so two
+	// daemons on it cannot tell each other's sessions apart — both see the
+	// crswd- prefix and @crswd-managed, which is the whole adoption signal, so
+	// the second daemon adopts the first's sessions and reaps them on shutdown.
+	// A server per daemon makes that impossible by construction rather than by
+	// a rule to remember (#22). It is isolation carried in the argv, not in an
+	// environment variable that would isolate right up until it silently did
+	// not — the same lesson the //go:build tmux tests learned.
 	socket string
 }
 
-// NewExec returns a Controller driving tmux's default server.
-func NewExec() *Exec { return &Exec{} }
+// ErrNoSocket is returned by NewExec for an empty server name, and by every
+// method of an Exec that somehow has one. The daemon has no business on tmux's
+// default server, so there is nothing to fall back to.
+var ErrNoSocket = errors.New("tmuxctl: no tmux server name; refusing to drive tmux's default server")
+
+// NewExec returns a Controller driving the tmux server named by socket, which
+// is tmux's -L. Use SocketFor to derive it from the daemon's listen address.
+func NewExec(socket string) (*Exec, error) {
+	if socket == "" {
+		return nil, ErrNoSocket
+	}
+	return &Exec{socket: socket}, nil
+}
+
+// SocketFor derives a daemon's tmux server name from the address it listens on,
+// rewriting everything that is not a letter or a digit so the result is usable
+// as the filename tmux turns -L into. An empty address yields an empty name,
+// which NewExec refuses.
+//
+// The listen address is the identity because two daemons cannot share one: the
+// second fails to bind. The rewrite only touches separators of an address
+// config.Load has already validated as a loopback IP literal and a port, so two
+// daemons that differ at all still differ here.
+func SocketFor(listen string) string {
+	if listen == "" {
+		return ""
+	}
+	return "crswd-" + strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		default:
+			return '-'
+		}
+	}, listen)
+}
 
 // tmux's own wording, matched because the exit status alone cannot separate
 // these: has-session and list-sessions both exit 1 for "that session is not
@@ -184,6 +223,13 @@ func parseSessions(stdout string) ([]SessionInfo, error) {
 // error separately, so each method decides for itself what may appear in the
 // error it returns.
 func (e *Exec) run(ctx context.Context, argv []string, stdin []byte) (string, string, error) {
+	// The zero Exec cannot reach tmux's default server. NewExec already refuses
+	// to build one, and this is the guard that makes that a property of the type
+	// rather than of its constructor — a struct literal is one keystroke away.
+	if e.socket == "" {
+		return "", "", ErrNoSocket
+	}
+
 	// G204 fires on any exec whose program or arguments are not literals here,
 	// and the whole design of this package is the answer to it: argv comes only
 	// from the builders above, each one a fixed sequence of literals, and the
@@ -206,11 +252,9 @@ func (e *Exec) run(ctx context.Context, argv []string, stdin []byte) (string, st
 }
 
 // args prepends the server socket, the only tmux global flag this package uses,
-// ahead of the command the builders produced.
+// ahead of the command the builders produced. There is no branch for an absent
+// socket: run refuses before reaching here.
 func (e *Exec) args(rest []string) []string {
-	if e.socket == "" {
-		return rest
-	}
 	return append([]string{"-L", e.socket}, rest...)
 }
 
