@@ -473,4 +473,13 @@ body {
   .rain {
     display: none;
   }
+
+  /* Universal rather than a list of the two rules that transition today: the
+     preference is then answered by the stylesheet itself, so the next hover
+     fade someone adds is covered by construction instead of by remembering. */
+  *,
+  *::before,
+  *::after {
+    transition: none;
+  }
 }
