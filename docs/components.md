@@ -88,10 +88,17 @@ Live terminal output, streamed over SSE.
 ```
 
 ```js
-// The live half. textContent, never innerHTML — the payload is untrusted bytes
-// from the host, and this is the project's only XSS surface.
+// The live half. Each event carries the WHOLE current screen as a JSON string,
+// and replaces what was there — a Claude session is a full-screen program that
+// repaints in place, not a log that appends. Reconstructing a transcript by
+// diffing redraws produces torn lines from every cursor move and spinner.
+//
+// textContent, never innerHTML: the payload is untrusted bytes from the host,
+// and this is the project's only XSS surface. JSON.parse yields a string, and
+// the only thing done with a string is assign it — there is no path from here
+// to markup, which is what "closed by construction" means.
 new EventSource(pane.dataset.stream).onmessage = (e) => {
-  pane.appendChild(document.createTextNode(e.data + "\n"));
+  pane.textContent = JSON.parse(e.data);
 };
 ```
 
@@ -108,8 +115,10 @@ Rules — these are security rules as much as design rules:
   and never an htmx swap that treats the payload as markup.
 - ANSI is stripped server-side before it reaches the template.
 - The container scrolls, the page does not. Fixed height, `overflow-y: auto`.
-- Auto-scroll to the bottom only when the user is already at the bottom — yanking
-  the viewport while someone is reading scrollback is hostile.
+- **The pane shows the live screen, not scrollback.** A repainting screen has no
+  "bottom" to follow, so an update must never move the viewport for the reader.
+  History is what `tmux attach` is for, and the interface should say so rather
+  than imply a transcript it does not keep.
 - No animation on new lines.
 
 ## Form
