@@ -15,6 +15,16 @@
 // the run produced and asserts that not one of those values is anywhere in them
 // (FR-042, FR-043, docs/security.md §3, SC-013).
 //
+// It drives the **browser door** on the same daemon and into the same trail
+// (T021c). That door is where the richest secrets are in scope at once: the page
+// a card links to renders a whole screen, the fleet renders every name and
+// working directory the viewer owns, and both are authorised by an assertion
+// naming a verified person — three kinds of value milestone 1's routes never had
+// together. Layer 1 is genuine here rather than stubbed: assertions are minted
+// from a key pair this file generates and resolved against a loopback key server
+// it starts, so an admitted request really was verified and a refused one really
+// was refused (FR-035, SC-008).
+//
 // It is in package audit_test rather than audit because it imports
 // internal/httpapi, which imports internal/audit. The external test package is
 // the only place that import direction is legal — which is why T038's sweep of
@@ -24,19 +34,26 @@ package audit_test
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/hmac"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -65,6 +82,14 @@ const (
 	// fires on any constant whose *name* says credential — and a //nolint on a
 	// leak suite's own fixture would be a poor precedent to set.
 	markBearer = "CANARY-BEARER"
+
+	// The browser door's three. An address is the edge's word about a person, a
+	// key id is the one part of a JOSE header a forger picks freely, and a path
+	// is whatever a caller typed — all caller- or edge-authored bytes, none of
+	// which the fixed-struct record has a field for.
+	markEmail = "CANARY-EMAIL"
+	markKeyID = "CANARY-KEYID"
+	markPath  = "CANARY-PATH"
 )
 
 // The values themselves.
@@ -102,7 +127,93 @@ const (
 	// presentedBearer is a session credential this daemon never issued. What a
 	// caller presents is as unwelcome in the trail as what the daemon minted.
 	presentedBearer = markBearer + "-not-one-this-daemon-issued"
+
+	// allowedEmail is the address the edge verifies and this daemon's own
+	// allowlist holds — the identity every admitted browser request below is
+	// served as. It is marked because it is rendered into the header of every
+	// page, held in a VerifiedOperator for the whole of the request, and is the
+	// value the trail is most plausibly tempted by: "caller" is a field, and the
+	// address is the only human-readable name the browser door ever learns.
+	allowedEmail = markEmail + "-operator@example.com"
+
+	// refusedEmail is step 11's own case: a genuine assertion, signed by the same
+	// key for the same application about a real person, naming an address this
+	// daemon does not serve. The refusal must reach the trail without it.
+	refusedEmail = markEmail + "-stranger@example.com"
+
+	// forgedKeyID names a signing key nothing publishes. internal/access
+	// documents that none of its errors carries a key id; this is what asks
+	// whether that holds all the way out to a record.
+	forgedKeyID = markKeyID + "-nothing-published-this"
+
+	// unclaimedPath is a path no route matches, and the browser door is what
+	// answers it (FR-013d). A trail built by interpolating the request line would
+	// leak it, which is the shape of leak a fixed-struct record forecloses — so
+	// this asks the property rather than assuming the type.
+	//
+	// It carries no `..`: net/http's own cleanPath answers such a path with a
+	// redirect before any door runs, so that request never reaches the daemon at
+	// all (see the note in httpapi's handleUnrouted).
+	unclaimedPath = "/" + markPath + "-nothing-serves-this"
 )
+
+// headerAssertion is where the edge writes the browser's identity.
+//
+// Spelled out rather than taken from internal/httpapi's own constant, for the
+// reason the signature above is computed rather than signed by the auth package:
+// a fixture built out of the code under test proves only that the code agrees
+// with itself.
+const headerAssertion = "Cf-Access-Jwt-Assertion"
+
+// leakKeyID is the key id the key server publishes its one key under.
+const leakKeyID = "leak-suite-key-1"
+
+// leakKeys is the RSA pair every assertion here is signed with, generated once
+// for the package.
+//
+// Once, because a 2048-bit generation costs more than everything else this suite
+// does put together and driveEveryOperation runs twice. internal/httpapi has a
+// fixture of the same shape and it is unexported — this file cannot import it,
+// because the import direction that would allow it is the one that makes this
+// file possible at all (see the package comment).
+var leakKeys = sync.OnceValue(func() *rsa.PrivateKey {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic("generate the leak suite's signing key: " + err.Error())
+	}
+	return key
+})
+
+// startKeyServer publishes the one public key over loopback and returns the
+// origin to configure as the team domain.
+//
+// Loopback over http is what config.loadTeamDomain permits for exactly this
+// case, and nothing is skipped for it: the full validation sequence runs against
+// whatever this server answers with, so an assertion admitted below was admitted
+// by the same code the daemon runs behind Cloudflare.
+func startKeyServer(t *testing.T) string {
+	t.Helper()
+
+	pub := &leakKeys().PublicKey
+	body, err := json.Marshal(map[string]any{"keys": []map[string]string{{
+		"kty": "RSA",
+		"kid": leakKeyID,
+		"n":   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+		"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+	}}})
+	if err != nil {
+		t.Fatalf("encode the test key set: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write(body); err != nil {
+			t.Errorf("serve the test key set: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
 
 // daemonKey is the shared secret. Spelled in words rather than hex for the
 // reason internal/httpapi's fixture is: a run of hex digits of this length is
@@ -179,15 +290,23 @@ type leakRun struct {
 
 	bodies      []string // every non-empty body sent, whole
 	credentials []string // every bearer token issued, plaintext
+	assertions  []string // every assertion presented at the browser door, whole
+
+	// teamDomain is the loopback key server the browser door's layer 1 resolves
+	// against, and the issuer every assertion here names — one value, because
+	// internal/access derives both from it.
+	teamDomain string
 
 	// The evidence. Without it the sweep would pass just as happily against a
 	// run that had done nothing at all.
 	createBody string
 	outputBody string
 	sweptError string
+	fleetBody  string
+	viewBody   string
 }
 
-func leakConfig(root string) *config.Config {
+func leakConfig(root, teamDomain string) *config.Config {
 	return &config.Config{
 		Listen:       "127.0.0.1:0",
 		SharedSecret: daemonKey(),
@@ -203,16 +322,72 @@ func leakConfig(root string) *config.Config {
 		// mean a request never reached the operation it was meant to drive.
 		CreateRatePerMin: 1000,
 
-		// Layer 1's configuration, which httpapi.New now builds a validator
-		// from. Well-formed and nothing more: this suite drives the API door,
-		// which reads no assertion, so the validator built from these is never
-		// asked anything and never opens a connection. When the browser door's
-		// own operations join driveEveryOperation (T017), an assertion these
-		// values would actually admit is what that task has to mint.
-		AccessTeamDomain:    "https://example-team.cloudflareaccess.com",
-		AccessAUD:           "leak-suite-audience-tag",
-		AccessAllowedEmails: []string{"operator@example.com"},
+		// Layer 1's configuration, which httpapi.NewWith builds the browser
+		// door's validator from. The team domain is the loopback key server this
+		// run started, so the validator resolves real keys, verifies real
+		// signatures, and refuses everything it is meant to — the assertions
+		// below are admitted by the same eleven steps a request from Cloudflare
+		// would be.
+		//
+		// The allowlist holds the marked address, which is what makes the sweep
+		// say something: the daemon spends the whole of every browser request
+		// holding this value, so a trail that carried it would carry it here.
+		AccessTeamDomain:    teamDomain,
+		AccessAUD:           leakAUD,
+		AccessAllowedEmails: []string{allowedEmail},
 	}
+}
+
+// leakAUD is the audience tag this fixture's application is pinned to. It is not
+// marked: it is the operator's own configuration rather than anything a caller
+// or the edge authored, and it is the one claim value a record could carry
+// without telling anyone something they did not already have to know to reach
+// the door.
+const leakAUD = "leak-suite-audience-tag"
+
+// identityClaims is an assertion the browser door should admit: this issuer,
+// this audience, inside its validity, naming a person.
+//
+// The refused cases below are this map with one member changed, so each differs
+// from a working assertion by exactly the thing it is named for.
+func (r *leakRun) identityClaims(email string) map[string]any {
+	now := time.Now()
+	return map[string]any{
+		"iss":   r.teamDomain,
+		"aud":   []string{leakAUD},
+		"email": email,
+		"iat":   now.Add(-time.Minute).Unix(),
+		"nbf":   now.Add(-time.Minute).Unix(),
+		"exp":   now.Add(time.Hour).Unix(),
+	}
+}
+
+// mintAssertion builds a JWS the way RFC 7515 describes it rather than by
+// calling internal/access's own code, for the reason sendTo computes its HMAC by
+// hand.
+func mintAssertion(t *testing.T, kid string, claims map[string]any) string {
+	t.Helper()
+
+	header := segment(t, map[string]any{"alg": "RS256", "kid": kid, "typ": "JWT"})
+	payload := segment(t, claims)
+	digest := sha256.Sum256([]byte(header + "." + payload))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, leakKeys(), crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("sign a test assertion: %v", err)
+	}
+	return header + "." + payload + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+// segment is one base64url-encoded JSON member of a JWS, unpadded as RFC 7515
+// requires.
+func segment(t *testing.T, v map[string]any) string {
+	t.Helper()
+
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("encode a test assertion segment: %v", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 func newLeakRun(t *testing.T) *leakRun {
@@ -245,12 +420,16 @@ func newLeakRun(t *testing.T) *leakRun {
 
 	trail := &bytes.Buffer{}
 	fake := tmuxctl.NewFake()
-	srv, err := httpapi.NewWith(leakConfig(root), fake, audit.NewTo(trail, time.Now))
+	teamDomain := startKeyServer(t)
+	srv, err := httpapi.NewWith(leakConfig(root, teamDomain), fake, audit.NewTo(trail, time.Now))
 	if err != nil {
 		t.Fatalf("httpapi.NewWith = _, %v; want a server", err)
 	}
 
-	return &leakRun{srv: srv, tmux: fake, root: root, repo: repo, trail: trail, logs: logs, base: time.Now()}
+	return &leakRun{
+		srv: srv, tmux: fake, root: root, repo: repo,
+		trail: trail, logs: logs, base: time.Now(), teamDomain: teamDomain,
+	}
 }
 
 // leakRequest is one request to drive, with the two knobs the refusal cases
@@ -355,6 +534,81 @@ func jsonBody(t *testing.T, v any) []byte {
 	return body
 }
 
+// present drives one request through the browser door and fails unless the
+// daemon answered as expected.
+//
+// It carries the assertion header and nothing else — no signature and no bearer
+// token — which is the door's own shape (FR-012): a browser request is never
+// refused for carrying no signature, and there is nothing else on this door for
+// one to present. The assertion is kept whether it was admitted or refused,
+// because a refusal is the case where the daemon is most tempted to record what
+// it was refusing.
+//
+// The response body is never printed, for the reason want's is not: one of them
+// is a whole session screen.
+func (r *leakRun) present(t *testing.T, status int, what, path, assertion string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	// Kept once each, unlike the bodies: one assertion authorises five of the
+	// requests below, and a mark per presentation would print that same leak five
+	// times over in a failure whose whole subject is a value nobody should be
+	// looking at.
+	if !slices.Contains(r.assertions, assertion) {
+		r.assertions = append(r.assertions, assertion)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set(headerAssertion, assertion)
+
+	got := httptest.NewRecorder()
+	r.srv.ServeHTTP(got, req)
+	if got.Code != status {
+		t.Fatalf("%s answered %d; want %d", what, got.Code, status)
+	}
+	return got
+}
+
+// driveTheBrowserDoor runs the daemon through every way the dashboard answers
+// (T021c): the fleet, the page a card links to, an embedded asset, the two
+// not-founds, and layer 1 refusing.
+//
+// It is the half of the daemon where the marked values are richest — the fleet
+// renders the name and the working directory a caller chose, the session's own
+// page renders a whole screen, and every one of them is served to an identity
+// carrying a marked address. Milestone 1's routes never had all three in scope
+// at once, which is why the trail's silence about this door needed asking
+// separately.
+//
+// The session id is the one created above, so the page renders a real screen
+// rather than a not-found.
+func (r *leakRun) driveTheBrowserDoor(t *testing.T, id string) {
+	t.Helper()
+
+	admitted := mintAssertion(t, leakKeyID, r.identityClaims(allowedEmail))
+
+	r.fleetBody = r.present(t, http.StatusOK, "GET /", "/", admitted).Body.String()
+	r.viewBody = r.present(t, http.StatusOK, "GET /sessions/{id}/view",
+		"/sessions/"+id+"/view", admitted).Body.String()
+	r.present(t, http.StatusOK, "GET /static/crswd.css", "/static/crswd.css", admitted)
+
+	// The two ways this door says no such thing, which are one answer to a caller
+	// and two reasons in the trail: a path nothing claims, and the view of a
+	// session that never existed.
+	r.present(t, http.StatusNotFound, "a path nothing claims", unclaimedPath, admitted)
+	r.present(t, http.StatusNotFound, "the view of a session that never existed",
+		"/sessions/"+strings.Repeat("d", session.IDLen)+"/view", admitted)
+
+	// Layer 1 refusing, in the two shapes that have a marked value in hand while
+	// they do it: an address the allowlist does not hold, and a key id nothing
+	// published. Both are genuine — the first is signed by the published key for
+	// this application about a real person, and the second is a real signature
+	// under a header naming a key that cannot be resolved.
+	r.present(t, http.StatusUnauthorized, "an assertion naming an address the allowlist refuses",
+		"/", mintAssertion(t, leakKeyID, r.identityClaims(refusedEmail)))
+	r.present(t, http.StatusUnauthorized, "an assertion naming a key nothing published",
+		"/", mintAssertion(t, forgedKeyID, r.identityClaims(allowedEmail)))
+}
+
 // loadTheConfiguration exercises startup.
 //
 // FR-004's default-root banner is the one thing the daemon writes with no audit
@@ -374,15 +628,16 @@ func (r *leakRun) loadTheConfiguration(t *testing.T) {
 	// belongs to the operating system, not to this daemon.
 	//
 	// The layer-1 values are present because startup refuses without them, and
-	// this fixture's subject is the default-root path further down. They are not
-	// marked: what they are worth asserting about is that a *refused* address
-	// never reaches the trail, which is the browser door's test to write.
+	// this fixture's subject is the default-root path further down. The address
+	// is marked all the same: startup is where the allowlist is parsed, and the
+	// one thing this fixture proves about it is that the loud warning it writes
+	// beside it says nothing about who the daemon will serve.
 	env := map[string]string{
 		config.EnvSharedSecret:        string(daemonKey()),
 		"HOME":                        r.root,
 		config.EnvAccessTeamDomain:    "example-team.cloudflareaccess.com",
-		config.EnvAccessAUD:           "test-only-audience-tag",
-		config.EnvAccessAllowedEmails: "operator@example.com",
+		config.EnvAccessAUD:           leakAUD,
+		config.EnvAccessAllowedEmails: allowedEmail,
 	}
 
 	cfg, err := config.LoadFrom(func(k string) string { return env[k] }, r.logs)
@@ -504,6 +759,11 @@ func driveEveryOperation(t *testing.T) *leakRun {
 		method: http.MethodGet, path: "/sessions/" + id, credential: credential,
 	})
 
+	// The other door, on the same daemon and into the same trail, while that
+	// session is still running: the pages it serves render the name, the working
+	// directory and the screen the routes above just put there.
+	r.driveTheBrowserDoor(t, id)
+
 	// Every way a body is refused, each carrying something the refusal would be
 	// tempted to quote back.
 	r.want(t, http.StatusBadRequest, "a create carrying an undeclared field", leakRequest{
@@ -619,6 +879,14 @@ func (r *leakRun) marks() []leakMark {
 		{"what the host said when it failed", markHostError},
 		{"a credential a caller presented", markBearer},
 		{"the shared secret", string(daemonKey())},
+		{"the address the edge verified, or the one it refused", markEmail},
+		// The allowlist compares lowercased, so the daemon holds a second
+		// spelling of the same address. A mark matching only the edge's spelling
+		// would miss a record built from the comparison rather than from the
+		// claim.
+		{"the same address folded as the allowlist holds it", strings.ToLower(markEmail)},
+		{"a signing key an assertion named", markKeyID},
+		{"a path a caller asked for", markPath},
 	}
 
 	for _, credential := range r.credentials {
@@ -635,6 +903,18 @@ func (r *leakRun) marks() []leakMark {
 	// carry nothing marked would still be a record carrying a body.
 	for i, body := range r.bodies {
 		marks = append(marks, leakMark{fmt.Sprintf("request body %d, whole", i+1), body})
+	}
+
+	// The assertions, whole and segment by segment. Whole is the claim FR-035
+	// makes; the segments are what catches the narrower leak — a record built
+	// from the payload alone would carry every claim the edge wrote, base64 and
+	// therefore unmatched by any mark above, since none of the values inside it
+	// survives the encoding as text.
+	for i, assertion := range r.assertions {
+		marks = append(marks, leakMark{fmt.Sprintf("assertion %d, whole", i+1), assertion})
+		for _, part := range strings.Split(assertion, ".") {
+			marks = append(marks, leakMark{fmt.Sprintf("one segment of assertion %d", i+1), part})
+		}
 	}
 	return marks
 }
@@ -735,6 +1015,11 @@ func TestTheLeakSuiteReallyDrivesTheDaemon(t *testing.T) {
 		"session.create", "session.list", "session.detail",
 		"session.prompt", "session.output", "session.destroy",
 		"auth.reject", "reaper.destroy",
+		// The browser door's four (T021c). access.reject is deliberately not
+		// auth.reject: the two doors fail for unrelated reasons, and a sweep that
+		// accepted either would pass on a run where layer 1 never refused
+		// anything at all.
+		"dashboard.view", "dashboard.asset", "access.reject", "route.unknown",
 	}
 	got := make(map[string]bool)
 	for _, rec := range run.records(t) {
@@ -760,6 +1045,13 @@ func TestTheLeakSuiteReallyDrivesTheDaemon(t *testing.T) {
 		{"the pane content", markPane, "the output response", run.outputBody},
 		{"the session name", markName, "the create response", run.createBody},
 		{"the host's own error", markHostError, "the error a failed sweep returned", run.sweptError},
+		// The browser door's own three. Each is a value the door had in scope
+		// while it wrote a record, and the page proves it: a dashboard that
+		// rendered none of them would make the sweep's silence about this door
+		// mean nothing.
+		{"the verified address", markEmail, "the fleet page", run.fleetBody},
+		{"the session name", markName, "the fleet page", run.fleetBody},
+		{"the pane content", markPane, "the session's own page", run.viewBody},
 	} {
 		if !strings.Contains(reached.text, reached.mark) {
 			t.Errorf("%s never reached %s, so its absence from the trail proves nothing", reached.what, reached.where)
@@ -771,6 +1063,9 @@ func TestTheLeakSuiteReallyDrivesTheDaemon(t *testing.T) {
 	}
 	if len(run.bodies) == 0 {
 		t.Error("no request body was ever sent, so the sweep proves nothing about one")
+	}
+	if len(run.assertions) == 0 {
+		t.Error("no assertion was ever presented, so the sweep proves nothing about one")
 	}
 	if run.logs.Len() == 0 {
 		t.Error("the run produced no log output, so the sweep read only the audit sink")
