@@ -8800,3 +8800,112 @@ go.sum                                    absent  ✅
     two hard-coded `:8765` cases fail their post-refusal bind check while all ten
     refusals exit 1 with the right message. The other twelve stories pass. Still
     **T021's**.
+
+---
+
+## Iteration 51 (milestone 2, iteration 8) — 2026-08-04 05:13
+
+**Did:** **T008** — the milestone's four audit actions in `internal/audit/audit.go`:
+`ActionAccessReject` (`access.reject`), `ActionDashboardView` (`dashboard.view`),
+`ActionDashboardAsset` (`dashboard.asset`), `ActionStreamOpen` (`stream.open`). Actions
+only — `Record` is untouched, still the same fixed six string fields.
+
+**Shape, and the reasons behind the non-obvious parts:**
+
+- **`access.reject` is deliberately not `auth.reject`.** data-model.md calls it "the
+  browser door's `auth.reject`", which reads like an alias and is not one: the two doors
+  fail for unrelated reasons, quickstart.md line 220 counts one of them with
+  `grep -c 'access.reject'`, and a shared spelling would make that count silently
+  include the other door's refusals.
+- **`dashboard.asset` is the fourth action the plan's sketch did not have.** An asset
+  fetch is a request, FR-016/SC-008 want exactly one record per request, and this
+  package's own rule forbids recording traffic under an approximate neighbour — so the
+  alternative was a silent request or a page view that was not one.
+- **The four are documented where they are emitted, not merely spelled.** Each carries
+  the constraint the call site will need: the refused address never reaching the trail
+  (`access.reject`), the session ID coming from the daemon's own record rather than the
+  path (`dashboard.view`), and open-not-close with no second record (`stream.open`).
+  T009, T014 and T022 are the callers, and a constant they read from is cheaper than a
+  contract they re-derive.
+- **`route.unknown` was missing from `TestEmitAcceptsEveryDocumentedAction`'s table** —
+  a milestone 1 gap, since that constant landed after the table did. Added, because the
+  table's completeness is now load-bearing (below).
+- **A distinctness test was written and then deleted, having proved itself redundant.**
+  The table's keys are typed constants in a map literal, so two constants sharing one
+  spelling is a *compile* error — mutation 2 below is what showed that. The comment on
+  the table now records why listing every action matters; a second test asserting the
+  same thing would have been churn.
+
+Gate, executed not asserted, one command at a time (finding 115):
+
+```
+go build ./...                            OK
+go vet ./...                              OK
+go test ./...                             OK
+golangci-lint run                         OK (silent)
+gofmt -l .                                OK (silent)
+go test -tags tmux ./...                  OK
+go test -tags dev ./...                   OK
+go test -race ./internal/audit/           OK
+```
+
+**Five mutations, each applied and reverted, to prove the tests are not decorative:**
+
+1. `ActionDashboardAsset = "stream.open.placeholder"` → `TestEmitAcceptsEveryDocumentedAction/dashboard.asset`
+   fails twice, on the constant and on the emitted `action`. (This one was not
+   synthetic — it was a genuine slip in the first draft of the constant block, and the
+   test caught it before the first full run.)
+2. `ActionAccessReject = "auth.reject"` → **build failure**: `duplicate key
+   "auth.reject" in map literal`. The compiler, not a test.
+3. `Emit` adds `session_id` unconditionally instead of when non-empty → all four
+   subtests of `TestEmitWritesTheBrowserDoorActionsInTheExistingShape` fail on the
+   bare-record key set.
+4. `Emit` skips the `CallerUnknown` default when the action is `access.reject` (the
+   plausible mistake: "a layer-1 refusal has no caller") → `caller = , want "unknown"`.
+5. `Record` grows a `Claims map[string]string` field → `TestRecordCannotCarryFreeFormContent`
+   fails on the field count. FR-042 survives a second door.
+
+**Left:** T009–T034. Next is **T009**: the browser door in `internal/httpapi/browser.go`
+— layer 1 on every dashboard route, one audit record per request, one uniform refusal.
+It is the first production caller of `access.New`, of the bypass, and of three of the
+four constants this iteration added.
+
+**Findings:**
+
+142. **All four new actions have no production caller, and that is the task, not an
+    oversight** — but the plan's own rule ("a task is not done when the code exists, it
+    is done when something calls it") means the *next* reader should not treat T008 as
+    closing anything. `access.reject` is emitted by T009, `dashboard.view` and
+    `dashboard.asset` by T014/T016, `stream.open` by T027. Unused exported constants are
+    not a lint failure in Go, so nothing will remind whoever writes those tasks.
+143. **`leak_test.go`'s `want` list still names only milestone 1's nine actions**
+    (`TestTheLeakSuiteReallyDrivesTheDaemon`, line ~723). That list is what keeps the
+    leak sweep honest — an absence proves nothing if the operation never ran — so when
+    the browser door and the stream land, the four new actions must be added there *and*
+    driven by `driveEveryOperation`, or FR-042 goes unasserted for the door that handles
+    an identity assertion. **Belongs to whoever finishes US1 (T017) and US2 (T029).**
+144. **Findings 133–134 stand unchanged and are T009's:** the `--dev-auth-bypass` flag
+    does not exist on `cmd/crswd` and needs its own `//go:build dev` / `!dev` pair;
+    `access.New` has no production caller (now five tasks old); and `internal/access`'s
+    fourteen repo-authored refusal reasons are still unmapped to the `access.reject`
+    record they were written for — this iteration supplied the action, not the mapping.
+145. **Iteration 14 #1 / … / 50 #136 still stands:** `git checkout --`, `git restore`,
+    `perl -i`, heredocs and `sed -i` remain outside the permission allowlist. New this
+    iteration: `go build ./...; echo "build:$?"` was refused for being two operations,
+    which is why the gate above is one command per line rather than one line with `&&`.
+    Five mutations were applied and reverted with the Edit tool — two round trips each.
+146. **Iteration 1 #1 / … / 50 #137 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the
+    hook: "no leaks found".)
+147. **Iteration 2 #2 / … / 50 #138 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+148. **Iteration 6 #6 / … / 50 #139 still stands:** `AGENTS.md`'s command table names
+    none of `go test -tags tmux ./...`, `go test -tags quickstart ./cmd/crswd`, or
+    `go test -tags dev ./...`. **T032.**
+149. **`deploy/README.md`'s four-variable trap (44 #84 / … / 50 #140) still stands.**
+    **T033.**
+150. **Finding 78 reproduces an eighth time**, untouched by this task: the deployed
+    daemon holds `127.0.0.1:8765`, so `TestQuickstartStory1StartupFailures`'s two
+    hard-coded `:8765` cases fail their post-refusal bind check while all ten refusals
+    exit 1 with the right message. The other twelve stories pass. Still **T021's**.

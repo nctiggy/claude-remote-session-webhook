@@ -84,7 +84,7 @@ wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and stop.
 - [x] T005 `internal/access/claims.go`: both assertion shapes. Identity carries `email`; a service token carries `common_name`, empty `sub`, and **no email**. The dashboard requires a non-empty allowlisted email — **"no email" must never read as "allow"**, or every API call the operator makes is admitted to the dashboard
 - [x] T006 `internal/access/allowlist.go`: the daemon's own email check. The edge is the gate; this asserts the gate is configured as believed. The refused address never reaches the trail
 - [x] T007 **[delivers US5]** `internal/access/bypass_{dev,prod}.go`: skips layer 1 only, refuses off loopback, warns every request, and is **absent** from the shipping build. In Foundation because there is no Access in front of a laptop — without it nothing here can be developed locally
-- [ ] T008 `internal/audit/audit.go`: add `access.reject`, `dashboard.view`, `dashboard.asset`, `stream.open`, keeping the fixed-struct shape
+- [x] T008 `internal/audit/audit.go`: add `access.reject`, `dashboard.view`, `dashboard.asset`, `stream.open`, keeping the fixed-struct shape
 
 ### US1 — See every session at a glance (P1, MVP)
 
