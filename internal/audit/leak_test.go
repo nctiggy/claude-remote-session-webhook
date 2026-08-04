@@ -240,11 +240,11 @@ func startKeyServer(t *testing.T) string {
 // into the repository.
 func daemonKey() []byte { return []byte(markShared + "-not-a-real-one-and-long-enough") }
 
-// hostError is what tmux says when it fails. It is marked because the daemon
+// errHostError is what tmux says when it fails. It is marked because the daemon
 // holds it in a Go error while deciding what to record, and "wrap what the host
 // said" is the one habit that would put a byte the daemon did not author into
 // the trail.
-var hostError = errors.New("tmux: " + markHostError + ": server exited unexpectedly")
+var errHostError = errors.New("tmux: " + markHostError + ": server exited unexpectedly")
 
 // errClientGone is deliberately unmarked. A write failure is a fact about the
 // network and not caller data, so marking it would be asserting a leak that is
@@ -799,7 +799,7 @@ func (r *leakRun) reap(t *testing.T) {
 	// hands back carries what the host said — that is the evidence the marked
 	// host error really did reach a Go error inside the daemon, and the sweep
 	// below is what proves it never reached the record written beside it.
-	host.FailOp(tmuxctl.OpKill, hostError)
+	host.FailOp(tmuxctl.OpKill, errHostError)
 	swept, err := reaper.Sweep(ctx)
 	if err == nil {
 		t.Fatal("Sweep() = _, nil; want the host failure reported")
@@ -926,13 +926,13 @@ func driveEveryOperation(t *testing.T) *leakRun {
 	// tmux itself failing, with an error carrying pane-shaped text. The daemon
 	// holds that error while it decides what to record, which is the moment a
 	// wrap would put a byte it did not author into the trail.
-	r.tmux.FailOp(tmuxctl.OpCapturePane, hostError)
+	r.tmux.FailOp(tmuxctl.OpCapturePane, errHostError)
 	r.want(t, http.StatusInternalServerError, "a capture the host refused", leakRequest{
 		method: http.MethodGet, path: "/sessions/" + id + "/output", credential: credential,
 	})
 	r.tmux.FailOp(tmuxctl.OpCapturePane, nil)
 
-	r.tmux.FailOp(tmuxctl.OpPaste, hostError)
+	r.tmux.FailOp(tmuxctl.OpPaste, errHostError)
 	r.want(t, http.StatusInternalServerError, "a prompt the host refused", leakRequest{
 		method: http.MethodPost, path: "/sessions/" + id + "/prompt", credential: credential,
 		body: jsonBody(t, map[string]string{"text": promptText}),

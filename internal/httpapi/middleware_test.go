@@ -1229,7 +1229,7 @@ func TestAFailedAuditWriteIsReportedAndChangesNothingElse(t *testing.T) {
 
 	want := errors.New("stdout is gone")
 	s := newAuditedServer(t)
-	s.Server.trail = audit.NewTo(brokenSink{err: want}, func() time.Time { return testTime })
+	s.trail = audit.NewTo(brokenSink{err: want}, func() time.Time { return testTime })
 
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sessions", nil))

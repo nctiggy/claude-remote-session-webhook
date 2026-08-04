@@ -285,6 +285,14 @@ return `404` with an identical body.
 
 ## D12. golangci-lint v1.62 config schema
 
+> **Superseded (2026-08-04).** `golangci-lint-action` refuses v1 from v7 onward —
+> *"golangci-lint v1 is not supported by golangci-lint-action >= v7"* — so the pin
+> moved to **v2.12.2** and `.golangci.yml` to the v2 schema. The decision below is
+> left as written because it was correct when made and milestone 1 was built under
+> it; what changed is upstream, not the reasoning. The four behaviours it protects
+> are unchanged and are re-verified in the v2 config's own comments.
+
+
 **Decision**: `.golangci.yml` is written against the **v1** schema.
 
 CI pins `golangci/golangci-lint-action@v6` with `version: v1.62`. golangci-lint v2

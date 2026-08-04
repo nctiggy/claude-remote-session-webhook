@@ -39,7 +39,9 @@ jobs:
 
       - name: Run Claude Code against the issue
         id: claude
-        uses: anthropics/claude-code-action@v1.0.183
+        # Pinned to a commit SHA for the reason the model below is pinned: a tag
+        # can be moved, and this action runs with write access to the repo.
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
         with:
           # Subscription auth (Claude Pro/Max) — no API billing.
           # Generate on the runner (or any machine you are signed in on) with:

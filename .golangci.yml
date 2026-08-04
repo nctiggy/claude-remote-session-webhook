@@ -1,58 +1,84 @@
-# golangci-lint configuration — **v1 config schema**.
+# golangci-lint configuration — **v2 config schema**.
 #
-# CI pins golangci/golangci-lint-action@v6 at v1.62 (.github/workflows/ci.yml).
-# golangci-lint v2 changed this file's format incompatibly, so a v2-style config
-# fails there. Do not "modernise" it without changing the CI pin in the same PR.
-# Rationale: specs/001-crswd-daemon-core/research.md D12.
+# CI pins golangci/golangci-lint-action to a commit SHA and golangci-lint itself
+# to a v2 release (.github/workflows/ci.yml). v2 changed this file's format
+# incompatibly and the action refuses v1 outright, so the config and the pin move
+# together or not at all.
+#
+# Migrated from the v1 schema by `golangci-lint migrate`, then hand-checked
+# against the four behaviours below. A migration that silently drops one leaves
+# CI green while checking less, which is worse than a red build.
+version: "2"
 
 run:
-  timeout: 5m
   # Without this, every file behind `//go:build tmux` — the real-tmux
   # integration tests, the only place a tmux binary is required — is invisible
   # to the linter locally and in CI. A file no linter ever reads is not covered
-  # by the gate that the definition of done rests on. Any future build tag needs
+  # by the gate the definition of done rests on. Any future build tag needs
   # adding here for the same reason.
   build-tags:
     - tmux
-    # T007's //go:build dev half — the development bypass, which is the one
-    # file in the tree that turns authentication off. Unlinted is precisely
-    # what it must not be. Its counterpart, bypass_prod.go, goes invisible in
-    # exchange, and that is affordable only because it declares nothing at all:
+    # The `//go:build dev` half of the development bypass, which is the one file
+    # in the tree that turns authentication off. Unlinted is precisely what it
+    # must not be. Its counterpart, bypass_prod.go, goes invisible in exchange,
+    # and that is affordable only because it declares nothing at all:
     # bypass_build_test.go carries no tag and fails if it ever declares
-    # anything, so the file this list stops linting is one no linter has work
-    # to do on.
+    # anything, so the file this list stops linting is one no linter has work to
+    # do on.
     - dev
 
 linters:
-  disable-all: true
+  # v2's spelling of v1's `disable-all: true`.
+  default: none
   enable:
     # Required by T002.
+    - bodyclose
     - errcheck
     - gosec
     - govet
     - staticcheck
-    - bodyclose
-    # v1's remaining defaults, named explicitly so `disable-all` cannot quietly
-    # drop them and leave a weaker gate than an unconfigured run would give.
-    - gosimple
+    # Named explicitly so a change in upstream defaults cannot quietly leave a
+    # weaker gate than an unconfigured run would give.
     - ineffassign
     - unused
+    # `gosimple` is deliberately absent rather than forgotten: v2 folded it into
+    # staticcheck, so naming it here is an error. Its checks still run.
 
-linters-settings:
-  errcheck:
-    # `_ = tmux.Kill(...)` is precisely how verified teardown stops being
-    # verified (Constitution VI), and AGENTS.md bans a swallowed error outright.
-    check-blank: true
-    check-type-assertions: true
+  settings:
+    errcheck:
+      # `_ = tmux.Kill(...)` is precisely how verified teardown stops being
+      # verified (Constitution VI), and AGENTS.md bans a swallowed error
+      # outright.
+      check-type-assertions: true
+      check-blank: true
+
+  exclusions:
+    # This block is v2's replacement for v1's `exclude-use-default: false`:
+    # preset exclusions are opt-in here, so naming none means none apply. That
+    # matters. The default set mutes two findings this daemon cannot afford to
+    # lose, both confirmed by probe rather than assumed — gosec G304, file
+    # inclusion via a variable path, which is T015's entire subject; and errcheck
+    # on the `.Close()`/`os.Remove` family, where a dropped error is how verified
+    # teardown quietly stops being verified. Anything genuinely unavoidable takes
+    # a //nolint with a reason, which review can see.
+    #
+    # Do not add a `presets:` key here without naming which finding you are
+    # agreeing to stop seeing.
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 
 issues:
-  # golangci-lint's built-in exclusions mute two findings this daemon cannot
-  # afford to lose (both confirmed by probe, not assumed): gosec G304, file
-  # inclusion via a variable path — which is T015's entire subject — and
-  # errcheck on the `.Close()`/`os.Remove` family, where a dropped error is how
-  # verified teardown quietly stops being verified. Anything genuinely
-  # unavoidable gets a //nolint with a reason, which review can see.
-  exclude-use-default: false
   # Never truncate. A capped report reads as "clean" when it is not.
   max-issues-per-linter: 0
   max-same-issues: 0
+
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
