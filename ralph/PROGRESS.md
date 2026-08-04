@@ -9869,3 +9869,156 @@ the `prefers-reduced-motion` rule. The page committed here names `shell`, `summa
     well (**T017**/**T029**), the missing `--dev-auth-bypass` flag (**T034**),
     `Store.SetState` uncalled and contradicted, `Resolve`'s single-test idle clock, and
     `View`'s deliberate silence about `AbsoluteDeadline` (**T028**).
+
+---
+
+## Iteration 58 (milestone 2, iteration 15) — 2026-08-04 06:51
+
+**Did:** **T015** — `web/static/crswd.css`, the dashboard's one stylesheet, written from
+`docs/design-system.md`, plus nine tests in the new
+`internal/httpapi/stylesheet_test.go`. Everything T013 and T014 rendered has been unstyled
+since it was written: the file held a placeholder comment so that `go:embed` had something
+to match, and nothing else.
+
+**Shape, and the reasons behind the non-obvious parts:**
+
+- **Two halves, split positionally.** One token block transcribing the design system,
+  pinned across `:root`, `:root[data-theme="dark"]` and `:root[data-theme="light"]`, then
+  rules that reference tokens and nothing else. The sweep splits the file at the first
+  `}`, so a second `:root` block further down is swept as a rule and its values refused —
+  otherwise "tokens only" degrades to "tokens, mostly" the first time somebody needs one
+  value in a hurry. Mutation 10 is that exact edit.
+- **The design system names values the token block has to name properly.** Colours,
+  states, `--mono`/`--sans`, `--s1`–`--s7`, `--r`, `--edge-width` and `--transition` are
+  declared *as CSS* in that document and are transcribed verbatim. Its typography and
+  layout values live in tables **without token names** (`1.05rem`, `14px/1.5`, `.86rem`,
+  `.22em`, `1160px`, `310px`, `.16`, `.5`, the focus ring's two `2px`); those become
+  `--fs-*`, `--ls-*`, `--shell-max`, `--card-min`, `--rain-*`, `--focus-*` here. No value
+  was invented — rule 1 is about values, and every one of these is in the document. The
+  single judgement call is `--fs-label: .66rem`, inside the `.64–.68rem` the table gives
+  as a range.
+- **The breakpoint's `780px` is the one literal below the token block, and that is CSS
+  rather than a preference.** A media query is evaluated before custom properties resolve,
+  so `@media (max-width: var(--bp))` is not valid CSS at all. The sweep strips media
+  preludes before looking for lengths, and a separate test asserts there is **exactly one**
+  width query and that it sits at `780px`.
+- **`.pill` colours itself through an indirection.** Each `.pill-<state>` sets
+  `--pill-state` and `.pill::before` reads `var(--pill-state, var(--dim))`. That is what
+  lets `needs-auth` and `dead` — neither reachable in this milestone — be complete and
+  tested now instead of rendering wrongly the first time they occur, which is the design
+  system's own instruction.
+- **The card is `display: grid` rather than flex**, so a long name or working directory
+  truncates inside `minmax(0, 1fr)`; the pill takes `justify-self: start`, which grid
+  honours and the summary row's flex context ignores, so one rule serves both call sites.
+- **`.empty-message` is `min(100%, calc(var(--card-min) * 2))` wide** — two cards, from the
+  grid's own token — rather than a prose measure invented for one paragraph.
+- **Reduced motion removes the rain and nothing else.** `display: none`, so the canvas
+  leaves the layout and the shared loop has nothing to draw into. The `.12s` hover fades
+  are not motion, and the design system asks only for the rain and the scanlines.
+
+**Mutation-tested.** Ten edits to the stylesheet in two batches; every one was caught, and
+each is named by the test that caught it:
+
+1. `--state-idle: #3fa85c` → `#3fa85d` → `TestTheTokenBlockIsTheDesignSystem`.
+2. `color: #c6f7d0` added to `.summary-count` → the hard-coded-colour sweep.
+3. Breakpoint `780px` → `800px` → `TestTheDashboardHasExactlyOneBreakpoint`.
+4. Reduced motion `display: none` → `opacity: 0` → `TestReducedMotionRemovesTheRain`.
+   Worth naming: a faded canvas still animates, which is the plausible weakening.
+5. `.empty-body`'s `font-family: var(--sans)` → `"Segoe UI", sans-serif` →
+   `TestNoRuleNamesAFontFace`.
+6. `outline: none` added to `.card-link:hover` → `TestTheFocusRingSurvives`.
+7. `.card-unknown` renamed → the forward direction of the class check (markup renders a
+   class no rule styles).
+8. `.card-badge` added → the reverse direction (a rule no template renders).
+9. `.pill-dead`'s `var(--state-dead)` → `var(--dim)` → `TestEveryDocumentedStateHasARule`.
+10. A second `:root { --pane-size: 12.5px }` appended → the length sweep, through the
+    positional split.
+
+Dropping `:root[data-theme="light"]` from the token block's selector was checked by
+inspection rather than mutation: it fails `tokenBlockAndRules`, which every test in the
+file goes through.
+
+**Learned:**
+
+1. **"No `font-family` outside the token block" cannot be tested literally.**
+   `contracts/dashboard.md`'s sweep line reads that way, but `font-family: var(--sans)` is
+   the *only* correct way to use the token, so a literal sweep forbids the right answer.
+   `TestNoRuleNamesAFontFace` tests FR-023's actual words — no hard-coded *font* — by
+   stripping every `var(--…)` from a font declaration and refusing letters or quotes in
+   what remains. The colour sweep needed the same treatment: a hex regex alone reads
+   `color: white` as clean.
+2. **`\b` is the wrong boundary for a CSS colour keyword.** `white-space: nowrap` and
+   `white-space: pre` appear in this file five times over, and `\bwhite\b` matches every
+   one. Go's RE2 has no lookahead, so the pattern is bounded by punctuation on both sides
+   instead. This cost one red run.
+3. **`strings.Fields` on `class="pill pill-{{ . }}"` yields four tokens, not two.** The
+   action holds spaces, so skipping tokens that contain `{{` leaves `.` and `}}` behind as
+   class names. A template action has to collapse to a *marker* before the split rather
+   than be dropped. `partials_test.go`'s `templateComment` is reused for comments; the
+   action regex is new and belongs beside it if a third file ever needs both.
+4. **The class cross-check is the test that would have caught the unstyled dashboard**, and
+   it is worth keeping bidirectional. `docs/components.md`'s premise is one card and one
+   pill, and the cheapest way to get a second is to style a class nobody renders and let
+   someone reach for it later.
+
+**Left:** T016–T034. Next is **T016**: unmatched paths through the browser door. Read
+iteration 57's learning 1 before starting — `GET /` cannot be registered on this mux, so
+the catch-all has to be reached another way.
+
+**Findings:**
+
+213. **Finding 201 is unchanged, and is now the only thing between this milestone and a
+    styled dashboard.** `contracts/dashboard.md`'s route table puts `GET /static/crswd.css`
+    on the browser door; `web/static/` is embedded, `audit.ActionDashboardAsset` exists,
+    `authenticateBrowser` already carries the asset cache exemption, and the page links the
+    exact path the tree embeds (asserted here) — **but no task registers the route**, so
+    the request still lands on the API door's 401 and every browser gets unstyled markup.
+    T015 could not take it: registering a route is `server.go`, which is T016's file and
+    T016's subject. **T016 should adopt it, or it needs a task of its own.**
+214. **Nothing animates the rain, and no task builds it.** `docs/design-system.md` requires
+    "one shared `requestAnimationFrame` loop over every `.rain` canvas, throttled to
+    ~14fps", wiping with a translucent fill rather than `clearRect`;
+    `contracts/dashboard.md` lists `GET /static/crswd.js` as one of the two assets.
+    `web/static/crswd.js` **does not exist**, and T026 — the only task naming it — is about
+    the pane's `textContent`. So the header and the empty state render an empty `<canvas>`.
+    The CSS half is done (position, both opacities, the reduced-motion removal); the loop
+    is unowned.
+215. **The pane's own styling is deliberately not in this stylesheet.** The typography row
+    (`12.5px/1.45`, `white-space: pre`, `tab-size: 4`, `font-variant-ligatures: none`) and
+    the scanline overlay apply to `.pane`, which no template renders until **T026**. Rules
+    for markup that does not exist are what the class cross-check refuses, so T026 adds
+    `pane.html`, its rules and its tokens together — and the reduced-motion block gains the
+    scanline removal at the same time. Recorded so T026 does not read the absence as an
+    oversight.
+216. **`docs/design-system.md` gives its typography and layout values without token
+    names.** All of them are named in `crswd.css` now, which makes the document and the
+    stylesheet a pair that has to stay in step — but only the values that document declares
+    *as CSS* are pinned by `designTokens`. A future size token still belongs in the
+    document first; nothing mechanical enforces that for the table values the way it does
+    for the rest.
+217. **Iteration 14 #1 / … / 57 #206 still stands:** `git checkout --`, `git restore`,
+    `sed -i` and `cp` are outside the permission allowlist, so ten mutations cost twenty
+    Edit round trips again. New this iteration: a **long heredoc is rejected by the command
+    parser outright** ("Parser aborted"), so this entry was appended with Edit instead —
+    iteration 57 found `git commit -F -` refused for a related reason. A multi-line
+    `git commit -m` with an escaped quote inside works fine.
+218. **Iteration 1 #1 / … / 57 #207 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the hook:
+    "no leaks found".)
+219. **Iteration 2 #2 / … / 57 #208 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+220. **Iteration 6 #6 / … / 57 #209 still stands:** `AGENTS.md`'s command table names none
+    of `go test -tags tmux ./...`, `go test -tags quickstart ./cmd/crswd`, or
+    `go test -tags dev ./...`. **T032.**
+221. **`deploy/README.md`'s four-variable trap (44 #84 / … / 57 #210) still stands.**
+    **T033.**
+222. **Findings 202–205 and 211–212 are unchanged.** Still open: the missing
+    `GET /sessions/{id}/view` page every card links to (202), `Manager.List`'s
+    clock-neutrality covered only from another package (203), a component test not being a
+    call-site test (204), `Server` and `Manager` holding separate clocks (205), the
+    milestone-1 test row that moved rather than weakened (211, for **T021**), the
+    `Cache-Control` default resolved inside a contract silence (**T031**), `leak_test.go`'s
+    milestone-1-only action list (**T017**/**T029**), the missing `--dev-auth-bypass` flag
+    (**T034**), `Store.SetState` uncalled and contradicted, and `View`'s deliberate silence
+    about `AbsoluteDeadline` (**T028**).
