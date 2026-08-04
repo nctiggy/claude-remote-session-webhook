@@ -9674,3 +9674,198 @@ summary row before any detail, one card per owned session, read through `Manager
     sweep added here refuses an inline script, an inline style and an external origin in
     any template — but nothing has yet been loaded in a real browser, so **T017** still
     owns the runtime half.
+
+---
+
+## Iteration 57 (milestone 2, iteration 14) — 2026-08-04 06:36
+
+**Did:** **T014** — `GET /`, the fleet page. `internal/httpapi/dashboard.go` (the handler,
+the page's view type, the projection, the summary and the age formatter), `renderPage` in
+`render.go`, the browser route registered in `server.go`, the real markup in
+`web/templates/dashboard.html`, and eleven tests in `internal/httpapi/dashboard_test.go`.
+
+**This is the first page the daemon serves**, so it is also the first production caller of
+`DisplayState` (T011, finding 172), `Manager`'s owner-scoped non-touching reads (T012,
+finding 182) and `sessionView`/`emptyView` (T013, finding 192). All four findings close
+here.
+
+**Shape, and the reasons behind the non-obvious parts:**
+
+- **The route is `GET /{$}`, and the alternative does not merely misbehave — it panics.**
+  `GET /` is a subtree pattern, so it would answer every unrouted GET path with the fleet
+  page; that is FR-013d's decision and **T016's** to make. Registering it that way is not
+  even possible: `handleUnrouted` registers method-less patterns for each route path, and
+  ServeMux refuses `GET /` against `/sessions` as a conflict at construction. See
+  learning 1.
+- **`handleBrowser`, and nothing appended to `s.registered`.** That list is
+  `contracts/http-api.md`'s closed six, and `apiResponses` in `render_test.go` drives
+  every route in it as a *signed API request* to prove milestone 1's responses gained no
+  browser header (FR-014). A browser route in the list would be swept as though a
+  signature authorised it.
+- **`Server.clock`.** The page derives a display state and an age, and the manager's clock
+  is unexported — so the server needs one. It is a field defaulted in `newServer` rather
+  than an eighth constructor parameter, and `pinClock` stands every fixture where the
+  session fixture's manager already stands. Without that a planted record renders as days
+  old and permanently idle, and the suite's result depends on the day it runs.
+- **`renderPage` buffers, and that is the whole point of it.** See mutation 8: a renderer
+  writing straight to the `ResponseWriter` leaves a browser holding half a page under a
+  `200` when a template fails, which is the one failure that looks like success.
+- **The summary appends a state it does not know.** `needs-auth` arrives in milestone 4;
+  a row that silently dropped it would say the fleet is smaller than the grid below
+  already shows.
+- **The summary renders only alongside the grid.** With nothing owned there is no detail
+  for a summary to come *before*, and a row of zeroes above the empty state is detail
+  where FR-021 asks for an explanation.
+- **The empty state's body is not `docs/components.md`'s** (finding 191, closed): that copy
+  says "Start one to open a Claude session in a tmux window", and there is no button, no
+  route behind this door to take it, and no secret in a page to sign it with.
+
+Gate, executed not asserted, one command at a time (finding 115):
+
+```
+go build ./...                            OK
+go build -tags dev ./...                  OK
+go vet ./...                              OK
+go test ./... -count=1                    OK
+golangci-lint run                         OK (silent)
+gofmt -l .                                OK (silent)
+go test -tags dev ./... -count=1          OK
+go test -tags tmux ./... -count=1         OK
+go test -race ./internal/httpapi          OK
+go.sum                                    absent  ✅
+```
+
+`go test -tags quickstart ./cmd/crswd` was not run, and this time the reason was checked
+rather than inherited: this task changes how one path is routed, so "nothing here touches
+`cmd/crswd`" had to be verified. That suite requests `/sessions…` and nothing else — no
+request in it can reach `GET /` — and it starts real tmux sessions, which iteration 44's
+warning makes a thing not to run casually from inside the loop's own tmux. It is
+**T021's**.
+
+**Eleven mutations, each applied and reverted. Three of them survived and are the reason
+this entry is worth reading:**
+
+1. `patternFleet` → `"GET /"` → **the whole package panics at `newServer`**, before any
+   test asserts anything. Caught by the router, not by a test.
+2. `DisplayState: session.DisplayRunning` hard-coded → **survived.** The derivation test
+   searched the whole page for `>idle<`, and the *summary row renders the same canonical
+   pill the cards do*, so the label is on the page whether or not any card carries it.
+   Fixed with `cardFor`, which isolates one card; the test now also asserts each card does
+   *not* read the other state. See learning 2.
+3. `Manager.List` given a `store.Touch` per record — the exact "fix" `View`'s comment
+   warns against → `TestOpeningTheFleetLeavesTheIdleClockWhereItWas` **and nothing else in
+   the repository**, including all of `internal/session`. See finding 203.
+4. The summary counted as `counted[running] = len(views)` → the `summarise` table, and
+   *not* the page test, which planted three identical sessions. Fixed by making the page's
+   fleet mixed (2 running, 1 idle); both levels catch it now.
+5. The append of an unknown state removed → the `a state this milestone cannot produce`
+   row alone.
+6. `{{ if .Sessions }}` → `{{ if .Summary }}` in the page, so an empty fleet renders a row
+   of zeroes → the empty-state test alone.
+7. `handleBrowser` registering without `authenticateBrowser` → seven tests, including both
+   halves of the door test.
+8. `renderPage` executing into `w` instead of the buffer → **survived.** The failure test
+   used a page the set does not define, which fails *before writing a byte* — the one
+   shape that proves nothing. Replaced with a template that emits markup and then fails;
+   it now catches a `200` carrying `<p>everything before the failure</p>`.
+9. The empty state given `docs/components.md`'s documented copy and action → the
+   empty-state test, on the copy and (after the fix in 10) on the action row.
+10. `Actions: []actionView{{}}` on every card → **survived.** T013's two FR-024a tests are
+    about the *component*, and neither says anything about what the page passes it. New
+    test `TestTheRenderedFleetOffersNothingToActWith` holds the call site. See finding 204.
+11. The header's operator replaced with `r.Header.Get("X-Operator")` → the ownership test
+    (FR-020/FR-036).
+
+The cross-owner assertion was checked separately, because the mutation for it is
+*unavailable by construction*: there is no owner-blind read a handler can call — `lookup`
+and `snapshot` are unexported in `internal/session` on purpose. Planting the second
+session under `auth.CallerOperator` instead made three assertions fire, which is what
+proves the row is live rather than vacuous.
+
+**Learned:**
+
+1. **`GET /` cannot be registered on this mux at all.** `handleUnrouted` registers a
+   method-less pattern per route path, and ServeMux panics on `GET /` vs `/sessions`
+   ("matches more methods … but has a more specific path pattern"). So `{$}` is not a
+   style choice here, it is the only spelling that builds — worth knowing before **T016**
+   moves the catch-all to this door, because that task is the one that has to take `/`
+   apart.
+2. **A page-level search for a card's text is not an assertion about a card.** One
+   canonical pill means the summary and the cards render identical markup, so
+   `strings.Contains(page, ">idle<")` is true whenever the summary exists. This is
+   finding 194's trap arriving exactly where it was predicted to (T017's page-level
+   sweeps), one task early. `cardFor` is the answer and **T017 should use it.**
+3. **A render-failure test must fail *after* writing.** An undefined template writes
+   nothing, so it passes against an unbuffered renderer. The distinction is the entire
+   value of the buffer.
+4. **`plant` leaves `CreatedAt == LastActivity == testTime`**, which makes both a Touch
+   and an age indistinguishable from doing nothing — iteration 54's finding and 55's
+   learning 2, met a third time. `idleAt`/`runningAt` in `dashboard_test.go` are the
+   fixture helpers that avoid it, expressed against `session.IdleTimeout` so the bound
+   moves them.
+
+**Left:** T015–T034. Next is **T015**: `web/static/crswd.css` from the design system's
+tokens — no hard-coded colour, size or font, plus the focus ring, the 780px breakpoint and
+the `prefers-reduced-motion` rule. The page committed here names `shell`, `summary`,
+`summary-state`, `summary-count` and `grid` alongside T013's component classes, and
+**every one of them is currently unstyled**.
+
+**Findings:**
+
+201. **Nothing serves `/static/crswd.css`, and the page now links to it.**
+    `contracts/dashboard.md` puts both assets on the browser door, `web/static/` is
+    embedded (T002), `audit.ActionDashboardAsset` exists (T008) and `authenticateBrowser`
+    already carries the cache exemption for it — but **no task in the milestone registers
+    the route**. Today the fleet page renders unstyled and the stylesheet request lands on
+    the API door's 401. This is the same shape as finding 190 and needs an owner:
+    **T015 or T016**, or a task of its own. It is the most visible gap in the MVP.
+202. **Finding 190 still stands and is now load-bearing:** no task registers
+    `GET /sessions/{id}/view`, and every card on the page committed here links to it. A
+    signed-in operator clicking a card gets a not-found. **T026** builds the pane that
+    page is for; something must build the page.
+203. **`Manager.List`'s clock-neutrality is covered by exactly one test, and it is in
+    another package.** Mutation 3 added a `Touch` to `List` and `go test ./internal/session`
+    stayed entirely green. This is finding 180's shape a second time — the idle clock is
+    the bound Principle VI calls non-negotiable and it has the thinnest coverage in the
+    repository. **T029** sweeps the stream's half; nothing is scheduled for the fleet's.
+204. **A component test is not a call-site test, and FR-024a lives at the call site.**
+    Handing every card an action row left T013's two FR-024a tests green, because they
+    assert the component *can* render a row and *does not* render one unasked — neither
+    asks what the page passed. Recorded because milestone 3 fills these rows, and the test
+    that tells "the row arrived on purpose" from "the row arrived by accident" is the
+    page-level one added here.
+205. **`Server` now has a clock and `Manager` has its own**, and nothing structurally stops
+    them disagreeing. Production picks `systemClock` in both, and `pinClock` pins the
+    fixtures — but a future test that builds a server without it will derive a display
+    state from the wall clock against a record stamped by a fixed one, and the symptom is
+    a suite that passes today and fails tomorrow. **T022–T028** each build on this clock.
+206. **Iteration 14 #1 / … / 56 #195 still stands:** `git checkout --`, `git restore`,
+    `perl -i`, `sed -i` and `cp` are outside the permission allowlist, so eleven mutations
+    cost twenty-two Edit round trips. New this iteration: a heredoc into `git commit -F -`
+    is refused as unanalysable shell, and `/tmp` is not writable by the Write tool — the
+    commit message went through a scratch file inside the repo, removed before the commit.
+207. **Iteration 1 #1 / … / 56 #196 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the hook:
+    "no leaks found".)
+208. **Iteration 2 #2 / … / 56 #197 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+209. **Iteration 6 #6 / … / 56 #198 still stands:** `AGENTS.md`'s command table names none
+    of `go test -tags tmux ./...`, `go test -tags quickstart ./cmd/crswd`, or
+    `go test -tags dev ./...`. **T032.**
+210. **`deploy/README.md`'s four-variable trap (44 #84 / … / 56 #199) still stands.**
+    **T033.**
+211. **`TestNoRouteOutsideTheContractIsServed` lost its `GET /` row**, which is a
+    deliberate contract change and not a weakened test: `contracts/dashboard.md`'s route
+    table gives `/` to the browser door, so the path is now *served* — by layer 1, and it
+    answers a signed API request with the browser's refusal. That claim moved to
+    `dashboard_test.go` rather than being dropped. Recorded because it is the first time
+    this milestone has edited a milestone-1 test, and **T021** must not read it as one of
+    the regressions it is looking for.
+212. **Findings 161–165, 172–173 and 180–182 are otherwise unchanged.** 172, 182 and 192
+    close here (all three types now have a production caller); 190 becomes 202. Still
+    open: the `Cache-Control` default resolved inside a contract silence (**T031**),
+    `leak_test.go`'s milestone-1-only action list — which now omits `dashboard.view` as
+    well (**T017**/**T029**), the missing `--dev-auth-bypass` flag (**T034**),
+    `Store.SetState` uncalled and contradicted, `Resolve`'s single-test idle clock, and
+    `View`'s deliberate silence about `AbsoluteDeadline` (**T028**).
