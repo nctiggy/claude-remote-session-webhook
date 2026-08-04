@@ -254,6 +254,37 @@ func New(cfg *config.Config) (*Server, error) {
 // reach, because internal/httpapi imports internal/audit and not the other way
 // round.
 func NewWith(cfg *config.Config, tmux tmuxctl.Controller, trail *audit.Logger) (*Server, error) {
+	return newWithLayer1(cfg, tmux, trail, verifiedLayer1)
+}
+
+// verifiedLayer1 is the door's first layer as the shipping build builds it: the
+// validator that verifies a Cloudflare Access assertion against the account's
+// published keys.
+//
+// It is a function rather than the expression it wraps so that the //go:build
+// dev half of this package can put the development bypass at exactly this point
+// in the sequence below, instead of alongside it. There is one layer 1 per
+// server, always — a Validator that could be accompanied by a Bypass would be
+// the "defaulted off" switch FR-041 forbids, wearing an interface.
+func verifiedLayer1(cfg *config.Config) (layer1, error) {
+	v, err := access.New(cfg.AccessTeamDomain, cfg.AccessAUD, cfg.AccessAllowedEmails)
+	if err != nil {
+		// Untyped, so that newServer's nil check below reads a nil interface
+		// rather than an interface holding a nil *Validator.
+		return nil, err
+	}
+	return v, nil
+}
+
+// newWithLayer1 is NewWith with the door's first layer named by the caller. The
+// two callers are NewWith, in every build, and NewWithBypass, in the development
+// build alone — see verifiedLayer1.
+func newWithLayer1(
+	cfg *config.Config,
+	tmux tmuxctl.Controller,
+	trail *audit.Logger,
+	buildLayer1 func(*config.Config) (layer1, error),
+) (*Server, error) {
 	if cfg == nil {
 		return nil, errors.New("httpapi: no configuration provided; refusing to start")
 	}
@@ -283,12 +314,13 @@ func NewWith(cfg *config.Config, tmux tmuxctl.Controller, trail *audit.Logger) (
 	// a startup failure, and the order only decides which message an operator
 	// working through their configuration meets first.
 	//
-	// The development bypass is the one thing that cannot come through this line,
-	// since config.WithAccessBypassActive leaves these three values empty and
-	// access.New rightly refuses them. It is built instead of a Validator, never
-	// alongside one, by the //go:build dev half of cmd/crswd — which does not
-	// exist yet, and is why newServer takes layer 1 as a parameter.
-	browser, err := access.New(cfg.AccessTeamDomain, cfg.AccessAUD, cfg.AccessAllowedEmails)
+	// The development bypass is the one thing that cannot come through the
+	// shipping build's spelling of this line, since config.WithAccessBypassActive
+	// leaves these three values empty and access.New rightly refuses them. It is
+	// built instead of a Validator, never alongside one, by NewWithBypass — the
+	// //go:build dev half of this package, called by the //go:build dev half of
+	// cmd/crswd, and the reason this step is a parameter.
+	browser, err := buildLayer1(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the Access assertion validator: %w", err)
 	}

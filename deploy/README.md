@@ -168,3 +168,20 @@ curl -sS http://<host-lan-ip>:PORT/   # must fail to connect
 
 If the second command reaches the daemon, stop and fix the bind address before
 going any further. See `docs/security.md`.
+
+### Edge admission (SC-014)
+
+The one check that cannot be made off the deployment. Everything else about
+milestone 2 is provable on a laptop against a local key server — this is not,
+because the thing under test is the edge itself. Confirm it once the hostname is
+live, and again after any change to the Access application:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' https://<host>/            # 302 to the IdP, never 200
+curl -sS -o /dev/null -w '%{http_code}\n' https://<host>/sessions    # refused at the edge as well
+```
+
+Every path must refuse at the edge without either a browser identity or the two
+service-token headers, and the API client must gain **those two headers and
+nothing else** (FR-014a): its signing procedure is unchanged, and the daemon
+never sees the service token.

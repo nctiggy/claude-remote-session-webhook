@@ -372,6 +372,34 @@ func freePort(t *testing.T) string {
 	return ln.Addr().String()
 }
 
+// freeAddrOn is freePort for the two startup cases whose address is deliberately
+// not 127.0.0.1: it asks the kernel for a port free under that exact spelling of
+// the host, and gives it straight back.
+//
+// quickstart.md writes both as port 8765, and so did this file. That is the port
+// .env.example, the systemd unit and the live deployment all name, so on the one
+// host an operator would run an acceptance suite on — the host running the
+// product — the "nothing bound" probe below was reporting the deployed daemon's
+// listener rather than a refusal that had leaked one. The host spelling is what
+// each of those two cases is about; the port never was.
+func freeAddrOn(t *testing.T, host string) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	if err != nil {
+		t.Fatalf("find a free port on %s: %v", host, err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("read the port back out of %s: %v", ln.Addr(), err)
+	}
+	// The spelling the case asked for, not the one the kernel resolved it to: a
+	// "localhost" case that ran against 127.0.0.1 would be the 127.0.0.1 case.
+	return net.JoinHostPort(host, port)
+}
+
 // daemon is one running crswd, with everything it wrote captured.
 type daemon struct {
 	t    *testing.T
@@ -390,6 +418,14 @@ type daemon struct {
 // start runs the daemon and waits until it is actually accepting.
 func (h *host) start(over map[string]string) *daemon {
 	h.t.Helper()
+	return h.startBinary(h.bin, over)
+}
+
+// startBinary is start with the artifact named, because milestone 2's story 5
+// runs a second one: the -tags dev build, with a flag the shipping binary does
+// not define. Every story here still goes through start and so through h.bin.
+func (h *host) startBinary(bin string, over map[string]string, args ...string) *daemon {
+	h.t.Helper()
 
 	addr, ok := over["CRSW_LISTEN"]
 	if !ok {
@@ -406,7 +442,7 @@ func (h *host) start(over map[string]string) *daemon {
 		h.t.Fatalf("create the trail file: %v", err)
 	}
 
-	cmd := exec.Command(h.bin)
+	cmd := exec.Command(bin, args...) //nolint:gosec // bin is built by this suite into t.TempDir()
 	cmd.Env = h.env(over)
 	cmd.Stdout = f
 	cmd.Stderr = f
@@ -912,8 +948,8 @@ func TestQuickstartStory1StartupFailures(t *testing.T) {
 		"the secret is unset":      {"CRSW_SHARED_SECRET": unset, "CRSW_LISTEN": addr},
 		"the secret is too short":  {"CRSW_SHARED_SECRET": "tooshort", "CRSW_LISTEN": addr},
 		"the secret is 31 bytes":   {"CRSW_SHARED_SECRET": strings.Repeat("a", 31), "CRSW_LISTEN": addr},
-		"the listener is public":   {"CRSW_LISTEN": "0.0.0.0:8765"},
-		"the listener is a name":   {"CRSW_LISTEN": "localhost:8765"},
+		"the listener is public":   {"CRSW_LISTEN": freeAddrOn(t, "0.0.0.0")},
+		"the listener is a name":   {"CRSW_LISTEN": freeAddrOn(t, "localhost")},
 		"the root does not exist":  {"CRSW_ALLOWED_ROOTS": filepath.Join(h.dir, "nope"), "CRSW_LISTEN": addr},
 		"the cap is not a number":  {"CRSW_MAX_SESSIONS": "many", "CRSW_LISTEN": addr},
 		"the cap bounds nothing":   {"CRSW_MAX_SESSIONS": "0", "CRSW_LISTEN": addr},
@@ -945,8 +981,16 @@ func TestQuickstartStory1StartupFailures(t *testing.T) {
 // startup-failure cases do.
 func (h *host) run(over map[string]string) (string, int) {
 	h.t.Helper()
+	return h.runBinary(h.bin, over)
+}
 
-	cmd := exec.Command(h.bin)
+// runBinary is run with the artifact and its arguments named, for the same
+// reason startBinary exists: milestone 2's story 5 asks both builds to refuse
+// something, and one of the two refusals is of a command-line flag.
+func (h *host) runBinary(bin string, over map[string]string, args ...string) (string, int) {
+	h.t.Helper()
+
+	cmd := exec.Command(bin, args...) //nolint:gosec // bin is built by this suite into t.TempDir()
 	cmd.Env = h.env(over)
 	out, err := cmd.CombinedOutput()
 

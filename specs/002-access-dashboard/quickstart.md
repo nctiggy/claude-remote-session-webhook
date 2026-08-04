@@ -93,6 +93,12 @@ export CRSW_ACCESS_TEAM_DOMAIN="http://127.0.0.1:8099"   # http is legal on loop
 export CRSW_ACCESS_AUD="$AUD"
 export CRSW_ACCESS_ALLOWED_EMAILS="operator@example.com"
 
+# Any free loopback port. The obvious host to run this on is the one already
+# running the deployment, and there 8765 is held by the live daemon — no story
+# below depends on the number, so pick one that is free rather than stopping a
+# service that reaps its whole fleet on the way down.
+export CRSW_LISTEN="127.0.0.1:8765"
+
 go build -o /tmp/crswd ./cmd/crswd && /tmp/crswd > /tmp/audit.jsonl 2>&1 &
 ```
 
@@ -100,7 +106,7 @@ The trail goes to `/tmp/audit.jsonl` because story 3 ends by grepping it. A
 browser-door helper, and the credential a valid operator carries:
 
 ```bash
-dash() { curl -sS -D- -H "Cf-Access-Jwt-Assertion: ${2-$JWT}" "http://127.0.0.1:8765$1"; }
+dash() { curl -sS -D- -H "Cf-Access-Jwt-Assertion: ${2-$JWT}" "http://$CRSW_LISTEN$1"; }
 JWT=$(mint "$(claims)")
 ```
 
@@ -159,7 +165,7 @@ screen, not scrollback (FR-032a).
 The stream, from the terminal:
 
 ```bash
-curl -sN -H "Cf-Access-Jwt-Assertion: $JWT" "http://127.0.0.1:8765/sessions/$ID/stream"
+curl -sN -H "Cf-Access-Jwt-Assertion: $JWT" "http://$CRSW_LISTEN/sessions/$ID/stream"
 ```
 
 Assert: the current screen arrives immediately as **one `data:` line holding a JSON
@@ -170,11 +176,18 @@ repeated screens; no `ESC[` bytes anywhere (FR-029).
 **Watching is not driving** (FR-034f): while the stream above is open,
 
 ```bash
-crswd_call GET "/sessions/$ID" '' "$TOK" | grep -o '"last_activity":"[^"]*"'
+crswd_call GET /sessions '' "$TOK" | grep -o '"last_activity":"[^"]*"'
 ```
 
 read twice a minute apart — `last_activity` must not move because of the stream.
-(The full reap-while-watched proof is the injected-clock unit test; US2 scenario 7.)
+
+It is the **list**, deliberately, and not `GET /sessions/$ID`. Every
+session-scoped route resolves through `Manager.Resolve`, which advances the idle
+clock — that is what it is for — so a per-session read moves `last_activity` by
+being made, and two of them would report a clock the reads themselves had
+pushed. `GET /sessions` reads the store without touching, which is the only
+observation that leaves the stream as the one thing under test. (The full
+reap-while-watched proof is the injected-clock unit test; US2 scenario 7.)
 
 **Ends are announced** (FR-033, SC-015): destroy the session from the API while the
 stream is open — within about a second the stream emits `event: end` and closes.
@@ -192,7 +205,7 @@ responses — headers included — and diff them: **all must be byte-identical**
 (FR-010, SC-001), because a difference in `Content-Length` alone is an oracle.
 
 ```bash
-curl -sS -D- http://127.0.0.1:8765/                                   # absent
+curl -sS -D- "http://$CRSW_LISTEN/"                                   # absent
 dash / "not-a-jwt"                                                    # malformed
 dash / "$(mint "$(claims operator@example.com -600)")"                # expired
 dash / "$(mint "$(claims)" "$IDP/wrong.pem")"                         # wrong key, known kid
@@ -237,9 +250,15 @@ create → list → destroy cycle verbatim. Then the coexistence pair (FR-012):
 dash /sessions/$ID/view
 ```
 
-A signed-in browser on an API path it has no business with, and on a path that does
-not exist, gets the dashboard's HTML not-found page — not the API's JSON refusal
-(FR-013d).
+A signed-in browser on a path the daemon serves **no route for** gets the
+dashboard's HTML not-found page, not the API's JSON refusal (FR-013d) — a
+mistyped URL is answered by the interface it was mistyped in.
+
+A **routed** API path is the other half of the same rule and reads the opposite
+way: `dash /sessions` is a caller with no signature on a signed route, so it is
+the API door that answers, with its own JSON 401 (FR-012). Each door refuses only
+by the check that applies to it, and FR-013d is about the paths neither door owns
+— not a licence for the browser door to answer for the API.
 
 SC-007's full answer is milestone 1's acceptance suite run unchanged:
 `go test -tags quickstart ./cmd/crswd`. Every request above — served or refused —
@@ -267,9 +286,9 @@ go build -o /tmp/crswd ./cmd/crswd
 go build -tags dev -o /tmp/crswd-dev ./cmd/crswd
 env -u CRSW_ACCESS_TEAM_DOMAIN -u CRSW_ACCESS_AUD -u CRSW_ACCESS_ALLOWED_EMAILS \
   /tmp/crswd-dev --dev-auth-bypass &             # starts: layer-1 config not demanded (FR-042)
-curl -sS http://127.0.0.1:8765/ >/dev/null       # served, no assertion —
+curl -sS "http://$CRSW_LISTEN/" >/dev/null       # served, no assertion —
                                                  # and a loud warning logged for THIS request (FR-040)
-curl -sS -i -X POST http://127.0.0.1:8765/sessions -d '{}' | head -1   # still 401: layer 2 intact (FR-038)
+curl -sS -i -X POST "http://$CRSW_LISTEN/sessions" -d '{}' | head -1   # still 401: layer 2 intact (FR-038)
 CRSW_LISTEN="0.0.0.0:8765" /tmp/crswd-dev --dev-auth-bypass; echo "exit=$?"  # refuses (FR-039)
 ```
 
@@ -280,25 +299,43 @@ while clicking around.
 
 ## Definition of done for the milestone
 
-- [ ] `go build ./...`, `go vet ./...`, `go test ./...`, `golangci-lint run` all green
-- [ ] Every story above validated end to end
-- [ ] Every contract test in [contracts/access-jwt.md](./contracts/access-jwt.md),
+Ticked by the T034 run recorded in `ralph/PROGRESS.md`. Every story above is
+executed by `cmd/crswd/quickstart_dashboard_test.go` — a real build, a real
+port, real tmux, and assertions minted from a generated key pair against a
+loopback key server — so this list is re-derivable with one command rather than
+remembered:
+
+```bash
+go test -tags quickstart ./cmd/crswd
+```
+
+- [x] `go build ./...`, `go vet ./...`, `go test ./...`, `golangci-lint run` all green
+- [x] Every story above validated end to end — except the three browser-visual
+      checks, which are their own line below
+- [x] Every contract test in [contracts/access-jwt.md](./contracts/access-jwt.md),
       [contracts/dashboard.md](./contracts/dashboard.md), and
       [contracts/stream.md](./contracts/stream.md) present and failing without its change
-- [ ] Milestone 1's acceptance suite passes unchanged (SC-007)
-- [ ] `go.sum` still absent — zero third-party dependencies, hand-rolled RS256 only
+      (verified by the task that landed each, not re-derived by this run)
+- [x] Milestone 1's acceptance suite passes unchanged (SC-007) — 13/13 stories. Its
+      two startup-refusal rows now take their port from the kernel instead of the
+      literal 8765, which is the port the deployment holds; no assertion changed
+- [x] `go.sum` still absent — zero third-party dependencies, hand-rolled RS256 only
       ([research D1](./research.md))
-- [ ] The no-CORS sweep and the no-external-origin check are tests, not eyeballs
+- [x] The no-CORS sweep and the no-external-origin check are tests, not eyeballs
       (FR-034c, SC-005)
-- [ ] No assertion, token, secret, prompt, pane content, or disallowed address in any
+- [x] No assertion, token, secret, prompt, pane content, or disallowed address in any
       log line or audit record, asserted by test (FR-035, SC-008)
 - [ ] Greyscale, keyboard-only, and reduced-motion checks done in a real browser
-      (SC-009, SC-010, SC-011)
-- [ ] The shipping build refuses the bypass; the check that proves it fails the build
-      if the bypass leaks in (SC-012)
-- [ ] `docs/auth-and-sessions.md`, `docs/security.md`, and `docs/components.md`
+      (SC-009, SC-010, SC-011) — **outstanding**. Go cannot render a page, and a
+      test asserting a CSS rule exists is not this check. It needs an operator, a
+      browser and ten minutes
+- [x] The shipping build refuses the bypass; the check that proves it fails the build
+      if the bypass leaks in (SC-012) — in `internal/access` and now in `cmd/crswd`,
+      which is the other place the exclusion can be lost
+- [x] `docs/auth-and-sessions.md`, `docs/security.md`, and `docs/components.md`
       amendments landed (the spec's "Documents this milestone must amend" —
       including the pane snippet's append-vs-replace correction)
-- [ ] SC-014 recorded on the deployment checklist: edge admission verified against
-      the running hostname once the DNS record exists
-- [ ] `docs/security.md` and `docs/auth-and-sessions.md` pre-merge checklists satisfied
+- [x] SC-014 recorded on the deployment checklist: edge admission verified against
+      the running hostname once the DNS record exists — `deploy/README.md`,
+      "Edge admission"
+- [x] `docs/security.md` and `docs/auth-and-sessions.md` pre-merge checklists satisfied

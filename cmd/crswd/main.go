@@ -12,9 +12,6 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-
-	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
-	"github.com/nctiggy/claude-remote-session-webhook/internal/httpapi"
 )
 
 // shutdownBudget is how long the daemon gives itself between a termination
@@ -72,12 +69,18 @@ func run(ctx context.Context) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := config.Load()
+	// Both of these are the same call in the shipping build — config.Load and
+	// httpapi.New, with nothing in between. They are named seams because the
+	// //go:build dev half of this package answers them differently when the
+	// development bypass is asked for, and bypass_prod.go is where the shipping
+	// build's answer is written down. See that file for why the difference is a
+	// build tag and never a flag on the artifact that ships.
+	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
 
-	srv, err := httpapi.New(cfg)
+	srv, err := newDaemon(cfg)
 	if err != nil {
 		return err
 	}
