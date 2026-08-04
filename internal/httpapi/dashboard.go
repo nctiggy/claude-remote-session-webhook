@@ -251,35 +251,62 @@ func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
 	// session_id on this page's record and on no other dashboard route's.
 	AuditFrom(r.Context()).SetSessionID(live.ID)
 
+	// The capture is the second read this page makes, and the only one that asks
+	// the host rather than the store. A session that died on its own is
+	// discovered here or not at all, and when it is, the page owes the same
+	// uniform 404 the read above would have given it — the record it resolved
+	// against has just been dropped, so serving the card would be a page
+	// describing a session this daemon no longer has (#21).
+	pane, err := s.screen(r, live)
+	if err != nil {
+		AuditFrom(r.Context()).Deny(resolveReason(err).Error())
+		s.renderNotFound(w, r, operator)
+		return
+	}
+
 	s.renderPage(w, r, http.StatusOK, "session", sessionPageView{
 		Operator: operator,
 		Session:  cardOf(live, s.clock.Now()),
-		Pane:     s.screen(r, live),
+		Pane:     pane,
 	})
 }
 
-// screen captures the session's current pane for the initial render.
+// screen captures the session's current pane for the initial render, and
+// reports the one failure that is not about the pane at all.
 //
 // This is the one thing on the page that can fail for a reason that has nothing
-// to do with the request: the capture is a tmux exec, and the window may have
-// vanished between the read above and this line, or tmux may have stopped
+// to do with the request: the capture is a tmux exec, and tmux may have stopped
 // answering. That is not a refusal — the record is the viewer's own and the card
 // above it is true — so the page is still served and the pane says the screen
 // could not be read. An empty pane instead would be a claim that the session has
 // printed nothing, which is the plausible-looking placeholder FR-018a forbids,
 // made about output rather than about a name.
 //
-// Nothing about the failure reaches the caller or the trail. tmux's account of
-// it is a fact about the host, so it goes to the report channel where an
-// operator is already reading — the same place a page that could not be rendered
-// goes.
-func (s *Server) screen(r *http.Request, live session.Session) paneView {
+// The error is the other case, and it is the reason this returns one: the
+// capture is also where the daemon learns that the window is not there — asked
+// and answered, not merely unreachable — and that is a fact about the session
+// rather than about the read. Manager.Output has dropped the record by the time
+// it reaches here, so the caller renders the uniform 404 rather than a pane note
+// about a screen that will never come back (#21). Only that answer travels; a
+// host that could not be asked stays the pane's business.
+//
+// Nothing about the unreadable case reaches the caller or the trail. tmux's
+// account of it is a fact about the host, so it goes to the report channel where
+// an operator is already reading — the same place a page that could not be
+// rendered goes.
+func (s *Server) screen(r *http.Request, live session.Session) (paneView, error) {
 	capture, err := s.sessions.Output(r.Context(), live)
-	if err != nil {
+	switch {
+	case errors.Is(err, session.ErrSessionDead):
+		// Unwrapped, so what the caller records is this package's own reason for
+		// a session that is already gone rather than internal/session's wording
+		// of it — the rule resolveReason exists to keep (FR-042).
+		return paneView{}, session.ErrSessionDead
+	case err != nil:
 		s.report(fmt.Errorf("capture the screen for the view of session %s: %w", live.ID, err))
-		return paneView{ID: live.ID, Unread: true}
+		return paneView{ID: live.ID, Unread: true}, nil
 	}
-	return paneView{ID: live.ID, Text: capture.Text}
+	return paneView{ID: live.ID, Text: capture.Text}, nil
 }
 
 // summarise counts the display states of the views it is given.

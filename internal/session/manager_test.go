@@ -1216,6 +1216,106 @@ func TestOutputNamesNoPaneContentInItsError(t *testing.T) {
 	}
 }
 
+// Issue #21: a session that dies out of band — a host reboot, a tmux server
+// restart, an operator's own kill-session — left a record nothing could collect
+// until the idle bound or the 24-hour ceiling reached it, and until then the
+// fleet drew it as a live card.
+//
+// The capture is where the daemon meets the host per request, so it is where the
+// death is discovered. What follows is Destroy's own ending on Destroy's own
+// evidence (FR-019, FR-020): the host is *asked*, and only an affirmative answer
+// drops the record and the token hash with it, after which the id resolves
+// exactly as one nobody was ever issued.
+func TestOutputDropsTheRecordWhenTheHostConfirmsTheSessionIsGone(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, tok := mustCreate(t, f, f.request())
+	name := "crswd-" + s.ID
+	// No kill: the session goes the way one whose shell exited goes, which is
+	// the case the daemon had no path for.
+	f.tmux.Vanish(name)
+	before := len(f.tmux.Calls())
+
+	got, err := f.mgr.Output(context.Background(), *s)
+	if !errors.Is(err, ErrSessionDead) {
+		t.Fatalf("Output() = _, %v, want %v", err, ErrSessionDead)
+	}
+	if got.Text != "" || !got.At.IsZero() {
+		t.Errorf("Output() returned %+v alongside an error; want the zero Capture", got)
+	}
+
+	// The liveness check is a question, not an assumption, so it is on the wire.
+	calls := f.tmux.Calls()[before:]
+	wantOps := []tmuxctl.Op{tmuxctl.OpCapturePane, tmuxctl.OpHas}
+	gotOps := make([]tmuxctl.Op, 0, len(calls))
+	for _, c := range calls {
+		gotOps = append(gotOps, c.Op)
+	}
+	if !slices.Equal(gotOps, wantOps) {
+		t.Errorf("Output() ran %v, want %v — a record may only be dropped on an answer from the host", gotOps, wantOps)
+	}
+
+	if _, err := f.store.Get(s.ID, auth.CallerOperator); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("the record of a session the host says is gone survives the capture: Get() = _, %v, want %v", err, ErrSessionNotFound)
+	}
+	if _, err := f.mgr.Resolve(s.ID, auth.CallerOperator, tok); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("the credential still resolves after the record was dropped: Resolve() = _, %v, want %v", err, ErrSessionNotFound)
+	}
+}
+
+// The other half of #21, and the half that must not regress: "I could not read
+// the screen" is not "there is no screen". A record may only be dropped on an
+// answer, so a session the host still has — or one it cannot be asked about —
+// keeps everything it had, and the caller keeps the transient failure it always
+// got.
+func TestOutputKeepsTheRecordWhenTheSessionIsNotConfirmedGone(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		// arrange breaks the host in the way this case is about, having already
+		// broken the capture itself.
+		arrange func(f managerFixture, name string)
+	}{
+		"the pane could not be read but the session is there": {
+			arrange: func(managerFixture, string) {},
+		},
+		"the session is gone and the liveness check could not be made": {
+			arrange: func(f managerFixture, name string) {
+				f.tmux.Vanish(name)
+				// Both, because confirmGone falls back to List when Has cannot
+				// answer: a host that can say nothing at all is the case where
+				// "gone" would be a guess.
+				f.tmux.FailOp(tmuxctl.OpHas, errTmuxBroken)
+				f.tmux.FailOp(tmuxctl.OpList, errTmuxBroken)
+			},
+		},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newManagerFixture(t)
+			s, _ := mustCreate(t, f, f.request())
+			f.tmux.FailOp(tmuxctl.OpCapturePane, errTmuxBroken)
+			c.arrange(f, "crswd-"+s.ID)
+
+			_, err := f.mgr.Output(context.Background(), *s)
+			if err == nil {
+				t.Fatal("Output() reported success while the capture was failing")
+			}
+			if errors.Is(err, ErrSessionDead) {
+				t.Errorf("Output() = _, %v; a session the host did not say was gone was declared dead", err)
+			}
+
+			if _, err := f.store.Get(s.ID, auth.CallerOperator); err != nil {
+				t.Errorf("the record was dropped on an unreadable pane: Get() = _, %v, want the session", err)
+			}
+		})
+	}
+}
+
 // Destroy's two commands, in the only order that proves anything: the kill, and
 // then the question about whether it worked (FR-019). What follows the answer is
 // FR-020 — the record and the hash it carries are gone, and the credential that

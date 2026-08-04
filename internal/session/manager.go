@@ -487,6 +487,13 @@ type Capture struct {
 // The instant is read after the capture, not before. It is what the pane held as
 // of *at most* that time, and a timestamp taken first would claim content newer
 // than itself whenever the exec was slow.
+//
+// A capture that fails is not the end of the question, and that is what
+// unreadable resolves. "I could not read the screen" and "there is no screen"
+// are different facts about the host, and until they were told apart the second
+// one was rendered as the first — a record for a session that had died on its
+// own kept a card on the fleet, a state pill, and a note inviting a reload that
+// could never work (#21).
 func (m *Manager) Output(ctx context.Context, s Session) (Capture, error) {
 	// Fail closed on the same two records Prompt refuses, and for the same
 	// reason: an empty ID builds the bare prefix as a target, and a dead
@@ -498,15 +505,65 @@ func (m *Manager) Output(ctx context.Context, s Session) (Capture, error) {
 		return Capture{}, fmt.Errorf("capture pane of session %s: %w", s.ID, ErrSessionDead)
 	}
 
-	// The error names the session and wraps what tmux said, and deliberately
-	// carries no captured text: a partial read reaching an error string is pane
-	// content in whatever records that error (FR-042).
 	text, err := m.tmux.CapturePane(ctx, s.TmuxName())
 	if err != nil {
-		return Capture{}, fmt.Errorf("capture pane of session %s: %w", s.ID, err)
+		return Capture{}, m.unreadable(ctx, s, err)
 	}
 
 	return Capture{Text: tmuxctl.Strip(text), At: m.clock.Now()}, nil
+}
+
+// unreadable is what a failed capture means, once the host has been asked.
+//
+// The daemon verifies teardown when *it* destroys a session (FR-019). A session
+// that dies on its own — a host reboot, a tmux server restart, an operator's own
+// kill-session — had no equivalent path, so its record outlived it until the
+// reaper's idle bound or the 24-hour ceiling collected it (#21). The evidence
+// arrives here, because the capture is the one thing the daemon does per request
+// that touches the window rather than the record.
+//
+// The question is confirmGone's, and it is the same question a destroy asks for
+// the same reason: tmux failing to answer is not tmux answering "it is gone", so
+// only an affirmative "the session is not there" drops anything. A pane that
+// merely could not be read leaves the record exactly as it was, and the caller
+// gets what it always got — the honest "not just now", which is now true whenever
+// it renders.
+//
+// Dropping the record is what Destroy does with a confirmed teardown (FR-020),
+// and it is the same act on the same evidence: the record and the token hash go,
+// and every endpoint for the id answers as it does for one nobody was ever
+// issued. Nothing is killed on this path — there is nothing left to kill — and
+// nothing is marked instead, because a record kept in StateDead would still be a
+// card on the fleet, which is the defect rather than the fix.
+//
+// The idle clock is untouched here, so this remains safe on the watching path:
+// what a stream discovers through Output is that the session is over, and the
+// next tick's View turns that into the terminal event a viewer can read
+// (FR-034f).
+//
+// No error is swallowed. tmux's account of the failed capture, and of a
+// liveness check that could not be made, both travel back to the caller — which
+// on every path is a report channel an operator reads, never a response body.
+// None of them carries captured text: a partial read in an error string is pane
+// content in whatever records that error (FR-042).
+func (m *Manager) unreadable(ctx context.Context, s Session, cause error) error {
+	gone, confirmErr := m.confirmGone(ctx, s.TmuxName())
+	switch {
+	case confirmErr != nil:
+		return fmt.Errorf("capture pane of session %s: %w", s.ID, errors.Join(cause, confirmErr))
+	case !gone:
+		return fmt.Errorf("capture pane of session %s: %w", s.ID, cause)
+	}
+
+	// A record already gone is not a failure, for the reason it is not one in
+	// Destroy: the session is confirmed gone and so is the record, which is the
+	// end state this path exists to reach. Only a delete that failed for some
+	// other reason is worth carrying back, and it is carried *alongside* the
+	// answer rather than instead of it — the session is over either way.
+	if err := m.store.Delete(s.ID); err != nil && !errors.Is(err, ErrSessionNotFound) {
+		return fmt.Errorf("drop the record of vanished session %s: %w: %w", s.ID, ErrSessionDead, err)
+	}
+	return fmt.Errorf("capture pane of session %s: %w", s.ID, ErrSessionDead)
 }
 
 // Destroy tears a session down and reports success only once the host has
@@ -805,7 +862,9 @@ func adoptableID(info tmuxctl.SessionInfo) (string, bool) {
 // like an empty host. The exec costs one command, and only on the path where the
 // first one already failed.
 //
-// An error means the answer is unknown, and Destroy treats unknown as surviving.
+// An error means the answer is unknown, and both callers treat unknown as
+// surviving: Destroy keeps the record and reports an orphan, and a failed
+// capture stays the transient "could not be read" it has always been.
 func (m *Manager) confirmGone(ctx context.Context, name string) (bool, error) {
 	present, err := m.tmux.Has(ctx, name)
 	if err == nil {
