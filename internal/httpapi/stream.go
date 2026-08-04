@@ -18,24 +18,25 @@ package httpapi
 // be the same line of code and would take the protection off every route that
 // still wants it.
 //
-// *When* a stream writes is here; *what* it writes is not, and the gap is
-// deliberate. The capture loop below reads each watched session once per tick
-// into a buffer every stream on that session shares, and writes an event only
-// when the screen differs from the one that stream last sent — but the event's
-// payload is a placeholder rather than the screen. Framing is T025: SSE's wire
-// format is line-oriented, so a screen put into a `data:` field before the
-// encoding that makes framing independent of content has landed is a screen
-// framed by nobody. Until it lands no byte a session printed crosses this
-// transport, and the buffer that task will marshal is already here.
+// *When* a stream writes and *what* it writes both live here. The capture loop
+// below reads each watched session once per tick into a buffer every stream on
+// that session shares, writes an event only when the screen differs from the one
+// that stream last sent, and frames that screen as one JSON string (research
+// D4). The encoding is the framing rather than a formality: SSE's wire format is
+// line-oriented, so a screen written raw into a `data:` field is a screen framed
+// by whatever it happens to contain — and what it contains is whatever an
+// unsandboxed program chose to print.
 //
-// One thing this route still owes contracts/stream.md, owned by a later task
-// and not a disclosure while the stream carries no output: the record emitted at
-// open rather than at close, which is T027's — until then a stream's one audit
-// record lands when the connection ends, which is exactly milestone 1's
-// behaviour and exactly what FR-016a exists to change.
+// One thing this route still owes contracts/stream.md: the record emitted at
+// open rather than at close, which is T027's. It cost nothing while the payload
+// above was a placeholder and costs something now — a stream carries a session's
+// screen from this file onwards, so a daemon that dies mid-stream leaves no
+// trace that output was being read. That is exactly milestone 1's behaviour and
+// exactly what FR-016a exists to change.
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -78,6 +79,15 @@ const (
 	secFetchSiteSameOrigin = "same-origin"
 )
 
+// dataField and groupEnd are SSE's own punctuation: the one field an event on
+// this route carries, and the blank line that ends any line group. Both writes a
+// tick can make are terminated by the same constant, so the two cannot drift into
+// disagreeing about what ends a group.
+const (
+	dataField = "data: "
+	groupEnd  = "\n\n"
+)
+
 // heartbeat is an SSE comment, which is a line that is not an event and carries
 // no data. It is what a tick writes when there is nothing to send.
 //
@@ -86,29 +96,49 @@ const (
 // would hold its slot forever, because nothing would ever fail. One write per
 // tick is what turns a dead peer into a write error, and it is also what keeps
 // an idle proxy at the edge from severing a stream that is working perfectly.
-var heartbeat = []byte(":\n\n")
+var heartbeat = []byte(":" + groupEnd)
 
-// screenChanged is what a tick writes instead of the heartbeat when the capture
-// differs from the screen that stream last sent.
+// screenEvent frames one screen as the event a tick writes instead of the
+// heartbeat when the capture differs from the screen that stream last sent
+// (research D4, contracts/stream.md).
 //
-// **The payload is a placeholder and not the screen**, which is the one thing
-// about this constant worth reading twice. What decides *when* an event is
-// written is here; what an event *carries* is T025, because SSE's wire format is
-// line-oriented and a screen is inherently multi-line — a raw newline inside a
-// `data:` field starts a new field, a lone `\r` is corrupted in the rejoin, and
-// a line the session printed beginning `event:` would be a session choosing this
-// daemon's framing. The encoding that makes all three impossible is one
-// json.Marshal, and it belongs to the task that also proves it against exactly
-// those payloads. Until then the buffer below holds the screen and the wire does
-// not.
+// The whole screen goes into one `data:` field as one JSON string, and the
+// encoding is what makes the framing independent of the content. SSE's wire
+// format is line-oriented and a screen is inherently multi-line: a raw newline
+// inside `data:` starts a new field, a payload split across fields loses a lone
+// `\r` when the client rejoins them, and a line the session printed beginning
+// `event:` would be a session choosing this daemon's framing. A JSON string can
+// carry none of the three, because every byte that could delimit anything is
+// escaped — so what a screen contains and how it is delimited become separate
+// questions, which is the only form in which the answer survives a program that
+// prints whatever it likes.
 //
-// It is an unnamed event, like the one contracts/stream.md frames, so that
-// landing the framing changes the payload and nothing else. An empty `data:`
-// field would have said the same thing with no placeholder at all, and is not an
-// option: EventSource drops an event whose data buffer is empty rather than
-// dispatching it, so a stream written that way would be a stream no browser
-// hears.
-var screenChanged = []byte("data: changed\n\n")
+// It is an unnamed event, which is what an EventSource dispatches as `message`.
+// The empty screen is still an event: a session that has printed nothing encodes
+// as `""` rather than as nothing at all, and an event whose data buffer is
+// genuinely empty is one EventSource drops instead of dispatching — so a fresh
+// tab on a session that has yet to print would otherwise hear silence and be
+// unable to tell it from a stream that is not working.
+//
+// The error cannot arise today: encoding/json replaces invalid UTF-8 rather than
+// refusing it, and Strip has already removed anything that would be. It is
+// returned rather than dropped because the only other thing to do with it is
+// write a half-framed event, which is precisely what this function exists to
+// make impossible.
+func screenEvent(screen string) ([]byte, error) {
+	encoded, err := json.Marshal(screen)
+	if err != nil {
+		// Never the screen itself, and never a prefix of it: a payload that could
+		// not be encoded is still pane content, and pane content in an error string
+		// is pane content in whatever records the error (FR-042).
+		return nil, fmt.Errorf("encode the screen for the wire: %w", err)
+	}
+
+	event := make([]byte, 0, len(dataField)+len(encoded)+len(groupEnd))
+	event = append(event, dataField...)
+	event = append(event, encoded...)
+	return append(event, groupEnd...), nil
+}
 
 // The refusals this route records, authored here.
 //
@@ -522,9 +552,18 @@ func (s *stream) tick(ctx context.Context, read func(context.Context) (string, e
 // fails ends the stream, so there is no next comparison for the difference to
 // matter to — and recording afterwards would mean a partially written event was
 // remembered as unsent, which on a transport that retried would send it twice.
+//
+// The framing happens before the record for the opposite reason: a screen that
+// could not be framed never reached the wire at all, and remembering it as sent
+// would suppress the next capture of the identical screen.
 func (s *stream) send(screen string) error {
+	event, err := screenEvent(screen)
+	if err != nil {
+		return err
+	}
+
 	s.sent, s.everSent = screen, true
-	return s.write(screenChanged)
+	return s.write(event)
 }
 
 // write puts one SSE line group on the wire and flushes it.

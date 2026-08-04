@@ -14,6 +14,7 @@ package httpapi
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -60,18 +61,33 @@ const (
 	ticksWatched = 10
 )
 
-// The two things a tick can write, as they arrive on the wire. Derived from the
-// constants rather than spelled again here, so a change to either moves these
-// with it, and split at the first newline because readGroup reads a group's
-// first line and its terminator apart.
-var (
-	heartbeatLine = firstLine(heartbeat)
-	screenLine    = firstLine(screenChanged)
-)
+// heartbeatLine is the suppressed tick as it arrives on the wire. Derived from
+// the constant rather than spelled again here, so a change to it moves this with
+// it, and split at the first newline because readGroup reads a group's first
+// line and its terminator apart.
+var heartbeatLine = firstLine(heartbeat)
 
 func firstLine(group []byte) string {
 	line, _, _ := strings.Cut(string(group), "\n")
 	return line + "\n"
+}
+
+// screenLine is the other thing a tick can write: the first line of the event
+// one screen is framed as.
+//
+// It goes through the production framing rather than spelling `data:` again, so
+// that every expectation in this file follows a change to the wire format. The
+// framing itself is pinned against bytes spelled out by hand in
+// TestAScreenIsFramedAsOneJSONString — which is where the tautology this would
+// otherwise be is closed.
+func screenLine(t *testing.T, screen string) string {
+	t.Helper()
+
+	event, err := screenEvent(screen)
+	if err != nil {
+		t.Fatalf("screenEvent(%q) = _, %v; want the framed event", screen, err)
+	}
+	return firstLine(event)
 }
 
 // watching is a fleet serving on a real loopback socket, with the write deadline
@@ -243,42 +259,72 @@ func readHeartbeat(t *testing.T, body *bufio.Reader, opened time.Time) {
 	}
 }
 
-// readScreen reads one group and insists it was the changed-screen event.
+// readScreen reads one group and insists it was the event carrying the screen
+// the caller planted.
 //
-// The payload it expects is the placeholder rather than a screen, and that is
-// the assertion rather than a concession: T024 decides *when* an event is
-// written and T025 decides what it carries, so a test that accepted any `data:`
-// line would go on passing through the change that puts an unframed screen on a
-// line-oriented wire.
-func readScreen(t *testing.T, body *bufio.Reader, opened time.Time) {
+// The screen is a parameter rather than a wildcard, and that is the assertion
+// rather than bookkeeping: a helper that accepted any `data:` line would go on
+// passing against a stream that sent every tab the same constant, which is
+// exactly what this route wrote before the framing landed.
+func readScreen(t *testing.T, body *bufio.Reader, opened time.Time, screen string) {
 	t.Helper()
 
-	if line := readGroup(t, body, opened); line != screenLine {
-		t.Fatalf("the stream wrote %q; want %q", line, screenLine)
+	want := screenLine(t, screen)
+	if line := readGroup(t, body, opened); line != want {
+		t.Fatalf("the stream wrote %q; want %q", line, want)
 	}
 }
 
-// awaitScreen reads groups until the changed-screen event arrives, and reports
-// how many heartbeats preceded it.
+// awaitScreen reads groups until the event carrying the changed screen arrives,
+// and reports how many heartbeats preceded it.
 //
 // A change is not expected on the very next group: the tick after a screen
 // changed may find the shared buffer still inside its interval, in which case
 // the reading that notices is one tick later. What is bounded is how long that
 // may take, which is what ticksWatched is.
-func awaitScreen(t *testing.T, body *bufio.Reader, opened time.Time) int {
+//
+// Any *other* event fails immediately rather than being waited through. The
+// screen a stream has already sent is suppressed, so the only event that can
+// arrive between the plant and the change is one carrying something neither of
+// them is.
+func awaitScreen(t *testing.T, body *bufio.Reader, opened time.Time, screen string) int {
 	t.Helper()
 
+	changed := screenLine(t, screen)
 	for quiet := 0; quiet < ticksWatched; quiet++ {
 		switch line := readGroup(t, body, opened); line {
-		case screenLine:
+		case changed:
 			return quiet
 		case heartbeatLine:
 		default:
-			t.Fatalf("the stream wrote %q; want either the heartbeat or the changed-screen event", line)
+			t.Fatalf("the stream wrote %q; want either the heartbeat or the screen %q", line, screen)
 		}
 	}
 	t.Fatalf("a screen that changed went unsent for %d ticks", ticksWatched)
 	return 0
+}
+
+// decodeScreen reads one group and hands back the screen it framed, which is the
+// client's own half of the wire format: parse the `data:` field as JSON and take
+// the string out of it.
+//
+// It is deliberately not readScreen with the comparison moved: what it asserts
+// is that the payload round-trips, so it is the helper for the claims about
+// bytes a session printed rather than for the claims about which screen arrived.
+func decodeScreen(t *testing.T, body *bufio.Reader, opened time.Time) string {
+	t.Helper()
+
+	line := readGroup(t, body, opened)
+	payload, ok := strings.CutPrefix(strings.TrimSuffix(line, "\n"), dataField)
+	if !ok {
+		t.Fatalf("the stream wrote %q; want an event carrying a screen", line)
+	}
+
+	var screen string
+	if err := json.Unmarshal([]byte(payload), &screen); err != nil {
+		t.Fatalf("the payload on the wire is not a JSON string: %q (%v)", payload, err)
+	}
+	return screen
 }
 
 func readStreamLine(t *testing.T, body *bufio.Reader, opened time.Time) string {
@@ -332,8 +378,11 @@ func TestTheStreamOutlivesTheWriteDeadlineTheOtherRoutesKeep(t *testing.T) {
 	// The assertion itself: keep reading until enough writes have landed after
 	// the instant net/http would have closed this connection. Every read past
 	// that instant is one the unlifted deadline would have turned into an error.
+	// The opening screen, which precedes the first tick. This session has printed
+	// nothing, and the empty screen is still an event — `data: ""` rather than an
+	// empty data buffer, which EventSource would drop.
 	body := bufio.NewReader(resp.Body)
-	readScreen(t, body, opened) // the opening screen, which precedes the first tick
+	readScreen(t, body, opened, "")
 	deadline := opened.Add(writeDeadlineUnderTest)
 	for late := 0; late < heartbeatsPastTheDeadline; {
 		readHeartbeat(t, body, opened)
@@ -649,7 +698,7 @@ func TestAStreamOpenedFromTheDashboardItselfIsServed(t *testing.T) {
 		t.Fatalf("a same-origin open answered %d; want %d", resp.StatusCode, http.StatusOK)
 	}
 	body := bufio.NewReader(resp.Body)
-	readScreen(t, body, opened)
+	readScreen(t, body, opened, "")
 	readHeartbeat(t, body, opened)
 }
 
@@ -842,7 +891,7 @@ func TestAClosedStreamGivesItsSlotBack(t *testing.T) {
 	if first.StatusCode != http.StatusOK {
 		t.Fatalf("the first open answered %d; want %d", first.StatusCode, http.StatusOK)
 	}
-	readScreen(t, bufio.NewReader(first.Body), opened)
+	readScreen(t, bufio.NewReader(first.Body), opened, "")
 
 	// The second tab, on a daemon with room for one.
 	second := f.watch(t, addr, live.ID) //nolint:bodyclose // watchFrom closes it in t.Cleanup, which the linter cannot see through.
@@ -860,7 +909,7 @@ func TestAClosedStreamGivesItsSlotBack(t *testing.T) {
 	for deadline := time.Now().Add(streamTestBudget); ; {
 		third := f.watch(t, addr, live.ID) //nolint:bodyclose // watchFrom closes it in t.Cleanup, which the linter cannot see through.
 		if third.StatusCode == http.StatusOK {
-			readScreen(t, bufio.NewReader(third.Body), time.Now())
+			readScreen(t, bufio.NewReader(third.Body), time.Now(), "")
 			return
 		}
 		if time.Now().After(deadline) {
@@ -875,9 +924,9 @@ func TestAClosedStreamGivesItsSlotBack(t *testing.T) {
 //
 // One reading per watched session per interval, an event only when the screen
 // differs from the one this stream last sent, and the heartbeat on every other
-// tick (research D5). What an event *carries* is T025's and deliberately absent:
-// readScreen insists on the placeholder, so the change that puts an unframed
-// screen on a line-oriented wire fails here rather than passing quietly.
+// tick (research D5). Every claim below names the screen it expects on the wire,
+// so a loop that sent the right screen at the wrong time and one that sent the
+// wrong screen at the right time both fail here.
 
 // TestAnUnchangedScreenIsNeverSentTwice is the suppression rule (research D5),
 // and it is the reason the loop is not simply "capture and write".
@@ -890,9 +939,11 @@ func TestAClosedStreamGivesItsSlotBack(t *testing.T) {
 func TestAnUnchangedScreenIsNeverSentTwice(t *testing.T) {
 	t.Parallel()
 
+	const screen = "$ go test ./...\nok\tinternal/access\t0.31s\n"
+
 	f, addr := watching(t)
 	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
-	f.fixture.tmux.SetPane(live.TmuxName(), "$ go test ./...\nok\tinternal/access\t0.31s\n")
+	f.fixture.tmux.SetPane(live.TmuxName(), screen)
 
 	opened := time.Now()
 	resp := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
@@ -901,7 +952,7 @@ func TestAnUnchangedScreenIsNeverSentTwice(t *testing.T) {
 	}
 
 	body := bufio.NewReader(resp.Body)
-	readScreen(t, body, opened)
+	readScreen(t, body, opened, screen)
 
 	for tick := 1; tick <= ticksWatched; tick++ {
 		if line := readGroup(t, body, opened); line != heartbeatLine {
@@ -922,9 +973,11 @@ func TestAnUnchangedScreenIsNeverSentTwice(t *testing.T) {
 func TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval(t *testing.T) {
 	t.Parallel()
 
+	const screen = "a screen the page already rendered"
+
 	f, addr := watching(t)
 	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
-	f.fixture.tmux.SetPane(live.TmuxName(), "a screen the page already rendered")
+	f.fixture.tmux.SetPane(live.TmuxName(), screen)
 
 	opened := time.Now()
 	resp := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
@@ -932,7 +985,7 @@ func TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval(t *testing.T) {
 		t.Fatalf("GET /sessions/%s/stream = %d; want %d", live.ID, resp.StatusCode, http.StatusOK)
 	}
 
-	readScreen(t, bufio.NewReader(resp.Body), opened)
+	readScreen(t, bufio.NewReader(resp.Body), opened, screen)
 	if waited := time.Since(opened); waited >= tickUnderTest {
 		t.Errorf("the opening screen arrived %v after the open, which is past the %v interval; it must not wait for a tick",
 			waited.Round(time.Millisecond), tickUnderTest)
@@ -948,9 +1001,14 @@ func TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval(t *testing.T) {
 func TestAChangedScreenIsSentOnceAndThenSuppressed(t *testing.T) {
 	t.Parallel()
 
+	const (
+		prompt  = "$ "
+		running = "$ go test ./...\n"
+	)
+
 	f, addr := watching(t)
 	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
-	f.fixture.tmux.SetPane(live.TmuxName(), "$ ")
+	f.fixture.tmux.SetPane(live.TmuxName(), prompt)
 
 	opened := time.Now()
 	resp := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
@@ -959,15 +1017,15 @@ func TestAChangedScreenIsSentOnceAndThenSuppressed(t *testing.T) {
 	}
 
 	body := bufio.NewReader(resp.Body)
-	readScreen(t, body, opened)
+	readScreen(t, body, opened, prompt)
 
-	f.fixture.tmux.SetPane(live.TmuxName(), "$ go test ./...\n")
+	f.fixture.tmux.SetPane(live.TmuxName(), running)
 
 	// At most one quiet tick before it: the only thing that can suppress the
 	// reading is the shared buffer still being inside its interval, and one
 	// stream's ticks are an interval apart, so it cannot happen twice running.
 	// More than that is a loop reading the session less often than it ticks.
-	if quiet := awaitScreen(t, body, opened); quiet > 1 {
+	if quiet := awaitScreen(t, body, opened, running); quiet > 1 {
 		t.Errorf("a screen that changed went unsent for %d ticks before it arrived; want at most 1", quiet)
 	}
 
@@ -995,9 +1053,14 @@ func TestAChangedScreenIsSentOnceAndThenSuppressed(t *testing.T) {
 func TestTwoTabsOnOneSessionCostOneReadingBetweenThem(t *testing.T) {
 	t.Parallel()
 
+	const (
+		prompt  = "$ "
+		running = "$ go test ./...\n"
+	)
+
 	f, addr := watching(t)
 	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
-	f.fixture.tmux.SetPane(live.TmuxName(), "$ ")
+	f.fixture.tmux.SetPane(live.TmuxName(), prompt)
 
 	opened := time.Now()
 	first := f.watch(t, addr, live.ID)  //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
@@ -1009,14 +1072,15 @@ func TestTwoTabsOnOneSessionCostOneReadingBetweenThem(t *testing.T) {
 	}
 
 	firstBody, secondBody := bufio.NewReader(first.Body), bufio.NewReader(second.Body)
-	readScreen(t, firstBody, opened)
-	readScreen(t, secondBody, opened)
+	readScreen(t, firstBody, opened, prompt)
+	readScreen(t, secondBody, opened, prompt)
 
 	// Both tabs see the change, which is the half saying the sharing did not
-	// silence one of them.
-	f.fixture.tmux.SetPane(live.TmuxName(), "$ go test ./...\n")
-	awaitScreen(t, firstBody, opened)
-	awaitScreen(t, secondBody, opened)
+	// silence one of them — and both see the same screen, which is the half saying
+	// the buffer they share is the session's and not one tab's.
+	f.fixture.tmux.SetPane(live.TmuxName(), running)
+	awaitScreen(t, firstBody, opened, running)
+	awaitScreen(t, secondBody, opened, running)
 
 	// Twice ticksWatched, so that the count the sharing produces and the count two
 	// independent buffers would produce are far enough apart that neither the
@@ -1232,4 +1296,143 @@ func TestASharedScreenIsDroppedWhenItsLastWatcherLeaves(t *testing.T) {
 	if _, watched := p.watched[id]; watched {
 		t.Error("the buffer outlived its last watcher; a session's screen may not accumulate in a daemon that runs for weeks")
 	}
+}
+
+// --- T025: what an event carries ---------------------------------------------
+//
+// One JSON string holding the whole screen, in one `data:` field (research D4,
+// contracts/stream.md). The claim is not that the payload is legible on the
+// wire: it is that no byte a session prints can decide where this daemon's
+// events begin and end, which on a line-oriented transport is a claim that has
+// to be made against the bytes that would otherwise decide it.
+
+// TestAScreenIsFramedAsOneJSONString spells the wire out by hand, row by row.
+//
+// Spelled rather than derived, deliberately. Every other expectation in this
+// file goes through screenEvent, so this is the one place where a change to the
+// framing has to be written down twice before the suite agrees with it — which
+// is what keeps the rest of them from being restatements of the code.
+//
+// Each row is then decoded back, because the two halves fail differently. Bytes
+// that are wrong but still parse are a client rendering the wrong screen; bytes
+// that parse to the right screen but carry a newline of their own are a client
+// that never sees the event at all.
+func TestAScreenIsFramedAsOneJSONString(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		screen, want string
+	}{
+		"a screen of plain text": {
+			screen: "$ go test ./...",
+			want:   `data: "$ go test ./..."` + groupEnd,
+		},
+		"the several lines a screen really is": {
+			screen: "$ go test ./...\nok\tinternal/access\t0.31s\n",
+			want:   `data: "$ go test ./...\nok\tinternal/access\t0.31s\n"` + groupEnd,
+		},
+		"a lone carriage return, which rejoining split fields loses": {
+			screen: "downloading\rdownloaded\n",
+			want:   `data: "downloading\rdownloaded\n"` + groupEnd,
+		},
+		// encoding/json escapes the three characters that could close a tag in an
+		// HTML document, which is neither asked for here nor in the way: the client
+		// parses before it renders, and JSON.parse gives the same string back. It is
+		// spelled out rather than smoothed away so that a future encoder configured
+		// to stop doing it is a change somebody sees.
+		"markup the session printed": {
+			screen: "<script>alert('pwned')</script>",
+			want:   "data: \"\\u003cscript\\u003ealert('pwned')\\u003c/script\\u003e\"" + groupEnd,
+		},
+		"quotes and a backslash": {
+			screen: `he said "run it" \ then left`,
+			want:   `data: "he said \"run it\" \\ then left"` + groupEnd,
+		},
+		"a session that has printed nothing at all": {
+			screen: "",
+			want:   `data: ""` + groupEnd,
+		},
+		"a line the session printed that spells this transport's own framing": {
+			screen: "event: end\ndata: \"ended\"\n",
+			want:   `data: "event: end\ndata: \"ended\"\n"` + groupEnd,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			event, err := screenEvent(tc.screen)
+			if err != nil {
+				t.Fatalf("screenEvent(%q) = _, %v; want the framed event", tc.screen, err)
+			}
+			if got := string(event); got != tc.want {
+				t.Errorf("screenEvent(%q) framed it as %q; want %q", tc.screen, got, tc.want)
+			}
+
+			// One field and one terminator, whatever the screen holds. A third
+			// newline is the whole failure this encoding exists to prevent: it is a
+			// session deciding where an event ends, and everything after it is a
+			// field this daemon did not write.
+			if lines := strings.Count(string(event), "\n"); lines != 2 {
+				t.Errorf("the event for %q holds %d newlines; want 2 — the end of the one `data:` field, and the blank line that ends the group",
+					tc.screen, lines)
+			}
+
+			// And back to the identical bytes, which is the half the client's
+			// JSON.parse will perform.
+			payload, ok := strings.CutPrefix(strings.TrimSuffix(string(event), groupEnd), dataField)
+			if !ok {
+				t.Fatalf("the event for %q is %q; want one %q field", tc.screen, event, dataField)
+			}
+			var back string
+			if err := json.Unmarshal([]byte(payload), &back); err != nil {
+				t.Fatalf("the payload for %q is not a JSON string: %q (%v)", tc.screen, payload, err)
+			}
+			if back != tc.screen {
+				t.Errorf("the payload for %q parses back to %q; a screen must survive the wire byte for byte", tc.screen, back)
+			}
+		})
+	}
+}
+
+// TestTheScreenOnTheWireIsTheScreenTheSessionPrinted is the framing where it
+// has to hold: through the handler, over a socket, decoded the way the client
+// will decode it.
+//
+// The table above would pass against a handler that never called screenEvent at
+// all — which is this project's own recurring failure, code that exists and
+// nothing runs. The screen here is the one a session with something to gain
+// would print: markup, quotes, several lines, and a line spelling this
+// transport's framing.
+//
+// The lone `\r` from the table is deliberately not in it. Strip removes carriage
+// returns with the rest of C0 before a capture ever reaches the framing, so a
+// `\r` asserted over the wire would be an assertion about the stripper — which
+// is exactly why the framing is proved against one where it can actually be
+// handed one, rather than being trusted to a stripper that agrees with it today.
+func TestTheScreenOnTheWireIsTheScreenTheSessionPrinted(t *testing.T) {
+	t.Parallel()
+
+	const printed = "$ cat page.html\n<script>alert(\"pwned\")</script>\ndata: \"not an event\"\n$ "
+
+	f, addr := watching(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), printed)
+
+	opened := time.Now()
+	resp := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /sessions/%s/stream = %d; want %d", live.ID, resp.StatusCode, http.StatusOK)
+	}
+
+	// readGroup has already insisted the payload was one line ending in a blank
+	// one, so a screen that framed itself fails inside this call rather than in
+	// the comparison after it.
+	body := bufio.NewReader(resp.Body)
+	if got := decodeScreen(t, body, opened); got != printed {
+		t.Errorf("the wire carried %q; want the screen the session printed, byte for byte:\n%q", got, printed)
+	}
+
+	// The ordinary quiet tick after it, which is what says the stream carried a
+	// screen like that rather than ending on one.
+	readHeartbeat(t, body, opened)
 }
