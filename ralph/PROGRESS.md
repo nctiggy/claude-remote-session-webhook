@@ -11320,3 +11320,119 @@ finding 280), T027 (the record at open, finding 290), T028 (lifecycle) and T029 
 acceptance suite, which should also drive `stream.open` through `internal/audit/leak_test.go`
 — finding 285's remaining half). Then T030–T034 (docs, `.env.example`, the quickstart run,
 which must deal with #266/#292). Plus the unowned findings above.
+
+---
+
+## Iteration 69 (milestone 2, iteration 26) — 2026-08-04 09:41
+
+**Did:** **T023** — the four-step open sequence in `internal/httpapi/stream.go`. Identity was
+already in front of the route (T022); this adds the two that were missing and, more to the
+point, fixes them in an order: identity → cross-site → ownership → capacity. Finding **291**
+is closed — `CRSW_MAX_STREAMS` has been loaded and unread since T001 and is now the bound it
+was configured to be, refused at startup when it is below one like every other bound.
+
+**The order is the deliverable, not the two checks.** Each of the three refusal steps is
+independently obvious; what they are worth is decided by which one answers first. The
+cross-site check sits **before** the lookup, so a hostile page cannot enumerate session ids
+through the operator's own riding cookie one 404 at a time. The cap sits **after** everything,
+so a stranger, that same page, and a viewer asking about somebody else's session all get the
+answer their own step gives rather than "this host has no room", which is the one fact about
+the host the other three exist to withhold. Two of the new tests are about the ordering alone
+and would pass against any implementation that merely had all four checks.
+
+**`Sec-Fetch-Site` is present-and-wrong refuses, never absent refuses** (research D8). Only
+`same-origin` admits, so `same-site` and `none` refuse with `cross-site` — `none` being a URL
+typed or bookmarked, which the dashboard never opens this address as. The compare is exact
+rather than case-folded: the Fetch standard spells these as lowercase tokens, so an
+unrecognised spelling is not a value a browser sent and reading it as "not same-origin" is the
+fail-closed direction. A refusal is the door's **existing** uniform 401, byte for byte — a
+second shape here would be a shape that varies with the request.
+
+**The 429 is the only response on this door that is neither the uniform refusal nor the
+uniform 404**, and it is bodyless like the failed open beside it. It is reachable only by a
+caller layer 1 verified who was then found to own the session, so it discloses the cap's state
+to the one person entitled to it.
+
+**Mutations, all caught:**
+
+1. `crossSite` always false → 8 tests (the table's five rows, the ordering test, the cap's
+   order test).
+2. Absent read as refuse → 7, including three of T022's.
+3. The cross-site check moved after `View` → the ordering test, on both the status and the
+   reason ("a request refused by the lookup is a request the lookup ran for").
+4. The cap moved to the top of the handler → the order test's four rows plus the missing
+   `session_id`.
+5. `defer release()` dropped → both slot-return tests, one of them by running its whole 10s
+   budget out.
+6. The count and the take split into two critical sections → the race test.
+7. `sync.Once` dropped from the release → the race test's double release.
+8. `newStreamCap` accepting zero → `TestNewRefusesMissingDependencies`' new row.
+9. The 429 given a body → both cap tests.
+
+**Learned:**
+
+1. **A race test that only fails under `-race` does not fail.** The split-critical-section
+   mutant passed a plain `go test` at 64 callers and one round, and failed reliably only under
+   `-race` — which CI does not run (`AGENTS.md` says `go test ./...`). The fix is rounds: 1000
+   rounds × 64 callers catches it 10 times out of 10 in a plain run and costs ~20ms. Any
+   future test of a critical section here should be written the same way rather than trusting
+   one shot at the window.
+2. **A server-authored reason must not contain a word the caller could have sent.** The first
+   spelling was "…from a cross-site context", and the assertion that the trail does not carry
+   the header value failed on the daemon's own constant. The constant was reworded rather than
+   the assertion dropped: the check is what stops a later edit quoting `Sec-Fetch-Site` into
+   the journal, and it can only work if no reason spells a value the header can hold.
+3. **A recorder is enough for every refusal on this route and for no admission.** All four
+   checks are decided before the response is touched, so `askToWatch` (recorder) drives them
+   all — and a 500 from it is precisely "the sequence admitted this", since a recorder cannot
+   lift a write deadline. That inverts iteration 68's constraint into a useful signal instead
+   of an obstacle: only the two socket-bound tests here need `watching`.
+4. **`testConfig` needed `MaxStreams` and so did `leakConfig`.** Both are hand-built Configs
+   that no `config.Load` ever produced, and the startup refusal found them immediately — the
+   same shape as the `MaxSessions` note already in `testConfig`.
+
+**Findings:**
+
+294. **The cap counts connections, not sessions, and the two diverge at T024.**
+    contracts/stream.md says captures are per *session* — two tabs on one session share one
+    capture loop and one exec — while `CRSW_MAX_STREAMS` bounds *connections*. That is the
+    contract's own split ("the cap counts connections; the cost model counts sessions") and it
+    is correct, but **T024** is where the second half has to become real: a capture loop keyed
+    per session with the streams attached to it, not one loop per admitted slot. Ten streams
+    on one session must be one `capture-pane` per second, not ten.
+295. **A stream refused for want of room emits `stream.open` with a `session_id`, and a stream
+    refused earlier does not.** Deliberate — the id is stamped off the daemon's own record
+    once ownership matched, so a cap refusal says which session went unwatched while a
+    cross-site or unverified refusal has no record to take an id from. Worth knowing before
+    **T027** moves the emit to open: the record's shape already varies by how far the request
+    got, and that is the fact an operator reads it for.
+296. **Nothing yet stops a stream a browser abandoned from being re-authorised.** T023
+    authorises at open only; FR-034b's re-evaluation every tick is **T028**'s, and until it
+    lands a stream whose session is destroyed keeps its slot until the next failed write. Not
+    a disclosure — the transport carries no output — but it is the gap between "a slot is
+    released on every path out of the handler" (true today) and "a slot is released within one
+    interval of the session ending" (T028).
+297. **Findings 203–205, 216, 275, 278, 280–283, 285–288, 290, 292–293 are unchanged**, minus
+    291 which this iteration closed. Still unowned: `Manager.List`'s clock-neutrality covered
+    only from another package (203), a component test not being a call-site test (204/233),
+    `Server` and `Manager` holding separate clocks (205), untokenised values in
+    `docs/design-system.md` (216), `Store.SetState` uncalled and contradicted, the unaudited
+    `cleanPath` redirect (275), the rain being unverifiable from Go (278), the pane's unbuilt
+    scanline overlay (280, for **T026**), and the session page being a dead end (282).
+    Iteration 1 #1 / 68 (`loop.sh`'s `--no-verify` sweep commit — this iteration's own commit
+    went through the hook: "no leaks found") and the duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `tasks.md` (ticked in both by hand again) still stand. The
+    quickstart suite still fails only `TestQuickstartStory1StartupFailures` on this host, for
+    the reason #292 gives (the live daemon holds 127.0.0.1:8765). `internal/httpapi` is ~5.5s;
+    the new tests add ~0.6s, most of it the one socket-bound slot-return poll.
+
+**Left:** **T024** — the 1s capture tick emitting **only when the screen changed**, with the
+heartbeat `hold` already writes as the suppressed-tick case, and one capture per watched
+*session* rather than per stream (finding 294). Then T025 (one JSON string per event — the
+event half of `stream.write`), T026 (`pane.html`'s `data-stream` hook and `crswd.js`'s loop;
+also owns finding 280), T027 (the record at open — findings 290 and 295), T028 (lifecycle and
+re-evaluation, finding 296) and T029 (the acceptance suite, which should also drive
+`stream.open` through `internal/audit/leak_test.go` — finding 285's remaining half). Then
+T030–T034 (docs — T031 now also owes `docs/security.md` the `Sec-Fetch-Site` rule, which
+exists only in the spec and this file — `.env.example`, and the quickstart run, which must
+deal with #266/#292). Plus the unowned findings above.
