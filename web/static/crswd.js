@@ -170,10 +170,11 @@
    *
    * Nothing is done on error. A connection that drops is left to EventSource's
    * own reconnect, which opens a new request that is authorised from scratch —
-   * re-connection is never a resumed privilege. The event that says the session
-   * itself ended is the daemon's to send and this client's to close on; both
-   * halves of that arrive with the lifecycle work, and until they do a dropped
-   * stream is a dropped connection and nothing more.
+   * re-connection is never a resumed privilege. What is *not* left to it is the
+   * session ending: the daemon says so with a named event, and this closes on
+   * it. Without the close, EventSource would reconnect for as long as the tab
+   * lives, and every one of those requests is answered with the uniform 404 —
+   * a polite client turned into a scanner of its own daemon.
    */
   const watch = (pane) => {
     const live = new EventSource(pane.dataset.stream);
@@ -203,6 +204,25 @@
       pane.scrollTop = top;
       pane.scrollLeft = left;
     };
+
+    /*
+     * The end of the session, which the daemon sends as the one named event on
+     * this stream and which is therefore not something a session can announce by
+     * printing it — every screen arrives unnamed, whatever it contains.
+     *
+     * The screen is left exactly where it is: the last thing the session printed
+     * is the most useful thing on the page once it has ended, and replacing it
+     * with a sentence would throw that away. The note beside it is what says so
+     * (FR-033), revealed rather than written here, because the copy belongs to
+     * the template that renders it.
+     */
+    live.addEventListener('end', () => {
+      const note = document.getElementById(pane.dataset.ended);
+      if (note) {
+        note.hidden = false;
+      }
+      live.close();
+    });
   };
 
   for (const pane of document.querySelectorAll('pre.pane[data-stream]')) {

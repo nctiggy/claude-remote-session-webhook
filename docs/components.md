@@ -84,7 +84,10 @@ Live terminal output, streamed over SSE.
 
 ```gotemplate
 {{/* The initial screen. Server-rendered, escaped by html/template. */}}
-<pre class="pane" id="pane-{{ .ID }}" tabindex="0" data-stream="/sessions/{{ .ID }}/stream">{{ .Text }}</pre>
+<pre class="pane" id="pane-{{ .ID }}" tabindex="0" data-stream="/sessions/{{ .ID }}/stream" data-ended="pane-ended-{{ .ID }}">{{ .Text }}</pre>
+{{/* Revealed when the daemon says the session ended. The copy lives here, not
+     in the script: what the interface says to a person belongs to a template. */}}
+<p class="pane-note" id="pane-ended-{{ .ID }}" hidden>This session has ended. The screen above is the last one it printed.</p>
 ```
 
 ```js
@@ -113,6 +116,19 @@ live.onmessage = (e) => {
   pane.scrollTop = top;
   pane.scrollLeft = left;
 };
+
+// The session ending is the daemon's one NAMED event, so a session cannot
+// announce its own by printing the bytes of one — every screen arrives unnamed.
+// The close is not politeness: without it EventSource reconnects for as long as
+// the tab lives, and each reconnection after the end is answered with the
+// uniform 404, which is the dashboard scanning its own daemon.
+live.addEventListener('end', () => {
+  const note = document.getElementById(pane.dataset.ended);
+  if (note) {
+    note.hidden = false;
+  }
+  live.close();
+});
 ```
 
 > **Do not use htmx's `sse-swap` / `hx-swap="beforeend"` for pane output.** That
@@ -132,6 +148,10 @@ Rules — these are security rules as much as design rules:
   "bottom" to follow, so an update must never move the viewport for the reader.
   History is what `tmux attach` is for, and the interface should say so rather
   than imply a transcript it does not keep.
+- **A stream that stops says why.** When the watched session ends, the note beside
+  the pane is revealed and the source is closed. Updates that simply cease look
+  exactly like a session sitting quietly at a prompt, and the last screen stays on
+  the page rather than being replaced by the sentence about it.
 - No animation on new lines.
 
 ## Form

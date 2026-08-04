@@ -502,6 +502,48 @@ func TestThePaneNamesTheStreamItsLiveHalfReads(t *testing.T) {
 	}
 }
 
+// TestThePaneSaysWhenTheWatchedSessionEnded is FR-033 in the markup: a stream
+// that stops must say why.
+//
+// Silence is the failure. A pane whose updates simply cease looks exactly like a
+// session that has gone quiet — which is the ordinary state of a session waiting
+// at a prompt — so an operator would go on watching a screen that is never
+// coming back, and would believe the session was still there.
+//
+// The copy is in the template rather than in crswd.js for the reason every other
+// sentence on this page is: what the interface says to a person is the
+// template's, and a script that authored its own prose would be a second place
+// to look for it.
+func TestThePaneSaysWhenTheWatchedSessionEnded(t *testing.T) {
+	t.Parallel()
+
+	card := ownedCard()
+	pane := renderComponent(t, "pane", paneView{ID: card.ID, Text: "$ go test ./..."})
+
+	hook := regexp.MustCompile(`data-ended="([^"]*)"`).FindStringSubmatch(pane)
+	if hook == nil {
+		t.Fatalf("the pane names no note for the end of the session, so a stream that stops says nothing:\n%s", pane)
+	}
+
+	note := regexp.MustCompile(`<p[^>]*id="` + regexp.QuoteMeta(hook[1]) + `"[^>]*>([^<]*)</p>`).FindStringSubmatch(pane)
+	if note == nil {
+		t.Fatalf("the pane points the live half at %q and the render holds no such element:\n%s", hook[1], pane)
+	}
+	if !strings.Contains(note[0], "hidden") {
+		t.Errorf("the note renders visible (%q); a page that says so before it happens says it about a session that is running", note[0])
+	}
+	if strings.TrimSpace(note[1]) == "" {
+		t.Error("the note carries no copy at all, so revealing it would say nothing")
+	}
+
+	// A pane that opens no stream needs no ending: nothing attaches to it, so
+	// nothing could ever reveal the note. Held for the reason the hook's own
+	// absence is — the two have to be the same decision.
+	if unread := renderComponent(t, "pane", paneView{ID: card.ID, Unread: true}); strings.Contains(unread, "data-ended") {
+		t.Errorf("a pane that opens no stream carries an end note anyway:\n%s", unread)
+	}
+}
+
 // TestEveryCanonicalComponentIsAPartial is FR-024 held by the shape of the tree:
 // pages compose components, components live in one place, and a second card is a
 // defect visible by inspection. It is a test rather than a convention because

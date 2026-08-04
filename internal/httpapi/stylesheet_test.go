@@ -541,6 +541,46 @@ func TestTheStreamClientReplacesTheScreenWithText(t *testing.T) {
 	}
 }
 
+// TestTheStreamClientClosesWhenTheSessionEnds is the client half of the
+// lifecycle: the daemon's terminal event, and the two things that must happen
+// when it arrives.
+//
+// The close is the load-bearing one, and it is not politeness. An EventSource
+// left open reconnects for as long as the tab lives, and every reconnection
+// after the session ended is a request the daemon answers with the uniform 404 —
+// the dashboard turned into a scanner of its own daemon, by the operator's own
+// browser, using the operator's own identity.
+//
+// The note is FR-033: a view that stopped updating in silence is one an operator
+// reads as a session that has gone quiet.
+func TestTheStreamClientClosesWhenTheSessionEnds(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	// The named event, not `onmessage`. A screen is an unnamed event whatever it
+	// contains, so listening by name is what stops a session ending its own stream
+	// by printing the bytes of one.
+	named := regexp.MustCompile(`addEventListener\(\s*['"]end['"]`)
+	if named.FindString(source) == "" {
+		t.Error("crswd.js listens for no `end` event, so a stream the daemon ended is a stream that simply stopped")
+	}
+	if !strings.Contains(source, ".close()") {
+		t.Error("crswd.js never closes the EventSource; without it a browser reconnects into the uniform 404 for as long as the tab lives")
+	}
+	if !strings.Contains(source, "dataset.ended") {
+		t.Error("crswd.js never reads the pane's end-note hook, so nothing on the page says the session ended (FR-033)")
+	}
+
+	// And the screen the session last printed is left where it is. One assignment
+	// in the whole file is what says that: a second would be the end handler
+	// replacing the last screen with a sentence, throwing away the most useful
+	// thing on the page at the moment it became the only thing on it.
+	if wrote := strings.Count(source, "pane.textContent ="); wrote != 1 {
+		t.Errorf("crswd.js writes the pane's content %d times; want exactly 1 — the ending is said beside the screen, not over it", wrote)
+	}
+}
+
 // blockFor returns the body of the first block whose prelude contains marker,
 // so a test can assert about one rule rather than about the whole file. Braces
 // are counted, because a media query holds rules of its own.

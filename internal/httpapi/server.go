@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
@@ -148,6 +149,22 @@ type Server struct {
 	// and the session cap and unlike the clock or the listener: a caller may say
 	// where tmux and the trail are, never how bounded the daemon is.
 	streams *streamCap
+
+	// closing is how a response that is deliberately without an end is given one
+	// at shutdown (FR-034f). Every open stream selects on it, and Shutdown closes
+	// it before the drain begins — see Shutdown for why the order is the
+	// requirement rather than a tidy detail.
+	//
+	// It is the one field here that is written after Listen, and it is written
+	// exactly once: closeStreams guards it, and a receive on a closed channel is
+	// safe from any number of goroutines. What the handlers read is the channel
+	// value, which is fixed at construction like everything else.
+	closing chan struct{}
+
+	// closeStreams is that guard. A second close of the same channel panics, and
+	// a shutdown that panicked would take the verified teardown of every session
+	// down with it — which is the one thing shutdown exists to do.
+	closeStreams sync.Once
 
 	// panes is the shared screen buffer per watched session, and it is one per
 	// server for a reason the two bounds above do not have: two registries would
@@ -365,6 +382,7 @@ func newServer(
 		sessions:   sessions,
 		creates:    creates,
 		streams:    streams,
+		closing:    make(chan struct{}),
 		panes:      newPanes(),
 		streamTick: streamInterval,
 		clock:      systemClock{},
@@ -711,7 +729,18 @@ const shutdownDrain = 10 * time.Second
 // is the one thing this method exists to prevent — the caller is cmd/crswd,
 // which reports it and exits non-zero, so an operator's service manager records
 // a failed stop instead of a clean one.
+//
+// Streams are ended before any of it (FR-034f). An output stream is an in-flight
+// request that never finishes on its own, so a drain that had to wait for one
+// would wait out its entire budget and then close it anyway — and the budget is
+// not the cost. Behind the drain is the verified teardown of every session, so a
+// forgotten browser tab would be deciding how long unsandboxed shells outlive
+// the daemon that owns them, which is precisely the bound Principle VI refuses
+// to leave to a peer. Ending them first costs the watcher a farewell that
+// contracts/stream.md never promised.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.closeStreams.Do(func() { close(s.closing) })
+
 	drain, cancel := context.WithTimeout(ctx, shutdownDrain)
 	defer cancel()
 

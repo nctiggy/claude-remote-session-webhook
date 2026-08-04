@@ -1543,3 +1543,237 @@ func TestARecordAlreadyWrittenIsNotWrittenAgainWhenTheHandlerReturns(t *testing.
 		t.Errorf("a second emit reported %v; want nothing — writing once is not a failure", s.failed)
 	}
 }
+
+// --- T028: the lifecycle ------------------------------------------------------
+//
+// A stream is authorised at the open and re-authorised for as long as it runs
+// (FR-034b), it never postpones the deadline of the session it is watching
+// (FR-034f), and it is a response the daemon can end — by the session going
+// away, and by the daemon itself stopping.
+
+// awaitEnd reads until the terminal event arrives, and asserts its bytes.
+//
+// The bytes are spelled here by hand rather than derived from endEvent, for the
+// reason TestAScreenIsFramedAsOneJSONString spells its table: this is the one
+// place a change to the terminal event has to be written down twice before the
+// suite agrees with it. A client that is not this repository reads them, so what
+// they are is contracts/stream.md's business rather than an implementation
+// detail.
+//
+// Ordinary groups before it are read through rather than refused. The session
+// ends between two ticks, so whatever the stream was doing when it happened — a
+// heartbeat, or an event for a screen that changed just before — is allowed to
+// arrive first. What is bounded is how long the end may take, which is SC-015's
+// one interval expressed in writes.
+func awaitEnd(t *testing.T, body *bufio.Reader, opened time.Time) {
+	t.Helper()
+
+	for read := 0; read < ticksWatched; read++ {
+		line := readStreamLine(t, body, opened)
+		if line != "event: end\n" {
+			// An ordinary two-line group: its terminator, then on to the next.
+			if term := readStreamLine(t, body, opened); term != "\n" {
+				t.Fatalf("%q was followed by %q; an SSE line group ends with a blank line", line, term)
+			}
+			continue
+		}
+
+		if data := readStreamLine(t, body, opened); data != "data: \"ended\"\n" {
+			t.Fatalf("the terminal event carried %q; contracts/stream.md spells its payload as one JSON string", data)
+		}
+		if term := readStreamLine(t, body, opened); term != "\n" {
+			t.Fatalf("the terminal event was followed by %q; an SSE line group ends with a blank line", term)
+		}
+		return
+	}
+	t.Fatalf("the watched session ended and no terminal event arrived within %d writes; a view that stops in silence is a session that looks quiet",
+		ticksWatched)
+}
+
+// assertStreamIsOver insists the response ended, cleanly, with nothing after the
+// terminal event.
+//
+// Both halves matter and they fail differently. Bytes after the end are a client
+// that was told to close and then handed more; a read that fails rather than
+// reaching EOF is a connection torn down instead of a response completed, which
+// is what a browser reconnects from.
+func assertStreamIsOver(t *testing.T, body *bufio.Reader) {
+	t.Helper()
+
+	rest, err := io.ReadAll(body)
+	if err != nil {
+		t.Errorf("the stream did not end cleanly: %v", err)
+	}
+	if len(rest) != 0 {
+		t.Errorf("the stream wrote %q after it ended; nothing follows the terminal event", rest)
+	}
+}
+
+// TestAReapedSessionEndsTheStreamThatWasWatchingIt is FR-034b, SC-015 and US2
+// scenario 7 in one exchange: the reaper takes a session out from under a
+// browser that is watching it, and the browser is told.
+//
+// The reap is a real sweep rather than a record deleted by hand, because the
+// claim is about the daemon's own teardown reaching a watcher that teardown
+// knows nothing about. Nothing in Sweep looks for streams — that is the point.
+// The stream finds out by asking, which is what makes "authorisation is
+// re-evaluated, not established" a mechanism rather than a sentence.
+func TestAReapedSessionEndsTheStreamThatWasWatchingIt(t *testing.T) {
+	t.Parallel()
+
+	const screen = "$ claude --dangerously-skip-permissions\n"
+
+	f, addr := watching(t)
+	// Already past its idle bound at the fixture's instant, which gives the sweep
+	// below something to take without moving a clock: the stream's cadence is real
+	// elapsed time and the manager's is pinned, and the two must not have to agree
+	// about anything.
+	live, _ := f.fixture.plant(t, session.Session{
+		Name: "watch me", WorkDir: f.fixture.repo, LastActivity: idleAt(testTime),
+	})
+	f.fixture.tmux.SetPane(live.TmuxName(), screen)
+
+	opened := time.Now()
+	resp := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /sessions/%s/stream = %d; want %d — a session past its idle bound is still running until the sweep takes it",
+			live.ID, resp.StatusCode, http.StatusOK)
+	}
+
+	// Delivering before the reap, so that what follows is caused by it.
+	body := bufio.NewReader(resp.Body)
+	readScreen(t, body, opened, screen)
+
+	reaper, err := session.NewReaper(f.fixture.mgr, testTrail(t))
+	if err != nil {
+		t.Fatalf("session.NewReaper = _, %v; want a reaper", err)
+	}
+	// Teardown does not block on watchers: this returns while the stream is still
+	// open, and a sweep that waited for one would be the reaper's bound decided by
+	// a browser tab.
+	reaped, err := reaper.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("Sweep() = _, %v; want the watched session reaped", err)
+	}
+	if len(reaped) != 1 {
+		t.Fatalf("the sweep took %d sessions; want the one being watched", len(reaped))
+	}
+
+	awaitEnd(t, body, opened)
+	assertStreamIsOver(t, body)
+
+	// The buffer goes with the stream that held it. A session's screen is secret
+	// under docs/security.md §3, and one kept for a session that no longer exists
+	// is material a daemon running for weeks accumulates for nobody.
+	if watchers := f.panes.watching(live.ID); watchers != 0 {
+		t.Errorf("%d watchers still share the screen buffer of a reaped session; want none", watchers)
+	}
+}
+
+// TestWatchingASessionNeverAdvancesItsIdleClock is FR-034f's first half, and the
+// reason Manager.View exists at all.
+//
+// Watching is not driving. A stream that touched the record on every tick would
+// postpone the idle deadline for as long as the tab stayed open — and a tab left
+// open on a laptop nobody is at would hold an unsandboxed shell alive
+// indefinitely, which is the bound Principle VI calls non-negotiable, defeated
+// by the feature that was only supposed to look at it.
+//
+// The record is read out of the store rather than off a response, because what
+// must not move is the field the reaper judges, not the field the dashboard
+// renders.
+func TestWatchingASessionNeverAdvancesItsIdleClock(t *testing.T) {
+	t.Parallel()
+
+	const screen = "$ "
+
+	f, addr := watching(t)
+	live, _ := f.fixture.plant(t, session.Session{
+		Name: "watch me", WorkDir: f.fixture.repo, LastActivity: runningAt(testTime),
+	})
+	f.fixture.tmux.SetPane(live.TmuxName(), screen)
+
+	opened := time.Now()
+	resp := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /sessions/%s/stream = %d; want %d", live.ID, resp.StatusCode, http.StatusOK)
+	}
+
+	// Many ticks, so the claim is about a stream that has been watching rather
+	// than one that has only opened: every one of them resolves the record again.
+	body := bufio.NewReader(resp.Body)
+	readScreen(t, body, opened, screen)
+	for tick := 1; tick <= ticksWatched; tick++ {
+		readGroup(t, body, opened)
+	}
+
+	after, err := f.fixture.store.Get(live.ID, auth.CallerOperator)
+	if err != nil {
+		t.Fatalf("the record of a watched session is gone: %v", err)
+	}
+	if !after.LastActivity.Equal(live.LastActivity) {
+		t.Errorf("%d ticks of watching moved the idle clock from %v to %v; a forgotten tab must not hold a session open",
+			ticksWatched, live.LastActivity.UTC(), after.LastActivity.UTC())
+	}
+}
+
+// TestShutdownIsNotDelayedByOpenStreams is FR-034f's other half.
+//
+// A stream is an in-flight request that never finishes on its own, and shutdown
+// drains in-flight requests before it tears every session down. Left to the
+// drain, an open tab would spend the whole budget and then be closed anyway —
+// and the budget is not what is being protected. Behind it is the verified
+// teardown of unsandboxed shells the daemon is about to stop owning, which is
+// not a queue a browser gets to hold up.
+//
+// Two failures are asserted rather than one, because they are the two shapes
+// this goes wrong in: a drain that ran out reports its own deadline, and a
+// shutdown that spent the budget spent it out of the teardown's.
+func TestShutdownIsNotDelayedByOpenStreams(t *testing.T) {
+	t.Parallel()
+
+	const (
+		screen = "$ "
+		tabs   = 3
+	)
+
+	f, addr := watching(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), screen)
+
+	opened := time.Now()
+	bodies := make([]*bufio.Reader, 0, tabs)
+	for tab := 1; tab <= tabs; tab++ {
+		resp := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("tab %d answered %d; want %d", tab, resp.StatusCode, http.StatusOK)
+		}
+		// Read before the clock starts, so every stream is genuinely being served
+		// when shutdown begins rather than merely requested.
+		body := bufio.NewReader(resp.Body)
+		readScreen(t, body, opened, screen)
+		bodies = append(bodies, body)
+	}
+
+	began := time.Now()
+	if err := f.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() with %d streams open = %v; want a clean stop — a drain that waits out an endless response reports its own deadline",
+			tabs, err)
+	}
+	// Half the budget is slack rather than a requirement: streams are ended before
+	// the drain begins, so what is left for it is the six short routes it was
+	// sized for. Anything near the whole budget is a drain that waited for a
+	// response that was never going to finish.
+	if took := time.Since(began); took > shutdownDrain/2 {
+		t.Errorf("shutdown with %d streams open took %v; the whole drain budget is %v and the verified teardown waits behind it",
+			tabs, took.Round(time.Millisecond), shutdownDrain)
+	}
+
+	// No farewell is asserted. contracts/stream.md declines to promise one at
+	// shutdown — the daemon is racing its own service manager — and what the
+	// client relies on instead is the reconnect: to a live daemon it
+	// re-authorises, and to a dead one it fails visibly.
+	for _, body := range bodies {
+		assertStreamIsOver(t, body)
+	}
+}

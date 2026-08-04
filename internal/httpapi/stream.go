@@ -27,6 +27,17 @@ package httpapi
 // by whatever it happens to contain — and what it contains is whatever an
 // unsandboxed program chose to print.
 //
+// *How it ends* is the third subject, and the one that keeps the four checks
+// above honest. Authorisation here is re-evaluated rather than established: every
+// tick asks the daemon's own records whether there is still a session and whether
+// it is still this viewer's, so a session that was destroyed, reaped, or has
+// stopped being theirs stops being delivered within one interval and the watcher
+// is told rather than left with a screen that quietly never changes again. The
+// asking is also what keeps the two directions apart — nothing that tears a
+// session down has to know a watcher exists, and no watcher may hold anything up:
+// not the reaper, not a destroy, and not the shutdown that closes every stream
+// before it drains what is left.
+//
 // The trail is written at the open, and this is the one route on either door
 // that does not leave that to the middleware's deferred emit (FR-016a). A
 // response deliberately without an end cannot be recorded when the handler
@@ -44,6 +55,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 )
 
@@ -80,13 +92,15 @@ const (
 	secFetchSiteSameOrigin = "same-origin"
 )
 
-// dataField and groupEnd are SSE's own punctuation: the one field an event on
-// this route carries, and the blank line that ends any line group. Both writes a
-// tick can make are terminated by the same constant, so the two cannot drift into
-// disagreeing about what ends a group.
+// dataField, eventField and groupEnd are SSE's own punctuation: the field every
+// event on this route carries, the name only the terminal event carries, and the
+// blank line that ends any line group. Every write this route can make is
+// terminated by the same constant, so they cannot drift into disagreeing about
+// what ends a group.
 const (
-	dataField = "data: "
-	groupEnd  = "\n\n"
+	dataField  = "data: "
+	eventField = "event: "
+	groupEnd   = "\n\n"
 )
 
 // heartbeat is an SSE comment, which is a line that is not an event and carries
@@ -98,6 +112,22 @@ const (
 // tick is what turns a dead peer into a write error, and it is also what keeps
 // an idle proxy at the edge from severing a stream that is working perfectly.
 var heartbeat = []byte(":" + groupEnd)
+
+// endEvent is what a stream writes when the session it was watching is no longer
+// there, and it is the last thing it writes (FR-033, contracts/stream.md).
+//
+// It is the one *named* event on this route, and the name is what carries the
+// meaning: the client can tell the end from a screen without looking at the
+// payload, which is the only arrangement in which a session cannot announce its
+// own ending by printing one. Its data is still a JSON string, so the client
+// parses every event it receives the same way rather than keeping a second rule
+// for the one event that is different.
+//
+// What the client must do with it is close (FR-033). Without an explicit close
+// an EventSource reconnects for as long as the tab lives, and every reconnection
+// after the session ended is a request the daemon answers with the uniform 404 —
+// a polite client turned into a scanner of its own daemon.
+var endEvent = []byte(eventField + "end\n" + dataField + `"ended"` + groupEnd)
 
 // screenEvent frames one screen as the event a tick writes instead of the
 // heartbeat when the capture differs from the screen that stream last sent
@@ -170,6 +200,24 @@ var (
 	// way the host is watched.
 	errStreamCapReached = errors.New("the concurrent stream cap was reached, so the stream was refused")
 )
+
+// errWatchedSessionEnded is the re-evaluation's verdict, and it is the one error
+// in this file that is neither a refusal nor a failure: the stream was
+// authorised, served, and is now over because what it was watching is gone
+// (FR-034b).
+//
+// It reaches neither the response nor the trail. The response gets the terminal
+// event, which says the same thing in the transport's own vocabulary; the trail
+// got its one record at the open, and after that emit an amendment reaches
+// nobody — so a stream that ends carries no second record, which is the choice
+// contracts/stream.md makes and the invariant FR-041 keeps.
+//
+// It is deliberately not the error View returned. That error distinguishes an
+// unknown session from one this viewer no longer owns from a dead record, and
+// the three are one answer here for the reason they are one answer at the open:
+// a watcher who is told which of them happened is a watcher being told about
+// records that are not theirs.
+var errWatchedSessionEnded = errors.New("the watched session is no longer there to read")
 
 // sessionStream serves GET /sessions/{id}/stream (contracts/stream.md).
 //
@@ -284,7 +332,7 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 	shared, unwatch := s.panes.attach(live.ID)
 	defer unwatch()
 
-	if err := sse.hold(r.Context(), s.streamTick, s.reader(live, shared)); err != nil {
+	if err := sse.hold(r.Context(), s.streamTick, s.closing, s.reader(live, operator.Owner, shared)); err != nil {
 		// A peer that closed cleanly ends through the context and returns no
 		// error at all, so what reaches here is a write that failed against a
 		// connection nobody closed — the vanished browser the heartbeat exists to
@@ -295,14 +343,29 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// reader is what one held stream reads its screen from: the buffer shared by
-// every stream watching this session, the capture that fills it, and the single
-// report an outage earns.
+// reader is what one held stream reads its screen from: the authorisation it
+// re-answers every time, the buffer shared by every stream watching this
+// session, the capture that fills it, and the single report an outage earns.
+//
+// The re-evaluation is first, and it is a check rather than a lookup for
+// convenience (FR-034b). Authorisation here is *not established* at the open and
+// then remembered: a session that was destroyed, reaped, or has stopped being
+// this viewer's must stop delivering within one interval (SC-015), and a stream
+// holding the record it was admitted with would go on reading a window whose
+// record the daemon has already dropped. Asking the daemon's own store every
+// tick is what makes the ending a discovery rather than a race — teardown does
+// not have to find the watchers, because the watchers keep asking.
+//
+// The record the capture uses is the one that ask just returned, never the one
+// the open closed over. They agree today; the point is that if they ever
+// disagreed, the fresh one is the daemon's answer and the stale one is this
+// connection's memory.
 //
 // The capture goes through Manager.Output rather than the controller, which is
 // what keeps one stripper rather than a second that agrees today (FR-029) — and
 // what keeps the stream off the idle clock, since Output takes the record it was
-// given and reaches no store (FR-034f). Watching is not driving, on every tick
+// given and reaches no store (FR-034f). View does not advance it either, by
+// construction rather than by argument, so watching is not driving on every tick
 // and not only at the open.
 //
 // Failures are reported once per outage rather than once per tick. A session
@@ -313,11 +376,19 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 // not to the screen: two tabs on one dead session are two reports, which is a
 // number an operator can read, and the state that would make it one is state the
 // shared buffer would then have to unwind on every attach.
-func (s *Server) reader(live session.Session, shared *pane) func(context.Context) (string, error) {
+func (s *Server) reader(live session.Session, owner auth.CallerID, shared *pane) func(context.Context) (string, error) {
 	failing := false
 	return func(ctx context.Context) (string, error) {
+		current, err := s.sessions.View(live.ID, owner)
+		if err != nil {
+			// Nothing is reported and nothing is wrapped. A session that ended is
+			// the ordinary end of a stream rather than a failure of one, and the
+			// caller's answer to it is the terminal event.
+			return "", errWatchedSessionEnded
+		}
+
 		screen, err := shared.current(ctx, s.streamTick, func(ctx context.Context) (string, error) {
-			capture, err := s.sessions.Output(ctx, live)
+			capture, err := s.sessions.Output(ctx, current)
 			return capture.Text, err
 		})
 		switch {
@@ -519,8 +590,35 @@ func openStream(w http.ResponseWriter) (*stream, error) {
 // A cancelled context is the ordinary ending and not a failure: it is what a
 // closed tab, a dropped connection, and a closed server all arrive as, and every
 // one of them means this response is over.
-func (s *stream) hold(ctx context.Context, every time.Duration, read func(context.Context) (string, error)) error {
-	if screen, err := read(ctx); err == nil {
+//
+// There are two other endings, and neither is a failure either.
+//
+// The session going away ends the stream with the terminal event, because a view
+// that stopped updating in silence would be indistinguishable from a session
+// that had gone quiet (FR-033) — an operator would go on watching a screen that
+// is never coming back. It is discovered by the read, one interval at most after
+// it happened (SC-015), rather than delivered by whatever tore the session down:
+// teardown does not block on watchers, and nothing about it has to know that any
+// exist.
+//
+// The daemon shutting down ends the stream at once and *without* a farewell
+// (FR-034f, contracts/stream.md). Streams are ended here, before the drain, for a
+// blunt reason: a response deliberately without an end is an in-flight request
+// that never finishes, so a drain waiting for one would spend its whole budget
+// on a connection that was never going to complete — and that budget belongs to
+// the six short routes it was sized for, with the verified teardown of every
+// session waiting behind it. No farewell is guaranteed because the daemon is
+// racing its own service manager, and the client's reconnect covers the
+// difference: a reconnection to a live daemon re-authorises, and one to a dead
+// daemon fails visibly.
+func (s *stream) hold(ctx context.Context, every time.Duration, closing <-chan struct{}, read func(context.Context) (string, error)) error {
+	switch screen, err := read(ctx); {
+	case errors.Is(err, errWatchedSessionEnded):
+		// The session went between the open's ownership check and this first read.
+		// Rare, and served rather than special-cased: the operator gets the same
+		// account of it they would have got a tick later.
+		return s.end()
+	case err == nil:
 		if err := s.send(screen); err != nil {
 			return err
 		}
@@ -533,12 +631,26 @@ func (s *stream) hold(ctx context.Context, every time.Duration, read func(contex
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-closing:
+			return nil
 		case <-ticker.C:
-			if err := s.tick(ctx, read); err != nil {
+			switch err := s.tick(ctx, read); {
+			case errors.Is(err, errWatchedSessionEnded):
+				return s.end()
+			case err != nil:
 				return err
 			}
 		}
 	}
+}
+
+// end writes the terminal event, and a stream writes nothing after it.
+//
+// The write's own failure is still returned. The connection is gone either way,
+// but a farewell that could not be delivered is a browser that will reconnect
+// rather than close, and the caller's report is the only place that is visible.
+func (s *stream) end() error {
+	return s.write(endEvent)
 }
 
 // tick writes the event when the screen changed since this stream last sent one,
@@ -554,11 +666,17 @@ func (s *stream) hold(ctx context.Context, every time.Duration, read func(contex
 // A capture that failed is a suppressed tick and not the end of the stream. The
 // window may have gone between one tick and the next, and tmux may answer again
 // a second later; what turns a session that really ended into a closed stream is
-// the re-evaluation against the daemon's own records that T028 owns, never one
-// exec that did not answer.
+// the re-evaluation against the daemon's own records, never one exec that did not
+// answer. That verdict is the one error passed back to the caller rather than
+// answered with a heartbeat, and the distinction is the whole of why the two are
+// separate errors: an unanswered exec is a quiet second, and a session the daemon
+// no longer has a record of is not coming back.
 func (s *stream) tick(ctx context.Context, read func(context.Context) (string, error)) error {
 	screen, err := read(ctx)
-	if err != nil || (s.everSent && screen == s.sent) {
+	switch {
+	case errors.Is(err, errWatchedSessionEnded):
+		return err
+	case err != nil, s.everSent && screen == s.sent:
 		return s.write(heartbeat)
 	}
 	return s.send(screen)
@@ -652,6 +770,25 @@ func (p *panes) attach(id string) (shared *pane, release func()) {
 
 	var once sync.Once
 	return shared, func() { once.Do(func() { p.detach(id) }) }
+}
+
+// watching is how many streams share this session's buffer, and zero for a
+// session nobody is watching — which is also the answer for one whose buffer has
+// been dropped.
+//
+// It takes the registry's own lock, which is the whole reason it exists: the map
+// is written by every attach and detach, on whichever goroutine net/http gave
+// the handler, so an assertion that reached in from another one would be a data
+// race dressed up as a check.
+func (p *panes) watching(id string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	shared, ok := p.watched[id]
+	if !ok {
+		return 0
+	}
+	return shared.watchers
 }
 
 func (p *panes) detach(id string) {
