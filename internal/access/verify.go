@@ -67,22 +67,48 @@ var (
 // would fetch per request — exactly what FR-008 forbids.
 type Validator struct {
 	keys *keySet
+
+	// issuer is the exact string an assertion's `iss` must equal, and is the
+	// origin the key set itself fetches from rather than a second reading of the
+	// configured value.
+	issuer string
+
+	// aud is the audience tag this application is pinned to, compared for
+	// equality and never parsed (config.AccessAUD). Without it an assertion
+	// minted for any other application in the same Cloudflare account verifies
+	// here — the signing keys are per-account, and the audience is the only
+	// thing that names *this* one.
+	aud string
+
+	// clock is the same clock the key set measures its refetch floor on, so a
+	// suite can settle the floor and a token's validity window at one instant.
+	// It is a field rather than a call to time.Now for that reason alone.
+	clock clock
 }
 
 // New builds the validator, and is the one place this package chooses the host
 // clock — everything below it measures time on the clock it was given, which is
-// what lets the refetch floor be tested without sleeping for a minute.
+// what lets the refetch floor and an assertion's expiry be tested without
+// sleeping.
 //
 // It takes the team domain for the same reason newKeySet does: the issuer the
 // assertion must name and the origin the keys come from are two readings of one
-// configured value. The audience, the allowlist, and the time checks join here
-// in T005 and T006.
-func New(teamDomain string) (*Validator, error) {
-	keys, err := newKeySet(teamDomain, systemClock{})
+// configured value, and the issuer here is literally the key set's own origin.
+// The allowlist joins in T006.
+func New(teamDomain, aud string) (*Validator, error) {
+	// The audience is the one layer-1 value with no derivation and no default:
+	// an empty one would compare equal to an assertion carrying an empty tag,
+	// which is a pin that pins nothing (FR-011).
+	if aud == "" {
+		return nil, errors.New("access: no audience configured for the Access assertions; refusing to start")
+	}
+
+	clk := systemClock{}
+	keys, err := newKeySet(teamDomain, clk)
 	if err != nil {
 		return nil, err
 	}
-	return &Validator{keys: keys}, nil
+	return &Validator{keys: keys, issuer: keys.origin, aud: aud, clock: clk}, nil
 }
 
 // joseHeader is the two fields verification cannot proceed without, plus the one

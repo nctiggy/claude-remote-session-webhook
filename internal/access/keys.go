@@ -115,6 +115,13 @@ func (systemClock) Now() time.Time { return time.Now() }
 //
 // These are the *edge's* keys. Google signs nothing this daemon ever sees.
 type keySet struct {
+	// origin is the normalised scheme-and-host the key URL was built from, kept
+	// because the issuer an assertion must name is that same origin. Reading it
+	// back from here is what makes data-model.md's one-configured-value rule
+	// true by construction: the address the keys came from and the authority the
+	// assertion claims cannot be normalised into disagreement, because only one
+	// normalisation ever runs.
+	origin string
 	url    string
 	client *http.Client
 	clock  clock
@@ -163,8 +170,10 @@ func newKeySet(teamDomain string, clk clock) (*keySet, error) {
 		return nil, errors.New("access: the configured team domain names no usable scheme; refusing to start")
 	}
 
+	origin := u.Scheme + "://" + u.Host
 	return &keySet{
-		url:    u.Scheme + "://" + u.Host + certsPath,
+		origin: origin,
+		url:    origin + certsPath,
 		client: &http.Client{Timeout: fetchTimeout},
 		clock:  clk,
 		floor:  refetchFloor,

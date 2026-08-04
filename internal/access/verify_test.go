@@ -68,9 +68,15 @@ func mintHS256(t *testing.T, pub *rsa.PublicKey, header, claims string) string {
 
 // newTestValidator wires a validator to a key server, bypassing New so the
 // clock stays under the test's control. New's own wiring is asserted separately.
+//
+// The issuer is read back off the key set rather than restated, exactly as New
+// does it: a fixture that spelled the origin itself could pass while production
+// derived a different one.
 func newTestValidator(t *testing.T, srv *keyServer, clk clock) *Validator {
 	t.Helper()
-	return &Validator{keys: mustKeySet(t, srv.URL(), clk)}
+
+	keys := mustKeySet(t, srv.URL(), clk)
+	return &Validator{keys: keys, issuer: keys.origin, aud: testAUD, clock: clk}
 }
 
 // publishing returns a key server holding the one key the daemon trusts, and a
@@ -398,7 +404,7 @@ func TestNewWiresTheKeySet(t *testing.T) {
 	key := signingKey(t, 0)
 	srv := newKeyServer(t, keySetJSON(jwkFor(t, "k1", &key.PublicKey)))
 
-	v, err := New(srv.URL())
+	v, err := New(srv.URL(), testAUD)
 	if err != nil {
 		t.Fatalf("New(%q): %v", srv.URL(), err)
 	}
@@ -418,9 +424,20 @@ func TestNewRefusesAnUnusableTeamDomain(t *testing.T) {
 	t.Parallel()
 
 	for _, domain := range []string{"", "team.cloudflareaccess.com", "https://", "ftp://team.cloudflareaccess.com"} {
-		v, err := New(domain)
+		v, err := New(domain, testAUD)
 		if err == nil {
-			t.Fatalf("New(%q) built %v, want a refusal", domain, v)
+			t.Fatalf("New(%q, %q) built %v, want a refusal", domain, testAUD, v)
 		}
+	}
+}
+
+// TestNewRefusesAnEmptyAudience is the same rule for the value with no
+// derivation to fall back on: an empty audience compares equal to an assertion
+// carrying an empty tag, so it is a pin that pins nothing (FR-011).
+func TestNewRefusesAnEmptyAudience(t *testing.T) {
+	t.Parallel()
+
+	if v, err := New("https://team.cloudflareaccess.com", ""); err == nil {
+		t.Fatalf("New with no audience built %v, want a refusal", v)
 	}
 }
