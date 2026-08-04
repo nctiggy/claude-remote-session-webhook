@@ -10473,3 +10473,141 @@ names** (see findings 240 and 241). US3's first half is now real.
 T019 is the route-level one, plus "does not crash or hang"), then T020–T021 (US4),
 T022–T029 (US2, the stream), T030–T034 (docs, `.env.example`, quickstart). Plus the four
 unowned findings above (202, 214, 223, 231).
+
+---
+
+## Iteration 62 (milestone 2, iteration 19) — 2026-08-04 07:54
+
+**Did:** **T019** — fail-closed asserted end to end, at the routes. US3 is complete.
+Five tests in `internal/httpapi/browser_test.go`, under a `--- T019` heading, driving the
+browser door's whole surface through the real router while the edge's signing keys cannot
+be obtained.
+
+**What was added:**
+
+- `browserSurface(sessionID)`: the four requests this door answers — the fleet (`GET /`),
+  `GET /sessions/{id}/view` (the address every card links to, finding 202), a path
+  nothing claims, and `PUT /sessions` (a contract *path* with a method no route answers,
+  the one browser row that shares a pattern with the API door). Written out rather than
+  derived from the router, because what is being asserted is *which door each path is
+  on*, and a list derived from the router would agree with whatever the router does.
+- `TestTheBrowserSurfaceIsServedWhenTheKeysCanBeObtained` — the control, in the shape
+  iteration 61 established for the door's own table. It pins each row's **audit action**
+  (`dashboard.view` / `route.unknown`) as well as its status, which is the half a status
+  cannot give: a row that had drifted onto the API door would still be 401 in the sweep
+  below, for want of a *signature*, and nothing about a 401 says which check refused.
+- `TestEveryBrowserRequestIsRefusedWhenTheKeysCannotBeObtained` — FR-009 at the routes,
+  for two shapes of unobtainable (unreachable origin; a set holding no usable key). Every
+  route answers the one uniform refusal; the bodies withhold the planted session **and**
+  `notFoundTitle` (an answer naming which paths are unclaimed is the route table, handed
+  out during the one failure where nobody is verified); headers are compared **across
+  routes**, not merely across failures; one `access.reject` record apiece, caller unknown.
+- `TestAnUnobtainableKeySetCostsOneFetchAndNoStartup` — a key source that answers 503 and
+  counts. Zero fetches before the first request (reachability is not configuration:
+  SC-013 makes *config* fail startup, and a daemon that fetched at boot would not start
+  during an outage, taking the API door down with it), and exactly one across five
+  refused requests.
+- `TestABrowserRequestIsAnsweredWhenTheKeySourceNeverAnswers` — `newSilentKeyServer`
+  accepts the connection and says nothing. This is the "does not hang" half and the only
+  test in the repo that fails when `internal/access`'s key client loses its timeout.
+- `TestTheSignedAPIIsUnaffectedWhenTheKeysCannotBeObtained` — the six operations keep
+  their exact statuses during the outage, with a browser 401 first so the sweep cannot
+  pass by the outage not happening. T020 still owns the general non-regression claim;
+  this is only the crossing-the-doors case.
+- `newFleetWith(t, keys)` in `dashboard_test.go`, beside `newFleet` which now delegates.
+
+**Mutation-tested.** Four mutations, all caught:
+
+1. **Step 4 falling through to the claims when the key cannot be obtained**
+   (`return claims, nil`) — the fail-open reading FR-009 exists to forbid, and the one
+   that would admit *every* browser during an outage. Caught by all five new tests.
+2. `refetchFloor = 0` → the cost test alone in this package (`access`'s own floor test
+   also fails).
+3. The fleet registered with `s.mux.Handle` instead of `handleBrowser` → caught by the
+   refusal sweep and the cost test, but **not by status**: `dashboard` refuses on its own
+   when no operator is in the context, so `GET /` was still 401. What caught it was the
+   **cross-route header comparison** (the undoored response carried none of the security
+   headers) and **zero fetches**. See finding 250.
+4. `&http.Client{}` in place of `&http.Client{Timeout: fetchTimeout}` → **the entire
+   `internal/access` suite still passed**; only the silent-key-source test failed, after
+   waiting out its 60s deadline.
+
+**Learned:**
+
+1. **A handler that fails closed on its own can hide a missing door.** Mutation 3 is the
+   general case of it: `dashboard` refuses without an operator, `notFound` does too, so
+   "the route answered 401" is satisfied by a route with no layer 1 in front of it at
+   all. The claims that survive that are the ones about things only the middleware
+   produces — the security headers, the audit action, and the outbound fetch. Worth
+   carrying into T023, where the stream's open sequence has the same shape.
+2. **`newDeadKeyServer` cannot test a hang.** A refused connection returns in
+   microseconds, so every claim built on it passes on a daemon with no bound on the fetch
+   whatsoever. Only a socket that accepts and stays quiet asks the question.
+3. **The refused-request reason changes after the first one.** With the keys
+   unobtainable, request 1 records `errKeysUnobtainable` and requests 2+ record
+   `errRefetchFloored` — a *different* sentinel, same uniform response. A route-level
+   test that pinned the reason string would have been green only for its first row.
+4. `t.Cleanup` is LIFO, so the silent server registers `srv.Close` **first** and the
+   release of its blocked handler **second**. The other order deadlocks the test binary:
+   `Close` waits for the handler, and the handler waits for the release.
+
+**Findings:**
+
+250. **The package suite now takes ~5.5s, up from ~0.7s**, entirely from the
+    silent-key-source test waiting out `internal/access`'s 5s `fetchTimeout`. `go test
+    ./...` went from 1.3s to ~5.6s. It is the price of the only assertion that would
+    notice the timeout being deleted (mutation 4), and `internal/access` cannot be given
+    a shorter one from here — `access.New` takes no client and no timeout, and the field
+    is unexported. If a future task wants the suite fast again, the fix is a seam in
+    `access` (a `newValidatorWith`-style constructor), not a weaker test.
+251. **`fetchTimeout` had no test at all before this iteration.** Recorded because it is
+    the third time this milestone a load-bearing value turned out to be uncovered while
+    everything around it was heavily tested (60 #234's comment, 61 #240's step-7
+    collision). The pattern: a value that only matters when a dependency *misbehaves in a
+    particular way* is invisible to fixtures that make it fail cleanly.
+252. **Iteration 14 #1 / … / 61 #244 still stands:** `git checkout --`, `git restore`,
+    `sed -i` and `cp` are outside the permission allowlist, so four mutations cost eight
+    Edit round trips. New data point: a **heredoc `git commit -F -`** was refused by the
+    permission layer for containing a command substitution the parser could not analyse,
+    and `Write` to `/tmp` was refused as well — the workaround that did land was
+    `git commit` with repeated `-m` flags, which is worth reaching for first next time
+    (an em-dash and quotes inside `-m` are fine; a bare `"` is not).
+253. **Iteration 1 #1 / … / 61 #245 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the
+    hook: "no leaks found".)
+254. **Iteration 2 #2 / … / 61 #246 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+255. **Iteration 6 #6 / … / 61 #247 still stands:** `AGENTS.md`'s command table names none
+    of `go test -tags tmux ./...`, `go test -tags quickstart ./cmd/crswd`, or
+    `go test -tags dev ./...`. **T032.** `dev` **was** run this iteration and passes.
+    `tmux` and `quickstart` were not, for the standing reasons (real tmux on the host
+    running the live daemon; the quickstart suite collides with that daemon's port,
+    59 #225). This task adds tests to one package and changes no production code — the
+    four mutations above were reverted and `git diff --stat` before the commit showed
+    only the two test files.
+256. **`deploy/README.md`'s four-variable trap (44 #84 / … / 61 #248) still stands.**
+    **T033.**
+257. **Findings 202–205, 211–216, 223 and 231–233 are unchanged.** `/sessions/{id}/view`
+    (202) is now *named* by `browserSurface` as a browser route, which is a row that will
+    change shape in milestone 3 when the page exists — it asserts the refusal, not the
+    404, so it should survive. Still unowned: the **unregistered `GET /static/crswd.css`**
+    (223 — and note `browserSurface` has no asset row *because* there is no asset route;
+    when 223 is fixed, a row belongs here), the unbuilt rain loop / unwritten
+    `web/static/crswd.js` (214), and the leak suite's blindness to the browser door (231).
+    Also open: `Manager.List`'s clock-neutrality covered only from another package (203),
+    a component test not being a call-site test (204/233), `Server` and `Manager` holding
+    separate clocks (205), the milestone-1 test row that moved rather than weakened (211,
+    for **T021**), the `Cache-Control` default resolved inside a contract silence
+    (**T031**), the missing `--dev-auth-bypass` flag (**T034**), the pane styling deferred
+    to **T026** (215), the untokenised values in `docs/design-system.md` (216),
+    `Store.SetState` uncalled and contradicted, and `View`'s deliberate silence about
+    `AbsoluteDeadline` (**T028**).
+
+**Left:** **US3 is complete** (T018–T019), and with US1 that is everything before the
+milestone's shipping point except US4's two proofs. Next is **T020** (the non-regression
+guard: each door refuses only by its own check, and milestone 1's six routes keep their
+exact statuses and bodies), then **T021** (`go test -tags quickstart ./cmd/crswd`
+unchanged — see finding 211, and 59 #225 on the port collision with the live daemon),
+then T022–T029 (US2, the stream) and T030–T034 (docs, `.env.example`, quickstart). Plus
+the four unowned findings above (202, 214, 223, 231) and the new suite-runtime cost (250).
