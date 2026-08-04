@@ -205,18 +205,30 @@ func TestTheCardStatesWhatTheDaemonDoesNotKnow(t *testing.T) {
 	}
 }
 
-// The three shapes the assertions below read out of a rendered card: any link,
-// the heading that has to hold it, and the paragraph the identifier is rendered
-// into once it is no longer the link itself.
+// The four shapes the assertions below read out of a rendered card: any link,
+// the heading that has to hold it, the paragraph the identifier is rendered into
+// once it is no longer the link itself, and the link's reference to it.
 var (
-	cardAnchor        = regexp.MustCompile(`(?s)<a\b([^>]*)>(.*?)</a>`)
-	cardHeading       = regexp.MustCompile(`(?s)<h2[^>]*\bclass="card-heading"[^>]*>(.*?)</h2>`)
-	cardIdentifier    = regexp.MustCompile(`(?s)<p[^>]*\bclass="card-id"[^>]*>(.*?)</p>`)
-	cardDescribedBy   = regexp.MustCompile(`aria-describedby="([^"]*)"`)
-	cardDescriptionOf = func(id string) *regexp.Regexp {
-		return regexp.MustCompile(`<[a-z][a-z0-9]*[^>]*\bid="` + regexp.QuoteMeta(id) + `"[^>]*>([^<]*)<`)
-	}
+	cardAnchor      = regexp.MustCompile(`(?s)<a\b([^>]*)>(.*?)</a>`)
+	cardHeading     = regexp.MustCompile(`(?s)<h2[^>]*\bclass="card-heading"[^>]*>(.*?)</h2>`)
+	cardIdentifier  = regexp.MustCompile(`(?s)<p[^>]*\bclass="card-id"[^>]*>(.*?)</p>`)
+	cardDescribedBy = regexp.MustCompile(`aria-describedby="([^"]*)"`)
 )
+
+// describedBy is the text of the element an aria-describedby names. Built per
+// call because the id it matches is the session's own, which is the whole point:
+// a description that resolved to some other card's element would read correctly
+// and describe the wrong unsandboxed shell.
+func describedBy(t *testing.T, markup, id string) (string, bool) {
+	t.Helper()
+
+	element := regexp.MustCompile(`<[a-z][a-z0-9]*[^>]*\bid="` + regexp.QuoteMeta(id) + `"[^>]*>([^<]*)<`)
+	match := element.FindStringSubmatch(markup)
+	if match == nil {
+		return "", false
+	}
+	return strings.TrimSpace(match[1]), true
+}
 
 // TestTheCardLinksTheNameAndNotOnlyTheIdentifier is issue #16.
 //
@@ -293,12 +305,12 @@ func TestTheLinkOnACardWithNoNameIsStillToldApartFromEveryOther(t *testing.T) {
 	if describes == nil {
 		t.Fatalf("the link reads %q and carries nothing else; every adopted card in the fleet would announce that same sentence:\n%s", strings.TrimSpace(anchors[0][2]), got)
 	}
-	described := cardDescriptionOf(describes[1]).FindStringSubmatch(got)
-	if described == nil {
+	description, ok := describedBy(t, got, describes[1])
+	if !ok {
 		t.Fatalf("the link is described by %q and the card renders no element with that id:\n%s", describes[1], got)
 	}
-	if strings.TrimSpace(described[1]) != adopted.ID {
-		t.Errorf("the link's description reads %q; the identifier is the only thing that separates two adopted cards:\n%s", strings.TrimSpace(described[1]), got)
+	if description != adopted.ID {
+		t.Errorf("the link's description reads %q; the identifier is the only thing that separates two adopted cards:\n%s", description, got)
 	}
 }
 
