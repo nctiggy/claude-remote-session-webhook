@@ -395,6 +395,32 @@ func (s *Server) Reconcile(ctx context.Context) error {
 	return nil
 }
 
+// StartReaper launches the idle and absolute-lifetime sweep and returns once it
+// is running. It stops when ctx is done.
+//
+// It lives here rather than in main because the reaper needs the manager and the
+// audit sink, and this package owns both — main holding either of them would be a
+// second route to the one thing in the daemon that can cause execution on the
+// host. Failing to build one is fatal to the caller for the same reason a missing
+// secret is: a daemon serving without a reaper has no idle timeout and no
+// ceiling, which is two of the five bounds Principle VI calls non-negotiable, and
+// the sessions it starts would then only ever end by an explicit destroy or a
+// restart.
+//
+// A goroutine rather than a blocking call, because the reaper's whole point is
+// that an abandoned session dies without a request arriving to notice. Nothing
+// waits on it: Run returns on cancellation, and the teardown that matters at
+// shutdown is Shutdown's, which reaps every session rather than only the expired
+// ones.
+func (s *Server) StartReaper(ctx context.Context) error {
+	reaper, err := session.NewReaper(s.sessions, s.trail)
+	if err != nil {
+		return fmt.Errorf("httpapi: start the reaper: %w", err)
+	}
+	go reaper.Run(ctx)
+	return nil
+}
+
 // Listen binds the configured address and refuses to keep a listener that is not
 // on loopback.
 //

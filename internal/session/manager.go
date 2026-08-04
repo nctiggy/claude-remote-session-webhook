@@ -270,6 +270,27 @@ func (m *Manager) Resolve(id string, owner auth.CallerID, presented string) (Ses
 	if s.State == StateDead {
 		return Session{}, fmt.Errorf("resolve session: %w", ErrSessionDead)
 	}
+
+	// The idle clock moves here, and only here, because this is the one place a
+	// request becomes a session — every session-scoped route reaches its record
+	// through this call and nothing else can. A handler doing it instead would be
+	// a rule each new route has to remember, and the cost of forgetting is a live
+	// session the reaper destroys out from under an operator who is using it.
+	//
+	// After the checks, never before: a request that failed the owner or the
+	// credential is not activity on the session, and letting it postpone the
+	// deadline would let anyone who can reach the listener keep a session alive
+	// forever without ever authenticating to it.
+	//
+	// The returned copy is the pre-touch one. LastActivity is the field this just
+	// wrote, so re-reading the record to carry it back would cost a second lock
+	// for a value no caller of Resolve reads — the handler renders the session it
+	// was given, and GET /sessions reads the store afresh.
+	now := m.clock.Now()
+	if err := m.store.Touch(s.ID, now); err != nil {
+		return Session{}, fmt.Errorf("resolve session: %w", err)
+	}
+	s.LastActivity = now
 	return s, nil
 }
 

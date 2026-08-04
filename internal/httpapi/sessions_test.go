@@ -1842,10 +1842,21 @@ func TestListRefusesARequestWithNoAuthenticatedCaller(t *testing.T) {
 	}
 }
 
-// detailUsed is the fixture's last_activity, deliberately not its created_at, so
-// that a handler echoing either instant for the other is caught rather than
-// agreed with.
-var detailUsed = testTime.Add(33 * time.Minute)
+// detailCreated ages the fixture's session so that created_at and last_activity
+// are different instants and a handler echoing either for the other is caught
+// rather than agreed with.
+//
+// The distance is on the *creation* rather than on the activity because reaching
+// a session through Manager.Resolve moves its idle clock — that is what stops the
+// reaper destroying a session someone is using — so any planted last_activity is
+// overwritten by the very request that reads it. Which makes detailUsed below the
+// stronger fixture: it is not a value this file wrote, it is the one the daemon
+// wrote while answering.
+var detailCreated = testTime.Add(-33 * time.Minute)
+
+// detailUsed is what last_activity must be after a detail request: the instant of
+// that request, on the daemon's own clock.
+var detailUsed = testTime
 
 // detailFixture is a server holding one live session and the only copy of its
 // credential — what every claim on GET /sessions/{id} starts from. The record is
@@ -1867,7 +1878,8 @@ func newDetailFixture(t *testing.T) detailFixture {
 		Name:         "refactor-auth",
 		WorkDir:      s.fixture.repo,
 		State:        session.StateRunning,
-		LastActivity: detailUsed,
+		CreatedAt:    detailCreated,
+		LastActivity: detailCreated,
 	})
 	return detailFixture{testServer: s, live: live, token: issued}
 }
@@ -1921,8 +1933,8 @@ func TestDetailAnswersTheContractResponse(t *testing.T) {
 		"name":          "refactor-auth",
 		"work_dir":      f.fixture.repo,
 		"state":         "running",
-		"created_at":    testTime.Format(time.RFC3339),
-		"expires_at":    testTime.Add(24 * time.Hour).Format(time.RFC3339),
+		"created_at":    detailCreated.Format(time.RFC3339),
+		"expires_at":    detailCreated.Add(24 * time.Hour).Format(time.RFC3339),
 		"last_activity": detailUsed.Format(time.RFC3339),
 		"adopted":       false,
 	}

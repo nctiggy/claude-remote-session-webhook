@@ -85,6 +85,16 @@ func run(ctx context.Context) error {
 	if err := srv.Reconcile(ctx); err != nil {
 		return err
 	}
+
+	// Before the listener binds, so that no session can exist without the sweep
+	// that bounds it already running (FR-038). It stops when ctx does, which is
+	// the same signal that begins shutdown — and shutdown tears down every
+	// session, not only the expired ones, so there is no window where the two
+	// disagree about who is responsible for the fleet.
+	if err := srv.StartReaper(ctx); err != nil {
+		return err
+	}
+
 	if err := srv.Listen(); err != nil {
 		return err
 	}
