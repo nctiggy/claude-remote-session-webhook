@@ -96,7 +96,7 @@ wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and stop.
 - [x] T014 `internal/httpapi/dashboard.go`: `GET /` — state summary before detail, one card per session **the viewer owns**, read through T012's non-touching path. Adopted sessions have no name and no working directory; render that as an explicit unknown, never a plausible-looking placeholder
 - [x] T015 `web/static/crswd.css`: tokens from `docs/design-system.md` only — no hard-coded colour, size or font anywhere. Focus ring, one breakpoint, and `prefers-reduced-motion` removing the rain entirely
 - [x] T016 `internal/httpapi/server.go`: unmatched paths answer through the **browser** door, so a signed-in operator who mistypes a URL does not get the API's raw JSON
-- [ ] T017 US1 acceptance suite: zero external origins in the rendered markup, every state distinguishable without colour, and the cross-owner refusal exercised **through the dashboard's own route** with a synthetic second owner — milestone 1's API test does not satisfy this
+- [x] T017 US1 acceptance suite: zero external origins in the rendered markup, every state distinguishable without colour, and the cross-owner refusal exercised **through the dashboard's own route** with a synthetic second owner — milestone 1's API test does not satisfy this
 
 ### US3 — A browser that should not be here gets nothing (P3)
 

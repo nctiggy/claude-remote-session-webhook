@@ -10171,3 +10171,165 @@ the catch-all has to be reached another way.
     milestone-1-only action list (**T017**/**T029**), the missing `--dev-auth-bypass` flag
     (**T034**), `Store.SetState` uncalled and contradicted, and `View`'s deliberate silence
     about `AbsoluteDeadline` (**T028**).
+
+---
+
+## Iteration 60 (milestone 2, iteration 17) — 2026-08-04 07:21
+
+**Did:** **T017** — the US1 acceptance suite, five tests at the foot of
+`dashboard_test.go` under their own heading. Everything in that file until now was a
+claim about a handler; these are claims about what an operator receives, each driven
+through the real router and asserted against the response alone. **US1 is closed, and
+the milestone reaches its shipping checkpoint.**
+
+**The five, and the reason each is shaped the way it is:**
+
+- **Zero external origins (SC-005, FR-025) is attribute-scoped, not a search for
+  `https://`.** A session name and a working directory reach the page as text *and*
+  inside `title="…"`, so a caller who names a session after the repository they work on
+  puts `https://github.com/…` in the markup legitimately. What FR-025 forbids is the
+  page *fetching* from elsewhere, so the sweep matches the attributes that fetch
+  (`href|src|srcset|action|formaction|poster|cite|background|data|manifest`) and refuses
+  any value carrying a scheme **or the protocol-relative `//` form** — the one a sweep
+  for `https:` misses. Three pages: a fleet rendering caller text shaped like a
+  reference, an empty fleet, and the not-found page.
+- **Non-vacuity is asserted twice.** The hostile text must really be on the page, and
+  the page must really link `/static/crswd.css` — a page that stopped referencing
+  anything would satisfy "no external origin" by referencing nothing.
+- **"Distinguishable without colour" (SC-009) is done by removing the colour.** Every
+  `class="…"` is stripped and the assertions run on what is left. The premise is
+  asserted first: no ` style=` attribute and no `<style` element, so classes really are
+  the only colour channel — and those two absences are the CSP's job at runtime, held
+  here because a proxy that stripped the header must not be the only thing enforcing them.
+- **The cross-owner refusal is byte-identity, not absence.** A fleet holding a second
+  owner's session and a fleet holding nothing must be the *same bytes*. An absence check
+  passes on a page that leaks the difference by a count, a heading, or a stray space,
+  and the difference between "not yours" and "does not exist" is what enumeration is
+  made of.
+- **The identity test is also byte-identity.** A request carrying six identity-shaped
+  fields (`Cf-Access-Authenticated-User-Email`, two `X-Forwarded-*`, `X-Remote-User`,
+  `From`, a `CF_Authorization` cookie, `?email=`) plus **a second, genuinely signed
+  assertion naming someone the allowlist refuses** must be answered with the identical
+  page. The second assertion is the sharp one: if the door read the last header value
+  rather than the first, the request would be refused outright, so the 200 is as much of
+  the assertion as the body.
+- **The fifth is the trail** (FR-035, SC-008): the record for a page carries neither the
+  name nor the working directory it rendered, nor the verified address, nor the
+  assertion. See finding 231 for why this had to be written here rather than added to
+  `internal/audit`'s leak suite.
+
+**Mutation-tested.** Seven edits, all caught; **three were caught by nothing but the new
+tests**, which is the answer to whether this suite was worth writing:
+
+1. `<link href="https://cdn.example.net/x.css">` added to `dashboard.html` → the two
+   fleet subtests, plus both existing source sweeps.
+2. **The card's `href` changed to `{{ .WorkDir }}` → caught by the new test alone.** A
+   caller-chosen value in a fetching position is invisible to `partials_test.go` and
+   `stylesheet_test.go` because those read the *sources*, and a source has no caller text
+   in it. This is the defect SC-005 is actually about and nothing was holding it.
+3. The status pill's label moved into `title="…"` → the new test, plus two existing ones.
+4. **The summary row rendering `<span class="pill pill-{{ .State }}"></span>` instead of
+   the pill partial → caught by the new test alone.** `TestTheFleetSummaryCountsTheCardsBelowIt`
+   passes happily: it looks for the `pill-<state>` *class* and the count, which is to say
+   it identifies the state by its colour. A summary row nobody can read without colour
+   survived every test in the package.
+5. `Store.List` losing its owner filter → the new test, the existing fleet test, and
+   `TestListReturnsOnlyTheCallersOwnSessions`.
+6. `ra.rec.Caller = operator.Email` → the new trail test and `TestBrowserDoorAdmitsAVerifiedOperator`.
+7. **`dashboard` preferring `Cf-Access-Authenticated-User-Email` when present → caught by
+   the new test alone.** Nothing else in the package asks where the rendered identity
+   came from; `partials_test.go` feeds the component a `VerifiedOperator` directly, which
+   is finding 204 in concrete form.
+
+**Learned:**
+
+1. **`cardFor` had to find a card by its element rather than by `class="card"`**, or it
+   could not read a page the colour had been stripped from. The card is the only
+   `<article>` the dashboard renders and the new test holds that with a count, so the
+   helper is no weaker — and one helper serving both pages is what keeps the coloured and
+   colourless assertions talking about the same cards.
+2. **A summary entry has to be asserted per `<li>`.** A page-wide search for the state and
+   a page-wide search for the count both pass on a row that paired them the wrong way
+   round, which is the same trap `cardFor` exists for one level up.
+3. **`http.Header.Set` then `Add` is a real test case, not a curiosity.** `Get` returns the
+   first value, so a second assertion appended to the same header is silently ignored —
+   and that is worth pinning, because "last one wins" is what a hand-rolled reader would
+   most plausibly do.
+4. **Byte-identity between two `newFleet` instances works** and is the strongest available
+   spelling of a refusal that must disclose nothing. Nothing instance-specific (temp dir,
+   key server origin, minted assertion) reaches a rendered page.
+
+**Findings:**
+
+231. **`internal/audit/leak_test.go` still drives the API door only, and its own comment
+    names T017 as the task that would fix it — wrongly.** `leakConfig` says "when the
+    browser door's own operations join `driveEveryOperation` (T017), an assertion these
+    values would actually admit is what that task has to mint", and the action list in
+    `TestTheLeakSuiteReallyDrivesTheDaemon` is milestone 1's nine actions with none of
+    `dashboard.view`, `dashboard.asset`, `access.reject` or `route.unknown`. T017's own
+    text — in both `tasks.md` and the plan — is four claims in `dashboard_test.go` and
+    says nothing about the leak suite, and doing it properly is a second deliverable in
+    another package: `leakConfig` points at a real Cloudflare hostname, so driving the
+    browser door there means standing up a key server inside `package audit_test` (an
+    RSA pair, a JWK set, an `httptest` server, a loopback team domain), because the
+    httpapi fixtures that already do this are package-internal and unreachable from an
+    external test package. Principle II says don't invent that into this task. **What
+    T017 shipped instead** is `TestTheFleetsRecordCarriesNothingThePageRendered`, which
+    makes the same claim for the values a page has in scope, in-package, at the fleet
+    route. **This needs a task of its own** — probably beside **T029**, when the stream
+    and the view page make the browser door's operation list complete. Until then the
+    daemon-wide sweep is blind to a browser-door record.
+232. **The `/sessions/{id}/view` half of FR-037b is a guard, not a proof, and the test
+    says so.** T017 exercises the cross-owner refusal through `GET /` — the only
+    dashboard route that exists — where it is a real assertion. The suite *also* asks the
+    address every card links to for a second owner's session and for an ID that never
+    existed, and requires the two answers to be identical; today both are the browser
+    door's not-found page, so it passes for a reason that is not FR-037b. It was kept
+    because it becomes the requirement's own assertion the moment finding 202's route
+    lands, and because it does hold something true now: the link target discloses nothing
+    about which identifiers are real. Whoever builds that page should read the assertion
+    as already written for them.
+233. **Finding 204 now has a name and a mutation.** "A component test is not a call-site
+    test" was an observation; mutation 7 above is the concrete cost — the rendered
+    identity could have come from a request header and only a call-site test noticed.
+    Same for mutation 4 and the summary row. Worth keeping in mind for T026, which will
+    be tempted to test the pane component instead of the page that carries it.
+234. **Iteration 14 #1 / … / 59 #226 still stands:** `git checkout --`, `git restore`,
+    `sed -i` and `cp` are outside the permission allowlist, so seven mutations cost
+    fourteen Edit round trips again. A compound `golangci-lint run 2>&1 | tail -20; …`
+    was also refused for its second half, so the lint and the format check ran as two
+    commands.
+235. **Iteration 1 #1 / … / 59 #227 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the
+    hook: "no leaks found".)
+236. **Iteration 2 #2 / … / 59 #228 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+237. **Iteration 6 #6 / … / 59 #229 still stands:** `AGENTS.md`'s command table names none
+    of `go test -tags tmux ./...`, `go test -tags quickstart ./cmd/crswd`, or
+    `go test -tags dev ./...`. **T032.** Neither tagged suite was run this iteration:
+    `tmux` drives real tmux on the host running the live daemon, and `quickstart` collides
+    with that daemon's port (59 #225). This task touched neither path — it adds tests to
+    one package and changes no production code.
+238. **`deploy/README.md`'s four-variable trap (44 #84 / … / 59 #221) still stands.**
+    **T033.**
+239. **Findings 202–205, 211–216 and 223 are unchanged.** Still open and still unowned by
+    any task: the missing `GET /sessions/{id}/view` page every card links to (202), the
+    **unregistered `GET /static/crswd.css`** that leaves every browser unstyled (223 —
+    this is the last thing between the code and a styled page, and T016 explicitly
+    declined it), and the unbuilt rain loop / unwritten `web/static/crswd.js` (214).
+    Also still open: `Manager.List`'s clock-neutrality covered only from another package
+    (203), `Server` and `Manager` holding separate clocks (205), the milestone-1 test row
+    that moved rather than weakened (211, for **T021**), the `Cache-Control` default
+    resolved inside a contract silence (**T031**), the missing `--dev-auth-bypass` flag
+    (**T034**), the pane styling deferred to **T026** (215), the untokenised values in
+    `docs/design-system.md` (216), `Store.SetState` uncalled and contradicted, and
+    `View`'s deliberate silence about `AbsoluteDeadline` (**T028**).
+
+**Left:** US1 is complete — T001–T017 all green, which is the plan's "Shippable at T021"
+checkpoint minus the proofs. Next is **T018** (the full negative sweep from
+`contracts/access-jwt.md`, including a valid *service-token* assertion presented to the
+dashboard) and **T019** (fail-closed with the key set unobtainable), then T020–T021 (US4),
+T022–T029 (US2, the stream), T030–T034 (docs, `.env.example`, quickstart). Plus the three
+unowned findings above (202, 214, 223) and the leak suite's browser door (231), none of
+which has a task.
