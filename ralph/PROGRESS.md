@@ -11122,3 +11122,101 @@ per-route assertions added here and in the fleet's own record test are the inter
 Then T022–T029 (US2, the stream — T026 now has a `pane.html` to fill rather than to write),
 and T030–T034 (docs, `.env.example`, the quickstart run, which must deal with #266). Plus
 the unowned findings above.
+
+---
+
+## Iteration 67 (milestone 2, iteration 24) — 2026-08-04 09:02
+
+**Did:** **T021c** — the daemon-wide leak sweep now drives the browser door. Finding **231**
+is closed: `internal/audit/leak_test.go` drove milestone 1's six routes and nothing else, so
+the one door where a verified address, a raw assertion and a whole session screen are all in
+scope at once was the door the sweep could not see.
+
+**Layer 1 is genuine here, not stubbed.** `package audit_test` starts a key server of its own
+— one 2048-bit pair behind `sync.OnceValue`, a JWK set, an `httptest` origin configured as
+`AccessTeamDomain` — because `internal/httpapi`'s fixtures are package-internal and the
+import direction that would reach them is the one that makes this file possible at all. So an
+admitted request really went through all eleven steps, and a refused one really was refused.
+
+**The corpus is seven requests**, one per way the door answers: the fleet, the page a card
+links to, `/static/crswd.css`, a path nothing claims, the view of a session that never
+existed, an assertion naming an address the allowlist refuses, and one naming a key nothing
+published. Four new actions join the honesty test — `dashboard.view`, `dashboard.asset`,
+`access.reject`, `route.unknown` — and `access.reject` is deliberately not accepted as
+`auth.reject`, or a run where layer 1 never refused anything would pass.
+
+**Marks:** an address (in **both** spellings, see below), a key id, a path, and every
+assertion **whole and segment by segment**. The last is the one that matters: base64 hides
+every value inside a payload, so a record built from the assertion's claims would carry the
+canary email in a form no plain mark matches.
+
+**Mutations, all caught:**
+
+1. `ra.rec.Caller = operator.Email` → five lines of the sweep, and the failure output doubles
+   as proof the corpus really emitted `dashboard.view` twice (once with `session_id`),
+   `dashboard.asset` and `route.unknown`.
+2. The refusal reason quoting the assertion → the segment marks, on both refusal shapes.
+3. The asset registration removed → both tests, at the status assertion.
+4. `screen()` returning an empty pane → the evidence test alone ("the pane content never
+   reached the session's own page, so its absence from the trail proves nothing").
+5. `access.reject` recorded as `auth.reject` → the action list.
+
+**Learned:**
+
+1. **The address needs two marks, not one.** The allowlist compares lowercased, so the daemon
+   holds a folded spelling of the address as well as the edge's, and a mark matching only
+   `CANARY-EMAIL` would miss a record built from the comparison rather than from the claim.
+   `strings.ToLower(markEmail)` is a second mark for a second value.
+2. **The unknown-kid case is free, because of the refetch floor.** The admitted request has
+   already fetched the key set by then, so the forged kid is refused by `errRefetchFloored`
+   without a second outbound request — the fixture never has to think about fetch counts.
+3. **A path with `..` cannot be in this corpus** (finding 275): `cleanPath` answers it with a
+   301 before any door runs, so it would assert nothing about the trail. `unclaimedPath` is
+   marked but clean.
+4. **`present` de-duplicates the assertions it records.** One assertion authorises five of the
+   seven requests, and a mark per presentation printed the same leaked line five times in a
+   failure whose entire subject is a value nobody should be looking at.
+
+**Findings:**
+
+285. **`stream.open` is the browser door's fifth action and nothing drives it.** The corpus
+    covers four; the stream does not exist yet. **T029** already has to prove session output
+    reaches zero audit records — that assertion and this suite are the same claim at two
+    scopes, and the cheap way to hold it daemon-wide is one more `present`-shaped call in
+    `driveTheBrowserDoor` once `stream.open` is real. Recorded here so T029 finds it.
+286. **The key-server fixture is now duplicated between `internal/httpapi` and
+    `package audit_test`, and that is the correct cost.** Two RSA generations per run (~0.4s
+    of the suite, once each). The alternative is exporting test helpers from `internal/httpapi`
+    — production-visible fixtures for a test's convenience — or a third package nothing else
+    needs. Whoever is tempted to unify them should read the package comment first: this file
+    exists *because* the import cannot go the other way.
+287. **A caller-supplied session id in a path is still swept only unmarked.** `session.IDLen`
+    is 32 hex characters, so no canary can be spelled as one; the not-found cases here use
+    `"d"×32` exactly as milestone 1's API cases use `"c"×32`. What covers that value is the
+    fixed-struct record and `SetSessionID`'s rule of taking the id off the daemon's own
+    record — both asserted elsewhere, neither by this sweep. A known limit of **both** halves
+    of the suite, not something this task introduced.
+288. **`loadTheConfiguration`'s comment about the layer-1 values was stale and is now false in
+    the other direction.** It said they were unmarked because "a refused address never
+    reaching the trail is the browser door's test to write" — that test is now written, so the
+    configured address is marked and the fixture asserts startup's loud default-root warning
+    says nothing about who the daemon will serve.
+289. **Findings 203–205, 216, 275, 278, 280–283 are unchanged**, minus 231 which this
+    iteration closed. Still unowned: `Manager.List`'s clock-neutrality covered only from
+    another package (203), a component test not being a call-site test (204/233), `Server` and
+    `Manager` holding separate clocks (205), untokenised values in `docs/design-system.md`
+    (216), `Store.SetState` uncalled and contradicted, the unaudited `cleanPath` redirect
+    (275), the rain being unverifiable from Go (278), the pane's unbuilt scanline overlay
+    (280, for **T026**), and the session page being a dead end (282). Iteration 1 #1 / 66
+    (`loop.sh`'s `--no-verify` sweep commit — this iteration's own commit went through the
+    hook: "no leaks found") and the duplicate checkbox state in `IMPLEMENTATION_PLAN.md` and
+    `tasks.md` (ticked in both by hand again) still stand. Suite runtime is ~6.0s.
+
+**Left:** US1, US3 and US4 are all green, which is the gate US2 was told to wait behind — so
+next is **T022**, the SSE write deadline cleared **per response** with
+`http.NewResponseController` and never by setting `WriteTimeout: 0`, then T023–T029 (the open
+sequence, the 1s tick that emits only on change, JSON-framed events, `pane.html`'s
+`data-stream` hook and the loop that reads it, the record at open, the lifecycle, and the US2
+acceptance suite — which should also close finding 285). Then T030–T034 (docs,
+`.env.example`, the quickstart run, which must deal with #266). Plus the unowned findings
+above.
