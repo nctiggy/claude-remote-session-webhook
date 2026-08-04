@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -134,10 +136,21 @@ func TestCallerIdentityIgnoresTheRequest(t *testing.T) {
 			// One Authenticator per case: several cases sign identical bodies at
 			// the same instant, and a shared one would refuse the second as a
 			// replay rather than answering the question this test asks.
-			r := validRequest(t, body)
+			//
+			// The claim is applied *before* signing, because the method and the
+			// path are part of the signed payload now. This is the honest shape
+			// of the attack anyway: the question is whether a caller holding the
+			// secret can talk itself into a different identity by choosing what
+			// it signs, so it has to be allowed to sign what it chose. Signing
+			// first and mutating after would only prove that a broken signature
+			// is refused, which is a different test.
+			r := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(body))
 			if tt.claim != nil {
 				tt.claim(r)
 			}
+			r.Header.Set(auth.HeaderTimestamp, strconv.FormatInt(testTimestamp, 10))
+			r.Header.Set(auth.HeaderSignature,
+				signatureOverRequest(t, testSecret, r.Method, r.URL.EscapedPath(), testTimestamp, body))
 
 			caller, err := newAuth(t).Verify(r)
 			if err != nil {

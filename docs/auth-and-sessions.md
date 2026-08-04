@@ -63,7 +63,7 @@ binary that can bypass auth via a flag is a backdoor.
 ## Layer 2 — request signing
 
 Every request carries `X-CRSW-Timestamp` (Unix seconds) and `X-CRSW-Signature`
-(`sha256=` + hex HMAC over `timestamp + "." + rawBody`).
+(`sha256=` + hex HMAC over `METHOD + "\n" + PATH + "\n" + timestamp + "." + rawBody`).
 
 ```go
 func (a *Authenticator) Verify(r *http.Request) (*Caller, error) {
@@ -83,8 +83,10 @@ func (a *Authenticator) Verify(r *http.Request) (*Caller, error) {
     }
     r.Body = io.NopCloser(bytes.NewReader(body)) // handler still needs it
 
+    // METHOD "\n" PATH "\n" timestamp "." body. The request line is in the
+    // payload because a signature has to name what it authorizes.
     mac := hmac.New(sha256.New, a.secret)
-    fmt.Fprintf(mac, "%d.", ts)
+    fmt.Fprintf(mac, "%s\n%s\n%d.", r.Method, r.URL.EscapedPath(), ts)
     mac.Write(body)
     want := "sha256=" + hex.EncodeToString(mac.Sum(nil))
 
@@ -103,6 +105,16 @@ Non-negotiable properties:
 - **`hmac.Equal`, never `==`** on any secret comparison.
 - **Sign the body, not just the path.** A signature over the URL alone lets an
   attacker swap the prompt.
+- **Sign the method and the path too, not just the body.** The converse failure
+  is quieter and was live in milestone 1 until the acceptance run found it. Over
+  `timestamp + "." + body` alone, every empty-body request at one instant signs
+  identically: one signed `GET /sessions` is a valid `DELETE /sessions/{id}` in
+  the same second. Only the replay cache stood between them, and only if the
+  original arrived — anyone able to block it and substitute their own request
+  line inherited the signature. It also made the daemon refuse itself, since a
+  client reading twice in one second sent the same signature twice and got a 401
+  the second time. Use `EscapedPath`, so the payload covers the bytes on the
+  request line rather than a decoded spelling of them.
 - **The replay cache is required.** A captured request is otherwise valid for the
   whole skew window, and one replay is one extra unsandboxed session.
 - Clock skew window: **300 seconds**. Do not widen it to fix a clock problem; fix

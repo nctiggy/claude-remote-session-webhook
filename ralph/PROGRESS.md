@@ -7778,3 +7778,116 @@ quickstart run cannot demonstrate the idle or absolute lifetime in a live daemon
 71. **Iteration 6 #6 / … / 41 #70 still stands:** `AGENTS.md`'s command table has no entry for
     `go test -tags tmux ./...` or `go vet -tags tmux ./...`, so "Test (all)" is not all. Both were
     run by hand this iteration, green.
+
+## Iteration 43 — 2026-08-04 00:05
+
+**Did:** Completed **T042**, the acceptance run — and it earned its place by finding a defect in
+the daemon and one in itself, the second of which had already destroyed the operator's machine
+state twice.
+
+`cmd/crswd/quickstart_test.go` (`//go:build quickstart`) drives every story in `quickstart.md`
+against a real build, real tmux, and a real signing helper.
+
+**The test was killing every tmux session on the host.** It isolated itself with `TMUX_TMPDIR` and
+called `tmux kill-server` in cleanup. tmux **ignores `TMUX_TMPDIR` whenever `TMUX` is set**, and
+`TMUX` is always set inside a tmux session — which is where `loop.sh` runs. So the cleanup went to
+`/tmp/tmux-$UID/default` and took down the operator's sessions, this loop's included. Twice.
+Proven, not guessed:
+
+```
+TMUX_TMPDIR=<tmp> tmux display-message -p '#{socket_path}'  ->  /tmp/tmux-1000/default
+env -u TMUX TMUX_TMPDIR=<tmp> ...                           ->  correctly isolated
+```
+
+Fixed three ways, because one was what failed: `TMUX`/`TMUX_PANE` are dropped from the daemon's
+environment; this file's own tmux calls pass `-S <path>` so the socket is in the argv; and
+`assertIsolated()` resolves the daemon's socket *before* anything starts and fails the test if it
+is not ours. `internal/tmuxctl/exec.go:22` had already written down the rule this broke —
+"isolation carried in the argv, not in an environment variable that would isolate them right up
+until it silently did not". The `//go:build tmux` tests obeyed it; this one had not.
+
+**The signing payload did not name the request (real defect, operator-approved fix).** It was
+`timestamp + "." + rawBody`, so method and path were unsigned. Consequences, both live:
+
+- One signed `GET /sessions` was a valid `DELETE /sessions/{id}` at the same instant — every
+  empty-body request in a second signed identically. Only the replay cache stood in between, and
+  only if the original arrived; blocking it and substituting a request line inherited the signature.
+- The daemon refused itself. A client reading twice inside one second sent one signature twice and
+  got 401 on the second. A polling dashboard would have hit this constantly.
+
+Payload is now `METHOD "\n" PATH "\n" timestamp "." body`, using `EscapedPath` so it covers the
+bytes on the request line. Amended in the same change: `docs/auth-and-sessions.md` (binding),
+`spec.md` FR-007, `contracts/http-api.md`, and `quickstart.md`'s shell helper — whose output was
+checked byte-for-byte against the Go signer rather than eyeballed.
+
+The bearer token is deliberately **not** in the payload: it is layer 3 with its own lifetime, and
+folding it in would collapse two independent checks into one. Consequence recorded in the contract:
+two requests differing only by bearer token, at one instant, are one signature.
+
+**Three test-isolation faults found by the same run**, each a case where a bound answered before
+the thing under test: nine boundary bodies tripped the create rate limit and returned 429 instead
+of 400; five identical burst bodies signed identically and were refused as replays before the rate
+limiter saw them; eight isolation probes at one timestamp collided the same way. Fixed by raising
+the limit where validation is the subject, varying the body, and giving each probe its own instant
+inside the window — not by relaxing an assertion.
+
+**The `claude` stand-in was being shadowed by the real thing.** The daemon starts a *login* shell,
+which sources this operator's `~/.bashrc`, which re-prepends `~/.local/bin` — so real Claude Code
+v2.1.220 started in the pane and the byte-for-byte assertions timed out against a TUI. Pointing
+`HOME` at an empty directory leaves nothing to source and the daemon's PATH survives. Story 2 now
+proves the research-D4 regression closed against real tmux: a prompt of exactly `;` arrives as `;`.
+
+Ticked T042 in **both** `ralph/IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`. All 42 done.
+
+Gate, executed not asserted:
+
+```
+go build ./...                    OK
+go vet ./...                      OK
+go vet -tags tmux ./...           OK
+go test -count=1 ./...            OK
+go test -tags tmux ./...          OK (real tmux on this host)
+go test -tags quickstart ./...    OK  13/13 stories, 10.7s, real daemon + real tmux
+golangci-lint run                 OK
+gofmt -l .                        empty
+go.sum                            absent  ✅ zero third-party deps still holds
+operator's tmux session           still alive after the full run  ✅
+```
+
+**Learned:**
+
+1. **`TMUX_TMPDIR` is not isolation.** It is ignored whenever `TMUX` is set. Any test that shells
+   out to tmux must put the socket in the argv (`-S` or `-L`) and, if it also drives a child that
+   resolves its own socket, must unset `TMUX` for that child. Assert the resolution before acting
+   on it — a wrong answer here is not a red test, it is the host.
+2. **Signing the body but not the request line is a real hole**, and it hides as a usability bug
+   ("why is my second read a 401?") long before anyone reads it as a substitution weakness.
+3. **A login shell undoes any PATH the parent set**, so PATH-shimming a program the daemon launches
+   through `tmux new-session` needs `HOME` pointed somewhere empty.
+4. Bounds answer before the thing under test. A test for validation must lift the rate limit, or it
+   silently tests the rate limit instead.
+
+**Left:** nothing. Every task T001–T042 is ticked and the tree is green on every gate above.
+
+**Findings:**
+
+72. **The acceptance run starts real Claude Code processes if `HOME` is not redirected** — worth
+    knowing before anyone copies this harness. With the redirect it starts the stand-in only.
+73. **`journalctl` is unusable as the audit trail on this host right now.** The `claude
+    remote-control` daemons write a TUI redraw to the journal roughly once a second, so the
+    resolved decision "structured JSON on stdout, captured by journald" is sound but the records
+    are buried. `journalctl --user -u crswd` will filter to the unit, so this is not a defect —
+    just a surprise waiting for whoever first greps the whole journal.
+74. **Iteration 14 #1 / … / 42 #68 still stands:** `git checkout --`, `git restore`, `perl -i` and
+    heredocs remain outside the permission allowlist, so `PROMPT.md` step 6's recovery path still
+    needs an approval an autonomous run cannot give.
+75. **Iteration 1 #1 / … / 42 #69 still stands, forty-third iteration carrying it:** `loop.sh`'s
+    sweep commit uses `--no-verify`, bypassing gitleaks.
+76. **Iteration 2 #2 / … / 42 #70 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/.../tasks.md`, with `PROMPT.md` step 9 naming only the
+    plan. Ticked both by hand again — the forty-second iteration of manual compensation.
+77. **Iteration 6 #6 / … / 42 #71 still stands, and grew:** `AGENTS.md`'s command table still has
+    no entry for `go test -tags tmux ./...`, and now none for `go test -tags quickstart ./cmd/crswd`
+    either. "Test (all)" names neither of the two suites that touch real tmux.
+
+RALPH_COMPLETE

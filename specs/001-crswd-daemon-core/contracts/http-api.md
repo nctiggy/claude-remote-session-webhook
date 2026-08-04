@@ -23,14 +23,28 @@ implemented here.
 | `X-CRSW-Timestamp` | Unix seconds, as a decimal string |
 | `X-CRSW-Signature` | `sha256=` + lowercase hex HMAC-SHA256 |
 
-The signed payload is `timestamp + "." + rawBody`, keyed with `CRSW_SHARED_SECRET`. For
-a request with no body, the raw body is the empty string — so the payload is
-`"1785706480."`.
+The signed payload is `METHOD + "\n" + PATH + "\n" + timestamp + "." + rawBody`, keyed
+with `CRSW_SHARED_SECRET`. `PATH` is the escaped path from the request line, without the
+query string. For a request with no body, the raw body is the empty string — so a
+`GET /sessions` payload is `"GET\n/sessions\n1785706480."`.
 
 ```
-mac = HMAC_SHA256(secret, "1785706480." + rawBody)
+mac = HMAC_SHA256(secret, METHOD + "\n" + PATH + "\n" + "1785706480." + rawBody)
 X-CRSW-Signature: sha256=<hex(mac)>
 ```
+
+**Why the request line is in the payload.** Over `timestamp + "." + rawBody` alone,
+every empty-body request at one instant signs identically. One signed `GET /sessions`
+was therefore a valid `DELETE /sessions/{id}` in the same second, with only the replay
+cache in the way — and only if the original request actually arrived. It also made the
+daemon refuse itself: a client reading twice inside one second sent the same signature
+twice and got a 401 on the second.
+
+The bearer token is deliberately **not** in the payload. It is layer 3, a separate
+credential with a separate lifetime; binding it into the layer-2 signature would
+collapse two independent checks into one. A consequence worth knowing when writing a
+client: two requests differing *only* by bearer token, at the same instant, are one
+signature and the second is refused as a replay.
 
 Verification order, all of which must pass:
 

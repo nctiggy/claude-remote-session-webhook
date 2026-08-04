@@ -282,7 +282,9 @@ func (r *leakRun) sendTo(t *testing.T, w http.ResponseWriter, req leakRequest) {
 	// with the code under test proves only that the code agrees with itself.
 	ts := strconv.FormatInt(req.at.Unix(), 10)
 	mac := hmac.New(sha256.New, daemonKey())
-	if _, err := mac.Write([]byte(ts + "." + string(req.signed))); err != nil {
+	// METHOD "\n" PATH "\n" timestamp "." body: the signature names the request
+	// it authorizes, not just the instant and the bytes.
+	if _, err := mac.Write([]byte(hr.Method + "\n" + hr.URL.EscapedPath() + "\n" + ts + "." + string(req.signed))); err != nil {
 		t.Fatalf("sign the request: %v", err)
 	}
 	hr.Header.Set(auth.HeaderTimestamp, ts)

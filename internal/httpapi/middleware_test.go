@@ -105,7 +105,9 @@ func signRequest(t *testing.T, r *http.Request, body []byte, at time.Time) {
 
 	ts := strconv.FormatInt(at.Unix(), 10)
 	mac := hmac.New(sha256.New, testSecret())
-	if _, err := mac.Write([]byte(ts + "." + string(body))); err != nil {
+	// METHOD "\n" PATH "\n" timestamp "." body — the signature names what it
+	// authorizes, so one signed read is not a valid destroy at the same instant.
+	if _, err := mac.Write([]byte(r.Method + "\n" + r.URL.EscapedPath() + "\n" + ts + "." + string(body))); err != nil {
 		t.Fatalf("sign the test request: %v", err)
 	}
 
