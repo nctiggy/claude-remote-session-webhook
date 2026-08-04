@@ -9228,3 +9228,134 @@ deriving idle from milestone 1's own `IdleDeadline()` rather than a second thres
     holds `127.0.0.1:8765`, so `TestQuickstartStory1StartupFailures`'s two hard-coded
     `:8765` cases fail their post-refusal bind check while all ten refusals exit 1 with the
     right message. The other twelve stories pass. Still **T021's**.
+
+---
+
+## Iteration 54 (milestone 2, iteration 11) — 2026-08-04 05:48
+
+**Did:** **T011** — `Session.DisplayState(now)` in `internal/session/session.go`, plus the
+`DisplayState` type and its two constants, deriving **idle** from milestone 1's own
+`IdleDeadline()` and **running** otherwise. Four table tests in `session_test.go`.
+
+**Shape, and the reasons behind the non-obvious parts:**
+
+- **A second vocabulary, not a second field.** `DisplayState` is its own string type
+  alongside `State` rather than more members on `State`: `State.Valid()` gates what the
+  store will *accept*, and "idle" is not a record the store may hold. Separate types mean
+  a handler cannot pass one where the other belongs.
+- **Two members only — there is no `DisplayDead` and no `needs-auth`.** A dead session has
+  no record to render (both the reaper and `Destroy` delete), and `needs-auth` arrives
+  with milestone 4's relay. A state produced before anything can draw it is a defect that
+  ships silently, so the type does not offer one.
+- **`!now.Before(s.IdleDeadline())`, character for character `expiredAt`'s idle arm.** Not
+  `now.After(...)`: the boundary belongs to idle, exactly as it belongs to reapable. The
+  two differ only at the deadline instant, which is precisely the instant FR-019c is about.
+- **`State` is not read at all.** Mutation 4 below is the implementation FR-019a forbids,
+  and it passes anything that only tests the clock — hence a test that varies `State`
+  across all three values, including `StateDead`, and asserts the label does not move.
+- **The agreement with the reaper is tested as a property, not a transcription.**
+  `TestDisplayStateAndTheReaperAgreeOnIdle` calls `expiredAt` directly (the test file is
+  already internal) and asserts the two answers match at four instants. A second constant
+  that agrees with `IdleTimeout` *today* satisfies every other test in the file and fails
+  this one the day either is edited — which is the failure mode FR-019c names. It asserts
+  its own premise first: every instant is inside `AbsoluteDeadline()`, because past the
+  ceiling `expiredAt` names the bound that cannot be renewed and the comparison would be
+  against the wrong question.
+
+Gate, executed not asserted, one command at a time (finding 115):
+
+```
+go build ./...                            OK
+go build -tags dev ./...                  OK
+go vet ./...                              OK
+go test ./... -count=1                    OK
+golangci-lint run                         OK (silent)
+gofmt -l .                                OK (silent)
+go test -tags dev ./... -count=1          OK
+go test -tags tmux ./... -count=1         OK
+go test -race ./internal/session          OK
+go.sum                                    absent  ✅
+```
+
+`go test -tags quickstart ./cmd/crswd` was not run this iteration: nothing here touches
+`cmd/crswd`, and finding 78 makes its result known in advance. It is **T021's**.
+
+**Six mutations, each applied and reverted, to prove the tests are not decorative:**
+
+1. `now.After(s.IdleDeadline())` — the boundary handed to running → the
+   `exactly at the deadline` row, the reaper-agreement test, and three rows of the
+   stored-field test. The one-nanosecond rows either side exist for this.
+2. A second threshold that disagrees (`s.LastActivity.Add(IdleTimeout - 5*time.Minute)`)
+   → the reaper-agreement test plus `one nanosecond before the deadline`. This is FR-019c's
+   actual failure mode and the reason that test is a property rather than a table.
+3. Measured from `CreatedAt` instead of `LastActivity` →
+   **`TestDisplayStateFollowsLastActivityAndNotCreation` alone.** Every other test uses a
+   record where the two are equal, so it is the only one that can see this. Worth knowing:
+   a fixture whose `CreatedAt == LastActivity` hides the entire idle clock.
+4. `if s.State == StateDead` — the derivation FR-019a forbids → eleven rows across all
+   four tests, including `dead/inside the idle bound`, which only the stored-field test
+   covers.
+5. The two labels swapped → 16 failures. A sanity mutation.
+6. `DisplayIdle = "Idle"` → the transcribed-token check alone. The CSS custom properties
+   are named after these strings, so this is the mutation that would otherwise reach a
+   browser as a card with no state colour and nothing failing.
+
+**Learned:**
+
+1. **A method may share its name with a package-level type.** `func (s Session)
+   DisplayState(now time.Time) DisplayState` compiles: method names are not in package
+   scope, so the return type still resolves to the type. Worth knowing before someone
+   renames one of them to avoid a collision that does not exist.
+2. **`expiredAt` asks about the ceiling first**, so "the reaper considers this idle" is only
+   the same question as "the dashboard shows idle" while the session is inside
+   `AbsoluteDeadline()`. Any later test comparing the two needs that guard — T014's summary
+   counts and T017's acceptance suite will both be tempted to compare them.
+3. **The design system's tokens are the constants' values** (`docs/design-system.md`'s state
+   table: `running`, `idle`, with `--state-running` / `--state-idle`). **T013 and T015**
+   should render the derived value into the class name rather than re-spelling either
+   string in a template, or the transcription check stops protecting anything.
+4. **`SweepInterval` lives in `reaper.go`** and is exported, which is what let the boundary
+   table say "a sweep interval after the deadline" in the reaper's own units rather than an
+   arbitrary duration.
+
+**Left:** T012–T034. Next is **T012**: the non-touching owner-scoped read in
+`internal/session/manager.go`, plus the amendment to `Manager.Resolve`'s comment.
+
+**Findings:**
+
+172. **`DisplayState` has no production caller yet** — it is a derivation waiting for
+    **T014**'s `SessionView`. The plan's own rule ("a task is not done when the code
+    exists, it is done when something calls it") is satisfied at T014, not here; T011 is
+    listed `[P]` precisely because it is the leaf. If T014 renders `Session.State`
+    directly, this task bought nothing, and no test in this package would notice.
+    **T014 must call this.**
+173. **`Store.SetState` is now called by nothing in production *and* contradicted by the
+    dashboard** — `StateRunning` is written by the manager, `StateDead` by nobody. Not a
+    defect and explicitly out of scope ("Real state observation in the daemon"), but the
+    gap between "the store models three states" and "two of them are unreachable" is wider
+    than it was, and a future reader will find `StateDead` and assume the dashboard should
+    render it. `TestDisplayStateIgnoresTheStoredLifecycleField` is where that reader is
+    told otherwise.
+174. **Iteration 14 #1 / … / 53 #166 still stands:** `git checkout --`, `git restore`,
+    `perl -i` and `sed -i` are outside the permission allowlist, so six mutations cost
+    twelve Edit round trips. New this iteration: **`/tmp` is not writable by the Write
+    tool either**, so iteration 53's Write-to-scratch-then-`cat >>` route is gone as well.
+    This entry was appended with a single `Edit` anchored on the previous entry's last
+    finding — which works, needs no scratch file, and is the route the next iteration
+    should take.
+175. **Iteration 1 #1 / … / 53 #167 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the hook:
+    "no leaks found".)
+176. **Iteration 2 #2 / … / 53 #168 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+177. **Iteration 6 #6 / … / 53 #169 still stands:** `AGENTS.md`'s command table names none
+    of `go test -tags tmux ./...`, `go test -tags quickstart ./cmd/crswd`, or
+    `go test -tags dev ./...`. **T032.**
+178. **`deploy/README.md`'s four-variable trap (44 #84 / … / 53 #170) still stands.**
+    **T033.**
+179. **Findings 161–165 from iteration 53 are untouched by this task** and still stand:
+    the `Cache-Control` default resolved inside a contract silence (**T031**), no
+    registered route on the browser door yet (**T014**/**T016**), the CSP that nothing
+    renders under yet (**T013**/**T015**/**T017**), `leak_test.go`'s milestone-1-only
+    action list (**T017**/**T029**), and the missing `--dev-auth-bypass` flag (**T034**).
