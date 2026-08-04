@@ -210,9 +210,18 @@ type door struct {
 
 func newDoor(t *testing.T, browser layer1) *door {
 	t.Helper()
+	return newDoorFor(t, browser, audit.ActionDashboardView)
+}
+
+// newDoorFor is newDoor with the guarded route's action chosen, which the header
+// tests in render_test.go need and no test of layer 1 itself does: the two
+// static assets are the one response the cache rule treats differently (T010),
+// and the door learns which it is guarding from this action.
+func newDoorFor(t *testing.T, browser layer1, action audit.Action) *door {
+	t.Helper()
 
 	d := &door{testServer: newAuditedServerWith(t, browser)}
-	d.handler = d.authenticateBrowser(audit.ActionDashboardView, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	d.handler = d.authenticateBrowser(action, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.served++
 		if op, ok := OperatorFrom(r.Context()); ok {
 			w.Header().Set("X-Test-Operator", op.Email+" "+string(op.Owner))

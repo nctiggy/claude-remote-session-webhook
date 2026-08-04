@@ -1,8 +1,8 @@
 package httpapi
 
 // render.go is the dashboard's rendering half: the template set, parsed once
-// when the server is built. The security headers (T010) and the page handlers
-// (T014) join it here.
+// when the server is built, and the headers every browser-door response carries.
+// The page handlers (T014) join them here.
 //
 // Parsing at construction is the whole point of this file. A template that does
 // not compile then makes the daemon refuse to start — the same answer
@@ -24,9 +24,71 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
+	"net/http"
 	"path"
 	"strings"
 )
+
+// The browser door's response headers, named here once each because the name a
+// header is written under and the name a test looks for are the same string.
+const (
+	headerCSP                = "Content-Security-Policy"
+	headerHSTS               = "Strict-Transport-Security"
+	headerContentTypeOptions = "X-Content-Type-Options"
+	headerReferrerPolicy     = "Referrer-Policy"
+	headerCacheControl       = "Cache-Control"
+)
+
+// The values, from docs/security.md's table and contracts/dashboard.md, spelled
+// exactly as those documents give them.
+//
+// The policy is sent unmodified (research D9). `default-src 'none'` with
+// `'self'`-only sources is FR-025 enforced by the browser itself: a template that
+// slipped a CDN reference past review fails to load, visibly, rather than
+// quietly shipping a third-party dependency. There is no `unsafe-inline` and no
+// route may add one — docs/security.md rules that a change needing one is the
+// wrong change, which is why this is a constant and not a value a handler
+// assembles.
+const (
+	contentSecurityPolicy   = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+	strictTransportSecurity = "max-age=31536000; includeSubDomains"
+	contentTypeNosniff      = "nosniff"
+	referrerPolicyNone      = "no-referrer"
+	cacheControlNoStore     = "no-store"
+)
+
+// setBrowserSecurityHeaders writes what every browser-door response carries —
+// pages, assets, refusals, and the not-found page alike (FR-026).
+//
+// It is called from one place, authenticateBrowser, before layer 1 has decided
+// anything. That is deliberate twice over: a handler cannot forget headers it
+// never sets, and a refusal leaves with the identical set to a served page, so
+// the headers cannot become the thing that tells a stranger which paths this
+// daemon really serves.
+//
+// `no-store` is the default rather than the exception. contracts/dashboard.md
+// enumerates the one exemption — the two embedded assets, which carry no session
+// data — so everything else on this door is a page, a stream, or an
+// authorisation decision, and a cached copy of any of those is a copy that
+// outlives what it described. See authenticateBrowser for where the exemption is
+// taken, and why only an admitted request may take it.
+//
+// What this function does not write is as load-bearing as what it does: no
+// `Access-Control-Allow-*` header, here or on the API door (FR-034c, research
+// D8). The browser's layer-1 credential is an ambient cookie — it rides on
+// requests a hostile third-party page triggers, and the edge turns those into a
+// valid assertion — so same-origin policy is the only thing stopping that page
+// *reading* these responses, and it holds exactly as long as the daemon never
+// opts out of it. There is deliberately no CORS helper in this package to reach
+// for; the absence is the protection, and it is a swept assertion rather than a
+// habit because an absence nobody checks is one refactor away from present.
+func setBrowserSecurityHeaders(h http.Header) {
+	h.Set(headerCSP, contentSecurityPolicy)
+	h.Set(headerHSTS, strictTransportSecurity)
+	h.Set(headerContentTypeOptions, contentTypeNosniff)
+	h.Set(headerReferrerPolicy, referrerPolicyNone)
+	h.Set(headerCacheControl, cacheControlNoStore)
+}
 
 // templateExt is the only extension the set accepts. A file under templates/
 // that does not carry it is refused rather than skipped: silently ignoring

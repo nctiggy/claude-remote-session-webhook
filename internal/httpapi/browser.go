@@ -119,6 +119,10 @@ func (s *Server) authenticateBrowser(action audit.Action, next http.Handler) htt
 		}}
 		defer s.emit(ra)
 
+		// Before layer 1 runs, so that a refusal carries them too (FR-026) and no
+		// exit path below can leave without them. See setBrowserSecurityHeaders.
+		setBrowserSecurityHeaders(w.Header())
+
 		operator, err := s.verifyBrowser(r)
 		if err != nil {
 			ra.rec.Action = audit.ActionAccessReject
@@ -141,6 +145,17 @@ func (s *Server) authenticateBrowser(action audit.Action, next http.Handler) htt
 		// itself is a claim value, which stays out of the trail.
 		ra.rec.Caller = string(operator.Owner)
 		ra.rec.Decision = audit.Allow
+
+		if action == audit.ActionDashboardAsset {
+			// The stylesheet and the script are contracts/dashboard.md's one
+			// exemption from no-store: they hold no session data, and caching them
+			// is what makes the page cheap. It is taken here rather than in
+			// setBrowserSecurityHeaders because only an *admitted* request may take
+			// it — a refusal that varied by which route was asked for would tell a
+			// stranger which paths this daemon really serves, which is the
+			// disclosure the uniform refusal exists to close.
+			w.Header().Del(headerCacheControl)
+		}
 
 		ctx := context.WithValue(r.Context(), operatorContextKey, operator)
 		ctx = context.WithValue(ctx, auditContextKey, ra)
