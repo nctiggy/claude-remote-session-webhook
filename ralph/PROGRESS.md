@@ -11011,3 +11011,114 @@ row expects `route.unknown`/404 today — that row moves to `dashboard.view`/200
 page lands. Then **T021c** (the leak suite over the browser door), T022–T029 (US2, the
 stream), and T030–T034 (docs, `.env.example`, the quickstart run — which must deal with
 #266). Plus the unowned findings above, now including **275**.
+
+---
+
+## Iteration 66 (milestone 2, iteration 23) — 2026-08-04 08:51
+
+**Did:** **T021b** — `GET /sessions/{id}/view`. Finding **202** (via 190) is closed: every
+card on the fleet has linked to this address since T013 and nothing served it, so a
+signed-in operator clicking a session got the not-found page. It now renders that
+session's canonical card above its current screen, and it is the page T026 attaches the
+stream to.
+
+**`Manager.View`, never `Resolve`** (FR-034f). The whole reason T012 added a second read
+is that watching must not advance the idle clock, and this is the caller the requirement
+was written about — a tab left open on a session nobody is driving would otherwise
+postpone its reaping for as long as the tab lived. No per-session credential is presented
+either (FR-034a): the validated identity plus the ownership `Store.Get` enforces is what
+authorises the page, and the only places a browser could keep a token are the URL and a
+script it can read.
+
+**One 404 for four things.** An id that never existed, one this viewer does not own, one
+whose record is dead, and a path nothing claims are all the browser door's not-found page,
+byte for byte — `notFound` and this route now share `renderNotFound` so there is one page
+rather than two that agree today. The distinction is kept in the trail via `resolveReason`,
+which is milestone 1's own vocabulary rather than a second one for this door.
+
+**The pane arrived here rather than at T026**, because the task asks the page to render the
+current screen. `web/templates/partials/pane.html` is a `<pre>` holding a text node —
+`paneView.Text`, captured through `Manager.Output` so `tmuxctl.Strip` already ran (FR-029),
+escaped by `html/template` (FR-028). Its **`data-stream` attribute is deliberately absent**:
+the route it names does not exist until US2, and an element pointing at an address nothing
+serves is the dead link this task exists to end. T026 adds the hook and the loop together.
+
+**A screen the host could not be asked for is stated, not drawn empty.** The capture is a
+tmux exec and can fail after the record resolved; the card above is still true, so the page
+is still served with 200 and the pane says so. An empty `<pre>` would claim the session
+printed nothing — FR-018a's rule about placeholders, applied to output. tmux's own account
+goes to the report channel, never to the caller and never to the trail.
+
+**Mutations, all caught:** the registration removed (8 tests, four of them not mine — the
+`browserSurface` row and T020's signature sweep); a `Touch` added inside `Manager.View`
+(the new idle-clock test plus two in `internal/session`); `Unread` dropped so a failed
+capture renders a blank pane; the 404 given its own title ("No such session") so it differs
+from a path nothing claims; `SetSessionID` removed.
+
+**Learned:**
+
+1. **Rendering a class forces its stylesheet rule in the same task.**
+   `TestTheStylesheetAndTheMarkupNameTheSameThings` holds both directions, so `pane.html`
+   could not land without `.pane`/`.pane-note` rules — which is finding 215 resolving
+   itself the moment the markup arrived, one task earlier than that finding predicted.
+   `--fs-pane`/`--lh-pane` are the design system's own typography row; `--pane-h` is a
+   value that document did not have, so it was **added there first** (non-negotiable 1) —
+   `docs/design-system.md`'s Layout section now names the pane's fixed block size.
+2. **An escaping assertion must be structural, not a search for payload text.** The first
+   version failed on its own fixture: `onerror=alert(2)` survives *as text* inside an
+   escaped payload, and must. What a text node cannot contain is an angle bracket, so
+   `paneBody` isolates the element and the claim is that no `<` or `>` is in it — with the
+   escaped payload asserted present, because escaping shows what the session printed rather
+   than dropping it.
+3. **`cardOf` now exists because two pages compose one card.** The projection moved out of
+   `fleet` rather than being copied into the new handler: docs/components.md's "one card"
+   rule has a Go half, and the cheapest second card is a second projection.
+
+**Findings:**
+
+280. **The pane's scanline overlay is still unbuilt, and its values are not in the design
+    system.** `docs/design-system.md` asks for a `repeating-linear-gradient` at 3% opacity
+    on the pane viewer only, as a `::after`, removed under `prefers-reduced-motion` — but
+    gives **no colour and no period**, and `crswd.css` may carry neither below the token
+    block. So the rule cannot be written without adding two values to that document first,
+    which is a design decision this task had no mandate to take (Principle II). The pane is
+    complete without it: typography, the scroll container, ligatures and the tab stop are
+    all in. **T026** owns the pane's remaining styling (215) and should either add the two
+    values to `docs/design-system.md` or record that the effect was dropped.
+281. **`TestTheSessionPageStatesAScreenItCouldNotRead` is the only test of the unreadable
+    screen, and the fake makes it easy.** `tmuxctl.Fake.FailOp(OpCapturePane, …)` is how it
+    is reached; production reaches it when the window dies between the record read and the
+    capture. Worth knowing for **T028**, which has to answer the same question for a stream
+    that is already open — and there the answer is not "say so once" but "stop delivering
+    and say so" (FR-033).
+282. **The page carries no way back to the fleet.** The masthead's brand is an `<h1>`, not a
+    link, and this page adds no navigation — an operator arrives by clicking a card and
+    leaves by the browser's back button. Not a defect against any requirement in this
+    milestone (the design system's layout names no nav), but it is the first page in this
+    daemon that is a dead end, and milestone 3's action rows will make it worse. Unowned.
+283. **`browserSurface`'s session-view row is now the door's richest response.** It renders
+    a name, a working directory and a whole screen, which is what makes it the best row in
+    `TestEveryBrowserRequestIsRefusedWhenTheKeysCannotBeObtained` — the fail-closed suite
+    now proves the outage withholds pane content as well as a session list. Noted because
+    the row's old comment said the opposite ("nothing serves it yet").
+284. **Findings 203–205, 216, 275, 278 and 279's remainder are unchanged**, minus 202 which
+    this iteration closed. Still unowned: `Manager.List`'s clock-neutrality covered only
+    from another package (203), a component test not being a call-site test (204/233),
+    `Server` and `Manager` holding separate clocks (205), untokenised values in
+    `docs/design-system.md` (216), `Store.SetState` uncalled and contradicted, the unaudited
+    `cleanPath` redirect (275), and the rain being unverifiable from Go (278). Iteration 1
+    #1 / 65 (`loop.sh`'s `--no-verify` sweep commit) and the duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `tasks.md` (ticked in both by hand again) still stand.
+    Suite runtime is ~5.5s.
+
+**Left:** **T021c** — extend `internal/audit/leak_test.go` to the browser door: it drives
+milestone 1's six API routes with canaries and never drives `GET /`, `GET
+/sessions/{id}/view` or the static route, so nothing there proves the browser door keeps
+pane content, a verified email or a raw assertion out of the trail. Finding 231 records
+what makes it a real piece of work: `leakConfig` points at a real Cloudflare hostname and
+the httpapi key-server fixtures are package-internal, so `package audit_test` needs a key
+server of its own (RSA pair, JWK set, `httptest` server, loopback team domain). The
+per-route assertions added here and in the fleet's own record test are the interim cover.
+Then T022–T029 (US2, the stream — T026 now has a `pane.html` to fill rather than to write),
+and T030–T034 (docs, `.env.example`, the quickstart run, which must deal with #266). Plus
+the unowned findings above.
