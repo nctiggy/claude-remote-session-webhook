@@ -8648,3 +8648,155 @@ finding 122 below before starting it.
     two hard-coded `:8765` cases fail their post-refusal bind check while all ten
     refusals exit 1 with the right message. The other twelve stories pass. Still
     **T021's**.
+
+---
+
+## Iteration 50 (milestone 2, iteration 7) — 2026-08-04 05:06
+
+**Did:** **T007 [delivers US5]** — the development bypass.
+`internal/access/bypass_dev.go` (`//go:build dev`) holds `Bypass`, `NewBypass(listen,
+warn)` and a `Verify` with the same signature as `(*Validator).Verify`;
+`internal/access/bypass_prod.go` (`//go:build !dev`) holds a comment and a package
+clause, and **declares nothing at all**. `.golangci.yml` gains the `dev` build tag
+(finding 130, closed).
+
+**Shape, and the reasons behind the non-obvious parts:**
+
+- **The shipping half is empty on purpose, and a test keeps it that way.**
+  `bypass_prod.go` declaring a `BypassActive = false` constant would be exactly the
+  "defaulted off" switch FR-041 forbids, and it is the file a later change would reach
+  for to make the two builds "match". Code naming the bypass now fails to *compile* in
+  the shipping build, which is where that mistake is cheapest to find.
+- **`bypass_build_test.go` carries no build tag**, and that is the whole point:
+  FR-041/SC-012 is a claim about the artifact that does *not* contain the bypass, so a
+  check that only ran under `-tags dev` would be asserting it of the wrong artifact. It
+  reads the package's own directory through `go/build` in a context it constructs
+  itself (`ctxt.BuildTags = tags`, replaced not appended), so it says the same thing
+  whichever tags the test binary was built with. Three properties: `bypass_dev.go` is
+  in `IgnoredGoFiles` and not `GoFiles` for the default context — which is also how it
+  tells "excluded" from "deleted" — it *is* in `GoFiles` for the `dev` context, and no
+  file the default context compiles declares anything matching `bypass`.
+- **`layer1` is an interface declared in the dev file with two compile-time
+  assertions**, `_ layer1 = (*Validator)(nil)` and `_ layer1 = (*Bypass)(nil)`. It
+  exists so the door T009 writes cannot end up with two authorisation paths: a
+  middleware written against `*Validator` and *adapted* for the bypass is a second
+  path, and the second path is the one nobody reads. The assertion fails the dev build
+  the moment the two signatures drift.
+- **Owner is `auth.CallerOperator`, unchanged.** FR-038's "skips layer 1 only" is
+  mostly a statement about other packages, but the piece this one owns is that the
+  identity it produces is the identity the ownership check already compares. A bypass
+  handing back a different owner would show a developer an empty dashboard and no
+  reason for it.
+- **`Email` is `dev-bypass@dev.invalid`.** `.invalid` is reserved by RFC 2606 and can
+  never be delivered to, so it cannot collide with an address an operator put on the
+  real allowlist, and it reads in the header as a development artefact rather than a
+  person. Not configurable — a settable identity here is the bypass growing into a
+  login form, which is layer 1 rebuilt badly rather than skipped.
+- **The loopback refusal is a third reading of a rule that already exists twice**
+  (`config.loadListen`, `httpapi.Server.Listen` on `ln.Addr()`), and deliberately so:
+  the other two protect a daemon that still authenticates. Host *names* are refused
+  like `config` refuses them — `localhost` is whatever a resolver says it is, and this
+  is the one build where that would publish an unauthenticated dashboard.
+- **A warning that cannot be written refuses the request it would have admitted.**
+  `config.warnDefaultRoot` already takes that line; here the thing going unsaid is that
+  nothing authenticated the caller, and a bypass that falls silent is indistinguishable
+  from a daemon checking identities. `errors.Join(errBypassUnannounced, err)` so the
+  refusal says what was refused and the join says why it could not be announced.
+
+Gate, executed not asserted, one command at a time (finding 115):
+
+```
+go build ./...                            OK
+go build -tags dev ./...                  OK
+go vet ./...                              OK
+go vet -tags dev ./...                    OK
+go vet -tags tmux ./...                   OK
+go vet -tags quickstart ./cmd/crswd       OK
+go test -count=1 ./...                    OK
+go test -count=1 -tags dev ./...          OK
+go test -count=1 -tags tmux ./...         OK (real tmux on this host)
+go test -count=1 -race -tags dev ./internal/access  OK
+go test -tags quickstart ./cmd/crswd      12 of 13 stories — finding 78 exactly, reproduced
+golangci-lint run                         OK (now linting the dev files)
+gofmt -l .                                empty
+go.sum                                    absent  ✅
+```
+
+**Learned:**
+
+1. **Mutation-testing paid a fifth time, ten for ten.** Loosening the build tag to
+   `dev || !dev` → both shipping-build tests. Declaring `BypassActive` in
+   `bypass_prod.go` → the empty-half test *and* the symbol scan. Dropping the loopback
+   check → all eight refusal rows. Resolving host names instead of refusing them →
+   *only* the `localhost` row, which is why that row exists. Warning at startup only →
+   three tests. Swallowing the write error → two. Dropping the mutex → a race under
+   `-race`, not a failure without it. A second owner constant → four rows. Announcing
+   before the loopback check → every refusal row's "a refused bypass announced itself".
+   Refusing an empty assertion (a bypass that still checks *something*) → three tests.
+2. **gosec's G101 matches the substring `pass`, which `bypass` contains.** Every string
+   constant in this repo whose name contains "bypass" trips "potential hardcoded
+   credentials". `bypassEmail` keeps the name and pays a `//nolint:gosec` with a reason,
+   because `TestShippingBuildDeclaresNoBypassSymbol` scans the shipping build for that
+   exact word — a constant renamed to something neutral could be moved into an untagged
+   file and the scan would not notice. The test's own filename constant is
+   `devOnlyFile` instead, since no such argument applies to it. **Expect this again in
+   T009 and T033.**
+3. **Adding `dev` to `.golangci.yml` makes the `!dev` files invisible in exchange.**
+   golangci-lint evaluates one tag set (`tmux`, `dev`), so `bypass_prod.go` is now
+   unlinted — affordable only because it declares nothing, which the untagged
+   `bypass_build_test.go` enforces. A future `!dev` file with real code in it would be
+   silently unlinted; that is the trade this line makes.
+4. **`build.Default.BuildTags` does not inherit the `go test -tags` flag**, so a
+   `go/build` context constructed in a test really is the default one. Verified by
+   running the same test under `-tags dev` and under none.
+
+**Left:** T008–T034. Next is **T008**: the milestone's audit actions —
+`access.reject`, `dashboard.view`, `dashboard.asset`, `stream.open` in
+`internal/audit/audit.go`, keeping the fixed-struct shape.
+
+**Findings:**
+
+133. **The `--dev-auth-bypass` flag does not exist yet, and T007 did not add it.** The
+    task names three files, all in `internal/access`, and the package is where the
+    bypass's *representation* lives (44 #79's own words). But `.env.example:123` and
+    `quickstart.md` Story 5 both describe a **flag** on `cmd/crswd`, and
+    `docs/auth-and-sessions.md:58` calls layer 1's local escape `--dev-auth-bypass` by
+    name. **Whoever wires the browser door (T009) owns this**, and it needs its own
+    `//go:build dev` / `//go:build !dev` pair in `cmd/crswd` — a flag registered in an
+    untagged file is the backdoor FR-041 forbids, whatever the flag then does. It must
+    also pass `config.WithAccessBypassActive()` (FR-042), which still has no production
+    caller, and build a `*Bypass` **instead of** a `*Validator`, never both — finding
+    122.
+134. **Findings 122–124 stand unchanged and are now T008's and T009's:** `New` has no
+    production caller (four tasks old); nothing emits `access.reject`, whose fourteen
+    repo-authored reasons are still unmapped; and the bypass path must not construct a
+    `Validator`, whose `New` refuses the empty allowlist a bypassed `config` returns.
+135. **Quickstart Story 5 cannot pass yet, and not because of this task.** Its middle
+    two commands need `GET /` (T014) and the dashboard door (T009) to exist; the first
+    and last — the shipping build refusing the flag, and a dev build refusing
+    `CRSW_LISTEN=0.0.0.0:8765` — need finding 133's flag. The package-level half of US5
+    is done and proven; the artifact-level half lands with T009 and is verified in
+    T034.
+136. **Iteration 14 #1 / … / 49 #126 still stands:** `git checkout --`, `git restore`,
+    `perl -i`, heredocs, `git worktree add` and `pkill` remain outside the permission
+    allowlist. Ten mutations were applied and reverted with the Edit tool — two round
+    trips each. New this iteration: `sed -i` was refused outright, a `Write` to `/tmp`
+    was refused, and a heredoc appending this entry to `PROGRESS.md` was aborted by the
+    parser. The Edit tool, anchored on the previous iteration's last finding, did it.
+137. **Iteration 1 #1 / … / 49 #127 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the
+    hook: "no leaks found".)
+138. **Iteration 2 #2 / … / 49 #128 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+139. **Iteration 6 #6 / … / 49 #129 still stands:** `AGENTS.md`'s command table names
+    neither `go test -tags tmux ./...` nor `go test -tags quickstart ./cmd/crswd` — and
+    now not `go test -tags dev ./...` either, which this iteration adds to the set a
+    definition of done has to cover. **T032**, whose scope just grew by one line.
+140. **`deploy/README.md`'s four-variable trap (44 #84 / … / 49 #131) still stands.**
+    **T033.**
+141. **Finding 78 reproduces a seventh time**, unchanged and untouched by this task: the
+    deployed daemon holds `127.0.0.1:8765`, so `TestQuickstartStory1StartupFailures`'s
+    two hard-coded `:8765` cases fail their post-refusal bind check while all ten
+    refusals exit 1 with the right message. The other twelve stories pass. Still
+    **T021's**.
