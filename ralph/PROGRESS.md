@@ -12231,3 +12231,89 @@ code changed; build/vet/test/lint green and unchanged.
 only, never a value) and **T034** (the quickstart end to end, which must deal with #266/#292
 and now #324, whose two failing subtests are already isolated and diagnosed). Then the
 milestone is done.
+
+---
+
+## Iteration 79 (milestone 2, iteration 36) — 2026-08-04 11:34
+
+**Did:** **T033** — the four-variable trap this loop has re-raised since iteration 44
+(finding 84, twenty iterations). `deploy/README.md` told an operator to write exactly one
+assignment into `~/.config/crswd/env`; the daemon has demanded four since T001, so
+following the deployment procedure produced a service that refused to start. The recipe now
+writes all four, and the claims around it that were true only before this milestone are
+gone.
+
+**`.env.example` was already done, and nothing said so.** T001 named and described all four
+variables when it added them to `config.go`, and three tests pin the file to it
+(`TestEnvExampleNamesEveryVariable`, `…CarriesNoValues`, `…DescribesEveryVariable`). Every
+"Left:" line since iteration 66 has listed `.env.example` as owed by T033 — it was not.
+`crswd.example.service` was likewise already correct, pinned by `deployexample_test.go`.
+**Only `deploy/README.md` was ever outstanding**, because it is the one deployment file with
+no guard. That is the whole shape of this finding: two of the three examples had a test and
+stayed true; the third had prose and rotted for twenty iterations.
+
+**So the fix ships a guard, not just a corrected paragraph.**
+`TestDeployREADMERecipeStartsTheDaemon` (in `deployexample_test.go`, beside the unit's
+tests) parses the `CRSW_*` assignments out of the README's fenced blocks that write
+`/.config/crswd/env`, feeds exactly those — plus `HOME`, since the recipe sets no roots — to
+`config.LoadFrom`, and fails if the daemon refuses to start. Values come from
+`config_test.go`'s existing `baseEnv`, so there is no third list of sample values; names are
+checked against `declaredVars`, so a typo in the recipe fails too. Verified in both
+directions: reverting only the recipe fails with `CRSW_ACCESS_TEAM_DOMAIN is required;
+refusing to start`, naming the exact trap. The unit's inline values are deliberately not fed
+in — `TestUnitInlineValuesAreTheDaemonDefaults` already pins each to the daemon's own
+default, so omitting them loads the same configuration.
+
+**What else in that file was false, and why fixing it was in scope.** The task is "document
+the new variables in `deploy/README.md`", and three passages contradicted the documentation
+being added:
+
+1. The top blockquote said **"Do not deploy milestone 1 behind a public hostname yet — the
+   daemon does not validate a Cloudflare Access JWT until milestone 2"**, and pointed at
+   "Not shippable before T037" in `ralph/IMPLEMENTATION_PLAN.md`. That string is not in
+   that file: T037 is a milestone-1 task and the plan was replaced wholesale, so the
+   pointer has been dangling since the milestone rolled over. Rewritten to what is now
+   true — layer 1 runs on every dashboard route, the API door is unchanged, the edge is
+   still in front of both.
+2. **"The daemon does not read the three Access values yet"** — it reads all three and
+   refuses to start without them.
+3. **"`CRSW_SHARED_SECRET` is required; the rest have defaults"** — four are required now.
+   `CRSW_MAX_STREAMS` is named in the same paragraph as the one new optional variable
+   (default 10, a second cap of the same kind as `CRSW_MAX_SESSIONS`, 429 past it).
+
+The service-token section gained the sentence that separates the two credentials, since
+T033 asked for the variables to sit alongside it: the edge reads the service token and the
+daemon never sees it, the daemon reads `CRSW_ACCESS_*` and the edge never sees them.
+
+Docs-only plus one test. Build/vet/test/lint green; `.env.example` untouched.
+
+**Findings:**
+
+327. **The root `README.md` carries the same staleness this task removed from
+    `deploy/README.md`.** Line 12 ("no Cloudflare Access validation yet; both are milestone
+    2") and lines 175–176 ("**Milestone 1 is not ready for a public hostname.** Cloudflare
+    Access JWT validation lands in milestone 2; until then HMAC on the API is the only
+    check") are both false as of US1. Not fixed: T033 names `.env.example` and
+    `deploy/README.md`, and the root README is the project's front page — widening a docs
+    task into it is how a reviewable change stops being one. Unowned by any milestone-2
+    task; two passages, no code.
+328. **Three deployment examples are now pinned to `config.go`; the prose files are not.**
+    `.env.example`, `crswd.example.service`, `cloudflared.example.yml` and now
+    `deploy/README.md`'s recipe all fail a test when they drift. `docs/*.md`, `AGENTS.md`
+    and `README.md` still do not — findings 319, 322 and 325 unchanged, and 327 is the
+    fourth instance of the same class. The pattern that worked here is worth copying:
+    assert the *behaviour the document promises* (the daemon starts), not the document's
+    wording.
+329. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307,
+    311–318, 321–326 are unchanged**, including 324 (the two `-tags quickstart` subtests
+    colliding with the live daemon on `127.0.0.1:8765`, which **T034** must deal with), 321
+    (the stream cap still absent from `docs/security.md`'s "Rate limiting & audit", one
+    clause, unowned) and 306, which still needs the operator's answer. `loop.sh`'s sweep
+    commit still uses `--no-verify`; this iteration's own commit went through the gitleaks
+    hook. `IMPLEMENTATION_PLAN.md` / `tasks.md` duplicate checkbox state ticked in both by
+    hand again.
+
+**Left:** **T034** alone — the quickstart end to end, which must deal with #266/#292 and
+#324, whose two failing subtests are isolated and diagnosed (a free port in those two cases,
+or the deployed unit stopped for the run; not a change to the assertion). Then the milestone
+is done.

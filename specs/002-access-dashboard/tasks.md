@@ -159,7 +159,7 @@ rather than silently absent from the list.
 - [x] T030 [P] Amend `docs/auth-and-sessions.md` — it is binding and this milestone makes it wrong in three ways. It opens "There are no browser sessions and no human login form" (this milestone creates both); its layer-1 code sample uses a JWT library, contradicting the zero-dependency decision ([research D1](./research.md)); and its two-door table has no service token. Add the stream-authorisation rule, which currently exists only in the spec.
 - [x] T031 [P] Amend `docs/security.md` — its two-door table predates the service token, and its header table says nothing about cross-origin headers, which FR-034c now makes load-bearing rather than incidental.
 - [x] T032 [P] Add the missing commands to `AGENTS.md`'s table: `go test -tags tmux ./...` and `go test -tags quickstart ./cmd/crswd`. "Test (all)" currently names neither of the two suites that touch real tmux — a finding milestone 1 carried for 43 iterations without fixing.
-- [ ] T033 [P] Document the new environment variables in `.env.example` (names and descriptions only, never a value) and in `deploy/README.md` alongside the Access service token already recorded there.
+- [x] T033 [P] Document the new environment variables in `.env.example` (names and descriptions only, never a value) and in `deploy/README.md` alongside the Access service token already recorded there.
 - [ ] T034 Run the full [quickstart.md](./quickstart.md) validation end to end — it mints assertions from a locally generated key pair against a loopback key server, so it needs no Cloudflare account — and record the outcome in `ralph/PROGRESS.md`. Any deviation is a defect in the code or the doc; fix one, do not paper over it.
 
 ---

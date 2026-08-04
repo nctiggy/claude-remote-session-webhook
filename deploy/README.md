@@ -6,11 +6,12 @@ at deploy time from the environment or 1Password.
 
 This repository is public. Treat every file in it as published, because it is.
 
-> **Do not deploy milestone 1 behind a public hostname yet.** The daemon does not
-> validate a Cloudflare Access JWT until milestone 2, so HMAC is the only check on
-> the API, and Cloudflare Access is what keeps unauthenticated traffic off the box
-> entirely. See "Not shippable before T037" in
-> [`ralph/IMPLEMENTATION_PLAN.md`](../ralph/IMPLEMENTATION_PLAN.md).
+> **The daemon validates the Cloudflare Access assertion itself.** Every dashboard
+> route verifies the forwarded `Cf-Access-Jwt-Assertion` against the team domain's
+> key set, the AUD tag, and the allowlist before it renders anything; the API door
+> is unchanged and still checks the HMAC signature. Access at the edge stays in
+> front of both — no path gets an edge bypass — and the three `CRSW_ACCESS_*`
+> values below are what the daemon checks against. It refuses to start without them.
 
 ## What you fill in yourself
 
@@ -20,44 +21,65 @@ This repository is public. Treat every file in it as published, because it is.
 | `CRSW_SHARED_SECRET` | 1Password (`Lobster` vault) | In this repo, in a unit file, in a log |
 | `CRSW_ALLOWED_ROOTS` | Directories sessions may run in | In this repo |
 | Tunnel ID + credentials | `cloudflared tunnel create` | In this repo |
-| Access AUD tag, team domain, allowed email | Cloudflare Access → application | In this repo |
+| `CRSW_ACCESS_TEAM_DOMAIN` | Your Access team domain, normally `<team>.cloudflareaccess.com` | In this repo |
+| `CRSW_ACCESS_AUD` | Cloudflare Access → application → the AUD tag in its settings | In this repo |
+| `CRSW_ACCESS_ALLOWED_EMAILS` | The addresses your Access identity policy admits | In this repo |
 
 The AUD tag and team domain are not secrets in the cryptographic sense, but they
-identify your specific Access application. Keep them out of a public repo anyway —
-there is no upside to publishing them.
+identify your specific Access application, and the allowlist names a person. Keep
+all three out of a public repo anyway — there is no upside to publishing them.
 
-**The daemon does not read the three Access values yet.** They are configured on
-the Cloudflare side only; the variables that carry them into the daemon arrive with
-milestone 2. Setting them in the unit file today does nothing and tells you
-nothing, which is the failure mode this table used to have.
+**The daemon reads all three and refuses to start without them.** They are what it
+checks a browser's assertion against: the team domain fixes both the expected
+issuer and the key set the signature is verified with, the AUD tag pins the one
+Access application, and the allowlist is the daemon's own copy of the list the edge
+enforces — the edge is the gate, and this is the daemon asserting the gate is
+configured as believed. Configuring them on the Cloudflare side alone is a daemon
+that does not start, which is the inverse of the failure this section used to have.
 
-Everything the daemon *does* read is named in [`.env.example`](../.env.example),
-with what each value refuses to start on. `CRSW_SHARED_SECRET` is required; the
-rest have defaults, and `crswd.example.service` sets each of them to its own
-default so the list is visible in one place.
+Everything the daemon reads is named in [`.env.example`](../.env.example), with
+what each value refuses to start on. Four are required — `CRSW_SHARED_SECRET` and
+the three `CRSW_ACCESS_*` above — and the rest have defaults, which
+`crswd.example.service` sets to their own default value so the whole list is
+visible in one place. Among them is `CRSW_MAX_STREAMS` (default 10): how many live
+output streams the dashboard may hold open at once, across every tab. It is a
+second cap of the same kind as `CRSW_MAX_SESSIONS` — past it an open is refused
+with 429 rather than the host quietly degrading.
 
 ## Order of operations
 
 1. `cloudflared tunnel create crswd` — note the tunnel ID and credentials path
-2. Create the Cloudflare Access application, Google IdP, allowlist your one email
-3. Copy the AUD tag from the application's settings
+2. Create the Cloudflare Access application, Google IdP, allowlist your one email —
+   that address is also `CRSW_ACCESS_ALLOWED_EMAILS`, and your team domain is
+   `CRSW_ACCESS_TEAM_DOMAIN`
+3. Copy the AUD tag from the application's settings — it is `CRSW_ACCESS_AUD`
 4. Put `CRSW_SHARED_SECRET` in 1Password; generate it with `openssl rand -hex 32`
 5. Copy both example files, fill them in **outside the repo**, install them
 6. `loginctl enable-linger "$USER"` — without it the unit stops at logout
 7. `systemctl --user enable --now crswd` then `systemctl --user enable --now cloudflared`
 
-The secret reaches the daemon through an `EnvironmentFile` outside the repo, never
-through the unit. `EnvironmentFile` parses `NAME=value` lines, so write the
-assignment rather than the bare secret:
+**Four values** reach the daemon through an `EnvironmentFile` outside the repo,
+never through the unit. `EnvironmentFile` parses `NAME=value` lines, so write the
+assignments rather than the bare values:
 
 ```bash
 mkdir -p ~/.config/crswd
-( umask 077; printf 'CRSW_SHARED_SECRET=%s\n' \
-    "$(op read 'op://Lobster/crswd/shared-secret')" > ~/.config/crswd/env )
+( umask 077
+  printf 'CRSW_SHARED_SECRET=%s\n'         "$(op read 'op://Lobster/crswd/shared-secret')"
+  printf 'CRSW_ACCESS_TEAM_DOMAIN=%s\n'    '<team>.cloudflareaccess.com'
+  printf 'CRSW_ACCESS_AUD=%s\n'            '<the Access application AUD tag>'
+  printf 'CRSW_ACCESS_ALLOWED_EMAILS=%s\n' '<you@example.com>'
+) > ~/.config/crswd/env
 ```
 
-`Environment=` in a unit is the wrong place for it regardless of this repo:
-anyone who can run `systemctl --user show crswd` can read it back.
+Writing only the secret gets a daemon that refuses to start rather than one
+running with an unchecked browser door, and the startup error names the variable
+it is missing.
+
+`Environment=` in a unit is the wrong place for any of them regardless of this
+repo: anyone who can run `systemctl --user show crswd` can read them back. The
+secret is the obvious case; the other three name a Cloudflare team, an
+application, and a person.
 
 ### The Access service token
 
@@ -74,6 +96,13 @@ op read 'op://Lobster/crswd/shared-secret'          # the daemon's HMAC key
 op read 'op://Lobster/crswd/access-client-id'       # CF-Access-Client-Id
 op read 'op://Lobster/crswd/access-client-secret'   # CF-Access-Client-Secret
 ```
+
+The `CRSW_ACCESS_*` variables are the other half of that split, and no value is
+shared between them: the edge reads the service token and the daemon never sees
+it, while the daemon reads those three and the edge never sees them. The two
+assertion shapes are not interchangeable either — a service token's carries
+`common_name`, an empty `sub`, and **no email**, so presenting it to the dashboard
+is refused exactly as a stranger's is.
 
 A client call therefore carries four headers: the two Access ones the edge
 consumes, and the timestamp and signature the daemon checks. Dropping the Access

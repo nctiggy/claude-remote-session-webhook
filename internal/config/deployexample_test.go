@@ -8,11 +8,18 @@ package config_test
 // — the operator who sets a cap of 8 runs with 5 and is never told — so they are
 // checked here rather than left to review (Constitution Principle V).
 //
+// deploy/README.md is checked alongside it for the same reason: it is the
+// procedure an operator follows once, from a shell, and its recipe is the only
+// place that says which values must exist before the daemon will start.
+//
 // declaredVars lives in envexample_test.go and parses config.go, so a variable
 // renamed there fails this file too.
 
 import (
+	"io"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,6 +30,12 @@ import (
 const (
 	unitPath        = "../../deploy/crswd.example.service"
 	cloudflaredPath = "../../deploy/cloudflared.example.yml"
+	readmePath      = "../../deploy/README.md"
+
+	// envFilePath is the file the README's recipe writes and the unit's
+	// EnvironmentFile reads. It identifies the recipe among the README's other
+	// shell blocks.
+	envFilePath = "/.config/crswd/env"
 )
 
 // unitSettings returns the unit file's directives, comments dropped. A systemd
@@ -72,6 +85,78 @@ func unitEnvironment(t *testing.T) map[string]string {
 		env[name] = value
 	}
 	return env
+}
+
+// readmeEnvFileVars returns the CRSW_ variables deploy/README.md's shell recipe
+// writes into the environment file. Only the fenced blocks naming that file are
+// read: the README also names variables in prose and in a table, and a variable
+// an operator is told about but never shown writing is exactly the gap below.
+func readmeEnvFileVars(t *testing.T) map[string]bool {
+	t.Helper()
+
+	raw, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", readmePath, err)
+	}
+
+	assignment := regexp.MustCompile("(" + envPrefix + "[A-Z0-9_]+)=")
+	vars := make(map[string]bool)
+	// Splitting on the fence marker puts block contents at the odd indices; the
+	// prose before the first fence is index 0.
+	for i, segment := range strings.Split(string(raw), "```") {
+		if i%2 == 0 || !strings.Contains(segment, envFilePath) {
+			continue
+		}
+		for _, match := range assignment.FindAllStringSubmatch(segment, -1) {
+			vars[match[1]] = true
+		}
+	}
+
+	if len(vars) == 0 {
+		t.Fatalf("%s has no %s assignment in a block writing %s; this test is not checking anything", readmePath, envPrefix, envFilePath)
+	}
+	return vars
+}
+
+// TestDeployREADMERecipeStartsTheDaemon holds the deployment procedure to the
+// configuration the daemon actually demands. The recipe wrote CRSW_SHARED_SECRET
+// alone for twenty iterations after the three layer-1 values became required, and
+// an operator following it got a daemon that refused to start with nothing in the
+// file it was being followed from to explain why (Constitution Principle V).
+func TestDeployREADMERecipeStartsTheDaemon(t *testing.T) {
+	t.Parallel()
+
+	recipe := readmeEnvFileVars(t)
+	declared := declaredVars(t)
+	pairs, _ := baseEnv(t)
+
+	// The environment an operator following the README ends up with is the
+	// recipe's assignments and nothing else. The unit's inline values are left
+	// out because TestUnitInlineValuesAreTheDaemonDefaults pins each to the
+	// daemon's own default, so setting them changes nothing — except
+	// CRSW_ALLOWED_ROOTS, whose default is $HOME/code and whose unit spelling is
+	// systemd's %h, which is not a path anything outside systemd can resolve.
+	home := t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, config.DefaultRootName), 0o750); err != nil {
+		t.Fatalf("mkdir default root: %v", err)
+	}
+	following := map[string]string{"HOME": home}
+
+	for name := range recipe {
+		if !declared[name] {
+			t.Errorf("%s writes %s into the environment file and nothing in config.go reads it", readmePath, name)
+			continue
+		}
+		value, ok := pairs[name]
+		if !ok {
+			t.Fatalf("%s writes %s and this test has no valid sample value for it; add one to baseEnv", readmePath, name)
+		}
+		following[name] = value
+	}
+
+	if _, err := config.LoadFrom(env(following), io.Discard); err != nil {
+		t.Errorf("an operator who follows %s gets a daemon that refuses to start: %v", readmePath, err)
+	}
 }
 
 // deploymentSpecific are the variables whose values may never be committed, so
