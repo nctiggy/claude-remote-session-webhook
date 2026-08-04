@@ -11551,3 +11551,102 @@ T027 (the record at open — findings 290 and 295), T028 (lifecycle and re-evalu
 also owes `docs/security.md` the `Sec-Fetch-Site` rule, which exists only in the spec and this
 file — `.env.example`, and the quickstart run, which must deal with #266/#292). Plus the
 unowned findings above.
+
+---
+
+## Iteration 71 (milestone 2, iteration 28) — 2026-08-04 10:14
+
+**Did:** **T025** — the framing. `screenChanged`'s placeholder is gone; `screenEvent(screen)`
+marshals the whole screen as one JSON string into one `data:` field, and `send` writes that.
+**From this commit onwards a session's own bytes cross this transport** — iteration 68's rule
+("no byte a session printed reaches the wire until the framing lands") is now discharged
+rather than kept, which changes what the *next* tasks are protecting.
+
+**The test file no longer has a screen-shaped wildcard.** `readScreen` and `awaitScreen` take
+the screen the caller planted and derive the expected line through `screenEvent`, so every
+existing cadence claim now also says *which* screen arrived. Two new tests carry T025's own
+claim:
+
+- `TestAScreenIsFramedAsOneJSONString` spells the wire out **by hand**, row by row — plain
+  text, several lines, a lone `\r`, markup, quotes and a backslash, the empty screen, and a
+  line the session printed spelling `event: end` / `data: "ended"`. Spelled rather than
+  derived on purpose: it is the one place a framing change must be written down twice, which
+  is what stops the other expectations being restatements of the code. Each row also asserts
+  **exactly two newlines** in the event and decodes back to the identical bytes.
+- `TestTheScreenOnTheWireIsTheScreenTheSessionPrinted` drives it through the handler over a
+  socket and decodes with `json.Unmarshal`, because the table alone passes against a handler
+  that never calls the framing — this project's own recurring failure.
+
+**Learned (do not rediscover):**
+
+1. **`Strip` removes a lone `\r`.** It is C0, and `tmuxctl.Strip` drops all of C0 bar `\n`
+   and `\t`. So a `\r` **cannot** be asserted end-to-end through the capture path: a wire test
+   carrying one would be asserting the stripper, not the framing. The `\r` row lives in the
+   unit table, where `screenEvent` can actually be handed one — which is also the honest
+   arrangement, since the framing must not depend on a stripper that happens to agree with it.
+   `contracts/stream.md`'s framing example shows `\r\n` in the payload; that is illustrative
+   and does not describe what this daemon's capture path can produce.
+2. **`json.Marshal` HTML-escapes `<`, `>` and `&`** into the backslash-u forms 003c, 003e
+   and 0026. Harmless — `JSON.parse` gives the same string back — but the by-hand table has
+   to spell them, so the markup row's expectation is the escaped form and not `<script>`. A
+   future switch to an encoder with `SetEscapeHTML(false)` is then a change somebody has to
+   see rather than a silent change of the wire.
+3. **Iteration 62's warning about the Write tool eating four-hex-digit backslash-u is real,
+   and it bit twice here** — once in the Go source and once in this very entry, where the
+   sentence above came back with literal `<` in it. What works: write the Go source as an
+   **interpreted** string with a doubled backslash, so the file holds two backslashes and the
+   Go string holds one. In prose, spell the escape in words rather than as characters.
+   Either way, `grep -n u003c` the file afterwards — the tool reports success either way.
+4. **`json.Marshal` on a `string` cannot fail** — invalid UTF-8 is replaced with U+FFFD, not
+   refused — so `screenEvent`'s error branch is unreachable today. It is returned rather than
+   dropped because the only alternative is writing a half-framed event, which is the failure
+   the function exists to prevent. Do not "simplify" it away.
+5. **`bash` in this session refuses heredocs, `cp`, `sed -i`, `python3` and writes outside the
+   repo.** A multi-paragraph commit message therefore has to go through repeated `git commit
+   -m` flags, and backticks in one make the tool refuse the command outright. Mutation probing
+   has to be done with the Edit tool (apply, run, revert), not `sed`/`cp`.
+
+**Mutations, all caught:**
+
+1. The screen written raw (`dataField + screen + groupEnd`, no encoding) → five failures,
+   including `readGroup`'s own "an SSE line group ends with a blank line" on the multi-line
+   screens. This is the mutation the whole task exists to prevent.
+2. `send` ignoring the framing and writing the old placeholder → eight failures naming the
+   screen each stream should have carried.
+3. The screen truncated at its first newline (a plausible wrong answer to "SSE is
+   line-oriented") → the wire test and the table.
+
+**Findings:**
+
+302. **The stream's audit record still lands at close, and that now leaks a real gap rather
+    than a theoretical one.** Until this commit the trail's lateness cost nothing, because a
+    stream carried no output; a stream now carries a session's screen, so a daemon that dies
+    mid-stream leaves no trace that output was read (FR-016a). **T027 owns it** — this is
+    findings 290/295 with the stakes raised, and the file header comment was updated to say
+    so rather than to keep calling it harmless.
+303. **`TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is flaky under `-race`.** It
+    bounds a whole HTTP round trip over a real socket by `tickUnderTest` (10ms), which `-race`
+    can exceed: one run in four here failed with "arrived 11ms after the open". Three
+    subsequent full `-race` runs of the package were clean, and `go test ./...` (the gate in
+    `AGENTS.md`) is green every time. Pre-existing — the assertion predates this task and the
+    framing adds microseconds — but it will bite whoever runs `-race` in CI. The fix is to
+    measure the interval rather than the round trip, or to widen the bound under `-race`.
+304. **Findings 203–205, 216, 275, 278, 280–283, 285–288, 290, 292–293, 295–296, 298–301 are
+    unchanged.** Nothing here closed one. Still unowned: the untokenised values in
+    `docs/design-system.md` (216), the unaudited `cleanPath` redirect (275), the rain being
+    unverifiable from Go (278), the pane's unbuilt scanline overlay (280, for **T026**), the
+    session page being a dead end (282), and `testServer.failed` not being lock-safe while a
+    stream is open (298). The duplicate checkbox state in `IMPLEMENTATION_PLAN.md` and
+    `tasks.md` was again ticked in both by hand. `internal/httpapi` is ~5.4s; the new tests add
+    ~0.4s. `-race` on the package is ~6.8s.
+
+**Left:** **T026** — `web/templates/partials/pane.html`'s `data-stream` hook and `crswd.js`'s
+loop. The wire it consumes is now real and fixed: an unnamed event whose `data:` is a JSON
+string, so `pane.textContent = JSON.parse(e.data)` — replace, never append, scroll position
+untouched, and never `innerHTML` or an htmx swap. It also owns finding 280. Then T027 (the
+record at open — findings 290, 295 and 302), T028 (lifecycle and re-evaluation, findings 296
+and 299) and T029 (the acceptance suite, which should also drive `stream.open` through
+`internal/audit/leak_test.go` — finding 285's remaining half, and which is where finding 303
+could be settled). Then T030–T034 (docs — T031 also owes `docs/security.md` the
+`Sec-Fetch-Site` rule, which exists only in the spec and this file — `.env.example`, and the
+quickstart run, which must deal with #266/#292). Plus the unowned findings above.
