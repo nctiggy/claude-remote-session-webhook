@@ -4,14 +4,16 @@
 // pair — the same arrangement browser_test.go uses, because a handler called
 // directly would prove the markup and not the route.
 //
-// The US1 acceptance suite is T017's and lives in this file too when it arrives:
-// zero external origins, every state distinguishable without colour, and the
-// cross-owner refusal through GET /sessions/{id}/view, which no route serves yet.
+// The US1 acceptance suite (T017) is at the foot of this file, under its own
+// heading. It is the story's own claims rather than a handler's: what the page
+// fetches, what it says without colour, what it withholds from a second owner,
+// and where the identity in its header came from.
 package httpapi
 
 import (
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -36,19 +38,29 @@ func newFleet(t *testing.T) *fleet {
 	return &fleet{testServer: newAuditedServerWith(t, keys.validator(t)), keys: keys}
 }
 
-// view opens the fleet page as the verified operator would.
+// open asks for one path as the verified operator would and hands back whatever
+// the daemon answered, status and all — some of the pages this suite reads are
+// refusals, and a helper that insisted on 200 could not fetch them.
 //
 // The request carries no layer-2 signature and no bearer token, which is FR-012
 // from the browser's side: this door refuses only by the check that applies to it,
 // and a page that needed a signature would be a page no browser could open.
-func (f *fleet) view(t *testing.T) *httptest.ResponseRecorder {
+func (f *fleet) open(t *testing.T, target string) *httptest.ResponseRecorder {
 	t.Helper()
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequest(http.MethodGet, target, nil)
 	r.Header.Set(headerAccessAssertion, f.keys.mint(t, f.keys.claims()))
 
 	w := httptest.NewRecorder()
 	f.ServeHTTP(w, r)
+	return w
+}
+
+// view opens the fleet page, which every test here expects to be served.
+func (f *fleet) view(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
+
+	w := f.open(t, "/")
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET / = %d (%s); want %d", w.Code, w.Body.String(), http.StatusOK)
 	}
@@ -71,10 +83,15 @@ func runningAt(now time.Time) time.Time { return now.Add(-time.Minute) }
 // the cards do, which is the point of there being one pill, and it always names
 // both states. A page-level search for a card's own text is not an assertion
 // about a card.
+//
+// The opener names the element and not its class, so this works just as well on
+// a page the colour has been stripped out of — which is what T017's
+// without-colour assertion reads. The card is the only <article> the dashboard
+// renders, and TestEveryCardIsLegibleWithoutColour holds that.
 func cardFor(t *testing.T, page, id string) string {
 	t.Helper()
 
-	const opener = `<article class="card"`
+	const opener = `<article`
 	for _, card := range strings.Split(page, opener)[1:] {
 		body, _, _ := strings.Cut(card, "</article>")
 		if strings.Contains(body, id) {
@@ -574,6 +591,374 @@ func TestFormatAgeIsCoarseAndReadable(t *testing.T) {
 	for _, c := range cases {
 		if got := formatAge(c.d); got != c.want {
 			t.Errorf("formatAge(%v) = %q; want %q", c.d, got, c.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The US1 acceptance suite (T017)
+//
+// Everything above is a claim about a handler. Everything below is a claim about
+// the story — what an operator receives, asserted against the response and not
+// against the code that composed it, which is why each one drives a real request
+// through the real router and reads only what came back.
+//
+// The four are contracts/dashboard.md's own: zero external origins (SC-005),
+// every state legible without colour (SC-009), a second owner's session withheld
+// through the dashboard's own route (FR-037b, SC-016), and the identity in the
+// header taken from the assertion and from nothing the request supplied (FR-020,
+// FR-036). A fifth asserts what the trail keeps of all this (FR-035, SC-008).
+// ---------------------------------------------------------------------------
+
+// urlPosition matches the attributes a browser *fetches* from, which is the only
+// place FR-025 is about.
+//
+// A session name or a working directory that reads like a URL is text, and stays
+// text: it reaches the page inside a title attribute and between two tags, both
+// escaped. So a sweep for "https://" anywhere in the markup would refuse a
+// caller for naming a session after the repository it works on, while a page
+// that really did pull a script off a CDN would be caught by neither that sweep
+// nor the template sweeps in partials_test.go — those read the sources, which
+// have no caller text in them at all. What SC-005 forbids is the page causing a
+// request to somewhere else, and this is the list of attributes that causes one.
+var urlPosition = regexp.MustCompile(`(?i)\s(href|src|srcset|action|formaction|poster|cite|background|data|manifest)\s*=\s*"([^"]*)"`)
+
+// otherOrigin is a reference that leaves this origin: any scheme at all, and the
+// protocol-relative form, which carries no scheme to spot and is the one a
+// sweep for "https:" misses.
+var otherOrigin = regexp.MustCompile(`(?i)^([a-z][a-z0-9+.\-]*:|//)`)
+
+// styleFetch is the two CSS constructs that fetch. No rendered page may contain
+// either, and the reason is structural rather than stylistic: the pages carry no
+// CSS at all, inline or otherwise, so the only stylesheet is the one they link.
+// The same sweep over the stylesheet's own rules is stylesheet_test.go's.
+var styleFetch = regexp.MustCompile(`(?i)@import|url\(`)
+
+// TestNoPageThisMilestoneServesFetchesFromAnotherOrigin is SC-005 and FR-025 over
+// every page the browser door can render, with caller text on the page that would
+// become an external origin the moment anything put it in a fetching position.
+func TestNoPageThisMilestoneServesFetchesFromAnotherOrigin(t *testing.T) {
+	t.Parallel()
+
+	const (
+		nameLikeAScript = "https://cdn.example.net/analytics.js"
+		pathLikeAHost   = "//an-origin.example/not-a-directory"
+	)
+
+	f := newFleet(t)
+	f.fixture.plant(t, session.Session{Name: nameLikeAScript, WorkDir: pathLikeAHost})
+
+	loaded := f.view(t).Body.String()
+	// Without this the case is a page with no caller text on it, which every one
+	// of the sweeps below would pass by rendering nothing.
+	for _, text := range []string{nameLikeAScript, pathLikeAHost} {
+		if !strings.Contains(loaded, text) {
+			t.Fatalf("the fleet never rendered %q, so this case sweeps a page nothing hostile reached:\n%s", text, loaded)
+		}
+	}
+
+	notFound := f.open(t, "/not-a-route")
+	if notFound.Code != http.StatusNotFound {
+		t.Fatalf("GET /not-a-route = %d; want %d — this case is about the page, so it has to be the page", notFound.Code, http.StatusNotFound)
+	}
+
+	pages := map[string]string{
+		"the fleet, rendering caller text that reads like a reference": loaded,
+		"an empty fleet":     newFleet(t).view(t).Body.String(),
+		"the not-found page": notFound.Body.String(),
+	}
+
+	for what, page := range pages {
+		t.Run(what, func(t *testing.T) {
+			t.Parallel()
+
+			refs := urlPosition.FindAllStringSubmatch(page, -1)
+			if len(refs) == 0 {
+				t.Fatalf("%s references nothing at all, so the sweep below would pass on a blank response:\n%s", what, page)
+			}
+
+			linked := false
+			for _, ref := range refs {
+				if otherOrigin.MatchString(ref[2]) {
+					t.Errorf("%s fetches %s=%q, which is another origin (FR-025, SC-005):\n%s", what, ref[1], ref[2], page)
+				}
+				linked = linked || ref[2] == "/static/crswd.css"
+			}
+			// The one reference every page really makes. A page that stopped
+			// linking the stylesheet would satisfy "no external origin" by
+			// referencing nothing, and this suite would have nothing to sweep.
+			if !linked {
+				t.Errorf("%s links no stylesheet, so it proves nothing about what a page fetches:\n%s", what, page)
+			}
+			if got := styleFetch.FindString(page); got != "" {
+				t.Errorf("%s carries %q; a page holds no CSS, so the only stylesheet is the one it links:\n%s", what, got, page)
+			}
+		})
+	}
+}
+
+// classAttribute is every attribute that carries colour on these pages. Nothing
+// else can: docs/security.md's policy forbids the inline style attribute, the
+// template sweep refuses it at build time, and FR-023 keeps every colour in a
+// token the stylesheet reads. So removing these removes the colour, and what
+// survives is what an operator who cannot see it receives.
+var classAttribute = regexp.MustCompile(`\sclass="[^"]*"`)
+
+// TestEveryCardIsLegibleWithoutColour is SC-009 and FR-019 as an acceptance
+// claim rather than a component one.
+//
+// partials_test.go asserts that the pill *can* render its label; this asserts
+// that what a browser is sent still distinguishes one state from another after
+// every colour on it is gone. The two are not the same claim — a page could
+// compose a labelled pill and still tell an operator apart by nothing but a
+// class, which is what the summary row does if nobody looks.
+func TestEveryCardIsLegibleWithoutColour(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	stale, _ := f.fixture.plant(t, session.Session{
+		Name: "left open", WorkDir: f.fixture.repo, LastActivity: idleAt(testTime),
+	})
+	live, _ := f.fixture.plant(t, session.Session{
+		Name: "in use", WorkDir: f.fixture.repo, LastActivity: runningAt(testTime),
+	})
+	other, _ := f.fixture.plant(t, session.Session{
+		Name: "also in use", WorkDir: f.fixture.repo, LastActivity: runningAt(testTime),
+	})
+
+	page := f.view(t).Body.String()
+	// The premise of stripping classes: nothing else on the page could be
+	// carrying colour. Both are absences the CSP would also refuse at runtime,
+	// asserted here because a proxy that stripped the header must not be the only
+	// thing between a template and an inline colour.
+	if strings.Contains(page, " style=") {
+		t.Fatalf("the page carries an inline style attribute, so removing its classes does not remove its colour:\n%s", page)
+	}
+	if strings.Contains(strings.ToLower(page), "<style") {
+		t.Fatalf("the page carries an inline stylesheet, so removing its classes does not remove its colour:\n%s", page)
+	}
+
+	colourless := classAttribute.ReplaceAllString(page, "")
+	if n := strings.Count(colourless, "<article"); n != 3 {
+		t.Fatalf("the colourless page holds %d cards; want 3 — the card is the only <article> the dashboard renders:\n%s", n, colourless)
+	}
+
+	for _, want := range []struct {
+		id            string
+		state, notThe session.DisplayState
+	}{
+		{stale.ID, session.DisplayIdle, session.DisplayRunning},
+		{live.ID, session.DisplayRunning, session.DisplayIdle},
+		{other.ID, session.DisplayRunning, session.DisplayIdle},
+	} {
+		card := cardFor(t, colourless, want.id)
+		if !strings.Contains(card, ">"+string(want.state)+"<") {
+			t.Errorf("with the colour gone, the card for session %s no longer says it is %q:\n%s", want.id, want.state, card)
+		}
+		if strings.Contains(card, ">"+string(want.notThe)+"<") {
+			t.Errorf("the card for session %s reads %q as well as %q:\n%s", want.id, want.notThe, want.state, card)
+		}
+	}
+
+	// The summary row is the half that would fail quietly. Its counts are
+	// unambiguous, but the state each one counts is carried by the pill beside it
+	// — and if that pill said nothing, the row would be three numbers whose
+	// meaning is a colour.
+	for _, want := range []struct {
+		state session.DisplayState
+		count string
+	}{
+		{session.DisplayRunning, "2"},
+		{session.DisplayIdle, "1"},
+	} {
+		if !summaryReads(colourless, want.state, want.count) {
+			t.Errorf("with the colour gone, no summary entry reads %q %s:\n%s", want.state, want.count, colourless)
+		}
+	}
+}
+
+// summaryReads reports whether one entry of the summary row names a state and
+// its count as text, in that entry rather than anywhere on the page.
+//
+// Per entry, because the row is one <li> per state: a page-wide search for the
+// state and a page-wide search for the number would both pass on a row that had
+// paired them the wrong way round.
+func summaryReads(page string, state session.DisplayState, count string) bool {
+	for _, entry := range strings.Split(page, "<li")[1:] {
+		body, _, _ := strings.Cut(entry, "</li>")
+		if strings.Contains(body, ">"+string(state)+"<") && strings.Contains(body, ">"+count+"<") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestASecondOwnersSessionIsInvisibleThroughTheDashboardsOwnRoute is FR-037b and
+// SC-016, exercised where the requirement asks for it: through the dashboard,
+// with a synthetic second owner. Milestone 1's API test asserts the same property
+// on the other door, and pointing at it would be asserting nothing about this one.
+//
+// The claim is stronger than "the card is absent". Two responses are compared —
+// one from a host holding a session this viewer does not own, one from a host
+// holding nothing at all — and they must be identical byte for byte, because the
+// difference between "not yours" and "does not exist" is what enumeration is made
+// of. A page that leaked the difference by a count, a heading, or a stray space
+// would pass an absence check and fail this one.
+func TestASecondOwnersSessionIsInvisibleThroughTheDashboardsOwnRoute(t *testing.T) {
+	t.Parallel()
+
+	const stranger auth.CallerID = "a-second-operator"
+
+	held := newFleet(t)
+	theirs, _ := held.fixture.plant(t, session.Session{
+		Owner: stranger, Name: "not yours", WorkDir: held.fixture.repo, LastActivity: idleAt(testTime),
+	})
+	empty := newFleet(t)
+
+	withTheirs, withNothing := held.view(t), empty.view(t)
+	if withTheirs.Body.String() != withNothing.Body.String() {
+		t.Errorf("the fleet distinguishes a host holding another owner's session from a host holding none:\ngot:\n%s\nwant:\n%s",
+			withTheirs.Body.String(), withNothing.Body.String())
+	}
+
+	// The address every card links to, which no route serves yet: today both of
+	// these are the browser door's not-found page. The assertion is a guard
+	// rather than a proof — it will become FR-037b's own the moment
+	// GET /sessions/{id}/view exists, and until then it holds that the link
+	// target discloses nothing about which identifiers are real.
+	unknown := strings.Repeat("c", session.IDLen)
+	notMine, neverExisted := held.open(t, "/sessions/"+theirs.ID+"/view"), held.open(t, "/sessions/"+unknown+"/view")
+	if notMine.Code != neverExisted.Code {
+		t.Errorf("another owner's session answers %d and one that never existed answers %d; the difference is what enumeration is made of",
+			notMine.Code, neverExisted.Code)
+	}
+	if notMine.Body.String() != neverExisted.Body.String() {
+		t.Errorf("another owner's session and one that never existed answer differently:\ngot:\n%s\nwant:\n%s",
+			notMine.Body.String(), neverExisted.Body.String())
+	}
+	if strings.Contains(notMine.Body.String(), theirs.Name) {
+		t.Errorf("the answer for another owner's session names it:\n%s", notMine.Body.String())
+	}
+}
+
+// TestTheHeaderNamesTheAssertionAndNothingTheRequestSupplied is FR-020 and
+// FR-036 at the page.
+//
+// The header component executes against the VerifiedOperator, so no
+// request-supplied value is in scope for it — which is the point, and is exactly
+// why this has to be asserted from outside: "the template is fed the right
+// thing" is a claim about today's code, while this is a claim about the response.
+//
+// Byte-identity is the assertion rather than "the stranger's address is absent".
+// A page that echoed a request field somewhere other than the header — a title, a
+// hidden attribute, a comment — would pass an absence check for one spelling and
+// still be reflecting a caller's text back at them.
+func TestTheHeaderNamesTheAssertionAndNothingTheRequestSupplied(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	f.fixture.plant(t, session.Session{Name: "refactor the reaper", WorkDir: f.fixture.repo})
+
+	plain := f.view(t).Body.String()
+	if !strings.Contains(plain, testOperatorEmail) {
+		t.Fatalf("the page does not name the verified operator at all:\n%s", plain)
+	}
+
+	// Everything a caller can put on a request that looks like an identity,
+	// including the two the edge itself writes. The daemon reads exactly one
+	// header and validates it; the rest are here because "it is not read" is a
+	// property worth a test, and because the cookie in particular is the
+	// browser's credential to the edge rather than the edge's product for the
+	// daemon (browser.go).
+	r := httptest.NewRequest(http.MethodGet, "/?email="+testStrangerEmail+"&operator="+testStrangerEmail, nil)
+	r.Header.Set(headerAccessAssertion, f.keys.mint(t, f.keys.claims()))
+	for _, field := range []string{
+		"Cf-Access-Authenticated-User-Email",
+		"X-Forwarded-Email",
+		"X-Forwarded-User",
+		"X-Remote-User",
+		"From",
+	} {
+		r.Header.Set(field, testStrangerEmail)
+	}
+	r.Header.Set("Cookie", "CF_Authorization="+testStrangerEmail)
+	// A second assertion, genuinely signed by the same key server, naming someone
+	// the allowlist refuses. If the door read the last value rather than the
+	// first, this request would be refused outright — so the status below is as
+	// much of the assertion as the body is.
+	r.Header.Add(headerAccessAssertion, f.keys.mint(t, claimsFor(f.keys, testStrangerEmail)))
+
+	w := httptest.NewRecorder()
+	f.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET / carrying identity-shaped request fields = %d (%s); want %d — the door reads the assertion and nothing else",
+			w.Code, w.Body.String(), http.StatusOK)
+	}
+	if strings.Contains(w.Body.String(), testStrangerEmail) {
+		t.Errorf("the page names an address the request supplied rather than the one the edge signed (FR-020, FR-036):\n%s", w.Body.String())
+	}
+	if w.Body.String() != plain {
+		t.Errorf("a request carrying identity-shaped fields was answered with a different page:\ngot:\n%s\nwant:\n%s", w.Body.String(), plain)
+	}
+}
+
+// claimsFor is the key server's own claim set with the address changed, so the
+// second assertion above differs from a working one by the person it names and
+// by nothing else.
+func claimsFor(k *keyServer, email string) map[string]any {
+	claims := k.claims()
+	claims["email"] = email
+	return claims
+}
+
+// TestTheFleetsRecordCarriesNothingThePageRendered is FR-035 and SC-008 at this
+// route: one record for the request, and not a byte of what the response was
+// made of.
+//
+// internal/audit's leak suite makes this claim across the whole daemon, but it
+// drives the API door only — the browser door's own operations are not in it, so
+// until they are, this is the assertion covering the values a *page* has in
+// scope: a name and a working directory a caller chose, the address the edge
+// verified, and the assertion itself.
+func TestTheFleetsRecordCarriesNothingThePageRendered(t *testing.T) {
+	t.Parallel()
+
+	const (
+		chosenName = "a-name-a-caller-chose"
+		chosenPath = "/srv/a-directory-a-caller-named"
+	)
+
+	f := newFleet(t)
+	f.fixture.plant(t, session.Session{Name: chosenName, WorkDir: chosenPath})
+
+	assertion := f.keys.mint(t, f.keys.claims())
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set(headerAccessAssertion, assertion)
+
+	w := httptest.NewRecorder()
+	f.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET / = %d (%s); want %d", w.Code, w.Body.String(), http.StatusOK)
+	}
+
+	page := w.Body.String()
+	for _, rendered := range []string{chosenName, chosenPath, testOperatorEmail} {
+		if !strings.Contains(page, rendered) {
+			t.Fatalf("the page never rendered %q, so its absence from the trail proves nothing:\n%s", rendered, page)
+		}
+	}
+
+	f.only(t)
+	trail := f.sink.String()
+	for _, secret := range []struct{ what, value string }{
+		{"the session name a caller chose", chosenName},
+		{"the working directory a caller chose", chosenPath},
+		{"the address the edge verified", testOperatorEmail},
+		{"the assertion itself", assertion},
+	} {
+		if strings.Contains(trail, secret.value) {
+			t.Errorf("the trail carries %s; a record holds what the daemon derived and never what it rendered (FR-035):\n%s", secret.what, trail)
 		}
 	}
 }
