@@ -8134,3 +8134,125 @@ cannot be obtained.
     only, so T007's `//go:build dev` files will be invisible to the linter. Do it inside
     T007.
 93. **`deploy/README.md`'s four-variable trap (44 #84) still stands.** **T033.**
+
+---
+
+## Iteration 46 (milestone 2, iteration 3) — 2026-08-04 04:22
+
+**Did:** **T003** — `internal/access/keys.go`, the signing key set: fetched from the
+team domain, cached, refetched **only** on an unknown key id, floored at one attempt
+per 60s, single-flight, and refusing whenever the keys cannot be obtained (FR-008,
+FR-009). `internal/access` now exists; this is its first file, so it carries the
+package doc.
+
+**Shape, and the reasons behind the non-obvious parts:**
+
+- **`key(ctx, kid)` is the whole surface.** Cache hit answers; a miss refetches once
+  and then refuses. The kid is the only refetch trigger, because a rotation announces
+  itself as a kid nothing has seen. No timed refresh — FR-008 names one rule and a
+  second trigger would be a second thing to reason about.
+- **`lastAttempt` marks attempts, not successes.** A failed fetch has already spent
+  the outbound request the floor exists to bound, so it moves the mark. The
+  consequence to know: after a failure the next attempt is a minute away, which is
+  exactly the "a later request may trigger the next attempt" the contract describes.
+- **The shared fetch drops the caller's cancellation** (`context.WithoutCancel`). It is
+  shared with everyone waiting on it, so a browser that gave up must not cancel it out
+  from under them — and a caller who could cancel at will could keep the cache empty
+  on purpose. The bound is the client's own 5s timeout. A *waiter* still answers to its
+  own context; only the fetch does not.
+- **A failed fetch leaves the cache exactly as it was.** Replacing working keys with
+  none would refuse everything until the next rotation. Tested both directions.
+- **"Usable `n` and `e`" had to be given an operational meaning**, since the contract
+  only says "usable". It is: `kty:RSA`, a non-empty `kid`, unpadded base64url both
+  fields, exponent ≤ 4 bytes and odd and ≥ 3, modulus ≥ **2048 bits**
+  (`minModulusBits`). The size floor is the one judgement call in this task — the edge
+  issues 2048-bit keys and `crypto/rsa` itself refuses under 1024 at verify time, so it
+  excludes only entries that could never be a real Access key. If a later iteration
+  finds it wrong, it is one constant.
+- **The whole set is replaced on a successful fetch**, never merged. The cache is the
+  published set; a merge would keep a revoked key alive forever.
+
+Gate, executed not asserted:
+
+```
+go build ./...                          OK
+go vet ./...                            OK
+go vet -tags tmux ./...                 OK
+go test -count=1 ./...                  OK
+go test -count=1 -tags tmux ./...       OK (real tmux on this host)
+go test -count=1 -race ./internal/access  OK
+go test -tags quickstart ./cmd/crswd    12 of 13 stories — finding 78 exactly, reproduced
+golangci-lint run                       OK
+gofmt -l .                              empty
+go.sum                                  absent  ✅
+```
+
+**Learned:**
+
+1. **`unused` deleted the `systemClock` this package "obviously" needed.** Nothing
+   constructs a key set outside tests until the validator does (T004), so a host clock
+   here is shelf code and the linter says so. `internal/auth` and `internal/httpapi`
+   each declare their own; **T004 adds this package's**, at the point something wires
+   it. The `clock` interface itself stays and is the seam every later time-based check
+   (`exp`, `nbf`, `iat` in T005) should take.
+2. **Mutation-testing this task paid for itself twice.** Deleting the floor and then
+   the single-flight join, and re-running, is what proved the tests bite. The second
+   mutation also **hung the suite instead of failing it**: a `t.Fatal` between "hold the
+   key server" and "release it" wedges `httptest.Server.Close`, which waits for the
+   handler still parked in the hold. The fixture now returns an idempotent `release`
+   registered with `t.Cleanup`, so a failed assertion arrives as a failure. Any future
+   test that blocks a handler needs the same shape.
+3. **Without single-flight the stampede test fails as `errRefetchFloored`, not as
+   "8 fetches"** — the floor catches the extra fetches first. So the property that test
+   uniquely proves is that the losers get the winner's *result* rather than a refusal.
+   Worth knowing before "simplifying" either mechanism.
+4. **`errcheck` here runs with `check-blank: true` and the default exclusions off**, so
+   both `defer resp.Body.Close()` and `_ = resp.Body.Close()` are findings, and
+   `bodyclose` still wants the close. The shape that satisfies all three: read the body
+   through the limiter, then close inline and fold the close error into the read error.
+   No named returns, no `//nolint`. The same applies to `io.WriteString(w, …)` in a test
+   handler — check it and `t.Errorf`.
+5. **`gosec` G403 forbids generating an undersized RSA key**, even in a test that wants
+   one as a fixture. The undersized-modulus case truncates a good modulus to half its
+   bytes instead; the entry is skipped long before anything tries to verify with it.
+
+**Left:** T004–T034. Next is **T004**: `internal/access/verify.go` — RS256 verification
+in the exact order `contracts/access-jwt.md` gives, `alg` read only to reject, claims
+parsed only after the signature verifies. The fixtures it needs are already in
+`keys_test.go`: `signingKeys` (extend the array), `jwkFor`, `keySetJSON`, `newKeyServer`,
+`stepClock`, `mustKeySet`.
+
+**Findings:**
+
+94. **`newKeySet` has no production caller yet, and that is correct for T003** — the
+    validator that constructs it is T004. But it means the *wiring* is unproven: T004
+    must actually build one, and T009 must pass `cfg.AccessTeamDomain` to it, or this
+    package ships as the milestone-1 reaper did (implemented, tested, never called).
+    The plan's own rule: a task is done when something calls it.
+95. **Nothing yet emits the `access.reject` audit record these errors are meant for.**
+    `errKeyIDMissing`, `errKeyIDUnknown`, `errRefetchFloored` and `errKeysUnobtainable`
+    are written to be recorded server-side under a repo-authored constant (T008 adds the
+    action, T009 the emission). They deliberately carry no kid, no body and no origin —
+    keep it that way when mapping them.
+96. **Iteration 14 #1 / … / 45 #88 still stands:** `git checkout --`, `git restore`,
+    `perl -i`, heredocs and `git worktree add` remain outside the permission allowlist.
+    New this iteration: **`pkill` is refused too**, so a hung test binary from a
+    deliberate mutation had to be stopped through the harness rather than the shell.
+    Multi-paragraph commit messages went through repeated `-m` flags, which works and
+    avoids the heredoc problem 45 #88 hit.
+97. **Iteration 1 #1 / … / 45 #89 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the
+    hook: "no leaks found".)
+98. **Iteration 2 #2 / … / 45 #90 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+99. **Iteration 6 #6 / … / 45 #91 still stands:** `AGENTS.md`'s command table still
+    names neither `go test -tags tmux ./...` nor `go test -tags quickstart ./cmd/crswd`.
+    **T032.**
+100. **Iteration 44 #79 / 45 #92 still stands:** `.golangci.yml`'s `run.build-tags` lists
+    `tmux` only, so T007's `//go:build dev` files will be invisible to the linter. Do it
+    inside T007.
+101. **`deploy/README.md`'s four-variable trap (44 #84 / 45 #93) still stands.** **T033.**
+102. **Finding 78 reproduces a third time**, unchanged and untouched by this task:
+    `TestQuickstartStory1StartupFailures`'s two hard-coded `:8765` cases fail their
+    post-refusal bind check while the deployed daemon holds that port. Still **T021's**.
