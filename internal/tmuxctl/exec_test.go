@@ -586,6 +586,7 @@ func TestExecZeroValueRunsNothing(t *testing.T) {
 	if err := e.Kill(context.Background(), execName); !errors.Is(err, ErrNoSocket) {
 		t.Fatalf("Kill on a zero Exec = %v, want ErrNoSocket", err)
 	}
+	//nolint:gosec // same path as the read above: install(t) set it from this test's own t.TempDir
 	if _, err := os.Stat(os.Getenv(stubRecordEnv)); !os.IsNotExist(err) {
 		t.Errorf("the zero Exec executed tmux: %v", recorded(t))
 	}
