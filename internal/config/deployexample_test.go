@@ -74,6 +74,24 @@ func unitEnvironment(t *testing.T) map[string]string {
 	return env
 }
 
+// deploymentSpecific are the variables whose values may never be committed, so
+// the unit names them in a comment and they arrive through the EnvironmentFile
+// instead. The secret is the obvious one; the three layer-1 values name a
+// Cloudflare team, an Access application, and a person, and a unit's contents
+// are readable by anyone who can run `systemctl --user show`.
+//
+// Being on this list is not an exemption from the rule below — it is the other
+// half of it. The unit must still mention each of these by name, so the file
+// stays the one place an operator can see the whole configuration at once.
+func deploymentSpecific() map[string]bool {
+	return map[string]bool{
+		config.EnvSharedSecret:        true,
+		config.EnvAccessTeamDomain:    true,
+		config.EnvAccessAUD:           true,
+		config.EnvAccessAllowedEmails: true,
+	}
+}
+
 // TestUnitSetsOnlyVariablesTheDaemonReads is the silent-wrong guard. A variable
 // nothing reads leaves the operator believing they configured something.
 func TestUnitSetsOnlyVariablesTheDaemonReads(t *testing.T) {
@@ -81,6 +99,7 @@ func TestUnitSetsOnlyVariablesTheDaemonReads(t *testing.T) {
 
 	declared := declaredVars(t)
 	set := unitEnvironment(t)
+	private := deploymentSpecific()
 
 	for name := range set {
 		if !declared[name] {
@@ -89,9 +108,17 @@ func TestUnitSetsOnlyVariablesTheDaemonReads(t *testing.T) {
 	}
 
 	// The other direction, because the unit claims inline to be the complete list.
-	// The secret is the one exception and has its own test below.
+	raw, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", unitPath, err)
+	}
 	for name := range declared {
-		if name == config.EnvSharedSecret {
+		if private[name] {
+			// Not inline — TestUnitNeverCarriesADeploymentValue — but the operator
+			// still has to learn from this file that it exists and is required.
+			if !strings.Contains(string(raw), name) {
+				t.Errorf("config.go reads %s, and %s neither sets it nor names it, so an operator following this file gets a daemon that refuses to start", name, unitPath)
+			}
 			continue
 		}
 		if _, ok := set[name]; !ok {
@@ -100,16 +127,19 @@ func TestUnitSetsOnlyVariablesTheDaemonReads(t *testing.T) {
 	}
 }
 
-// TestUnitNeverCarriesTheSecret is the committed-secret guard for this file. A
-// unit is readable by anyone who can run `systemctl --user show`, and this
-// example is in a public repository, so the secret has exactly one route in:
-// an EnvironmentFile written from 1Password outside the repo.
-func TestUnitNeverCarriesTheSecret(t *testing.T) {
+// TestUnitNeverCarriesADeploymentValue is the committed-value guard for this
+// file. A unit is readable by anyone who can run `systemctl --user show`, and
+// this example is in a public repository, so each of these has exactly one route
+// in: an EnvironmentFile written outside the repo.
+func TestUnitNeverCarriesADeploymentValue(t *testing.T) {
 	t.Parallel()
 
 	settings := unitSettings(t)
-	if _, ok := unitEnvironment(t)[config.EnvSharedSecret]; ok {
-		t.Errorf("%s sets %s inline; it must arrive through EnvironmentFile, which is not committed", unitPath, config.EnvSharedSecret)
+	set := unitEnvironment(t)
+	for name := range deploymentSpecific() {
+		if _, ok := set[name]; ok {
+			t.Errorf("%s sets %s inline; it must arrive through EnvironmentFile, which is not committed", unitPath, name)
+		}
 	}
 	if len(settings["EnvironmentFile"]) == 0 {
 		t.Errorf("%s has no EnvironmentFile, so there is no route for %s at all", unitPath, config.EnvSharedSecret)
@@ -142,6 +172,7 @@ func TestUnitInlineValuesAreTheDaemonDefaults(t *testing.T) {
 		config.EnvMaxSessions:      strconv.Itoa(config.DefaultMaxSessions),
 		config.EnvCreateRatePerMin: strconv.Itoa(config.DefaultCreateRatePerMin),
 		config.EnvMaxBodyBytes:     strconv.FormatInt(config.DefaultMaxBodyBytes, 10),
+		config.EnvMaxStreams:       strconv.Itoa(config.DefaultMaxStreams),
 	} {
 		if got := set[name]; got != want {
 			t.Errorf("%s sets %s=%s, want the daemon's default %s", unitPath, name, got, want)

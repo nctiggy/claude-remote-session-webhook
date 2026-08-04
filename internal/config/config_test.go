@@ -18,6 +18,15 @@ import (
 // real HMAC key looks like, and the repo's gitleaks rules correctly say so.
 const goodSecret = "test-only-shared-secret-32-bytes"
 
+// The layer-1 values, each distinctive enough that finding it in an error string
+// or a formatted Config is unambiguous. They name an organisation and a person,
+// which is why several assertions below hunt for them.
+const (
+	goodTeamDomain = "example-team.cloudflareaccess.com"
+	goodAUD        = "test-only-audience-tag"
+	goodEmail      = "operator@example.com"
+)
+
 func env(pairs map[string]string) func(string) string {
 	return func(key string) string { return pairs[key] }
 }
@@ -28,8 +37,11 @@ func baseEnv(t *testing.T) (map[string]string, string) {
 	t.Helper()
 	root := t.TempDir()
 	return map[string]string{
-		config.EnvSharedSecret: goodSecret,
-		config.EnvAllowedRoots: root,
+		config.EnvSharedSecret:        goodSecret,
+		config.EnvAllowedRoots:        root,
+		config.EnvAccessTeamDomain:    goodTeamDomain,
+		config.EnvAccessAUD:           goodAUD,
+		config.EnvAccessAllowedEmails: goodEmail,
 	}, root
 }
 
@@ -60,8 +72,21 @@ func TestLoadFromDefaultsEverythingOptional(t *testing.T) {
 	if cfg.MaxBodyBytes != config.DefaultMaxBodyBytes {
 		t.Errorf("MaxBodyBytes = %d, want %d", cfg.MaxBodyBytes, config.DefaultMaxBodyBytes)
 	}
+	if cfg.MaxStreams != config.DefaultMaxStreams {
+		t.Errorf("MaxStreams = %d, want %d", cfg.MaxStreams, config.DefaultMaxStreams)
+	}
 	if string(cfg.SharedSecret) != goodSecret {
 		t.Error("SharedSecret did not survive the load")
+	}
+	// A bare team hostname is the normal form, and https is not optional for it.
+	if want := "https://" + goodTeamDomain; cfg.AccessTeamDomain != want {
+		t.Errorf("AccessTeamDomain = %q, want %q", cfg.AccessTeamDomain, want)
+	}
+	if cfg.AccessAUD != goodAUD {
+		t.Errorf("AccessAUD = %q, want %q", cfg.AccessAUD, goodAUD)
+	}
+	if len(cfg.AccessAllowedEmails) != 1 || cfg.AccessAllowedEmails[0] != goodEmail {
+		t.Errorf("AccessAllowedEmails = %v, want the one configured address", cfg.AccessAllowedEmails)
 	}
 	if len(cfg.Roots) != 1 || cfg.Roots[0].Path != resolve(t, root) {
 		t.Errorf("Roots = %v, want the one configured root %q", cfg.Roots, root)
@@ -79,6 +104,7 @@ func TestLoadFromAcceptsEveryOptionalOverride(t *testing.T) {
 	pairs[config.EnvMaxSessions] = "3"
 	pairs[config.EnvCreateRatePerMin] = "12"
 	pairs[config.EnvMaxBodyBytes] = "1048576"
+	pairs[config.EnvMaxStreams] = "2"
 
 	cfg := mustLoad(t, pairs)
 
@@ -93,6 +119,9 @@ func TestLoadFromAcceptsEveryOptionalOverride(t *testing.T) {
 	}
 	if cfg.MaxBodyBytes != 1048576 {
 		t.Errorf("MaxBodyBytes = %d, want 1048576", cfg.MaxBodyBytes)
+	}
+	if cfg.MaxStreams != 2 {
+		t.Errorf("MaxStreams = %d, want 2", cfg.MaxStreams)
 	}
 }
 
@@ -288,6 +317,157 @@ func TestLoadFromRejects(t *testing.T) {
 			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvMaxBodyBytes] = "64k" },
 			wantIn: config.EnvMaxBodyBytes,
 		},
+		{
+			name:   "max streams is zero",
+			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvMaxStreams] = "0" },
+			wantIn: config.EnvMaxStreams,
+		},
+		{
+			name:   "max streams is negative",
+			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvMaxStreams] = "-1" },
+			wantIn: config.EnvMaxStreams,
+		},
+		{
+			name:   "max streams is not a number",
+			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvMaxStreams] = "ten" },
+			wantIn: config.EnvMaxStreams,
+		},
+		{
+			name:   "team domain unset",
+			mutate: func(_ *testing.T, p map[string]string, _ string) { delete(p, config.EnvAccessTeamDomain) },
+			wantIn: config.EnvAccessTeamDomain,
+		},
+		{
+			name:   "team domain empty",
+			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvAccessTeamDomain] = "" },
+			wantIn: config.EnvAccessTeamDomain,
+		},
+		{
+			name:   "team domain is only whitespace",
+			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvAccessTeamDomain] = "   " },
+			wantIn: config.EnvAccessTeamDomain,
+		},
+		{
+			name: "team domain is http on a routable host",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvAccessTeamDomain] = "http://" + goodTeamDomain
+			},
+			wantIn: "loopback",
+		},
+		{
+			// A name that resolves to loopback today can be pointed elsewhere by
+			// /etc/hosts tomorrow, which is why EnvListen refuses names too.
+			name: "team domain is http on the name localhost",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvAccessTeamDomain] = "http://localhost:8099"
+			},
+			wantIn: "loopback",
+		},
+		{
+			name: "team domain uses an unrelated scheme",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvAccessTeamDomain] = "ftp://" + goodTeamDomain
+			},
+			wantIn: config.EnvAccessTeamDomain,
+		},
+		{
+			name: "team domain carries a path, which would break the key-set URL",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvAccessTeamDomain] = goodTeamDomain + "/cdn-cgi/access/certs"
+			},
+			wantIn: config.EnvAccessTeamDomain,
+		},
+		{
+			name: "team domain carries a query",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvAccessTeamDomain] = "https://" + goodTeamDomain + "?a=b"
+			},
+			wantIn: config.EnvAccessTeamDomain,
+		},
+		{
+			name: "team domain carries a fragment",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvAccessTeamDomain] = "https://" + goodTeamDomain + "#frag"
+			},
+			wantIn: config.EnvAccessTeamDomain,
+		},
+		{
+			name: "team domain carries credentials",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvAccessTeamDomain] = "https://user:pass@" + goodTeamDomain
+			},
+			wantIn: config.EnvAccessTeamDomain,
+		},
+		{
+			name:   "team domain has no host",
+			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvAccessTeamDomain] = "https://" },
+			wantIn: config.EnvAccessTeamDomain,
+		},
+		{
+			name:   "team domain is not parseable at all",
+			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvAccessTeamDomain] = "https://a b.com" },
+			wantIn: config.EnvAccessTeamDomain,
+		},
+		{
+			name:   "audience unset",
+			mutate: func(_ *testing.T, p map[string]string, _ string) { delete(p, config.EnvAccessAUD) },
+			wantIn: config.EnvAccessAUD,
+		},
+		{
+			name:   "audience empty",
+			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvAccessAUD] = "" },
+			wantIn: config.EnvAccessAUD,
+		},
+		{
+			name:   "audience is only whitespace",
+			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvAccessAUD] = "\t " },
+			wantIn: config.EnvAccessAUD,
+		},
+		{
+			name:   "allowed emails unset",
+			mutate: func(_ *testing.T, p map[string]string, _ string) { delete(p, config.EnvAccessAllowedEmails) },
+			wantIn: config.EnvAccessAllowedEmails,
+		},
+		{
+			name:   "allowed emails empty",
+			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvAccessAllowedEmails] = "" },
+			wantIn: config.EnvAccessAllowedEmails,
+		},
+		{
+			name:   "allowed emails is only a separator",
+			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvAccessAllowedEmails] = "," },
+			wantIn: config.EnvAccessAllowedEmails,
+		},
+		{
+			name: "allowed emails has a trailing empty entry",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvAccessAllowedEmails] = goodEmail + ","
+			},
+			wantIn: "empty entry",
+		},
+		{
+			name: "allowed emails has a leading empty entry",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvAccessAllowedEmails] = "," + goodEmail
+			},
+			wantIn: "empty entry",
+		},
+		{
+			name: "allowed emails has an interior empty entry",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvAccessAllowedEmails] = goodEmail + ",," + goodEmail
+			},
+			wantIn: "empty entry",
+		},
+		{
+			// The separator typed wrong. Left to run this is not a startup failure
+			// but a silent one: the operator is refused by their own allowlist.
+			name: "allowed emails are separated by spaces",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvAccessAllowedEmails] = goodEmail + " second@example.com"
+			},
+			wantIn: "whitespace",
+		},
 	}
 
 	for _, tt := range tests {
@@ -308,6 +488,7 @@ func TestLoadFromRejects(t *testing.T) {
 				t.Errorf("error %q does not mention %q, so the operator is not told what to fix", err, tt.wantIn)
 			}
 			assertNoSecret(t, err.Error(), pairs[config.EnvSharedSecret])
+			assertNoAccessValues(t, err.Error(), pairs)
 		})
 	}
 }
@@ -339,6 +520,128 @@ func TestLoadFromNeverRevealsTheSecret(t *testing.T) {
 	}
 }
 
+// TestLoadFromNormalisesTheTeamDomain covers the accepted spellings of the one
+// value two derivations must agree on. Whatever an operator types, the issuer
+// and the key-set origin are the same string.
+func TestLoadFromNormalisesTheTeamDomain(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configured string
+		want       string
+	}{
+		{"bare team hostname is https", goodTeamDomain, "https://" + goodTeamDomain},
+		{"explicit https origin", "https://" + goodTeamDomain, "https://" + goodTeamDomain},
+		{"trailing slash is not part of the origin", "https://" + goodTeamDomain + "/", "https://" + goodTeamDomain},
+		{"surrounding whitespace is not part of the origin", "  " + goodTeamDomain + "  ", "https://" + goodTeamDomain},
+		{"host case is not significant to DNS but is to the issuer comparison", "HTTPS://Example-Team.CloudflareAccess.com", "https://" + goodTeamDomain},
+		{"http on a loopback literal, for the quickstart's own key server", "http://127.0.0.1:8099", "http://127.0.0.1:8099"},
+		{"http on the IPv6 loopback literal", "http://[::1]:8099", "http://[::1]:8099"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			pairs, _ := baseEnv(t)
+			pairs[config.EnvAccessTeamDomain] = tt.configured
+
+			if got := mustLoad(t, pairs).AccessTeamDomain; got != tt.want {
+				t.Errorf("AccessTeamDomain = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadFromKeepsEveryAllowedAddress(t *testing.T) {
+	t.Parallel()
+
+	pairs, _ := baseEnv(t)
+	// Spaces around the separator are how a person writes a list, and are not
+	// part of any address.
+	pairs[config.EnvAccessAllowedEmails] = goodEmail + ", second@example.com"
+
+	cfg := mustLoad(t, pairs)
+
+	want := []string{goodEmail, "second@example.com"}
+	if len(cfg.AccessAllowedEmails) != len(want) {
+		t.Fatalf("AccessAllowedEmails = %v, want %v", cfg.AccessAllowedEmails, want)
+	}
+	for i, address := range want {
+		if cfg.AccessAllowedEmails[i] != address {
+			t.Errorf("AccessAllowedEmails[%d] = %q, want %q", i, cfg.AccessAllowedEmails[i], address)
+		}
+	}
+}
+
+// TestLoadFromDoesNotDemandLayerOneUnderTheBypass is FR-042. Without it, local
+// development would need a Cloudflare account to supply an audience the bypass
+// then ignores.
+func TestLoadFromDoesNotDemandLayerOneUnderTheBypass(t *testing.T) {
+	t.Parallel()
+
+	pairs, _ := baseEnv(t)
+	for _, name := range []string{config.EnvAccessTeamDomain, config.EnvAccessAUD, config.EnvAccessAllowedEmails} {
+		delete(pairs, name)
+	}
+
+	cfg, err := config.LoadFrom(env(pairs), io.Discard, config.WithAccessBypassActive())
+	if err != nil {
+		t.Fatalf("LoadFrom() with the bypass active refused a configuration it does not need: %v", err)
+	}
+	if cfg.AccessTeamDomain != "" || cfg.AccessAUD != "" || len(cfg.AccessAllowedEmails) != 0 {
+		t.Errorf("the bypass invented layer-1 configuration: %v", cfg)
+	}
+	// The bypass skips layer 1 only. Everything that bounds the host is still
+	// demanded, and still defaulted.
+	if cfg.MaxStreams != config.DefaultMaxStreams || len(cfg.Roots) != 1 || string(cfg.SharedSecret) != goodSecret {
+		t.Errorf("the bypass relaxed something other than layer 1: %v", cfg)
+	}
+}
+
+// The bypass lifts the requirement to be present, never the requirement to be
+// valid. The operator meant the value they set, and will one day run without the
+// bypass — with a daemon that has never once told them the value is wrong.
+func TestLoadFromStillValidatesLayerOneUnderTheBypass(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct{ name, key, value string }{
+		{"team domain is http on a routable host", config.EnvAccessTeamDomain, "http://" + goodTeamDomain},
+		{"allowed emails has an empty entry", config.EnvAccessAllowedEmails, goodEmail + ",,"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			pairs, _ := baseEnv(t)
+			pairs[tt.key] = tt.value
+
+			if _, err := config.LoadFrom(env(pairs), io.Discard, config.WithAccessBypassActive()); err == nil {
+				t.Fatalf("the bypass accepted a malformed %s", tt.key)
+			}
+		})
+	}
+}
+
+// The shipping build's half of FR-011: no option, no relaxation, and each value
+// fatal on its own rather than only as a set.
+func TestLoadFromRefusesEveryLayerOneValueIndependently(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{config.EnvAccessTeamDomain, config.EnvAccessAUD, config.EnvAccessAllowedEmails} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			pairs, _ := baseEnv(t)
+			delete(pairs, name)
+
+			if _, err := config.LoadFrom(env(pairs), io.Discard); err == nil {
+				t.Fatalf("started with %s unset, so the browser door has nothing to verify against", name)
+			}
+		})
+	}
+}
+
 func TestConfigFormattingRedactsTheSecret(t *testing.T) {
 	t.Parallel()
 
@@ -352,6 +655,11 @@ func TestConfigFormattingRedactsTheSecret(t *testing.T) {
 			assertNoSecret(t, got, goodSecret)
 			if !strings.Contains(got, "redacted") {
 				t.Errorf("Sprintf(%q) = %s, want the secret redacted", verb, got)
+			}
+			// The allowed addresses are a list of real people. A count says
+			// everything an operator reading a log line needs to know.
+			if strings.Contains(got, goodEmail) {
+				t.Errorf("Sprintf(%q) = %s, want the allowed addresses counted rather than named", verb, got)
 			}
 		}
 	}
@@ -500,6 +808,9 @@ func TestLoadReadsTheProcessEnvironment(t *testing.T) {
 	t.Setenv(config.EnvSharedSecret, goodSecret)
 	t.Setenv(config.EnvAllowedRoots, root)
 	t.Setenv(config.EnvListen, "127.0.0.1:9001")
+	t.Setenv(config.EnvAccessTeamDomain, goodTeamDomain)
+	t.Setenv(config.EnvAccessAUD, goodAUD)
+	t.Setenv(config.EnvAccessAllowedEmails, goodEmail)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -513,6 +824,11 @@ func TestLoadReadsTheProcessEnvironment(t *testing.T) {
 func TestLoadRefusesAWeakProcessEnvironment(t *testing.T) {
 	t.Setenv(config.EnvSharedSecret, "")
 	t.Setenv(config.EnvAllowedRoots, t.TempDir())
+	// Complete apart from the secret, so the refusal under test is the one the
+	// test names rather than whichever check happens to run first.
+	t.Setenv(config.EnvAccessTeamDomain, goodTeamDomain)
+	t.Setenv(config.EnvAccessAUD, goodAUD)
+	t.Setenv(config.EnvAccessAllowedEmails, goodEmail)
 
 	if _, err := config.Load(); err == nil {
 		t.Fatal("Load() started with no shared secret")
@@ -535,6 +851,21 @@ func assertNoSecret(t *testing.T, text, secret string) {
 	t.Helper()
 	if secret != "" && strings.Contains(text, secret) {
 		t.Errorf("the shared secret appears in %q", text)
+	}
+}
+
+// assertNoAccessValues holds the layer-1 half of the same rule the secret has.
+// These values are not secrets, but a team domain names an organisation and an
+// allowed address names a person, and a startup error is written to stderr and
+// kept in the journal for as long as the host keeps logs. The variable's name is
+// what the operator needs; its value is what they already typed.
+func assertNoAccessValues(t *testing.T, text string, pairs map[string]string) {
+	t.Helper()
+	for _, name := range []string{config.EnvAccessTeamDomain, config.EnvAccessAUD, config.EnvAccessAllowedEmails} {
+		value := strings.TrimSpace(pairs[name])
+		if value != "" && strings.Contains(text, value) {
+			t.Errorf("the configured %s appears in %q", name, text)
+		}
 	}
 }
 

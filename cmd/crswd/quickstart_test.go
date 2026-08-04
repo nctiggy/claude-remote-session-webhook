@@ -276,6 +276,15 @@ func (h *host) env(over map[string]string) []string {
 		"TMUX_TMPDIR":        h.tmuxDir,
 		"PATH":               h.shimDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 
+		// Milestone 2's layer-1 configuration, which the daemon now refuses to
+		// start without. No story here presents a browser assertion — these are
+		// the API door's stories — so the values need only be well-formed. That
+		// the six routes still answer a signed request with these set is what the
+		// suite proves, and is not a change to any story.
+		"CRSW_ACCESS_TEAM_DOMAIN":    "example-team.cloudflareaccess.com",
+		"CRSW_ACCESS_AUD":            "quickstart-only-audience-tag",
+		"CRSW_ACCESS_ALLOWED_EMAILS": "operator@example.com",
+
 		// The two that make TMUX_TMPDIR mean anything. A tmux client with TMUX
 		// set connects to the server named in it and ignores TMUX_TMPDIR
 		// entirely, so leaving these through would point the daemon at the

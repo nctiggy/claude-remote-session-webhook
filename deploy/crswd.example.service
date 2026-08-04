@@ -33,28 +33,39 @@ ExecStart=%h/bin/crswd
 StandardOutput=journal
 StandardError=journal
 
-# The shared secret comes from a file OUTSIDE the repo, mode 0600, written from
-# 1Password at deploy time. EnvironmentFile parses NAME=value lines, so write the
-# assignment and not the bare secret:
+# Four values come from a file OUTSIDE the repo, mode 0600, written at deploy
+# time. EnvironmentFile parses NAME=value lines, so write the assignments and not
+# the bare values:
 #
 #   mkdir -p ~/.config/crswd
-#   ( umask 077; printf 'CRSW_SHARED_SECRET=%s\n' \
-#       "$(op read 'op://Lobster/crswd/shared-secret')" > ~/.config/crswd/env )
+#   ( umask 077
+#     printf 'CRSW_SHARED_SECRET=%s\n' "$(op read 'op://Lobster/crswd/shared-secret')"
+#     printf 'CRSW_ACCESS_TEAM_DOMAIN=%s\n' '<team>.cloudflareaccess.com'
+#     printf 'CRSW_ACCESS_AUD=%s\n'         '<the Access application AUD tag>'
+#     printf 'CRSW_ACCESS_ALLOWED_EMAILS=%s\n' '<you@example.com>'
+#   ) > ~/.config/crswd/env
 #
-# Never `Environment=CRSW_SHARED_SECRET=...` in this file. A unit's contents are
-# readable by anyone who can run `systemctl --user show crswd`, and this example
-# is committed to a public repository — a value typed here is published forever.
+# All four are required and the daemon refuses to start without them: the secret
+# is layer 2, and the other three are what layer 1 verifies a browser's Access
+# assertion against — a daemon that cannot check who the browser is has no
+# browser door at all. `.env.example` describes each one.
+#
+# Never `Environment=` any of them in this file. A unit's contents are readable
+# by anyone who can run `systemctl --user show crswd`, and this example is
+# committed to a public repository — a value typed here is published forever.
+# The secret is the obvious case; the other three name a Cloudflare team, an
+# application, and a person.
 EnvironmentFile=%h/.config/crswd/env
 
-# Non-secret configuration, inline. This is every variable the daemon reads apart
-# from the secret above, and each value shown is the daemon's own default, so a
-# line deleted here changes nothing. `.env.example` says what each one refuses to
-# start on.
+# The rest, inline. This is every remaining variable the daemon reads, and each
+# value shown is the daemon's own default, so a line deleted here changes
+# nothing. `.env.example` says what each one refuses to start on.
 Environment=CRSW_ALLOWED_ROOTS=%h/code
 Environment=CRSW_LISTEN=127.0.0.1:8765
 Environment=CRSW_MAX_SESSIONS=5
 Environment=CRSW_CREATE_RATE_PER_MIN=6
 Environment=CRSW_MAX_BODY_BYTES=65536
+Environment=CRSW_MAX_STREAMS=10
 
 # There is no unit setting for the idle timeout (60m), the absolute session
 # lifetime (24h) or the signed-request timestamp window (300s). They are

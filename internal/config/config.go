@@ -5,9 +5,10 @@
 // --dangerously-skip-permissions, so the allowlisted roots, the loopback bind,
 // and the shared secret are not settings — they are the constraints standing in
 // for the permission prompt that is gone. A value that would weaken one of them
-// is a startup failure, never a warning (docs/security.md §4). The single
-// exception is an unset root list, which FR-004 requires be loud rather than
-// fatal.
+// is a startup failure, never a warning (docs/security.md §4). There are two
+// exceptions, both written down where they happen: an unset root list, which
+// FR-004 requires be loud rather than fatal, and the layer-1 values, which an
+// activated development bypass is allowed not to demand (FR-042).
 package config
 
 import (
@@ -15,10 +16,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // The environment is the only configuration surface (FR-001). Named as
@@ -35,12 +38,27 @@ const (
 	EnvMaxSessions      = "CRSW_MAX_SESSIONS"
 	EnvCreateRatePerMin = "CRSW_CREATE_RATE_PER_MIN"
 	EnvMaxBodyBytes     = "CRSW_MAX_BODY_BYTES"
-	envHome             = "HOME"
+
+	// Layer 1 — the Cloudflare Access assertion the browser door validates.
+	// Required, and fatal when absent, for the same reason the shared secret is:
+	// a daemon that cannot verify who the browser is has no browser door at all.
+	EnvAccessTeamDomain    = "CRSW_ACCESS_TEAM_DOMAIN"
+	EnvAccessAUD           = "CRSW_ACCESS_AUD"
+	EnvAccessAllowedEmails = "CRSW_ACCESS_ALLOWED_EMAILS"
+
+	EnvMaxStreams = "CRSW_MAX_STREAMS"
+
+	envHome = "HOME"
 
 	// rootListSeparator is fixed at ":" rather than os.PathListSeparator: the
 	// spec says colon, the daemon is a systemd/tmux service, and a separator
 	// that changes with the build platform would change what an allowlist means.
 	rootListSeparator = ":"
+
+	// emailListSeparator is "," because that is what the spec fixes and because
+	// an address cannot carry one outside a quoted local part, which no Google
+	// identity has.
+	emailListSeparator = ","
 )
 
 // Defaults for everything optional. There is deliberately no default for the
@@ -57,6 +75,11 @@ const (
 	DefaultMaxSessions      = 5
 	DefaultCreateRatePerMin = 6
 	DefaultMaxBodyBytes     = 65536
+
+	// DefaultMaxStreams is twice DefaultMaxSessions, so every session on a fully
+	// loaded host is watchable from two tabs before the daemon starts refusing.
+	// The spec fixes the property, not the number: capped, and refusing past it.
+	DefaultMaxStreams = 10
 )
 
 // ApprovedRoot is a directory a session may run in, resolved once at startup so
@@ -83,28 +106,79 @@ type Config struct {
 	MaxSessions      int
 	CreateRatePerMin int
 	MaxBodyBytes     int64
+
+	// AccessTeamDomain is a normalised origin — scheme and host, no path, host
+	// lower-cased. It is one configured value because two things must agree: the
+	// issuer is exactly this string, and the key set is fetched from it.
+	// Configuring them separately would allow an issuer and a key set that do not
+	// belong to each other, which is a validator checking signatures against the
+	// wrong authority.
+	AccessTeamDomain string
+
+	// AccessAUD is compared for equality against the assertion's audience and
+	// never parsed, so only non-emptiness is enforced. Pinning Cloudflare's
+	// current 64-hex format would add nothing — a wrong value already fails every
+	// request — and would break the daemon the day that format changes.
+	AccessAUD string
+
+	// AccessAllowedEmails is the daemon's own copy of the list the edge enforces.
+	// The edge is the gate; this is the daemon asserting the gate is configured
+	// as believed.
+	AccessAllowedEmails []string
+
+	// MaxStreams bounds concurrent live-output streams, which are the one thing
+	// a browser can hold open indefinitely.
+	MaxStreams int
 }
 
 // String redacts the shared secret so that formatting a Config — in a log line,
 // a panic, or a hastily added debug print — cannot leak it. GoString does the
 // same for %#v.
+//
+// The allowed addresses are counted rather than named: they are a list of real
+// people, and this string is written wherever a Config is formatted.
 func (c Config) String() string {
-	return fmt.Sprintf("config{shared_secret:<redacted> roots:%v listen:%q max_sessions:%d create_rate_per_min:%d max_body_bytes:%d}",
-		c.Roots, c.Listen, c.MaxSessions, c.CreateRatePerMin, c.MaxBodyBytes)
+	return fmt.Sprintf("config{shared_secret:<redacted> roots:%v listen:%q max_sessions:%d create_rate_per_min:%d max_body_bytes:%d access_team_domain:%q access_aud:%q allowed_emails:%d max_streams:%d}",
+		c.Roots, c.Listen, c.MaxSessions, c.CreateRatePerMin, c.MaxBodyBytes,
+		c.AccessTeamDomain, c.AccessAUD, len(c.AccessAllowedEmails), c.MaxStreams)
 }
 
 // GoString mirrors String, so %#v is not a way around the redaction.
 func (c Config) GoString() string { return c.String() }
 
+// Option adjusts what counts as a complete configuration. There is exactly one,
+// because there is exactly one thing outside the environment that changes the
+// answer.
+type Option func(*loadOptions)
+
+type loadOptions struct{ accessBypassed bool }
+
+// WithAccessBypassActive stops the loader demanding the three layer-1 values
+// (FR-042). It says the operator has *activated* the development bypass — a
+// flag that exists only in a `-tags dev` build — not that a build merely carries
+// one, because demanding an audience the bypass then ignores would make local
+// development need a Cloudflare account.
+//
+// It lifts the requirement to be present, never the requirement to be valid: a
+// layer-1 value that is set and malformed is still a startup failure, since the
+// operator meant it and will one day run without the bypass.
+func WithAccessBypassActive() Option {
+	return func(o *loadOptions) { o.accessBypassed = true }
+}
+
 // Load reads the configuration from the real environment, writing any startup
 // warning to stderr. It is the only form cmd/crswd needs.
-func Load() (*Config, error) { return LoadFrom(os.Getenv, os.Stderr) }
+func Load(opts ...Option) (*Config, error) { return LoadFrom(os.Getenv, os.Stderr, opts...) }
 
 // LoadFrom is Load with the environment and the warning sink injected, so tests
 // can drive every case in parallel without mutating the process environment.
-func LoadFrom(getenv func(string) string, warn io.Writer) (*Config, error) {
+func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Config, error) {
 	if getenv == nil {
 		return nil, errors.New("no environment source provided; refusing to start")
+	}
+	var o loadOptions
+	for _, opt := range opts {
+		opt(&o)
 	}
 	if warn == nil {
 		// Discarding here would make FR-004's warning silent, which is the one
@@ -136,14 +210,34 @@ func LoadFrom(getenv func(string) string, warn io.Writer) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	maxStreams, err := loadInt(getenv, EnvMaxStreams, DefaultMaxStreams)
+	if err != nil {
+		return nil, err
+	}
+	teamDomain, err := loadTeamDomain(getenv, o.accessBypassed)
+	if err != nil {
+		return nil, err
+	}
+	aud, err := loadAUD(getenv, o.accessBypassed)
+	if err != nil {
+		return nil, err
+	}
+	emails, err := loadAllowedEmails(getenv, o.accessBypassed)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Config{
-		SharedSecret:     secret,
-		Roots:            roots,
-		Listen:           listen,
-		MaxSessions:      maxSessions,
-		CreateRatePerMin: createRate,
-		MaxBodyBytes:     maxBody,
+		SharedSecret:        secret,
+		Roots:               roots,
+		Listen:              listen,
+		MaxSessions:         maxSessions,
+		CreateRatePerMin:    createRate,
+		MaxBodyBytes:        maxBody,
+		AccessTeamDomain:    teamDomain,
+		AccessAUD:           aud,
+		AccessAllowedEmails: emails,
+		MaxStreams:          maxStreams,
 	}, nil
 }
 
@@ -285,6 +379,106 @@ func loadListen(getenv func(string) string) (string, error) {
 	}
 
 	return v, nil
+}
+
+// The three layer-1 loaders below share one discipline the rest of this file
+// does not need: their errors name the variable and the defect, never the value.
+// A team domain names an organisation and an allowed address names a person,
+// and a startup error is written to stderr and kept in the journal forever.
+//
+// Each takes bypassed rather than reading a package-level switch, so that the
+// relaxation is visible at the call site and impossible to reach by accident.
+
+// loadTeamDomain normalises the single value two derivations must agree on: the
+// issuer is exactly the string returned here, and the key set is fetched from
+// it. It accepts a bare team hostname, which is the normal form, or a full
+// origin — with http:// permitted only on loopback.
+func loadTeamDomain(getenv func(string) string, bypassed bool) (string, error) {
+	v := strings.TrimSpace(getenv(EnvAccessTeamDomain))
+	if v == "" {
+		if bypassed {
+			return "", nil
+		}
+		return "", fmt.Errorf("%s is required; refusing to start", EnvAccessTeamDomain)
+	}
+
+	raw := v
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+
+	// The parse error is answered rather than wrapped: url.Error carries the
+	// value it failed on, which is the one thing this message may not.
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("%s is not a usable origin; refusing to start", EnvAccessTeamDomain)
+	}
+	if u.User != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return "", fmt.Errorf("%s must be an origin such as <team>.cloudflareaccess.com, carrying no credentials, path, query or fragment; refusing to start", EnvAccessTeamDomain)
+	}
+
+	switch u.Scheme {
+	case "https":
+	case "http":
+		// The same rule, for the same reason, as EnvListen: a name can be pointed
+		// anywhere by /etc/hosts or a resolver, so loopback has to be an IP
+		// literal. The carve-out exists so the contract tests and the quickstart
+		// can serve a key set they control without a synthetic CA in the trust
+		// store. It is not a bypass — validation runs in full against whatever
+		// that origin serves.
+		if ip := net.ParseIP(u.Hostname()); ip == nil || !ip.IsLoopback() {
+			return "", fmt.Errorf("%s may use http:// only on a loopback IP literal such as 127.0.0.1; refusing to start", EnvAccessTeamDomain)
+		}
+	default:
+		return "", fmt.Errorf("%s must be an https:// origin, or http:// on loopback; refusing to start", EnvAccessTeamDomain)
+	}
+
+	// Lower-cased because DNS is case-insensitive and the issuer comparison is
+	// not: an operator who capitalises the team name would otherwise configure a
+	// daemon that refuses every assertion Cloudflare mints.
+	return u.Scheme + "://" + strings.ToLower(u.Host), nil
+}
+
+// loadAUD enforces non-emptiness and nothing else. The value is compared for
+// equality against the assertion's audience and never parsed, so pinning
+// Cloudflare's current 64-hex tag format would add no safety a wrong value does
+// not already have, and would break the daemon the day that format changes.
+func loadAUD(getenv func(string) string, bypassed bool) (string, error) {
+	v := strings.TrimSpace(getenv(EnvAccessAUD))
+	if v == "" {
+		if bypassed {
+			return "", nil
+		}
+		return "", fmt.Errorf("%s is required; refusing to start", EnvAccessAUD)
+	}
+	return v, nil
+}
+
+func loadAllowedEmails(getenv func(string) string, bypassed bool) ([]string, error) {
+	raw := getenv(EnvAccessAllowedEmails)
+	if strings.TrimSpace(raw) == "" {
+		if bypassed {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("%s is required and must name at least one address; refusing to start", EnvAccessAllowedEmails)
+	}
+
+	parts := strings.Split(raw, emailListSeparator)
+	emails := make([]string, 0, len(parts))
+	for i, part := range parts {
+		address := strings.TrimSpace(part)
+		if address == "" {
+			return nil, fmt.Errorf("%s contains an empty entry; refusing to start", EnvAccessAllowedEmails)
+		}
+		// Interior whitespace is the separator typed wrong. Left to run it is not
+		// a startup failure but a silent one: the address never matches, and the
+		// operator is refused by their own allowlist with nothing saying why.
+		if strings.ContainsFunc(address, unicode.IsSpace) {
+			return nil, fmt.Errorf("%s entry %d contains whitespace; separate addresses with %q; refusing to start", EnvAccessAllowedEmails, i+1, emailListSeparator)
+		}
+		emails = append(emails, address)
+	}
+	return emails, nil
 }
 
 func loadInt(getenv func(string) string, name string, def int) (int, error) {

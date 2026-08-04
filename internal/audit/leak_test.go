@@ -362,7 +362,18 @@ func (r *leakRun) loadTheConfiguration(t *testing.T) {
 
 	// "HOME" is spelled here rather than exported from internal/config: the name
 	// belongs to the operating system, not to this daemon.
-	env := map[string]string{config.EnvSharedSecret: string(daemonKey()), "HOME": r.root}
+	//
+	// The layer-1 values are present because startup refuses without them, and
+	// this fixture's subject is the default-root path further down. They are not
+	// marked: what they are worth asserting about is that a *refused* address
+	// never reaches the trail, which is the browser door's test to write.
+	env := map[string]string{
+		config.EnvSharedSecret:        string(daemonKey()),
+		"HOME":                        r.root,
+		config.EnvAccessTeamDomain:    "example-team.cloudflareaccess.com",
+		config.EnvAccessAUD:           "test-only-audience-tag",
+		config.EnvAccessAllowedEmails: "operator@example.com",
+	}
 
 	cfg, err := config.LoadFrom(func(k string) string { return env[k] }, r.logs)
 	if err != nil {
