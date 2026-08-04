@@ -132,7 +132,7 @@ wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and stop.
 - [x] T031 Amend `docs/security.md`: the two-door table predates the service token, and the header table says nothing about cross-origin headers, which are now load-bearing
 - [x] T032 `AGENTS.md`: add `go test -tags tmux ./...` and `go test -tags quickstart ./cmd/crswd` to the command table. "Test (all)" names neither suite that touches real tmux — carried unfixed for 43 iterations
 - [x] T033 Document the new variables in `.env.example` (names only, never a value) and in `deploy/README.md`
-- [ ] T034 Run the full `specs/002-access-dashboard/quickstart.md` end to end — it needs no Cloudflare account — and record the outcome in `PROGRESS.md`
+- [x] T034 Run the full `specs/002-access-dashboard/quickstart.md` end to end — it needs no Cloudflare account — and record the outcome in `PROGRESS.md`
 
 ---
 

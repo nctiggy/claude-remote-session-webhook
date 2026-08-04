@@ -12317,3 +12317,132 @@ Docs-only plus one test. Build/vet/test/lint green; `.env.example` untouched.
 #324, whose two failing subtests are isolated and diagnosed (a free port in those two cases,
 or the deployed unit stopped for the run; not a change to the assertion). Then the milestone
 is done.
+
+---
+
+## Iteration 80 (milestone 2, iteration 37) — 2026-08-04 11:57
+
+**Did:** **T034** — ran `specs/002-access-dashboard/quickstart.md` end to end. The
+milestone's last task, and the one that finds what the other thirty-three agreed with each
+other about. It is now `cmd/crswd/quickstart_dashboard_test.go`: ten tests, one per story
+plus the pieces each story ends with, against a real build on a real port with real tmux.
+`go test -tags quickstart ./cmd/crswd` is 23/23 — milestone 1's 13 and milestone 2's 10.
+
+**The shell in that document cannot be run from inside an iteration, and that is settled
+now rather than rediscovered.** `openssl`, `python3` and `curl` are all outside
+`.claude/settings.json`'s allowlist (iteration 14 #1 and its long tail). The precedent is
+milestone 1's **T042**, which met the same wall and answered it the same way: the
+acceptance procedure becomes a Go suite under the same build tag, sharing the same harness.
+The local identity edge is `crypto/rsa` plus an `httptest` server publishing the
+Cloudflare-shaped `/cdn-cgi/access/certs` — no Cloudflare account, no `/tmp/crswd-idp`, and
+the assertions are built the way RFC 7515 describes a JWS rather than by calling
+`internal/access`, so a fixture agreeing with the code under test proves nothing here.
+
+**Three departures from the literal document, all recorded at the top of the new file:**
+the edge is Go rather than openssl/python3; the listener is a free port rather than 8765;
+and Story 2's hostile payload is two prompts rather than one, because a tmux pane wraps at
+its width and a wrapped line is a screen the daemon rendered correctly that a substring
+assertion cannot see.
+
+**What the run found — three defects, fixed, per the task's own rule.**
+
+1. **The suite could not be green on the host that runs the product** (#225 → #266 → #292 →
+   #324, carried for twenty-two iterations). `TestQuickstartStory1StartupFailures` proves
+   "nothing bound" by binding the address the case asked for, and two rows asked for
+   **8765** — the port `quickstart.md`, `.env.example`, the systemd unit and the live
+   deployment all name. The probe was reporting the deployed daemon's listener as though a
+   refusal had leaked one. `freeAddrOn(t, host)` now takes the port from the kernel under
+   the case's own host spelling (`0.0.0.0:0`, `localhost:0`), which is the fix finding 266
+   named. **Milestone 1's acceptance suite is 13/13 on this host for the first time.** The
+   live daemon was never stopped: iteration 78's learning 3 was right that stopping it
+   reaps the operator's whole fleet, and it was never necessary.
+2. **US5 had no artifact behind it.** T007 built `internal/access`'s bypass and ticked;
+   nothing constructed it outside tests, and `server.go` said so in a comment — "by the
+   //go:build dev half of cmd/crswd — which does not exist yet". So `quickstart.md`'s
+   Story 5 described a `--dev-auth-bypass` flag that had never existed, and FR-039, FR-040
+   and FR-042 were properties of a *type* rather than of a *daemon*. This is exactly the
+   failure `IMPLEMENTATION_PLAN.md`'s Conventions warn about ("a task is not done when the
+   code exists; it is done when something calls it"), caught by the task whose job is to
+   run the thing rather than read it. Now: `cmd/crswd/bypass_dev.go` defines the flag,
+   `bypass_prod.go` is the shipping half and names it nowhere, `httpapi.NewWithBypass` puts
+   the bypass exactly where `verifiedLayer1` goes so there is one layer 1 per server and
+   never two, and `cmd/crswd/bypass_build_test.go` asserts both halves *in the build that
+   ships* — the same shape `internal/access/bypass_build_test.go` already had for the
+   package, extended to the command, which is the other place the exclusion can be lost.
+   The scan checks declared names **and** string literals, because a flag is defined by the
+   string a caller types and not by the variable it is stored in.
+3. **Two of the document's own checks could not pass as written.** "Watching is not
+   driving" read `last_activity` through `GET /sessions/{id}`, which resolves through
+   `Manager.Resolve` — the one path that *does* advance the idle clock — so the two
+   readings it takes a minute apart move because of the reads. It now reads `GET /sessions`,
+   which goes through `Manager.List` and touches nothing. And Story 4 claimed a signed-in
+   browser on an API path receives the dashboard's HTML not-found page; FR-013d is about
+   paths **neither door owns**, and a routed API path still answers with the API door's own
+   JSON 401. Both spellings are now in the document and both are asserted in the suite.
+
+**Also landed:** SC-014 was on no checklist anywhere — grep found it in neither `deploy/`
+nor `docs/` — so `deploy/README.md` gained an "Edge admission" section. It is the one claim
+in this milestone that no local run can make, which is precisely why it needed writing down
+somewhere an operator will meet it.
+
+**What this run does not claim.** SC-009, SC-010 and SC-011 — greyscale, keyboard-only,
+reduced motion — are **not done**. Go cannot render a page, and a test asserting a CSS rule
+exists is not the check the document asks for. The quickstart's definition-of-done list is
+ticked for everything else and that line is left open with the reason on it; it needs an
+operator, a browser and ten minutes. This is the honest boundary of an autonomous loop on a
+visual requirement, and it is the third time this milestone has met it (findings 278, 312).
+
+**Learnings for whoever comes next:**
+
+1. **`h.startBinary` / `h.runBinary` are the harness seams the second suite needed.**
+   `start` and `run` now delegate to them; nothing else about milestone 1's file changed,
+   and no assertion in it was touched. A third suite wanting a differently-built daemon
+   should reach for these rather than duplicating thirty lines of process plumbing.
+2. **The pane escapes `"` as `&#34;` and `<` as `&lt;`, so an XSS assertion must name the
+   escaped spelling.** The first draft asserted `onerror=alert(2)` was absent from the page
+   and failed — correctly: with the angle brackets around its element escaped, that string
+   is inert text, and asserting its absence asserts the payload never arrived. The raw
+   spelling to forbid is the *tag* (`<img src=x`), not its contents.
+3. **`paneOf` strips the pane's newlines before matching.** tmux wraps at the pane width, so
+   a payload longer than the terminal is a correct screen that a naive `strings.Contains`
+   cannot see. Two short prompts beat one long one.
+4. **A stream test must never give its client a `Timeout`.** It would cut the thing under
+   test. The `watcher` here cancels a context instead, and reads the wire on a goroutine so
+   an assertion polls what *has* arrived rather than blocking on what has not.
+5. **The daemon fetches the key set lazily and once.** The sweep of nine bad assertions plus
+   one good one produced ≤2 fetches of `/cdn-cgi/access/certs`, which is the outage-riding
+   behaviour T003 built and this run confirms over the wire.
+
+**Findings:**
+
+330. **`e.fetches() > 2` is a bound, not an equality, and that is deliberate.** The refetch
+    floor and the unknown-kid rule mean the exact count depends on which case runs first,
+    which `map` iteration order used to decide before the sweep became a slice. A tighter
+    assertion would be a flaky one. Recorded so nobody "fixes" it to `== 1`.
+331. **The dev build's warning count is asserted against the trail file, which holds stdout
+    and stderr together.** That is what an operator sees under the systemd unit, and it is
+    also why the count is of the per-request banner's own sentence rather than of the word
+    "WARNING" — `config.warnDefaultRoot` writes one of those too.
+332. **Nothing proves the bypass warns on a request the *browser door refuses*.** It cannot:
+    the bypass admits everyone, so within the dev build there is no refusal to warn about.
+    Harmless, and noted because "every request" is the requirement's wording.
+333. **`golangci-lint` never sees the tagged files.** It runs the default build, so
+    `cmd/crswd/bypass_dev.go`, `internal/httpapi/bypass_dev.go` and both quickstart suites
+    are unlinted — `go vet -tags dev ./...` and `go vet -tags quickstart ./cmd/crswd` are
+    the only checks they get. Same class as 319/322/325: a rule that holds only where the
+    tool happens to look. Unowned.
+334. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307,
+    311–315, 317–323, 325, 327–328 are unchanged**, with two closed by this iteration: 266
+    and 324 (the 8765 collision, fixed by `freeAddrOn`) and 292 with them. 306 still needs
+    the operator's answer. `loop.sh`'s sweep commit still uses `--no-verify`; this
+    iteration's own commit went through the gitleaks hook. `IMPLEMENTATION_PLAN.md` /
+    `tasks.md` duplicate checkbox state ticked in both by hand again.
+
+**Left:** nothing in the plan. T001–T034 are done and the tree is green on every command
+the contract names: `go build ./...`, `go vet ./...`, `go test ./...`, `golangci-lint run`,
+`go test -tags tmux ./...`, `go test -tags dev ./...`, and `go test -tags quickstart
+./cmd/crswd` (23/23). Outside the plan, for a human: the three browser-visual checks above,
+finding 306's clarification, and the unowned documentation-drift findings (319, 322, 325,
+327, 333).
+
+RALPH_COMPLETE
