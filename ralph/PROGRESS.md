@@ -12166,3 +12166,68 @@ tmux), **T033** (`.env.example` and `deploy/README.md` owe `CRSW_ACCESS_TEAM_DOM
 `CRSW_ACCESS_AUD`, `CRSW_ACCESS_ALLOWED_EMAILS`, `CRSW_MAX_STREAMS` — names only), and
 **T034** (the quickstart end to end, which must deal with #266/#292). Then the milestone is
 done.
+
+## Iteration 78 (milestone 2, iteration 35) — 2026-08-04 11:26
+
+**Did:** **T032** — `AGENTS.md`'s command table, the finding this loop has re-raised since
+iteration 6 (43+ iterations). Three rows added — `go test -tags tmux ./...`,
+`go test -tags quickstart ./cmd/crswd`, `go test -tags dev ./...` — and `Test (all)`
+renamed to `Test (default build)`, because "all" is the exact word that made three suites
+invisible. All three were **run** before being written down, not merely spelled: `tmux` and
+`dev` are green (`-count=1`), `quickstart` fails only the two subtests of #225 (below). No
+code changed; build/vet/test/lint green and unchanged.
+
+**Four things this task turned up that the next iteration should not re-derive:**
+
+1. **The task named two commands; the table needed three.** Finding 229 (iteration 59) had
+   already folded `go test -tags dev ./...` into T032, and `internal/access/bypass_test.go`
+   is `//go:build dev`, so it is invisible to `go test ./...` for exactly the same reason
+   the other two are. Adding two of three would have left the row a future iteration
+   re-raises. Called out here because it is wider than the literal task text.
+2. **`CI runs exactly these commands` had to change in the same edit.** `.github/workflows/ci.yml`
+   runs `go mod download`, `golangci-lint`, `go vet ./...`, `go test ./...`, `go build ./...`
+   — lines 162–182, no tags anywhere. Adding tagged rows under a sentence claiming CI runs
+   the table would have traded one false statement for another. Now reads "the untagged
+   commands above and nothing else", with the tag detail in its own table (what each covers,
+   what each needs).
+3. **`go vet -tags <tag> ./...` typechecks a tagged suite without running it.** Verified on
+   all three. This is the answer to the standoff in findings 229 and 272, where iterations
+   alternately ran and refused to run `-tags tmux` on the host carrying the live daemon —
+   the compile half is free and safe, and it catches the failure mode a build tag actually
+   causes (a tagged file that stopped compiling while everything else went green). Written
+   into `AGENTS.md` as the last line of the section.
+4. **`-tags tmux` is safe on this host, and the file says why.** `exec_tmux_test.go`'s
+   `newTestExec` gives every test its own server via `-L crswd-test-<TestName>`, so the
+   cleanup's `kill-server` cannot reach the operator's sessions or the deployed daemon's.
+   Ran it: `internal/tmuxctl` ok in 0.510s. The caution in 229 was reasonable but the
+   isolation is by construction — this need not be re-litigated a third time.
+
+**Findings:**
+
+324. **#225 reproduces exactly, three months and one daemon restart later, and it is
+    `T034`'s to fix.** `go test -tags quickstart ./cmd/crswd -count=1` fails two subtests of
+    `TestQuickstartStory1StartupFailures` — "the listener is public" (`0.0.0.0:8765`) and
+    "the listener is a name" (`localhost:8765`) — both `bind: address already in use`.
+    `ss -ltnp` shows `127.0.0.1:8765` held by the live `crswd`, now **pid 178092** (it was
+    993 at iteration 58, so the service has restarted; the collision has not moved). Every
+    other case in the suite passes, including all of Story 1's other ten refusals. The fix
+    is a free port in those two cases or the unit stopped for the run — not a change to the
+    assertion, which is testing the right thing.
+325. **The new `AGENTS.md` rows are prose with no guard, which is 319/322 again in a third
+    file.** Nothing fails if a tag is renamed or a suite deleted; the table would simply be
+    wrong the way it was wrong for 43 iterations. `.claude/hooks/test-hooks.sh` tests hooks,
+    not the contract's own claims. A `grep -l 'go:build' ` sweep asserting every tag in the
+    tree has a row would close it, and constitution V ("standards are enforced, not
+    documented") is the argument for doing so. Unowned — no milestone-2 task covers it.
+326. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307,
+    311–318, 321–323 are unchanged**, including 321 (the stream cap is still absent from
+    `docs/security.md`'s "Rate limiting & audit", one clause, unowned) and 306, which still
+    needs the operator's answer. `loop.sh`'s sweep commit still uses `--no-verify`; this
+    iteration's own commit went through the gitleaks hook. `IMPLEMENTATION_PLAN.md` /
+    `tasks.md` duplicate checkbox state ticked in both by hand again.
+
+**Left:** **T033** (`.env.example` and `deploy/README.md` owe `CRSW_ACCESS_TEAM_DOMAIN`,
+`CRSW_ACCESS_AUD`, `CRSW_ACCESS_ALLOWED_EMAILS`, `CRSW_MAX_STREAMS` — names and descriptions
+only, never a value) and **T034** (the quickstart end to end, which must deal with #266/#292
+and now #324, whose two failing subtests are already isolated and diagnosed). Then the
+milestone is done.

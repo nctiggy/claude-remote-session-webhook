@@ -37,14 +37,30 @@ Keep this table honest. A stale command here costs more than a missing one.
 |---|---|
 | Install | `go mod download` |
 | Build | `go build ./...` |
-| Test (all) | `go test ./...` |
+| Test (default build) | `go test ./...` |
 | Test (single) | `go test ./internal/auth -run TestVerify` |
+| Test (real tmux) | `go test -tags tmux ./...` |
+| Test (acceptance) | `go test -tags quickstart ./cmd/crswd` |
+| Test (dev bypass) | `go test -tags dev ./...` |
 | Lint | `golangci-lint run` |
 | Format | `gofmt -w . && goimports -w .` |
 | Typecheck | `go vet ./...` |
 
 **Definition of done** — a change is not done until build, test, and lint all pass.
-CI runs exactly these commands; do not hand-wave them locally.
+CI runs the untagged commands above and nothing else; do not hand-wave them locally.
+
+**A build tag hides a file from the default build, so a tagged suite reports nothing
+whether or not it still compiles.** `go test ./...` does not reach these three, and
+neither does CI. Run the one that matches what you touched:
+
+| Tag | Covers | Needs |
+|---|---|---|
+| `tmux` | `internal/tmuxctl` driven against the real binary | `tmux` installed. Each test gets a private `-L` socket, never the operator's server |
+| `quickstart` | `cmd/crswd` acceptance — a real build, a real port, real tmux | `tmux`, and `127.0.0.1:8765` free: the deployed daemon holds it and two startup cases bind that exact port |
+| `dev` | `internal/access`'s loopback auth bypass, which is absent from the shipping build | nothing |
+
+`go vet -tags <tag> ./...` compiles a tagged suite without running it — the cheap check
+when its environment is not available.
 
 ---
 
