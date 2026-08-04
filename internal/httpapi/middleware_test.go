@@ -533,10 +533,21 @@ func TestHandleRefusesARouteWithNoAuditAction(t *testing.T) {
 		t.Errorf("the refused route was still recorded: %d routes, was %d", after, before)
 	}
 
+	// Signed, because every path now passes through layer 2 first and an unsigned
+	// probe would answer 401 whether or not the route had been registered — which
+	// would make this assertion pass for the wrong reason. With the signature, a
+	// registered /healthz would answer as its handler, and the uniform 404 is
+	// proof that nothing but the catch-all is there.
+	signed := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	signRequest(t, signed, nil, testTime)
+
 	rec := httptest.NewRecorder()
-	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	s.ServeHTTP(rec, signed)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("GET /healthz = %d; the refused route reached the mux anyway", rec.Code)
+	}
+	if body := rec.Body.String(); body != string(bodyNotFound) {
+		t.Errorf("GET /healthz body = %q; want the uniform %q", body, bodyNotFound)
 	}
 }
 

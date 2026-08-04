@@ -109,6 +109,20 @@ type Session struct {
 	// an adopted session is subject to the same ownership check and the same
 	// timeouts as any other (FR-023).
 	Adopted bool
+
+	// CredentialPending marks a session whose bearer token has not been handed
+	// to anyone yet, which only adoption produces. A create returns its token in
+	// the same response that mints it; adoption has no response to put one in,
+	// because it happens at startup with nobody asking.
+	//
+	// While it is set, TokenHash is the hash of a token that was generated and
+	// immediately discarded, so no credential a caller can present will match —
+	// the session is owned, listed, capped and reapable, and nothing can drive
+	// it. ClaimPending is what ends that: it mints the real token, returns it
+	// once, and clears this. Minting late rather than at adoption is what keeps
+	// FR-013's "never stored" true — a plaintext token held from startup until
+	// somebody asked for it would be exactly the storage that forbids.
+	CredentialPending bool `json:"-"`
 }
 
 // TmuxName is the host session name this record addresses.
@@ -167,6 +181,13 @@ var (
 	// ErrSessionDead marks an attempt to move a terminal record. Dead is the
 	// end of the state machine in data-model.md.
 	ErrSessionDead = errors.New("session is dead")
+
+	// ErrCredentialNotPending marks a claim on a session whose credential has
+	// already been handed out. It is not reachable through the API — ClaimPending
+	// only ever asks about sessions it has just seen are pending — and exists so
+	// that a future caller reaching SetCredential twice fails loudly rather than
+	// silently invalidating a token somebody is using.
+	ErrCredentialNotPending = errors.New("session credential is not pending")
 
 	// ErrInvalidSession wraps every malformed-record rejection from Add.
 	ErrInvalidSession = errors.New("invalid session record")
@@ -436,6 +457,33 @@ func (st *Store) Touch(id string, now time.Time) error {
 		s.LastActivity = now
 		st.byID[id] = s
 	}
+	return nil
+}
+
+// SetCredential replaces a record's token hash and clears CredentialPending. It
+// is how an adopted session acquires the one credential it will ever have.
+//
+// It refuses a session that is not pending, so a second claim cannot rotate a
+// credential that has already been handed out — that would let anyone able to
+// call the route invalidate a token another client is holding, and would make
+// "returned once" (FR-013) mean "returned once per caller who asks".
+func (st *Store) SetCredential(id string, hash [32]byte) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	s, ok := st.byID[id]
+	if !ok {
+		return fmt.Errorf("set credential: %w", ErrSessionNotFound)
+	}
+	if s.State == StateDead {
+		return fmt.Errorf("set credential: %w", ErrSessionDead)
+	}
+	if !s.CredentialPending {
+		return fmt.Errorf("set credential: %w", ErrCredentialNotPending)
+	}
+	s.TokenHash = hash
+	s.CredentialPending = false
+	st.byID[id] = s
 	return nil
 }
 

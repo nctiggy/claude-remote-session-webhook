@@ -92,9 +92,19 @@ Content-Type: application/json
 
 - **Request bodies** decode into a fixed struct with `DisallowUnknownFields`, read
   through `http.MaxBytesReader` at `CRSW_MAX_BODY_BYTES` (default 64 KiB). An unknown
-  field or an oversize body is `400` (FR-026).
+  field or a body that fails validation is `400` (FR-026).
+- **An oversize body is `401`, not `400`**, and the difference is not an accident.
+  The size limit is enforced in the authenticator, because the signature covers the
+  raw body and the daemon cannot compute a MAC over bytes it refused to read. A body
+  past the limit is therefore a request whose signature cannot be verified, which is
+  a layer-2 failure and gets the uniform 401 like every other one. Answering 400
+  would also mean telling an unauthenticated caller what the body limit is.
 - **Every response** is `application/json`.
-- **Every request** produces exactly one audit record, allowed or denied (FR-041).
+- **Every request** produces exactly one audit record, allowed or denied (FR-041) —
+  including one that matches no route at all, which is recorded as `route.unknown`.
+- **A request matching no route is refused like an unknown session**: 401 without a
+  valid signature, the uniform 404 with one. There is no 405 and no `Allow` header;
+  both would hand the route table to an unauthenticated caller.
 - Success bodies never contain the shared secret; only `POST /sessions` ever contains a
   token, and only once.
 
@@ -105,9 +115,9 @@ Content-Type: application/json
 | `200` | Read or delete succeeded |
 | `201` | Session created |
 | `202` | Prompt accepted for delivery |
-| `400` | Malformed body, unknown field, failed field validation, oversize body |
-| `401` | Any layer-2 authentication failure (uniform) |
-| `404` | Unknown session, another owner's session, wrong bearer token (uniform) |
+| `400` | Malformed body, unknown field, failed field validation |
+| `401` | Any layer-2 authentication failure, **including an oversize body** (uniform) |
+| `404` | Unknown session, another owner's session, wrong bearer token, **no such route** (uniform) |
 | `409` | Teardown could not be verified — the session may still be alive |
 | `429` | Concurrent-session cap reached, or create rate limit exceeded |
 | `500` | Internal failure; body carries no detail |
@@ -181,6 +191,18 @@ Returns only sessions owned by the caller (FR-032). Never includes tokens or has
 
 No bearer token is required here — the route is caller-scoped, not session-scoped — but
 the layer-2 signature is (FR-007).
+
+**`token` appears on an entry in exactly one case**: the first list after a session was
+adopted at startup. Adoption happens with nobody asking, so there is no response to hand
+a credential to, and holding a plaintext token in memory from startup until somebody
+asked would be the storage FR-013 forbids. The credential is therefore minted by the
+first list its owner makes — a caller who has already proved layer 2 and owns the
+session, which is the same standing a create has when it receives a token. Every
+subsequent list omits the field, and no other route ever carries it.
+
+```json
+{ "id": "9f2c...", "adopted": true, "token": "3b7f...64 hex chars...", "...": "..." }
+```
 
 ---
 
@@ -277,7 +299,9 @@ Each maps to a success criterion and must fail if the behaviour is removed.
 | Concurrent replay | Exactly one succeeds | edge case |
 | Cross-owner on every `{id}` route | `404`, byte-identical to unknown-ID | SC-005 |
 | Valid signature + wrong bearer token | `404`, byte-identical | FR-014 |
-| Unknown JSON field / oversize body | `400`, no session created | FR-026 |
+| Unknown JSON field | `400`, no session created | FR-026 |
+| Oversize body | `401` — the limit lives in the authenticator | FR-026 |
+| Unknown path, or a method a path does not serve | `401` unsigned, uniform `404` signed, never `405`/`Allow` | FR-006, FR-041 |
 | `work_dir` traversal, absolute escape, symlink escape | `400`, no session created | FR-028 |
 | `name` containing `:` or `.` | `400` | FR-027 |
 | Prompt `";"`, `"foo;"`, `"$(id)"`, embedded newline | Delivered byte-for-byte; nothing executed | SC-012 |

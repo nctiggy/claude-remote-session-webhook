@@ -60,6 +60,13 @@ const (
 	ActionSessionList   Action = "session.list"
 	ActionSessionDetail Action = "session.detail"
 	ActionSessionOutput Action = "session.output"
+
+	// ActionUnknownRoute names a request that matched no route in the contract —
+	// a path that does not exist, or a method the path does not answer. It exists
+	// so that "one record per request" (FR-041) means every request and not every
+	// *routed* request: without it, a scan of the listener produced no trail at
+	// all, which is precisely the traffic an incident review would want.
+	ActionUnknownRoute Action = "route.unknown"
 )
 
 // Decision is the allow/deny outcome, and unlike Action it is closed: two

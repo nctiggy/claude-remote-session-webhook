@@ -107,6 +107,19 @@ type sessionEntry struct {
 	// here because an operator looking at a fleet after a restart needs to be
 	// able to tell which of these the daemon did not start.
 	Adopted bool `json:"adopted"`
+
+	// Token is the bearer credential for a session adopted at startup, present
+	// in exactly one response and omitted from every other. Adoption happens
+	// with nobody asking, so there is no reply to hand a credential to; the
+	// first list by the owner is the first time there is one, and that caller
+	// has already proved layer 2 and owns the session — the same standing a
+	// create has when it receives a token.
+	//
+	// omitempty is load-bearing. Every ordinary entry must be byte-identical to
+	// what it was before this field existed, so a detail and a list entry stay
+	// one object (contracts/http-api.md) and no client learns to expect a token
+	// that will never come again.
+	Token string `json:"token,omitempty"`
 }
 
 // listResponse is the contract's 200 body for GET /sessions: one object with one
@@ -435,6 +448,19 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Claimed before the list is read, so an entry minted here is described by
+	// the record that already carries it. A session adopted at startup has no
+	// credential until this moment — see Manager.ClaimPending — and this is the
+	// one response that will ever carry it (FR-013, FR-021).
+	//
+	// A failure here is not fatal to the list. The sessions that were claimed
+	// really were, and answering 500 would strand the rest of the fleet behind
+	// one that could not be minted for; the trail records the failure.
+	claimed, err := s.sessions.ClaimPending(caller.ID)
+	if err != nil {
+		s.report(fmt.Errorf("claim credentials for adopted sessions: %w", err))
+	}
+
 	owned := s.sessions.List(caller.ID)
 
 	// Made rather than declared, so a caller with no sessions is answered with an
@@ -442,7 +468,9 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	// has to treat the two spellings alike is one this API has made guess.
 	entries := make([]sessionEntry, 0, len(owned))
 	for _, one := range owned {
-		entries = append(entries, entryFor(one))
+		entry := entryFor(one)
+		entry.Token = claimed[one.ID]
+		entries = append(entries, entry)
 	}
 
 	// No SetSessionID. The record says which caller listed and when, because a

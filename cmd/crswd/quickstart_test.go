@@ -1147,6 +1147,9 @@ func TestQuickstartStory4Restart(t *testing.T) {
 			ID      string `json:"id"`
 			Adopted bool   `json:"adopted"`
 			State   string `json:"state"`
+			// Present on exactly one list: the first after adoption, which is the
+			// only response an adopted session's credential can arrive in.
+			Token string `json:"token"`
 		} `json:"sessions"`
 	}
 	if err := json.Unmarshal(list.Body, &listed); err != nil {
@@ -1197,18 +1200,44 @@ func TestQuickstartStory4Restart(t *testing.T) {
 		t.Errorf("%d startup.adopt records, want 1", adopts)
 	}
 
-	// The adopted session is owned, listed, capped and reapable — and drivable
-	// by nobody, because Reconcile has nowhere to put the credential Adopt
-	// minted and may not write it to the trail. Asserted so the gap is a fact
-	// this run records rather than something a reader has to infer.
-	for name, resp := range map[string]response{
-		"prompt":  restarted.call(http.MethodPost, "/sessions/"+c.ID+"/prompt", `{"text":"x"}`, c.Token),
-		"output":  restarted.call(http.MethodGet, "/sessions/"+c.ID+"/output", "", c.Token),
-		"destroy": restarted.call(http.MethodDelete, "/sessions/"+c.ID, "", c.Token),
-	} {
-		if resp.Status != http.StatusNotFound {
-			t.Errorf("%s of an adopted session = %d, want 404: %s", name, resp.Status, resp.Body)
+	// FR-021's other half: the fresh credential has to reach the operator, or
+	// "taken under management" means a session nobody can drive. It arrives in
+	// the first list after adoption — the first moment anyone asks — and the list
+	// above was that moment, so its token is the one this session will ever have.
+	var claimed string
+	for _, s := range listed.Sessions {
+		if s.ID == c.ID {
+			claimed = s.Token
 		}
+	}
+	if claimed == "" {
+		t.Fatalf("the list after adoption carried no credential for %s: %s", c.ID, list.Body)
+	}
+	if claimed == c.Token {
+		t.Error("the adopted session was handed back the credential from before the restart")
+	}
+
+	// And it works, on every session-scoped route.
+	if resp := restarted.call(http.MethodPost, "/sessions/"+c.ID+"/prompt", `{"text":"x"}`, claimed); resp.Status != http.StatusAccepted {
+		t.Errorf("prompt with the claimed credential = %d, want 202: %s", resp.Status, resp.Body)
+	}
+	if resp := restarted.call(http.MethodGet, "/sessions/"+c.ID+"/output", "", claimed); resp.Status != http.StatusOK {
+		t.Errorf("output with the claimed credential = %d, want 200: %s", resp.Status, resp.Body)
+	}
+
+	// Once, and only once. A second list must not re-issue it — that would make
+	// "returned once" mean "returned to whoever asks" (FR-013).
+	second := restarted.call(http.MethodGet, "/sessions", "", "")
+	if strings.Contains(string(second.Body), claimed) {
+		t.Error("a second list returned the adopted session's credential again")
+	}
+	if strings.Contains(string(second.Body), `"token"`) {
+		t.Errorf("a second list still carries a token field: %s", second.Body)
+	}
+
+	// The credential never reaches the trail, adopted or not (FR-042).
+	if strings.Contains(restarted.readTrail(), claimed) {
+		t.Error("the adopted session's credential is in the audit trail")
 	}
 
 	// Shutdown still reaps it, which is the half that does work without a token.
@@ -1297,16 +1326,33 @@ func TestQuickstartStory5RateLimit(t *testing.T) {
 		statuses = append(statuses, d.call(http.MethodPost, "/sessions", body, "").Status)
 	}
 
-	limited := 0
-	for _, s := range statuses {
-		if s == http.StatusTooManyRequests {
+	// Asserted as a shape, not as a count. "At least one 429" was the whole claim
+	// here once, and it would have been satisfied by a limiter that refused all
+	// five — or by four 500s and a 429 — neither of which is a rate limit. What
+	// makes this one is that some creates succeed, the rest are refused, and the
+	// refusals come last.
+	allowed, limited := 0, 0
+	for i, s := range statuses {
+		switch s {
+		case http.StatusCreated:
+			allowed++
+			if limited > 0 {
+				t.Errorf("create %d succeeded after %d had already been refused: %v — "+
+					"a token bucket that refills mid-burst is not bounding anything", i, limited, statuses)
+			}
+		case http.StatusTooManyRequests:
 			limited++
+		default:
+			t.Errorf("create %d = %d, want 201 or 429: %v", i, s, statuses)
 		}
 	}
-	if limited == 0 {
-		t.Errorf("a burst of five creates was never rate limited: %v", statuses)
+	if allowed == 0 {
+		t.Errorf("every create in the burst was refused: %v — that is not a rate limit, it is a wall", statuses)
 	}
-	t.Logf("burst of five at six a minute: %v", statuses)
+	if limited == 0 {
+		t.Errorf("no create in the burst was refused: %v — the limiter never engaged", statuses)
+	}
+	t.Logf("burst of five at six a minute: %v (%d allowed, %d limited)", statuses, allowed, limited)
 
 	if !strings.Contains(d.readTrail(), "create rate limit") {
 		t.Errorf("no rate-limit refusal in the trail:\n%s", d.readTrail())

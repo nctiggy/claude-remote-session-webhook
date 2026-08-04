@@ -312,6 +312,48 @@ func (m *Manager) Resolve(id string, owner auth.CallerID, presented string) (Ses
 // contracts/http-api.md names the fields — and the hash is not among them.
 func (m *Manager) List(owner auth.CallerID) []Session { return m.store.List(owner) }
 
+// ClaimPending mints the credential for every session of the caller's that was
+// adopted and has not been handed one yet, and returns the plaintext keyed by
+// session ID. Each token is returned by exactly one call; a second asks about
+// nothing.
+//
+// This is how FR-021's "freshly issued credential" reaches the operator without
+// a seventh route (FR-006) and without a plaintext token sitting in memory from
+// startup (FR-013). Adoption happens with nobody asking, so there is no response
+// to put a credential in; the first list *is* somebody asking, from a caller who
+// has already proved layer 2 and owns the session. That is the same standing a
+// create has when it receives a token, so nothing is being handed to a weaker
+// claim than before.
+//
+// A session that cannot be given a credential is skipped and reported rather
+// than silently listed as drivable. The caller decides what to do with a partial
+// result; every token in the map is real.
+func (m *Manager) ClaimPending(owner auth.CallerID) (map[string]string, error) {
+	var failures []error
+	claimed := map[string]string{}
+
+	for _, s := range m.store.List(owner) {
+		if !s.CredentialPending {
+			continue
+		}
+
+		token, hash, err := NewToken()
+		if err != nil {
+			failures = append(failures, fmt.Errorf("mint a credential for an adopted session: %w", err))
+			continue
+		}
+		// Stored before it is returned. The other order would hand a caller a
+		// token the daemon might then fail to record, which is a credential that
+		// looks issued and opens nothing.
+		if err := m.store.SetCredential(s.ID, hash); err != nil {
+			failures = append(failures, fmt.Errorf("record a credential for an adopted session: %w", err))
+			continue
+		}
+		claimed[s.ID] = token
+	}
+	return claimed, errors.Join(failures...)
+}
+
 // Prompt delivers caller text into a session verbatim and submits it (FR-030).
 //
 // The record is the one Resolve returned, so ownership, the credential, and the
@@ -513,9 +555,14 @@ func (m *Manager) DestroyAll(ctx context.Context) ([]Session, error) {
 // only its hash. Whatever the caller does with it, the trail is not one of the
 // options — an adopted session's token in an audit record is the credential to
 // an unsandboxed shell sitting in journald (FR-042).
+// AdoptedSession is one session taken back from the host at startup.
+//
+// It carries no token. Adoption mints none — see Adopt — because there is no
+// response at startup to hand one to, and holding a plaintext credential in
+// memory until somebody asked would be the storage FR-013 rules out. The
+// credential is minted by ClaimPending, in the reply that delivers it.
 type AdoptedSession struct {
 	Session Session
-	Token   string
 }
 
 // Adopt reconciles the daemon with the host: every live tmux session it created
@@ -621,18 +668,25 @@ func (m *Manager) Adopt(ctx context.Context) ([]AdoptedSession, error) {
 			continue
 		}
 
-		token, hash, err := NewToken()
+		// The token is generated and thrown away. What is kept is its hash, which
+		// makes the session undrivable by anyone — including whoever held the
+		// credential before the restart, which FR-021 requires — without holding
+		// a live plaintext token from startup until somebody asks for it. That
+		// storage is what FR-013 forbids, and it is why the real credential is
+		// minted later, by ClaimPending, in the response that hands it over.
+		_, hash, err := NewToken()
 		if err != nil {
 			failures = append(failures, fmt.Errorf("adopt session %s: %w", id, err))
 			continue
 		}
 		s.TokenHash = hash
+		s.CredentialPending = true
 
 		if err := m.store.Add(s); err != nil {
 			failures = append(failures, fmt.Errorf("adopt session %s: %w", id, err))
 			continue
 		}
-		adopted = append(adopted, AdoptedSession{Session: s, Token: token})
+		adopted = append(adopted, AdoptedSession{Session: s})
 	}
 
 	return adopted, errors.Join(failures...)

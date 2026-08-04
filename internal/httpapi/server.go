@@ -262,7 +262,44 @@ func newServer(
 			return nil, err
 		}
 	}
+	s.handleUnrouted()
 	return s, nil
+}
+
+// handleUnrouted puts every request that matches no route behind the same
+// authentication and the same trail as one that does.
+//
+// Without it, ServeMux answered them itself and the daemon never saw them: an
+// unknown path got `404 page not found` as text/plain, a wrong method got 405
+// with an Allow header naming the methods that do work, and a non-clean path got
+// a 301 with a Location — all unauthenticated, and none of them audited. No
+// handler ran, so this was never an auth bypass; it was a hole in the trail
+// (FR-041 says one record per request) and a way to map the route table without
+// holding the secret, which is the enumeration FR-033 closes everywhere else.
+//
+// Two kinds of pattern are needed. `/` catches paths nothing claims. A
+// method-less pattern for each path a route uses catches the wrong-method case,
+// because ServeMux answers 405 itself whenever some pattern matches the path —
+// falling through to `/` never happens. A method-ful pattern is the more
+// specific of the two, so the real routes still win for the methods they serve.
+//
+// Everything here answers the uniform 404 that an unknown session gets. A caller
+// without the secret is told nothing, and a caller with it learns only that this
+// is not a route — which the contract already says.
+func (s *Server) handleUnrouted() {
+	unknown := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.refuseSession(w, r, errScopeNoRoute)
+	})
+
+	seen := map[string]bool{"/": true}
+	s.mux.Handle("/", s.authenticate(audit.ActionUnknownRoute, unknown))
+	for _, r := range routes {
+		if seen[r.Pattern] {
+			continue
+		}
+		seen[r.Pattern] = true
+		s.mux.Handle(r.Pattern, s.authenticate(audit.ActionUnknownRoute, unknown))
+	}
 }
 
 // handlerFor is where a route acquires its behaviour, and it is a switch with a

@@ -136,12 +136,33 @@ func TestNoRouteOutsideTheContractIsServed(t *testing.T) {
 
 	s := newTestServer(t, loopbackListen)
 	for _, u := range unserved {
+		// Unauthenticated: the uniform 401, not a 404. Every request now passes
+		// through layer 2 before the router can answer, so a caller without the
+		// secret cannot tell a path that exists from one that does not — the same
+		// enumeration FR-033 closes for session IDs, closed for the route table.
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, httptest.NewRequest(u.method, u.path, nil))
 
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s = %d; want %d — an unauthenticated caller may not learn which paths exist",
+				u.method, u.path, rec.Code, http.StatusUnauthorized)
+		}
+
+		// Authenticated: the uniform 404, and still no handler. This is the half
+		// FR-006 is about — nothing outside the six routes may be *served*.
+		signed := httptest.NewRequest(u.method, u.path, nil)
+		signRequest(t, signed, nil, testTime)
+
+		rec = httptest.NewRecorder()
+		s.ServeHTTP(rec, signed)
+
 		if rec.Code != http.StatusNotFound {
-			t.Errorf("%s %s = %d; want %d — nothing outside the six contract routes may be served",
+			t.Errorf("%s %s signed = %d; want %d — nothing outside the six contract routes may be served",
 				u.method, u.path, rec.Code, http.StatusNotFound)
+		}
+		if body := rec.Body.String(); body != string(bodyNotFound) {
+			t.Errorf("%s %s signed body = %q; want %q — an unknown route answers as an unknown session does",
+				u.method, u.path, body, bodyNotFound)
 		}
 	}
 }
@@ -150,11 +171,13 @@ func TestNoRouteOutsideTheContractIsServed(t *testing.T) {
 // leak in: the same path under a verb no handler was written for. ServeMux
 // matches method and pattern together, so these reach nothing.
 //
-// It asserts the mux's own 405 rather than "not the 501 stub", which is what it
-// asserted until T029 gave the sixth route a handler and left nothing answering
-// 501 at all. A test whose failure condition has become unreachable passes for
-// the wrong reason, and this one guards a real mistake: a handler registered for
-// a verb the contract does not define.
+// It no longer asserts ServeMux's own 405. That answer carried an `Allow` header
+// naming the methods the path *does* serve, unauthenticated — a route table
+// anyone who could reach the listener could read off. A method the contract does
+// not define now answers exactly as a path that does not exist: 401 without the
+// secret, the uniform 404 with it. The mistake this guards against is unchanged —
+// a handler registered for a verb the contract does not define — and is now
+// caught by the 404 body rather than by a status only the mux could produce.
 func TestAMethodTheContractDoesNotDefineIsRefused(t *testing.T) {
 	t.Parallel()
 
@@ -171,9 +194,24 @@ func TestAMethodTheContractDoesNotDefineIsRefused(t *testing.T) {
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, httptest.NewRequest(r.method, r.path, nil))
 
-		if rec.Code != http.StatusMethodNotAllowed {
-			t.Errorf("%s %s = %d; want %d — the contract defines no such operation, so it must reach no handler",
-				r.method, r.path, rec.Code, http.StatusMethodNotAllowed)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s = %d; want %d — an unauthenticated caller may not learn which methods a path serves",
+				r.method, r.path, rec.Code, http.StatusUnauthorized)
+		}
+		if allow := rec.Header().Get("Allow"); allow != "" {
+			t.Errorf("%s %s carried Allow: %q — that is the route table, handed out unauthenticated",
+				r.method, r.path, allow)
+		}
+
+		signed := httptest.NewRequest(r.method, r.path, nil)
+		signRequest(t, signed, nil, testTime)
+
+		rec = httptest.NewRecorder()
+		s.ServeHTTP(rec, signed)
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s %s signed = %d; want %d — the contract defines no such operation, so it must reach no handler",
+				r.method, r.path, rec.Code, http.StatusNotFound)
 		}
 	}
 }

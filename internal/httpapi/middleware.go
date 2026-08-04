@@ -217,6 +217,12 @@ var (
 	// "that session is not yours" must read alike from outside (FR-014).
 	errScopeNoCredential = errors.New("no session credential was presented")
 
+	// errScopeNoRoute is a request the contract has no route for — an unknown
+	// path, or a method a known path does not answer. It reaches the same uniform
+	// 404 as an unknown session, so a caller cannot map the route table, and it
+	// is a distinct sentinel purely so the trail says which it was.
+	errScopeNoRoute = errors.New("no route in the contract matches this request")
+
 	// errScopeRefused is the fail-closed reason for a refusal none of the
 	// sentinels explain. A refusal nobody classified is still a refusal.
 	errScopeRefused = errors.New("the session could not be resolved")

@@ -1321,6 +1321,27 @@ func mustAdoptOne(t *testing.T, mgr *Manager) AdoptedSession {
 	return got[0]
 }
 
+// claimOne is the credential for an adopted session, taken the way the daemon
+// takes it: Adopt mints none, and ClaimPending issues the one token that session
+// will ever have, in the response that hands it over.
+//
+// Going through it rather than reading a field off AdoptedSession is what makes
+// these assertions cover the delivery path. A token that exists but reaches
+// nobody is the gap this replaced.
+func claimOne(t *testing.T, mgr *Manager, id string) string {
+	t.Helper()
+
+	claimed, err := mgr.ClaimPending(auth.CallerOperator)
+	if err != nil {
+		t.Fatalf("ClaimPending() unexpected error: %v", err)
+	}
+	token, ok := claimed[id]
+	if !ok {
+		t.Fatalf("ClaimPending() issued no credential for adopted session %s; it returned %d", id, len(claimed))
+	}
+	return token
+}
+
 // US4 scenario 1, and the shape of every field an adopted record carries. The
 // clock is the assertion that matters: CreatedAt is the host session's own start
 // time and LastActivity is the moment of adoption, which is FR-024 in two lines
@@ -1368,16 +1389,36 @@ func TestAdoptTakesBackASurvivingSessionWithAFreshCredential(t *testing.T) {
 		t.Error("Adopt() issued a credential whose life is not the session's own")
 	}
 
-	// Lengths and acceptance, never the value: a 64-character hex string in a
-	// failure message is a credential in CI's logs.
-	if !tokenShape.MatchString(got.Token) {
-		t.Errorf("Adopt() token is %d characters and does not match %s", len(got.Token), tokenShape)
-	}
-	if _, err := f.mgr.Resolve(id, auth.CallerOperator, got.Token); err != nil {
-		t.Errorf("Resolve() with the credential Adopt issued = _, %v; want the record", err)
-	}
+	// Checked before the claim, because claiming is what rewrites TokenHash and
+	// clears CredentialPending — comparing after would be comparing the record to
+	// the state it was deliberately moved out of.
 	if stored, err := f.store.Get(id, auth.CallerOperator); err != nil || stored != s {
 		t.Errorf("the store holds %+v (err %v) for an adopted session, want the record Adopt returned", stored, err)
+	}
+	if !s.CredentialPending {
+		t.Error("Adopt() left the session claimable by nobody: no credential is pending on it")
+	}
+	// Nothing can drive it yet. The hash Adopt stored is of a token it discarded,
+	// so this is the interval where the session is owned, listed, capped and
+	// reapable — and not drivable, which is what makes minting late safe.
+	if _, err := f.mgr.Resolve(id, auth.CallerOperator, strings.Repeat("f", 64)); !errors.Is(err, ErrTokenMismatch) {
+		t.Errorf("Resolve() on an unclaimed adopted session = _, %v; want %v", err, ErrTokenMismatch)
+	}
+
+	// Lengths and acceptance, never the value: a 64-character hex string in a
+	// failure message is a credential in CI's logs.
+	adoptedToken := claimOne(t, f.mgr, id)
+	if !tokenShape.MatchString(adoptedToken) {
+		t.Errorf("the adopted session's token is %d characters and does not match %s", len(adoptedToken), tokenShape)
+	}
+	if _, err := f.mgr.Resolve(id, auth.CallerOperator, adoptedToken); err != nil {
+		t.Errorf("Resolve() with the claimed credential = _, %v; want the record", err)
+	}
+
+	// Once, and only once (FR-013). A second claim has nothing to hand over.
+	if second, err := f.mgr.ClaimPending(auth.CallerOperator); err != nil || len(second) != 0 {
+		t.Errorf("a second ClaimPending() returned %d credentials (err %v); want none — a token is issued once",
+			len(second), err)
 	}
 
 	// One List for discovery (research D6) and one question per candidate. The
@@ -1418,13 +1459,14 @@ func TestAdoptIssuesACredentialTheProcessBeforeItCannotHave(t *testing.T) {
 	if got.Session.ID != created.ID {
 		t.Fatalf("Adopt() took %q under management, want the session the previous run created, %q", got.Session.ID, created.ID)
 	}
-	if got.Token == before {
-		t.Fatal("Adopt() handed back the credential the previous run issued")
+	restartedToken := claimOne(t, restarted, created.ID)
+	if restartedToken == before {
+		t.Fatal("the restart handed back the credential the previous run issued")
 	}
 	if _, err := restarted.Resolve(created.ID, auth.CallerOperator, before); !errors.Is(err, ErrTokenMismatch) {
 		t.Errorf("Resolve() with the credential from before the restart = _, %v; want %v", err, ErrTokenMismatch)
 	}
-	if _, err := restarted.Resolve(created.ID, auth.CallerOperator, got.Token); err != nil {
+	if _, err := restarted.Resolve(created.ID, auth.CallerOperator, restartedToken); err != nil {
 		t.Errorf("Resolve() with the credential the restart issued = _, %v; want the record", err)
 	}
 	// The ceiling is the one the first run set, an hour before this pass ran.
@@ -1570,12 +1612,13 @@ func TestAdoptCountsTheCeilingFromTheHostsOwnClock(t *testing.T) {
 	if want := f.now.Add(time.Hour); !got.Session.AbsoluteDeadline().Equal(want) {
 		t.Fatalf("Adopt() absolute deadline %s, want %s — one hour of the ceiling is left", got.Session.AbsoluteDeadline(), want)
 	}
-	if _, err := f.mgr.Resolve(id, auth.CallerOperator, got.Token); err != nil {
+	expiryToken := claimOne(t, f.mgr, id)
+	if _, err := f.mgr.Resolve(id, auth.CallerOperator, expiryToken); err != nil {
 		t.Errorf("Resolve() an hour before the ceiling = _, %v; want the record", err)
 	}
 
 	anHourLater := f.managerAt(t, f.store, f.now.Add(time.Hour))
-	if _, err := anHourLater.Resolve(id, auth.CallerOperator, got.Token); !errors.Is(err, ErrTokenExpired) {
+	if _, err := anHourLater.Resolve(id, auth.CallerOperator, expiryToken); !errors.Is(err, ErrTokenExpired) {
 		t.Errorf("Resolve() at the ceiling = _, %v; want %v", err, ErrTokenExpired)
 	}
 }
@@ -1688,7 +1731,7 @@ func TestAdoptLeavesARecordItAlreadyHasUntouched(t *testing.T) {
 	}
 	// The credential the first pass issued is still the session's, which is the
 	// part a re-adoption would silently break for whoever is holding it.
-	if _, err := again.Resolve(id, auth.CallerOperator, first.Token); err != nil {
+	if _, err := again.Resolve(id, auth.CallerOperator, claimOne(t, again, id)); err != nil {
 		t.Errorf("Resolve() with the first pass's credential = _, %v; want the record", err)
 	}
 }
