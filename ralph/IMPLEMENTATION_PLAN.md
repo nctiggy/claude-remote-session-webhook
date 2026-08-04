@@ -106,7 +106,7 @@ wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and stop.
 ### US4 — My existing API client keeps working (P4)
 
 - [x] T020 Non-regression guard: an API request is not refused for carrying no browser identity, and a browser request is not refused for carrying no signature. Each door refuses only by the check that applies to it
-- [ ] T021 Run `go test -tags quickstart ./cmd/crswd` and confirm milestone 1's acceptance suite passes **unchanged**. If a story needs editing to accommodate this milestone, that is a regression to fix in the code, not in the test
+- [x] T021 Run `go test -tags quickstart ./cmd/crswd` and confirm milestone 1's acceptance suite passes **unchanged**. If a story needs editing to accommodate this milestone, that is a regression to fix in the code, not in the test
 
 ### US2 — Watch a session's output as it happens (P2)
 

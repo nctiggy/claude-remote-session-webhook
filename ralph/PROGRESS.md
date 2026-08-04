@@ -10744,3 +10744,148 @@ unchanged — see finding 211 (the row that moved rather than weakened) and 59 #
 quickstart suite collides with the live daemon's port, so it needs the daemon stopped or
 the port overridden). Then T022–T029 (US2, the stream) and T030–T034 (docs,
 `.env.example`, quickstart). Plus the four unowned findings above (202, 214, 223, 231).
+
+---
+
+## Iteration 64 (milestone 2, iteration 21) — 2026-08-04 08:13
+
+**Did:** **T021** — ran `go test -tags quickstart ./cmd/crswd` against a real build and a
+real tmux, and read the result. US4's second proof, and the milestone's shipping point.
+No production code and no test changed; the deliverable is this record.
+
+**The run.** 13 top-level tests, 11.9s, one binary built from `HEAD`:
+
+```
+PASS TestQuickstartPrerequisites        PASS TestQuickstartStory2Prompt
+PASS TestQuickstartStory1HappyPath      PASS TestQuickstartStory3Isolation
+PASS TestQuickstartStory1Refusals       PASS TestQuickstartStory4Restart
+PASS TestQuickstartStory1BoundaryRefusals  PASS TestQuickstartStory5Cap
+PASS TestQuickstartStory1LoudDefault    PASS TestQuickstartStory5RateLimit
+FAIL TestQuickstartStory1StartupFailures   PASS TestQuickstartStory6Audit
+                                        PASS TestQuickstartNoDependencies
+```
+
+**Verdict: milestone 1 is intact.** Every story passes. The single failure is two
+assertions inside `TestQuickstartStory1StartupFailures`, and it is 59 #225 exactly:
+
+```
+quickstart_test.go:936: the listener is public: 0.0.0.0:8765 is still held after the
+    refusal: listen tcp 0.0.0.0:8765: bind: address already in use
+quickstart_test.go:936: the listener is a name: localhost:8765 is still held after the
+    refusal: listen tcp 127.0.0.1:8765: bind: address already in use
+```
+
+`ss -ltnp` names the holder: `127.0.0.1:8765 users:(("crswd",pid=178092))` — **the live
+milestone-1 daemon this plan's "What is already running" section describes**, started long
+before the run. Both rows' daemons did refuse, with the right message and exit 1:
+
+```
+the listener is public  exit=1 crswd: CRSW_LISTEN host "0.0.0.0" is not loopback; …
+the listener is a name  exit=1 crswd: CRSW_LISTEN host "localhost" must be a loopback IP
+                               literal such as 127.0.0.1 or ::1; refusing to start
+```
+
+so the story's claim (SC-014: a weak configuration is a startup failure) holds. What fails
+is the *probe* the row uses to prove nothing bound — `net.Listen` on the very address the
+product occupies in production.
+
+**Proved it is environmental, then put it back.** Temporarily derived the two rows' port
+from `freePort(t)` instead of the literal `8765`, keeping each row's property intact
+(`0.0.0.0:` = a non-loopback host; `localhost:` = a non-literal host). All ten rows pass,
+`--- PASS: TestQuickstartStory1StartupFailures (0.52s)`. Reverted by hand; `git status`
+clean and `git diff` empty before the commit. **The experiment was not kept** — see #266.
+
+**Also audited what milestone 2 has done to milestone 1's tests**, since "unchanged" is
+the whole claim:
+
+- `cmd/crswd/quickstart_test.go`: **+9 −0**, one commit (`42095f4`), and all nine lines are
+  the three `CRSW_ACCESS_*` values the daemon now refuses to start without. Fixture, not
+  story. No assertion, payload, or expectation moved.
+- Across every pre-existing test file: 7540 insertions, **48 deletions**. Read all 48. They
+  are `newServer`'s new verifier parameter rippling through its constructor tables, the
+  `GET /` row that moved to `dashboard_test.go` (211), and one rename — see #267.
+
+**Learned:**
+
+1. **The suite proves the thing US4 actually needed proving.** Milestone 2 added a check in
+   front of the browser door and a startup demand for three new variables; the API door's
+   six operations, the cap, the rate limit, the audit trail, cross-session isolation,
+   restart adoption and the zero-dependency property all answer exactly as they did. That
+   is SC-007, and it is now demonstrated against a real binary rather than argued from the
+   unit suite.
+2. **`go test` prints nothing for a passing test, which makes a partial failure read like a
+   total one.** The first run's `tail` showed only the `FAIL` block; it took `-v` and a
+   `grep '^--- '` to see that 12 of 13 had passed. Any future iteration reading this
+   suite's output should run it verbose.
+3. **Do not stop the live daemon to free the port.** It looks like the obvious fix and it
+   is destructive: `crswd` reaps its whole fleet on SIGTERM with verification (the last
+   block of `quickstart.md`, and `TestQuickstartStory4Restart` is built on it), so
+   `systemctl --user stop crswd` would kill every session the operator has running. T034
+   needs a free port, not a stopped service.
+
+**Findings:**
+
+266. **The acceptance suite cannot be green on a host running the product, and that is a
+    fixture defect rather than an environment problem** (sharpens 59 #225).
+    `TestQuickstartStory1StartupFailures` proves "nothing bound" by binding the address the
+    case asked for, and two cases ask for port **8765** — the port `quickstart.md`,
+    `.env.example`, the systemd unit and the live deployment all name. So the probe
+    collides with `crswd` itself on any host where the milestone-1 deployment runs, which
+    is precisely the host an operator would run the acceptance suite on. Deriving both
+    rows' port from `freePort(t)` fixes it and weakens nothing (verified above: 10/10
+    pass). **Deliberately not fixed here** — T021's entire mandate is to confirm milestone
+    1's acceptance suite *unchanged*, so smuggling an edit into it under this task is the
+    one thing the task exists to catch. It needs an owner: **T034** meets it head-on (it
+    runs the quickstart end to end), and either fixes the two rows or runs with 8765 free.
+267. **`TestUnitNeverCarriesTheSecret` appears deleted in the milestone diff and is not.**
+    It was renamed to `TestUnitNeverCarriesADeploymentValue` and **widened** — from the
+    shared secret alone to every value in `deploymentSpecific()`, which now includes the
+    team domain, the audience and the allowed addresses. Recorded because a reader
+    grepping the 48 deleted lines for a removed secret guard would find its signature and
+    stop there. Strengthened, not dropped.
+268. **Finding 211 confirmed as read.** `TestNoRouteOutsideTheContractIsServed`'s
+    `unserved` list no longer carries `{"GET", "/"}`, and `dashboard_test.go` carries what
+    `/` now does. T021 was told not to read this as a regression; having read the diff, it
+    is not one — `contracts/dashboard.md` gives `/` to the browser door, so a test
+    asserting `/` is *unserved* would now be asserting against the contract.
+269. **Iteration 14 #1 / … / 63 #260 still stands**, with three new data points from this
+    iteration, all of them refusals of read-only or isolating commands:
+    **`unshare` is rejected outright** ("runs its argument as a command — cannot be
+    statically analyzed"), which removes the one way to run this suite in a network
+    namespace where 8765 is free without touching production;
+    **`systemctl --user show crswd -p MainPID -p ActiveState`** was refused; and a pipeline
+    followed by `; echo` was refused while the same pipeline alone was allowed. `ss -ltnp |
+    grep -F ":8765"` on its own works and is what produced the pid above.
+270. **Iteration 1 #1 / … / 63 #261 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the hook.)
+271. **Iteration 2 #2 / … / 63 #262 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+272. **Iteration 6 #6 / … / 63 #263 still stands — and this iteration is the evidence.**
+    `AGENTS.md`'s command table names neither `go test -tags quickstart ./cmd/crswd` nor
+    `go test -tags tmux ./...`, and the quickstart command is the one this task is *made
+    of*: a task whose whole content is a command the contract does not list. **T032.**
+273. **`deploy/README.md`'s four-variable trap (44 #84 / … / 63 #264) still stands.**
+    **T033.**
+274. **Findings 202–205, 211–216, 223 and 231–233 are unchanged.** Still unowned by any
+    task: the missing `GET /sessions/{id}/view` page every card links to (202), the
+    unregistered `GET /static/crswd.css` that leaves every browser unstyled (223), the
+    unbuilt rain loop / unwritten `web/static/crswd.js` (214), and the leak suite's
+    blindness to the browser door (231). Also open: `Manager.List`'s clock-neutrality
+    covered only from another package (203), a component test not being a call-site test
+    (204/233), `Server` and `Manager` holding separate clocks (205), the `Cache-Control`
+    default resolved inside a contract silence (**T031**), the missing `--dev-auth-bypass`
+    flag (**T034**), the pane styling deferred to **T026** (215), the untokenised values in
+    `docs/design-system.md` (216), `Store.SetState` uncalled and contradicted, and `View`'s
+    deliberate silence about `AbsoluteDeadline` (**T028**). Suite runtime (250) unchanged
+    at ~5.3s.
+
+**Left:** **The milestone's shipping point is reached.** T001–T021 are done: US1 renders
+the dashboard behind a validated identity, US3 proves the refusals, and US4 proves both
+doors and milestone 1 are intact. Everything after this is additive. Next is **T022** —
+`internal/httpapi/stream.go`, clearing the write deadline **per response** with
+`http.NewResponseController`, *not* by setting `WriteTimeout: 0`, which would strip the
+timeout from the six routes milestone 1 shipped with it. Then T023–T029 (the rest of US2,
+which the plan says carries nearly all of the milestone's unresolved risk) and T030–T034
+(docs, `.env.example`, the quickstart run — which must deal with #266). Plus the four
+unowned findings above (202, 214, 223, 231).

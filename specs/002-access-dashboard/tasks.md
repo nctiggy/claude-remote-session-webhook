@@ -123,7 +123,7 @@ rather than silently absent from the list.
 **Independent Test**: Run milestone 1's own acceptance suite unchanged and get the same results.
 
 - [x] T020 [US4] Add a non-regression guard in `internal/httpapi/server_test.go`: an API request carrying **no** browser identity is not refused for lacking one, and a browser request carrying **no** signature is not refused for lacking one (FR-012). Each door refuses only by the check that applies to it. Assert milestone 1's six routes keep their exact status codes and response bodies (FR-015).
-- [ ] T021 [US4] Run `go test -tags quickstart ./cmd/crswd` and confirm milestone 1's acceptance suite passes **unchanged** (SC-007). If a story needs editing to accommodate this milestone, that is a regression to fix in the code, not in the test — record the outcome in `ralph/PROGRESS.md`.
+- [x] T021 [US4] Run `go test -tags quickstart ./cmd/crswd` and confirm milestone 1's acceptance suite passes **unchanged** (SC-007). If a story needs editing to accommodate this milestone, that is a regression to fix in the code, not in the test — record the outcome in `ralph/PROGRESS.md`.
 
 **Checkpoint**: the shipped contract is intact.
 
