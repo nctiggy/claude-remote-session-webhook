@@ -21,11 +21,13 @@ adding one is a decision for a PR, not a convenience.
 | Field | `partials/field.html` | Every text entry, with its label |
 | Form | `partials/form.html` | Every submission + validation |
 | Modal | `partials/modal.html` | Every blocking confirmation |
-| Header | `partials/header.html` | Product identity left, user identity right |
+| Header | `partials/header.html` | Product identity left, operator identity right; ambient rain canvas |
 | Session card | `partials/session-card.html` | One session in the list |
 | Status pill | `partials/status-pill.html` | Session state, everywhere it appears |
 | Pane viewer | `partials/pane.html` | Live terminal output |
 | Toast | `partials/toast.html` | Transient feedback |
+| Empty state | `partials/empty.html` | Full-strength rain field + one sans-serif explanation |
+| Rain canvas | `partials/rain.html` | `<canvas class="rain">` — header and empty state only |
 
 ## Button
 
@@ -55,7 +57,10 @@ state map in `design-system.md`; the label is always present.
 {{ template "status-pill" .Session.State }}   {{/* running | idle | needs-auth | dead */}}
 ```
 
-Never render state as a bare coloured dot. Never hand-write the colour at a call site.
+Never render state as a bare coloured dot, and never hand-write the colour at a call
+site — it comes from the state token map in `design-system.md`. `needs-auth` is amber
+and `dead` is red on purpose: legibility at a glance beats theme purity, and a dead
+session that reads as green is a bug.
 
 ## Session card
 
@@ -128,3 +133,33 @@ Non-negotiable, applies to everything above:
 - Icon-only controls carry an accessible name.
 - Live regions (`aria-live="polite"`) announce state changes and toasts. The pane
   itself is **not** a live region — announcing every terminal line is unusable.
+
+## Empty state
+
+The one surface where the rain runs at full strength — there is no data competing
+with it, so it fills the void instead of leaving a shrug.
+
+```gotemplate
+{{ template "empty" (dict
+     "Title" "No sessions running"
+     "Body"  "Nothing is executing on this host right now. Start one to open a Claude session in a tmux window."
+     "Action" (dict "Label" "Start a session" "HxPost" "/sessions")) }}
+```
+
+Rules:
+- Rain at `.5` opacity behind, message burned through with a radial vignette so the
+  text never fights the glyphs.
+- Body copy is **sans**, not mono — a human wrote it (see `design-system.md`).
+- The canvas is `aria-hidden`; it carries no information.
+- Removed entirely under `prefers-reduced-motion: reduce`, leaving the message.
+
+## Rain canvas
+
+```gotemplate
+<canvas class="rain" aria-hidden="true"></canvas>
+```
+
+Permitted in **two** places only: behind the header (`.16`) and in the empty state
+(`.5`). Never behind reading content — not a pane, a card grid, a form, or a table.
+A third home is reasonable when a login screen exists; anywhere else needs a
+justification in the PR. See `design-system.md` for the full rule set.

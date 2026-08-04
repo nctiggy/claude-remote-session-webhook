@@ -59,6 +59,29 @@ type Controller interface {
 	List(ctx context.Context) ([]SessionInfo, error)
 }
 
+// The tmux user options the daemon writes onto every session it creates, and
+// reads back on startup to decide what it owns (research D3).
+//
+// They live here, next to the List format string that interpolates
+// OptionManaged, because the name written and the name matched must be the same
+// string. internal/session sets them and cannot export a constant into this
+// package — the import runs the other way.
+const (
+	// OptionManaged is provenance: its presence means we created the session.
+	// FR-022 turns on it, so a session missing it is neither adopted nor killed.
+	OptionManaged = "@crswd-managed"
+
+	// OptionOwner records which identity created the session, so adoption after
+	// a restart has an owner to hand the record rather than a guess.
+	OptionOwner = "@crswd-owner"
+
+	// OptionManagedValue is what OptionManaged is set to. List only tests the
+	// option for emptiness, so this is a marker rather than data — but it is
+	// spelled once so a future reader does not have to check whether the value
+	// carries meaning.
+	OptionManagedValue = "1"
+)
+
 // SessionInfo is one row of List. Created is the origin of an adopted
 // session's absolute deadline, so it comes from tmux's own #{session_created}
 // rather than from the time we happened to notice the session.
