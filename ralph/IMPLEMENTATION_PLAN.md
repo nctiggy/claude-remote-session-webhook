@@ -89,7 +89,7 @@ wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and stop.
 ### US1 — See every session at a glance (P1, MVP)
 
 - [x] T009 `internal/httpapi/browser.go`: the browser door — layer 1 on every dashboard route, one audit record per request, one uniform refusal that reveals nothing about which check failed
-- [ ] T010 `internal/httpapi/render.go`: the security headers from `docs/security.md` verbatim, and **no `Access-Control-Allow-*` on any route, either door**. That absence is load-bearing: the browser credential is an ambient cookie, so same-origin policy is the protection. Swept across every registered route
+- [x] T010 `internal/httpapi/render.go`: the security headers from `docs/security.md` verbatim, and **no `Access-Control-Allow-*` on any route, either door**. That absence is load-bearing: the browser credential is an ambient cookie, so same-origin policy is the protection. Swept across every registered route
 - [ ] T011 `internal/session/session.go`: `DisplayState()` — idle from `IdleDeadline()`, running otherwise. Calls milestone 1's own method so the dashboard and the reaper cannot disagree
 - [ ] T012 `internal/session/manager.go`: a read that resolves ownership **without advancing the idle clock**, and amend `Resolve`'s comment claiming to be the only path from a request to a session — this milestone makes that false
 - [ ] T013 `web/templates/partials/`: header with the verified identity top-right, status pill, session card, empty state, rain canvas. The documented action rows are a **parameter that is absent here**, not deleted code milestone 3 must restore

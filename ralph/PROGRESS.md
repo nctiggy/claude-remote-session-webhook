@@ -9075,3 +9075,156 @@ route.
     the right message. The other twelve stories pass — including all six operations under
     a daemon that now builds a validator at startup, which is the non-regression signal
     T020 will assert deliberately. Still **T021's**.
+
+---
+
+## Iteration 53 (milestone 2, iteration 10) — 2026-08-04 05:41
+
+**Did:** **T010** — the browser door's response headers in `internal/httpapi/render.go`
+(the four from `docs/security.md`'s table verbatim, plus `Cache-Control`), applied from
+`authenticateBrowser`, and the sweep that holds FR-034c's absence across every response
+both doors produce.
+
+**Shape, and the reasons behind the non-obvious parts:**
+
+- **Set in the middleware, before layer 1 runs.** Finding 152 called this: the contract
+  says *every* browser-door response carries them — "pages, assets, refusals, the
+  not-found page" — and a refusal is the one response an unverified caller can reach. Set
+  after verification instead, the policy would be missing from every response an attacker
+  actually sees. One call site also means a page handler cannot forget it, which is the
+  arrangement `authenticate` already has for layer 2.
+- **`no-store` is the default, not the exception.** `contracts/dashboard.md` enumerates
+  the *exemption* (the two embedded assets) rather than the rule, so the rule taken here
+  is the safe direction: everything else on this door is a page, a stream, or an
+  authorisation decision, and a cached copy of any of those outlives what it described.
+  The contract's silence on the not-found page and the refusal is what this resolves —
+  logged rather than guessed at, since it is a choice inside the contract's silence and
+  not a requirement invented.
+- **The exemption is taken only on the admit path.** `w.Header().Del(headerCacheControl)`
+  sits after the `Allow` decision, not in `setBrowserSecurityHeaders`. Taken before layer
+  1, a refusal on an asset route would answer without a header a refusal on a page route
+  carries — and that difference is a way to map the route table, which is precisely what
+  FR-010's uniform refusal withholds. `TestABrowserRefusalLooksTheSameOnEveryRoute` is the
+  test that exists only for this, and mutation 2 below is the mistake it catches.
+- **The API door gains nothing.** FR-014 freezes milestone 1's six responses and a header
+  is part of a response, so `TestTheAPIDoorGainsNoBrowserHeaders` fails the well-meaning
+  "apply the security headers globally" edit. The CORS absence needs no such carve-out —
+  it holds on both doors by being an absence.
+- **FR-034c is a sweep, because there is nothing to point at.** The responses are
+  assembled from three helpers: each registered route signed and unsigned, both shapes of
+  unrouted request (unknown path, wrong method), and the browser door's page, asset and
+  refusals. The check is any header whose name begins `Access-Control-`, which is the
+  whole CORS response family and not only `-Allow-`.
+- **The expected header values are written out in `render_test.go`, not read from
+  `render.go`'s constants.** A test that compared the code against its own spelling would
+  still pass on a CSP that had quietly gained `unsafe-inline` — the one edit the table is
+  there to catch. Same reasoning `embeddedTemplateNames` already uses in that file.
+
+Gate, executed not asserted, one command at a time (finding 115):
+
+```
+go build ./...                            OK
+go build -tags dev ./...                  OK
+go vet ./...                              OK
+go test ./... -count=1                    OK
+golangci-lint run                         OK (silent)
+gofmt -l .                                OK (silent)
+go test -tags dev ./... -count=1          OK
+go test -tags tmux ./... -count=1         OK
+go test -race ./internal/httpapi          OK
+go test -tags quickstart ./cmd/crswd      12 of 13 stories — finding 78 exactly, again
+go.sum                                    absent  ✅
+```
+
+**Seven mutations, each applied and reverted, to prove the tests are not decorative:**
+
+1. `setBrowserSecurityHeaders` call deleted → `TestEveryBrowserResponseCarriesTheSecurityHeaders`
+   on all five response shapes, and `TestOnlyAServedAssetMayBeStored`.
+2. The asset exemption moved *above* layer 1, so refusals took it too →
+   `TestABrowserRefusalLooksTheSameOnEveryRoute` (three rows) and the `no-store` test.
+   This is the mutation the other header tests cannot catch, which is why that test exists.
+3. `'unsafe-inline'` added to `script-src` → the header-value table, five rows. The
+   mutation a test reading the production constant would have waved through.
+4. `Access-Control-Allow-Origin: *` in `setBrowserSecurityHeaders` →
+   `TestNoResponseOnEitherDoorCarriesACORSHeader`, browser-door rows.
+5. `setBrowserSecurityHeaders` + `Access-Control-Allow-Credentials` added to the *API*
+   door's `authenticate` → `TestTheAPIDoorGainsNoBrowserHeaders` and the CORS sweep's API
+   and unrouted rows (76 failure lines), which is what proves the sweep reaches both doors.
+6. The asset exemption disabled entirely → `TestOnlyAServedAssetMayBeStored`, the
+   `an asset served` row alone.
+7. `setBrowserSecurityHeaders` moved below the refusal branch (admit path only) → the
+   three refusal rows of the header test. Distinct from 1: it pins the *placement*.
+
+**Learned:**
+
+1. **`newDoor` needed an action parameter, and that is the whole test seam for the cache
+   rule.** `newDoorFor(t, browser, action)` was added to `browser_test.go`; `newDoor`
+   delegates with `dashboard.view`, so every existing call site is untouched. Without it
+   the asset case is unreachable, because the browser door has no registered route until
+   T014 and the action is what tells it which response it is guarding.
+2. **`http.Header.Del` is how "no header" is expressed.** The contract exempts the assets
+   from `no-store` and names no replacement value, so the asset response carries no
+   `Cache-Control` at all rather than an invented `max-age`. Whoever registers the asset
+   route may add a real caching policy; this task must not.
+3. **The two signed-request helpers need distinct timestamps *within* a helper only.**
+   `apiResponses` and `unroutedResponses` each build their own audited server, so their
+   replay caches are independent — but inside one, six identical empty-bodied requests
+   would share a signature and the second would be refused as a replay.
+   `testTime.Add(-i*time.Second)` per row, the pattern `TestEveryRegisteredRouteIsReachable`
+   already uses.
+4. **`TestBrowserDoorRefusesEveryFailureIdentically` kept passing throughout**, exactly as
+   finding 152 predicted: it compares whole header maps across refusals that all share one
+   action, so it is blind to a header that varies by *route*. That blind spot is why
+   mutation 2 needed a test of its own.
+
+**Left:** T011–T034. Next is **T011**: `DisplayState()` on `internal/session/session.go`,
+deriving idle from milestone 1's own `IdleDeadline()` rather than a second threshold.
+
+**Findings:**
+
+161. **`Cache-Control` on the not-found page and on the refusal is this task's own
+    resolution of a silence, not a stated requirement.** `contracts/dashboard.md` lists
+    `no-store` for `GET /`, `GET /sessions/{id}/view` and the stream, and exempts the two
+    assets; it says nothing about the refusal or the not-found page. This iteration made
+    `no-store` the default so that refusals stay byte-identical across routes. If **T031**
+    amends `docs/security.md`'s header table for this milestone, that is where the rule
+    should be written down as "no-store unless the response is one of the two assets".
+162. **Nothing calls `setBrowserSecurityHeaders` from a *registered* route yet** — the
+    browser door still has no route until T014/T016 (finding 151, unchanged). The headers
+    are exercised through `authenticateBrowser` only, so **T014 and T016 must not treat
+    T010 as closing anything**: the moment `GET /` and the catch-all move to this door,
+    the sweep in `render_test.go` starts covering real responses, and `unroutedResponses`'s
+    rows will move from the API door's JSON to the browser door's HTML. That helper is
+    deliberately written to assert only the CORS absence for them, so the move needs no
+    edit to it.
+163. **The CSP is sent but nothing yet renders under it.** `web/templates/dashboard.html`
+    is still T002's placeholder. `default-src 'none'` with `'self'`-only sources means
+    **T013 and T015** ship a page that fails visibly in a browser if it references a CDN
+    or an inline `<script>` — which is the point, but it is a runtime failure the Go tests
+    cannot see. T017's "zero external origins" assertion is the one that catches it.
+164. **`leak_test.go`'s `want` list still names only milestone 1's nine actions** (143,
+    154, unchanged). Belongs to **T017** and **T029**.
+165. **Finding 133's `--dev-auth-bypass` flag still does not exist** (153, unchanged); the
+    seam for it is `newServer`'s layer-1 parameter, and the work is `cmd/crswd`'s. Verified
+    in **T034**.
+166. **Iteration 14 #1 / … / 52 #155 still stands:** `git checkout --`, `git restore`,
+    `perl -i`, and `sed -i` remain outside the permission allowlist; seven mutations meant
+    fourteen Edit round trips. New this iteration: a heredoc appending this entry to
+    `PROGRESS.md` was **aborted by the parser** for length, while the shorter
+    `git commit -F -` heredoc was permitted — so a long append has to go through the Write
+    tool into a scratch file and then `cat >>`, which is what happened here.
+167. **Iteration 1 #1 / … / 52 #156 still stands:** `loop.sh`'s sweep commit uses
+    `--no-verify`, bypassing gitleaks. (This iteration's own commit went through the hook:
+    "no leaks found".)
+168. **Iteration 2 #2 / … / 52 #157 still stands:** duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `specs/002-access-dashboard/tasks.md`, with `PROMPT.md`
+    step 9 naming only the plan. Ticked both by hand again.
+169. **Iteration 6 #6 / … / 52 #158 still stands:** `AGENTS.md`'s command table names none
+    of `go test -tags tmux ./...`, `go test -tags quickstart ./cmd/crswd`, or
+    `go test -tags dev ./...`. **T032.**
+170. **`deploy/README.md`'s four-variable trap (44 #84 / … / 52 #159) still stands.**
+    **T033.**
+171. **Finding 78 reproduces a tenth time**, untouched by this task: the deployed daemon
+    holds `127.0.0.1:8765`, so `TestQuickstartStory1StartupFailures`'s two hard-coded
+    `:8765` cases fail their post-refusal bind check while all ten refusals exit 1 with the
+    right message. The other twelve stories pass. Still **T021's**.
