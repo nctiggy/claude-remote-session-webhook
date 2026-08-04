@@ -119,7 +119,7 @@ wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and stop.
 
 - [x] T022 `internal/httpapi/stream.go`: clear the write deadline **per response** with `http.NewResponseController`. **Do not set `WriteTimeout: 0`** — that strips the timeout from the six routes milestone 1 shipped with it
 - [x] T023 The ordered open sequence: identity → cross-site refusal on `Sec-Fetch-Site` (present-and-wrong refuses; absent does not) → ownership via T012's non-touching read → capacity **last**, so an unauthorised caller never observes the cap's state
-- [ ] T024 Capture on a 1s tick, emitting **only when the screen changed**, with a comment heartbeat on suppressed ticks. An idle session would otherwise push an identical screen every second to every open tab forever
+- [x] T024 Capture on a 1s tick, emitting **only when the screen changed**, with a comment heartbeat on suppressed ticks. An idle session would otherwise push an identical screen every second to every open tab forever
 - [ ] T025 Frame each event as **one JSON string holding the whole screen**. SSE is line-oriented, so a raw newline would start a new field; encoding makes framing independent of content
 - [ ] T026 `web/templates/partials/pane.html` and `web/static/crswd.js`: `pane.textContent = JSON.parse(e.data)` — **the screen is replaced, not appended**, and updating never moves the reader's scroll position. `docs/components.md` was corrected twice for this
 - [ ] T027 Emit the audit record at stream **open**, carrying the authorisation decision. Milestone 1 emits after the handler returns, which for a stream lasting hours leaves no trace until it ends

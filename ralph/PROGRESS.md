@@ -11436,3 +11436,118 @@ re-evaluation, finding 296) and T029 (the acceptance suite, which should also dr
 T030–T034 (docs — T031 now also owes `docs/security.md` the `Sec-Fetch-Site` rule, which
 exists only in the spec and this file — `.env.example`, and the quickstart run, which must
 deal with #266/#292). Plus the unowned findings above.
+
+---
+
+## Iteration 70 (milestone 2, iteration 27) — 2026-08-04 10:02
+
+**Did:** **T024** — the capture loop in `internal/httpapi/stream.go`. A stream carried
+heartbeats and nothing else, so nothing read the session it was opened on. It now does, on
+the tick, and writes the event only when the capture differs from the screen *that stream*
+last sent — the heartbeat `hold` already wrote is the suppressed-tick case, unchanged.
+Finding **294** is closed: readings go through a buffer shared per **session**, so ten tabs
+on one session are one `capture-pane` a second and not ten.
+
+**The payload is a placeholder and not the screen, deliberately.** `screenChanged` is
+`data: changed\n\n`. T025 owns framing, and until it lands no byte a session printed crosses
+this transport — iteration 68's rule, kept. Two things about that choice the next iteration
+should not have to rediscover:
+
+1. **An empty `data:` field was not an option.** EventSource *drops* an event whose data
+   buffer is empty rather than dispatching it, so "an event carrying nothing" and "no event"
+   are the same thing on the wire. Some placeholder had to be chosen.
+2. **It is an unnamed event**, like the one `contracts/stream.md` frames, so T025 changes the
+   payload and nothing else. `readScreen` in the test file asserts the exact placeholder
+   line — so the change that puts an unframed screen on a line-oriented wire fails there
+   rather than passing quietly. T025 must move that constant, not weaken the assertion.
+
+**The opening screen goes out without waiting for the first tick** (contracts/stream.md's
+cadence bullet). A browser attaches from a page rendered with a capture of its own; a stream
+that waited out its interval would leave that capture the newest thing the operator has for a
+whole second. Consequence for every existing test: **an opened stream's first line group is
+now an event, not a heartbeat.** Three of T022/T023's tests were updated to read it.
+
+**Learned:**
+
+1. **The freshness window must be measured from when a reading *starts*, not from when it
+   comes back.** Measured from the answer, the period becomes the interval plus however long
+   tmux took — which is always longer than the interval a ticker fires at, so every other
+   tick finds the buffer a hair inside the window and the screen updates at half its
+   configured rate. `pane.taken` is stamped before the exec for exactly this. **No test
+   catches this**: the fake captures in microseconds, so the mutant is invisible with an
+   in-memory controller. It would need a deliberately slow fake.
+2. **A capture that failed is a suppressed tick, never an event.** An event carrying an empty
+   screen would tell the operator their session had wiped itself. It is also not the end of
+   the stream — that judgement is made against the daemon's own records and is T028's.
+3. **Failures are reported once per outage, not once per tick.** A session whose window has
+   gone answers every capture identically, and one line a second buries the first line, which
+   is the only one that says anything. The flag is per stream (in the `Server.reader`
+   closure), so two tabs on a dead session are two reports.
+4. **`testServer.failed` is appended without a lock, and that is unsafe for a stream.** Every
+   other test in the package reports from inside `ServeHTTP` on the test's own goroutine; a
+   stream's ticks run on net/http's for as long as the connection lives. The new failure test
+   installs its own mutex-guarded reporter — and installs it **before `Serve`**, which is why
+   `watchingUnserved`/`serve` were split out of `watchingWithCap`. Any future socket-bound
+   test that reads a report needs the same. Fixing the fixture itself would touch ~12 call
+   sites across four files; it is left as a finding below.
+5. **`errcheck` here has `check-blank` on**: `_, _ = f()` is flagged just as a bare call is.
+   A goroutine that must ignore an error needs `if _, err := ...; err != nil { t.Errorf }`,
+   not a blank assignment.
+
+**Mutations, all caught:**
+
+1. Suppression removed (send on every tick) → `TestAnUnchangedScreenIsNeverSentTwice` and
+   `TestAChangedScreenIsSentOnceAndThenSuppressed`.
+2. `attach` always returning a fresh buffer (no sharing) →
+   `TestASharedScreenIsDroppedWhenItsLastWatcherLeaves` deterministically ("two streams
+   watching one session were handed two buffers"), and `TestTwoTabsOnOneSessionCostOne
+   ReadingBetweenThem` over the wire (26–33 captures against a bound of 24; the real code
+   produces 16–20, so the threshold sits in the gap rather than on an edge).
+3. The report emitted on every failing tick → `TestAScreenThatCannotBeReadIsSuppressedAnd
+   ReportedOnce` ("reported 11 times; want exactly 1").
+4. The opening send dropped → `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval`
+   ("arrived 12ms after the open, which is past the 10ms interval").
+5. The staleness check split from the reading → `TestWatchersRacingAStaleBufferReadThe
+   SessionOnce`, 64 watchers × 200 rounds, which fails in a plain `go test` rather than only
+   under `-race` (iteration 69's learning 1, applied).
+
+**Findings:**
+
+298. **`testServer.failed` is not safe to read while a stream is open.** Learning 4 above.
+    The fixture's reporter appends without a lock and ~12 sites read the slice directly, so
+    guarding it is a four-file change this task did not need. Unowned; whoever next writes a
+    socket-bound test that reads a report will either repeat the local workaround or fix the
+    fixture.
+299. **Nothing drops a shared buffer when the *session* ends, only when the last watcher
+    leaves.** contracts/stream.md's teardown paragraph asks for both. Refcounting covers the
+    common case because teardown ends the streams, but a session destroyed while a stream is
+    mid-tick keeps its buffer until that stream notices. **T028** owns it, together with
+    finding 296.
+300. **The cadence rule in learning 1 is reasoned, not tested.** Recorded so a later
+    "simplification" that stamps `taken` after the capture is recognised as a regression
+    rather than a tidy-up.
+301. **Findings 203–205, 216, 275, 278, 280–283, 285–288, 290, 292–293, 295–296 are
+    unchanged**, minus 294 which this iteration closed. Still unowned: `Manager.List`'s
+    clock-neutrality covered only from another package (203), a component test not being a
+    call-site test (204/233), `Server` and `Manager` holding separate clocks (205),
+    untokenised values in `docs/design-system.md` (216), `Store.SetState` uncalled and
+    contradicted, the unaudited `cleanPath` redirect (275), the rain being unverifiable from
+    Go (278), the pane's unbuilt scanline overlay (280, for **T026**), and the session page
+    being a dead end (282). Iteration 1 #1 / 69 (`loop.sh`'s `--no-verify` sweep commit —
+    this iteration's own commit went through the hook: "no leaks found") and the duplicate
+    checkbox state in `IMPLEMENTATION_PLAN.md` and `tasks.md` (ticked in both by hand again)
+    still stand. The quickstart suite still fails only `TestQuickstartStory1StartupFailures`
+    on this host, for the reason #292 gives. `internal/httpapi` is ~5.5s; the new tests add
+    ~0.9s, most of it the two-tab capture count and the failing-capture poll. `-race` on the
+    package is clean at ~7.6s.
+
+**Left:** **T025** — one JSON string per event, replacing `screenChanged`'s placeholder and
+`readScreen`'s expectation, tested against a screen holding `\n`, a lone `\r`, `<script>` and
+quotes. Then T026 (`pane.html`'s `data-stream` hook and `crswd.js`'s loop — `pane.textContent
+= JSON.parse(e.data)`, replace not append, scroll position untouched; also owns finding 280),
+T027 (the record at open — findings 290 and 295), T028 (lifecycle and re-evaluation, findings
+296 and 299) and T029 (the acceptance suite, which should also drive `stream.open` through
+`internal/audit/leak_test.go` — finding 285's remaining half). Then T030–T034 (docs — T031
+also owes `docs/security.md` the `Sec-Fetch-Site` rule, which exists only in the spec and this
+file — `.env.example`, and the quickstart run, which must deal with #266/#292). Plus the
+unowned findings above.
