@@ -29,7 +29,11 @@ jobs:
     # runners instead (free for public repos).
     runs-on: ubuntu-latest
 
-    timeout-minutes: 30
+    # Raised with the turn budget below. 80 turns that include `go test ./...`
+    # and a full `golangci-lint run` will not reliably finish inside 30 minutes,
+    # and a job killed by the clock looks identical to a job killed by the turn
+    # cap — a failure mode this repo just spent three runs learning to read.
+    timeout-minutes: 45
 
     steps:
       - name: Check out repository
@@ -61,6 +65,23 @@ jobs:
           # Keep the agent bounded. A runaway loop on a runner is expensive
           # and produces an unreviewable diff.
           #
+          # The turn budget was 25, and every one of the first three real issues
+          # (#21, #22, #23) died on `Reached maximum number of turns (25)` having
+          # produced nothing — no branch, no commit, and zero Edit/Write calls
+          # across all three. The transcripts were 24 Bash, 23 Read, 3 Grep,
+          # 3 Glob: the agent spent its entire budget on the reading this prompt
+          # *requires* of it and was cut off before it could change a line.
+          #
+          # That is a budget bug, not a prompt bug. The prompt mandates three
+          # document reads (AGENTS.md, the constitution, the matching docs/ file)
+          # and "reproduce or precisely locate the problem before changing
+          # anything" BEFORE any edit is permitted, then the four-command gate
+          # after it, then fixes-log.md, then commit, push, and PR. Plus
+          # track_progress, which spends turns updating the sticky comment.
+          # That floor is 30-50 turns for a one-line CSS fix; 25 could not
+          # buy the discipline this repo asks for. Lowering the discipline to
+          # fit the budget would be the wrong repair.
+          #
           # The model is pinned here rather than left to the action's default,
           # for the reason golangci-lint and Go are pinned: a default that moves
           # between action versions or subscription changes would quietly alter
@@ -73,7 +94,7 @@ jobs:
           # models by hand should not be fighting the automation's choice. The
           # action declares no `model` input, so it rides in claude_args as the
           # CLI flag it is.
-          claude_args: --max-turns 25 --model claude-opus-5
+          claude_args: --max-turns 80 --model claude-opus-5
 
           branch_prefix: claude/issue-
           track_progress: true
