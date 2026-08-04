@@ -1,0 +1,22 @@
+{{/*
+  Empty state — the one surface where the rain runs at full strength, because
+  there is no data competing with it and it fills the void instead of leaving a
+  shrug (docs/components.md). A blank region where the fleet would be is what
+  FR-021 forbids.
+
+  Title and body are parameters, per the component's documented call site. The
+  body is prose a human wrote, so the design system sets it in sans rather than
+  mono — the same rule that makes an unknown value on a card read as a sentence
+  and not as data.
+
+  The action docs/components.md documents here — "start a session" — is a
+  parameter this milestone passes none of, guarded for the reason the session
+  card gives at the same place.
+*/}}<section class="empty">
+{{ template "rain" }}
+<div class="empty-message">
+<h2 class="empty-title">{{ .Title }}</h2>
+<p class="empty-body">{{ .Body }}</p>
+{{ with .Action }}<div class="empty-action"></div>{{ end }}
+</div>
+</section>

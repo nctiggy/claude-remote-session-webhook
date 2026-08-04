@@ -1,0 +1,17 @@
+{{/*
+  Status pill — the single source of truth for how a session's state is rendered
+  (docs/components.md). It executes against the display state itself, which is
+  derived per render from the reaper's own idle deadline and never read from the
+  stored lifecycle field (FR-019a).
+
+  The label is always text. Colour is reinforcement (FR-019, and the design
+  system's fifth non-negotiable), so a pill that lost its stylesheet still says
+  which state this is, and the two greens the palette gives running and idle are
+  never the only thing separating them.
+
+  The class carries the same value rather than a second spelling of it. That is
+  what keeps this component working for a state it has never seen: needs-auth
+  arrives with milestone 4's device-code relay and dead keeps its token for the
+  day a record can be dead, and neither needs an edit here — only a rule in
+  crswd.css, where the state tokens already live.
+*/}}<span class="pill pill-{{ . }}">{{ . }}</span>
