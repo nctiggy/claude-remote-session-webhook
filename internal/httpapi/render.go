@@ -21,6 +21,8 @@ package httpapi
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"html/template"
@@ -28,6 +30,7 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"time"
 )
 
 // The browser door's response headers, named here once each because the name a
@@ -89,6 +92,146 @@ func setBrowserSecurityHeaders(h http.Header) {
 	h.Set(headerContentTypeOptions, contentTypeNosniff)
 	h.Set(headerReferrerPolicy, referrerPolicyNone)
 	h.Set(headerCacheControl, cacheControlNoStore)
+}
+
+// The two kinds of file web/static holds, and the exact type each is declared
+// as. They are constants rather than a call to mime.TypeByExtension because that
+// function consults /etc/mime.types on a Unix host: the same binary would serve
+// `.js` as text/javascript on one machine and application/javascript on another,
+// and with `nosniff` sent on every response a browser refuses what it is told
+// rather than guessing. What a daemon serves may not depend on a file the
+// operator has never heard of.
+const (
+	contentTypeCSS = "text/css; charset=utf-8"
+	contentTypeJS  = "text/javascript; charset=utf-8"
+)
+
+const headerETag = "ETag"
+
+// cacheControlRevalidate is the asset half of the cache rule, and it reads
+// stricter than it is: `no-cache` means "keep it, but ask before using it", not
+// `no-store`'s "do not keep it at all".
+//
+// contracts/dashboard.md exempts the two assets from no-store because they hold
+// no session data and caching them is what makes the page cheap. What it does not
+// give them is a freshness lifetime, and this is why: the URLs carry no
+// fingerprint, so a `max-age` would let a browser run the previous binary's
+// script against this one's markup for as long as the lifetime lasted — and the
+// script is the whole of the dashboard's client code. The entity tag below is a
+// hash of the embedded bytes, so a revalidation is exact and an unchanged asset
+// costs a 304 with no body.
+const cacheControlRevalidate = "no-cache"
+
+// staticRoot is the one subtree of web/ this door exposes, and naming it here is
+// the whole of that guarantee: the template tree is compiled into pages by
+// parseTemplates and never handed to a caller as source.
+const staticRoot = "static"
+
+// assetContentTypes is the closed set of asset kinds the browser door serves. A
+// file under static/ with any other extension is a startup failure rather than a
+// file served as something a browser has to guess at — docs/security.md's CSP
+// admits a stylesheet and a script from 'self' and nothing else, so a third kind
+// of asset is a policy change before it is a file.
+var assetContentTypes = map[string]string{
+	".css": contentTypeCSS,
+	".js":  contentTypeJS,
+}
+
+// asset is one embedded file resolved at construction: the route it answers, the
+// bytes, the type they are declared as, and the tag those bytes hash to.
+//
+// Everything is decided before the listener binds. A request for an asset reads
+// no path, opens no file, and makes no decision — which is what makes "only
+// web/static/ is reachable" a property of the router rather than a check a
+// handler has to get right (see loadAssets).
+type asset struct {
+	pattern     string
+	contentType string
+	etag        string
+	body        []byte
+}
+
+// loadAssets resolves the embedded asset tree into one route per file.
+//
+// One literal route per file, rather than a `/static/{path}` wildcard reading
+// the path back out of the request. The wildcard is the shape the task list
+// sketches and it is the weaker one: net/http unescapes a wildcard's value, so
+// `%2e%2e%2f` arrives as `../` inside a single segment and the handler is left
+// holding a caller-supplied path it must validate — which is the check
+// docs/security.md §2 says to avoid needing. With literal patterns there is
+// nothing to traverse: a path that is not exactly one of these files matches no
+// asset route at all, falls to the catch-all, and is answered as a page nothing
+// claims.
+//
+// The refusals are startup failures for the reason parseTemplates' are. A file
+// this door cannot type, or one nested a directory deeper than the route that
+// would name it, is a broken build — and the only place to refuse a broken build
+// is before anything can ask for it.
+func loadAssets(fsys fs.FS) ([]asset, error) {
+	if fsys == nil {
+		return nil, errors.New("httpapi: no asset source provided; refusing to start")
+	}
+
+	var assets []asset
+	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if dir := path.Dir(p); dir != staticRoot {
+			return fmt.Errorf("%s is not directly under %s/, so the path a browser asks for and the file it is served from would be two different strings", p, staticRoot)
+		}
+		contentType, ok := assetContentTypes[path.Ext(p)]
+		if !ok {
+			return fmt.Errorf("%s is not a kind of asset this door serves", p)
+		}
+		body, err := fs.ReadFile(fsys, p)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", p, err)
+		}
+		sum := sha256.Sum256(body)
+		assets = append(assets, asset{
+			pattern:     http.MethodGet + " /" + p,
+			contentType: contentType,
+			etag:        `"` + base64.RawURLEncoding.EncodeToString(sum[:]) + `"`,
+			body:        body,
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("httpapi: load the embedded assets: %w", err)
+	}
+	if len(assets) == 0 {
+		// Unreachable through web.Static, since //go:embed refuses to match
+		// nothing, but reachable through the seam above — and a daemon serving no
+		// stylesheet is the unstyled dashboard this task exists to end, which is a
+		// thing nobody notices in a test suite.
+		return nil, errors.New("httpapi: the asset tree is empty; refusing to start")
+	}
+	return assets, nil
+}
+
+// serveAsset answers one asset route.
+//
+// The security headers are already written and the no-store default already
+// lifted — authenticateBrowser does both, and lifts it only for a request layer 1
+// admitted, so a refusal on this route is byte-identical to a refusal on a page.
+// What is left here is the response's own description of itself.
+//
+// http.ServeContent rather than a Write, for the conditional request alone: it
+// compares the tag above against If-None-Match and answers 304 with no body. The
+// modification time is deliberately zero — an embedded file has none, and a
+// Last-Modified invented from process start would make every restart look like an
+// edit.
+func (s *Server) serveAsset(a asset) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(headerContentType, a.contentType)
+		w.Header().Set(headerETag, a.etag)
+		w.Header().Set(headerCacheControl, cacheControlRevalidate)
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(a.body))
+	}
 }
 
 // errPageNotRendered is what the trail records when a page could not be built.

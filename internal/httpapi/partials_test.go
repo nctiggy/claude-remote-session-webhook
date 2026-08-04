@@ -296,11 +296,16 @@ func TestTheRainCarriesNoInformationAndStaysOffReadingContent(t *testing.T) {
 //
 // A hard-coded colour, size or font is a value that stopped being a token, and
 // the design system's first non-negotiable is that a value not in that document
-// does not exist. An inline style, an inline script, or an event-handler
-// attribute is refused at runtime by the policy the daemon sends — this is the
-// second, independent enforcement contracts/dashboard.md asks for, because a
-// proxy stripping a header must not be the only thing between a template and
-// execution. An external origin is FR-025.
+// does not exist. An inline style or an event-handler attribute is refused at
+// runtime by the policy the daemon sends — this is the second, independent
+// enforcement contracts/dashboard.md asks for, because a proxy stripping a header
+// must not be the only thing between a template and execution. An external origin
+// is FR-025.
+//
+// The script element is not swept here but in a test of its own below. The policy
+// forbids an inline one and permits a file from 'self', and those are different
+// strings in the same element: a pattern that refused both would forbid the one
+// way the rain and the stream client can reach a page at all.
 var forbiddenInTemplates = []struct {
 	what    string
 	pattern *regexp.Regexp
@@ -309,7 +314,6 @@ var forbiddenInTemplates = []struct {
 	{"a hard-coded size", regexp.MustCompile(`\d+(px|rem|em|pt|vh|vw)\b`)},
 	{"a hard-coded font", regexp.MustCompile(`(?i)font-family`)},
 	{"an inline style", regexp.MustCompile(`(?i)style\s*=`)},
-	{"an inline script", regexp.MustCompile(`(?i)<script`)},
 	{"an inline event handler", regexp.MustCompile(`(?i)\son[a-z]+\s*=\s*["']`)},
 	{"an external origin", regexp.MustCompile(`(?i)https?:|//cdn|srcset`)},
 }
@@ -350,6 +354,102 @@ func TestNoTemplateCarriesAValueThatBelongsInATokenOrAnOrigin(t *testing.T) {
 	}
 	if files == 0 {
 		t.Fatal("the embedded template tree is empty, so this sweep asserted nothing")
+	}
+}
+
+// The three shapes a script can take in this tree: the whole element, the
+// opening tag on its own — counted so an unclosed one cannot hide a body from the
+// pair match — and the one spelling a page is allowed to load.
+var (
+	scriptElement = regexp.MustCompile(`(?is)<script([^>]*)>(.*?)</script>`)
+	scriptOpener  = regexp.MustCompile(`(?i)<script`)
+	scriptSource  = regexp.MustCompile(`^src="/static/([^"]+)"\s+defer$`)
+)
+
+// TestEveryScriptATemplateLoadsIsAnEmbeddedAssetAndNeverAnInlineOne is the half
+// of the policy that forbidding the element outright would have overshot.
+//
+// docs/security.md's CSP is sent with `script-src 'self'` and no
+// `unsafe-inline`, which is two rules and not one: a script *body* in a template
+// would be refused by the browser, and a script *file* from this origin is how
+// the rain and, later, the stream client reach a page at all. So the body must be
+// empty, the reference must name a file web/static really embeds, and it must
+// defer — a page whose script ran before the canvases were parsed would find
+// nothing to draw into.
+func TestEveryScriptATemplateLoadsIsAnEmbeddedAssetAndNeverAnInlineOne(t *testing.T) {
+	t.Parallel()
+
+	loaded := 0
+	err := fs.WalkDir(web.Templates, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		source, err := fs.ReadFile(web.Templates, p)
+		if err != nil {
+			return err
+		}
+		markup := string(templateComment.ReplaceAll(source, nil))
+
+		elements := scriptElement.FindAllStringSubmatch(markup, -1)
+		if opened := len(scriptOpener.FindAllString(markup, -1)); opened != len(elements) {
+			t.Errorf("web/%s opens %d script elements and closes %d; an unclosed one swallows whatever follows it", p, opened, len(elements))
+		}
+
+		for _, element := range elements {
+			loaded++
+			if body := strings.TrimSpace(element[2]); body != "" {
+				t.Errorf("web/%s carries an inline script (%q); the policy this daemon sends has no unsafe-inline, so it would be refused by the browser rather than by review", p, body)
+			}
+			ref := scriptSource.FindStringSubmatch(strings.TrimSpace(element[1]))
+			if ref == nil {
+				t.Errorf(`web/%s loads a script as <script%s>; the one permitted spelling is src="/static/<file>.js" defer`, p, element[1])
+				continue
+			}
+			if _, err := fs.Stat(web.Static, path.Join(staticRoot, ref[1])); err != nil {
+				t.Errorf("web/%s loads %q and web/static embeds no such file; the symptom is a page that renders and does nothing", p, ref[1])
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the embedded template tree: %v", err)
+	}
+	if loaded == 0 {
+		t.Fatal("no template loads a script at all, so this sweep asserted nothing — and the rain has no loop")
+	}
+}
+
+// TestEveryPageLoadsTheLoopThatDrivesItsRain is the linkage in the direction a
+// test can lose silently.
+//
+// Every page composes the header, and the header renders a rain canvas
+// (docs/components.md). A canvas nothing draws into is an empty rectangle: the
+// markup is right, the stylesheet is right, every assertion in this package
+// passes, and the effect the design system calls the product's signature is
+// simply absent in a browser. This is the only place that shows up.
+func TestEveryPageLoadsTheLoopThatDrivesItsRain(t *testing.T) {
+	t.Parallel()
+
+	pages := 0
+	err := fs.WalkDir(web.Templates, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || path.Dir(p) != "templates" {
+			return err
+		}
+		pages++
+		source, err := fs.ReadFile(web.Templates, p)
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(string(source), `src="/static/crswd.js"`) {
+			t.Errorf("web/%s loads no script, and every page carries a header with a rain canvas in it", p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the embedded template tree: %v", err)
+	}
+	if pages == 0 {
+		t.Fatal("the embedded tree holds no page at all, so this sweep asserted nothing")
 	}
 }
 

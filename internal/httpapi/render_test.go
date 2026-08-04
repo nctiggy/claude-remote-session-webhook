@@ -220,6 +220,195 @@ func TestStaticAssetsAreEmbedded(t *testing.T) {
 	}
 }
 
+// TestTheEmbeddedAssetsAreServedThroughTheBrowserDoor is what makes the design
+// system real in a browser rather than only in this package's assertions.
+//
+// Until this route existed, `web/static/crswd.css` was written, embedded, swept
+// for tokens, and cross-checked against the markup — and never served, so every
+// page the daemon rendered arrived unstyled and every rain canvas stayed empty.
+// Each claim below is one a browser depends on: the bytes are the embedded ones,
+// the type is declared exactly (with `nosniff` sent, a browser refuses a
+// stylesheet typed as anything else rather than guessing), and the response
+// carries the same policy every other response on this door does.
+func TestTheEmbeddedAssetsAreServedThroughTheBrowserDoor(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, target, file, contentType string }{
+		{"the stylesheet", "/static/crswd.css", "static/crswd.css", contentTypeCSS},
+		{"the rain loop", "/static/crswd.js", "static/crswd.js", contentTypeJS},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			want, err := web.Static.ReadFile(tc.file)
+			if err != nil {
+				t.Fatalf("read the embedded asset: %v", err)
+			}
+
+			f := newFleet(t)
+			w := f.open(t, tc.target)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("GET %s = %d; want %d — nothing serves it, so the browser has no %s", tc.target, w.Code, http.StatusOK, tc.name)
+			}
+			if got := w.Header().Get(headerContentType); got != tc.contentType {
+				t.Errorf("GET %s answered as %q; want %q", tc.target, got, tc.contentType)
+			}
+			if got := w.Body.String(); got != string(want) {
+				t.Errorf("GET %s served %d bytes; the embedded file is %d", tc.target, len(got), len(want))
+			}
+			for header, value := range securityHeaders {
+				if got := w.Header().Get(header); got != value {
+					t.Errorf("GET %s: %s = %q; want %q — an asset is a response on this door like any other", tc.target, header, got, value)
+				}
+			}
+
+			// The contract's one exemption from no-store, taken as a revalidation
+			// rather than as a lifetime: the URL carries no fingerprint, so a
+			// browser must never serve the previous binary's script against this
+			// one's markup.
+			if got := w.Header().Get(headerCacheControl); got != cacheControlRevalidate {
+				t.Errorf("GET %s: Cache-Control = %q; want %q", tc.target, got, cacheControlRevalidate)
+			}
+			tag := w.Header().Get(headerETag)
+			if !strings.HasPrefix(tag, `"`) || !strings.HasSuffix(tag, `"`) || len(tag) < 3 {
+				t.Fatalf("GET %s carries ETag %q, which is not an entity tag; without one the revalidation above costs a full response every time", tc.target, tag)
+			}
+
+			// The same asset asked for again by a browser that already holds it.
+			r := httptest.NewRequest(http.MethodGet, tc.target, nil)
+			r.Header.Set(headerAccessAssertion, f.keys.mint(t, f.keys.claims()))
+			r.Header.Set("If-None-Match", tag)
+			cached := httptest.NewRecorder()
+			f.ServeHTTP(cached, r)
+
+			if cached.Code != http.StatusNotModified {
+				t.Errorf("GET %s carrying its own ETag = %d; want %d", tc.target, cached.Code, http.StatusNotModified)
+			}
+			if cached.Body.Len() != 0 {
+				t.Errorf("GET %s answered %d with a body of %d bytes", tc.target, cached.Code, cached.Body.Len())
+			}
+		})
+	}
+}
+
+// TestNoAssetRouteReachesTheTemplateTree is the other half of "expose only
+// web/static/".
+//
+// The template sources are not secret, but they are the daemon's own internals
+// and nothing on this door hands out source. The guarantee is structural rather
+// than a check inside a handler: every asset is registered as a literal route at
+// startup, so a request that is not exactly one of those paths matches no asset
+// route at all — there is no wildcard to unescape `%2e%2e%2f` into, and no
+// handler that reads a path back out of a request.
+//
+// The two rows carrying a literal `..` are answered by net/http's own path
+// normalisation — a 301 to the cleaned path, decided before any handler runs —
+// so what they really assert is that the address they are sent on to is in this
+// table as well, and refused there.
+func TestNoAssetRouteReachesTheTemplateTree(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	for _, target := range []string{
+		"/templates/dashboard.html",
+		"/static/templates/dashboard.html",
+		"/static/../templates/dashboard.html",
+		"/static/..%2ftemplates%2fdashboard.html",
+		"/static/%2e%2e/templates/dashboard.html",
+		"/static/crswd.css/../templates/dashboard.html",
+	} {
+		w := f.open(t, target)
+
+		if w.Code == http.StatusOK {
+			t.Errorf("GET %s = %d; the template tree is not served", target, w.Code)
+		}
+		// A template's own bytes, whatever the status. A redirect or a refusal
+		// that carried them would be the same disclosure as a 200.
+		if body := w.Body.String(); strings.Contains(body, "{{") {
+			t.Errorf("GET %s answered with template source:\n%s", target, body)
+		}
+	}
+}
+
+// TestLoadAssetsRefuses is the asset tree's failure table, and it is
+// TestParseTemplatesRefuses' argument for the other embedded tree: every row is a
+// build that must not reach a browser, and the only place to refuse a build is
+// before a listener exists.
+func TestLoadAssetsRefuses(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		fsys     fs.FS
+		mentions string
+	}{
+		"a file this door cannot type": {
+			fsys: fstest.MapFS{
+				"static/crswd.css": &fstest.MapFile{Data: []byte(`body{}`)},
+				"static/logo.svg":  &fstest.MapFile{Data: []byte(`<svg/>`)},
+			},
+			mentions: "logo.svg",
+		},
+		"a file a directory deeper than its route": {
+			fsys: fstest.MapFS{
+				"static/vendor/crswd.css": &fstest.MapFile{Data: []byte(`body{}`)},
+			},
+			mentions: "static/vendor/crswd.css",
+		},
+		"an empty tree": {
+			fsys:     fstest.MapFS{},
+			mentions: "empty",
+		},
+		"no tree at all": {
+			fsys:     nil,
+			mentions: "no asset source",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			assets, err := loadAssets(tc.fsys)
+			if err == nil {
+				t.Fatalf("loadAssets() = %v, nil; want a refusal", assets)
+			}
+			if assets != nil {
+				t.Errorf("loadAssets() returned assets alongside its error; a caller could register them")
+			}
+			if !strings.Contains(err.Error(), tc.mentions) {
+				t.Errorf("refusal %q does not mention %q", err, tc.mentions)
+			}
+		})
+	}
+}
+
+// TestEveryEmbeddedAssetHasARoute closes the gap this task was written for, in
+// the direction that produced it: the stylesheet existed for nine iterations with
+// nothing serving it, and no test in the package could tell.
+func TestEveryEmbeddedAssetHasARoute(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	served := 0
+	err := fs.WalkDir(web.Static, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		served++
+		if w := f.open(t, "/"+p); w.Code != http.StatusOK {
+			t.Errorf("web/%s is embedded and GET /%s = %d; an asset nothing serves is a page that renders without it", p, p, w.Code)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the embedded asset tree: %v", err)
+	}
+	if served == 0 {
+		t.Fatal("web.Static embedded no asset at all; the //go:embed pattern has stopped matching")
+	}
+}
+
 // securityHeaders is docs/security.md's table, written out here rather than read
 // from render.go's own constants: a test that compared the code against its own
 // spelling would still pass on a policy that had quietly gained unsafe-inline or

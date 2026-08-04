@@ -94,6 +94,12 @@
   --rain-ambient: .16;
   --rain-full: .5;
 
+  /* The wipe the rain is cleared with each frame — the design system gives this
+     value and no name for it, like the typography above. No CSS rule reads it:
+     crswd.js does, so that the one colour a canvas draws with is a token here
+     rather than a string in a script no sweep can see. */
+  --rain-wipe: rgba(5, 7, 5, .22);
+
   /* Elevation is --surface-lift and borders, never a shadow. This one is
      typographic — the brand's phosphor glow, which the type table asks for. */
   --glow: 0 0 var(--s2) var(--phosphor);

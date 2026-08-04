@@ -1040,6 +1040,12 @@ type browserRequest struct {
 	// something. The failure this suite exists for is precisely the one where a
 	// refusal is mistaken for an answer.
 	served int
+
+	// contentType is what an admitted request is answered as. Most of this door
+	// answers a person with a document; the two embedded assets are the
+	// exception, and typing them exactly is what a browser sent `nosniff` needs
+	// in order to use them at all.
+	contentType string
 }
 
 // browserSurface is that door's whole surface, written out rather than derived,
@@ -1048,37 +1054,60 @@ type browserRequest struct {
 // currently does. The control below is what keeps a hand-written table honest.
 func browserSurface(sessionID string) []browserRequest {
 	return []browserRequest{{
-		name:   "the fleet",
-		method: http.MethodGet,
-		target: "/",
-		action: audit.ActionDashboardView,
-		served: http.StatusOK,
+		name:        "the fleet",
+		method:      http.MethodGet,
+		target:      "/",
+		action:      audit.ActionDashboardView,
+		served:      http.StatusOK,
+		contentType: contentTypeHTML,
+	}, {
+		// The two assets. They hold no session data, which is exactly why they
+		// belong in this sweep: the tempting exception is a door that admits an
+		// asset unverified because there is nothing in it to protect, and an
+		// exception is a path a stranger can use to learn that this daemon is a
+		// crswd rather than whatever else lives behind that hostname.
+		name:        "the stylesheet",
+		method:      http.MethodGet,
+		target:      "/static/crswd.css",
+		action:      audit.ActionDashboardAsset,
+		served:      http.StatusOK,
+		contentType: contentTypeCSS,
+	}, {
+		name:        "the rain loop",
+		method:      http.MethodGet,
+		target:      "/static/crswd.js",
+		action:      audit.ActionDashboardAsset,
+		served:      http.StatusOK,
+		contentType: contentTypeJS,
 	}, {
 		// The address every session card links to. Nothing serves it yet, which
 		// makes it the not-found page today and a real page in milestone 3; on
 		// either side of that it is a browser route, and this row asserts the
 		// thing that must not change — that it is refused when layer 1 cannot
 		// verify anyone.
-		name:   "the page a card links to",
-		method: http.MethodGet,
-		target: "/sessions/" + sessionID + "/view",
-		action: audit.ActionUnknownRoute,
-		served: http.StatusNotFound,
+		name:        "the page a card links to",
+		method:      http.MethodGet,
+		target:      "/sessions/" + sessionID + "/view",
+		action:      audit.ActionUnknownRoute,
+		served:      http.StatusNotFound,
+		contentType: contentTypeHTML,
 	}, {
-		name:   "a path nothing claims",
-		method: http.MethodGet,
-		target: "/not-a-route",
-		action: audit.ActionUnknownRoute,
-		served: http.StatusNotFound,
+		name:        "a path nothing claims",
+		method:      http.MethodGet,
+		target:      "/not-a-route",
+		action:      audit.ActionUnknownRoute,
+		served:      http.StatusNotFound,
+		contentType: contentTypeHTML,
 	}, {
 		// A contract *path* with a method the contract does not answer: the one
 		// browser row that shares a pattern with the API door, and so the one
 		// most able to end up on the wrong side of it.
-		name:   "a method no route answers",
-		method: http.MethodPut,
-		target: "/sessions",
-		action: audit.ActionUnknownRoute,
-		served: http.StatusNotFound,
+		name:        "a method no route answers",
+		method:      http.MethodPut,
+		target:      "/sessions",
+		action:      audit.ActionUnknownRoute,
+		served:      http.StatusNotFound,
+		contentType: contentTypeHTML,
 	}}
 }
 
@@ -1119,8 +1148,8 @@ func TestTheBrowserSurfaceIsServedWhenTheKeysCanBeObtained(t *testing.T) {
 		if w.Code != row.served {
 			t.Errorf("%s: %s %s = %d; want %d:\n%s", row.name, row.method, row.target, w.Code, row.served, w.Body.String())
 		}
-		if got := w.Header().Get(headerContentType); got != contentTypeHTML {
-			t.Errorf("%s: answered as %q; want %q — this door answers a person with a document", row.name, got, contentTypeHTML)
+		if got := w.Header().Get(headerContentType); got != row.contentType {
+			t.Errorf("%s: answered as %q; want %q — this door answers a person with a document, and the two assets it loads with the type each really is", row.name, got, row.contentType)
 		}
 	}
 

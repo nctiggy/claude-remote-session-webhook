@@ -7,8 +7,10 @@
   Load-bearing, and inherited from the placeholder this replaced: no inline
   <script>, no inline <style>, and no external origin. The CSP in
   docs/security.md is sent unmodified, so any of the three would fail in a
-  browser rather than in review. The stylesheet is the embedded asset, referenced
-  by path.
+  browser rather than in review. The stylesheet and the script are the two
+  embedded assets, each referenced by path — the script carries the rain the
+  header below renders a canvas for, and it has to be a file for exactly the
+  reason an inline one would fail.
 
   No colour, size, or font is expressed here at all — design-system.md's first
   non-negotiable is that they live in tokens, and a page has nothing to say about
@@ -25,6 +27,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>crswd — session control</title>
 <link rel="stylesheet" href="/static/crswd.css">
+<script src="/static/crswd.js" defer></script>
 </head>
 <body>
 {{ template "header" .Operator }}

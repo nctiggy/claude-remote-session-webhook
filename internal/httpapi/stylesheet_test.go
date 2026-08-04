@@ -381,6 +381,97 @@ func TestThePageLinksTheStylesheetThatIsEmbedded(t *testing.T) {
 	}
 }
 
+// jsComment is what the sweeps below read past, for the reason cssComment
+// exists: a comment is not code, and every rule this script follows is written
+// beside it by naming the thing it must not do — so a sweep that read the prose
+// would fail on the file explaining why it passes.
+var jsComment = regexp.MustCompile(`(?s)/\*.*?\*/|//[^\n]*`)
+
+// script is the other file in the static tree, with its prose removed. Nothing
+// here executes it — Go cannot — so every claim below is about the bytes a
+// browser is handed, which is the same footing the stylesheet's assertions stand
+// on.
+func script(t *testing.T) string {
+	t.Helper()
+
+	js, err := web.Static.ReadFile("static/crswd.js")
+	if err != nil {
+		t.Fatalf("read the embedded script: %v", err)
+	}
+	return jsComment.ReplaceAllString(string(js), "")
+}
+
+// TestTheRainLoopDrawsWithTokensAndNothingElse is Principle VII on the one
+// surface a stylesheet cannot reach.
+//
+// A canvas is painted from strings in a script, so the design system's first
+// non-negotiable — a value not in that document does not exist — has no CSS to be
+// swept out of. The loop reads the tokens back out of the stylesheet at runtime
+// instead, and this holds both halves of that: no literal value here, and every
+// token it names really declared over there. A renamed token is the failure worth
+// catching, because `getPropertyValue` answers a missing one with an empty
+// string and an empty `fillStyle` is *ignored* — the rain would go on drawing in
+// whatever colour it used last, which looks like a design decision.
+func TestTheRainLoopDrawsWithTokensAndNothingElse(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+	for _, forbidden := range []struct {
+		what    string
+		pattern *regexp.Regexp
+	}{
+		{"a hard-coded colour", regexp.MustCompile(`#[0-9a-fA-F]{3}`)},
+		{"a colour function", regexp.MustCompile(`(?i)\b(rgba?|hsla?)\(`)},
+		{"an external origin", regexp.MustCompile(`(?i)https?://`)},
+	} {
+		if match := forbidden.pattern.FindString(source); match != "" {
+			t.Errorf("crswd.js carries %s (%q); the value belongs in a token, and in docs/design-system.md before that", forbidden.what, match)
+		}
+	}
+
+	declared := declarations(func() string { tokens, _ := tokenBlockAndRules(t); return tokens }())
+	for _, name := range regexp.MustCompile(`--[a-z0-9-]+`).FindAllString(source, -1) {
+		if _, ok := declared[name]; !ok {
+			t.Errorf("crswd.js reads %s and crswd.css declares no such token; a missing one resolves to nothing and the canvas keeps its last colour", name)
+		}
+	}
+}
+
+// TestTheRainLoopIsTheEffectTheDesignSystemDescribes holds the rules that
+// document states in prose, at the only place they exist as code.
+//
+// The forbidden half is the load-bearing one. `clearRect` would erase the trail
+// that *is* the effect; `innerHTML` is the assignment docs/security.md forbids
+// outright on this door's client half, and it is worth refusing here before T026
+// adds the pane — everything a Claude session prints arrives through this file.
+func TestTheRainLoopIsTheEffectTheDesignSystemDescribes(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+	required := map[string]string{
+		"requestAnimationFrame":  "the design system asks for one shared loop across every .rain canvas",
+		"canvas.rain":            "the loop draws into the canvases the rain partial renders, and nothing else",
+		"prefers-reduced-motion": "the preference removes the rain entirely rather than slowing it",
+		"--rain-wipe":            "the field is wiped with the translucent fill the design system names",
+	}
+	for want, why := range required {
+		if !strings.Contains(source, want) {
+			t.Errorf("crswd.js does not mention %q: %s", want, why)
+		}
+	}
+
+	forbidden := map[string]string{
+		"clearRect": "the trail behind each lead glyph is the effect; the field is wiped with a translucent fill",
+		"innerHTML": "docs/security.md permits textContent only — everything a session prints reaches this file",
+		"eval(":     "the policy this daemon sends carries no unsafe-eval, so it would be refused by the browser",
+	}
+	for what, why := range forbidden {
+		if strings.Contains(source, what) {
+			t.Errorf("crswd.js carries %q: %s", what, why)
+		}
+	}
+}
+
 // blockFor returns the body of the first block whose prelude contains marker,
 // so a test can assert about one rule rather than about the whole file. Braces
 // are counted, because a media query holds rules of its own.

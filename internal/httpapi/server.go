@@ -297,6 +297,14 @@ func newServer(
 		return nil, err
 	}
 
+	// The other embedded tree, refused on the same terms and for the same reason:
+	// an asset the daemon cannot type is a browser rendering an unstyled page or
+	// running no script, which is a defect that ships in silence.
+	assets, err := loadAssets(web.Static)
+	if err != nil {
+		return nil, err
+	}
+
 	mux := http.NewServeMux()
 	s := &Server{
 		cfg: cfg,
@@ -326,6 +334,15 @@ func newServer(
 		}
 	}
 	s.handleBrowser(patternFleet, audit.ActionDashboardView, s.dashboard)
+	// One route per embedded asset, so `/static/` names exactly the files the
+	// binary carries and a path that is not one of them is a path nothing claims
+	// (contracts/dashboard.md's route table; see loadAssets for why a wildcard is
+	// the weaker shape). They go on the browser door like every other page: an
+	// asset is not secret, but a door that admitted one request unverified is a
+	// door with an exception in it.
+	for _, a := range assets {
+		s.handleBrowser(a.pattern, audit.ActionDashboardAsset, s.serveAsset(a))
+	}
 	s.handleUnrouted()
 	return s, nil
 }

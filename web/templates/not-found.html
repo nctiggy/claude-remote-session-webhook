@@ -17,8 +17,10 @@
   route table is disclosed by what renders here.
 
   Load-bearing, and the same three absences the fleet page carries: no inline
-  <script>, no inline <style>, and no external origin. The stylesheet is the
-  embedded asset, referenced by path.
+  <script>, no inline <style>, and no external origin. The stylesheet and the
+  script are the two embedded assets, each referenced by path; this page renders
+  the rain twice over — behind the header and at full strength in the empty state
+  — so it loads the loop that drives them.
 */}}<!doctype html>
 <html lang="en">
 <head>
@@ -26,6 +28,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>crswd — not found</title>
 <link rel="stylesheet" href="/static/crswd.css">
+<script src="/static/crswd.js" defer></script>
 </head>
 <body>
 {{ template "header" .Operator }}
