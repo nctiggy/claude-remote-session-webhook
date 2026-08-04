@@ -11220,3 +11220,103 @@ sequence, the 1s tick that emits only on change, JSON-framed events, `pane.html`
 acceptance suite — which should also close finding 285). Then T030–T034 (docs,
 `.env.example`, the quickstart run, which must deal with #266). Plus the unowned findings
 above.
+
+---
+
+## Iteration 68 (milestone 2, iteration 25) — 2026-08-04 09:21
+
+**Did:** **T022** — `internal/httpapi/stream.go`: `GET /sessions/{id}/stream`, whose response
+lifts its own write deadline with `http.NewResponseController` (research D3). The note
+`server.go` has carried since milestone 1 ("SSE streaming cannot live under WriteTimeout and
+will need its own answer") is answered and rewritten to point here. `WriteTimeout` is
+untouched at 30s, which `TestServerTimeoutsAreSet` already fails on a non-positive value —
+verified by mutation, so the task's one prohibition is enforced by a test that predates it.
+
+**The route is registered, not left for T023 to wire.** It goes on the browser door under
+`audit.ActionStreamOpen` — which closes finding **285**'s first half: that action now has a
+production caller — and resolves ownership through `Manager.View`, the same non-touching read
+the session page uses. Registering a route whose ownership check was "the next task's" would
+have put a live view of a shell behind identity alone for one commit, and `View` is one call
+that already exists. What T023 still owns is unchanged: the `Sec-Fetch-Site` refusal, the
+capacity cap, the *ordering* guarantee, and a refusal test per step.
+
+**It carries heartbeats and nothing else.** No capture (T024), no framing (T025) — so no byte
+a session printed crosses this transport before the task that makes framing independent of
+content has landed. `hold` writes one `:\n\n` per tick until the request context ends or a
+write fails, which is contracts/stream.md's one-write-per-tick invariant with the event half
+still to come.
+
+**Learned:**
+
+1. **An `httptest.ResponseRecorder` cannot lift a write deadline, so the stream route answers
+   a recorder-driven request with a 500.** `http.NewResponseController(recorder).SetWriteDeadline`
+   is `ErrNotSupported`, and `openStream` refuses rather than serving a stream that would be
+   cut off mid-screen at 30 seconds — a failure an operator reads as a session going quiet.
+   The consequence for **T023–T029**: every test of an *open* stream has to bind a real
+   socket (`watching(t)` in `stream_test.go` does it — `Listen`, `Serve`, shortened deadline
+   and tick, cleanup). Tests of a *refusal* still work with a recorder, because every refusal
+   happens before the response is touched.
+2. **A recorder-driven stream that wrongly opened hangs the suite rather than failing it.**
+   `httptest.NewRequest` carries a background context, so `hold` would loop forever. Found by
+   mutation: removing the deadline-lifting made the run hang until it was killed. The fix is
+   in the test, not the code — that case's request now carries a 1s context, so a future
+   change admitting a deadline-less writer fails on the status line instead. Any new stream
+   test driven by a recorder needs the same.
+3. **`streamTick` is a `Server` field and the pinned `clock` cannot replace it.** A stream is
+   real elapsed time on a real socket measured against a deadline net/http sets from the host
+   clock, so a fixture that pinned time would be testing something else. Shortening the field
+   (10ms here) is what keeps a stream test in milliseconds. T024's cadence work inherits it.
+4. **`bodyclose` false-positives on `http.NewResponseController`** (it is not a response and
+   has no body) and cannot see a body closed inside `t.Cleanup`. Three `//nolint:bodyclose`
+   with reasons, the first in this repo.
+
+**Mutations, all caught:**
+
+1. The deadline never lifted → `TestTheStreamOutlivesTheWriteDeadlineTheOtherRoutesKeep`
+   ("the stream stopped 212ms after it opened, which is around the 200ms write deadline this
+   server carries") and the fail-closed test.
+2. `Manager.View` replaced by the id off the path → the uniform-404 test: another owner's
+   session answered 500 where a path nothing claims answered 404.
+3. Registered under `dashboard.view` → the record test.
+4. `WriteTimeout: 0` → `TestServerTimeoutsAreSet`, both of its assertions.
+
+**Findings:**
+
+290. **A stream's audit record still lands at close, not at open.** `authenticateBrowser`
+    defers the emit, which is milestone 1's shape and correct for six short routes; for a
+    connection lasting hours it means a daemon that dies mid-stream leaves no trace that
+    session output was being read. That is precisely FR-016a, and **T027** owns it. Recorded
+    because the route is now live and the gap is real in the tree rather than hypothetical.
+291. **Nothing caps open streams yet.** `CRSW_MAX_STREAMS` is loaded (T001) and unread. The
+    cost the cap exists to bound — one `capture-pane` exec per watched session per second —
+    does not exist until **T024**, and today a stream is a socket and a ticker writing three
+    bytes, reachable only by the one allowlisted identity behind Access. **T023** closes it;
+    if T024 lands first, that ordering is wrong and the cap must come with it.
+292. **The quickstart suite still fails exactly one case on this host** —
+    `TestQuickstartStory1StartupFailures`, "the listener is a name", because the probe binds
+    127.0.0.1:8765 and the live daemon holds it. That is finding **266** unchanged, owned by
+    **T034**, and unrelated to this task: everything else in `-tags quickstart ./cmd/crswd`
+    passes.
+293. **Findings 203–205, 216, 275, 278, 280–283, 285–288 are unchanged**, except 285's first
+    half, which this iteration closed by giving `stream.open` a production caller — the leak
+    sweep still does not drive it (T029). Still unowned: `Manager.List`'s clock-neutrality
+    covered only from another package (203), a component test not being a call-site test
+    (204/233), `Server` and `Manager` holding separate clocks (205), untokenised values in
+    `docs/design-system.md` (216), `Store.SetState` uncalled and contradicted, the unaudited
+    `cleanPath` redirect (275), the rain being unverifiable from Go (278), the pane's unbuilt
+    scanline overlay (280, for **T026**), and the session page being a dead end (282).
+    Iteration 1 #1 / 67 (`loop.sh`'s `--no-verify` sweep commit — this iteration's own commit
+    went through the hook: "no leaks found") and the duplicate checkbox state in
+    `IMPLEMENTATION_PLAN.md` and `tasks.md` (ticked in both by hand again) still stand. Suite
+    runtime is ~5.4s for `internal/httpapi` and the new tests add ~0.5s of real waiting.
+
+**Left:** **T023** — the ordered open sequence on the route that now exists: `Sec-Fetch-Site`
+present-and-wrong refuses (absent does not), then ownership (already there, keep it third),
+then capacity **last** in one critical section with the count, so an unauthorised caller never
+observes the cap's state. Then T024 (the 1s tick emitting only on change, with the heartbeat
+`hold` already writes as the suppressed-tick case), T025 (one JSON string per event — the
+event half of `stream.write`), T026 (`pane.html`'s hook and `crswd.js`'s loop; also owns
+finding 280), T027 (the record at open, finding 290), T028 (lifecycle) and T029 (the
+acceptance suite, which should also drive `stream.open` through `internal/audit/leak_test.go`
+— finding 285's remaining half). Then T030–T034 (docs, `.env.example`, the quickstart run,
+which must deal with #266/#292). Plus the unowned findings above.
