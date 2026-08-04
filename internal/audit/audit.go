@@ -67,6 +67,39 @@ const (
 	// *routed* request: without it, a scan of the listener produced no trail at
 	// all, which is precisely the traffic an incident review would want.
 	ActionUnknownRoute Action = "route.unknown"
+
+	// The browser door's four, from data-model.md's AuditRecord additions. The
+	// record's shape is frozen — these add actions and nothing else, because a
+	// struct that cannot carry arbitrary data cannot leak it.
+
+	// ActionAccessReject is any layer-1 failure: the browser door's own
+	// auth.reject, kept apart from it because the two doors fail for unrelated
+	// reasons and an operator counting refusals of one must not be counting the
+	// other's as well. The specific reason stays server-side (FR-010), and the
+	// refused address is never among the things recorded — an allowlist refusal
+	// is recorded under a reason authored in this repo, never bytes the request
+	// supplied.
+	ActionAccessReject Action = "access.reject"
+
+	// ActionDashboardView is a dashboard page served, carrying SessionID when the
+	// page is one session's view and taking it from the daemon's own record
+	// rather than from the path.
+	ActionDashboardView Action = "dashboard.view"
+
+	// ActionDashboardAsset is an embedded static asset served. An asset fetch is
+	// a request, FR-016 wants exactly one record for every request, and this
+	// type's rule forbids recording traffic under an approximate neighbour — so
+	// the alternative to naming it is either a silent request or a page view that
+	// was not one.
+	ActionDashboardAsset Action = "dashboard.asset"
+
+	// ActionStreamOpen is a stream request decided, allow or deny, emitted when
+	// the decision is made rather than when the handler returns (FR-016a). A
+	// stream lasts hours; milestone 1's emit-on-return would leave a daemon that
+	// died mid-stream with no trace that session output was being read at all.
+	// It is the stream's only record — there is deliberately no close record,
+	// which would make "exactly one per request" false at this door alone.
+	ActionStreamOpen Action = "stream.open"
 )
 
 // Decision is the allow/deny outcome, and unlike Action it is closed: two

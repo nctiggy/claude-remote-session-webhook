@@ -225,7 +225,10 @@ func TestEmitAcceptsEveryDocumentedAction(t *testing.T) {
 
 	// Restated as literals rather than referencing the constants, so renaming a
 	// constant's value is a failure here instead of a silent change to the
-	// trail an operator greps.
+	// trail an operator greps. Listing *every* action also makes two constants
+	// sharing one spelling a compile error — constant keys in a map literal must
+	// be distinct — which is what keeps the two doors' refusals countable apart
+	// when the quickstart runs `grep -c 'access.reject'`.
 	cases := map[audit.Action]string{
 		audit.ActionSessionCreate:  "session.create",
 		audit.ActionSessionPrompt:  "session.prompt",
@@ -236,6 +239,13 @@ func TestEmitAcceptsEveryDocumentedAction(t *testing.T) {
 		audit.ActionSessionList:    "session.list",
 		audit.ActionSessionDetail:  "session.detail",
 		audit.ActionSessionOutput:  "session.output",
+		audit.ActionUnknownRoute:   "route.unknown",
+
+		// data-model.md's AuditRecord additions.
+		audit.ActionAccessReject:   "access.reject",
+		audit.ActionDashboardView:  "dashboard.view",
+		audit.ActionDashboardAsset: "dashboard.asset",
+		audit.ActionStreamOpen:     "stream.open",
 	}
 	for action, want := range cases {
 		t.Run(want, func(t *testing.T) {
@@ -246,6 +256,56 @@ func TestEmitAcceptsEveryDocumentedAction(t *testing.T) {
 			got := decode(t, emit(t, audit.Record{Action: action, Decision: audit.Allow}))
 			if got["action"] != want {
 				t.Errorf("action = %v, want %q", got["action"], want)
+			}
+		})
+	}
+}
+
+// The browser door's actions ride in the same record as milestone 1's: FR-016
+// freezes the shape, so what a second door adds is vocabulary and never a field.
+// Asserting the emitted key set per action is what makes that checkable here
+// rather than at each future call site.
+func TestEmitWritesTheBrowserDoorActionsInTheExistingShape(t *testing.T) {
+	t.Parallel()
+
+	for _, action := range []audit.Action{
+		audit.ActionAccessReject, audit.ActionDashboardView,
+		audit.ActionDashboardAsset, audit.ActionStreamOpen,
+	} {
+		t.Run(string(action), func(t *testing.T) {
+			t.Parallel()
+
+			got := decode(t, emit(t, audit.Record{
+				Action:    action,
+				Caller:    "operator",
+				SessionID: testSessionID,
+				Decision:  audit.Deny,
+				Reason:    "a reason this repo authored",
+				Remote:    "127.0.0.1:54321",
+			}))
+
+			want := map[string]any{
+				"time":       "2026-08-02T19:36:58Z",
+				"action":     string(action),
+				"caller":     "operator",
+				"session_id": testSessionID,
+				"decision":   "deny",
+				"reason":     "a reason this repo authored",
+				"remote":     "127.0.0.1:54321",
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("record = %v, want %v", got, want)
+			}
+
+			// A layer-1 refusal happens before any session is resolved and before
+			// an identity exists, so the door's records must omit rather than
+			// invent — the same absence milestone 1's startup.adopt relies on.
+			bare := decode(t, emit(t, audit.Record{Action: action, Decision: audit.Deny}))
+			if keys := keysOf(bare); !reflect.DeepEqual(keys, []string{"action", "caller", "decision", "time"}) {
+				t.Errorf("keys = %v, want the four a record with no session and no peer carries", keys)
+			}
+			if bare["caller"] != audit.CallerUnknown {
+				t.Errorf("caller = %v, want %q", bare["caller"], audit.CallerUnknown)
 			}
 		})
 	}
