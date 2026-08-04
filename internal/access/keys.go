@@ -14,7 +14,7 @@
 //
 // This file is the signing key set: the edge's published RSA public keys, held
 // in memory and refetched only when an assertion names a key id the cache has
-// never seen. The verifier that consumes it arrives in T004.
+// never seen. The verifier that consumes it is verify.go.
 package access
 
 import (
@@ -99,11 +99,16 @@ var (
 // httpapi's limiter are: the refetch floor is measured in it, and a floor read
 // from the wall clock could only be tested by sleeping for a minute.
 //
-// There is no host implementation here yet, deliberately. Nothing outside this
-// package constructs a key set until the validator does (T004), and a
-// systemClock with no caller is the shelf code the plan warns about — the
-// linter says so too.
+// It is the seam every later time-based check takes: the assertion's own exp,
+// nbf and iat are measured on it too, so a suite can settle the clock once and
+// have both the floor and the token's validity window agree about now.
 type clock interface{ Now() time.Time }
+
+// systemClock is the host clock, chosen in exactly one place (New) so that
+// everything below it takes the clock it was given.
+type systemClock struct{}
+
+func (systemClock) Now() time.Time { return time.Now() }
 
 // keySet is the cached key set: the edge's RSA public keys by key id, plus the
 // two facts the refetch rules are decided from.
