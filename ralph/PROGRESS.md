@@ -14445,3 +14445,117 @@ bytes landed — the "delivered, never compacted" sentence is the handler's to w
 `TestCompactReportsDeliveryNotSuccess` must fail when the response claims the compaction succeeded.
 Finding 412 applies: `identifierOps()` in `internal/httpapi/actions_test.go` is the closed list of
 identifier-addressed operations and needs a ninth row for this route.
+
+---
+
+## Iteration 100 (milestone 3, iteration 20) — 2026-08-05 08:58
+
+**Did:** **T020** — `POST /dashboard/sessions/{id}/compact`. `patternDashboardCompact`,
+`bodyActionCompactDelivered`, `bodyActionCompactFailed`, `errCompactRefused`,
+`compactFromBrowser` and `refuseBrowserCompact` in `internal/httpapi/actions.go`; the
+`handleAction` registration in `internal/httpapi/server.go`; the third control on
+`web/templates/partials/session-card.html`; five tests plus the `compactor` helper and the ninth
+`identifierOps()` row in `internal/httpapi/actions_test.go`;
+`TestTheCardsCompactFormCarriesWhatTheRouteRequires` in `internal/httpapi/partials_test.go`.
+
+**Five things worth not re-deriving.**
+
+1. **Iteration 99's handover was accurate and saved the whole re-derivation.** The handler is
+   `renameFromBrowser`'s shape exactly — `OperatorFrom` → `routableID` → `View` → `SetSessionID` →
+   act — and the only departure is the answer: `s.writeFragment(w, http.StatusAccepted, …)` rather
+   than a re-rendered card. That is deliberate rather than lazy: a compact changes nothing a card
+   draws (the name, the working directory and the age are all as they were, and the deferred idle
+   clock is not on the card at all), so a card rendered here would tell the operator that something
+   happened without saying what.
+2. **The handler reads no form field, and that is the feature.** The gate parses the form and reads
+   `crsw_page_token`; there is nothing else on this route to read, because what is delivered is
+   `compactCommand` in the manager. `TestTheCardsCompactFormCarriesWhatTheRouteRequires` asserts the
+   form carries **exactly one** input for that reason — a handler that reads no field cannot notice
+   an extra one being sent, so the markup is the only place the "no arbitrary text into a session"
+   boundary is visible. A later iteration adding a text field here would be shipping the
+   out-of-scope surface without touching a line of Go.
+3. **The refusal map has three arms and only two are reachable from the manager's sentinels.**
+   `View` catches the not-found/not-owned/dead cases before `Compact` runs, so
+   `refuseBrowserCompact`'s `ErrSessionNotFound`/`ErrSessionDead` arm exists for the *narrow race*:
+   the reaper collecting the record between `View` and `Compact`'s own `store.Touch`, which is taken
+   under the store's lock. Everything else — in practice a failed paste — is the 500. Dropping the
+   error handler entirely left `TestCompactAgainstASessionThatIsNotTheOperatorsIsUniform` green,
+   which is what proves those two paths are genuinely separate rather than one tested twice.
+4. **The compact control is appended *after* the rename, not placed beside the destroy.** Two
+   reasons, both worth keeping: `.card-rename` is `inline-size: 100%` so it already takes the row to
+   itself and appending moves no existing control (AR-008), and it keeps a plain button off the line
+   the `button-danger` destroy sits on. No CSS was needed — `.card-actions form { margin: 0 }` and
+   `.button` already cover it.
+5. **`partials_test.go`'s form count is a tripwire that fires on every new control.**
+   `TestTheCardsDestroyFormCarriesWhatTheRouteRequires` asserts `len(forms)` exactly, so it went
+   2 → 3 with a message naming all three. That is the intended design — a card growing a control
+   nobody wrote a linkage test for fails there first.
+
+**Must-fail conditions, verified by mutation rather than asserted.** Each mutation was reverted:
+
+- `bodyActionCompactDelivered` → `<p class="card-outcome">This session was compacted.</p>` →
+  **`TestCompactReportsDeliveryNotSuccess` red** on four assertions, and — the one that matters —
+  on the *claim* check independently of the byte comparison: `the answer says "compacted"; the
+  daemon cannot see what the assistant is carrying`. This is the task's own named must-fail.
+- `handleAction` → `handleBrowser` for this route → **`TestCompactRunsBehindTheActionGate` red on
+  both halves**, each answering `202` with the delivered body. Worth noting precisely: the
+  cross-site case went through too, so `handleBrowser` carries **no** `crossSite` check for a
+  non-stream route — the gate is the only thing standing between an ambient Access cookie and a
+  delivery into every running assistant on this host.
+- The `Compact` error swallowed (`_ = s.sessions.Compact(...)`) → **`TestCompactSaysSoWhenTheDeliveryFails`
+  red** at `202` where `500` was wanted.
+- The `Compact` call deleted outright → **`TestCompactReportsDeliveryNotSuccess` red** at `the host
+  was handed []`, which is the "done when something calls it" rule from the plan's conventions,
+  caught at the wire rather than at the seam.
+- A `<input type="text" name="text">` added to the compact form →
+  **`TestTheCardsCompactFormCarriesWhatTheRouteRequires` red** at `carries 2 inputs`.
+
+**Findings:**
+
+419. **`TestCompactSaysSoWhenTheDeliveryFails` needed its first assertion rewritten, and the reason
+    generalises.** Asserting the failure body does not contain `"delivered."` fails against the
+    body `The compact could not be delivered.` — the forbidden thing is the *claim*, not the word,
+    so the check is now `"compact delivered"` plus the `claimedCompaction` list. Any later "must not
+    say X" assertion on this door wants the affirmative phrase, not a word that both answers share.
+420. **The 500 body and the 202 body are one word apart in the DOM and identical in styling.** Both
+    are `<p class="card-outcome">`, which is FR-030/FR-031 working as designed — an outcome is told
+    apart by what it says, never by a shade — but it does mean an operator skimming a replaced card
+    reads a sentence rather than sees a state. Nothing to fix; noting it because a future "make
+    failures obvious" instinct would reach for colour, which non-negotiable 5 forbids.
+421. **Finding 415 is now visible from the browser.** `Compact` touches the idle clock and may emit
+    `changed` *before* the paste, so a delivery that fails answers `500` after the fleet stream has
+    already told every open page that this card moved. Deliberate (see iteration 99 §3), and the
+    event's claim — that the *record* changed — is still true. Still the thing a later "tidy" would
+    invert.
+422. **Findings 400–412, 414 and 416–418 carry over.** 416 (nothing yet proves the *delivered text*
+    stays out of the trail across the action routes) is now **T021's** to close and this iteration
+    made it cheaper: `TestCompactReportsDeliveryNotSuccess` already re-encodes the record and
+    asserts `/compact` is absent from it, so T021's corpus needs the same over all four routes and
+    the fleet stream. 412 is **closed** — `identifierOps()` has its ninth row, and it is the first
+    row in that sweep that speaks to the host per request, which is what gives the host-line
+    comparison something to compare (finding 417's "next such argv" arrived immediately).
+    306 still needs the operator's answer; 342, 350, 374, 378, 401, 402 and 405 still stand; 360,
+    367, 371, 372, 395 and 397 are T022's; 408's hostile-name row is T021's. Iteration 90's **NEEDS
+    CLARIFICATION on T023 vs T010 is still unanswered.** 340's lint caveat still applies:
+    `golangci-lint` on PATH is v1.62.2 and reads this repo's v2 config by running zero linters, so
+    `golangci-lint run` is a green that means nothing, and `go install` of the v2 binary is not
+    permitted in this environment. The substitute run was `golangci-lint run --no-config
+    --disable-all -E bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags
+    tmux,dev ./...`, clean with no new `//nolint`. `go build ./...`, `go test -count=1 ./...`,
+    `gofmt -l`, `goimports -l` and `go vet` under all four tags (default, tmux, dev, quickstart) are
+    clean. The tagged *suites* were not run: this task touches `internal/httpapi` and a template,
+    drives tmux only through the fake, and changes neither `internal/tmuxctl`, `cmd/crswd`, nor the
+    dev bypass — so `go vet -tags` is the check `AGENTS.md` names for that case. T023 runs them for
+    real.
+
+**Left:** T021–T023. Next is **T021** — extend `internal/audit/leak_test.go`'s corpus to all four
+action routes and the fleet stream. What it needs from here: the four routes are
+`patternDashboardDestroy`, `patternDashboardCreate`, `patternDashboardRename` and
+`patternDashboardCompact` in `internal/httpapi/actions.go`, the stream is `patternFleetStream` in
+`internal/httpapi/fleet.go`, and `contracts/actions.md`'s audit-row forbidden list is secret, tokens,
+page token, prompt text, `/compact`, and pane content. Four helper types in
+`internal/httpapi/actions_test.go` already drive each route end to end through `Server.ServeHTTP`
+with a real audit sink — `destroyer`, `creator`, `renamer` and `compactor`, each with `send` taking
+method/path/site/form — so the corpus can be built by driving them rather than by hand-rolling
+requests. Finding 408's hostile-name row belongs in the same task: a create or rename carrying a
+name built from a secret-looking literal, asserting the record never quotes it back.
