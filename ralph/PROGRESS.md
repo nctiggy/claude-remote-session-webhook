@@ -12599,3 +12599,112 @@ across all five causes including `Content-Length`. It is the second of the three
 plan says to have reviewed rather than to trust on green, and it is the one that turns this
 file from a value into a defence: **T002's `mint` and `verify` have no production caller
 until T003 and T004 land.**
+
+## Iteration 83 (milestone 3, iteration 3) — 2026-08-05 04:42
+
+**Did:** **T003 🔒** — `internal/httpapi/browser.go`, the action gate. `authorizeAction`
+composes the three checks in contracts/actions.md's order by *wrapping*, not by sequencing:
+`s.authenticateBrowser(action, s.gateAction(next))`. Layer 1 is therefore outside the gate,
+so a route physically cannot be registered with the two the other way round — which is what
+makes FR-008 structural. `gateAction` runs `crossSiteAction`, then `r.ParseForm` under
+`http.MaxBytesReader(w, r.Body, cfg.MaxBodyBytes)`, then `s.pageKey.verify` with
+`operator.Email` and `s.clock.Now()`. Six reasons, one `403`. `T002`'s `verify` now has a
+caller; `mint` still does not — that is T004.
+
+**The discrepancy this task turns on, and how it was resolved.** `contracts/actions.md` step 2
+says `Sec-Fetch-Site` "must be exactly `same-origin`. `same-site`, `none`, **absent**, or any
+other spelling → refuse". `research.md` R1 says reuse `crossSite`, "which reads
+`Sec-Fetch-Site` and admits only `same-origin`" — and that description of the existing code is
+**wrong**: `crossSite` is present-and-wrong-refuses, absent-does-not (milestone 2's research
+D8, and `docs/security.md`'s stream paragraph says so in as many words). Reusing it verbatim
+would admit a mutating request carrying no `Sec-Fetch-Site` at all.
+
+It was not resolved by preference. `tasks.md` T003 names `TestRefusalIsByteIdentical` over
+"all five causes — wrong origin, **absent origin**, missing token, malformed token, expired
+token", so the task's own named test **cannot be written** unless absent refuses. Three
+documents (contract, spec FR-002a, the task's test list) agree; R1 disagrees only in a
+parenthetical about code it describes second-hand. So:
+
+- `crossSiteAction(r) = crossSite(r) || r.Header.Get(headerSecFetchSite) == ""` — `crossSite`
+  reused as R1 requires, no `Origin` check added, presence required as the contract requires.
+- **`crossSite` itself is untouched.** The pane stream keeps milestone 2's behaviour exactly;
+  FR-014 and T023 both demand that, and the reason absent is admitted there — browsers send
+  the header, the quickstart's `curl` does not — is a reason about *readers*. On a route that
+  changes something the only legitimate caller is a form this daemon rendered, and a script
+  that wants to write uses the API door and its signature.
+
+**Both must-fail conditions were run, not asserted in prose.** Each mutation applied, suite
+run, mutation reverted:
+
+1. **Order swapped** (`s.gateAction(s.authenticateBrowser(...))`) → `TestActionGateOrder`
+   fails on "the request emitted 0 audit records" (the gate refuses ahead of the middleware
+   that opens the record), and `TestRefusalIsByteIdentical` fails on all five causes at once —
+   status `401`, layer 1's body, no `nosniff`, no `Content-Length`.
+2. **The presence requirement dropped** (`crossSiteAction` → plain `crossSite`) → the
+   absent-origin cause is *served*: `200`, handler ran once, record `dashboard.destroy`/`allow`,
+   and the header map compare names the two refusals as distinguishable. This is the mutation
+   that proves the paragraph above is load-bearing rather than an opinion.
+3. **The token check removed** (`return nil` in place of `verify`) → all three token causes
+   answer `200`. The two cross-site causes still refuse, which is FR-002c's independence seen
+   from one side; T008 owes the formal version of both sides.
+
+**Learnings for whoever comes next:**
+
+1. **The gate parses the form, so the handlers do not have to — and must not re-read the
+   body.** `r.ParseForm` caches into `r.PostForm`, so T006's `confirm`, T009's `name`/`work_dir`
+   and T017's `name` are already decoded by the time a handler runs. A handler that reads
+   `r.Body` itself will find it drained.
+2. **The token is read from `r.PostForm`, never `r.Form`.** `r.Form` merges the query string,
+   so reading it would make a token in a URL work — the exact thing T004 keeps it out of links
+   to prevent. Do not "simplify" this to `r.FormValue`.
+3. **The identity in the MAC is `operator.Email`, not `operator.Owner`.** `Owner` is the
+   constant `auth.CallerOperator` for every operator, so binding to it would bind every token
+   to every identity and `TestTokenBoundToIdentity` would be vacuous in production. The email
+   still never reaches the trail — the record carries `Owner`, as milestone 2 fixed it.
+4. **`refuseAction` writes `Content-Length` by hand.** Without it, `httptest.ResponseRecorder`
+   records no such header and the contract's "byte-identical **including `Content-Length`**"
+   would be asserted against two absences. Now uniformity is a property of the function.
+5. **`gosec` G101 fires on `const fieldPageToken = "crsw_page_token"`** — the name matches its
+   credential pattern. It carries a `//nolint:gosec` with a reason, which `.golangci.yml`
+   explicitly sanctions and this repo already does in `stream.go`. Expect the same on any
+   future constant whose Go identifier contains `token`, `secret` or `key`.
+6. **Registration is deliberately not written yet.** There is no `handleAction` helper: an
+   unexported function with neither a production nor a test caller is what `unused` exists to
+   catch. T006 adds it as one line — `s.mux.Handle(pattern, s.authorizeAction(action, h))` —
+   next to `handleBrowser`, which it should mirror rather than replace.
+
+**Findings:**
+
+342. **`research.md` R1 describes `crossSite` incorrectly.** It says the function "admits only
+    `same-origin`"; it admits an absent header too. The resolution above follows the contract
+    and the task's own test list, but **the operator should confirm it** — this is the one
+    place in milestone 3 where two spec artefacts disagree about a security check, and the
+    safer reading was taken without an answer. If the intent really was verbatim reuse, T003's
+    `TestRefusalIsByteIdentical` loses a cause and `contracts/actions.md` step 2 needs its
+    "absent" removed. T022 owes `docs/security.md` the distinction either way: that file's
+    `Sec-Fetch-Site` paragraph currently states the stream's rule as though it were the
+    daemon's.
+343. **T003 has no production caller, and that is the plan's sequencing rather than an
+    oversight.** `authorizeAction` is exercised only by `actions_test.go`'s `actionDoor`
+    fixture until T006 registers `POST /dashboard/sessions/{id}/destroy` through it. The repo
+    has shipped code-with-no-caller three times, so this is written down rather than assumed
+    obvious: **if T006 registers a route without `authorizeAction`, every test here still
+    passes and the milestone's entire defence is absent.**
+344. **A non-form `Content-Type` is refused as "no token", not as a bad media type.**
+    `ParseForm` only decodes a body it is told is `application/x-www-form-urlencoded`, so a
+    JSON body reaches `verify` as an empty token and leaves as `errPageTokenMissing`. Correct
+    for a uniform refusal, and worth knowing before somebody debugs it from the record alone.
+    A body over `CRSW_MAX_BODY_BYTES` is its own reason, `errActionFormUnreadable`.
+345. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307,
+    311–315, 317–323, 325, 327–328, 330–333, 335–341 carry over unchanged.** 306 still needs
+    the operator's answer; the three browser-visual checks (SC-009/010/011) still need a
+    human; 340's lint caveat still applies — the substitute run was `golangci-lint run
+    --no-config --disable-all -E bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused
+    ./...`, clean, and CI's pinned v2.12.2 remains the check that counts.
+
+**Left:** T004–T023. Next is **T004 🔒** — `internal/httpapi/dashboard.go` and
+`web/templates/partials/`: one token per render, bound to that request's **verified** identity,
+in a hidden `crsw_page_token` field, never in a URL, a cookie, a `data-` attribute or a log.
+It is the last of the three the plan says to have reviewed rather than trusted on green, and
+it is what finally gives `mint` a caller. The field name is already declared —
+`fieldPageToken` in `browser.go` — so use it rather than spelling the literal a second time.
