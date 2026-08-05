@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
@@ -81,7 +82,8 @@ var (
 
 // Manager owns the mapping between session records and the tmux sessions they
 // name. It is safe for concurrent use: every field is read-only after
-// construction and the store and controller are both concurrency-safe.
+// construction except the subscriber set, which carries its own lock, and the
+// store and controller are both concurrency-safe.
 type Manager struct {
 	tmux  tmuxctl.Controller
 	store *Store
@@ -93,6 +95,11 @@ type Manager struct {
 	// not configured — but it is *enforced* in the store, under the lock that
 	// makes counting and inserting one act (see Store.AddCapped).
 	maxSessions int
+
+	// events is who is watching the fleet. Its zero value is a working event
+	// source with nobody subscribed, so a Manager built by any constructor emits
+	// correctly and no path has to remember to install one.
+	events fleetEvents
 }
 
 // NewManager builds a Manager on the host clock. This is the constructor the
@@ -131,6 +138,170 @@ func NewManagerWithClock(tmux tmuxctl.Controller, store *Store, roots []config.A
 	}
 
 	return &Manager{tmux: tmux, store: store, roots: roots, maxSessions: maxSessions, clock: clock}, nil
+}
+
+// FleetEventKind is what happened, in the vocabulary contracts/fleet-stream.md
+// puts on the wire. These three values *are* the wire values — the stream names
+// its SSE event with one of them — so a fourth added here without a line in that
+// contract is an event no page knows how to read.
+type FleetEventKind string
+
+const (
+	// FleetAppeared is a session entering the fleet by any means: a create
+	// through either door, startup adoption, or a half-started create whose
+	// record was kept because the host would not confirm the teardown.
+	FleetAppeared FleetEventKind = "appeared"
+
+	// FleetVanished is a session leaving it by any means: a destroy through
+	// either door, the reaper, shutdown, or a capture that discovered the
+	// session was already gone.
+	FleetVanished FleetEventKind = "vanished"
+
+	// FleetChanged is a session that is still there and no longer renders the
+	// same — today a displayed-state transition, and from T016 a rename.
+	FleetChanged FleetEventKind = "changed"
+)
+
+// FleetEvent is one change to one owner's fleet.
+//
+// It carries an identifier and an owner and nothing else. The owner is not part
+// of what goes on the wire; it is what decides whose wire the event reaches
+// (FR-019b). The payload the stream writes is the id alone (research R6): a
+// name, a path or a state here would be a session field travelling to a page
+// that already has a route for fetching one, through a channel that renders
+// nothing.
+type FleetEvent struct {
+	Kind  FleetEventKind
+	ID    string
+	Owner auth.CallerID
+}
+
+// fleetBacklog is how far behind one subscriber may fall before it is dropped
+// rather than waited for.
+//
+// What matters is not the number but what happens at it: a full buffer ends the
+// subscription instead of blocking the goroutine that changed the fleet.
+// Shutdown is the largest burst the daemon can produce — DestroyAll emits one
+// event per record — so a value well above CRSW_MAX_SESSIONS (5 by default)
+// means a reader that is merely between selects is never dropped for a reason
+// that is the daemon's rather than its own.
+const fleetBacklog = 64
+
+// fleetSub is one open subscription: whose fleet it is about, and where the
+// events go. Subscribers are identified by pointer, so an operator with two
+// dashboard tabs open is two subscribers rather than one.
+type fleetSub struct {
+	owner auth.CallerID
+	ch    chan FleetEvent
+}
+
+// fleetEvents is the subscriber set. Its zero value is usable and empty.
+type fleetEvents struct {
+	mu   sync.Mutex
+	subs map[*fleetSub]struct{}
+}
+
+// Subscribe returns the caller's own fleet changes and the call that ends the
+// subscription. It is how an open dashboard learns about a change no request of
+// its own caused, which is the whole of issue #15.
+//
+// Ownership is a parameter rather than something the subscriber filters on
+// afterwards, for the reason it is one on Store.Get and Store.List: an event
+// about another identity's session must never reach the wire (FR-019b), and a
+// check performed by the subscriber is a check the second subscriber may forget.
+// An empty owner matches nothing — Add refuses a record without one, so the only
+// way to ask this question is to have skipped authentication — and it gets a
+// channel that is already closed rather than one that stays quiet, so a caller
+// that came in the wrong way finds out at once instead of watching an empty
+// fleet forever.
+//
+// The channel is closed when the subscription ends, whichever side ended it. A
+// subscriber that falls fleetBacklog events behind is dropped exactly that way,
+// because the alternative is a page still presenting a fleet it can no longer
+// vouch for (FR-020): a closed channel is the stream's cue to end the response
+// and the page's cue to say so.
+//
+// The returned cancel is idempotent, and safe after the daemon has already
+// dropped the subscriber.
+func (m *Manager) Subscribe(owner auth.CallerID) (<-chan FleetEvent, func()) {
+	sub := &fleetSub{owner: owner, ch: make(chan FleetEvent, fleetBacklog)}
+	if owner == "" {
+		close(sub.ch)
+		return sub.ch, func() {}
+	}
+
+	m.events.add(sub)
+	return sub.ch, func() { m.events.drop(sub) }
+}
+
+// emit records one change to the fleet. It is called from beside the store
+// mutation rather than from the handler that asked for one, and that placement
+// is the whole design.
+//
+// Every path that changes the fleet ends in Store.Add, Store.AddCapped or
+// Store.Delete in this file. So the reaper emits without knowing an event source
+// exists — it tears down through Manager.Destroy — and so does shutdown, and so
+// does a capture that discovers the session was already gone. Issue #15 is
+// precisely a fleet change with no request behind it, and the way not to miss
+// one is not to keep a list of the paths that have to remember.
+func (m *Manager) emit(kind FleetEventKind, s Session) {
+	m.events.publish(FleetEvent{Kind: kind, ID: s.ID, Owner: s.Owner})
+}
+
+func (e *fleetEvents) add(sub *fleetSub) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.subs == nil {
+		e.subs = make(map[*fleetSub]struct{})
+	}
+	e.subs[sub] = struct{}{}
+}
+
+// drop ends one subscription, once. The membership check is not defensive
+// tidiness: publish drops a subscriber that has fallen behind, and every caller
+// of Subscribe defers its cancel, so closing a channel twice is the ordinary
+// case rather than the impossible one.
+func (e *fleetEvents) drop(sub *fleetSub) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if _, open := e.subs[sub]; !open {
+		return
+	}
+	delete(e.subs, sub)
+	close(sub.ch)
+}
+
+// publish delivers ev to the subscribers it belongs to and waits for none of
+// them.
+//
+// The non-blocking send is the requirement rather than an optimisation. This
+// runs on the goroutine that just changed the fleet — a request handler, the
+// reaper's sweep, or shutdown — so a subscriber able to hold the send would be a
+// browser tab able to hold a destroy, delay a reap, or keep the daemon from
+// exiting.
+//
+// The lock is held across the fan-out, which is safe precisely because no send
+// here can block: the worst case is every channel full, and each of those costs
+// a delete and a close.
+func (e *fleetEvents) publish(ev FleetEvent) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	for sub := range e.subs {
+		if sub.owner != ev.Owner {
+			continue
+		}
+		select {
+		case sub.ch <- ev:
+		default:
+			// fleetBacklog behind: the subscription ends here rather than the
+			// fleet change waiting for it. See Subscribe.
+			delete(e.subs, sub)
+			close(sub.ch)
+		}
+	}
 }
 
 // CreateRequest is everything a caller may influence about a new session.
@@ -228,6 +399,12 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 		return nil, "", m.rollback(ctx, s, err)
 	}
 
+	// After the shell exists, not after the claim: a create that fails between
+	// the two is rolled back, and the fleet an open dashboard is watching gains
+	// a session only if the record survives that. rollback announces the one
+	// case where it does.
+	m.emit(FleetAppeared, s)
+
 	return &s, token, nil
 }
 
@@ -296,10 +473,24 @@ func (m *Manager) Resolve(id string, owner auth.CallerID, presented string) (Ses
 	// for a value no caller of Resolve reads — the handler renders the session it
 	// was given, and GET /sessions reads the store afresh.
 	now := m.clock.Now()
+	displayed := s.DisplayState(now)
 	if err := m.store.Touch(s.ID, now); err != nil {
 		return Session{}, fmt.Errorf("resolve session: %w", err)
 	}
 	s.LastActivity = now
+
+	// Activity that brings a session back from idle changes what the dashboard
+	// draws, so the card an open page is showing is now wrong — which is a fleet
+	// change by any definition an operator would recognise, even though no
+	// record entered or left.
+	//
+	// The two readings are compared rather than the one transition being spelled
+	// out, so a third display state (milestone 4's needs-auth) is covered here
+	// without this line being revisited. Both are taken from the same instant:
+	// what changed is LastActivity, not the time it is being judged at.
+	if after := s.DisplayState(now); after != displayed {
+		m.emit(FleetChanged, s)
+	}
 	return s, nil
 }
 
@@ -560,7 +751,14 @@ func (m *Manager) unreadable(ctx context.Context, s Session, cause error) error 
 	// end state this path exists to reach. Only a delete that failed for some
 	// other reason is worth carrying back, and it is carried *alongside* the
 	// answer rather than instead of it — the session is over either way.
-	if err := m.store.Delete(s.ID); err != nil && !errors.Is(err, ErrSessionNotFound) {
+	//
+	// The event is Destroy's, on the same terms: this discovery is one of the
+	// ways a session leaves the fleet without anyone asking it to, and only the
+	// call that actually removed the record announces it.
+	switch err := m.store.Delete(s.ID); {
+	case err == nil:
+		m.emit(FleetVanished, s)
+	case !errors.Is(err, ErrSessionNotFound):
 		return fmt.Errorf("drop the record of vanished session %s: %w: %w", s.ID, ErrSessionDead, err)
 	}
 	return fmt.Errorf("capture pane of session %s: %w", s.ID, ErrSessionDead)
@@ -619,7 +817,15 @@ func (m *Manager) Destroy(ctx context.Context, s Session) error {
 	// confirmed gone and so is the record, which is exactly what the caller
 	// asked for. Reporting an error for a teardown that completed would be the
 	// one lie Principle VI cannot afford in either direction.
-	if err := m.store.Delete(s.ID); err != nil && !errors.Is(err, ErrSessionNotFound) {
+	//
+	// The event goes with the delete rather than with the kill, and only when
+	// this call is the one that removed the record. The other half of that same
+	// race has already announced the session, and a second vanished would have
+	// an open page re-fetching a card that was gone the first time.
+	switch err := m.store.Delete(s.ID); {
+	case err == nil:
+		m.emit(FleetVanished, s)
+	case !errors.Is(err, ErrSessionNotFound):
 		return fmt.Errorf("destroy session %s: %w", s.ID, err)
 	}
 	return nil
@@ -799,6 +1005,12 @@ func (m *Manager) Adopt(ctx context.Context) ([]AdoptedSession, error) {
 			failures = append(failures, fmt.Errorf("adopt session %s: %w", id, err))
 			continue
 		}
+		// Nobody is listening here: adoption runs at startup, before the
+		// listener binds (T032). The emit is written anyway because the rule is
+		// that a path which changes the fleet announces it — not that a path
+		// whose events somebody happens to be reading does. A reconciliation run
+		// with the daemon up would otherwise be the silent one.
+		m.emit(FleetAppeared, s)
 		adopted = append(adopted, AdoptedSession{Session: s})
 	}
 
@@ -936,6 +1148,11 @@ func (m *Manager) rollback(ctx context.Context, s Session, cause error) error {
 
 	present, verifyErr := m.tmux.Has(ctx, name)
 	if verifyErr != nil || present {
+		// The record is kept, so the fleet has gained a session — one nobody
+		// holds a token for and the reaper will collect, but one the dashboard
+		// renders until it does. A change only a reload would reveal is exactly
+		// what this event source exists to stop.
+		m.emit(FleetAppeared, s)
 		return fmt.Errorf("create session %s: %w: %w",
 			s.ID, ErrOrphanedSession, errors.Join(cause, killErr, verifyErr))
 	}
