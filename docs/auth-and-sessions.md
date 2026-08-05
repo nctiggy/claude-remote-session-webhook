@@ -10,7 +10,10 @@ own: the API client signs each request, and a person signs in to Cloudflare Acce
 the edge, before the daemon is reachable at all. **The daemon still keeps no browser
 session** — it issues no cookie, stores no server-side session record, and has nothing
 to fixate, renew, or invalidate. It re-derives who is looking from a signed assertion
-on **every** request and keeps nothing between them.
+on **every** request and keeps nothing between them. A rendered page does carry one
+value this daemon minted — the page token below — and that changes nothing here: it is
+verified by recomputing it, never by looking it up, so there is still no record to
+fixate, expire, or leave behind.
 
 Treat this file as a correctness spec, not a style guide. A bug here is host
 compromise — see `docs/security.md` for why.
@@ -27,8 +30,14 @@ Never collapse these. Layer 1 is not a substitute for layer 2: if the tunnel is
 misconfigured, or the daemon is ever reached over loopback by another local process,
 the signature is what is left. The converse holds on the browser door, which carries
 no signature at all — there, a validated identity plus an ownership check is the whole
-of the authorisation, which is why layer 1 has to be a real check in the daemon and
-not a header the edge is trusted to have written.
+of the authorisation **for a request that only reads**, which is why layer 1 has to be
+a real check in the daemon and not a header the edge is trusted to have written.
+
+A browser request that *changes* something passes two further checks, because the
+browser's credential is an ambient cookie and an ambient credential rides on requests
+a hostile page triggers. Those are the action gate, and they are not a fourth layer:
+they answer a different question — not "who is this?" but "did this operator's own
+dashboard page ask for it?". See **the action-gate rule** below.
 
 ## Two doors, one hostname
 
@@ -40,8 +49,8 @@ daemon-side check behind the edge:
 |---|---|---|
 | Admitted at the edge by | The identity policy: Google IdP, one allowlisted address | An Access **service token**, sent as `CF-Access-Client-Id` + `CF-Access-Client-Secret` |
 | What the edge forwards | `Cf-Access-Jwt-Assertion`, **identity shape** — carries a verified `email` | `Cf-Access-Jwt-Assertion`, **service-token shape** — carries `common_name`, an empty `sub`, and **no email** |
-| What the daemon checks | Layer 1: the assertion is genuine and names an allowlisted person | Layers 2 and 3: signature, timestamp, replay, per-session token. The assertion is **ignored entirely** |
-| Refused with | One uniform 401 page | The uniform 401 JSON |
+| What the daemon checks | Layer 1: the assertion is genuine and names an allowlisted person — **plus the action gate on any route that changes something** | Layers 2 and 3: signature, timestamp, replay, per-session token. The assertion is **ignored entirely** |
+| Refused with | One uniform 401 page by layer 1; one uniform **403** page by the action gate | The uniform 401 JSON |
 
 **Each door refuses only by the check that applies to it.** A browser request is never
 refused for carrying no signature, and an API request is never refused for carrying no
@@ -277,6 +286,131 @@ Two more, for the same reason the session cap exists (constitution VI):
   was being read until it ends — and none at all if the daemon dies first. One record
   per request, no close record, and never a byte of pane content in it.
 
+## Changing something from the browser — the action-gate rule (non-negotiable)
+
+Four routes let a browser change this host: `POST /dashboard/sessions` and
+`POST /dashboard/sessions/{id}/{destroy,rename,compact}`. Until they existed, every
+mutating route demanded an HMAC signature no browser can produce, and **that**, not
+the cookie, is what made an ambient credential safe. The first route that accepts a
+form ends that argument. These checks replace it.
+
+| # | Check | Why here |
+|---|---|---|
+| 1 | Layer 1 — a validated **identity** assertion, exactly as on every other browser route | Nothing is asked about the request until the caller is known |
+| 2 | Same-origin on `Sec-Fetch-Site` — the **same** `crossSite` the pane stream uses, with one addition | Decided from one header, before the body is read, so a cross-site request costs one lookup |
+| 3 | The page token from the form, verified against the identity step 1 produced | The half a stripped header cannot remove |
+
+Then, in the handler: for a destroy the confirming field **before** the lookup, so
+"nothing was torn down" is a property of the control flow rather than of every later
+branch remembering it — and then ownership, on each of the three that name a session.
+The create names none, so what it does instead is record the same owner both doors
+resolve to, which is what makes the session it starts one the API can drive. A `GET` on one of
+these paths is an **unknown route**, answered by the browser door's 404 with no `Allow`
+header — never a `405`, which would confirm the path exists.
+
+**On a mutating route, an absent `Sec-Fetch-Site` refuses.** That is the one addition,
+and it inverts the stream's rule deliberately. Absent-does-not-refuse is right for a
+read, because non-browser clients omit the header and refusing them adds nothing
+against the attack it is about. It does not survive the move to a route that changes
+something: the only legitimate caller of an action route is a form this daemon
+rendered, submitted by a browser, which always sends the header — and a script that
+wants to change something uses the API door and its signature. An absent header is not
+evidence of same-origin initiation, and treating it as such makes the check optional
+for anything that can omit it.
+
+**The order is composition, not convention.** The gate is wrapped *inside* the layer-1
+middleware at the single point a mutating route reaches the mux, so a route cannot be
+registered with the two the other way round without rewriting that line. Both run
+**before the handler**, so a request that is going to be refused never reaches the code
+that could tear a session down: "refused" and "refused after acting" cannot be the same
+event.
+
+**Steps 2 and 3 are independently load-bearing, and each is tested with the other
+disabled.** Two checks never tested apart are one check with extra steps. Neither is
+sufficient alone: a header any future proxy could strip must not be the whole defence,
+and a token is only evidence while the page holding it is the daemon's own.
+
+A test **satisfies** these checks — it sets `Sec-Fetch-Site: same-origin` and mints a
+valid token. A build tag or flag that turns one off is the exact defect the gate exists
+to prevent, and the shipping build must offer no way to do it.
+
+### The page token
+
+```
+<expiry>.<HMAC-SHA256(pageKey, identity + "\n" + expiry)>
+```
+
+- **Stored nowhere.** No map, no sweep, no "already minted" set: it is verified by
+  recomputing it, exactly as the layer-2 signature is. A minted-and-remembered token
+  would be the daemon's first cross-request browser state — with the expiry,
+  invalidation and fixation questions this design exists not to have — plus a map a
+  caller who has only passed layer 1 can grow.
+- **`pageKey` is 32 bytes from `crypto/rand` at startup, unrelated to
+  `CRSW_SHARED_SECRET`**, never persisted, and served by no route in any form.
+  Unrelated is load-bearing: deriving it from the signing secret would put a value the
+  daemon hands to a browser into a relationship with the secret that authorises the
+  entire API, in exchange for the one property this design does not want — surviving a
+  restart. A restart invalidates every outstanding token, which is anticipated rather
+  than tolerated: session records do not survive one either, and an open page gets a
+  single clear failure that a reload fixes.
+- **Bound to the identity layer 1 verified on this request** — never to a value read
+  out of the body, the token, or a header the caller chose. A token minted for one
+  operator recomputes to a different MAC when presented as another.
+- **`hmac.Equal`, never `==`.** One canonical spelling and no other: lowercase hex of
+  the exact length, and an expiry that re-renders to the digits it arrived as.
+  Accepting either hex case would give every token an uppercase twin; accepting
+  `+1785749600` would give one instant an unbounded family of tokens that all verify.
+- **Read from `PostForm`, never `Form`.** The second holds the query string, and a
+  token this daemon would accept from a URL is a token in a referrer header, a browser
+  history and a proxy log.
+- **In a hidden form field and nowhere else** — never a URL, a cookie, a `data-`
+  attribute, or an audit record. A page rendered without one renders no controls at
+  all, rather than controls the gate is certain to refuse.
+- **One token per rendered response**, not per browser tab. A dashboard that has been
+  open a while holds tokens of several expiries — a re-fetched card carries one minted
+  for the fetch, and the create form carries the oldest. Each is a valid MAC over the
+  same identity, and nothing depends on them agreeing.
+
+**A token dies with its Access session by construction, not bookkeeping.** Step 3 runs
+after step 1 in the same middleware, so an identity whose Access session has ended is
+refused before its token is ever examined. No record can drift out of step with the
+Access session, because there is no record.
+
+### 403, not 401 — and neither is the 404
+
+Three uniform refusals live on this door and they are not interchangeable:
+
+| Answer | Means | Reasons folded into it |
+|---|---|---|
+| `401` page | Layer 1 said no | Every step of assertion validation, plus unobtainable keys |
+| `403` page | Admitted, then the action gate said no | Cross-site initiator, absent initiator, and the token's four: missing, malformed, expired, mismatched |
+| `404` page | Admitted, and the thing named is not here | An identifier no session had, one another operator owns, one already gone — and a path that matches no route at all |
+
+**`403` rather than a second `401`.** A `401` says "authenticate", and this caller
+already did, successfully — reusing it would tell an attacker their Access credential
+was the problem when it was not, and would invite the browser to re-prompt for a login
+that cannot help.
+
+**`404` rather than a `403` for the session lookup.** That is the enumeration rule
+`docs/security.md` §1 states, and it is untouched: an answer separating "never existed"
+from "not yours" lets anyone through this door count the sessions on the host. The two
+statuses answer different questions — the request was not accepted, versus the thing it
+named is not here — and an operator whose session was reaped between rendering a card
+and clicking it is owed the second.
+
+Each is uniform **within itself**: one status, one header set, one body, whichever
+reason applied — and the two the action routes write set `Content-Length` by hand, so
+byte-identical is a property of the function rather than of how the response happened
+to be buffered.
+
+Which reason it really was goes on the trail and nowhere else, and the three are
+recorded apart: layer 1's refusal is `access.reject`, the gate's is
+**`dashboard.reject`**, and a not-found is recorded by the handler that did the lookup,
+under the action's own name. `dashboard.reject` is deliberately not `access.reject`,
+because an identity that got in and *then* failed the cross-site check is a different
+and more alarming event than one that never got in — an operator counting one must not
+be counting the other with it.
+
 ## The session-isolation rule (non-negotiable)
 
 **Output from session A must never be reachable through a request scoped to session
@@ -340,6 +474,8 @@ This is the most fragile thing in the project and the most sensitive:
 | Live stream poll interval | 1 second — also the window within which a stream must notice it is no longer authorised |
 | Request signature window | 5 minutes |
 | Replay cache TTL | 10 minutes |
+| Page token lifetime | 12 hours — long enough that a dashboard left open through a working day still acts, short enough to bound what one captured token is worth. Nothing else depends on the number: expiry fails visibly and a reload fixes it |
+| Page token key | The process's lifetime. Regenerated at every start, never persisted, so a restart invalidates every outstanding token |
 | Session bearer token TTL | 24 hours — deliberately equal to the absolute lifetime |
 | Session idle timeout | 60 minutes, then auto-destroy |
 | Session absolute lifetime | 24 hours, no renewal |
@@ -367,6 +503,16 @@ one of these two numbers, shorten both.
 - [ ] No `Access-Control-Allow-*` on any route, swept across every registered one
 - [ ] A stream re-evaluates authorisation every tick, never advances the idle clock,
       and never delays teardown or shutdown
+- [ ] Every mutating browser route goes through the action gate, in the order layer 1
+      → same-origin → page token, all of it before the handler runs
+- [ ] Each half of that gate has a test that refuses with the *other* half satisfied,
+      and the shipping build offers no way to switch either off
+- [ ] The page token is stateless, bound to the request's own verified identity, read
+      from `PostForm` only, and appears in no URL, cookie, `data-` attribute or record
+- [ ] The page key is `crypto/rand`, unrelated to `CRSW_SHARED_SECRET`, and served by
+      no route
+- [ ] The gate answers 403 and layer 1 answers 401; each is uniform within itself,
+      `Content-Length` included, and the failed check is recorded server-side only
 - [ ] Constant-time comparison on every secret
 - [ ] Body included in the signed payload
 - [ ] Replay cache consulted and populated

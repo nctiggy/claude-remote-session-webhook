@@ -21,7 +21,7 @@ answer to "who is this?" behind the edge:
 
 | Door | Caller | Admitted at the edge by | Checked by the daemon |
 |---|---|---|---|
-| Web dashboard | A browser, operated by a human | The identity policy: Google IdP, one allowlisted address | Layer 1 — the forwarded `Cf-Access-Jwt-Assertion` is genuine, is the **identity** shape, and names an allowlisted email |
+| Web dashboard | A browser, operated by a human | The identity policy: Google IdP, one allowlisted address | Layer 1 — the forwarded `Cf-Access-Jwt-Assertion` is genuine, is the **identity** shape, and names an allowlisted email. A route that **changes** something adds the action gate below |
 | API | The companion Claude skill, or any script | An Access **service token**, sent as `CF-Access-Client-Id` + `CF-Access-Client-Secret` | HMAC-SHA256 signature, timestamp, replay, per-session token. The assertion is ignored entirely |
 
 The two shapes are not interchangeable. A service token's assertion carries
@@ -70,6 +70,15 @@ That is the API door. The browser door asks the same two questions with the othe
 door's credential — validate the assertion, then check ownership — and answers with
 the same uniform refusal. What changes is the credential, never the questions, and
 neither door has a route exempt from either.
+
+A browser route that **changes** something asks two more before either of them, and
+they are not about who the caller is. The browser's credential is an ambient cookie,
+so "the operator's identity was verified" and "the operator asked for this" are
+different facts; the second is what the action gate establishes. See
+[`docs/auth-and-sessions.md`](./auth-and-sessions.md) for the rule in full — the short
+version is layer 1, then `Sec-Fetch-Site` (**absent refuses here**), then a stateless
+page token bound to the verified identity, all before the handler runs and therefore
+before anything changes.
 
 Check **ownership**, not just authentication. "Is this caller authenticated?" is not
 the same question as "does this caller own session `a3f9`?" Session IDs must be
@@ -194,6 +203,15 @@ never about while adding nothing against the one it is. The refusal is decided b
 any session is looked up, and the header's value is caller-authored text that never
 reaches a log line or an audit record.
 
+**On a route that changes something, absent refuses too.** Same check, same code, one
+addition — and the difference is the argument above running out. The only legitimate
+caller of an action route is a form this daemon rendered, submitted by a browser, which
+always sends the header; a script that wants to change something uses the API door and
+its signature. An absent header is not evidence of same-origin initiation, and treating
+it as such makes the check optional for anything that can omit it. It is still only
+half the defence: the other half is the page token, because a header a future proxy
+could strip must not be the whole of it.
+
 ## Rendering session output (the one XSS surface)
 
 Everything a Claude session prints — file contents, command output, error text, a
@@ -218,16 +236,32 @@ web page it fetched — reaches the dashboard. **All of it is untrusted.**
 ## Rate limiting & audit
 
 - Per-caller rate limit on session creation. Spawning Claude sessions is expensive
-  and unbounded spawning is a local denial of service.
+  and unbounded spawning is a local denial of service. **Both doors create**, so the
+  browser's create calls the same limiter and the same validation rather than a second
+  copy of either.
 - Cap concurrent sessions; refuse past the cap rather than degrading the host.
 - **Every request is audited**: timestamp, caller ID, action, session ID, decision.
   Audit records carry no prompt text and no session output.
+- A browser action is audited under its own name — `dashboard.create`,
+  `dashboard.destroy`, `dashboard.rename`, `dashboard.compact` — and a request the
+  action gate refused under `dashboard.reject`, deliberately not `access.reject`: an
+  identity that got in and *then* failed the cross-site check is a different and more
+  alarming event than one that never got in, and an operator counting one must not be
+  counting the other with it.
+- **What was delivered is never recorded.** The compact's own text is a constant the
+  daemon sends into a session; the record says the action happened, never its content.
+  Every reason on the trail is a sentinel this codebase authored, so a record can
+  never carry a byte the caller chose.
 
 ## Pre-merge security checklist
 
 - [ ] No secret added to the repo (CI + push protection verify this)
 - [ ] Every new endpoint enforces authn **and** ownership server-side
-- [ ] Session IDs unguessable; unauthorized access returns 404, not 403
+- [ ] Session IDs unguessable; a session another caller owns, or one that never
+      existed, returns 404 and not 403 — the 403 is the action gate's answer to a
+      request it would not accept at all, and the two never stand in for each other
+- [ ] Any new mutating browser route goes through the action gate, not just layer 1,
+      and both halves of that gate are tested with the other satisfied
 - [ ] Input decoded into a typed struct with unknown fields rejected
 - [ ] No shell string built; `exec.Command` with argv only
 - [ ] Any caller-supplied path allowlisted and symlink-resolved
