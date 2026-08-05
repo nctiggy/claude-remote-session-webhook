@@ -32,6 +32,38 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
   fi
 fi
 
+# --- golangci-lint major version ---------------------------------------------
+# `.golangci.yml` is the v2 config schema. A pre-v2 binary does not reject it:
+# it reads the file, recognises nothing in it, runs zero linters, and exits 0.
+# The gate then reports green having checked nothing, and nothing on the machine
+# says so — which is why this is worth a startup banner rather than a doc line.
+if command -v golangci-lint >/dev/null 2>&1; then
+  GCL_BIN=$(command -v golangci-lint)
+  GCL_RAW=$(golangci-lint --version 2>&1 | head -1)
+  # Both spellings: v1 prints "version 1.62.2", v2 prints "version v2.12.2".
+  GCL_MAJOR=$(printf '%s' "$GCL_RAW" | sed -n 's/.*version v\{0,1\}\([0-9][0-9]*\)\..*/\1/p')
+  if [ "$GCL_MAJOR" != "2" ]; then
+    add ""
+    add "### ⚠️  golangci-lint on PATH is NOT v2 — \`golangci-lint run\` passes silently"
+    add ""
+    add "\`${GCL_BIN}\` reports: \`${GCL_RAW}\`"
+    add ""
+    add "\`.golangci.yml\` is the **v2 config schema**. A pre-v2 binary does not fail on"
+    add "it — it runs **zero linters** and exits 0, so a clean \`golangci-lint run\` on"
+    add "this machine proves nothing. Treat lint as UNVERIFIED until this is replaced."
+    add "CI is unaffected: it installs the pinned v2.12.2."
+    add ""
+    add '```'
+    add "go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2"
+    add "# then ensure \$(go env GOPATH)/bin precedes $(dirname "$GCL_BIN") on PATH"
+    add '```'
+  fi
+else
+  add ""
+  add "Note: \`golangci-lint\` is not on PATH, so the \`AGENTS.md\` lint command cannot run."
+  add "Install the pin: \`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2\`"
+fi
+
 # --- open TODOs --------------------------------------------------------------
 if command -v grep >/dev/null 2>&1; then
   TODOS=$(grep -rIn -E '(TODO|FIXME|XXX|HACK)' . \
