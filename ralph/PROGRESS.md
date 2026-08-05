@@ -14666,3 +14666,93 @@ needs from here: the shipped surface is four `POST /dashboard/…` routes plus
 token) in `internal/httpapi/browser.go`; the page token is stateless and documented at the top of
 `internal/httpapi/pagetoken.go`; the six new audit actions are in `internal/audit/audit.go`. Findings
 360, 367, 371, 372, 395 and 397 are the specific doc lines earlier iterations flagged as wrong.
+
+---
+
+## Iteration 102 (milestone 3, iteration 22) — 2026-08-05 10:13
+
+**Did:** **T022** — amended all three standards docs. `docs/auth-and-sessions.md` gains a
+non-negotiable **action-gate rule** (the three checks in order, the inverted `Sec-Fetch-Site`
+reading, the page token's seven properties, why it dies with the Access session by construction,
+and a three-row table separating 401 / 403 / 404), two `Lifetimes` rows and six checklist items.
+`docs/security.md` gains the gate at its two-doors table and in §1, the mutating-route half of the
+`Sec-Fetch-Site` rule, the `dashboard.*` audit actions, and two checklist items. `docs/components.md`
+was **corrected** rather than extended, then gained an `Action controls` section. Docs only; no Go,
+no templates, no CSS.
+
+**Five things worth not re-deriving.**
+
+1. **components.md was wrong in a way T022's one line does not name: it documents htmx.** The
+   preamble said partials are "swapped by htmx", and the Button, Modal and Empty-state call sites
+   all showed `HxPost`/`HxDelete`/`HxConfirm`. **There is no htmx in this tree** — `web/static/`
+   holds `crswd.css` and `crswd.js` and nothing else, and every action is a plain form post. That
+   had to be fixed to describe the action controls at all: a document telling the next author to
+   reach for `hx-post` sends them to a library the binary does not embed.
+2. **The `dict` call sites are fiction too, and for a reason worth keeping.** This template set is
+   parsed with **no function map**, so `{{ template "x" (dict …) }}` cannot execute. Rather than
+   rewrite four speculative call sites into a shape nothing exercises, the "Specified here, not
+   built" section says once that they are illustrative and that a real partial takes the dot. The
+   two call sites for partials that *do* exist (session card, empty state) were corrected to the dot.
+3. **Findings 360/367/372 are one defect, and Toast is a fourth instance nobody had flagged.** The
+   canonical inventory named `button.html`, `field.html`, `form.html`, `modal.html` and `toast.html`
+   and **none of the five exists**. Splitting the inventory into "these exist" and "specified here,
+   not built" fixes all four flagged findings at once and stops the table reading as a promise. The
+   class vocabulary the shipped templates use (`.button`, `.button-danger`, `.button-primary`,
+   `.field`, `.field-label`, `.field-input`) is now what the document pins, so a future partial lifts
+   the markup rather than inventing a second spelling.
+4. **Finding 371 (`actionView` unreachable) was answered in the document, not by deleting the type.**
+   The empty state's `Action` parameter is deliberately unpassed — the create form sits *beside* the
+   empty state because rain never goes behind reading content, which is this document's own rule
+   applied to itself, and the not-found page passes none for a different reason. Deleting
+   `view.go`'s `actionView` and `empty.html`'s `{{ with .Action }}` is a Go and template change that
+   AR-008 puts outside a docs task; the parameter is now documented as intentionally absent rather
+   than as an omission. **If a later task wants it gone, the reason to keep it is only this
+   paragraph** — `partials_test.go:159` is the sole remaining constructor.
+5. **Four claims were checked against the code and two were initially written wrong.** The destroy
+   reads `confirm=yes` **before** the ownership lookup (`actions.go:217`, so "nothing was torn down"
+   is control flow, not vigilance), and create has no ownership check to run at all. Also: only
+   `refuseAction` and `notFoundAction` set `Content-Length` by hand — `refuseBrowser`'s 401 leaves it
+   to `net/http` — and the three refusals are recorded under *three* different actions
+   (`access.reject`, `dashboard.reject`, and the route's own name for a not-found). The doc says each
+   of those precisely; a summary that flattened them would have been the kind of plausible-sounding
+   drift this file exists to prevent.
+
+**Findings:**
+
+426. **`pane.html`'s ended and stalled notes carry no `role`, and components.md's amended
+    accessibility rule now names that gap.** The rule as written — live regions announce the state
+    changes nobody is looking at, and the severed-fleet note carries `role="status"` for exactly that
+    reason — is right, and `pane.html`'s two notes appear under the same condition with no role at
+    all. This is finding 397's other half: 397 asked for the *grid* to announce, which the amended
+    rule explicitly refuses (a fleet changing under an operator is the same noise the pane forbids),
+    but the pane's own notes are the inconsistency it also named. **A two-attribute fix-lane change
+    plus a `partials_test.go` row — not this task's**, and it is the one place the shipped page now
+    visibly fails a rule this document states.
+427. **Finding 366's copy is still the operator's to confirm and T022 did not change it.** The four
+    create bodies and the destroy's are authored, not quoted from `contracts/actions.md`, and the
+    `429` deliberately does not tell the cap and the rate apart. T022 was named as "where to change
+    it" — but changing user-facing copy on an operator's say-so is not something a docs task can
+    invent, so the wording ships as it is. **The operator should read `actions.go`'s eleven
+    `.card-outcome` bodies and say.**
+428. **components.md's pane section still shows milestone 2's markup.** The snippet has the `ended`
+    note only; `pane.html` ships `ended`, `stalled` and an `Unread` branch. Out of T022's scope (its
+    line names the *card*'s action controls) and left alone deliberately — but it is the next thing
+    in that document that does not match the tree.
+429. **Findings 400–412 and 414–425 carry over.** 360, 367, 371, 372 and 395 are **closed** by this
+    task; 397 is **half closed** — see 426 for the half that is now a code fix. 306 still needs the
+    operator's answer; 342, 350, 374, 378, 401, 402, 405, 409, 419, 420, 421, 423 and 424 still
+    stand. Iteration 90's **NEEDS CLARIFICATION on T023 vs T010 is still unanswered**, and T023 is
+    the next and last task, so it needs an answer now. 340's lint caveat still applies:
+    `golangci-lint` on PATH is v1.62.2 and reads this repo's v2 config by running zero linters. This
+    task changed no Go, so the substitute run (`--no-config --disable-all -E
+    bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags tmux,dev ./...`) was
+    run anyway and is clean, as are `go build ./...`, `go vet ./...`, `go test -count=1 ./...` and
+    `gofmt -l`. The pre-commit gitleaks hook passed on the staged diff.
+
+**Left:** **T023 only** — run `specs/003-dashboard-actions/quickstart.md` end to end, plus
+`go test -tags tmux ./...` and `go test -tags quickstart ./cmd/crswd`, and confirm the milestone 1
+and 2 acceptance suites pass **unchanged**. Two things it needs from here: the quickstart wants
+`127.0.0.1:8765` free, which the deployed `crswd.service` holds — stop the user unit first and
+restart it after. And iteration 90's unanswered question is now blocking: **if a milestone 1 or 2
+story needs an edit to accommodate this milestone, that is a regression to fix in the code, not in
+the test** — so an edit that looks necessary is a finding for the operator, not a green.
