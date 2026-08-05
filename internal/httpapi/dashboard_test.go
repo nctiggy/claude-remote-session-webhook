@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -398,6 +399,71 @@ func TestAnEmptyFleetExplainsItselfInsteadOfRenderingNothing(t *testing.T) {
 	}
 	if strings.Contains(page, "Start") {
 		t.Errorf("the empty state tells the operator to start a session, which this page cannot do:\n%s", page)
+	}
+}
+
+// TestTheFleetCarriesTheDaemonsOwnRefreshInterval is FR-017a–d at the page,
+// which is the daemon's half of the guarantee — the browser's half is in
+// stylesheet_test.go, at the file that acts on this hook.
+//
+// The failure it is written against is #15: the fleet was rendered once and then
+// described the host forever after, so a session created or reaped since the load
+// was invisible until somebody reloaded by hand. Every test in this file passed
+// while that was true, because each one renders a fresh page — which is exactly
+// why the assertion has to be about the *hook* rather than about a second render.
+//
+// The empty fleet is asserted with the populated one deliberately. It is the
+// render most in need of correcting: "no sessions running" is the page an
+// operator is likeliest to leave open, and it is the one the issue was reported
+// against.
+//
+// The session page is the negative case, and it is not symmetry. That page is
+// already live over its own stream, and a reload under it would tear the stream
+// down and re-establish it every interval — paying a re-authorisation, a capture
+// and a trail record to replace a screen that was already arriving on its own.
+func TestTheFleetCarriesTheDaemonsOwnRefreshInterval(t *testing.T) {
+	t.Parallel()
+
+	// The number in the document is the constant, not a spelling of it that
+	// happens to agree today: a page that hard-coded its own interval is a page
+	// free to disagree with the daemon about how stale it may be.
+	want := `data-refresh="` + strconv.Itoa(int(fleetRefresh.Seconds())) + `"`
+
+	f := newFleet(t)
+	if page := f.view(t).Body.String(); !strings.Contains(page, want) {
+		t.Errorf("an empty fleet carries no %s, so it describes a host it will never ask about again (FR-017a):\n%s", want, page)
+	}
+
+	live, _ := f.fixture.plant(t, session.Session{Name: "refactor the reaper", WorkDir: f.fixture.repo})
+	if page := f.view(t).Body.String(); !strings.Contains(page, want) {
+		t.Errorf("a populated fleet carries no %s (FR-017a):\n%s", want, page)
+	}
+
+	if page := f.viewOf(t, live.ID).Body.String(); strings.Contains(page, "data-refresh") {
+		t.Errorf("the session page carries a refresh hook; a reload here would tear down the stream that is already updating it every interval:\n%s", page)
+	}
+}
+
+// TestTheRefreshIntervalIsBoundedAtBothEnds is the choice of value rather than
+// its rendering, and both bounds are requirements rather than taste.
+//
+// Too long is the failure FR-017a names: a fleet still showing a session the
+// reaper destroyed. The bound is expressed against the reaper's own idle timeout,
+// so a page cannot go stale for longer than it takes a session to become
+// reapable in the first place.
+//
+// Too short is FR-016's problem. Every refresh is a request and therefore one
+// audit record, so an interval near the stream's own second would cost an
+// operator's journal a line a second per open tab — to say the same thing about a
+// list that changes when a session is created or reaped and at no other time.
+func TestTheRefreshIntervalIsBoundedAtBothEnds(t *testing.T) {
+	t.Parallel()
+
+	if fleetRefresh > session.IdleTimeout {
+		t.Errorf("the fleet refreshes every %v, which is longer than the %v it takes a session to read as idle; the page would go stale for longer than the state it reports (FR-017a)", fleetRefresh, session.IdleTimeout)
+	}
+	if fleetRefresh <= streamInterval {
+		t.Errorf("the fleet refreshes every %v, at or under the stream's own %v; a fleet changes when a session is created or reaped and not continuously, and every refresh costs one audit record (FR-016)", fleetRefresh, streamInterval)
 	}
 }
 

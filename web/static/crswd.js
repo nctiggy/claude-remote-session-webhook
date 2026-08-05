@@ -263,4 +263,55 @@
   for (const pane of document.querySelectorAll('pre.pane[data-stream]')) {
     watch(pane);
   }
+
+  /*
+   * The fleet's live half (FR-017a). The page rendered once and then described
+   * the host forever after, so a session created or reaped since the load was
+   * invisible until somebody reloaded by hand — a dashboard quietly showing a
+   * session the reaper destroyed twenty minutes ago (#15).
+   *
+   * It reloads rather than swapping a fragment in. This milestone ships no htmx
+   * (contracts/dashboard.md) and the two ways a script has of putting markup on a
+   * page are the assignment docs/security.md forbids on this file — the same file
+   * everything a Claude session prints arrives in. A reload re-runs GET / through
+   * the same owner-scoped read and the same components, so a refreshed fleet
+   * cannot describe a session differently from the loaded one (FR-017b), cannot
+   * advance an idle clock (FR-017c) and cannot reach a mutating path, because the
+   * browser door serves GET only.
+   *
+   * The interval is read off the page rather than written here, like the pane's
+   * stream address above: this file is served to every page and the daemon is the
+   * one that decides how stale a document of its own may be. A page carrying no
+   * hook refreshes not at all, which is how the single-session view keeps the
+   * stream it already has instead of tearing it down every interval.
+   */
+  const shell = document.querySelector('[data-refresh]');
+  const seconds = shell ? Number(shell.dataset.refresh) : 0;
+  if (Number.isFinite(seconds) && seconds > 0) {
+    /*
+     * A timeout rather than an interval, because a reload starts the page — and
+     * this timer — again. An interval would be a second schedule that only ever
+     * fires once.
+     */
+    setTimeout(() => {
+      /*
+       * FR-017d. A hidden tab is not a dashboard anybody is reading, and
+       * refreshing one costs the daemon a render and the operator's trail a
+       * record (FR-016) to correct a page nobody is looking at. The reload is
+       * deferred to the moment it becomes visible, which is the moment a stale
+       * fleet would otherwise be read — the only moment the guarantee is about.
+       *
+       * `once` is what keeps that a single listener: the next visibility change
+       * after this one was registered is the tab coming back, and after it the
+       * page is being replaced anyway.
+       */
+      if (document.visibilityState !== 'visible') {
+        document.addEventListener('visibilitychange', () => location.reload(), {
+          once: true,
+        });
+        return;
+      }
+      location.reload();
+    }, seconds * 1000);
+  }
 })();

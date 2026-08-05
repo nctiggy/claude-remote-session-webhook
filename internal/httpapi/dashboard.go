@@ -76,6 +76,28 @@ const (
 	emptyFleetBody  = "Nothing is executing on this host right now. This dashboard only watches — sessions are started through the API."
 )
 
+// fleetRefresh is how long a rendered fleet may go on describing the host before
+// the page fetches itself again (FR-017a, contracts/dashboard.md).
+//
+// It is chosen here rather than written into the template so the page and the
+// daemon cannot disagree about it, and it is a whole number of seconds because
+// that is the unit the hook carries — see fleetView.Refresh.
+//
+// Fifteen seconds is the trade between two costs that pull opposite ways. Short
+// is what the requirement is about: the failure it names is a fleet still showing
+// a session the reaper destroyed twenty minutes ago, and this is three orders of
+// magnitude under that. Long is what the trail is about: every refresh is a
+// request and therefore one audit record (FR-016), so a tab left open all day
+// costs an operator's journal a line every fifteen seconds — six times a minute
+// would be six times that, to say the same thing about a page nobody is looking
+// at any harder.
+//
+// It is deliberately far above the stream's own second (streamInterval). A screen
+// repaints continuously and a fleet does not: a session appears when one is
+// created and disappears when one is reaped, and neither is a thing an operator
+// is watching for at a second's resolution.
+const fleetRefresh = 15 * time.Second
+
 // fleetView is the whole of what the fleet page renders against.
 //
 // It is a page rather than a component, which is why it is here and not in
@@ -102,6 +124,23 @@ type fleetView struct {
 	// (FR-021). It is built unconditionally because it costs two constants; the
 	// page chooses between it and the grid.
 	Empty emptyView
+
+	// Refresh is fleetRefresh in whole seconds — the hook the page carries so
+	// that crswd.js fetches the fleet again rather than leaving the first render
+	// on screen forever (FR-017a).
+	//
+	// Seconds rather than a Duration because a Duration renders as Go's own
+	// spelling of one ("15s"), and what reads the value is a script parsing an
+	// attribute. It is an int for the same reason: the number in the document is
+	// the number this constant states, with no format verb between them to be
+	// wrong about.
+	//
+	// It is on the fleet's view and on no other page's, deliberately. The
+	// single-session page is already live over its own stream, and a reload under
+	// it would tear that stream down and re-establish it every interval — paying
+	// the re-authorisation, the capture and the trail record to replace a screen
+	// that was already arriving on its own.
+	Refresh int
 }
 
 // sessionPageView is the whole of what the single-session page renders against:
@@ -179,6 +218,11 @@ func (s *Server) fleet(operator *access.VerifiedOperator) fleetView {
 		Summary:  summarise(views),
 		Sessions: views,
 		Empty:    emptyView{Title: emptyFleetTitle, Body: emptyFleetBody},
+		// Unconditional, and in particular not suppressed for an empty fleet. A
+		// dashboard reading "no sessions running" is the render most in need of
+		// correcting: it is the one an operator is likeliest to leave open, and the
+		// one #15 was reported against.
+		Refresh: int(fleetRefresh.Seconds()),
 	}
 }
 

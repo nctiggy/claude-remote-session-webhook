@@ -20,6 +20,22 @@
   operations. The dashboard is read-only (FR-022) and that is structural rather
   than a rendering choice: the browser door serves GET only, and a browser holds
   no shared secret to sign a mutation with.
+
+  The shell carries one hook, data-refresh: the interval the daemon chose, in
+  seconds, which crswd.js reloads the page on so the fleet goes on describing the
+  host after the render rather than freezing at it (FR-017a). It is data and not
+  a <meta http-equiv="refresh">, because a meta refresh reloads a hidden tab as
+  eagerly as a visible one — one request and one audit record per interval for a
+  page nobody is looking at, which is what FR-017d refuses. The value is the
+  server's, so the page and the daemon cannot disagree about how stale this
+  document is allowed to be.
+
+  The reload is the whole mechanism, and it is not a partial swap: this milestone
+  ships no htmx (contracts/dashboard.md), and the two ways a script has of putting
+  markup on a page are the assignment docs/security.md forbids on this door's
+  client half. Reloading re-runs GET / — the same owner-scoped read, the same
+  projection, the same components — so a refreshed fleet cannot describe a session
+  differently from the one that was loaded (FR-017b).
 */}}<!doctype html>
 <html lang="en">
 <head>
@@ -31,7 +47,7 @@
 </head>
 <body>
 {{ template "header" .Operator }}
-<main class="shell">
+<main class="shell" data-refresh="{{ .Refresh }}">
 {{/*
   The summary before any detail — a dashboard is scanned, not read
   (docs/design-system.md's layout). Each count is derived from the cards below

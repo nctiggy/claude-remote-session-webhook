@@ -634,6 +634,69 @@ func TestTheStreamClientClosesWhenTheSessionEnds(t *testing.T) {
 	}
 }
 
+// TestTheFleetRefreshesFromTheHookThePageCarries is the browser half of
+// FR-017a–d, held at the file it lives in — the daemon's half, the hook itself,
+// is in dashboard_test.go.
+//
+// It stands on the same footing as every other claim in this file: Go cannot
+// execute this, so what is asserted is the bytes a browser is handed. That is
+// worth asserting anyway for the reason the stream client's assertions are — the
+// failure this repairs is a client that is written, correct, and never called,
+// which is precisely what #15 was on the server side of the page.
+//
+// The interval is read off the document and not written here. A script carrying
+// its own number is a script free to disagree with the daemon about how stale a
+// page of the daemon's may be, and the two would drift the first time either
+// moved.
+func TestTheFleetRefreshesFromTheHookThePageCarries(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	// The hook by name, spelled as a selector, for the reason the pane's own
+	// query is asserted: it is as close to "something calls this" as a language
+	// Go cannot execute allows.
+	hook := regexp.MustCompile(`querySelector\(\s*['"][^'"]*data-refresh[^'"]*['"]\s*\)`)
+	if hook.FindString(source) == "" {
+		t.Error("crswd.js never looks for the page's data-refresh hook, so the fleet is rendered once and describes the host forever after (FR-017a, #15)")
+	}
+	if !strings.Contains(source, "dataset.refresh") {
+		t.Error("crswd.js does not read the interval off the page; a number written into this file is one free to disagree with the daemon that chose it")
+	}
+	if !strings.Contains(source, "location.reload()") {
+		t.Error("crswd.js never reloads, so nothing acts on the hook the fleet carries")
+	}
+
+	// FR-017d. A hidden tab refreshing on a timer is one request and one audit
+	// record (FR-016) per interval per forgotten tab, correcting a page nobody is
+	// reading; the reload waits for the moment somebody looks, which is the only
+	// moment the guarantee is about.
+	for want, why := range map[string]string{
+		"visibilityState":  "FR-017d: a page nobody is looking at must not refresh at all",
+		"visibilitychange": "a deferred refresh has to happen when the tab comes back, or a hidden tab is one that never refreshes again",
+	} {
+		if !strings.Contains(source, want) {
+			t.Errorf("crswd.js does not mention %q: %s", want, why)
+		}
+	}
+
+	// The refresh must not have arrived as a swap. This is the assertion the two
+	// sweeps above it cannot make on their own: `innerHTML` is already forbidden
+	// by name, but a fragment fetched and parsed into the document would satisfy
+	// every one of them while putting markup on the page from a script — on the
+	// door that serves session output, which is the one place docs/security.md
+	// closes by construction rather than by review.
+	for what, why := range map[string]string{
+		"DOMParser":                "a parsed fragment adopted into the page is markup from a script, on the door that serves session output",
+		"createContextualFragment": "same assignment, a different spelling of it",
+		"insertAdjacentHTML":       "same assignment, a different spelling of it",
+	} {
+		if strings.Contains(source, what) {
+			t.Errorf("crswd.js carries %q: %s — the fleet refreshes by reloading, and htmx arrives with milestone 3's first partial swap (contracts/dashboard.md)", what, why)
+		}
+	}
+}
+
 // blockFor returns the body of the first block whose prelude contains marker,
 // so a test can assert about one rule rather than about the whole file. Braces
 // are counted, because a media query holds rules of its own.
