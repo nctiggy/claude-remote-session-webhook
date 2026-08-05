@@ -11,6 +11,7 @@ package httpapi
 import (
 	"bufio"
 	"context"
+	"errors"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -778,5 +779,24 @@ func TestASubscriptionThatEndedEndsTheResponseWithNoFarewell(t *testing.T) {
 
 	if got := w.Body.String(); got != "" {
 		t.Errorf("the ending wrote %q; want nothing — contracts/fleet-stream.md names three events and none of them is a farewell", got)
+	}
+}
+
+// TestFleetEventRefusesAnOversizedPayload pins the bound fleetEvent's
+// allocation relies on.
+//
+// The contract fixes this payload at one 32-hex identifier, so it cannot grow on
+// its own. What the check catches is the shape changing without the contract
+// being revisited — the only route by which this allocation stops being small.
+func TestFleetEventRefusesAnOversizedPayload(t *testing.T) {
+	t.Parallel()
+
+	if _, err := fleetEvent(session.FleetEvent{Kind: session.FleetAppeared, ID: strings.Repeat("a", 32)}); err != nil {
+		t.Fatalf("fleetEvent(contract-shaped) = %v; want it framed", err)
+	}
+
+	_, err := fleetEvent(session.FleetEvent{Kind: session.FleetAppeared, ID: strings.Repeat("a", maxFleetPayloadBytes+1)})
+	if !errors.Is(err, errFleetPayloadTooLarge) {
+		t.Fatalf("fleetEvent(oversized id) = %v; want %v", err, errFleetPayloadTooLarge)
 	}
 }

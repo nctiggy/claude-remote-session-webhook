@@ -54,6 +54,18 @@ import (
 // (FR-033).
 const patternFleetStream = "GET /dashboard/fleet/stream"
 
+// maxFleetPayloadBytes caps one encoded fleet change. The contract fixes the
+// payload at a single 32-hex identifier — about fifty bytes — so a kilobyte is
+// twenty times anything reachable, and the check can only fire if the shape has
+// changed without the contract being revisited. See fleetEvent for why that is
+// the thing worth catching.
+const maxFleetPayloadBytes = 1 << 10
+
+// errFleetPayloadTooLarge is returned rather than truncated, for the reason
+// errScreenTooLarge is: a partial event is a wrong event, and this route's
+// framing exists to make one impossible.
+var errFleetPayloadTooLarge = errors.New("encoded fleet change exceeds the wire limit")
+
 // The refusals this route records, authored here and never written into a
 // response.
 //
@@ -118,6 +130,24 @@ func fleetEvent(ev session.FleetEvent) ([]byte, error) {
 	payload, err := json.Marshal(fleetPayload{ID: ev.ID})
 	if err != nil {
 		return nil, fmt.Errorf("encode the fleet change for the wire: %w", err)
+	}
+
+	// The bound the allocation below relies on, asserted where it is relied upon.
+	//
+	// This payload is one field holding a 32-hex identifier, so it is about fifty
+	// bytes and cannot be otherwise — contracts/fleet-stream.md fixes the shape,
+	// and Kind is already narrowed to the three names the switch above admits.
+	// The check is therefore not defending against a large payload; it is
+	// defending against the shape having quietly changed, which is the only way
+	// this allocation could stop being small.
+	//
+	// A kilobyte is twenty times what the contract can produce, so it can only
+	// fire when someone has added a field without revisiting the contract — the
+	// same reasoning as maxScreenBytes in stream.go, at the scale this payload
+	// actually has.
+	if len(payload) > maxFleetPayloadBytes {
+		return nil, fmt.Errorf("%w: %d bytes exceeds the %d-byte fleet payload limit",
+			errFleetPayloadTooLarge, len(payload), maxFleetPayloadBytes)
 	}
 
 	event := make([]byte, 0, len(eventField)+len(ev.Kind)+1+len(dataField)+len(payload)+len(groupEnd))
