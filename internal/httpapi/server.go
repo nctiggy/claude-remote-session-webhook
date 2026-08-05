@@ -510,6 +510,14 @@ func newServer(
 	// third-party page that can relabel every session on this host can hide one,
 	// and the operator reading the fleet afterwards has no way to tell.
 	s.handleAction(patternDashboardRename, audit.ActionDashboardRename, s.renameFromBrowser)
+	// The fourth, and the one that reaches furthest into a session without saying
+	// anything about what happens there: it delivers Claude Code's own /compact
+	// into a running assistant. It goes through handleAction like the three above
+	// because it is a write — a third-party page that can deliver into every
+	// session on this host is one that can interrupt whatever each of them was
+	// doing, and the operator watching a pane has no way to tell that from the
+	// assistant's own decision.
+	s.handleAction(patternDashboardCompact, audit.ActionDashboardCompact, s.compactFromBrowser)
 	// One route per embedded asset, so `/static/` names exactly the files the
 	// binary carries and a path that is not one of them is a path nothing claims
 	// (contracts/dashboard.md's route table; see loadAssets for why a wildcard is

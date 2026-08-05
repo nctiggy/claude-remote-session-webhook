@@ -133,5 +133,32 @@
   data-submit-once: a second rename to the same name is the same end state, so
   this is not the idempotence exposure the create is (research.md R7).
 */}}<form class="card-rename" method="post" action="/dashboard/sessions/{{ $.ID }}/rename">{{ template "page-token" . }}<label class="field-label" for="rename-{{ $.ID }}">New name</label><input class="field-input" id="rename-{{ $.ID }}" type="text" name="name" value="{{ $.Name }}" required maxlength="64" pattern="[-a-zA-Z0-9]+" autocomplete="off" spellcheck="false"><button class="button" type="submit" aria-describedby="card-id-{{ $.ID }}">Rename</button></form>
+{{/*
+  The third control on this card, and the only one that reaches into the running
+  assistant (US5). It is outside the same single anchor as the other two, for the
+  reason they are (FR-027).
+
+  It is last rather than beside the destroy, and that is a decision twice over.
+  The rename above takes the row to itself, so appending leaves every existing
+  control exactly where it was — the churn this milestone's ground rules forbid.
+  It also keeps this button off the line the destroy sits on: two plain buttons
+  sharing a row are two targets a mis-aimed click can confuse, and one of them
+  ends an unsandboxed shell while this one asks a question the session may ignore.
+
+  One hidden field and no more. A compact carries nothing to choose: what is
+  delivered is a constant in the manager (FR-016), and a text field here would be
+  the general "type into the session" surface this milestone puts out of scope,
+  arriving as markup rather than as a decision.
+
+  No data-submit-once, unlike the create form. A second compact is a second
+  delivery the operator asked for, so this is not the idempotence exposure that
+  one is (research.md R7) — and the create's guard is the exception on this page
+  rather than the rule.
+
+  What the operator is told afterwards is the route's answer: that the compact was
+  *delivered*, never that it happened (actions.go, FR-016a). The daemon hands the
+  bytes to the session and cannot see what the assistant does with them, so the
+  card is replaced by a sentence that says exactly that much.
+*/}}<form method="post" action="/dashboard/sessions/{{ $.ID }}/compact">{{ template "page-token" . }}<button class="button" type="submit" aria-describedby="card-id-{{ $.ID }}">Compact</button></form>
 </div>{{ end }}
 </article>

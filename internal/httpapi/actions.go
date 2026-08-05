@@ -669,6 +669,168 @@ func (s *Server) refuseBrowserRename(w http.ResponseWriter, r *http.Request, err
 	}
 }
 
+// --- Compact ---------------------------------------------------------------
+//
+// The fourth and last route on this door that changes something, and the only
+// one of the four that answers with something it did not observe the end of: the
+// bytes were handed to the session, and what the session makes of them is the
+// session's own business (US5).
+
+// patternDashboardCompact is the compact route, from contracts/actions.md's table.
+//
+// It is spelled the rename's way and for the rename's reasons: under /dashboard/
+// so milestone 1's surface is untouched (FR-005) and a grep for the prefix finds
+// every browser-initiated change, the wildcard through pathValueID so the name in
+// the pattern and the name read back cannot drift apart, and the method inside
+// the pattern so a GET here falls to handleUnrouted's `/` and is answered as a
+// path nothing claims rather than as a 405 with an Allow header (FR-033).
+const patternDashboardCompact = "POST /dashboard/sessions/{" + pathValueID + "}/compact"
+
+// The two things a compact can answer, each a fragment because the caller is a
+// card on a page rather than a client reading JSON.
+//
+// The first is contracts/actions.md's literal and the only *success* body on
+// this door that is quoted byte for byte. Everywhere else the contract fixes
+// what an answer must say and leaves the words to the call site; here the words
+// are the requirement — FR-016a is a rule about what this daemon is entitled to
+// claim, and a sentence authored freely is exactly how "delivered" becomes
+// "compacted" in a later edit that meant only to read better.
+var (
+	// bodyActionCompactDelivered is what the daemon watched happen and nothing
+	// more. Manager.Compact returns nil when the bytes reached the pane, and that
+	// is the whole of what it observed: nothing in this process can see what the
+	// assistant is carrying, so a body claiming the compaction happened would be
+	// asserting a fact no part of this daemon looked at (FR-016a). The second
+	// sentence is not decoration — it is what tells an operator that the outcome
+	// is the session's to decide, so a card that looks unchanged afterwards reads
+	// as expected rather than as a failure.
+	bodyActionCompactDelivered = []byte(`<p class="card-outcome">Compact delivered. The session decides what to do with it.</p>`)
+
+	// bodyActionCompactFailed is the fail-closed answer for a delivery that did
+	// not land. It states the delivery failed and claims nothing about the
+	// session's state, because a paste that errored is not evidence about what the
+	// pane holds — and it deliberately does say something, because an empty 500
+	// renders as a card that reverted (FR-031).
+	//
+	// It never carries what was being delivered. The bytes are the daemon's own
+	// and hold no secret, but a failure that quoted its payload is the shape of
+	// the leak AR-007 closes, and this door's next payload may not be a constant.
+	bodyActionCompactFailed = []byte(`<p class="card-outcome">The compact could not be delivered.</p>`)
+)
+
+// errCompactRefused is the fail-closed reason for a delivery that failed for a
+// reason no sentinel explains. A refusal nobody classified is still a refusal,
+// and errRenameRefused is not it: what tells one door's records from another's is
+// the action, and what tells one action's from another's is this.
+//
+// It names the delivery and never the delivered text, exactly as Manager.Compact's
+// own error does (FR-016b, AR-007).
+var errCompactRefused = errors.New("the compact could not be delivered")
+
+// compactFromBrowser is POST /dashboard/sessions/{id}/compact (US5,
+// contracts/actions.md).
+//
+// Everything that authorises it has already run: handleAction wrapped this
+// handler in the gate, so layer 1 has verified an identity, the browser has said
+// the request came from this page, and the form has carried a token minted for
+// that identity. What is left is the ownership check and the delivery.
+//
+// It reads no form field at all, and that is FR-016's shape rather than an
+// omission. What is delivered is a constant in the manager, so there is nothing
+// here for a caller to choose: a text parameter on this route would be the
+// general "type into the session" surface spec.md puts out of scope for this
+// milestone, arriving without anyone deciding to add it.
+//
+// The delivery is Manager.Compact and nothing else — the load-buffer path a
+// prompt uses, never send-keys (T019) — and its nil is carried straight through
+// to a 202 rather than being upgraded on the way. That status is the honest one:
+// the request was accepted for delivery, and the thing an operator asked for
+// happens after this handler has returned, in a process this daemon cannot see
+// into.
+func (s *Server) compactFromBrowser(w http.ResponseWriter, r *http.Request) {
+	operator, ok := OperatorFrom(r.Context())
+	if !ok {
+		// Fail closed on the path that should not happen, the way every other
+		// handler on this door does: the gate in front puts the operator in the
+		// context, so a false here is a route wired without one.
+		AuditFrom(r.Context()).Deny(errDashboardNoOperator.Error())
+		s.refuseBrowser(w)
+		return
+	}
+
+	// The shape check the destroy and the rename run, ahead of the lookup and for
+	// their reason: an identifier off the 32-lowercase-hex alphabet cannot name a
+	// session this daemon minted, so it is a path nothing claims rather than a
+	// session that is not there.
+	id := r.PathValue(pathValueID)
+	if !routableID(id) {
+		AuditFrom(r.Context()).Deny(errScopeNoRoute.Error())
+		s.renderNotFound(w, r, operator)
+		return
+	}
+
+	// Manager.View, which is what a browser gets: it settles ownership without a
+	// per-session credential, because a browser holds none and must not be given
+	// one (FR-034a). It deliberately does not advance the idle clock (FR-034f) —
+	// Compact does that itself, under the store's lock, because a compact is
+	// activity and a lookup is not.
+	live, err := s.sessions.View(id, operator.Owner)
+	if err != nil {
+		// resolveReason rather than a reason of this route's own, for the reason
+		// the destroy and the rename use it: the trail already has a vocabulary for
+		// these, and never the wrapped error, which would carry the caller's
+		// spelling of the id (FR-042).
+		AuditFrom(r.Context()).Deny(resolveReason(err).Error())
+		s.notFoundAction(w)
+		return
+	}
+	// The id off the daemon's own record, never the bytes in the path. It is
+	// stamped before the delivery, so a compact that failed is findable in the
+	// trail under the session it failed against.
+	AuditFrom(r.Context()).SetSessionID(live.ID)
+
+	if err := s.sessions.Compact(r.Context(), live); err != nil {
+		s.refuseBrowserCompact(w, r, err)
+		return
+	}
+
+	// The answer is a fragment and not a re-rendered card, which is the one place
+	// this route's shape departs from the rename's. A compact changes nothing a
+	// card draws — the name, the working directory and the age are all as they
+	// were, and the idle clock it deferred is not on the card at all — so a card
+	// rendered here would tell the operator only that something happened, without
+	// saying what. The sentence says it.
+	s.writeFragment(w, http.StatusAccepted, bodyActionCompactDelivered)
+}
+
+// refuseBrowserCompact maps a Compact failure onto the answer this route gives,
+// and it is refuseBrowserRename's shape for its reason: one function, so the
+// branches are read together.
+//
+// Three arms over an error with two named causes. A record that is no longer
+// there, or is dead, is the uniform not-found the other routes give — the session
+// was there when View answered and is not there now, which is exactly the "no
+// longer exists" cause T005's one answer exists to cover, and telling a caller
+// that a session disappeared between two reads of the store is the enumeration
+// FR-017 closes. Compact reaches those two through the store's own Touch, taken
+// under its lock, so a session the reaper collected mid-request lands here rather
+// than having bytes delivered into whatever its window has become.
+//
+// Everything else is the 500. A paste that failed is the only remaining cause and
+// it carries no sentinel, because there is nothing a caller could do differently:
+// the delivery did not land, and whether tmux was busy, gone, or wrong is the
+// operator's question to take to the journal.
+func (s *Server) refuseBrowserCompact(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, session.ErrSessionNotFound), errors.Is(err, session.ErrSessionDead):
+		AuditFrom(r.Context()).Deny(resolveReason(err).Error())
+		s.notFoundAction(w)
+	default:
+		AuditFrom(r.Context()).Deny(errCompactRefused.Error())
+		s.writeFragment(w, http.StatusInternalServerError, bodyActionCompactFailed)
+	}
+}
+
 // writeFragment writes one action's answer: the type, the length, the status and
 // the bytes, in that order and in one place.
 //

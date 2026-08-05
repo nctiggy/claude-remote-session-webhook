@@ -3218,12 +3218,13 @@ const afterTheRename = "renamed-yesterday"
 const renamedAgain = "renamed-once-more"
 
 // identifierOp is one operation a caller addresses by a session's identifier:
-// the four session-scoped operations of contracts/http-api.md, and the four the
+// the four session-scoped operations of contracts/http-api.md, and the five the
 // dashboard serves at an identifier of its own.
 //
-// Compact is absent because its route does not exist yet. T020 adds the route
-// and its row here together — a fifth dashboard operation that never joined this
-// sweep is exactly the gap SC-012 is written against.
+// The list is closed on purpose. An operation that never joined this sweep is
+// exactly the gap SC-012 is written against — a route free to reach for a session
+// by the one field an operator can now change, with nothing comparing it against
+// a session that was never renamed.
 type identifierOp struct {
 	name string
 
@@ -3359,6 +3360,22 @@ func identifierOps() []identifierOp {
 			run: func(t *testing.T, n *renamer, s session.Session, _ string) *httptest.ResponseRecorder {
 				t.Helper()
 				return n.post(t, s.ID, n.asked(t, renamedAgain))
+			},
+		},
+		{
+			// The row finding 411 anticipated: an operation that speaks to the host
+			// per request, so the host-line comparison in this sweep has something
+			// to compare. Compact builds its buffer name and its pane target from
+			// crswd-<id> alone (FR-015), and a delivery that reached for the label
+			// anywhere in that argv is what the comparison sees.
+			name:  "POST /dashboard/sessions/{id}/compact",
+			works: http.StatusAccepted,
+			run: func(t *testing.T, n *renamer, s session.Session, _ string) *httptest.ResponseRecorder {
+				t.Helper()
+
+				form := url.Values{}
+				form.Set(fieldPageToken, mustMint(t, n.pageKey, testOperatorEmail, testTime))
+				return n.send(t, http.MethodPost, "/dashboard/sessions/"+s.ID+"/compact", secFetchSiteSameOrigin, form)
 			},
 		},
 	}
@@ -3535,6 +3552,468 @@ func TestRenameThenIdentifierOperations(t *testing.T) {
 			if !slices.Equal(was.trail, is.trail) {
 				t.Errorf("the operation left different records, so a rename is legible in the trail of an operation that is not one:\nnever renamed: %v\nrenamed:       %v",
 					was.trail, is.trail)
+			}
+		})
+	}
+}
+
+// --- US5: compact from the browser (T020) ------------------------------------
+//
+// The registered route, driven through Server.ServeHTTP like the three above it
+// and for their reason: a compact wired with handleBrowser instead of
+// handleAction would leave every gate case in this file green while a route that
+// delivers into every running assistant on this host answers an ambient cookie.
+
+// The compact's own answers. The first is contracts/actions.md's literal and the
+// second is authored in actions.go, and both are quoted here rather than read
+// from the constants the code writes — a test asserting against the variable
+// proves only that the code agrees with itself, and on this route the words are
+// the requirement.
+const (
+	wantCompactDeliveredBody = `<p class="card-outcome">Compact delivered. The session decides what to do with it.</p>`
+	wantCompactFailedBody    = `<p class="card-outcome">The compact could not be delivered.</p>`
+)
+
+// deliveredCompact is what the session is handed, spelled out here rather than
+// read from internal/session's own constant so that an edit to that constant
+// cannot quietly move what this file is checking for — the arrangement
+// TestCompactUsesBufferPath already has at the manager seam.
+const deliveredCompact = "/compact\n"
+
+// claimedCompaction is every way this route's answer could assert the thing it is
+// not allowed to assert (FR-016a). The daemon delivers bytes into a pane and
+// looks at nothing afterwards, so any of these in a body is the response claiming
+// an outcome no part of this process observed.
+var claimedCompaction = []string{"compacted", "compaction", "succeeded", "success"}
+
+// compactor is the registered compact route with everything behind it readable:
+// the store, the fake host, and the trail.
+type compactor struct {
+	*testServer
+	keys *keyServer
+}
+
+func newCompactor(t *testing.T) *compactor {
+	t.Helper()
+
+	keys := newKeyServer(t)
+	return &compactor{testServer: newAuditedServerWith(t, keys.validator(t)), keys: keys}
+}
+
+// live plants a running session of this operator's own, together with the tmux
+// window its record names — the state a card on the fleet describes, and the one
+// a compact is delivered into.
+func (c *compactor) live(t *testing.T) session.Session {
+	t.Helper()
+
+	planted, _ := c.fixture.plant(t, session.Session{Name: originalName, WorkDir: c.fixture.repo})
+	return planted
+}
+
+// asked is the whole of what a rendered card's compact form submits: the render's
+// page token, and nothing else. There is deliberately no second field — what is
+// delivered is a constant in the manager, so a form with anything to choose in it
+// would be a different feature.
+func (c *compactor) asked(t *testing.T) url.Values {
+	t.Helper()
+
+	form := url.Values{}
+	form.Set(fieldPageToken, mustMint(t, c.pageKey, testOperatorEmail, testTime))
+	return form
+}
+
+// post submits one form at the compact route, as the browser this daemon rendered
+// the page for.
+func (c *compactor) post(t *testing.T, id string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+
+	return c.send(t, http.MethodPost, "/dashboard/sessions/"+id+"/compact", secFetchSiteSameOrigin, form)
+}
+
+// send is post with the method, the path and the browser's own account of where
+// the request came from all chosen by the caller — destroyer.send's and
+// renamer.send's arrangement, and for their reason: a varied case must differ
+// from the ordinary one in exactly the field it means to vary.
+func (c *compactor) send(t *testing.T, method, path, site string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := httptest.NewRequest(method, path, strings.NewReader(form.Encode()))
+	r.Header.Set(headerContentType, contentTypeForm)
+	r.Header.Set(headerAccessAssertion, c.keys.mint(t, c.keys.claims()))
+	if site != absent {
+		r.Header.Set(headerSecFetchSite, site)
+	}
+
+	w := httptest.NewRecorder()
+	c.ServeHTTP(w, r)
+	return w
+}
+
+// delivered is every payload that reached the host, read off the fake's call log
+// rather than off the response — whether bytes were delivered is a fact about
+// what the daemon asked tmux for, and this route's whole claim is about that.
+//
+// It selects on stdin having anything in it, which is what the buffer path is:
+// load-buffer takes the payload on stdin and paste-buffer takes none. A delivery
+// that had gone out as send-keys would put the text in an argv and appear here as
+// nothing at all, which is why the test that cares asserts the operations too.
+func (c *compactor) delivered() []string {
+	payloads := []string{}
+	for _, call := range c.fixture.tmux.Calls() {
+		if len(call.Stdin) > 0 {
+			payloads = append(payloads, string(call.Stdin))
+		}
+	}
+	return payloads
+}
+
+// TestCompactReportsDeliveryNotSuccess is US5 end to end and FR-016a with it: the
+// operator's own session, compacted from the card, the bytes really handed to the
+// host, and an answer that claims the delivery and nothing beyond it.
+//
+// **Must fail when** the response claims the compaction succeeded. Two assertions
+// carry that, deliberately: the body is compared against contracts/actions.md's
+// literal, which no reworded claim survives, and the body is then read for the
+// claim itself, which is what says *why* those bytes are pinned — for the next
+// hand that finds the sentence awkward.
+//
+// The delivery is asserted as well, because "says delivered" and "delivered" are
+// two facts and only one of them is in the response. A route that answered 202
+// with the right sentence and never spoke to tmux would satisfy every string
+// comparison here and be the one failure this route can have that an operator
+// cannot see: a card reporting a compact into a session that was never asked for
+// one.
+func TestCompactReportsDeliveryNotSuccess(t *testing.T) {
+	t.Parallel()
+
+	c := newCompactor(t)
+	live := c.live(t)
+
+	w := c.post(t, live.ID, c.asked(t))
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d (%s); want %d — a compact is accepted for delivery, and what happens after it is the session's",
+			w.Code, w.Body.String(), http.StatusAccepted)
+	}
+	body := w.Body.String()
+	if body != wantCompactDeliveredBody {
+		t.Errorf("body\n%s\nwant contracts/actions.md's own\n%s", body, wantCompactDeliveredBody)
+	}
+	if got, want := w.Header().Get(headerContentLength), strconv.Itoa(len(wantCompactDeliveredBody)); got != want {
+		t.Errorf("%s = %q; want %q", headerContentLength, got, want)
+	}
+
+	// FR-016a as the claim it is, rather than as a second string comparison. The
+	// daemon delivered bytes into a pane and looked at nothing afterwards; a body
+	// saying the compaction happened is this daemon asserting something no part of
+	// this process observed.
+	for _, claim := range claimedCompaction {
+		if strings.Contains(strings.ToLower(body), claim) {
+			t.Errorf("the answer says %q; the daemon cannot see what the assistant is carrying, so it reports the delivery and never the compaction (FR-016a):\n%s",
+				claim, body)
+		}
+	}
+	// And the other direction, which the list above alone does not give: an empty
+	// body carries no forbidden claim either, and would leave the operator with a
+	// card that vanished when they pressed a button.
+	if !strings.Contains(strings.ToLower(body), "delivered") {
+		t.Errorf("the answer never says what did happen — the bytes were delivered:\n%s", body)
+	}
+
+	// The bytes really went, through the buffer path and nothing else (T019).
+	if got := c.delivered(); !slices.Equal(got, []string{deliveredCompact}) {
+		t.Errorf("the host was handed %q; want exactly one delivery of %q — an answer that says delivered while tmux was never asked is the failure no status code shows",
+			got, deliveredCompact)
+	}
+	for _, call := range c.fixture.tmux.Calls() {
+		if call.Op == tmuxctl.OpSendKeys {
+			t.Errorf("the compact reached the session as send-keys %q; the delivered text goes in on stdin and never on a command line", call.Argv)
+		}
+	}
+
+	// One record, naming the action and the session, and carrying none of what was
+	// delivered (FR-016b, AR-007). The bytes hold no secret, being the daemon's
+	// own — what is held here is the shape, because the next payload this door
+	// delivers may not be a constant.
+	rec := c.only(t)
+	if got, want := rec["action"], string(audit.ActionDashboardCompact); got != want {
+		t.Errorf("action = %v; want %v — a browser compact is not session.prompt and not any other door's action", got, want)
+	}
+	if got, want := rec["session_id"], live.ID; got != want {
+		t.Errorf("session_id = %v; want %v — off the daemon's own record, which is what makes the compact findable", got, want)
+	}
+	line, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("re-encode the audit record %v: %v", rec, err)
+	}
+	if strings.Contains(string(line), strings.TrimSpace(deliveredCompact)) {
+		t.Errorf("the record carries the delivered text: %s", line)
+	}
+}
+
+// TestCompactSaysSoWhenTheDeliveryFails is the fail-closed half: a paste that did
+// not land is a 500 stating the delivery failed, never a 202 saying it went.
+//
+// **Must fail when** the error from Manager.Compact is dropped — the route
+// answers its 202 whatever tmux did, which is the same defect as claiming the
+// compaction happened, one layer down: an operator is told bytes reached a
+// session that never received them.
+//
+// The body claims nothing about the session's state, which is asserted as the
+// absence of the destroy's kind of specific claim: a failure nobody classified is
+// not evidence about what a pane now holds.
+func TestCompactSaysSoWhenTheDeliveryFails(t *testing.T) {
+	t.Parallel()
+
+	c := newCompactor(t)
+	live := c.live(t)
+	c.fixture.tmux.FailOp(tmuxctl.OpPaste, errors.New("tmux refused the buffer"))
+
+	w := c.post(t, live.ID, c.asked(t))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d (%s); want %d — a delivery that did not land is not an accepted one",
+			w.Code, w.Body.String(), http.StatusInternalServerError)
+	}
+	if got := w.Body.String(); got != wantCompactFailedBody {
+		t.Errorf("body\n%s\nwant\n%s", got, wantCompactFailedBody)
+	}
+	// The affirmative sentence, not the word: "could not be delivered" says the
+	// right thing and contains the wrong substring, so what is forbidden here is
+	// the claim the success body makes.
+	if got := strings.ToLower(w.Body.String()); strings.Contains(got, "compact delivered") {
+		t.Errorf("the answer to a failed delivery says it was delivered:\n%s", w.Body.String())
+	}
+	for _, claim := range claimedCompaction {
+		if strings.Contains(strings.ToLower(w.Body.String()), claim) {
+			t.Errorf("the answer to a failed delivery says %q:\n%s", claim, w.Body.String())
+		}
+	}
+	if got := w.Body.String(); strings.Contains(got, strings.TrimSpace(deliveredCompact)) {
+		t.Errorf("the failure quotes what was being delivered:\n%s", got)
+	}
+
+	rec := c.only(t)
+	if got, want := rec["action"], string(audit.ActionDashboardCompact); got != want {
+		t.Errorf("action = %v; want %v", got, want)
+	}
+	if got, want := rec["reason"], errCompactRefused.Error(); got != want {
+		t.Errorf("reason = %v; want %v — the record is the only place the cause is named", got, want)
+	}
+	if strings.Contains(w.Body.String(), errCompactRefused.Error()) {
+		t.Errorf("the response quotes the reason back:\n%s", w.Body.String())
+	}
+}
+
+// TestCompactRunsBehindTheActionGate is the claim this whole milestone rests on,
+// made against the fourth route: a compact reaches its handler only through the
+// gate in browser.go.
+//
+// **Must fail when** the route is registered with handleBrowser instead of
+// handleAction. Either case below then reaches the handler, delivers into a
+// running assistant on an ambient Access cookie, and answers 202 — which is
+// exactly the request a hostile third-party page can cause a browser to send.
+//
+// The host is read as well as the status, because the gate's whole point is that
+// it runs *before* any state change: a refusal that had already pasted into the
+// session would satisfy the status assertion and have done the thing anyway.
+func TestCompactRunsBehindTheActionGate(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]func(t *testing.T, c *compactor) (url.Values, string){
+		"the form carried no page token": func(t *testing.T, c *compactor) (url.Values, string) {
+			t.Helper()
+			form := c.asked(t)
+			form.Del(fieldPageToken)
+			return form, secFetchSiteSameOrigin
+		},
+		"the browser said the request came from another site": func(t *testing.T, c *compactor) (url.Values, string) {
+			t.Helper()
+			return c.asked(t), "cross-site"
+		},
+	}
+
+	for name, arrange := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			c := newCompactor(t)
+			live := c.live(t)
+			form, site := arrange(t, c)
+
+			w := c.send(t, http.MethodPost, "/dashboard/sessions/"+live.ID+"/compact", site, form)
+
+			if w.Code != wantActionStatus {
+				t.Fatalf("status = %d (%s); want %d — the compact route is not behind the gate",
+					w.Code, w.Body.String(), wantActionStatus)
+			}
+			if got := w.Body.String(); got != wantActionBody {
+				t.Errorf("body\n%s\nwant the gate's uniform refusal\n%s", got, wantActionBody)
+			}
+			if got := c.delivered(); len(got) != 0 {
+				t.Errorf("a refused compact still handed the host %q; the gate runs before any state change", got)
+			}
+			if got, want := c.only(t)["action"], string(audit.ActionDashboardReject); got != want {
+				t.Errorf("action = %v; want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestCompactAgainstASessionThatIsNotTheOperatorsIsUniform is FR-017 on this
+// route: an identifier no session ever had, one another operator owns, and one
+// whose session is already gone are one answer.
+//
+// **Must fail when** any of the three is distinguished. Each is compared against
+// contracts/actions.md's own literal rather than against the other rows, which is
+// the stronger claim: three rows agreeing with each other on a body this door
+// does not write would satisfy a comparison between themselves.
+//
+// The host is read on every row, because this is the one action of the four whose
+// refusal could still have reached a session: a route that pasted first and
+// answered the not-found afterwards would have delivered into a stranger's
+// assistant, and every assertion above it would be green.
+func TestCompactAgainstASessionThatIsNotTheOperatorsIsUniform(t *testing.T) {
+	t.Parallel()
+
+	// Not on the allowlist and not this operator's owner: a second operator whose
+	// sessions this one must not be able to detect the existence of.
+	const stranger auth.CallerID = "a-second-operator"
+
+	cases := []struct {
+		name   string
+		target func(t *testing.T, c *compactor) session.Session
+		reason error
+	}{
+		{
+			name: "an identifier no session on this host ever had",
+			target: func(*testing.T, *compactor) session.Session {
+				return session.Session{ID: strings.Repeat("c", session.IDLen)}
+			},
+			reason: session.ErrSessionNotFound,
+		},
+		{
+			name: "a session another operator owns",
+			target: func(t *testing.T, c *compactor) session.Session {
+				t.Helper()
+				theirs, _ := c.fixture.plant(t, session.Session{
+					Owner: stranger, Name: originalName, WorkDir: c.fixture.repo,
+				})
+				return theirs
+			},
+			reason: session.ErrSessionNotFound,
+		},
+		{
+			name: "a session of the operator's own that is no longer there",
+			target: func(t *testing.T, c *compactor) session.Session {
+				t.Helper()
+				gone, _ := c.fixture.plant(t, session.Session{
+					Name: originalName, WorkDir: c.fixture.repo, State: session.StateDead,
+				})
+				return gone
+			},
+			reason: session.ErrSessionDead,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := newCompactor(t)
+			target := tc.target(t, c)
+
+			w := c.post(t, target.ID, c.asked(t))
+
+			if w.Code != wantNotFoundStatus {
+				t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), wantNotFoundStatus)
+			}
+			if got := w.Body.String(); got != wantNotFoundBody {
+				t.Errorf("body\n%s\nwant\n%s", got, wantNotFoundBody)
+			}
+			if got, want := w.Header().Get(headerContentLength), strconv.Itoa(len(wantNotFoundBody)); got != want {
+				t.Errorf("%s = %q; want %q", headerContentLength, got, want)
+			}
+			if got := c.delivered(); len(got) != 0 {
+				t.Errorf("the host was handed %q for a session that is not this operator's to act on", got)
+			}
+
+			rec := c.only(t)
+			if got, want := rec["reason"], tc.reason.Error(); got != want {
+				t.Errorf("reason = %v; want %v — the record is the only place the cause is named", got, want)
+			}
+			if strings.Contains(w.Body.String(), tc.reason.Error()) {
+				t.Errorf("the response quotes the reason back:\n%s", w.Body.String())
+			}
+		})
+	}
+}
+
+// TestACompactIsNoRouteOnAnyOtherMethod is contracts/actions.md's method rule
+// with FR-033 behind it: a GET on the compact path is an unknown route, answered
+// exactly as any other unknown route is — never a 405, and never with an Allow
+// header naming the method that would have worked.
+//
+// **Must fail when** a method-not-allowed path is added. ServeMux answers 405
+// itself whenever a pattern matches the path but not the method and nothing else
+// matches, so deleting handleUnrouted's `/` catch-all turns every row below into
+// one; a hand-written 405 branch moves the same two things.
+//
+// The two responses are compared whole rather than each being asserted a 404,
+// because "answered exactly as any other unknown route is" is the claim: a 404
+// that mentioned the method would tell a caller that *something* is served at
+// that address, which is what a route table is made of.
+//
+// Each request carries everything a compact that would have worked carries, so
+// the only thing left that can refuse it is the method.
+func TestACompactIsNoRouteOnAnyOtherMethod(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{
+		http.MethodGet, http.MethodHead, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodOptions,
+	} {
+		t.Run(strings.ToLower(method), func(t *testing.T) {
+			t.Parallel()
+
+			c := newCompactor(t)
+			live := c.live(t)
+			form := c.asked(t)
+
+			w := c.send(t, method, "/dashboard/sessions/"+live.ID+"/compact", secFetchSiteSameOrigin, form)
+
+			if w.Code == http.StatusMethodNotAllowed {
+				t.Fatalf("%s on the compact path was answered %d with %s: %q — which method a path serves is not a caller's to learn",
+					method, w.Code, headerAllow, w.Header().Get(headerAllow))
+			}
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("%s on the compact path was answered %d (%s); want %d — the unknown-route answer",
+					method, w.Code, w.Body.String(), http.StatusNotFound)
+			}
+			if got := w.Header().Get(headerAllow); got != "" {
+				t.Errorf("%s on the compact path answered with %s: %q; want no such header", method, headerAllow, got)
+			}
+
+			// The same method at a path nothing claims, on the same daemon and the
+			// same identity: what an unknown route really answers here, rather than
+			// this test's idea of it.
+			nowhere := c.send(t, method, "/dashboard/sessions/"+live.ID+"/nonesuch", secFetchSiteSameOrigin, form)
+
+			if w.Code != nowhere.Code {
+				t.Errorf("%s on the compact path answered %d; at a path nothing claims it answered %d — the two are distinguishable",
+					method, w.Code, nowhere.Code)
+			}
+			if got, want := w.Body.String(), nowhere.Body.String(); got != want {
+				t.Errorf("%s on the compact path answered\n%s\nat a path nothing claims it answered\n%s\nthe two are distinguishable",
+					method, got, want)
+			}
+			if !maps.EqualFunc(w.Header(), nowhere.Header(), slices.Equal) {
+				t.Errorf("%s on the compact path answered with headers %v; at a path nothing claims %v — the two are distinguishable",
+					method, w.Header(), nowhere.Header())
+			}
+
+			if got := c.delivered(); len(got) != 0 {
+				t.Errorf("%s on the compact path handed the host %q; a path this daemon does not serve delivers nothing", method, got)
 			}
 		})
 	}

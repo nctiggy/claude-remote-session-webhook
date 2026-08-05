@@ -445,8 +445,8 @@ func TestTheCardsDestroyFormCarriesWhatTheRouteRequires(t *testing.T) {
 	got := renderComponent(t, "session-card", card)
 
 	forms := cardForm.FindAllStringSubmatch(got, -1)
-	if len(forms) != 2 {
-		t.Fatalf("the card renders %d action forms; this milestone's card carries two, the destroy and the rename:\n%s", len(forms), got)
+	if len(forms) != 3 {
+		t.Fatalf("the card renders %d action forms; this milestone's card carries three, the destroy, the rename and the compact:\n%s", len(forms), got)
 	}
 
 	target := strings.Replace(strings.TrimPrefix(patternDashboardDestroy, "POST "), "{"+pathValueID+"}", card.ID, 1)
@@ -598,6 +598,66 @@ func TestTheCardsRenameFormCarriesWhatTheRouteRequires(t *testing.T) {
 	// replaced by that refusal.
 	if !regexp.MustCompile(`\brequired\b`).MatchString(name) {
 		t.Errorf("the %q input is not required (%s), and the route refuses an empty one", fieldName, name)
+	}
+}
+
+// TestTheCardsCompactFormCarriesWhatTheRouteRequires is the destroy's and the
+// rename's linkage for the third control on the card (T020), and it is the
+// shortest of the three because the route reads no field of its own: what is
+// delivered is a constant in the manager, so all this form has to carry is the
+// evidence the gate demands.
+//
+// That makes the negative half the load-bearing one. A compact form that grew an
+// input would be the general "type into the session" surface spec.md puts out of
+// scope for this milestone, arriving as markup rather than as a decision — and
+// nothing on the route would refuse it, because a handler that reads no field
+// cannot notice one being sent.
+//
+// The address is derived from the pattern the daemon registers rather than
+// spelled again here. This template set is parsed with no function map, so a
+// template cannot reach a Go constant and the second spelling of the token field
+// is unavoidable; this is the only thing holding the two together.
+func TestTheCardsCompactFormCarriesWhatTheRouteRequires(t *testing.T) {
+	t.Parallel()
+
+	card := actionableCard()
+	got := renderComponent(t, "session-card", card)
+
+	forms := cardForm.FindAllStringSubmatch(got, -1)
+	target := strings.Replace(strings.TrimPrefix(patternDashboardCompact, "POST "), "{"+pathValueID+"}", card.ID, 1)
+	attributes, contents, ok := formPostingTo(forms, target)
+	if !ok {
+		t.Fatalf("no form on the card posts to %q, which is where the daemon serves the compact:\n%s", target, got)
+	}
+
+	// A GET on that path is an unknown route rather than a 405, so a form that
+	// forgot its method would submit a query string to nothing at all — and would
+	// put the token in a URL on the way.
+	if !strings.Contains(strings.ToLower(attributes), `method="post"`) {
+		t.Errorf("the compact form declares no post method (<form%s>); a GET on that path is a route this daemon does not serve:\n%s", attributes, got)
+	}
+
+	token := hiddenTokenField.FindStringSubmatch(contents)
+	if token == nil {
+		t.Fatalf("the compact form carries no hidden %s field, so the gate refuses every submission of it:\n%s", fieldPageToken, got)
+	}
+	if token[1] != card.PageToken {
+		t.Errorf("the compact form submits %q and the card was rendered with %q", token[1], card.PageToken)
+	}
+	if !strings.Contains(contents, `type="submit"`) {
+		t.Errorf("the compact form holds no submit control, so nothing on the card operates it:\n%s", got)
+	}
+
+	// The one field it may carry is the token, and the route reads nothing else.
+	// A second input here would be a caller choosing what this daemon delivers
+	// into a session it runs with --dangerously-skip-permissions.
+	inputs := regexp.MustCompile(`<input\b[^>]*>`).FindAllString(contents, -1)
+	if len(inputs) != 1 {
+		t.Errorf("the compact form carries %d inputs (%v); it carries the page token and nothing else — what is delivered is a constant, not a caller's to choose:\n%s",
+			len(inputs), inputs, got)
+	}
+	if strings.Contains(strings.ToLower(contents), "<textarea") || strings.Contains(strings.ToLower(contents), "<select") {
+		t.Errorf("the compact form offers something to choose:\n%s", got)
 	}
 }
 
