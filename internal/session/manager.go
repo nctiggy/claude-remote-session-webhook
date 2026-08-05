@@ -158,7 +158,7 @@ const (
 	FleetVanished FleetEventKind = "vanished"
 
 	// FleetChanged is a session that is still there and no longer renders the
-	// same — today a displayed-state transition, and from T016 a rename.
+	// same — a displayed-state transition, or a rename.
 	FleetChanged FleetEventKind = "changed"
 )
 
@@ -599,6 +599,55 @@ func (m *Manager) ClaimPending(owner auth.CallerID) (map[string]string, error) {
 		claimed[s.ID] = token
 	}
 	return claimed, errors.Join(failures...)
+}
+
+// Rename replaces a session's display label and changes nothing else (FR-015).
+//
+// It takes no context, and that is the statement rather than an oversight: there
+// is no tmux command to run, because there is no tmux name to change. TmuxName
+// derives from the ID alone (FR-034), so every target, every audit SessionID and
+// every route parameter goes on naming exactly what it named before — which is
+// what makes SC-012's "every identifier-based operation behaves identically"
+// verifiable rather than aspirational.
+//
+// The record is the one View returned, for the reason Prompt and Destroy take
+// one: ownership has already been settled, and there is no second lookup here to
+// disagree with the first.
+//
+// Validation is ValidateName — Create's own check, called rather than restated. A
+// name the create path refuses must not be reachable by renaming into it, and the
+// only thing that keeps that true through a later widening of the alphabet is
+// there being one check to widen.
+//
+// Names are not required to be unique. Nothing addresses a session by name, so a
+// uniqueness rule would refuse a caller something that costs the daemon nothing —
+// and would make the second dashboard tab's rename fail for a reason no operator
+// could act on.
+//
+// There is no empty-id guard, unlike Prompt, Output and Destroy. Theirs exists
+// because an empty id builds the bare prefix as a *target*; nothing here builds
+// one, and Store.SetName already answers ErrSessionNotFound for an id it does not
+// hold. A guard added here would be a branch no test could tell from the one
+// below it.
+func (m *Manager) Rename(s Session, name string) (Session, error) {
+	if err := ValidateName(name); err != nil {
+		return Session{}, fmt.Errorf("rename session %s: %w", s.ID, err)
+	}
+
+	if err := m.store.SetName(s.ID, name); err != nil {
+		return Session{}, fmt.Errorf("rename session %s: %w", s.ID, err)
+	}
+	// The caller's copy carries the field this call just wrote, the way Resolve
+	// carries the one it wrote: re-reading the store would cost a second lock for
+	// the single field this method is the writer of.
+	s.Name = name
+
+	// Beside the store mutation rather than in the handler that asked for one,
+	// like every other emit here. No record entered or left, and the card an open
+	// page is drawing is wrong all the same — it shows a label the daemon no
+	// longer holds, which is a fleet change by the only definition that matters.
+	m.emit(FleetChanged, s)
+	return s, nil
 }
 
 // Prompt delivers caller text into a session verbatim and submits it (FR-030).

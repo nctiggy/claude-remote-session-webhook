@@ -1004,6 +1004,127 @@ func TestListIsScopedToItsOwner(t *testing.T) {
 	}
 }
 
+// hostSessions is every session name the host holds, sorted, so a test can say
+// the host is exactly as it was rather than that some particular window survived.
+func hostSessions(t *testing.T, f managerFixture) []string {
+	t.Helper()
+
+	infos, err := f.tmux.List(context.Background())
+	if err != nil {
+		t.Fatalf("the host could not be listed: %v", err)
+	}
+	names := make([]string, 0, len(infos))
+	for _, info := range infos {
+		names = append(names, info.Name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// FR-015 and SC-012, pinned where the change happens. A rename is a record-only
+// change: the tmux name derives from the identifier, so the window a session
+// addresses before the rename is the window it addresses after.
+//
+// The way to hold that is not to compare two strings afterwards — an
+// implementation that renamed the window would leave TmuxName agreeing with
+// itself while the host no longer had that session. So the claim is made three
+// ways: the rename runs no tmux command at all, the host's session names are
+// unchanged, and the stored record differs in exactly one field.
+//
+// The new label is hostileLabel, which no path the fixture builds and no id the
+// daemon mints can contain, so its absence from every argv is proof rather than
+// coincidence.
+func TestRenameLeavesTmuxNameAlone(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+
+	before := mustStored(t, f, s.ID)
+	hostBefore := hostSessions(t, f)
+	calls := len(f.tmux.Calls())
+
+	renamed, err := f.mgr.Rename(before, hostileLabel)
+	if err != nil {
+		t.Fatalf("Rename() unexpected error: %v", err)
+	}
+
+	// Read before the host is listed again, so that the listing itself is not
+	// one of the calls being counted.
+	if extra := f.tmux.Calls()[calls:]; len(extra) != 0 {
+		t.Errorf("the rename ran %v; a record-only change costs no tmux command", extra)
+	}
+	if got := hostSessions(t, f); !slices.Equal(got, hostBefore) {
+		t.Errorf("the host now holds %v, want %v unchanged", got, hostBefore)
+	}
+
+	after := mustStored(t, f, s.ID)
+	if after.TmuxName() != before.TmuxName() {
+		t.Errorf("the record now addresses %q, want %q: the tmux name derives from the id", after.TmuxName(), before.TmuxName())
+	}
+
+	// Every other field is compared as one value rather than named one at a
+	// time, so a field added to Session later is held to this rule without the
+	// test being revisited.
+	want := before
+	want.Name = hostileLabel
+	if after != want {
+		t.Errorf("the stored record is %+v, want %+v: a rename changes the name and nothing else", after, want)
+	}
+	if renamed != want {
+		t.Errorf("Rename() returned %+v, want the record as stored %+v", renamed, want)
+	}
+}
+
+// The same validation as create, because it is the same call. A name create
+// refuses must not be reachable by renaming into it, and the existing name must
+// survive the refusal — which is the contract's 400 (contracts/actions.md).
+func TestRenameRefusesWhatCreateRefuses(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		to   string
+		want error
+	}{
+		{"an empty name", "", ErrInvalidName},
+		{"a name over the ceiling", strings.Repeat("a", MaxNameLen+1), ErrInvalidName},
+		{"a name that is a tmux window target", "repo:1", ErrNameIsTmuxTarget},
+		{"a name that is a tmux pane target", "repo.1", ErrNameIsTmuxTarget},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newManagerFixture(t)
+			s, _ := mustCreate(t, f, f.request())
+			before := mustStored(t, f, s.ID)
+			calls := len(f.tmux.Calls())
+
+			renamed, err := f.mgr.Rename(before, tc.to)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Rename() = _, %v; want one wrapping %v", err, tc.want)
+			}
+			if renamed != (Session{}) {
+				t.Errorf("Rename() returned %+v alongside an error, want the zero record", renamed)
+			}
+			// The rejected name is caller-supplied text, and an error travels to
+			// the log the trail may not carry it in (FR-042). ValidateName says
+			// what the rule is, never what was sent.
+			if tc.to != "" && strings.Contains(err.Error(), tc.to) {
+				t.Errorf("Rename() error %q repeats the name the caller sent", err)
+			}
+			if after := mustStored(t, f, s.ID); after != before {
+				t.Errorf("the refused rename left %+v, want %+v unchanged", after, before)
+			}
+			if extra := f.tmux.Calls()[calls:]; len(extra) != 0 {
+				t.Errorf("a refused rename ran %v, want no tmux command", extra)
+			}
+		})
+	}
+}
+
 // Prompt's two commands, in the only order that delivers anything: the bytes
 // reach tmux on stdin, and only then is Return pressed. The payload is one
 // research D4 verified send-keys would mangle, and it must appear on no command
@@ -2316,6 +2437,20 @@ func TestEveryFleetChangeEmits(t *testing.T) {
 				return mgr, func(t *testing.T) []FleetEvent {
 					if _, err := mgr.Resolve(s.ID, auth.CallerOperator, tok); err != nil {
 						t.Fatalf("Resolve() unexpected error: %v", err)
+					}
+					return []FleetEvent{{Kind: FleetChanged, ID: s.ID, Owner: auth.CallerOperator}}
+				}
+			},
+		},
+		{
+			// No record entered or left, and the card an open page is drawing is
+			// wrong all the same: it carries a label the daemon no longer holds.
+			name: "a rename",
+			arrange: func(t *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
+				s, _ := mustCreate(t, f, f.request())
+				return f.mgr, func(t *testing.T) []FleetEvent {
+					if _, err := f.mgr.Rename(*s, hostileLabel); err != nil {
+						t.Fatalf("Rename() unexpected error: %v", err)
 					}
 					return []FleetEvent{{Kind: FleetChanged, ID: s.ID, Owner: auth.CallerOperator}}
 				}
