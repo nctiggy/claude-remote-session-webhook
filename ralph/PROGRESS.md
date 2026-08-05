@@ -14050,3 +14050,101 @@ name check (`name.go`) — call it, do not restate it, the way T009 reused the c
 `changed` emit must go beside the store mutation like every other one in `manager.go` (T012's rule),
 so `fleet_test.go`'s suite will see it without being changed; and finding 400 means the contract's
 other `changed` row — idle→`changed` — is **not** T016's to fix, however tempting the proximity.
+
+## Iteration 96 (milestone 3, iteration 16) — 2026-08-05 08:02
+
+**Did:** **T016** — `Manager.Rename` in `internal/session/manager.go`, plus its one writer
+`Store.SetName` in `internal/session/session.go`, plus three tests in `manager_test.go`:
+`TestRenameLeavesTmuxNameAlone`, `TestRenameRefusesWhatCreateRefuses`, and a `"a rename"` row in
+`TestEveryFleetChangeEmits`. Signature is `Rename(s Session, name string) (Session, error)` — it
+takes the record `View` returned the way `Prompt` and `Destroy` do, and **takes no `ctx`**, which is
+the statement rather than an omission: there is no tmux command to run.
+
+**Three decisions worth not re-deriving.**
+
+1. **No empty-id guard**, unlike `Prompt`/`Output`/`Destroy`. Theirs exists because an empty id
+   builds the bare prefix as a *target*; nothing here builds one, and `Store.SetName` already
+   answers `ErrSessionNotFound` for an id it does not hold — so the guard would be a branch no test
+   could tell from the line below it. The doc comment says so, because the three neighbours all
+   have one and a later reader would "fix" it.
+2. **`SetName` returns only an error and `Rename` updates its own copy** (`s.Name = name`), which is
+   exactly what `Resolve` does with `LastActivity` after `Touch`. The returned record is therefore
+   the caller's copy plus the one field this call wrote, not a re-read — T017's re-rendered card
+   gets the new name without a second lock.
+3. **The emit is unconditional**, not compared-before-and-after the way `Resolve`'s is. `Resolve`
+   compares because *every* request would otherwise be an event; a rename is a rare explicit act,
+   and the contract's row says "emits `changed`" flatly.
+
+**Learned:**
+
+1. **`tmuxctl.Controller` has no rename operation at all** (New, SetOption, SendKeys, Paste,
+   CapturePane, Kill, Has, List — `controller.go`). So "rename touches the tmux name" cannot be
+   written straightforwardly as a wrong tmux call; the mutation that reproduces it is either an
+   *extra* command addressed at the new label, or the record's `ID` being rewritten. Both are in the
+   must-fail list below, because the test has to catch either.
+2. **The comparison that carries the test is a whole-struct one.** `Session` is comparable (every
+   field is), so `after != want` where `want := before; want.Name = <new>` states "the name and
+   nothing else" in one line and holds a field added to `Session` later to the same rule without
+   the test being revisited. It is what caught mutation 5.
+3. **`tmuxctl.Fake.List` records a call**, so a helper that lists the host must be called *before*
+   the baseline `len(f.tmux.Calls())` is taken and *after* the extra-calls assertion has run. The
+   new `hostSessions(t, f)` helper is ordered that way in the test and says why in a comment.
+4. **`FleetChanged`'s own doc comment said "and from T016 a rename"** — now amended to state it as
+   fact. A grep for `T0NN` in `internal/` is a cheap way to find the next such promise.
+
+**All five must-fail conditions were run, not reasoned about.** Each mutation applied, the named
+tests run, the mutation reverted:
+
+1. **`_ = m.tmux.SendKeys(ctx, tmuxNamePrefix+name, enterKey)` added to `Rename`** →
+   `TestRenameLeavesTmuxNameAlone` red on `the rename ran [{SendKeys [tmux send-keys -t
+   '=crswd-zzz-not-a-target-zzz:' -- Enter] []}]; a record-only change costs no tmux command`.
+2. **`s.ID = name` added** (the other way to touch the tmux name) → the same test red on the
+   whole-struct compare, **and** `TestEveryFleetChangeEmits/a_rename` red because the event then
+   carries a made-up id.
+3. **The `ValidateName` call deleted** → all four rows of `TestRenameRefusesWhatCreateRefuses` red.
+4. **`m.emit(FleetChanged, s)` deleted** → `TestEveryFleetChangeEmits/a_rename` red on
+   `the fleet announced [], want [{changed <id> operator}]`.
+5. **`SetName` also advancing `LastActivity` by a minute** → `TestRenameLeavesTmuxNameAlone` red on
+   the whole-struct compare. This is the one that pins `data-model.md`'s table: `LastActivity` is
+   **compact's** writer (T019), never rename's.
+
+**Findings:**
+
+405. **`Manager.Rename` has no production caller yet — T017 is the task that gives it one.** This is
+    the plan's own "a task is not done when the code exists, it is done when something calls it"
+    rule sitting open across exactly one iteration boundary, the same way `Manager.Subscribe` sat
+    between T012 and T013. Worth naming rather than assuming: if T017 slips, this is dead code with
+    a green suite, which is the failure mode that shipped three times in this repo.
+406. **Nothing yet refuses a rename of a *dead* record above the store.** `Store.SetName` refuses
+    one (`ErrSessionDead`, as `Touch` and `SetCredential` do) and `View` refuses one before the
+    handler ever gets a record, so the path is closed twice over — but `Manager.Rename` itself has
+    no state check, unlike `Prompt` and `Output`. It is deliberate (`Destroy` has none either, and
+    for a better reason) and it is untested at the manager seam. Cheap for T018 to pin if its sweep
+    wants it; not this task's.
+407. **Findings 400–404 carry over unchanged**, and 400 is now **half closed**: the contract's
+    rename→`changed` row is covered by `TestEveryFleetChangeEmits/a_rename` at the manager seam, and
+    T018 will cover it at the wire. The idle→`changed` row is still the unowned one. 306 still needs
+    the operator's answer; 342, 350, 374 and 378 still stand; 360, 367, 371, 372, 395 and 397 are
+    T022's. Iteration 90's **NEEDS CLARIFICATION on T023 vs T010 is still unanswered.** 340's lint
+    caveat still applies: `golangci-lint` on PATH is v1.62.2 and reads this repo's v2 config by
+    running zero linters, so `golangci-lint run` is a green that means nothing. The substitute run
+    was `golangci-lint run --no-config --disable-all -E
+    bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags tmux,dev ./...`,
+    clean with no new `//nolint`. `go build ./...`, `go test -count=1 ./...`, `go test -race
+    ./internal/session ./internal/httpapi`, `gofmt -l`, `goimports -l` and `go vet` under all four
+    tags (default, tmux, dev, quickstart) are clean. The tagged *suites* were not run: this task
+    touches `internal/session` only — no tmux binary use, no `cmd/crswd`, no dev bypass — so
+    `go vet -tags` is the check AGENTS.md names for that case. CI's pinned v2.12.2 is what counts.
+
+**Left:** T017–T023. Next is **T017** — `POST /dashboard/sessions/{id}/rename` in
+`internal/httpapi/actions.go` plus the control in `web/templates/partials/session-card.html`. Five
+things it needs from here: the manager call is `mgr.Rename(s, name)` where `s` is what `View`
+returned and the **returned `Session` is what to render** (it already carries the new name, so do
+not re-read the store); the form field is `name` and the answer is `200` with the re-rendered card,
+`400` on an invalid name — branch on `session.ErrInvalidName` with `errors.Is`, which every
+rejection wraps (`name.go`), and do **not** put the rejected name in the response or a record, per
+`TestRenameRefusesWhatCreateRefuses`'s FR-042 row; the `dashboard.rename` audit constant already
+exists from T001; the control goes **outside** the card's single anchor, which T007 already
+established for destroy — copy that placement rather than inventing a second one; and the browser
+gate (layer 1 → `crossSite` → page token) is `browser.go`'s, already applied to the other action
+routes, so the route is registered the way destroy's is and nothing about the gate is restated.
