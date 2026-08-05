@@ -12856,3 +12856,113 @@ verified teardown on success, `200` with the card fragment; `409` with the recor
 audited prominently when teardown cannot be verified; **no force path** (AR-004). Its three
 not-found cases go through `notFoundAction`, and `TestDestroyCrossOwnerUniform` asserts they are
 byte-identical to an unknown id.
+
+## Iteration 86 (milestone 3, iteration 6) — 2026-08-05 05:15
+
+**Did:** **T006** — `POST /dashboard/sessions/{id}/destroy` in `internal/httpapi/actions.go`,
+registered in `server.go` through a new `handleAction` (finding 343's warning, answered).
+`destroyFromBrowser` runs: operator from the context → `{id}` shape → `confirm=yes` →
+`Manager.View` → `Manager.Destroy`. `200` with a removal-marker fragment, `400` unconfirmed with
+nothing torn down, `409` with the contract's literal and the record **retained**, `404` uniform
+through `notFoundAction`, `500` fail-closed for a failure no sentinel explains. Six tests in
+`actions_test.go`, all driving the **registered route** through `Server.ServeHTTP`.
+
+**`handleAction` is a second function, not a flag on `handleBrowser`.** A boolean parameter is a
+thing a call site gets wrong quietly; a different function makes registering an action on the
+read-only door something a hand has to type. Both leave `s.registered` alone — that list is
+contracts/http-api.md's closed set of six signed operations.
+
+**The one thing the contract does not fix, and what was decided.** `contracts/actions.md` gives
+the `409` byte for byte and gives the `200` only as "a fragment replacing the card with a removal
+marker"; `tasks.md` T006 calls the same thing "the card fragment". A re-rendered *card* is
+impossible — the record is deleted by the time there is anything to answer with — so the removal
+marker is what was built. Its words, and the `400`'s and the `500`'s, are authored at the call
+site the way milestone 2 authored the empty state's and the not-found page's copy. All four share
+`class="card-outcome"` with the `409` so the outcomes are one component, and each is a text node
+(FR-030, FR-031). **T007 owns the CSS for that class and must not need to change these bytes.**
+See finding 352: if the operator wanted different copy, this is where it is.
+
+**All five must-fail conditions were run, not reasoned about.** Each mutation applied, the named
+test run, the mutation reverted:
+
+1. **Confirm check removed** → `TestDestroyRequiresConfirm` red on all six cases: `200`, session
+   gone.
+2. **The `Destroy` error ignored** → `TestDestroyUnverifiedTeardown` red on all three arrangements
+   *and* on the AR-004 force case: `200` claiming a window that is still there.
+3. **The already-gone cause answered differently** → `TestDestroyCrossOwnerUniform` red on the
+   body, the `Content-Length` and the whole-header compare.
+4. **Registered with `handleBrowser` instead of `handleAction`** → `TestDestroyRunsBehindTheActionGate`
+   red on both halves.
+5. **The `{id}` shape check dropped** → `TestADestroyIdentifierOffTheAlphabetIsNoRoute` red on the
+   body and the recorded reason.
+
+**Learned:**
+
+1. **A destroy registered without the gate is visibly broken, not silently insecure — but only by
+   accident.** Mutation 4 answered `400` rather than `403`, because `r.ParseForm` lives in the
+   *gate*: with no gate, `r.PostForm` is empty, so `confirm` is absent and every destroy is
+   refused. Do not lean on that. It is a coupling, not a defence, and the next action (T009's
+   create) has no equivalent field to save it.
+2. **`Manager.View`, not `Resolve`.** A browser holds no per-session bearer token and must not be
+   given one (FR-034a). `View` also leaves the idle clock alone, which costs nothing here — the
+   session is about to be gone — and keeps one rule for every browser read.
+3. **The confirming step is compared, never interpreted.** `on`, `true`, `YES` and an empty value
+   are all things a stray checkbox or a hand-built request produces, and none is the deliberate
+   act FR-029 asks for. The test carries all four as near-misses.
+4. **The 409's reasons are the API door's own sentinels** — `errDestroyOrphaned`, `errDestroyRefused`
+   from `sessions.go`. The same fact deserves the same words in the journal whichever door found
+   it; what tells them apart is the action `authenticateBrowser` already set
+   (`dashboard.destroy` against `session.destroy`).
+5. **`d.standing(t, live)` asks the store *and* the host.** Either alone is satisfiable by the
+   wrong thing: a record dropped for a window that is still there is the orphan Principle VI
+   forbids, and a window torn down for a refused request is the state change FR-003 forbids. The
+   kill count is the third: a kill whose session survived leaves store and host looking exactly
+   like a request that was refused before it ran.
+
+**Findings:**
+
+352. **The destroy's `200`, `400` and `500` copy is authored, not quoted.** Only the `409` is in
+    `contracts/actions.md`. The three sentences are in `actions.go` as `bodyActionDestroyed`,
+    `bodyActionUnconfirmed` and `bodyActionDestroyFailed`, each a `<p class="card-outcome">`. **The
+    operator should confirm the wording** — it is the first thing a person sees after ending a
+    session — and T007/T022 are the places to change it if it is wrong. Nothing about the security
+    model rests on it.
+353. **The `{id}` shape check is this repo's first, and it lives in `httpapi`.**
+    `contracts/actions.md` says a non-hex `{id}` "is not a route match", which `net/http`'s router
+    cannot express, so `routableID` in `actions.go` answers the unknown-route *page* for one. It
+    duplicates the alphabet test `session.adoptableID` already makes, unexported, in the other
+    package. Not unified here (AR-008); if a fourth caller appears, `session` is where the
+    predicate belongs.
+354. **The `500` branch of `refuseBrowserDestroy` is unreachable and therefore untested**, the
+    same shape as finding 347. `Manager.Destroy` returns `ErrOrphanedSession` for every tmux
+    failure and only a non-not-found store delete could reach the default, which the real store
+    never produces. Written fail-closed anyway.
+355. **T007 must move `{{ template "page-token" .PageToken }}` inside the `<form>` it adds**
+    (iteration 84's note, still outstanding), and the form must submit `confirm=yes` — the field
+    name and value are `fieldConfirm`/`confirmYes` in `actions.go`, and a template cannot reach
+    either constant, so they are spelled a second time in the markup. Pin them with a test the way
+    `hiddenTokenField` pins the token field.
+356. **T005 was ticked in `ralph/IMPLEMENTATION_PLAN.md` and not in `tasks.md`.** Fixed here
+    along with T006's own tick, because `tasks.md` is the plan's stated source of truth and a
+    fresh context reading it would have redone a task that shipped in iteration 85. Worth a glance
+    each iteration: both files carry the same checkbox.
+357. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307,
+    311–315, 317–323, 325, 327–328, 330–333, 335–351 carry over unchanged.** 306 still needs the
+    operator's answer; 342's `research.md` R1 discrepancy still wants confirming; 350's missing pin
+    between the two not-found bodies is now *more* live, since this route serves both of them; the
+    three browser-visual checks (SC-009/010/011) still need a human. 340's lint caveat still
+    applies: `golangci-lint` on PATH is v1.62.2 and reads this repo's v2 config by running zero
+    linters, so `golangci-lint run` is a green that means nothing. The substitute run was
+    `golangci-lint run --no-config --disable-all -E
+    bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags tmux,dev ./...`,
+    clean. `go test ./...`, `go test -race ./internal/httpapi`, `go test -tags dev ./...` and
+    `go vet` under all three tags clean too. CI's pinned v2.12.2 is the check that counts.
+
+**Left:** T007–T023. Next is **T007** — `web/templates/partials/session-card.html` and
+`web/static/crswd.css`: the destroy control as a form **outside** the card's existing anchor, so
+the card still holds exactly one `<a>` (FR-027), with `TestCardHasExactlyOneAnchor` in
+`partials_test.go`. The route it posts to is `/dashboard/sessions/{id}/destroy`, and the form owes
+three fields' worth of care: the page-token partial moved inside it (finding 355), `confirm=yes`,
+and nothing inside the anchor. Outcome text is already what the route answers with — style
+`.card-outcome`, do not restate it in the template. Nothing animates under
+`prefers-reduced-motion`; the universal `transition: none` from #23 already covers it.
