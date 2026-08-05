@@ -526,3 +526,98 @@
     watchFleet(shell);
   }
 })();
+
+/*
+ * The action toast (issue #42).
+ *
+ * The four action forms are real forms posting to real routes, and that is what
+ * makes them work with scripting off and what makes their submit buttons
+ * keyboard-operable without anything being added. But a form post navigates: the
+ * browser replaced the fleet with the handler's answer, which is one sentence
+ * with no page around it. An operator clicked Compact and got a white page.
+ *
+ * So this posts them instead and writes the answer into the live region the page
+ * already carries. Nothing here is required for the daemon to be correct — every
+ * check that matters ran server-side before the answer existed — and a browser
+ * that never runs this file still gets the old behaviour rather than none.
+ *
+ * The answer is read as text, never inserted as markup. These fragments are
+ * daemon-authored today, so innerHTML would be safe today; textContent is what
+ * keeps it safe after someone makes one of them carry a name or a path, which is
+ * the same lesson docs/components.md was corrected for twice.
+ */
+(() => {
+  const toast = document.getElementById('action-toast');
+  if (!toast) {
+    return;
+  }
+
+  let hide;
+  const show = (message) => {
+    toast.textContent = message;
+    toast.hidden = false;
+    clearTimeout(hide);
+    // Long enough to read a sentence, and cleared on the next action so two
+    // clicks never leave the earlier answer standing under the later one.
+    hide = setTimeout(() => {
+      toast.hidden = true;
+    }, 6000);
+  };
+
+  /*
+   * A fragment's text, without trusting it to be markup.
+   *
+   * DOMParser builds an inert document: no script runs, no image loads, nothing
+   * in it reaches this page. Taking textContent from that is the same reading a
+   * browser would give the sentence, with none of the consequences of letting it
+   * be one.
+   */
+  const sentence = (html) => {
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    return (parsed.body.textContent || '').trim();
+  };
+
+  for (const form of document.querySelectorAll('form[action^="/dashboard/"]')) {
+    form.addEventListener('submit', async (event) => {
+      // Let the browser do the ordinary thing if it cannot do this one.
+      if (typeof window.fetch !== 'function') {
+        return;
+      }
+      event.preventDefault();
+
+      try {
+        const answer = await fetch(form.action, {
+          method: 'POST',
+          body: new URLSearchParams(new FormData(form)),
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          // The gate reads Sec-Fetch-Site, which the browser sets and script
+          // cannot. same-origin keeps this a same-origin request so it stays set
+          // to the one value the daemon admits.
+          credentials: 'same-origin',
+        });
+        show(sentence(await answer.text()) || 'The host answered without a message.');
+
+        // Re-enable the control the submit-once guard spent. The guard exists
+        // for the create's double-submit, and with no navigation there is no new
+        // page to bring a fresh one back.
+        for (const control of form.querySelectorAll('button[type="submit"]')) {
+          control.disabled = false;
+        }
+        const note = document.getElementById(form.dataset.submitOnce);
+        if (note) {
+          note.hidden = true;
+        }
+        if (form.matches('.create-form')) {
+          form.reset();
+        }
+      } catch {
+        // A request that never reached the host is the one case where the
+        // operator must not be told anything happened, because nothing did.
+        show('That action could not be sent. The fleet is unchanged.');
+        for (const control of form.querySelectorAll('button[type="submit"]')) {
+          control.disabled = false;
+        }
+      }
+    });
+  }
+})();

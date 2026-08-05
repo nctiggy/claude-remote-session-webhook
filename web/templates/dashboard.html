@@ -121,6 +121,31 @@
   It renders nothing at all when this render minted no token, which is what makes
   a page that cannot authorise a create offer none.
 */}}{{ template "create-form" .Create }}
-</main>
+</main>{{/*
+  Where an action's answer is shown, instead of the page it used to become.
+
+  The four action forms post to this door's own routes, and a form post navigates:
+  the browser replaced this whole fleet with the handler's answer, which is a
+  sentence with no page around it. Correct, and unusable — an operator clicked
+  Compact and landed on a white page with one line on it.
+
+  So the live half posts these forms itself and writes the answer here. The form
+  is still a real form with a real action, because that is what makes it work
+  with no script at all and what makes the submit button keyboard-operable
+  without anything being added; the interception is an enhancement over a page
+  that already functioned, not the thing that makes it function.
+
+  aria-live="polite" rather than "assertive": an outcome is worth announcing at
+  the next pause, not worth interrupting what a screen reader is already saying.
+  The region is present and empty rather than created on demand, because a live
+  region has to exist before the text arrives for the announcement to happen at
+  all — and because a class that only JavaScript ever writes is invisible to the
+  stylesheet sweep in stylesheet_test.go, which would then read its rule as dead.
+
+  It carries no colour of its own. FR-030 — an outcome is text, never a hue — is
+  the whole reason the sentence says what happened rather than the border saying
+  it.
+*/}}
+<output class="action-toast" id="action-toast" role="status" aria-live="polite" hidden></output>
 </body>
 </html>
