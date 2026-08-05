@@ -337,6 +337,26 @@ body {
   margin: 0;
 }
 
+/* The rename, which is the one action carrying a field rather than only a
+   button. It takes the row to itself: the row above wraps, and a text entry
+   sharing a line with the one control on this card that cannot be taken back is
+   a destroy sitting where a Tab from a half-typed name lands.
+
+   The label spans both columns rather than sitting beside the field, which is
+   the arrangement the create panel's fields already use — a label beside a
+   narrow input in a card-width column leaves neither enough room to read. */
+.card-rename {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--s1) var(--s2);
+  inline-size: 100%;
+}
+
+.card-rename .field-label {
+  grid-column: 1 / -1;
+}
+
 /* Every control that submits something. A button does not inherit the page's
    font, so the family is set here rather than left to the platform's: a
    dashboard whose one button is set in the system sans is a dashboard with a

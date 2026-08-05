@@ -93,5 +93,45 @@
   the same word, each ending a different shell.
 */}}{{ with .PageToken }}<div class="card-actions">
 <form method="post" action="/dashboard/sessions/{{ $.ID }}/destroy">{{ template "page-token" . }}<input type="hidden" name="confirm" value="yes"><button class="button button-danger" type="submit" aria-describedby="card-id-{{ $.ID }}">Destroy</button></form>
+{{/*
+  The second control on this card, and the only one of the four actions that
+  changes nothing on the host (US4). It sits in the same row, outside the same
+  single anchor, for the reason the destroy does (FR-027): a text entry nested
+  inside a link is a target a click cannot mean two things about.
+
+  It takes the row to itself rather than sitting beside the destroy, which is the
+  stylesheet's doing and not this template's. What belongs here is the ordering:
+  the destroy is first because it was, and moving it would be churn this
+  milestone's ground rules forbid.
+
+  The field carries a real <label>, per docs/components.md's Form rules — a
+  placeholder is not a label. Its `for` is the session's own identifier, like
+  every other id this card renders, because a fleet of cards each carrying a
+  field called "rename-name" would be a page where every label names the first
+  one. The button is described by the identifier for the reason the destroy's is:
+  a column of controls announcing the same word, each relabelling a different
+  session, tells a screen reader nothing.
+
+  The field is rendered with the name the daemon currently holds, so the operator
+  edits a label rather than recalling one. It discloses nothing the card does not
+  already show as text two lines above, and an adopted session — which has no
+  recorded name at all (FR-018a) — renders an empty field rather than an invented
+  one.
+
+  The client hints are the create form's, pinned to ValidateName by a test for
+  the reason that form's are: a hint that drifted would refuse a name this daemon
+  would have accepted, in a native bubble this daemon never wrote. Validation is
+  server-side and authoritative — the route calls the same ValidateName and
+  answers a refusal in words.
+
+  `name` is fieldName in actions.go, spelled here a second time because this
+  template set is parsed with no function map and cannot reach a Go constant. The
+  test in partials_test.go is what holds the two spellings together, exactly as
+  it does for `confirm=yes` above.
+
+  A plain form post and a submit button, per research.md R4, and no
+  data-submit-once: a second rename to the same name is the same end state, so
+  this is not the idempotence exposure the create is (research.md R7).
+*/}}<form class="card-rename" method="post" action="/dashboard/sessions/{{ $.ID }}/rename">{{ template "page-token" . }}<label class="field-label" for="rename-{{ $.ID }}">New name</label><input class="field-input" id="rename-{{ $.ID }}" type="text" name="name" value="{{ $.Name }}" required maxlength="64" pattern="[-a-zA-Z0-9]+" autocomplete="off" spellcheck="false"><button class="button" type="submit" aria-describedby="card-id-{{ $.ID }}">Rename</button></form>
 </div>{{ end }}
 </article>

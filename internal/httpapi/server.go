@@ -504,6 +504,12 @@ func newServer(
 	// pages: a route that spawns a Claude session on an ambient Access cookie alone
 	// is the exact request a hostile third-party page can cause a browser to send.
 	s.handleAction(patternDashboardCreate, audit.ActionDashboardCreate, s.createFromBrowser)
+	// The third, and the only one of the four that touches nothing on the host. It
+	// goes through handleAction all the same: what makes the gate necessary is that
+	// a request changes state on an ambient cookie, not what the change costs — a
+	// third-party page that can relabel every session on this host can hide one,
+	// and the operator reading the fleet afterwards has no way to tell.
+	s.handleAction(patternDashboardRename, audit.ActionDashboardRename, s.renameFromBrowser)
 	// One route per embedded asset, so `/static/` names exactly the files the
 	// binary carries and a path that is not one of them is a path nothing claims
 	// (contracts/dashboard.md's route table; see loadAssets for why a wildcard is

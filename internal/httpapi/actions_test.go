@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -2701,4 +2702,494 @@ func TestEveryCreateAttemptLeavesOneRecord(t *testing.T) {
 				"a request over budget costs no tmux command", got, burst)
 		}
 	})
+}
+
+// --- US4: rename from the browser (T017) ------------------------------------
+//
+// The registered route, driven through Server.ServeHTTP like the destroy and the
+// create above it and for their reason: a rename wired with handleBrowser instead
+// of handleAction would leave every gate case in this file green while the one
+// route that can relabel every session on this host answers an ambient cookie.
+
+// The rename's own refusal, quoted here rather than read from the constant the
+// code writes, for the reason the destroy's are: a test asserting against the
+// variable proves only that the code agrees with itself.
+const wantRenameBadNameBody = `<p class="card-outcome">That is not a usable session name. Use letters, digits and hyphens, up to 64 characters. This session is still called what it was.</p>`
+
+// originalName is the label every case below starts from, and the one a refused
+// rename has to leave behind.
+const originalName = "before-the-rename"
+
+// renderedCardName reads the heading slot a card puts a session's name in
+// (session-card.html), so an answer can be compared against the record it claims
+// to describe rather than merely searched for the right substring.
+var renderedCardName = regexp.MustCompile(`<span class="card-name"[^>]*>([^<]*)</span>`)
+
+// renamer is the registered rename route with everything behind it readable: the
+// store, the fake host, and the trail.
+type renamer struct {
+	*testServer
+	keys *keyServer
+}
+
+func newRenamer(t *testing.T) *renamer {
+	t.Helper()
+
+	keys := newKeyServer(t)
+	return &renamer{testServer: newAuditedServerWith(t, keys.validator(t)), keys: keys}
+}
+
+// live plants a running session of this operator's own, together with the tmux
+// window its record names — the state a card on the fleet describes.
+func (n *renamer) live(t *testing.T) session.Session {
+	t.Helper()
+
+	planted, _ := n.fixture.plant(t, session.Session{Name: originalName, WorkDir: n.fixture.repo})
+	return planted
+}
+
+// asked is the form a rendered card submits: the render's page token, and the
+// label the operator typed.
+func (n *renamer) asked(t *testing.T, name string) url.Values {
+	t.Helper()
+
+	form := url.Values{}
+	form.Set(fieldPageToken, mustMint(t, n.pageKey, testOperatorEmail, testTime))
+	form.Set(fieldName, name)
+	return form
+}
+
+// post submits one form at the rename route, as the browser this daemon rendered
+// the page for.
+func (n *renamer) post(t *testing.T, id string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+
+	return n.send(t, http.MethodPost, "/dashboard/sessions/"+id+"/rename", secFetchSiteSameOrigin, form)
+}
+
+// send is post with the method, the path and the browser's own account of where
+// the request came from all chosen by the caller — destroyer.send's arrangement,
+// and for its reason: a varied case must differ from the ordinary one in exactly
+// the field it means to vary.
+func (n *renamer) send(t *testing.T, method, path, site string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := httptest.NewRequest(method, path, strings.NewReader(form.Encode()))
+	r.Header.Set(headerContentType, contentTypeForm)
+	r.Header.Set(headerAccessAssertion, n.keys.mint(t, n.keys.claims()))
+	if site != absent {
+		r.Header.Set(headerSecFetchSite, site)
+	}
+
+	w := httptest.NewRecorder()
+	n.ServeHTTP(w, r)
+	return w
+}
+
+// stored is the record the daemon holds for a session, read from the store rather
+// than from a page: whether a rename took effect is a fact about the daemon's own
+// state and not about what some later render chose to draw.
+//
+// It takes the record so the owner comes with it, which is what lets a case ask
+// the same question about a second operator's session as about this one's.
+func (n *renamer) stored(t *testing.T, s session.Session) session.Session {
+	t.Helper()
+
+	held, err := n.fixture.store.Get(s.ID, s.Owner)
+	if err != nil {
+		t.Fatalf("read the store for session %s: %v", s.ID, err)
+	}
+	return held
+}
+
+// TestRenameRelabelsTheRecordAndAnswersWithItsCard is US4's first scenario end to
+// end: the operator's own session, renamed from the card, answered with the card
+// the fleet will draw for it, and the host never spoken to.
+//
+// **Must fail when** the route stops calling Manager.Rename — the store keeps the
+// old label — or when it answers with something other than the canonical card,
+// which is what makes a renamed session look exactly as it will on every later
+// page load.
+//
+// The tmux half is FR-015, and it is asserted as "no command at all" rather than
+// as "the window is still there": a rename that ran a tmux rename and then ran it
+// back would leave the host looking untouched. The record's TmuxName is compared
+// as well, because that is the string every later identifier-based operation
+// builds its target from — SC-012 is T018's claim, and this is what it rests on.
+func TestRenameRelabelsTheRecordAndAnswersWithItsCard(t *testing.T) {
+	t.Parallel()
+
+	const renamed = "after-the-rename"
+
+	n := newRenamer(t)
+	live := n.live(t)
+	calls := len(n.fixture.tmux.Calls())
+
+	w := n.post(t, live.ID, n.asked(t, renamed))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusOK)
+	}
+	if got, want := w.Header().Get(headerContentType), wantActionContentType; got != want {
+		t.Errorf("%s = %q; want %q", headerContentType, got, want)
+	}
+	if got, want := w.Header().Get(headerContentTypeOptions), wantActionNosniff; got != want {
+		t.Errorf("%s = %q; want %q — a rename's answer carries the same headers a page does",
+			headerContentTypeOptions, got, want)
+	}
+
+	held := n.stored(t, live)
+	if held.Name != renamed {
+		t.Errorf("the record is called %q; want %q — the rename never reached the store", held.Name, renamed)
+	}
+	if held.TmuxName() != live.TmuxName() {
+		t.Errorf("the record now names the window %q and named it %q; a rename that moved the target breaks every identifier-based operation (FR-015)",
+			held.TmuxName(), live.TmuxName())
+	}
+	if extra := n.fixture.tmux.Calls()[calls:]; len(extra) != 0 {
+		t.Errorf("the rename ran %v on the host; want no tmux command at all — a rename is a record edit (FR-015)", extra)
+	}
+	if running, err := n.fixture.tmux.Has(context.Background(), live.TmuxName()); err != nil || !running {
+		t.Errorf("the host is running %s: %t (err: %v); a renamed session is the same session", live.TmuxName(), running, err)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, `<article class="card"`) {
+		t.Errorf("the answer is not the canonical card:\n%s", body)
+	}
+	// The name slot's own contents rather than a search of the whole fragment,
+	// because a card is what the operator is left looking at: a search for the new
+	// name is satisfied by a card that renders it with something appended, and the
+	// claim here is that the answer describes the record this route just wrote.
+	shown := renderedCardName.FindStringSubmatch(body)
+	if shown == nil {
+		t.Fatalf("the card renders no name at all:\n%s", body)
+	}
+	if shown[1] != held.Name {
+		t.Errorf("the card is headed %q and the daemon holds %q; the answer describes a session that does not exist", shown[1], held.Name)
+	}
+	if shown[1] != renamed {
+		t.Errorf("the card is headed %q; want %q — the operator is looking at the label they just replaced", shown[1], renamed)
+	}
+	if !strings.Contains(body, live.ID) {
+		t.Errorf("the card does not carry the identifier (%q):\n%s", live.ID, body)
+	}
+	if !strings.Contains(body, fieldPageToken) {
+		t.Errorf("the card carries no %s, so the session it re-renders offers no control the gate would admit until the operator reloads:\n%s",
+			fieldPageToken, body)
+	}
+
+	rec := n.only(t)
+	if got, want := rec["action"], string(audit.ActionDashboardRename); got != want {
+		t.Errorf("action = %v; want %v", got, want)
+	}
+	if got, want := rec["decision"], string(audit.Allow); got != want {
+		t.Errorf("decision = %v; want %v", got, want)
+	}
+	if got := rec["session_id"]; got != live.ID {
+		t.Errorf("session_id = %v; want %q", got, live.ID)
+	}
+}
+
+// TestRenameRefusesAnUnusableNameAndLeavesTheLabel is the contract's 400: a name
+// ValidateName refuses is refused here, and the session goes on being called what
+// it was.
+//
+// **Must fail when** the route validates the name itself instead of calling
+// Manager.Rename. The two tmux-target rows are the ones a hand-written character
+// class forgets, and they are exactly the two that would put ":" or "." into a
+// string every tmux target is built from.
+//
+// The rejected name reaches neither the response nor the trail. It is
+// caller-supplied text on its way back out through a page and into a log
+// (FR-042), and what the operator needs is the rule rather than an echo of what
+// they typed. The empty row is exempt from that check for the reason the manager's
+// own suite exempts it: every string contains the empty one.
+func TestRenameRefusesAnUnusableNameAndLeavesTheLabel(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		to     string
+		reason error
+	}{
+		{"an empty name", "", session.ErrInvalidName},
+		{"a name over the ceiling", strings.Repeat("a", session.MaxNameLen+1), session.ErrInvalidName},
+		{"a name off the permitted alphabet", "not a name", session.ErrInvalidName},
+		{"a name that is a tmux window target", "repo:1", session.ErrNameIsTmuxTarget},
+		{"a name that is a tmux pane target", "repo.1", session.ErrNameIsTmuxTarget},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			n := newRenamer(t)
+			live := n.live(t)
+			calls := len(n.fixture.tmux.Calls())
+
+			w := n.post(t, live.ID, n.asked(t, tc.to))
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusBadRequest)
+			}
+			if got := w.Body.String(); got != wantRenameBadNameBody {
+				t.Errorf("body\n%s\nwant\n%s", got, wantRenameBadNameBody)
+			}
+			if got, want := w.Header().Get(headerContentLength), strconv.Itoa(len(wantRenameBadNameBody)); got != want {
+				t.Errorf("%s = %q; want %q", headerContentLength, got, want)
+			}
+
+			if held := n.stored(t, live); held.Name != originalName {
+				t.Errorf("a refused rename left the session called %q; want %q unchanged", held.Name, originalName)
+			}
+			if extra := n.fixture.tmux.Calls()[calls:]; len(extra) != 0 {
+				t.Errorf("a refused rename ran %v on the host; want no tmux command", extra)
+			}
+
+			rec := n.only(t)
+			if got, want := rec["action"], string(audit.ActionDashboardRename); got != want {
+				t.Errorf("action = %v; want %v — a rename refused for its name is still a rename", got, want)
+			}
+			if got, want := rec["decision"], string(audit.Deny); got != want {
+				t.Errorf("decision = %v; want %v", got, want)
+			}
+			if got, want := rec["reason"], tc.reason.Error(); got != want {
+				t.Errorf("reason = %v; want %v — the record is the only place the rule that refused is named", got, want)
+			}
+			if got := rec["session_id"]; got != live.ID {
+				t.Errorf("session_id = %v; want %q — a refusal against a real session is stamped with it", got, live.ID)
+			}
+
+			if tc.to == "" {
+				return
+			}
+			if strings.Contains(w.Body.String(), tc.to) {
+				t.Errorf("the refusal quotes the rejected name back:\n%s", w.Body.String())
+			}
+			if strings.Contains(n.sink.String(), tc.to) {
+				t.Errorf("the trail carries the rejected name:\n%s", n.sink.String())
+			}
+		})
+	}
+}
+
+// TestRenameRunsBehindTheActionGate is the claim T003 cannot make about itself for
+// this route: the rename is registered *through* the gate.
+//
+// **Must fail when** the route is registered with handleBrowser rather than
+// handleAction. Both halves of the defence are driven here because either one
+// alone leaves the other's absence invisible on this route — the formal
+// independence proof is T008's, and this is the registration claim it rests on.
+//
+// The label is asserted unchanged afterwards, which is the half a status code
+// cannot see: a gate that refused *after* the handler ran would answer 403 with
+// the session already relabelled.
+func TestRenameRunsBehindTheActionGate(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]func(t *testing.T, n *renamer) (url.Values, string){
+		"the form carried no page token": func(t *testing.T, n *renamer) (url.Values, string) {
+			t.Helper()
+			form := n.asked(t, "renamed-by-nobody")
+			form.Del(fieldPageToken)
+			return form, secFetchSiteSameOrigin
+		},
+		"the browser said the request came from another site": func(t *testing.T, n *renamer) (url.Values, string) {
+			t.Helper()
+			return n.asked(t, "renamed-by-nobody"), "cross-site"
+		},
+	}
+
+	for name, arrange := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			n := newRenamer(t)
+			live := n.live(t)
+			form, site := arrange(t, n)
+
+			w := n.send(t, http.MethodPost, "/dashboard/sessions/"+live.ID+"/rename", site, form)
+
+			if w.Code != wantActionStatus {
+				t.Fatalf("status = %d (%s); want %d — the rename route is not behind the gate",
+					w.Code, w.Body.String(), wantActionStatus)
+			}
+			if got := w.Body.String(); got != wantActionBody {
+				t.Errorf("body\n%s\nwant the gate's uniform refusal\n%s", got, wantActionBody)
+			}
+			if held := n.stored(t, live); held.Name != originalName {
+				t.Errorf("a refused rename left the session called %q; want %q untouched — the gate runs before any state change",
+					held.Name, originalName)
+			}
+			if got, want := n.only(t)["action"], string(audit.ActionDashboardReject); got != want {
+				t.Errorf("action = %v; want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestRenameAgainstASessionThatIsNotTheOperatorsIsUniform is FR-017 on this route:
+// an identifier no session ever had, one another operator owns, and one whose
+// session is already gone are one answer.
+//
+// **Must fail when** any of the three is distinguished. Each is compared against
+// contracts/actions.md's own literal rather than against the other rows, which is
+// the stronger claim: three rows agreeing with each other on a body this door does
+// not write would satisfy a comparison between themselves.
+//
+// The reason is read off each record, because that is where the difference is kept
+// and an operator has to be able to find it (SC-009).
+func TestRenameAgainstASessionThatIsNotTheOperatorsIsUniform(t *testing.T) {
+	t.Parallel()
+
+	// Not on the allowlist and not this operator's owner: a second operator whose
+	// sessions this one must not be able to detect the existence of.
+	const stranger auth.CallerID = "a-second-operator"
+
+	cases := []struct {
+		name   string
+		target func(t *testing.T, n *renamer) session.Session
+		reason error
+	}{
+		{
+			name: "an identifier no session on this host ever had",
+			target: func(*testing.T, *renamer) session.Session {
+				return session.Session{ID: strings.Repeat("c", session.IDLen)}
+			},
+			reason: session.ErrSessionNotFound,
+		},
+		{
+			name: "a session another operator owns",
+			target: func(t *testing.T, n *renamer) session.Session {
+				t.Helper()
+				theirs, _ := n.fixture.plant(t, session.Session{
+					Owner: stranger, Name: originalName, WorkDir: n.fixture.repo,
+				})
+				return theirs
+			},
+			reason: session.ErrSessionNotFound,
+		},
+		{
+			name: "a session of the operator's own that is no longer there",
+			target: func(t *testing.T, n *renamer) session.Session {
+				t.Helper()
+				gone, _ := n.fixture.plant(t, session.Session{
+					Name: originalName, WorkDir: n.fixture.repo, State: session.StateDead,
+				})
+				return gone
+			},
+			reason: session.ErrSessionDead,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			n := newRenamer(t)
+			target := tc.target(t, n)
+
+			w := n.post(t, target.ID, n.asked(t, "renamed-by-a-stranger"))
+
+			if w.Code != wantNotFoundStatus {
+				t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), wantNotFoundStatus)
+			}
+			if got := w.Body.String(); got != wantNotFoundBody {
+				t.Errorf("body\n%s\nwant\n%s", got, wantNotFoundBody)
+			}
+			if got, want := w.Header().Get(headerContentLength), strconv.Itoa(len(wantNotFoundBody)); got != want {
+				t.Errorf("%s = %q; want %q", headerContentLength, got, want)
+			}
+
+			rec := n.only(t)
+			if got, want := rec["reason"], tc.reason.Error(); got != want {
+				t.Errorf("reason = %v; want %v — the record is the only place the cause is named", got, want)
+			}
+			if strings.Contains(w.Body.String(), tc.reason.Error()) {
+				t.Errorf("the response quotes the reason back:\n%s", w.Body.String())
+			}
+
+			// The record that really exists is still called what it was, which is the
+			// half the status cannot see: a route that renamed first and answered the
+			// not-found afterwards satisfies every assertion above.
+			if target.Owner == "" {
+				return
+			}
+			if held := n.stored(t, target); held.Name != originalName {
+				t.Errorf("the session is now called %q; want %q — a session that is not this operator's to act on is never touched",
+					held.Name, originalName)
+			}
+		})
+	}
+}
+
+// TestARenameIsNoRouteOnAnyOtherMethod is contracts/actions.md's method rule with
+// FR-033 behind it: a GET on the rename path is an unknown route, answered exactly
+// as any other unknown route is — never a 405, and never with an Allow header
+// naming the method that would have worked.
+//
+// **Must fail when** a method-not-allowed path is added. ServeMux answers 405
+// itself whenever a pattern matches the path but not the method and nothing else
+// matches, so deleting handleUnrouted's `/` catch-all turns every row below into
+// one; a hand-written 405 branch moves the same two things.
+//
+// The two responses are compared whole rather than each being asserted a 404,
+// because "answered exactly as any other unknown route is" is the claim: a 404
+// that mentioned the method would tell a caller that *something* is served at that
+// address, which is what a route table is made of.
+//
+// Each request carries everything a rename that would have worked carries, so the
+// only thing left that can refuse it is the method.
+func TestARenameIsNoRouteOnAnyOtherMethod(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{
+		http.MethodGet, http.MethodHead, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodOptions,
+	} {
+		t.Run(strings.ToLower(method), func(t *testing.T) {
+			t.Parallel()
+
+			n := newRenamer(t)
+			live := n.live(t)
+			form := n.asked(t, "renamed-by-the-wrong-verb")
+
+			w := n.send(t, method, "/dashboard/sessions/"+live.ID+"/rename", secFetchSiteSameOrigin, form)
+
+			if w.Code == http.StatusMethodNotAllowed {
+				t.Fatalf("%s on the rename path was answered %d with %s: %q — which method a path serves is not a caller's to learn",
+					method, w.Code, headerAllow, w.Header().Get(headerAllow))
+			}
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("%s on the rename path was answered %d (%s); want %d — the unknown-route answer",
+					method, w.Code, w.Body.String(), http.StatusNotFound)
+			}
+			if got := w.Header().Get(headerAllow); got != "" {
+				t.Errorf("%s on the rename path answered with %s: %q; want no such header", method, headerAllow, got)
+			}
+
+			// The same method at a path nothing claims, on the same daemon and the same
+			// identity: what an unknown route really answers here, rather than this
+			// test's idea of it.
+			nowhere := n.send(t, method, "/dashboard/sessions/"+live.ID+"/nonesuch", secFetchSiteSameOrigin, form)
+
+			if w.Code != nowhere.Code {
+				t.Errorf("%s on the rename path answered %d; at a path nothing claims it answered %d — the two are distinguishable",
+					method, w.Code, nowhere.Code)
+			}
+			if got, want := w.Body.String(), nowhere.Body.String(); got != want {
+				t.Errorf("%s on the rename path answered\n%s\nat a path nothing claims it answered\n%s\nthe two are distinguishable",
+					method, got, want)
+			}
+			if !maps.EqualFunc(w.Header(), nowhere.Header(), slices.Equal) {
+				t.Errorf("%s on the rename path answered with headers %v; at a path nothing claims %v — the two are distinguishable",
+					method, w.Header(), nowhere.Header())
+			}
+
+			if held := n.stored(t, live); held.Name != originalName {
+				t.Errorf("%s on the rename path left the session called %q; want %q untouched", method, held.Name, originalName)
+			}
+		})
+	}
 }

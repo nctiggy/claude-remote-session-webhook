@@ -499,6 +499,176 @@ func (s *Server) refuseBrowserCreate(w http.ResponseWriter, r *http.Request, err
 	}
 }
 
+// --- Rename ----------------------------------------------------------------
+//
+// The third route on this door that changes something, and the only one of the
+// four that changes nothing on the host at all: a rename is an edit to a record
+// (US4).
+
+// patternDashboardRename is the rename route, from contracts/actions.md's table.
+//
+// It is spelled the destroy's way and for the destroy's reasons: under
+// /dashboard/ so milestone 1's surface is untouched (FR-005) and a grep for the
+// prefix finds every browser-initiated change, the wildcard through pathValueID
+// so the name in the pattern and the name read back cannot drift apart, and the
+// method inside the pattern so a GET here falls to handleUnrouted's `/` and is
+// answered as a path nothing claims rather than as a 405 with an Allow header
+// (FR-033).
+const patternDashboardRename = "POST /dashboard/sessions/{" + pathValueID + "}/rename"
+
+// The two things a rename can answer other than a card, each a fragment because
+// the caller is a card on a page rather than a client reading JSON.
+//
+// Neither is quoted from contracts/actions.md, which fixes what a rename must
+// *say* — that the name was refused, and that the session still holds the one it
+// had — and does not fix the words. Both are text nodes carrying no colour, no
+// markup and no control, and they share the class the destroy's and the create's
+// outcomes carry, because what an operator is told after an action is one
+// component and not seven.
+var (
+	// bodyActionRenameBadName answers a name ValidateName refused.
+	//
+	// It states the rule and then the outcome, and the second sentence is the one
+	// this route needs that the create's refusal does not: the answer *replaces
+	// the card*, so an operator who is told only that the name was bad is left
+	// looking at a slot where their session used to be, with no way to tell a
+	// refused rename from one that half happened (FR-031). What it never carries
+	// is the name that was refused — that is caller-supplied text on its way back
+	// out through a page (FR-042), and the rule is what the operator has to act
+	// on in any case.
+	bodyActionRenameBadName = []byte(`<p class="card-outcome">That is not a usable session name. Use letters, digits and hyphens, up to 64 characters. This session is still called what it was.</p>`)
+
+	// bodyActionRenameFailed is the fail-closed answer for a rename that failed
+	// for a reason no sentinel explains. It says nothing about the record's
+	// current state, because a failure nobody classified is not evidence about
+	// one — and it deliberately does say something, because an empty 500 renders
+	// as a card that reverted (FR-031).
+	bodyActionRenameFailed = []byte(`<p class="card-outcome">The session could not be renamed.</p>`)
+)
+
+// errRenameRefused is the fail-closed reason for a rename that failed for a
+// reason no sentinel explains. A refusal nobody classified is still a refusal,
+// and errCreateRefused is not it: what tells one door's records from another's is
+// the action, and what tells one action's from another's is this.
+var errRenameRefused = errors.New("the session could not be renamed")
+
+// renameFromBrowser is POST /dashboard/sessions/{id}/rename (US4,
+// contracts/actions.md).
+//
+// Everything that authorises it has already run: handleAction wrapped this
+// handler in the gate, so layer 1 has verified an identity, the browser has said
+// the request came from this page, and the form has carried a token minted for
+// that identity. What is left is the ownership check and the record edit.
+//
+// The rename is Manager.Rename and nothing else, which is where FR-015 lives:
+// that method takes no context and has no tmux name to change, so "a rename does
+// not touch the host" is a property of the call rather than of this handler
+// remembering not to. The validation is ValidateName's, reached by calling the
+// same method rather than by restating the alphabet here — a name the create path
+// refuses must not be reachable by renaming into it, and the only thing that keeps
+// that true through a later widening is there being one check to widen.
+//
+// The record that is rendered back is the one Rename returned, not a second read
+// of the store. It already carries the field this call just wrote, and re-reading
+// would be a lookup free to disagree with the write it is describing.
+func (s *Server) renameFromBrowser(w http.ResponseWriter, r *http.Request) {
+	operator, ok := OperatorFrom(r.Context())
+	if !ok {
+		// Fail closed on the path that should not happen, the way every other
+		// handler on this door does: the gate in front puts the operator in the
+		// context, so a false here is a route wired without one.
+		AuditFrom(r.Context()).Deny(errDashboardNoOperator.Error())
+		s.refuseBrowser(w)
+		return
+	}
+
+	// The shape check the destroy runs, ahead of the lookup and for its reason: an
+	// identifier off the 32-lowercase-hex alphabet cannot name a session this
+	// daemon minted, so it is a path nothing claims rather than a session that is
+	// not there.
+	id := r.PathValue(pathValueID)
+	if !routableID(id) {
+		AuditFrom(r.Context()).Deny(errScopeNoRoute.Error())
+		s.renderNotFound(w, r, operator)
+		return
+	}
+
+	// Manager.View, which is what a browser gets: it settles ownership without a
+	// per-session credential and without advancing the idle clock (FR-034a,
+	// FR-034f). Ahead of the name check deliberately — a session this operator may
+	// not act on is answered the same whatever they asked to call it, so the two
+	// refusals cannot be read against each other to learn which identifiers are
+	// real.
+	live, err := s.sessions.View(id, operator.Owner)
+	if err != nil {
+		// resolveReason rather than a reason of this route's own, for the reason
+		// the destroy uses it: the trail already has a vocabulary for these, and
+		// never the wrapped error, which would carry the caller's spelling of the id
+		// (FR-042).
+		AuditFrom(r.Context()).Deny(resolveReason(err).Error())
+		s.notFoundAction(w)
+		return
+	}
+	// The id off the daemon's own record, never the bytes in the path. It is
+	// stamped before the edit, so a rename that failed is findable in the trail
+	// under the session it failed against.
+	AuditFrom(r.Context()).SetSessionID(live.ID)
+
+	// Read from PostForm and never Form, for the reason the gate reads the token
+	// that way: a rename this daemon would accept from a query string is a relabel
+	// a link can carry. The form itself was parsed by the gate, under the
+	// configured body limit.
+	renamed, err := s.sessions.Rename(live, r.PostForm.Get(fieldName))
+	if err != nil {
+		s.refuseBrowserRename(w, r, err)
+		return
+	}
+
+	// The card, rendered from the one projection the fleet and the session page
+	// render from (cardOf), so a renamed session reads exactly as it will on every
+	// later page load — which is also the whole of what this route answers, because
+	// the name is the only thing about the card that moved.
+	//
+	// The page token is the one the request carried rather than a second one minted
+	// here, exactly as the create's answer carries it: this card rejoins the page
+	// that submitted the form, and a card holding a later expiry than its siblings
+	// is one that outlives them. Nothing arbitrary can reach this line — admitAction
+	// verified the value as a MAC over this operator's identity before the handler
+	// ran.
+	s.renderPage(w, r, http.StatusOK, "session-card", cardOf(renamed, s.clock.Now(), r.PostForm.Get(fieldPageToken)))
+}
+
+// refuseBrowserRename maps a Rename failure onto the answer contracts/actions.md
+// gives it, and it is refuseBrowserDestroy's and refuseBrowserCreate's shape for
+// their reason: one function, so the branches are read together.
+//
+// Three arms over an error with two named causes. A name the shared check refused
+// is the contract's 400; a record that is no longer there, or is dead, is the
+// uniform not-found the other routes give — the session was there when View
+// answered and is not there now, which is exactly the "no longer exists" cause
+// T005's one answer exists to cover, and telling a caller that a session
+// disappeared between two reads of the store is the enumeration FR-017 closes.
+//
+// createReason is what turns a refused name into the sentinel an operator can
+// act on. Only its two name arms are reachable from here — ValidateName is the
+// only thing on this path that produces one — and they are the API door's own
+// words on purpose: the same fact deserves the same words in the journal whichever
+// door reported it, and what tells the records apart is the action the middleware
+// already set.
+func (s *Server) refuseBrowserRename(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, session.ErrInvalidName):
+		AuditFrom(r.Context()).Deny(createReason(err).Error())
+		s.writeFragment(w, http.StatusBadRequest, bodyActionRenameBadName)
+	case errors.Is(err, session.ErrSessionNotFound), errors.Is(err, session.ErrSessionDead):
+		AuditFrom(r.Context()).Deny(resolveReason(err).Error())
+		s.notFoundAction(w)
+	default:
+		AuditFrom(r.Context()).Deny(errRenameRefused.Error())
+		s.writeFragment(w, http.StatusInternalServerError, bodyActionRenameFailed)
+	}
+}
+
 // writeFragment writes one action's answer: the type, the length, the status and
 // the bytes, in that order and in one place.
 //

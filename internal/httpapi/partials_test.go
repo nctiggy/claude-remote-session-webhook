@@ -376,6 +376,23 @@ func TestTheLinkOnACardWithNoNameIsStillToldApartFromEveryOther(t *testing.T) {
 // contents.
 var cardForm = regexp.MustCompile(`(?s)<form\b([^>]*)>(.*?)</form>`)
 
+// formPostingTo picks the one form on a card that submits to an address, and
+// returns its attributes and its contents.
+//
+// The card carries more than one action now, so a test that read forms[0] would
+// be asserting against whichever control happens to be first in the markup — and
+// would go on passing, silently describing the wrong route, the moment the row is
+// reordered. The address is the only thing that identifies a form here, because it
+// is the only thing the daemon serves.
+func formPostingTo(forms [][]string, target string) (attributes, contents string, ok bool) {
+	for _, form := range forms {
+		if strings.Contains(form[1], `action="`+target+`"`) {
+			return form[1], form[2], true
+		}
+	}
+	return "", "", false
+}
+
 // TestCardHasExactlyOneAnchor is FR-027 on the card that finally has a control
 // to put somewhere.
 //
@@ -428,14 +445,14 @@ func TestTheCardsDestroyFormCarriesWhatTheRouteRequires(t *testing.T) {
 	got := renderComponent(t, "session-card", card)
 
 	forms := cardForm.FindAllStringSubmatch(got, -1)
-	if len(forms) != 1 {
-		t.Fatalf("the card renders %d action forms; this milestone's card carries one, the destroy:\n%s", len(forms), got)
+	if len(forms) != 2 {
+		t.Fatalf("the card renders %d action forms; this milestone's card carries two, the destroy and the rename:\n%s", len(forms), got)
 	}
-	attributes, contents := forms[0][1], forms[0][2]
 
 	target := strings.Replace(strings.TrimPrefix(patternDashboardDestroy, "POST "), "{"+pathValueID+"}", card.ID, 1)
-	if !strings.Contains(attributes, `action="`+target+`"`) {
-		t.Errorf("the destroy form posts to <form%s> and the daemon serves %q:\n%s", attributes, target, got)
+	attributes, contents, ok := formPostingTo(forms, target)
+	if !ok {
+		t.Fatalf("no form on the card posts to %q, which is where the daemon serves the destroy:\n%s", target, got)
 	}
 	// A GET on that path is an unknown route rather than a 405 (T008), so a form
 	// that forgot its method would submit a query string to nothing at all — and
@@ -464,6 +481,123 @@ func TestTheCardsDestroyFormCarriesWhatTheRouteRequires(t *testing.T) {
 	// ring both come with the element.
 	if !strings.Contains(contents, `type="submit"`) {
 		t.Errorf("the destroy form holds no submit control, so nothing on the card operates it:\n%s", got)
+	}
+}
+
+// TestTheCardsRenameFormCarriesWhatTheRouteRequires is the destroy form's
+// linkage for the second control on the card (T017): the markup, the route and
+// the handler have to agree about one address and two field names, and when they
+// do not, the card renders perfectly and every rename is refused — by the gate if
+// the token field moved, and as bad input if the name field did.
+//
+// The address and both names are derived from what the daemon registers and reads
+// rather than spelled again here. This template set is parsed with no function
+// map, so a template cannot reach a Go constant and the second spelling is
+// unavoidable; this is the only thing holding the two together.
+//
+// The label is asserted because docs/components.md requires one on every input
+// and a placeholder is not a label — and its `for` is asserted to name *this*
+// card's field, because a fleet is many cards and a label pointing at another
+// card's input reads correctly while operating the wrong session.
+func TestTheCardsRenameFormCarriesWhatTheRouteRequires(t *testing.T) {
+	t.Parallel()
+
+	card := actionableCard()
+	got := renderComponent(t, "session-card", card)
+
+	forms := cardForm.FindAllStringSubmatch(got, -1)
+	target := strings.Replace(strings.TrimPrefix(patternDashboardRename, "POST "), "{"+pathValueID+"}", card.ID, 1)
+	attributes, contents, ok := formPostingTo(forms, target)
+	if !ok {
+		t.Fatalf("no form on the card posts to %q, which is where the daemon serves the rename:\n%s", target, got)
+	}
+
+	// A GET on that path is an unknown route rather than a 405, so a form that
+	// forgot its method would submit a query string to nothing at all — and would
+	// put the token in a URL on the way.
+	if !strings.Contains(strings.ToLower(attributes), `method="post"`) {
+		t.Errorf("the rename form declares no post method (<form%s>); a GET on that path is a route this daemon does not serve:\n%s", attributes, got)
+	}
+
+	token := hiddenTokenField.FindStringSubmatch(contents)
+	if token == nil {
+		t.Fatalf("the rename form carries no hidden %s field, so the gate refuses every submission of it:\n%s", fieldPageToken, got)
+	}
+	if token[1] != card.PageToken {
+		t.Errorf("the rename form submits %q and the card was rendered with %q", token[1], card.PageToken)
+	}
+
+	name := regexp.MustCompile(`<input\b[^>]*\bname="` + regexp.QuoteMeta(fieldName) + `"[^>]*>`).FindString(contents)
+	if name == "" {
+		t.Fatalf("the rename form submits no %q field, and the handler reads the new label out of one:\n%s", fieldName, got)
+	}
+	if !strings.Contains(contents, `type="submit"`) {
+		t.Errorf("the rename form holds no submit control, so nothing on the card operates it:\n%s", got)
+	}
+
+	id, ok := attributeValue(t, name, "id")
+	if !ok {
+		t.Fatalf("the %q input carries no id (%s), so no label can name it", fieldName, name)
+	}
+	if !strings.Contains(id, card.ID) {
+		t.Errorf("the %q input is called %q, which does not name this session; every card on a fleet renders this form, and duplicate ids point every label at the first one", fieldName, id)
+	}
+	labelled := false
+	for _, label := range formLabel.FindAllStringSubmatch(contents, -1) {
+		if label[1] == id && strings.TrimSpace(label[2]) != "" {
+			labelled = true
+		}
+	}
+	if !labelled {
+		t.Errorf("the %q input is named by no label with words in it; a placeholder is not a label (docs/components.md):\n%s", fieldName, got)
+	}
+
+	// The field is what the daemon currently holds, so the operator edits a label
+	// rather than recalling one — and an adopted session, which has none, renders
+	// an empty field rather than an invented name (FR-018a).
+	if value, ok := attributeValue(t, name, "value"); !ok || value != card.Name {
+		t.Errorf("the %q input renders value %q (present: %t); want the session's current name %q", fieldName, value, ok, card.Name)
+	}
+	adopted := actionableCard()
+	adopted.Name = ""
+	nameless := regexp.MustCompile(`<input\b[^>]*\bname="` + regexp.QuoteMeta(fieldName) + `"[^>]*>`).
+		FindString(renderComponent(t, "session-card", adopted))
+	if value, _ := attributeValue(t, nameless, "value"); value != "" {
+		t.Errorf("a session with no recorded name renders the rename field holding %q; an invented label is the card telling an operator something false about an unsandboxed shell", value)
+	}
+
+	// The client hints, pinned to the daemon's own rule rather than to a second
+	// spelling of it — the create form's arrangement, and for its reason: a hint
+	// that disagrees refuses in a native bubble this daemon never wrote, about a
+	// rule it does not have, with nothing on the card to say why.
+	if limit, ok := attributeValue(t, name, "maxlength"); !ok {
+		t.Errorf("the %q input sets no maxlength (%s); the daemon's ceiling is %d characters", fieldName, name, session.MaxNameLen)
+	} else if limit != strconv.Itoa(session.MaxNameLen) {
+		t.Errorf("the %q input stops at %s characters and the daemon accepts %d", fieldName, limit, session.MaxNameLen)
+	}
+	hint, ok := attributeValue(t, name, "pattern")
+	if !ok {
+		t.Fatalf("the %q input carries no pattern (%s); the alphabet below has nothing to compare against", fieldName, name)
+	}
+	// Anchored, because an HTML pattern is: the browser matches the whole value.
+	alphabet, err := regexp.Compile(`^(?:` + hint + `)$`)
+	if err != nil {
+		t.Fatalf("the %q input's pattern %q does not compile: %v", fieldName, hint, err)
+	}
+	for b := 0; b < 128; b++ {
+		char := string(rune(b))
+		hinted, accepted := alphabet.MatchString(char), session.ValidateName(char) == nil
+		if hinted != accepted {
+			t.Errorf("the browser hint %q %s %q and the daemon %s it; a hint that disagrees refuses in a bubble this daemon never wrote",
+				hint, map[bool]string{true: "accepts", false: "refuses"}[hinted], char,
+				map[bool]string{true: "accepts", false: "refuses"}[accepted])
+		}
+	}
+	// The route refuses an empty name, so a form that submits without one is a
+	// round trip whose only outcome is a refusal — and, on this route, a card
+	// replaced by that refusal.
+	if !regexp.MustCompile(`\brequired\b`).MatchString(name) {
+		t.Errorf("the %q input is not required (%s), and the route refuses an empty one", fieldName, name)
 	}
 }
 
