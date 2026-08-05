@@ -147,6 +147,33 @@ jobs:
             - If the issue is ambiguous, do NOT guess. Open the PR as a draft and
               write the specific question under a "NEEDS CLARIFICATION" heading.
 
+      # The agent cannot do this itself, and deliberately still cannot. Opening a
+      # PR needs `gh pr create`, which is not on its allowlist; widening that
+      # means editing .claude/settings.json, which the harness denies because an
+      # agent must not be able to grant itself permissions (constitution V). The
+      # #30 run verified both walls by walking into them rather than reasoning
+      # about them, and reported the second one as the finding it was sent to fix.
+      #
+      # Note what is NOT here: `workflows: write`. Adding it would let a future
+      # run edit this file — the one that decides what runs with write access to
+      # the repo — and the agent's inability to touch it is the guardrail, not an
+      # inconvenience to route around. Wiring the step from outside removes the
+      # need without removing the wall.
+      #
+      # `if: always()` is the point rather than a detail: a run cut off by the
+      # turn budget still leaves commits worth reading, and open-pr.sh opens
+      # those as a *draft* so the auto-merge chain cannot carry half-finished
+      # work to main on its own.
+      - name: Open the pull request
+        if: always()
+        env:
+          BRANCH: ${{ steps.claude.outputs.branch_name }}
+          ISSUE: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          AGENT_OUTCOME: ${{ steps.claude.outcome }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./.github/scripts/open-pr.sh
+
       - name: Summarize
         if: always()
         run: |
