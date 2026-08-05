@@ -487,6 +487,14 @@ func newServer(
 	// operations, and a route authorised by an identity rather than a signature
 	// is not one of them.
 	s.handleBrowser(patternSessionStream, audit.ActionStreamOpen, s.sessionStream)
+	// The other stream, and the one that is about the fleet rather than about a
+	// session (#15). It goes on handleBrowser and not handleAction because it
+	// changes nothing: what admits it is layer 1 and the same-origin check the pane
+	// stream carries, with no page token — an EventSource cannot submit a form
+	// field, and the token exists to authorise a write. Its action is its own, so
+	// an operator counting who watched the fleet is not counting page loads or pane
+	// reads with it.
+	s.handleBrowser(patternFleetStream, audit.ActionFleetOpen, s.fleetStream)
 	// The first route on this door that changes something, and the reason
 	// handleAction exists one line below handleBrowser rather than instead of it:
 	// everything above only reads, and a read is authorised by layer 1 alone.
