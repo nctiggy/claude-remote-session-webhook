@@ -12966,3 +12966,119 @@ three fields' worth of care: the page-token partial moved inside it (finding 355
 and nothing inside the anchor. Outcome text is already what the route answers with — style
 `.card-outcome`, do not restate it in the template. Nothing animates under
 `prefers-reduced-motion`; the universal `transition: none` from #23 already covers it.
+
+## Iteration 87 (milestone 3, iteration 7) — 2026-08-05 05:30
+
+**Did:** **T007** — the destroy control on `web/templates/partials/session-card.html`, styled in
+`web/static/crswd.css`. A plain `<form method="post" action="/dashboard/sessions/{id}/destroy">`
+holding the `page-token` partial, a hidden `confirm=yes`, and a `<button type="submit">`, all
+inside `<div class="card-actions">` and all **outside** the card's one `<a>` (FR-027). New CSS:
+`.card-actions form`, `.button`, `.button-danger`, `.card-outcome`. Tests
+`TestCardHasExactlyOneAnchor` and `TestTheCardsDestroyFormCarriesWhatTheRouteRequires` in
+`partials_test.go`, plus the call site in `dashboard_test.go`.
+
+**The row is gated on `.PageToken`, not on `Actions`.** This is the one decision T007 had to make
+and it is worth reading before T017 and T020 add their controls. `actionView` is an empty struct
+by design ("inventing its shape now would be inventing milestone 3's requirements"), so
+`[]actionView{{}}` cannot say *destroy* — passing one from `cardOf` to mean "show the button"
+would have been a placeholder used as a flag. What actually decides whether a card may offer an
+action is whether it holds the token the gate demands: without one, every control on it is
+refused with nothing on the page to say why. So the row renders `{{ with .PageToken }}`, both
+page handlers already mint one (`cardOf`), and **`sessionView.Actions` was removed** — a
+parameter no template read. `emptyView.Action` still uses `actionView`; T010 fills that one.
+
+**What T007 had to change in milestone 2's tests, and why that is not a regression.** Four
+independent assertions said the dashboard offers nothing to act with. Three of them are now
+false *by design* — that is the milestone. `TestTheReadOnlyComponentsOfferNoAction` became
+`TestAComponentHandedNothingToActWithOffersNoAction` (a card with no token, and the empty state,
+still offer nothing); `TestTheRenderedFleetOffersNothingToActWith` became
+`TestTheRenderedFleetOffersTheDestroyControl`, asserting the inverse at the same call site; the
+session page's block flipped the same way. `mutationMarkup` is untouched and still guards the
+two components that offer nothing; a narrower `scriptedMarkup` (`hx-*`, `onclick`) is what the
+action-carrying pages are swept with. **T023 asks whether milestone 1 and 2 acceptance passes
+unchanged — these three are the exception it cannot mean**, since a milestone whose purpose is to
+put controls on the card cannot leave a test asserting the card has none.
+
+**All six must-fail conditions were run, not reasoned about.** Each mutation applied, the named
+test run, the mutation reverted:
+
+1. **A `<button>` added inside the anchor** → `TestCardHasExactlyOneAnchor` red on the contents
+   check. The count assertion alone stays green, which is why the test reads `anchors[0][2]`.
+2. **`confirm=yes` removed** → `TestTheCardsDestroyFormCarriesWhatTheRouteRequires` red.
+3. **The token include removed** → the form test, the fleet call site, *and*
+   `TestPageTokenNotInURLsOrLogs` all red.
+4. **The token field left outside the `<form>`, exactly where T004 shipped it (finding 355)** →
+   the form test and the fleet call site red; `TestPageTokenNotInURLsOrLogs` **stayed green**,
+   which is the whole reason the new assertions read the form's contents rather than the page's.
+5. **The `{{ with .PageToken }}` guard dropped** → `TestAComponentHandedNothingToActWithOffersNoAction`
+   and the FR-024a "without" branch red.
+6. **The control deleted entirely** → six tests red, including
+   `TestTheStylesheetAndTheMarkupNameTheSameThings` on `.button`, `.button-danger` and
+   `.card-actions` — the "a rule no template renders" direction catching a deleted control.
+
+**Learned:**
+
+1. **`.card-outcome` is written in Go, not in a template, and the stylesheet sweep could not see
+   it.** `renderedClasses` walks `web/templates`; the four outcome sentences are `[]byte` literals
+   in `actions.go` because a destroyed session has no record left to render a card from. Styling
+   the class would have failed the "no template renders it" direction. Fixed by folding
+   `actionFragments` — the five bodies, by name — into `renderedClasses`, which now holds **both**
+   directions for markup composed in Go. **T009, T017 and T020 add more such fragments and must
+   add them to that map**, or their classes are unstyled with nothing to say so.
+2. **`font: inherit` on a button fails `TestNoRuleNamesAFontFace`.** A button does not inherit the
+   page font, so the family has to be set — and the sweep demands a `var(--…)`, which `inherit` is
+   not. `font-family: var(--mono)` is the spelling that passes and is also the correct one.
+3. **A `<form>` is a block with a UA margin**, so `.card-actions form { margin: 0 }` is load-bearing
+   for the row, not tidiness. An element selector under a rendered class satisfies the class sweep.
+4. **`--state-dead` is the danger colour.** No new token: the design system's rule is that a value
+   not in that document does not exist, and adding one is `docs/design-system.md`'s edit, not this
+   task's. Measured rather than eyeballed as that document requires — `#ff4d4d` on `--surface` is
+   ≈5.9:1, clear of AA.
+5. **The button carries `aria-describedby` to the card's identifier**, for the reason the anchor
+   above it does (#16): after a restart every card reads "no name recorded", and a column of
+   controls all announcing "Destroy" would each end a different unsandboxed shell.
+
+**Findings:**
+
+358. **Nothing swaps the fragment into the page, so a destroy is a full-page navigation to a bare
+    sentence.** R4 accepts this ("an action still works if scripting fails") and T006 deliberately
+    gave the outcome bodies no stylesheet link, so the operator lands on an unstyled paragraph with
+    no way back but the browser's back button. `.card-outcome` is styled for the day something
+    swaps it in — **no task in the plan does**, and T014 is the only one that touches `crswd.js`.
+    **This is the MVP's most visible rough edge and needs an owner.** Same shape as findings 201
+    and 202.
+359. **FR-031's *in-progress* state has no treatment and cannot get one in this task.** Complete
+    and failed are sentences the route returns; in-progress is the browser's own navigation
+    indicator, because a plain form post has no `:submitting` state and `crswd.js` is not T007's
+    file. Not a defect against the contract — it is what R4 chose — but **SC-011 and the FR-031
+    row of the spec's verification table are browser-visual checks a human still owes**, alongside
+    SC-009/010.
+360. **`docs/components.md` says destructive actions use "`Variant: danger` **and** a confirmation
+    modal", and there is no modal.** `partials/modal.html` and `partials/button.html` are both on
+    that document's canonical inventory and **neither file exists** — milestone 2 had no controls,
+    so it built neither. FR-029's confirming step is the `confirm=yes` field (T006 settled this:
+    "the field costs a deliberate act to send, which is the whole of what FR-029 asks for"), and a
+    `<dialog>` needs script to open. The card therefore renders a raw `<button>` with `.button
+    .button-danger` — the class vocabulary a Button partial would use, so it lifts and shifts —
+    rather than a component that does not exist. **T022 already owes `docs/components.md` an
+    amendment; this is part of it**, and T010 will meet the same absence for the create form.
+361. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307, 311–315,
+    317–323, 325, 327–328, 330–333, 335–357 carry over unchanged.** 306 still needs the operator's
+    answer; 342's `research.md` R1 discrepancy still wants confirming; 350's missing pin between
+    the two not-found bodies still stands; 352's authored destroy copy is still the operator's to
+    confirm and is now on screen. 340's lint caveat still applies: `golangci-lint` on PATH is
+    v1.62.2 and reads this repo's v2 config by running zero linters, so `golangci-lint run` is a
+    green that means nothing. The substitute run was `golangci-lint run --no-config --disable-all
+    -E bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags tmux,dev ./...`,
+    clean after one `//nolint:gosec` on the test's placeholder token (G101 on a value chosen so it
+    could not be mistaken for a credential — the third of these). `go test ./...`, `go test -race
+    ./internal/httpapi`, `go test -tags dev ./...`, `gofmt -l` and `go vet` under all three tags
+    clean too. CI's pinned v2.12.2 is the check that counts.
+
+**Left:** T008–T023. Next is **T008** — the US1 acceptance suite in
+`internal/httpapi/actions_test.go`, and **AR-005 applies with full force**: `GET` on the destroy
+path is the unknown-route response with **no `Allow` header** (must fail when a method-not-allowed
+path is added), and **each half of the defence is disabled separately in the test build** with the
+other still refusing (FR-002c, SC-001a). The seam must not exist in the shipping build — a build
+tag or flag that turns a check off is the exact defect this milestone was written to prevent. The
+two halves are `crossSite` and the page-token check, both in `admitAction` in `browser.go`.
