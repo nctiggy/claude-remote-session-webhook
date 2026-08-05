@@ -13936,3 +13936,117 @@ through `Store.Add` and does **not** emit, so `Manager.Create`/`Destroy` are the
 event; the reaper row needs the reaper's own path rather than a manual destroy, which is the half of
 #15 that was reported; and finding 389's severed-stream row is **T015's half** (fill a 64-event
 backlog with a reader that has stopped reading) — the page half is done and the wire half is not.
+
+## Iteration 95 (milestone 3, iteration 15) — 2026-08-05 07:54
+
+**Did:** **T015** — the US3 acceptance suite at the foot of `internal/httpapi/fleet_test.go`.
+Five tests: `TestASessionTheAPICreatedAppearsOnAnOpenFleet`,
+`TestTheReaperTakingASessionIsSeenByAnOpenFleet`, `TestAQuietFleetWritesHeartbeatsAndNotEvents`,
+`TestTheFleetStreamIsNoRouteOnAnyOtherMethod` and
+`TestASubscriptionThatEndedEndsTheResponseWithNoFarewell`, plus two helpers
+(`onlyHeartbeatsFollow`, `fleet.askTheFleetStream`). Test-only: no production file changed.
+
+**The difference between this suite and the one above it is where the change comes from.** Every
+test written in iteration 93 causes its change by calling `Manager.Create`/`Destroy` directly, which
+is right for a test of the handler — but issue #15 is the fleet an open dashboard did *not* touch,
+and a stream that only heard browser-caused changes would pass all of them. So the create here is a
+**signed API request through `postSessions`** (layer 2, no Access assertion anywhere) and the
+destroy is the **reaper's own `Sweep`**, built with `session.NewReaper(f.sessions, f.trail)` —
+literally the two arguments `StartReaper` passes.
+
+**All six must-fail conditions were run, not reasoned about.** Each mutation applied, the named
+tests run, the mutation reverted:
+
+1. **`m.emit(FleetAppeared, s)` removed from `Manager.Create`** → the API-create test red at
+   `no fleet change arrived within 300 line groups`.
+2. **The reaper's `r.mgr.Destroy(ctx, s)` replaced by `r.mgr.store.Delete(s.ID)`** (teardown
+   *around* the manager) → the reaper test red the same way. This is the mutation that matters: the
+   reaper emits only because it tears down through `Manager.Destroy`, and nothing else forces that.
+3. **The heartbeat write deleted from `follow`'s ticker case** → the quiet-fleet test red on the
+   stream delivering nothing for 10s.
+4. **The ticker made to write an event instead of the comment** → red on the hand-spelled `":\n"`,
+   which is the half `isHeartbeat` alone would not have caught.
+5. **`handleUnrouted`'s `/` catch-all deleted** → all five method rows red with
+   `405` and `Allow: "GET, HEAD"`.
+6. **A farewell event written on the closed-channel path**, then **`continue` instead of `return`**
+   → the severed-subscription test red on the bytes, then on the 10s budget.
+7. **`publish` sending each event twice** → *both* story tests red on `onlyHeartbeatsFollow`. That
+   is what makes "one `appeared`" a claim; without those ten quiet ticks the tests would pass on the
+   first event that happened to match.
+
+**Learned:**
+
+1. **`postSessions(t, f.testServer, createBody(f.fixture))` works against a fleet that is already
+   serving on a real socket**, and needs no second server. The stream is on the listener and the API
+   request goes straight through `ServeHTTP`; they share one `Server`, so the manager the request
+   changes is the manager the stream is subscribed to. No sleeps, no goroutines, no retry loop —
+   iteration 93's learning 2 (subscribe happens before `openStream`) carries the whole thing.
+2. **The reaper is drivable from `internal/httpapi`'s tests without waiting 30 seconds.** `Sweep` is
+   exported and is exactly what `Run` calls per tick; the `ticker` seam is only needed for a test of
+   the *loop*. The fixture's `fixedClock{at: testTime}` plus `idleAt(testTime)` from
+   `dashboard_test.go` is all an expired record takes, and `plant` seeds the tmux window so the
+   verified teardown really confirms.
+3. **`GET` patterns serve `HEAD` in net/http's ServeMux**, so a method sweep over this route cannot
+   include HEAD — mutation 5's `Allow: "GET, HEAD"` is the proof. HEAD is excluded from the table
+   with a comment saying why. See finding 402.
+4. **Finding 389's severed stream is not distinguishable at the wire, and that is the answer rather
+   than a gap.** Filling the 64-event backlog needs the handler to have stopped reading its channel;
+   the handler only stops while a write is blocked; and a blocked write on this server fails at its
+   own deadline and ends the response with *the same bytes* a dropped subscriber produces (finding
+   388 — neither has a farewell). So the two endings are one case at the wire by construction. The
+   claim is pinned at `follow` instead, with a `stream` over a recorder and an already-closed
+   channel: `rc.Flush()` works on an `httptest.ResponseRecorder`, so a `stream` is constructible in
+   a test without a socket, and a one-hour cadence keeps the ticker out of the claim.
+
+**Findings:**
+
+400. **The contract's `changed`-on-rename and `changed`-on-idle rows are still not covered by any
+    acceptance test, and only one of them is anybody's.** Rename is T016's and will arrive. The
+    idle→`changed` row is the unowned one from iterations 92, 93 and 94 — **T015 was the last task
+    that could have covered it and its own list does not name it**, so the contract now has a row no
+    task in this milestone owns and no code satisfies. Still the operator's ruling.
+401. **`TestTheFleetStreamIsNoRouteOnAnyOtherMethod` asserts a byte-identical answer to a path
+    nothing claims, which passes only because the fixture's clock is pinned.** Both responses carry
+    a freshly minted page token, and a token is `<expiry>.<HMAC>` over an expiry the clock decides —
+    on a real daemon the two renders are a moment apart and would agree anyway (the expiry is
+    coarse), but a future page whose token expiry were second-resolution would make this test flake
+    rather than fail. `TestADestroyIsNoRouteOnAnyOtherMethod` has the same shape and the same
+    dependence. Recorded, not fixed: `pinClock` is the fixture's, not this task's.
+402. **A `HEAD` on either stream route opens a subscription, records the open, and streams to a
+    client that by definition discards the body.** net/http's ServeMux serves HEAD from a `GET`
+    pattern, so `HEAD /dashboard/fleet/stream` reaches `fleetStream`, subscribes, writes a
+    `fleet.open` record and then heartbeats into a response the transport throws away until the
+    connection dies. It is not an authorisation hole — the same two checks run — but it is a way to
+    hold a subscription and a connection slot that no contract mentions, and the pane stream has
+    carried it since milestone 2. **A route table that spelled `HEAD` as unrouted would need a
+    contract line first**, which is why this is recorded rather than changed.
+403. **Nothing asserts that the API's *destroy* emits `vanished` at the wire.** T015's list names
+    the API create and the reaper destroy, and both are now covered; `DELETE /sessions/{id}` goes
+    through the same `Manager.Destroy` the reaper does, so it is covered by construction rather than
+    by a test. Cheap to add and nobody's task — T021's leak corpus is the next thing that will drive
+    the action routes with a stream open.
+404. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307, 311–315,
+    317–323, 325, 327–328, 330–333, 335–379, 381–383, 385–387, 390–398 carry over unchanged.** 389
+    is **closed** by learning 4 above — its wire half is unreachable *and* indistinguishable, which
+    is the answer it was asking for. 306 still needs the operator's answer; 342's `research.md` R1
+    discrepancy still wants confirming; 350's missing pin between the two not-found bodies still
+    stands; 360, 367, 371, 372, 395 and 397 are all T022's; 374's unowned swap is still unowned;
+    378's two drifting checklists still want a ruling. Iteration 90's **NEEDS CLARIFICATION on T023
+    vs T010 is still unanswered.** 340's lint caveat still applies: `golangci-lint` on PATH is
+    v1.62.2 and reads this repo's v2 config by running zero linters, so `golangci-lint run` is a
+    green that means nothing. The substitute run was `golangci-lint run --no-config --disable-all -E
+    bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags tmux,dev ./...`,
+    clean with no new `//nolint`. `go build ./...`, `go test -count=1 ./...`, `go test -race
+    ./internal/httpapi ./internal/session`, `go test -tags tmux ./...`, `go test -tags dev ./...`,
+    **`go test -tags quickstart ./cmd/crswd` (ran green, 27s)**, `gofmt -l`, `goimports -l` and
+    `go vet` under all four tags clean too. CI's pinned v2.12.2 is the check that counts.
+
+**Left:** T016–T023. **US3 is complete** — T012–T015 close issue #15. Next is **T016** —
+`internal/session/manager.go`: `Rename`, changing **only** the record's display name, with the same
+validation as create, emitting `changed`, and test `TestRenameLeavesTmuxNameAlone`. Four things it
+needs from here: `TmuxName()` is `crswd-<id>` and derives from the identifier, so the test's
+must-fail condition is a rename that touches it; the validation to reuse is `internal/session`'s own
+name check (`name.go`) — call it, do not restate it, the way T009 reused the create validation; the
+`changed` emit must go beside the store mutation like every other one in `manager.go` (T012's rule),
+so `fleet_test.go`'s suite will see it without being changed; and finding 400 means the contract's
+other `changed` row — idle→`changed` — is **not** T016's to fix, however tempting the proximity.

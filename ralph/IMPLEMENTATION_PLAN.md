@@ -116,7 +116,7 @@ if one looks wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and st
 - [x] T012 `internal/session/manager.go`: an event source covering **every** path that changes the fleet — including the reaper and startup adoption. Non-blocking: a slow subscriber must never delay a destroy or shutdown. The reaper is the case most likely to be missed and is exactly what #15 reported
 - [x] T013 `internal/httpapi/fleet.go`: `GET /dashboard/fleet/stream`. Layer 1 + `crossSite`, **no page token** — it mutates nothing. Payload is `{"id":"..."}` only. Ownership filtered **before the event is written**. One `fleet.open` record per open, not per event
 - [x] T014 `web/static/crswd.js` + templates: re-fetch only the affected card; a severed stream **says so** rather than presenting a fleet it cannot vouch for
-- [ ] T015 US3 acceptance: API create yields `appeared`, a reaper destroy yields `vanished`, a quiet stream yields a heartbeat comment
+- [x] T015 US3 acceptance: API create yields `appeared`, a reaper destroy yields `vanished`, a quiet stream yields a heartbeat comment
 
 ### US4 — Rename (P4)
 
