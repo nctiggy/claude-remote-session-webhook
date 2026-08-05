@@ -133,7 +133,7 @@ if one looks wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and st
 
 - [x] T021 `internal/audit/leak_test.go`: extend the corpus to all four action routes and the fleet stream. Nothing yet proves the *action* routes do not leak
 - [x] T022 Amend `docs/auth-and-sessions.md`, `docs/security.md` and `docs/components.md` — all three describe a browser that can only read
-- [ ] T023 Run `specs/003-dashboard-actions/quickstart.md` end to end plus both tagged suites, and confirm milestone 1 and 2 acceptance passes **unchanged**. A story needing edits to accommodate this milestone is a regression to fix in the code, not in the test
+- [x] T023 Run `specs/003-dashboard-actions/quickstart.md` end to end plus both tagged suites, and confirm milestone 1 and 2 acceptance passes **unchanged**. A story needing edits to accommodate this milestone is a regression to fix in the code, not in the test
 
 ---
 

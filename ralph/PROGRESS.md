@@ -14756,3 +14756,29 @@ and 2 acceptance suites pass **unchanged**. Two things it needs from here: the q
 restart it after. And iteration 90's unanswered question is now blocking: **if a milestone 1 or 2
 story needs an edit to accommodate this milestone, that is a regression to fix in the code, not in
 the test** — so an edit that looks necessary is a finding for the operator, not a green.
+
+---
+
+**T023 — the gate, run for real.** Every prior iteration deferred the tagged suites here and ran a
+substitute linter, because `golangci-lint` on PATH is v1.62.2: it reads this repo's v2 config,
+executes zero linters, and exits 0. The session-start warning from #26/#33 is what made that
+visible rather than a silent false green, and every iteration reported it honestly instead of
+claiming a pass it had not earned.
+
+Run with the pinned v2.12.2 from `~/go/bin`, on the full milestone:
+
+| Command | Result |
+|---|---|
+| `go build ./...` · `go vet ./...` · `go test ./...` | pass |
+| `golangci-lint run` (**v2.12.2, repo config**) | **0 issues** |
+| `go test -tags tmux ./...` | pass, all 8 packages |
+| `go test -tags quickstart ./cmd/crswd` | pass, 27.6s |
+| `go.sum` present? | no |
+
+The operator's own tmux sessions (`speckit-m1`, `customer-opprotunities`) were present and
+untouched before and after the real-tmux suite — #22's per-daemon socket doing its job, on the
+host, under the suite most likely to expose it.
+
+**Left:** nothing in the plan. T001–T023 are done.
+
+RALPH_COMPLETE
