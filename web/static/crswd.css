@@ -90,6 +90,10 @@
 
   --shell-max: 1160px;
   --card-min: 310px;
+  /* The action toast's own width, alongside --card-min for the same reason: a
+     layout dimension the design system does not name, declared once here rather
+     than spelled into the rule that uses it. */
+  --toast-max: 34rem;
   --pane-h: 30rem;
 
   /* The rain's two permitted strengths. Opacity belongs to the surface the
@@ -690,4 +694,26 @@ body {
   *::after {
     transition: none;
   }
+}
+
+/* The action toast (issue #42).
+   An action's answer, shown over the fleet instead of replacing it. Fixed to the
+   viewport so it is where the eye already is after a click, and inert to the
+   pointer so it can never sit between an operator and the card underneath it.
+   Every value is a token: the toast is a component, and a component that
+   introduced a colour would be the drift Principle VII forbids. */
+.action-toast {
+  position: fixed;
+  inset-block-end: var(--s5);
+  inset-inline: var(--s5);
+  margin-inline: auto;
+  max-inline-size: var(--toast-max);
+  padding: var(--s3) var(--s4);
+  border: var(--edge-width) solid var(--edge-bright);
+  border-radius: var(--r);
+  background: var(--surface-lift);
+  color: var(--text);
+  font-family: var(--sans);
+  text-align: center;
+  pointer-events: none;
 }
