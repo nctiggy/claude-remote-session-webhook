@@ -13304,3 +13304,128 @@ four actions ([R7](../specs/003-dashboard-actions/research.md)) — **and that n
 means `crswd.js`, a file T014 otherwise owns.** The form's container has no component in
 `docs/components.md` (finding 367), and the empty state's `Action` parameter is still the one
 `actionView` was kept for.
+
+## Iteration 90 (milestone 3, iteration 10) — 2026-08-05 06:23
+
+**Did:** **T010** — the create form, `web/templates/partials/create-form.html`, rendered by
+`dashboard.html` from a new `createFormView` (one field, the page token). Submit disables itself in
+`crswd.js`; `crswd.css` gains the panel, the field pair, `.button-primary` and `.button:disabled`.
+Five tests in `partials_test.go` including the named `TestCreateFormCarriesToken`,
+`TestTheScriptSpendsASubmitOnce` in `stylesheet_test.go`, and
+`TestTheRenderedFleetOffersTheCreateForm` in `dashboard_test.go` — the "something calls it" half.
+
+**The form is outside the empty state as well as outside every card, and the second half is the
+design system's rather than the milestone's.** `docs/components.md` documents the empty state with
+a "Start a session" action and `actionView` was kept alive for exactly that parameter — but
+`docs/design-system.md` says rain never goes behind reading content, "not a pane, a card grid, **a
+form**, or a table", and the empty state is the one surface where it runs at `.5`. So FR-024a's
+parameter stays absent and the form is a sibling section. **`actionView` is now a parameter nothing
+will ever pass**: T017's rename and T020's compact are both card controls. T022 should decide
+whether it is deleted or documented, because a component parameter with no possible call site is
+the shape of a second component waiting to happen.
+
+**Milestone 2's acceptance story could not survive this task, by any means short of naming the
+control something it is not.** `TestDashboardQuickstartStory1Fleet` asserted `"This dashboard only
+watches"` and that **no string anywhere on the page** reads "start a session". The second one fails
+for *any* T010 that puts a create control on the fleet page — it is not about the copy. Both were
+narrowed rather than dropped: the empty state must still explain itself, must still render no
+`empty-action`, and must still offer no control, but the two sweeps are now scoped to the
+`<section class="empty">` slice instead of the whole page. **See NEEDS CLARIFICATION below.**
+
+**All seven must-fail conditions were run, not reasoned about.** Each mutation applied, the named
+tests run, the mutation reverted:
+
+1. **`{{ template "page-token" . }}` removed from the form** → `TestCreateFormCarriesToken` and
+   both rows of `TestTheRenderedFleetOffersTheCreateForm` red.
+2. **`work_dir` renamed to `workdir` in the markup** → `TestTheCreateFormPostsWhatTheRouteReads`
+   and the `required` sweep red. This is the linkage that loses silently: the form renders
+   perfectly and every create is refused as bad input.
+3. **`pattern` widened to `[-a-zA-Z0-9_]+`** → `TestTheCreateFormsHintsAgreeWithTheDaemonsRules`
+   red, printing `accepts "_" and the daemon refuses it`.
+4. **The `querySelectorAll` loop replaced with `void spendOnce`** → `TestTheScriptSpendsASubmitOnce`
+   red. A guard that is written, correct and attached to nothing is this repo's fourth instance of
+   that failure.
+5. **The form moved inside `{{ if .Sessions }}`** → only the `an empty fleet` row red, the
+   populated row green. That is the independence claim stated backwards.
+6. **The in-progress note deleted** → `TestTheCreateFormSaysWhenItIsInFlight` **and**
+   `TestTheStylesheetAndTheMarkupNameTheSameThings` red (`crswd.css styles "create-note" and no
+   template renders it`). The stylesheet sweep catches template deletions from the other side.
+7. **`{{ with .PageToken }}` loosened to `{{ with . }}`** → `TestCreateFormCarriesToken`'s second
+   half and `TestAComponentHandedNothingToActWithOffersNoAction` red, the latter printing the
+   `<form` and `<button` a tokenless component rendered.
+
+**Learned:**
+
+1. **A per-render token broke a byte-for-byte page comparison, and the fix was to align the key,
+   not to filter.** `TestASecondOwnersSessionIsInvisibleThroughTheDashboardsOwnRoute` compares two
+   *separate* fleets — one holding a stranger's session, one holding nothing — and demands
+   identical bytes. An empty fleet never carried a token before; now the create form does, and two
+   servers mean two random `pageKey`s. `empty.pageKey = held.pageKey` keeps the comparison strict:
+   one key, one identity, one clock reading is one string, so a token that ever encoded something
+   about the fleet would still make the pages differ. **T013's fleet stream and T017's re-rendered
+   card will hit this same fixture.**
+2. **The client hints are pinned to `ValidateName` by iterating the ASCII alphabet**, not by
+   spelling the rule twice: every byte 0–127 is run through both the rendered `pattern` (anchored,
+   as HTML anchors it) and `session.ValidateName`, and they must agree. Widening the daemon's own
+   character class is what fails this, rather than someone's memory of it. `maxlength` is compared
+   against `session.MaxNameLen` the same way. **The hyphen is written first (`[-a-zA-Z0-9]`)**
+   deliberately: a trailing `-` in a character class is ambiguous under the `v` flag modern
+   browsers apply to `pattern`.
+3. **No `pattern` on `work_dir`, and that is a security decision.** The approved roots are this
+   daemon's configuration; a hint describing them would put a map of the host in markup that every
+   extension and proxy on the path can read. The test asserts the *absence*.
+4. **Disabling inside the `submit` event, not `click`.** `click` fires before the browser's own
+   constraint validation, so it would spend the control on a submission that never happened. The
+   button carries no `name`, so disabling it removes nothing from the entry list — disabling the
+   fields would.
+5. **The substitute lint run every iteration has used omits `--build-tags quickstart`.** Widening
+   it surfaces three findings nobody has seen locally: `quickstart_test.go:292` (G306),
+   `quickstart_test.go:813` (G204) and `quickstart_dashboard_test.go:572` (bodyclose). All three
+   pre-date this change and sit in lines it does not touch.
+
+**NEEDS CLARIFICATION — T023 vs T010, and it is the plan against itself.**
+
+T023 says milestone 1 and 2 acceptance must pass **unchanged**, and that "a story needing edits to
+accommodate this milestone is a regression to fix in the code, not in the test." T010 says to build
+the create form. Milestone 2's Story 1 asserts the dashboard *cannot act*, which is the exact
+limitation milestone 3's spec opens by removing. **Both cannot hold.** This iteration narrowed the
+two assertions and kept the tree green, because leaving a tagged suite knowingly red violates a
+hard rule in `AGENTS.md` outright. **The operator should confirm that reading.** The alternative
+was to mark T010 blocked and ship nothing, which would have stalled the loop on a wording collision
+rather than on a defect.
+
+**Findings:**
+
+371. **`actionView` is now unreachable.** See above — no remaining task can pass it. T022's call.
+372. **`docs/components.md` still has no Form, Field, Button or Modal partial**, and this task
+    needed three of the four. It followed T007's precedent — spell the markup, reuse the `.button`
+    class, do not fork a component that does not exist — so the tree now has `.field`,
+    `.field-label` and `.field-input` styled and rendered from one place. **T022 owes that document
+    the entry**, and finding 367 is now concrete rather than anticipated.
+373. **`.card-outcome` is what a refused create answers with, and a create has no card.** Finding
+    368 restated with the form built: the four create fragments replace the whole page, not a card.
+374. **Findings 358 and 365 are now the *only* thing between this and a usable create.** A
+    successful create answers with a bare `<article>` — no stylesheet, no header, full-page
+    navigation. The form makes that reachable by an ordinary click for the first time, so the rough
+    edge is no longer hypothetical. T014 owns `crswd.js`; **nothing owns the swap.**
+375. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307, 311–315,
+    317–323, 325, 327–328, 330–333, 335–370 carry over unchanged.** 306 still needs the operator's
+    answer; 342's `research.md` R1 discrepancy still wants confirming; 350's missing pin between
+    the two not-found bodies still stands; 360, 367 and 372 are all T022's. 340's lint caveat still
+    applies: `golangci-lint` on PATH is v1.62.2 and reads this repo's v2 config by running zero
+    linters, so `golangci-lint run` is a green that means nothing. The substitute run was
+    `golangci-lint run --no-config --disable-all -E
+    bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags tmux,dev ./...`,
+    clean with no new `//nolint`. `go build ./...`, `go test ./...`, `go test -race
+    ./internal/httpapi`, `go test -tags tmux ./...`, `go test -tags dev ./...`, **`go test -tags
+    quickstart ./cmd/crswd` (ran green, all stories)**, `gofmt -l` and `go vet` under all four tags
+    clean too. CI's pinned v2.12.2 is the check that counts.
+
+**Left:** T011–T023. Next is **T011** — the US2 acceptance suite in `internal/httpapi/actions_test.go`:
+`429` at the cap with **existing sessions untouched**, and **one `dashboard.create` record per
+attempt including the refused ones**. Three things it needs from here: finding 369's seam is how to
+reach the rate branch (`testLimiter(t, config.DefaultCreateRatePerMin, fixedClock{…})` assigned over
+`s.creates`, precedent `ratelimit_test.go:318`), since `testConfig` sets `rateNotUnderTest` (1000)
+so no fixture can exhaust it; T008's answer to "disabled means satisfied" applies here too
+(iteration 88); and finding 363 says it owes a `GET`-is-no-route case — **already written** as
+`TestACreateIsNoRouteOnAnyOtherMethod` in iteration 89, so T011 should check before duplicating it.

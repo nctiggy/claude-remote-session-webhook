@@ -108,7 +108,7 @@ if one looks wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and st
 ### US2 — Create from the browser (P2)
 
 - [x] T009 `POST /dashboard/sessions`: reuse milestone 1's validation by **calling it**, not reimplementing it. The four `work_dir` refusals share **one** message — distinguishing "does not exist" from "not permitted" is a filesystem oracle. **The bearer token is discarded, never served**
-- [ ] T010 The create form; submit disables on submission — the only genuine idempotence exposure of the four actions
+- [x] T010 The create form; submit disables on submission — the only genuine idempotence exposure of the four actions
 - [ ] T011 US2 acceptance: `429` at the cap with existing sessions untouched, one record per attempt including refusals
 
 ### US3 — The fleet stays current (P3, closes #15)
