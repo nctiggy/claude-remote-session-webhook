@@ -17,13 +17,21 @@
   like a real name or a real path: a card showing an invented directory is
   telling an operator something false about an unsandboxed shell.
 
-  The identifier is rendered as well as linked. It is the only handle a session
-  with no name has — without it every adopted card would read identically — and
-  it carries no credential, which is the same reason a stream URL may hold one.
+  The heading is the link, and it is the only one on the card. The identifier
+  used to be, which made the least human-readable thing here the only thing a
+  mouse or a Tab key could reach, on a card that reads as clickable end to end.
+
+  The identifier is still rendered. It is the only handle a session with no name
+  has — without it every adopted card would read identically — and it carries no
+  credential, which is the same reason a stream URL may hold one. It also names
+  the link's description, so a screen reader reaching the second of two adopted
+  cards is told them apart by exactly the string a sighted reader uses: without
+  that, every nameless card in the fleet announces "no name recorded" and
+  nothing else.
 */}}<article class="card">
-<h2 class="card-heading">{{ if .Name }}<span class="card-name" title="{{ .Name }}">{{ .Name }}</span>{{ else }}<span class="card-unknown">no name recorded</span>{{ end }}</h2>
+<h2 class="card-heading"><a class="card-link" href="/sessions/{{ .ID }}/view" aria-describedby="card-id-{{ .ID }}">{{ if .Name }}<span class="card-name" title="{{ .Name }}">{{ .Name }}</span>{{ else }}<span class="card-unknown">no name recorded</span>{{ end }}</a></h2>
 {{ template "status-pill" .DisplayState }}
-<p class="card-id"><a class="card-link" href="/sessions/{{ .ID }}/view" title="{{ .ID }}">{{ .ID }}</a></p>
+<p class="card-id" id="card-id-{{ .ID }}" title="{{ .ID }}">{{ .ID }}</p>
 <dl class="card-meta">
 <dt>working directory</dt>
 <dd>{{ if .WorkDir }}<span class="card-path" title="{{ .WorkDir }}">{{ .WorkDir }}</span>{{ else }}<span class="card-unknown">no working directory recorded</span>{{ end }}</dd>
