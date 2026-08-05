@@ -13178,3 +13178,129 @@ oracle, and **discard the bearer token it mints** without it reaching a response
 log (FR-013). Its outcome fragments must be added to `renderedClasses`' `actionFragments` map
 (iteration 87's learning 1) or their classes ship unstyled with nothing to say so, and per finding
 363 it owes a `GET`-is-no-route case of its own.
+
+## Iteration 89 (milestone 3, iteration 9) — 2026-08-05 06:00
+
+**Did:** **T009** — `POST /dashboard/sessions` in `internal/httpapi/actions.go`, registered through
+`handleAction` in `server.go`. `createFromBrowser` spends the create budget, calls `Manager.Create`
+with the owner layer 1 verified, and answers with the canonical card; `refuseBrowserCreate` is
+`refuseCreate`'s shape for a browser — four branches over the same sentinels, four fragments
+(`bodyActionCreateBadName`, `…BadWorkDir`, `…Limited`, `…Failed`), all folded into
+`actionFragments` per iteration 87's learning 1. Eight tests in `actions_test.go`, including the
+two the task names.
+
+**The bearer token is discarded in the assignment, and that is the strongest form Go has.**
+`created, _, err := s.sessions.Create(...)` — the plaintext is never bound to a name, so there is
+no variable a later edit can reach for. This is also why `TestBrowserCreateNeverServesToken` could
+not search for a known string: **a test cannot be handed a value the handler never names.**
+`servedTheToken` slides a `session.TokenLen` window over the served bytes and compares
+`sha256.Sum256` of each against the record's own `TokenHash`, which asks the only answerable
+question — is the credential for *this* record anywhere in these bytes — and finds it wherever it
+is, including a field nobody thought to assert about. It carries its own non-vacuity guard: a
+freshly minted token is planted in a string and the sweep must find *that* before its silence about
+the response means anything. **T017 and T020 will want the same helper; T021's leak corpus should
+use it too.**
+
+**The card carries the token the request arrived with, not a fresh mint.** This was the one
+decision T009's contract left open, and it is the same question T004 answered for a page. A page is
+rendered for one identity at one instant and every form on it carries that render's token; the new
+card joins exactly that page, so minting here would give one card a later expiry than its siblings
+— the second expiry `pageTokenFor`'s comment exists to refuse. It would also put a mint *after* a
+session exists, where the only honest answer to a failure is a 500 for a create that succeeded.
+Nothing arbitrary can reach the line: `admitAction` verified the value as a MAC over this
+operator's identity before the handler ran, so what is written back is a value this daemon minted
+for this browser. **T017's rename re-renders a card too and faces the identical choice.**
+
+**The 429 has two causes and one body, and the rate limiter had to be called by hand.**
+`limitCreates` spends the layer-2 caller `CallerFrom` returns and there is none on this door, so
+the handler calls `s.creates.allow(operator.Owner)` itself, ahead of the manager. Both doors
+resolve to `auth.CallerOperator` (FR-037a), so the operator has **one** create budget rather than
+one per door — a second would be a way to spend twice as fast by alternating. The cap and the rate
+answer identically, as `bodyTooManyRequests` does on the API door: the fix for either is to wait or
+to destroy something.
+
+**All five must-fail conditions were run, not reasoned about.** Each mutation applied, the named
+test run, the mutation reverted:
+
+1. **The bearer token passed to `cardOf` in place of the page token** →
+   `TestBrowserCreateNeverServesToken` red, printing the card with the credential in its hidden
+   field.
+2. **A separate body for `ErrWorkDirUnresolvable`** → `TestWorkDirRefusalsAreOneMessage` red on
+   four assertions: the body, the `Content-Length`, and both cross-row comparisons.
+3. **The route registered with `handleBrowser`** → `TestBrowserCreateRunsBehindTheActionGate` red.
+   Worth reading the failure: it answers **400 for an invalid name**, not 200, because the gate is
+   what calls `ParseForm` — without it every field reads empty. So the handler depends on the gate
+   having parsed the body, exactly as `destroyFromBrowser` documents. The status assertion catches
+   it; a test asserting only "no session was started" would not have.
+4. **`s.creates.allow` neutered** → the create-rate subtest red, answering a card where a 429 was
+   owed. The cap subtest stayed green, which is the two bounds being independent.
+5. **`handleUnrouted`'s `/` catch-all deleted** → every row of
+   `TestACreateIsNoRouteOnAnyOtherMethod` answers `405` with `Allow: POST`.
+
+**Learned:**
+
+1. **`renderPage` is the right writer for a template-built fragment, unchanged.** It buffers before
+   writing, so a template that fails halfway cannot leave a browser holding half a card under a
+   200, and it answers a render failure with **no body** — which is the honest answer here and
+   nowhere else on this route: the session really was started, so a fragment saying it could not be
+   would be a lie, and the fleet the operator reloads will show the card. The four *refusal*
+   fragments go through `writeFragment` like the destroy's, because they are `[]byte` literals.
+2. **`filepath.Dir(fixture.root)` is the cheapest "absolute escape".** The fixture's approved root
+   is a resolved `t.TempDir()`, so its parent exists, is a directory, and is outside the allowlist
+   — no second fixture needed. The symlink escape and the non-directory each need one file created
+   inside the root, which is safe: each row builds its own `creator` and therefore its own root.
+3. **The work-dir rows are one loop, not parallel subtests.** The claim is *between* rows, so the
+   responses must exist at the same time to be compared at all; `t.Run` + `t.Parallel` returns
+   before the subtests finish and there would be nothing to compare against.
+4. **A fifth work-dir row was added beyond the contract's four.** "A directory that is not there at
+   all" is the row the filesystem-oracle argument is actually about — the other four are all
+   "exists and is refused" — and it answers in the same bytes, which is the property FR-012 names.
+
+**Findings:**
+
+365. **Nothing swaps the created card into the page either, so a create is a full-page navigation
+    to one bare `<article>` with no stylesheet.** This is finding 358 for the other route and it is
+    worse in kind: a destroy at least lands the operator on a sentence, while a create lands them
+    on a card that looks broken. T010 adds the form and T014 is the only task that touches
+    `crswd.js`. **The MVP's most visible rough edge now has two instances and still no owner.**
+366. **The create's four bodies are authored, not quoted** — `contracts/actions.md` fixes what each
+    must *say* and not its words, exactly as with the destroy's (finding 352). **The operator
+    should confirm the wording**, particularly the 429, which deliberately does not tell the cap
+    and the rate apart. T022 is where to change it.
+367. **`docs/components.md` has no Form component, and the create form has no card to live in.**
+    T010 meets finding 360's absence from the other side: `partials/button.html` and
+    `partials/modal.html` still do not exist, and now a form outside every card needs a container
+    that document does not define. **T022 owes this an amendment too.**
+368. **`.card-outcome` is doing duty for an outcome that is not a card's.** A create's refusal
+    replaces nothing — the form is outside every card (T010) — so the class name is now narrower
+    than its job. Reusing it was deliberate (one component for "what an action answered", and no
+    new stylesheet rule in a task that owns no CSS), but **T022 should either rename it or say in
+    `docs/components.md` that it is the answer to any action.**
+369. **The rate-limit branch is proven by a test that replaces `s.creates`.** `testConfig` sets
+    `rateNotUnderTest` (1000) so no fixture can exhaust it, so the subtest assigns
+    `testLimiter(t, config.DefaultCreateRatePerMin, fixedClock{…})` — the precedent is
+    `ratelimit_test.go:318`. **T011's acceptance suite will need the same seam** for "one record
+    per attempt including the refused ones".
+370. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307, 311–315,
+    317–323, 325, 327–328, 330–333, 335–364 carry over unchanged.** 306 still needs the operator's
+    answer; 342's `research.md` R1 discrepancy still wants confirming; 350's missing pin between
+    the two not-found bodies still stands; 358 and 365 are the same unowned rough edge; 360 and 367
+    are both T022's. 340's lint caveat still applies: `golangci-lint` on PATH is v1.62.2 and reads
+    this repo's v2 config by running zero linters, so `golangci-lint run` is a green that means
+    nothing. The substitute run was `golangci-lint run --no-config --disable-all -E
+    bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags tmux,dev ./...`,
+    clean with no new `//nolint`. `go build ./...`, `go test ./...`, `go test -race
+    ./internal/httpapi`, `go test -tags tmux ./...`, `go test -tags dev ./...`, `gofmt -l` and
+    `go vet` under all three tags clean too. CI's pinned v2.12.2 is the check that counts.
+
+**Left:** T010–T023. Next is **T010** — the create form in `web/templates/partials/`, **outside
+every card**, with `TestCreateFormCarriesToken` in `partials_test.go` (**must fail when** the form
+renders without `crsw_page_token`). Three things it needs from this iteration: the field names are
+`name` and `work_dir` (`fieldName`/`fieldWorkDir` in `actions.go`, unreachable from a template
+parsed with no function map, so the markup spells them again and the test is what holds the two
+together — the arrangement `confirm=yes` already has); the action is `/dashboard/sessions`; and the
+submit must disable itself on submission, which is the only genuine idempotence exposure of the
+four actions ([R7](../specs/003-dashboard-actions/research.md)) — **and that needs script, which
+means `crswd.js`, a file T014 otherwise owns.** The form's container has no component in
+`docs/components.md` (finding 367), and the empty state's `Action` parameter is still the one
+`actionView` was kept for.
