@@ -12708,3 +12708,84 @@ in a hidden `crsw_page_token` field, never in a URL, a cookie, a `data-` attribu
 It is the last of the three the plan says to have reviewed rather than trusted on green, and
 it is what finally gives `mint` a caller. The field name is already declared —
 `fieldPageToken` in `browser.go` — so use it rather than spelling the literal a second time.
+
+## Iteration 84 (milestone 3, iteration 4) — 2026-08-05 04:55
+
+**Did:** **T004 🔒** — `internal/httpapi/dashboard.go`, `view.go`, and a new
+`web/templates/partials/page-token.html`. `Server.pageTokenFor` mints one token per page render
+from `operator.Email` (the identity layer 1 verified, never a value off the request) on
+`s.clock.Now()` — the same field and the same clock `admitAction` verifies against, which is the
+whole of FR-007 at the minting end. `fleet` and `cardOf` take the token as a parameter, so one
+render hands one value to every card it draws rather than minting per card. `mint` now has a
+caller; the gate T003 built is armed at both ends. Test `TestPageTokenNotInURLsOrLogs` in
+`dashboard_test.go`, over both card-rendering pages.
+
+**Where the field went, and why it is not in a form yet.** The card renders
+`{{ template "page-token" .PageToken }}` *outside* the `{{ with .Actions }}` row. T004 could not
+put it inside a `<form>` without building T007's destroy control early, and could not put it
+inside the action row without rendering a row FR-024a says this point in the plan does not have.
+A bare hidden input is inert — it submits nothing, authorises nothing, and the gate refuses every
+action either way — and it keeps milestone 2's `TestTheRenderedFleetOffersNothingToActWith` and
+`TestTheReadOnlyComponentsOfferNoAction` green, because neither `<input` nor `card-actions`
+appears. **T007 must move that one line inside the `<form>` it adds**, and every later form
+(T010, T017, T020) includes the same partial rather than spelling the field again.
+
+**Learned:**
+
+1. **A template cannot reach `fieldPageToken`.** This set is parsed with no function map on
+   purpose, so `crsw_page_token` is spelled a second time in `page-token.html` and there is no
+   way around that. What holds the two together is the test: `hiddenTokenField` is a regexp
+   *built from* `fieldPageToken`, so a template that renames the field fails here rather than at
+   the first action that silently stops verifying. The test also pins `fieldPageToken` against
+   the contract's own literal — nothing did before this, in any file.
+2. **The mint is deterministic under the pinned test clock**, which matters more than it sounds:
+   `TestTheHeaderNamesTheAssertionAndNothingTheRequestSupplied` compares two renders of `/`
+   **byte for byte**. Same server, same clock, same identity → same expiry → same MAC → the
+   comparison still holds. A future change that made the token vary per render (a nonce, a real
+   clock reading per call) breaks that test, and the breakage will look unrelated.
+3. **The `{{ with . }}` guard in the partial is load-bearing.** A card built without a token —
+   `ownedCard()` in `partials_test.go` does exactly that — renders no field rather than
+   `value=""`. An empty value looks like a token to everything reading the markup and verifies as
+   none, which is FR-018a's discipline applied to a credential.
+4. **Search the MAC, not the token.** `TestPageTokenNotInURLsOrLogs` sweeps hrefs, `src`s,
+   `action`s, `data-` attributes, every response header (which is where a `Set-Cookie` would be)
+   and the render's own audit trail for *both* the whole token and its MAC half. A leak that
+   carried the secret without its punctuation passes a whole-token search.
+5. **All four must-fail conditions were run, not reasoned about.** Token into the card's `href` →
+   the URL sweep fails. `SetSessionID(token)` → the trail sweep fails. Include removed → the
+   field assertion fails. `mint` bound to a constant address → the verify assertion fails. Each
+   was applied, observed red, and reverted.
+
+**Findings:**
+
+346. **`docs/components.md`'s canonical inventory does not list `page-token.html`.** The new
+    partial is not a UI primitive — it renders no visible element and takes no variant — but the
+    inventory is that document's closed list and this is now a file under `partials/` that is not
+    on it. **T022 already owes that file an amendment** ("all three describe a browser that can
+    only read"); adding the row is the same edit. Flagged rather than done here: AR-008.
+347. **A mint failure is unreachable and therefore untested.** `pageTokenFor`'s 500 path needs
+    `mint` to refuse, which needs an empty identity or a MAC that could not be computed — layer 1
+    guarantees the first cannot happen and `hash.Hash` documents the second cannot. It is written
+    fail-closed anyway (`errDashboardNoOperator` has the same shape and the same reason), but
+    nothing in the suite drives it. Reachable only by a seam this task had no licence to add.
+348. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307,
+    311–315, 317–323, 325, 327–328, 330–333, 335–345 carry over unchanged.** 306 still needs the
+    operator's answer; 342's `research.md` R1 discrepancy still wants confirming; 343's warning
+    is now the live one — **T006 must register its route through `authorizeAction`, or every
+    test still passes with the milestone's whole defence absent**; the three browser-visual
+    checks (SC-009/010/011) still need a human. 340's lint caveat still applies: `golangci-lint`
+    on PATH is still v1.62.2, so `golangci-lint run` is a green that means nothing. The
+    substitute run was `golangci-lint run --no-config --disable-all -E
+    bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags tmux,dev ./...`,
+    clean after one `//nolint:gosec` on the test's contract literal (G101 on the field's *name*,
+    the same false positive `browser.go` already carries). CI's pinned v2.12.2 is the check that
+    counts.
+
+**Left:** T005–T023. Next is **T005** — `internal/httpapi/actions.go`: the shared uniform `404`
+for an unknown id, another owner's, and one that no longer exists. `404`, `text/html;
+charset=utf-8`, `nosniff`, body exactly `<!doctype html><title>not found</title><p>No such
+session.</p>`. One function, **no reason parameter** — `refuseBrowser` and `refuseAction` both
+take none for the same reason, and this is the third. Note it is a *different* body from
+`renderNotFound`'s page (browser.go), which is the full not-found *page* for a route that does
+not exist; this one is a fragment for an action against a session that is not there. Test
+`TestNotFoundUniform`, must fail when unknown and not-owned produce different bytes.
