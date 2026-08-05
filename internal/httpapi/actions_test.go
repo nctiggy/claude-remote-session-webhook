@@ -14,7 +14,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -3189,6 +3191,350 @@ func TestARenameIsNoRouteOnAnyOtherMethod(t *testing.T) {
 
 			if held := n.stored(t, live); held.Name != originalName {
 				t.Errorf("%s on the rename path left the session called %q; want %q untouched", method, held.Name, originalName)
+			}
+		})
+	}
+}
+
+// --- US4: a rename is a label and nothing else (T018) ------------------------
+//
+// SC-012 is a claim about every route except the rename: a session that has been
+// relabelled goes on being addressed, served, driven and torn down exactly as one
+// that never was. It is asserted here as a comparison between two sessions on one
+// daemon rather than against a list of expected answers, because a list written
+// today agrees with the code today whatever the code does — and what this
+// milestone could newly break is a route that reaches for a session by the one
+// field an operator is now able to change.
+
+// afterTheRename is what the swept session ends up called, and it is exactly as
+// long as originalName on purpose: the two answers below are compared whole,
+// Content-Length included, so labels of different lengths would put an exception
+// in every row that has nothing to do with what is being claimed.
+const afterTheRename = "renamed-yesterday"
+
+// renamedAgain is what the rename row relabels each of its two sessions to. A
+// third name rather than either of the two the comparison rewrites, so that
+// row's own answer cannot be made to match by a rewrite.
+const renamedAgain = "renamed-once-more"
+
+// identifierOp is one operation a caller addresses by a session's identifier:
+// the four session-scoped operations of contracts/http-api.md, and the four the
+// dashboard serves at an identifier of its own.
+//
+// Compact is absent because its route does not exist yet. T020 adds the route
+// and its row here together — a fifth dashboard operation that never joined this
+// sweep is exactly the gap SC-012 is written against.
+type identifierOp struct {
+	name string
+
+	// works is what the operation answers when it reaches its handler. Without
+	// it a row whose two halves failed alike — a path spelled wrong here, a
+	// credential this test forgot to present — would compare two 404s and report
+	// that the rename changed nothing.
+	works int
+
+	// run drives the operation against one session. The credential is the only
+	// copy of the bearer token plant issued for it, which the API's four present
+	// and the dashboard's four have no use for.
+	run func(t *testing.T, n *renamer, s session.Session, credential string) *httptest.ResponseRecorder
+}
+
+// addressable plants one running session of this operator's own and hands back
+// both halves the sweep needs: the record, and the credential the API's
+// session-scoped routes demand. renamer.live drops the second, which is
+// everything a dashboard case needs and half of what this one does.
+func (n *renamer) addressable(t *testing.T) (session.Session, string) {
+	t.Helper()
+	return n.fixture.plant(t, session.Session{Name: originalName, WorkDir: n.fixture.repo})
+}
+
+// signed drives one signed, credentialled API request through the whole stack,
+// for the two operations no helper in this package already builds. The others
+// come from getSession and deleteSession, so a change to how a session-scoped
+// request is spelled cannot leave this sweep driving a shape nothing else does.
+func (n *renamer) signed(t *testing.T, method, path string, body []byte, credential string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := httptest.NewRequest(method, path, bytes.NewReader(body))
+	signRequest(t, r, body, testTime)
+	// After signing, because layer 3 is a separate credential and not part of
+	// the signed payload.
+	r.Header.Set(headerAuthorization, bearerScheme+credential)
+
+	w := httptest.NewRecorder()
+	n.ServeHTTP(w, r)
+	return w
+}
+
+// browse drives one dashboard read as the verified operator's browser makes it:
+// the identity assertion, the fetch-metadata header a real navigation carries,
+// and no signature anywhere.
+func (n *renamer) browse(t *testing.T, path string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	r.Header.Set(headerAccessAssertion, n.keys.mint(t, n.keys.claims()))
+	r.Header.Set(headerSecFetchSite, secFetchSiteSameOrigin)
+
+	w := httptest.NewRecorder()
+	n.ServeHTTP(w, r)
+	return w
+}
+
+// identifierOps is every way this daemon lets a caller name one session.
+func identifierOps() []identifierOp {
+	return []identifierOp{
+		{
+			name:  "GET /sessions/{id}",
+			works: http.StatusOK,
+			run: func(t *testing.T, n *renamer, s session.Session, credential string) *httptest.ResponseRecorder {
+				t.Helper()
+				answer, _ := getSession(t, n.testServer, s.ID, credential, testTime)
+				return answer
+			},
+		},
+		{
+			name:  "POST /sessions/{id}/prompt",
+			works: http.StatusAccepted,
+			run: func(t *testing.T, n *renamer, s session.Session, credential string) *httptest.ResponseRecorder {
+				t.Helper()
+				return n.signed(t, http.MethodPost, "/sessions/"+s.ID+"/prompt", promptBody(), credential)
+			},
+		},
+		{
+			name:  "GET /sessions/{id}/output",
+			works: http.StatusOK,
+			run: func(t *testing.T, n *renamer, s session.Session, credential string) *httptest.ResponseRecorder {
+				t.Helper()
+				return n.signed(t, http.MethodGet, "/sessions/"+s.ID+"/output", nil, credential)
+			},
+		},
+		{
+			name:  "DELETE /sessions/{id}",
+			works: http.StatusOK,
+			run: func(t *testing.T, n *renamer, s session.Session, credential string) *httptest.ResponseRecorder {
+				t.Helper()
+				answer, _ := deleteSession(t, n.testServer, s.ID, credential, testTime)
+				return answer
+			},
+		},
+		{
+			name:  "GET /sessions/{id}/view",
+			works: http.StatusOK,
+			run: func(t *testing.T, n *renamer, s session.Session, _ string) *httptest.ResponseRecorder {
+				t.Helper()
+				return n.browse(t, "/sessions/"+s.ID+"/view")
+			},
+		},
+		{
+			// A recorder cannot lift a write deadline, so an open that got all the
+			// way past identity, the cross-site check, the ownership lookup and the
+			// cap answers 500 — which is what stream_test.go's askToWatch documents
+			// and what makes this row an assertion about the lookup rather than
+			// about the transport. The identifier is resolved before the 500 is
+			// written; a stream that could not find a renamed session would answer
+			// the uniform 404 instead, and the row would go red.
+			name:  "GET /sessions/{id}/stream",
+			works: http.StatusInternalServerError,
+			run: func(t *testing.T, n *renamer, s session.Session, _ string) *httptest.ResponseRecorder {
+				t.Helper()
+				return n.browse(t, "/sessions/"+s.ID+"/stream")
+			},
+		},
+		{
+			name:  "POST /dashboard/sessions/{id}/destroy",
+			works: http.StatusOK,
+			run: func(t *testing.T, n *renamer, s session.Session, _ string) *httptest.ResponseRecorder {
+				t.Helper()
+
+				form := url.Values{}
+				form.Set(fieldPageToken, mustMint(t, n.pageKey, testOperatorEmail, testTime))
+				form.Set(fieldConfirm, confirmYes)
+				return n.send(t, http.MethodPost, "/dashboard/sessions/"+s.ID+"/destroy", secFetchSiteSameOrigin, form)
+			},
+		},
+		{
+			name:  "POST /dashboard/sessions/{id}/rename",
+			works: http.StatusOK,
+			run: func(t *testing.T, n *renamer, s session.Session, _ string) *httptest.ResponseRecorder {
+				t.Helper()
+				return n.post(t, s.ID, n.asked(t, renamedAgain))
+			},
+		},
+	}
+}
+
+// observed is everything one operation did that anybody can see: what the caller
+// was told, what the host was asked, and what the trail recorded.
+//
+// All three, because "behaving exactly as before" is a claim about all three. A
+// route that reached the right session and then told the trail the wrong thing
+// about it has changed behaviour no status code shows, and an operator reading
+// the journal afterwards is the one who finds out.
+type observed struct {
+	status int
+	header http.Header
+	body   string
+
+	// host is one line per tmux call — the operation, its argv and the bytes
+	// that went in on stdin — rendered rather than kept as a struct so that a
+	// difference is legible in a failure message.
+	host []string
+
+	// trail is one line per audit record, as canonical JSON: encoding/json sorts
+	// a map's keys, so two records are comparable as strings.
+	trail []string
+}
+
+// observe drives one operation and gathers what it did, counting only what this
+// request added to the host's call log and to the trail.
+func observe(t *testing.T, n *renamer, op identifierOp, s session.Session, credential string) observed {
+	t.Helper()
+
+	calls, records := len(n.fixture.tmux.Calls()), len(n.records(t))
+	w := op.run(t, n, s, credential)
+
+	host := []string{}
+	for _, c := range n.fixture.tmux.Calls()[calls:] {
+		host = append(host, fmt.Sprintf("%s %q stdin:%q", c.Op, c.Argv, c.Stdin))
+	}
+
+	trail := []string{}
+	for _, rec := range n.records(t)[records:] {
+		line, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatalf("re-encode the audit record %v: %v", rec, err)
+		}
+		trail = append(trail, string(line))
+	}
+
+	return observed{status: w.Code, header: w.Header().Clone(), body: w.Body.String(), host: host, trail: trail}
+}
+
+// asAnySession rewrites what two different sessions may legitimately differ in,
+// so that everything else can be compared byte for byte.
+//
+// The three rewrites are deliberately not the same rewrite, and the difference
+// between them is most of what this sweep claims:
+//
+//   - What the caller was told may carry both. An identifier addresses a session
+//     and a label describes it, and a rename changes the second by definition.
+//   - What the host was asked may carry the identifier only. Every tmux target
+//     this daemon builds is crswd-<id> (FR-015), so a label reaching an argv at
+//     all is the defect SC-012 is about — and leaving the label unrewritten here
+//     is what lets this comparison see it.
+//   - What the trail recorded may carry the identifier only, for a second
+//     reason: a name is caller-supplied text, and no record is built from it
+//     (FR-042).
+func (o observed) asAnySession(id, name string) observed {
+	anyID := func(s string) string { return strings.ReplaceAll(s, id, "<ID>") }
+	anySession := func(s string) string { return strings.ReplaceAll(anyID(s), name, "<NAME>") }
+
+	header := http.Header{}
+	for field, values := range o.header {
+		for _, v := range values {
+			header.Add(field, anySession(v))
+		}
+	}
+
+	rewritten := func(lines []string, rewrite func(string) string) []string {
+		out := make([]string, len(lines))
+		for i, line := range lines {
+			out[i] = rewrite(line)
+		}
+		return out
+	}
+
+	return observed{
+		status: o.status,
+		header: header,
+		body:   anySession(o.body),
+		host:   rewritten(o.host, anyID),
+		trail:  rewritten(o.trail, anyID),
+	}
+}
+
+// TestRenameThenIdentifierOperations is SC-012, and FR-014 and FR-015 with it:
+// rename a session, then run every operation that names a session by its
+// identifier and find each one behaving as it does against a session that was
+// never renamed.
+//
+// **Must fail when** any operation depends on the name. The comparison is
+// between two sessions planted alike on one daemon — same owner, same working
+// directory, same instant, same label — of which one is renamed through the real
+// route before the sweep runs. Everything that legitimately differs between two
+// sessions is rewritten out (see asAnySession); anything left is the rename
+// having changed something it must not.
+//
+// The two halves are driven against one daemon rather than two, which is what
+// makes the comparison byte for byte: the page token both renders carry is the
+// same server's, the working directory both name is the same directory, and the
+// clock behind both is the same fixed one. Two servers would differ in all three
+// for reasons that are not about renaming anything.
+//
+// Iteration 96 pinned FR-015 at the manager seam — Rename writes Name and
+// nothing else, and TmuxName has no parameter that could carry a new target.
+// What is new here is the wire: a route is free to look a session up however it
+// likes, and only a request can show that none of them looks one up by label.
+func TestRenameThenIdentifierOperations(t *testing.T) {
+	t.Parallel()
+
+	if len(afterTheRename) != len(originalName) {
+		t.Fatalf("the two labels are %d and %d characters; the answers below are compared whole and their Content-Length would differ by the difference",
+			len(originalName), len(afterTheRename))
+	}
+
+	for _, op := range identifierOps() {
+		t.Run(op.name, func(t *testing.T) {
+			t.Parallel()
+
+			n := newRenamer(t)
+			control, controlCredential := n.addressable(t)
+			subject, subjectCredential := n.addressable(t)
+
+			// Through the route rather than through the manager: the manager's own
+			// suite already has the seam, and a rename that never went over the
+			// wire would leave this sweep asking its question of a state no browser
+			// can produce.
+			renamed := n.post(t, subject.ID, n.asked(t, afterTheRename))
+			if renamed.Code != http.StatusOK {
+				t.Fatalf("the rename this case rests on was answered %d (%s); want %d",
+					renamed.Code, renamed.Body.String(), http.StatusOK)
+			}
+			held := n.stored(t, subject)
+			if held.Name != afterTheRename {
+				t.Fatalf("the daemon holds %q for the renamed session; want %q — nothing below would be about a rename",
+					held.Name, afterTheRename)
+			}
+			if held.TmuxName() != subject.TmuxName() {
+				t.Fatalf("the renamed session's window is now %q and was %q; every operation below builds its target from that string (FR-015)",
+					held.TmuxName(), subject.TmuxName())
+			}
+
+			was := observe(t, n, op, control, controlCredential).asAnySession(control.ID, originalName)
+			is := observe(t, n, op, subject, subjectCredential).asAnySession(subject.ID, afterTheRename)
+
+			if was.status != op.works {
+				t.Fatalf("the operation answered %d (%s) against a session that was never renamed; want %d — a row where neither half worked compares two refusals and claims agreement",
+					was.status, n.sink.String(), op.works)
+			}
+			if was.status != is.status {
+				t.Errorf("the operation answered %d against a session that was never renamed and %d against one that was; a rename changes the label and nothing else (SC-012)",
+					was.status, is.status)
+			}
+			if !maps.EqualFunc(was.header, is.header, slices.Equal) {
+				t.Errorf("the two answers carry different headers:\nnever renamed: %v\nrenamed:       %v", was.header, is.header)
+			}
+			if was.body != is.body {
+				t.Errorf("the two answers differ:\nnever renamed:\n%s\nrenamed:\n%s", was.body, is.body)
+			}
+			if !slices.Equal(was.host, is.host) {
+				t.Errorf("the operation asked the host for different things, so something addressed the session by its label rather than by crswd-<id> (FR-015):\nnever renamed: %v\nrenamed:       %v",
+					was.host, is.host)
+			}
+			if !slices.Equal(was.trail, is.trail) {
+				t.Errorf("the operation left different records, so a rename is legible in the trail of an operation that is not one:\nnever renamed: %v\nrenamed:       %v",
+					was.trail, is.trail)
 			}
 		})
 	}
