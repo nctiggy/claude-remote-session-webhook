@@ -13792,3 +13792,147 @@ correct; the card to re-fetch is at `GET /sessions/{id}/view` — but finding 37
 still unowned, and a bare `<article>` fragment is what the create route already answers with; and
 FR-022 forbids animating an update, which #23's universal `transition: none` already covers as long
 as nothing new escapes it.
+
+## Iteration 94 (milestone 3, iteration 14) — 2026-08-05 07:38
+
+**Did:** **T014** — the fleet's live half. `web/static/crswd.js` subscribes to
+`GET /dashboard/fleet/stream` from the fleet page, listens by event *name*, and turns each event
+into a re-fetch of that one card from `GET /sessions/{id}/view`; `web/templates/dashboard.html`
+carries the three hooks and the note FR-020 needs; `web/templates/partials/session-card.html`
+carries `data-session`; `crswd.css` gains `.fleet-note`. Named test `TestStreamLossIsVisible` plus
+`TestTheFleetNamesTheStreamAndTheCardItRefetches` in `internal/httpapi/partials_test.go`, and
+`TestTheFleetClientSubscribesAndSaysWhenItStops` in `internal/httpapi/stylesheet_test.go`.
+
+**The identifier on the wire becomes one card in the document through `data-session`, and that is
+the whole mechanism.** The stream says *what* changed and never *what it now looks like* (R6), so
+the page holds the only mapping from an id to a card, and it holds it in markup rather than in the
+script — `crswd.js` is one asset served to every page and knows about no session and no route. Both
+addresses come off the page with the daemon's own route parameter still in them
+(`data-fleet-card="/sessions/{id}/view"`), which is what lets the tests compare them against
+`patternSessionView` and `patternFleetStream` *verbatim* rather than against a rendering of them.
+
+**All eight must-fail conditions were run, not reasoned about.** Each mutation applied, the named
+tests run, the mutation reverted:
+
+1. **The note deleted from `dashboard.html`** → `TestStreamLossIsVisible` red on the hook naming an
+   element that is not there (and `TestTheStylesheetAndTheMarkupNameTheSameThings` red as well, on
+   a `.fleet-note` rule nothing renders — the sweep catching a template deletion from the CSS side).
+2. **`hidden` removed from the note** → red on a page that announces the failure on every load.
+3. **`data-fleet-stalled` removed from `<main>`** → red on there being no hook at all.
+4. **Both addresses drifted** (`/dashboard/fleet`, `/sessions/{id}/card`) →
+   `TestTheFleetNamesTheStreamAndTheCardItRefetches` red on both, naming what the daemon serves.
+5. **`data-session` removed from the card** → red at the component *and* at the page.
+6. **The subscription query renamed** → `TestTheFleetClientSubscribesAndSaysWhenItStops` red:
+   nothing subscribes.
+7. **`live.onerror` removed** → red on 1 error handler where 2 are wanted. This is why that
+   assertion counts rather than matches: the pane already has one, so a `MatchString` would have
+   passed with the fleet's ending gone silent.
+8. **The three `addEventListener`s replaced by one `onmessage`** → red on all three names.
+
+**Learned:**
+
+1. **`renderComponent(t, "dashboard", fleetView{…})` works and is the right level for this.** The
+   three hooks are the page's composition, not a component's parameters, so a component test cannot
+   see them — but the page still goes through the server's own template set, so the assertions are
+   about the markup `web/` really holds. `renderedFleet(t)` in `partials_test.go` is the helper.
+2. **The empty fleet is the case the whole design turns on.** `dashboard.html` chooses between the
+   summary-and-grid and the empty state with `{{ if .Sessions }}`, and
+   `TestAnEmptyFleetExplainsItselfInsteadOfRenderingNothing` **pins that an empty fleet renders no
+   summary row** — so "always render both and toggle `hidden`" is not available, and a script that
+   composed either shape would be a second fleet page. The live half reloads on exactly those two
+   transitions (a card arriving when there is no grid; the last card leaving) and re-fetches cards
+   on every other change. A reload is the server composing the page again, and the story asks for no
+   *manual* reload (spec line 61), which this satisfies.
+3. **The summary row cannot be left alone.** It is derived from the cards below it —
+   `dashboard.html` says so in terms — so a script that replaced a card and left the row would make
+   the page disagree with itself. `recount()` re-derives it from the cards that are there, reading
+   each row's own pill for the class it counts, so **no state is named in `crswd.js`**: the two the
+   daemon derives today and any the status component renders later are one code path.
+4. **`insertAdjacentHTML` and `document.write` are invisible to the existing sink sweep.** That
+   sweep (`TestTheStreamClientReplacesTheScreenWithText`) matches *assignments* — `.innerHTML =` and
+   friends — and both of these are calls. This task put DOM insertion in the file for the first
+   time, so the new test forbids them by name. The insertion path is `DOMParser` → `querySelector`
+   → `document.importNode`, and the pane in the fetched page is left in the document nobody adopts.
+5. **A response that is `!answer.ok` is not the same as a 404 and must not be treated as one.** The
+   uniform not-found means the session is gone or was never this operator's — the card goes. A 500
+   means nothing of the kind, so it reveals the note instead: a page that could not re-fetch a card
+   it was told changed is showing a card it cannot vouch for, which is FR-020 about one card.
+6. **Two changes to one session in flight at once need an ordering rule.** `newest` maps an id to
+   the newest request's ticket and a response that is not the newest is dropped, rather than painted
+   over a fresher card. The ticket is deleted once applied, so the map does not grow with every
+   identifier the page has ever seen.
+
+**Findings:**
+
+392. **The quickstart's story-1 card count was edited, and the plan's T023 rule says a story needing
+    an edit is a regression in the code.** This one is not, and the operator should confirm that
+    reading. `cmd/crswd/quickstart_dashboard_test.go` counted `<article class="card">` — with the
+    closing bracket — and it was **the only one of eight card counts in the repository spelled that
+    way**; the other seven (`dashboard_test.go` ×4, `actions_test.go`, and `cardFor`'s own opener)
+    count `<article class="card"`. So it was an assertion about the card's attribute list rather
+    than about how many cards a fleet of two renders, and `data-session` is the first attribute
+    added to that element since it was written. **No behaviour changed and the claim is unchanged.**
+    If the operator would rather the card carried no attribute at all, the alternative is finding a
+    card by its own link (`a.card-link[href="/sessions/<id>/view"]` + `closest('article.card')`),
+    which needs no markup — and buries the coupling in the script.
+393. **Each fleet event now costs one `GET /sessions/{id}/view` per open dashboard, and that route
+    runs a `tmux capture-pane` and writes a `dashboard.view` audit record.** Both are consequences
+    nothing in the plan names. The capture is cheap next to the pane stream's one-per-second, and
+    the record is honest — FR-023 counts requests and this *is* a request — but an operator reading
+    their journal will now see a `dashboard.view` per fleet change per open tab, which is a shape
+    the trail did not have before. The alternative is a card-only fragment route, which T014 may not
+    add (it names no Go file) and which would need a contract first.
+394. **`GET /sessions/{id}/view` is a heavier answer than the page needs.** It carries the header,
+    the pane and a freshly minted page token, of which the live half takes one `<article>`. The pane
+    is the part worth naming: everything an unsandboxed program printed is in that response, parsed
+    into an inert document and then dropped. It is safe — `DOMParser` executes nothing and only the
+    card is imported — but it is the project's one XSS surface passing through a code path that did
+    not previously touch it, and a reviewer should look at `refresh()` with that in mind.
+395. **The re-fetched card carries a page token minted for the *fetch*, not for the page.** So a
+    long-open dashboard's replaced cards hold later expiries than its untouched ones, and the create
+    form holds the oldest of all. Nothing is wrong with that — each is a valid MAC over this
+    identity — but "one render, one token" is no longer true of a page that has been live for a
+    while, and `view.go`'s comment says a page mints one because "a page is rendered for one
+    identity at one instant". T022 may want to say so.
+396. **The reload on a shape change is unconditional, and the create form's typed input goes with
+    it.** An operator halfway through typing a name when a session appears from the API loses it.
+    The window is narrow (it needs the fleet to be *empty* or to empty), and the alternative — a
+    page that says "the fleet changed, reload to see it" and does nothing — fails acceptance
+    scenario 1 in the exact case US3's independent test names. Recorded rather than resolved.
+397. **Nothing on the page announces a card that arrived or left.** `docs/components.md`'s
+    accessibility floor says live regions announce state changes; the stalled note carries
+    `role="status"` and the grid carries nothing, so a screen-reader user hears the failure but not
+    the fleet changing under them. Announcing every card would be the noise that document forbids at
+    the pane. **The pane's own ended/stalled notes have no `role` either**, which makes this an
+    inconsistency as well as a gap — the fleet note is the first. T022's, or the operator's.
+398. **The idle→`changed` row of `contracts/fleet-stream.md` is still unowned** (iterations 92 and
+    93). This iteration is the first that would *show* it: a session crossing its idle deadline is a
+    pill that stays green and a summary count that stays wrong until something else changes. **The
+    page cannot fix it — nothing emits the event.** It remains the operator's ruling.
+399. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307, 311–315,
+    317–323, 325, 327–328, 330–333, 335–379, 381–383, 385–387, 389–391 carry over unchanged.** 388
+    is closed by this iteration — the page now has the sentence a farewell-less ending needs. 374's
+    unowned swap is **still unowned**: this task owns the fleet page's live half and not what a
+    dashboard *create* navigates to, which is still a bare `<article>` with no stylesheet. 306 still
+    needs the operator's answer; 342's `research.md` R1 discrepancy still wants confirming; 350's
+    missing pin between the two not-found bodies still stands; 360, 367, 371, 372 and now 395 and
+    397 are all T022's; 378's two drifting checklists still want a ruling. Iteration 90's **NEEDS
+    CLARIFICATION on T023 vs T010 is still unanswered.** 340's lint caveat still applies:
+    `golangci-lint` on PATH is v1.62.2 and reads this repo's v2 config by running zero linters, so
+    `golangci-lint run` is a green that means nothing. The substitute run was `golangci-lint run
+    --no-config --disable-all -E bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused
+    --build-tags tmux,dev ./...`, clean with no new `//nolint`. `go build ./...`, `go test -count=1
+    ./...`, `go test -race ./internal/httpapi`, `go test -tags tmux ./...`, `go test -tags dev
+    ./...`, **`go test -tags quickstart ./cmd/crswd` (ran green, 27s)**, `gofmt -l`, `goimports -l`
+    and `go vet` under all four tags clean too. CI's pinned v2.12.2 is the check that counts.
+
+**Left:** T015–T023. Next is **T015** — the US3 acceptance suite in
+`internal/httpapi/fleet_test.go`: an API-created session yields one `appeared`, a reaper destroy
+yields one `vanished`, a quiet stream past one second yields a heartbeat comment rather than an
+event, and a `POST` to the stream path returns the unknown-route response. Four things it needs from
+here: iteration 93's learning 2 — the handler subscribes *before* `openStream`, so a test that opens
+the stream and then causes a change has no race and needs no sleeps; learning 3 — `plant` writes
+through `Store.Add` and does **not** emit, so `Manager.Create`/`Destroy` are the ways to make an
+event; the reaper row needs the reaper's own path rather than a manual destroy, which is the half of
+#15 that was reported; and finding 389's severed-stream row is **T015's half** (fill a 64-event
+backlog with a reader that has stopped reading) — the page half is done and the wire half is not.
