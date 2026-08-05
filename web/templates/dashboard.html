@@ -62,6 +62,13 @@
 */}}
 <main class="shell" data-fleet-stream="/dashboard/fleet/stream" data-fleet-card="/sessions/{id}/view" data-fleet-stalled="fleet-stalled">
 {{/*
+  What the action that redirected here did (#42), and nothing at all on an
+  ordinary visit. It is first in the page on purpose: an operator arriving from
+  an action is arriving to find out what happened, and it is the only thing here
+  that is about a moment rather than about the fleet. The component renders
+  nothing for a query this daemon does not recognise — see partials/outcome.html.
+*/}}{{ template "outcome" .Outcome }}
+{{/*
   What the page says when it can no longer keep itself current (FR-020).
 
   It ships hidden and the live half reveals it, on any interruption of the

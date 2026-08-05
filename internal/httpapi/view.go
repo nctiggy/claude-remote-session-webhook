@@ -127,13 +127,12 @@ type emptyView struct {
 	Action *actionView
 }
 
-// createFormView is the create form's whole parameter list (T010): the token
-// its submission has to present, and nothing else.
+// createFormView is the create form's parameter list (T010): the token its
+// submission has to present, and the roots a submission may name.
 //
-// One field, because a create names no session. The other three forms this
-// milestone adds are the card's and take the card's own projection with them;
-// this one has nothing to describe — what it makes is what it is for — so the
-// only thing it needs is the evidence the gate demands.
+// It describes no session, because a create names none — what it makes is what
+// it is for. The other three forms this milestone adds are the card's and take
+// the card's own projection with them.
 //
 // It is a type of its own rather than the bare string for the reason every other
 // component's parameters are a struct: this template set is parsed with no
@@ -146,6 +145,49 @@ type createFormView struct {
 	// field: a control the gate is certain to refuse is worse than no control,
 	// because an operator cannot tell the two apart until they use it.
 	PageToken string
+
+	// Roots is every directory this daemon will start a session under —
+	// CRSW_ALLOWED_ROOTS as config.Load resolved it, absolute and with the
+	// symlinks already followed.
+	//
+	// It renders as a hint under the working-directory field (#42), which
+	// reverses milestone 3's deliberate omission. That omission was right about
+	// the wrong disclosure: bodyActionCreateBadWorkDir stays one message for
+	// every cause precisely so that a caller cannot ask whether a path exists,
+	// and nothing here changes that. Which roots are *permitted* is a different
+	// fact — it is this authenticated operator's own configuration, it is
+	// already on every card in the fleet as a working directory, and without it
+	// the field is one an operator has to guess at. Naming the permitted set is
+	// not confirming what is inside it.
+	//
+	// Every configured root renders, not the first: an operator whose second
+	// root is missing from the hint would read it as a refusal they have no way
+	// to explain.
+	Roots []string
+}
+
+// outcomeView is the banner the fleet renders for what an action just did (#42).
+//
+// Its copy is never caller text. The page reads a code out of the query string,
+// bannerFor accepts only codes this package spells, and what is rendered is the
+// sentence that code maps to — so the field below holds a string chosen by a
+// handler and not one chosen by whoever wrote the link. An unrecognised code
+// produces no view at all, which is why the fleet holds a pointer.
+type outcomeView struct {
+	// Message is the sentence the operator reads. It is the whole of an ordinary
+	// outcome and the body of the one alarming one.
+	Message string
+
+	// Heading is carried by the alarming outcome alone, and empty everywhere
+	// else. It exists so that the one outcome an operator must not scan past has
+	// a shape of its own rather than a shade of its own — colour is
+	// reinforcement and never the signal (docs/design-system.md).
+	Heading string
+
+	// Alarm marks the outcome that must not read as one line alongside
+	// "renamed": a teardown this daemon could not verify means a live
+	// unsandboxed shell may have survived it (#42, FR-010, AR-004).
+	Alarm bool
 }
 
 // actionView is one entry in an action row, and it is deliberately empty.

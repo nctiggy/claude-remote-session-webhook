@@ -1,0 +1,38 @@
+{{/*
+  What the last action did — the banner the fleet renders after an action's
+  redirect lands (#42, outcome.go).
+
+  Milestone 3's four routes each answered with a fragment meant to replace the
+  card they acted on, and nothing did the replacing: the forms are plain posts
+  and this tree's one script swaps no responses, so every click navigated the
+  operator to a bare `<p>` with no page around it. The routes now answer 303 and
+  the operator arrives back here, on a fleet that already shows what they did,
+  with this saying what it was.
+
+  The dot is a *outcomeView or nil, so `with` renders nothing at all for an
+  ordinary visit. It also renders nothing for a query naming something this
+  daemon does not spell: bannerFor maps a closed vocabulary to fixed copy and
+  returns nil for anything else, so the text below is a sentence a handler chose
+  and never one a link chose. That is the whole of the injection question this
+  component raises — there is no path from `?outcome=` to the document, escaped
+  or otherwise.
+
+  Two shapes, and the second is the reason this is a component rather than a line
+  in the page. An ordinary outcome is prose: renamed, delivered, refused. The
+  alarming one means a destroy was issued and the host still reports the
+  session's window — a live unsandboxed shell may have survived — and #42 is
+  explicit that it must not be reduced to a line beside "renamed". So it is a
+  titled block, which is a difference an operator scanning the page can see.
+  Colour is not what tells them apart: the design system's fifth non-negotiable
+  rules that state is never encoded by colour alone, and this is that rule
+  applied to an outcome.
+
+  No live region, on either shape. docs/components.md draws that boundary
+  deliberately — live regions announce the state changes nobody is looking at,
+  and an outcome the operator just caused is not one. What replaces the
+  announcement is position: this is the first thing in the page, so it is the
+  first thing read.
+*/}}{{ with . }}{{ if .Alarm }}<section class="outcome outcome-alarm">
+<h2 class="outcome-heading">{{ .Heading }}</h2>
+<p class="outcome-body">{{ .Message }}</p>
+</section>{{ else }}<p class="outcome">{{ .Message }}</p>{{ end }}{{ end }}
