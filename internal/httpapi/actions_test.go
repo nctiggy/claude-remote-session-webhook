@@ -12,6 +12,8 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -25,6 +27,7 @@ import (
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 )
 
 // The uniform refusal, quoted from contracts/actions.md.
@@ -568,5 +571,581 @@ func TestNotFoundUniform(t *testing.T) {
 	}
 	if served.served != 1 {
 		t.Errorf("the handler behind the lookup acted %d times for a session the operator owns; want exactly 1", served.served)
+	}
+}
+
+// --- US1: destroy from the browser (T006) ----------------------------------
+//
+// The two fixtures above drive handlers of the test's own making, because the
+// gate and the uniform not-found are answers no route had yet. Everything below
+// drives the **registered** route through Server.ServeHTTP instead, and that is
+// load-bearing rather than tidy: a destroy wired with handleBrowser instead of
+// handleAction would leave every case above green with the milestone's entire
+// cross-site defence absent from the one route that can end an unsandboxed shell.
+
+// The destroy's own answers. Each is quoted here rather than read from the
+// constant the code writes, for the reason the refusal above is: a test asserting
+// against the variable proves only that the code agrees with itself.
+const (
+	wantDestroyedBody   = `<p class="card-outcome">Session destroyed. The host confirmed its window is gone.</p>`
+	wantUnconfirmedBody = `<p class="card-outcome">This destroy was not confirmed, so nothing was torn down.</p>`
+	// From contracts/actions.md, which fixes this one byte for byte.
+	wantUnverifiedBody = `<p class="card-outcome">Teardown could not be verified. This session may still be running on the host.</p>`
+)
+
+// destroyer is the registered destroy route with everything behind it readable:
+// the store, the fake host, and the trail.
+type destroyer struct {
+	*testServer
+	keys *keyServer
+}
+
+func newDestroyer(t *testing.T) *destroyer {
+	t.Helper()
+
+	keys := newKeyServer(t)
+	return &destroyer{testServer: newAuditedServerWith(t, keys.validator(t)), keys: keys}
+}
+
+// live plants a running session of this operator's own, together with the tmux
+// window the record names — the state a card on the fleet describes.
+func (d *destroyer) live(t *testing.T) session.Session {
+	t.Helper()
+
+	planted, _ := d.fixture.plant(t, session.Session{Name: "to be destroyed", WorkDir: d.fixture.repo})
+	return planted
+}
+
+// confirmed is the form a rendered card submits: the render's page token, and
+// the confirming step FR-029 requires.
+func (d *destroyer) confirmed(t *testing.T) url.Values {
+	t.Helper()
+
+	form := url.Values{}
+	form.Set(fieldPageToken, mustMint(t, d.pageKey, testOperatorEmail, testTime))
+	form.Set(fieldConfirm, confirmYes)
+	return form
+}
+
+// post submits one form at the destroy route, as the browser this daemon
+// rendered the page for.
+func (d *destroyer) post(t *testing.T, id string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := httptest.NewRequest(http.MethodPost, "/dashboard/sessions/"+id+"/destroy", strings.NewReader(form.Encode()))
+	r.Header.Set(headerContentType, contentTypeForm)
+	r.Header.Set(headerAccessAssertion, d.keys.mint(t, d.keys.claims()))
+	r.Header.Set(headerSecFetchSite, secFetchSiteSameOrigin)
+
+	w := httptest.NewRecorder()
+	d.ServeHTTP(w, r)
+	return w
+}
+
+// standing is what the daemon and the host say about a session after a request:
+// whether the record survived, and whether the window did.
+//
+// The two are asserted together everywhere below because they answer different
+// halves of the same question. A record dropped for a window that is still there
+// is the orphan Principle VI forbids; a window torn down for a request that was
+// refused is the state change FR-003 forbids.
+func (d *destroyer) standing(t *testing.T, s session.Session) (recorded, running bool) {
+	t.Helper()
+
+	_, err := d.fixture.store.Get(s.ID, auth.CallerOperator)
+	switch {
+	case err == nil:
+		recorded = true
+	case !errors.Is(err, session.ErrSessionNotFound):
+		t.Fatalf("read the store for session %s: %v", s.ID, err)
+	}
+
+	running, err = d.fixture.tmux.Has(context.Background(), s.TmuxName())
+	if err != nil {
+		t.Fatalf("ask the fake host about %s: %v", s.TmuxName(), err)
+	}
+	return recorded, running
+}
+
+// kills counts the teardowns that reached the host, which is the only way to
+// tell a refusal that acted first from one that did not act at all: a kill whose
+// session survived leaves the store and the host looking exactly like a request
+// that was refused before it ran.
+func (d *destroyer) kills() int {
+	n := 0
+	for _, c := range d.fixture.tmux.Calls() {
+		if c.Op == tmuxctl.OpKill {
+			n++
+		}
+	}
+	return n
+}
+
+// TestDestroyTearsTheSessionDown is US1's first scenario end to end: the
+// operator's own session, destroyed from the card, torn down with the teardown
+// verified, its record and credential hash cleared, and one record in the trail.
+//
+// **Must fail when** the route stops calling Manager.Destroy, or answers before
+// the host has confirmed: the window assertion goes red on the first and the
+// status on the second.
+//
+// The response is asserted as bytes rather than as "a 200", because the fragment
+// is what replaces the card. A destroy that answered with an empty body would
+// leave the operator looking at a card that quietly vanished, which FR-030 and
+// FR-031 both forbid.
+func TestDestroyTearsTheSessionDown(t *testing.T) {
+	t.Parallel()
+
+	d := newDestroyer(t)
+	live := d.live(t)
+
+	w := d.post(t, live.ID, d.confirmed(t))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusOK)
+	}
+	if got := w.Body.String(); got != wantDestroyedBody {
+		t.Errorf("body\n%s\nwant\n%s", got, wantDestroyedBody)
+	}
+	if got, want := w.Header().Get(headerContentType), wantActionContentType; got != want {
+		t.Errorf("%s = %q; want %q", headerContentType, got, want)
+	}
+	if got, want := w.Header().Get(headerContentLength), strconv.Itoa(len(wantDestroyedBody)); got != want {
+		t.Errorf("%s = %q; want %q", headerContentLength, got, want)
+	}
+	if got, want := w.Header().Get(headerContentTypeOptions), wantActionNosniff; got != want {
+		t.Errorf("%s = %q; want %q — an action's answer carries the same headers a page does", headerContentTypeOptions, got, want)
+	}
+
+	if recorded, running := d.standing(t, live); recorded || running {
+		t.Errorf("after a verified teardown the record is %v and the window is %v; want both gone",
+			recorded, running)
+	}
+	if got := d.kills(); got != 1 {
+		t.Errorf("the host was asked to kill %d times; want exactly 1 — a retried destroy is a second destroy (AR-006)", got)
+	}
+
+	rec := d.only(t)
+	if got, want := rec["action"], string(audit.ActionDashboardDestroy); got != want {
+		t.Errorf("action = %v; want %v — a browser destroy is not the API's session.destroy", got, want)
+	}
+	if got, want := rec["decision"], string(audit.Allow); got != want {
+		t.Errorf("decision = %v; want %v", got, want)
+	}
+	if got := rec["session_id"]; got != live.ID {
+		t.Errorf("session_id = %v; want %q", got, live.ID)
+	}
+}
+
+// TestDestroyRunsBehindTheActionGate is the claim T003 cannot make about itself:
+// the route that ends an unsandboxed shell is registered *through* the gate.
+//
+// **Must fail when** the route is registered with handleBrowser rather than
+// handleAction. Both halves of the defence are driven here because either one
+// alone leaves the other's absence invisible on this route — the formal
+// independence proof is T008's, and this is the registration claim it rests on.
+//
+// The session is asserted alive afterwards, and the kill count with it. A gate
+// that refused *after* the handler ran would answer 403 and still have torn the
+// session down, which is the one failure a status code cannot see (FR-003).
+func TestDestroyRunsBehindTheActionGate(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]func(t *testing.T, d *destroyer) (url.Values, string){
+		"the form carried no page token": func(t *testing.T, d *destroyer) (url.Values, string) {
+			t.Helper()
+			form := d.confirmed(t)
+			form.Del(fieldPageToken)
+			return form, secFetchSiteSameOrigin
+		},
+		"the browser said the request came from another site": func(t *testing.T, d *destroyer) (url.Values, string) {
+			t.Helper()
+			return d.confirmed(t), "cross-site"
+		},
+	}
+
+	for name, arrange := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			d := newDestroyer(t)
+			live := d.live(t)
+			form, site := arrange(t, d)
+
+			r := httptest.NewRequest(http.MethodPost, "/dashboard/sessions/"+live.ID+"/destroy", strings.NewReader(form.Encode()))
+			r.Header.Set(headerContentType, contentTypeForm)
+			r.Header.Set(headerAccessAssertion, d.keys.mint(t, d.keys.claims()))
+			r.Header.Set(headerSecFetchSite, site)
+
+			w := httptest.NewRecorder()
+			d.ServeHTTP(w, r)
+
+			if w.Code != wantActionStatus {
+				t.Fatalf("status = %d (%s); want %d — the destroy route is not behind the gate",
+					w.Code, w.Body.String(), wantActionStatus)
+			}
+			if got := w.Body.String(); got != wantActionBody {
+				t.Errorf("body\n%s\nwant the gate's uniform refusal\n%s", got, wantActionBody)
+			}
+
+			recorded, running := d.standing(t, live)
+			if !recorded || !running {
+				t.Errorf("a refused destroy left the record %v and the window %v; want both untouched",
+					recorded, running)
+			}
+			if got := d.kills(); got != 0 {
+				t.Errorf("a refused destroy asked the host to kill %d times; want 0 — the gate runs before any state change", got)
+			}
+			if got, want := d.only(t)["action"], string(audit.ActionDashboardReject); got != want {
+				t.Errorf("action = %v; want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestDestroyRequiresConfirm is FR-029: a destroy without the confirming step is
+// refused, and nothing is torn down.
+//
+// **Must fail when** the confirm check is removed — every case below then answers
+// 200 with the session gone.
+//
+// The confirming value is compared rather than interpreted, which is what the
+// four near-misses are for. `on`, `true` and an upper-case `YES` are what a stray
+// checkbox, a hand-built request and a helpful client produce, and none of them
+// is the deliberate act FR-029 asks for on the one action that cannot be undone.
+//
+// The last case is the non-vacuity: the same form with `yes` destroys. Without it
+// every assertion here is satisfied by a route that refuses everything.
+func TestDestroyRequiresConfirm(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"the field is absent":        absent,
+		"the field is empty":         "",
+		"the operator said no":       "no",
+		"a checkbox said on":         "on",
+		"a client said true":         "true",
+		"the value is not lowercase": "YES",
+	}
+
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			d := newDestroyer(t)
+			live := d.live(t)
+
+			form := d.confirmed(t)
+			if value == absent {
+				form.Del(fieldConfirm)
+			} else {
+				form.Set(fieldConfirm, value)
+			}
+
+			w := d.post(t, live.ID, form)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusBadRequest)
+			}
+			if got := w.Body.String(); got != wantUnconfirmedBody {
+				t.Errorf("body\n%s\nwant\n%s", got, wantUnconfirmedBody)
+			}
+
+			recorded, running := d.standing(t, live)
+			if !recorded || !running {
+				t.Errorf("an unconfirmed destroy left the record %v and the window %v; want both untouched",
+					recorded, running)
+			}
+			if got := d.kills(); got != 0 {
+				t.Errorf("an unconfirmed destroy asked the host to kill %d times; want 0", got)
+			}
+
+			rec := d.only(t)
+			if got, want := rec["action"], string(audit.ActionDashboardDestroy); got != want {
+				t.Errorf("action = %v; want %v — the gate admitted this request; the confirming step is what refused it", got, want)
+			}
+			if got, want := rec["decision"], string(audit.Deny); got != want {
+				t.Errorf("decision = %v; want %v", got, want)
+			}
+			if got, want := rec["reason"], errDestroyUnconfirmed.Error(); got != want {
+				t.Errorf("reason = %v; want %v", got, want)
+			}
+		})
+	}
+
+	confirmed := newDestroyer(t)
+	live := confirmed.live(t)
+	if w := confirmed.post(t, live.ID, confirmed.confirmed(t)); w.Code != http.StatusOK {
+		t.Fatalf("a confirmed destroy answered %d (%s); want %d — every refusal above is satisfied by a route that refuses everyone",
+			w.Code, w.Body.String(), http.StatusOK)
+	}
+	if _, running := confirmed.standing(t, live); running {
+		t.Error("a confirmed destroy left the window running")
+	}
+}
+
+// TestDestroyUnverifiedTeardown is FR-010 and AR-004: a teardown the host will
+// not confirm is reported as unverified, the record is **kept**, and there is no
+// way to make the daemon claim otherwise.
+//
+// **Must fail when** the verification is skipped or its result ignored — the
+// status, the body and the retained record all move at once, because
+// Manager.Destroy only ever drops a record after confirmGone said the window is
+// gone.
+//
+// The three arrangements are the three shapes a teardown fails in, taken from the
+// API door's own suite so both doors are asked the same question: a kill that
+// reported success and left the session there, a kill that failed outright, and a
+// host that cannot say. The last one counts as surviving because Principle VI
+// does not let an unanswered question be reported as a teardown.
+func TestDestroyUnverifiedTeardown(t *testing.T) {
+	t.Parallel()
+
+	const tmuxMarker = "no-such-tmux-binary"
+
+	cases := map[string]func(d *destroyer, live session.Session){
+		"the kill reported success and the session is still there": func(d *destroyer, live session.Session) {
+			d.fixture.tmux.SurviveKill(live.TmuxName())
+		},
+		"the kill itself failed": func(d *destroyer, _ session.Session) {
+			d.fixture.tmux.FailOp(tmuxctl.OpKill, errors.New(tmuxMarker))
+		},
+		"the host cannot say whether it is gone": func(d *destroyer, _ session.Session) {
+			// Both, because confirmGone falls back to List when Has cannot answer.
+			d.fixture.tmux.FailOp(tmuxctl.OpHas, errors.New(tmuxMarker))
+			d.fixture.tmux.FailOp(tmuxctl.OpList, errors.New(tmuxMarker))
+		},
+	}
+
+	for name, arrange := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			d := newDestroyer(t)
+			live := d.live(t)
+			arrange(d, live)
+
+			w := d.post(t, live.ID, d.confirmed(t))
+
+			if w.Code != http.StatusConflict {
+				t.Fatalf("status = %d (%s); want %d — an unverified teardown is not a teardown",
+					w.Code, w.Body.String(), http.StatusConflict)
+			}
+			if got := w.Body.String(); got != wantUnverifiedBody {
+				t.Errorf("body\n%s\nwant\n%s", got, wantUnverifiedBody)
+			}
+			if got, want := w.Header().Get(headerContentType), wantActionContentType; got != want {
+				t.Errorf("%s = %q; want %q", headerContentType, got, want)
+			}
+
+			// The record is the only thing carrying an owner and two deadlines for a
+			// session that may still be running, and adoption runs at startup: a
+			// record dropped here is a live unsandboxed shell forgotten for good.
+			if _, err := d.fixture.store.Get(live.ID, auth.CallerOperator); err != nil {
+				t.Errorf("the record of a session that may still be running was dropped: %v", err)
+			}
+
+			// Prominent means findable: the trail's own name for this operation, a
+			// refusal, the daemon's id for the session, and the one reason that says
+			// a live unsandboxed shell may exist.
+			rec := d.only(t)
+			if got, want := rec["action"], string(audit.ActionDashboardDestroy); got != want {
+				t.Errorf("action = %v; want %v", got, want)
+			}
+			if got, want := rec["decision"], string(audit.Deny); got != want {
+				t.Errorf("decision = %v; want %v", got, want)
+			}
+			if got, want := rec["reason"], errDestroyOrphaned.Error(); got != want {
+				t.Errorf("reason = %v; want %v", got, want)
+			}
+			if got := rec["session_id"]; got != live.ID {
+				t.Errorf("session_id = %v; want %q", got, live.ID)
+			}
+
+			outward := d.sink.String() + w.Body.String()
+			if strings.Contains(outward, tmuxMarker) {
+				t.Errorf("the host's own account of the failure travelled outward: %q", outward)
+			}
+		})
+	}
+
+	// AR-004 stated as a test rather than as a comment: a form asking to be
+	// believed anyway changes nothing. **Must fail when** a force path is added.
+	forced := newDestroyer(t)
+	live := forced.live(t)
+	forced.fixture.tmux.SurviveKill(live.TmuxName())
+
+	form := forced.confirmed(t)
+	for _, field := range []string{"force", "skip_verification", "verify"} {
+		form.Set(field, confirmYes)
+	}
+
+	w := forced.post(t, live.ID, form)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("a destroy carrying a force field answered %d (%s); want %d — there is no force path (AR-004)",
+			w.Code, w.Body.String(), http.StatusConflict)
+	}
+	if _, err := forced.fixture.store.Get(live.ID, auth.CallerOperator); err != nil {
+		t.Errorf("a destroy carrying a force field dropped the record of a session that may still be running: %v", err)
+	}
+}
+
+// TestDestroyCrossOwnerUniform is FR-017 and SC-009 at the route that acts: an
+// identifier no session ever had, one another operator owns, and one whose
+// session is already gone are one answer, byte for byte.
+//
+// **Must fail when** the action distinguishes them — which is what the
+// whole-header comparison and the Content-Length claim are for. TestNotFoundUniform
+// makes the same claim about a fixture handler; this one makes it about the
+// registered route, which is the only place a real branch could grow.
+//
+// The record is asserted in the opposite direction: an operator reads which of
+// the three it was, and a caller cannot.
+func TestDestroyCrossOwnerUniform(t *testing.T) {
+	t.Parallel()
+
+	// Not on the allowlist and not this operator's owner: a second operator whose
+	// sessions this viewer must not be able to detect the existence of.
+	const stranger auth.CallerID = "a-second-operator"
+
+	cases := []struct {
+		name   string
+		id     func(t *testing.T, d *destroyer) string
+		reason error
+	}{
+		{
+			name:   "an identifier no session on this host ever had",
+			id:     func(*testing.T, *destroyer) string { return strings.Repeat("c", session.IDLen) },
+			reason: session.ErrSessionNotFound,
+		},
+		{
+			name: "a session another operator owns",
+			id: func(t *testing.T, d *destroyer) string {
+				t.Helper()
+				theirs, _ := d.fixture.plant(t, session.Session{
+					Owner: stranger, Name: "not yours", WorkDir: d.fixture.repo,
+				})
+				return theirs.ID
+			},
+			reason: session.ErrSessionNotFound,
+		},
+		{
+			name: "a session of the operator's own that is no longer there",
+			id: func(t *testing.T, d *destroyer) string {
+				t.Helper()
+				gone, _ := d.fixture.plant(t, session.Session{
+					Name: "already gone", WorkDir: d.fixture.repo, State: session.StateDead,
+				})
+				return gone.ID
+			},
+			reason: session.ErrSessionDead,
+		},
+	}
+
+	var (
+		firstName    string
+		firstBody    string
+		firstHeaders http.Header
+	)
+
+	for _, c := range cases {
+		d := newDestroyer(t)
+		id := c.id(t, d)
+
+		w := d.post(t, id, d.confirmed(t))
+
+		if w.Code != wantNotFoundStatus {
+			t.Errorf("%s: status = %d (%s); want %d", c.name, w.Code, w.Body.String(), wantNotFoundStatus)
+		}
+		if got := w.Body.String(); got != wantNotFoundBody {
+			t.Errorf("%s: body\n%s\nwant\n%s", c.name, got, wantNotFoundBody)
+		}
+		if got, want := w.Header().Get(headerContentLength), strconv.Itoa(len(wantNotFoundBody)); got != want {
+			t.Errorf("%s: %s = %q; want %q", c.name, headerContentLength, got, want)
+		}
+		if got := d.kills(); got != 0 {
+			t.Errorf("%s: the host was asked to kill %d times; want 0 — a session that is not this operator's is never touched", c.name, got)
+		}
+
+		rec := d.only(t)
+		if got, want := rec["reason"], c.reason.Error(); got != want {
+			t.Errorf("%s: reason = %v; want %v — the record is the only place the cause is named", c.name, got, want)
+		}
+		if strings.Contains(w.Body.String(), c.reason.Error()) {
+			t.Errorf("%s: the response quotes the reason back:\n%s", c.name, w.Body.String())
+		}
+
+		if firstHeaders == nil {
+			firstName, firstBody, firstHeaders = c.name, w.Body.String(), w.Header().Clone()
+			continue
+		}
+		if got := w.Body.String(); got != firstBody {
+			t.Errorf("%s answers\n%s\n%s answers\n%s\nthe two are distinguishable", c.name, got, firstName, firstBody)
+		}
+		if !maps.EqualFunc(firstHeaders, w.Header(), slices.Equal) {
+			t.Errorf("%s answers with headers %v; %s answers with %v — the two are distinguishable",
+				c.name, w.Header(), firstName, firstHeaders)
+		}
+	}
+
+	served := newDestroyer(t)
+	mine := served.live(t)
+	if w := served.post(t, mine.ID, served.confirmed(t)); w.Code != http.StatusOK {
+		t.Fatalf("a destroy of this operator's own session answered %d (%s); want %d — "+
+			"every refusal above is satisfied by a route that refuses everyone",
+			w.Code, w.Body.String(), http.StatusOK)
+	}
+}
+
+// TestADestroyIdentifierOffTheAlphabetIsNoRoute is contracts/actions.md's `{id}`
+// rule: 32 lowercase hex characters, and anything else takes the existing
+// unknown-route path rather than this route's own not-found.
+//
+// **Must fail when** the shape check is dropped — every case below then answers
+// with the action's uniform not-found fragment instead of the door's not-found
+// page.
+//
+// It discloses nothing that the address of every rendered card does not already.
+// An identifier off that alphabet cannot name a session on this host, so this is
+// a shape check rather than an existence oracle; the identifiers that *could*
+// name one all go through the uniform answer asserted above.
+func TestADestroyIdentifierOffTheAlphabetIsNoRoute(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"upper-case hex":                   strings.Repeat("C", session.IDLen),
+		"one character short":              strings.Repeat("c", session.IDLen-1),
+		"one character long":               strings.Repeat("c", session.IDLen+1),
+		"off the alphabet":                 strings.Repeat("z", session.IDLen),
+		"a name rather than an identifier": "refactor-auth",
+	}
+
+	for name, id := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			d := newDestroyer(t)
+			live := d.live(t)
+
+			w := d.post(t, id, d.confirmed(t))
+
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusNotFound)
+			}
+			if got := w.Body.String(); !strings.Contains(got, notFoundBody) {
+				t.Errorf("body\n%s\ndoes not carry the door's own not-found page (%q)", got, notFoundBody)
+			}
+			if got := w.Body.String(); got == string(bodyActionNotFound) {
+				t.Errorf("an identifier that is not a route was answered with the action's not-found:\n%s", got)
+			}
+
+			if recorded, running := d.standing(t, live); !recorded || !running {
+				t.Errorf("a request at no route left the record %v and the window %v; want both untouched",
+					recorded, running)
+			}
+			if got, want := d.only(t)["reason"], errScopeNoRoute.Error(); got != want {
+				t.Errorf("reason = %v; want %v", got, want)
+			}
+		})
 	}
 }

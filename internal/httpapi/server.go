@@ -487,6 +487,10 @@ func newServer(
 	// operations, and a route authorised by an identity rather than a signature
 	// is not one of them.
 	s.handleBrowser(patternSessionStream, audit.ActionStreamOpen, s.sessionStream)
+	// The first route on this door that changes something, and the reason
+	// handleAction exists one line below handleBrowser rather than instead of it:
+	// everything above only reads, and a read is authorised by layer 1 alone.
+	s.handleAction(patternDashboardDestroy, audit.ActionDashboardDestroy, s.destroyFromBrowser)
 	// One route per embedded asset, so `/static/` names exactly the files the
 	// binary carries and a path that is not one of them is a path nothing claims
 	// (contracts/dashboard.md's route table; see loadAssets for why a wildcard is
@@ -560,6 +564,27 @@ func (s *Server) handleUnrouted() {
 // were the thing that authorises it.
 func (s *Server) handleBrowser(pattern string, action audit.Action, h http.HandlerFunc) {
 	s.mux.Handle(pattern, s.authenticateBrowser(action, h))
+}
+
+// handleAction is handleBrowser for a route that changes something: the one
+// place a mutating dashboard route reaches the mux, so an action cannot be
+// registered without the gate contracts/actions.md puts in front of it.
+//
+// It is a second function rather than a boolean on the first because the two
+// differ in what they promise, and the promise is the whole of milestone 3's
+// defence. A route registered with handleBrowser is authorised by an ambient
+// Access cookie alone — which is exactly what a hostile third-party page can
+// cause a browser to send — and every test in this package would still pass with
+// the cross-site checks absent. Making the choice a parameter would make it a
+// thing a call site can get wrong quietly; making it a different function makes
+// registering an action without the gate a thing somebody has to type.
+//
+// Nothing is appended to s.registered, for the reason handleBrowser appends
+// nothing: that list is contracts/http-api.md's closed set of six operations,
+// each authorised by a signature, and these are authorised by an identity and a
+// page token instead.
+func (s *Server) handleAction(pattern string, action audit.Action, h http.HandlerFunc) {
+	s.mux.Handle(pattern, s.authorizeAction(action, h))
 }
 
 // handlerFor is where a route acquires its behaviour, and it is a switch with a
