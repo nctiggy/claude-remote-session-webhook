@@ -39,6 +39,19 @@
 <dd>{{ .Age }}</dd>
 </dl>
 {{/*
+  The token every action form on this card submits, minted once for the render
+  this card belongs to and bound to the identity layer 1 verified for it
+  (contracts/actions.md, FR-002b, FR-007). It is here rather than on the page
+  because the per-session forms are this component's own.
+
+  It sits outside the row below because the row is still FR-024a's absent
+  parameter: the destroy control that will wrap this field in a <form> is T007's,
+  and a form built here to hold it would be that task done early and a control
+  nobody can operate. Until then the field submits nothing, which is the correct
+  behaviour for a card that offers nothing to submit — and the gate refuses every
+  action either way, so nothing is authorised by its presence.
+*/}}{{ template "page-token" .PageToken }}
+{{/*
   The action row is a parameter this milestone passes none of (FR-024a). The
   dashboard is read-only (FR-022), and a browser holds no shared secret, so
   destroy, compact and rename would be non-functional here as well as out of

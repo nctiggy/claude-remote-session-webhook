@@ -1215,6 +1215,155 @@ func claimsFor(k *keyServer, email string) map[string]any {
 	return claims
 }
 
+// The three shapes a rendered value can take that decide whether it travels
+// anywhere: the field a form submits, the URL a browser follows, and the
+// attribute a script reads. Matching the attribute rather than searching the page
+// for a substring is the point — the claim is not "the token appears once" but
+// "every place that would carry it onwards is free of it".
+//
+// The field pattern is built from fieldPageToken, the constant the gate reads a
+// submitted token out of, so a template that renamed the field it renders is
+// caught here rather than at the first action that silently stops verifying.
+var (
+	hiddenTokenField = regexp.MustCompile(`<input type="hidden" name="` + fieldPageToken + `" value="([^"]*)">`)
+	linkedURL        = regexp.MustCompile(`(?:href|src|action)="([^"]*)"`)
+	dataAttribute    = regexp.MustCompile(`data-[a-zA-Z0-9-]+="([^"]*)"`)
+)
+
+// TestPageTokenNotInURLsOrLogs is T004's whole claim: a page carries the token
+// its own action forms will submit, in a hidden field and in nothing else.
+//
+// **Must fail when** the token is placed in a link — the URL sweep reads every
+// href, src and action on the page — or when it reaches a record, which the sweep
+// of the render's own trail reads. It fails just as directly when the field is not
+// rendered at all, and when the token is minted against anything other than the
+// identity layer 1 verified: a page whose token does not verify for its own viewer
+// is a page whose every action is refused with nothing to say why.
+//
+// The needle is the MAC rather than the whole token. The expiry is a timestamp and
+// discloses nothing; the MAC is the half a forger needs, and searching for it
+// catches a leak that carried the secret without its punctuation.
+func TestPageTokenNotInURLsOrLogs(t *testing.T) {
+	t.Parallel()
+
+	// Quoted from contracts/actions.md rather than read from the constant. A test
+	// that compared fieldPageToken with itself would go on passing through an edit
+	// to the contract's own word, and this is the name every form on every page
+	// and every submission the gate reads have to agree on.
+	if fieldPageToken != "crsw_page_token" { //nolint:gosec // G101 false positive, as on the constant itself in browser.go: this is the field's *name*, which every rendered page carries in plain sight. The value it names is minted per render and appears in no source file.
+		t.Fatalf("the token field is named %q; contracts/actions.md fixes it as %q", fieldPageToken, "crsw_page_token")
+	}
+
+	cases := []struct {
+		page string
+		open func(t *testing.T, f *fleet, id string) *httptest.ResponseRecorder
+	}{
+		{
+			page: "the fleet",
+			open: func(t *testing.T, f *fleet, _ string) *httptest.ResponseRecorder { return f.view(t) },
+		},
+		{
+			// The other page that renders a card, and therefore the other page
+			// whose card will carry action forms.
+			page: "the single-session page",
+			open: func(t *testing.T, f *fleet, id string) *httptest.ResponseRecorder { return f.viewOf(t, id) },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.page, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFleet(t)
+			live, _ := f.fixture.plant(t, session.Session{Name: "refactor the reaper", WorkDir: f.fixture.repo})
+
+			w := tc.open(t, f, live.ID)
+			page := w.Body.String()
+
+			fields := hiddenTokenField.FindAllStringSubmatch(page, -1)
+			if len(fields) == 0 {
+				t.Fatalf("%s renders no hidden %s field, so nothing it offers could ever be submitted:\n%s",
+					tc.page, fieldPageToken, page)
+			}
+			token := fields[0][1]
+			for _, field := range fields[1:] {
+				if field[1] != token {
+					t.Errorf("%s rendered two different tokens (%q and %q); one page render mints one token, and every form on it carries that one",
+						tc.page, token, field[1])
+				}
+			}
+
+			// FR-007 at the minting end. What the gate recomputes on a submission
+			// is this identity's MAC over this expiry, so a token bound to
+			// anything else — a claim off the request, a constant, nobody — is a
+			// page that cannot act. The clock is the fixture's own, the one the
+			// mint measured the expiry on.
+			if err := f.pageKey.verify(token, testOperatorEmail, testTime); err != nil {
+				t.Errorf("%s rendered a token that does not verify for the identity the page was rendered for: %v",
+					tc.page, err)
+			}
+
+			mac := token[strings.LastIndex(token, pageTokenSeparator)+1:]
+			needles := []struct{ what, value string }{
+				{"the page token", token},
+				{"the MAC the page token is made of", mac},
+			}
+
+			urls := linkedURL.FindAllStringSubmatch(page, -1)
+			if len(urls) == 0 {
+				t.Fatalf("%s renders no href, src or action at all, so their freedom from the token asserts nothing:\n%s",
+					tc.page, page)
+			}
+			for _, u := range urls {
+				for _, needle := range needles {
+					if strings.Contains(u[1], needle.value) {
+						t.Errorf("%s carries %s in a URL (%s); a token in a link is a token in a referrer header, a browser history and a proxy log",
+							tc.page, needle.what, u[0])
+					}
+				}
+			}
+
+			for _, attr := range dataAttribute.FindAllStringSubmatch(page, -1) {
+				for _, needle := range needles {
+					if strings.Contains(attr[1], needle.value) {
+						t.Errorf("%s carries %s in a data- attribute (%s), which is a place scripts and extensions read from for no benefit here",
+							tc.page, needle.what, attr[0])
+					}
+				}
+			}
+
+			// Every response header, which is where a Set-Cookie would be: the
+			// token must never become ambient, because a credential that rides on
+			// requests a hostile page triggers is the thing this one exists to
+			// refuse.
+			for name, values := range w.Header() {
+				for _, value := range values {
+					for _, needle := range needles {
+						if strings.Contains(value, needle.value) {
+							t.Errorf("%s carries %s in the %s response header (%q); the hidden field is the only place it belongs",
+								tc.page, needle.what, name, value)
+						}
+					}
+				}
+			}
+
+			// One record for the render, asserted before the trail is searched:
+			// a page that recorded nothing would carry the token zero times for
+			// entirely the wrong reason.
+			if got, want := f.only(t)["decision"], string(audit.Allow); got != want {
+				t.Errorf("%s was recorded as %v; want %v", tc.page, got, want)
+			}
+			trail := f.sink.String()
+			for _, needle := range needles {
+				if strings.Contains(trail, needle.value) {
+					t.Errorf("%s put %s on the record; a trail holds what the daemon derived and never what it handed the browser (FR-035, AR-007):\n%s",
+						tc.page, needle.what, trail)
+				}
+			}
+		})
+	}
+}
+
 // TestTheFleetsRecordCarriesNothingThePageRendered is FR-035 and SC-008 at this
 // route: one record for the request, and not a byte of what the response was
 // made of.

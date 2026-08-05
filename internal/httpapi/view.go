@@ -59,6 +59,25 @@ type sessionView struct {
 	// exists so milestone 3 fills a row that is already there rather than
 	// restoring markup this milestone deleted.
 	Actions []actionView
+
+	// PageToken is the value every action form on this card will submit: minted
+	// for this render and bound to the identity layer 1 verified for it
+	// (FR-002b, FR-007, contracts/actions.md). It is the card's parameter rather
+	// than the page's because the per-session forms are the card's own, and one
+	// value is handed to every card a page draws — a fleet of ten renders one
+	// token, not ten, because a page is rendered for one identity at one instant
+	// and a second mint would be a second expiry that nothing is truer for.
+	//
+	// It reaches the browser in a hidden field and in nothing else: never a URL,
+	// never a cookie, never a data- attribute, never a record. A token in a link
+	// is a token in a referrer header, a browser history, and a proxy log — which
+	// is also why the gate reads it out of PostForm and never out of Form.
+	//
+	// Empty renders no field at all (partials/page-token.html), which is what
+	// makes the zero value safe: a card built without a token offers nothing that
+	// looks like one. That is FR-018a's discipline — state the absence, never
+	// render something that reads like a value — applied to a credential.
+	PageToken string
 }
 
 // paneView is the pane viewer's parameters (docs/components.md): one session's

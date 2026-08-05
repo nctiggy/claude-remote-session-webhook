@@ -153,9 +153,53 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	token, minted := s.pageTokenFor(w, r, operator)
+	if !minted {
+		return
+	}
 	// No SetSessionID: this page is about the fleet and not about one session,
 	// and data-model.md carries session_id on the single-session view alone.
-	s.renderPage(w, r, http.StatusOK, "dashboard", s.fleet(operator))
+	s.renderPage(w, r, http.StatusOK, "dashboard", s.fleet(operator, token))
+}
+
+// pageTokenFor mints the one page token a render's action forms carry, bound to
+// the identity layer 1 verified for that request (FR-002b, FR-007).
+//
+// One mint per render rather than one per form. A page is rendered for one
+// identity at one instant, so every form on it carries the same value and a
+// second mint would only be a second expiry nothing is truer for. The identity is
+// the operator layer 1 produced and never a value read out of the request, which
+// is the whole of FR-007 at the minting end: the gate in browser.go recomputes
+// the MAC against the identity of whoever submits, so a token minted for one
+// operator's page cannot be spent by another.
+//
+// The instant is the server's own clock, the same one admitAction measures the
+// expiry against. There is no arrangement where a page mints a token that is
+// already expired by the reading of time that will check it.
+//
+// A failure serves no page. mint refuses an empty identity and a MAC it could not
+// compute, neither of which is reachable behind this door — layer 1 refuses an
+// assertion that names no person — but the honest answer to the unreachable one is
+// still not a page: every action offered by a page whose token was not minted is
+// refused by the gate, with nothing on the page to say why. It answers the way
+// renderPage answers a template that failed, and for the same reason: 500 with no
+// body, the reason on the record, the detail on the report channel where an
+// operator is already reading. What went wrong is this daemon's, not the caller's.
+func (s *Server) pageTokenFor(w http.ResponseWriter, r *http.Request, operator *access.VerifiedOperator) (string, bool) {
+	token, err := s.pageKey.mint(operator.Email, s.clock.Now())
+	if err != nil {
+		// mint's reasons are pagetoken.go's own sentinels, authored there and
+		// carrying no byte a caller wrote (FR-035, FR-042).
+		AuditFrom(r.Context()).Deny(err.Error())
+		// The identity is deliberately absent from the report as well as from the
+		// record. It is the edge's word rather than the caller's, but nothing here
+		// needs it to be diagnosed, and a page token's own failure is the last
+		// place to start writing addresses down.
+		s.report(fmt.Errorf("mint the page token for a dashboard render: %w", err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return "", false
+	}
+	return token, true
 }
 
 // fleet reads the viewer's own sessions and projects them into the page.
@@ -165,13 +209,18 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 // with a session counted as running in the summary and drawn as idle in the grid
 // — a disagreement between a page and itself, over the one fact that says a
 // session is about to be reaped.
-func (s *Server) fleet(operator *access.VerifiedOperator) fleetView {
+//
+// The token arrives as a parameter for the reason the clock reading is taken once
+// above: it belongs to the render rather than to a card, so every card on the page
+// carries the same value and the page cannot hand two of its own forms two
+// different tokens.
+func (s *Server) fleet(operator *access.VerifiedOperator, token string) fleetView {
 	now := s.clock.Now()
 
 	owned := s.sessions.List(operator.Owner)
 	views := make([]sessionView, 0, len(owned))
 	for _, live := range owned {
-		views = append(views, cardOf(live, now))
+		views = append(views, cardOf(live, now, token))
 	}
 
 	return fleetView{
@@ -189,7 +238,10 @@ func (s *Server) fleet(operator *access.VerifiedOperator) fleetView {
 // second projection would be a second card — the defect that document exists to
 // prevent, spelled in Go instead of in markup, and free to disagree about the
 // two fields it derives.
-func cardOf(live session.Session, now time.Time) sessionView {
+//
+// The token is the render's, passed through rather than minted here, so the one
+// function that projects a card cannot become a second place a token is issued.
+func cardOf(live session.Session, now time.Time, token string) sessionView {
 	return sessionView{
 		ID:      live.ID,
 		Name:    live.Name,
@@ -201,6 +253,7 @@ func cardOf(live session.Session, now time.Time) sessionView {
 		Age:          formatAge(now.Sub(live.CreatedAt)),
 		// Actions is left absent (FR-024a). See view.go: the parameter exists so
 		// milestone 3 fills a row that is already there.
+		PageToken: token,
 	}
 }
 
@@ -264,9 +317,17 @@ func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Minted after both reads, so a request that ends in the uniform 404 mints
+	// nothing: a token is a thing a page hands out, and this one is not serving a
+	// page.
+	token, minted := s.pageTokenFor(w, r, operator)
+	if !minted {
+		return
+	}
+
 	s.renderPage(w, r, http.StatusOK, "session", sessionPageView{
 		Operator: operator,
-		Session:  cardOf(live, s.clock.Now()),
+		Session:  cardOf(live, s.clock.Now(), token),
 		Pane:     pane,
 	})
 }

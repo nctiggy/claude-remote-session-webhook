@@ -1,0 +1,25 @@
+{{/*
+  The page token — the evidence a mutating request came from a page this daemon
+  rendered, for the identity it rendered that page for (contracts/actions.md,
+  FR-002b, FR-007). It is half of the cross-site defence; the other half is the
+  Sec-Fetch-Site check the browser fills in by itself.
+
+  One partial, so the field a page renders and the field the gate reads are one
+  spelling. The gate names it `fieldPageToken` in browser.go and there is no
+  function map in this template set for a constant to reach through, so the two
+  literals are held together by the test that asserts a rendered page carries the
+  field the gate looks for — not by anyone remembering to change both.
+
+  A hidden field and nothing else, which is a security property rather than a
+  markup choice. Never a URL: a token in a link is a token in a referrer header,
+  a browser history and a proxy log, and the gate refuses one submitted as a query
+  string for exactly that reason. Never a cookie: a cookie is ambient, so it would
+  ride on the cross-site request this token exists to refuse and hand the attack
+  the evidence it is missing. Never a data- attribute, which is a place scripts
+  and extensions read from for no benefit here at all.
+
+  It renders only when a token was minted. A component built without one renders
+  no field rather than an empty one — an empty value looks like a token to
+  everything reading the markup and verifies as none, which is FR-018a's
+  discipline applied to a credential.
+*/}}{{ with . }}<input type="hidden" name="crsw_page_token" value="{{ . }}">{{ end }}
