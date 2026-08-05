@@ -800,6 +800,146 @@ func TestTheRainCarriesNoInformationAndStaysOffReadingContent(t *testing.T) {
 	}
 }
 
+// renderedFleet is the fleet page as a browser receives it.
+//
+// It is a page rather than a component, and it has to be: the three hooks the
+// live half reads belong to the composition — which stream to open, which
+// address one card is at, and which note says the fleet has stopped being kept
+// current — so a component executed on its own could not see any of them. It
+// goes through the server's own template set all the same, which is what every
+// assertion in this file stands on.
+func renderedFleet(t *testing.T) string {
+	t.Helper()
+
+	return renderComponent(t, "dashboard", fleetView{
+		Operator: &access.VerifiedOperator{Email: "operator@example.com"},
+		Summary:  []stateCount{{State: session.DisplayRunning, Count: 1}},
+		Sessions: []sessionView{actionableCard()},
+		Empty:    emptyView{Title: "No sessions running", Body: "Nothing is executing on this host right now."},
+		Create:   createForm(),
+	})
+}
+
+// TestStreamLossIsVisible is FR-020, and it is the pane's ended note made about
+// a whole fleet: a page whose updates have stopped must say so rather than going
+// on presenting a fleet it can no longer vouch for.
+//
+// Silence is the failure, and it is worse here than at a pane. A pane that stops
+// updating looks like a session sitting quietly at a prompt; a *fleet* that stops
+// updating looks like a host where nothing is happening — and this page now
+// offers a control on every card, so a stale card is an operator destroying a
+// session that has already gone or reading a fleet that has grown since.
+//
+// The ending arrives as no event at all. contracts/fleet-stream.md names three
+// and not one of them is a farewell, so a severed stream, a restarted daemon and
+// a subscriber this daemon dropped for falling behind are one thing to a browser:
+// a response that ended. That is why the page needs a sentence prepared for it in
+// advance, rather than something the daemon could send.
+//
+// **Must fail when** the page carries no disconnected state — the hook is gone,
+// the note it names is missing, the note renders visible, or it says nothing. The
+// other half of the claim is in stylesheet_test.go, where the script that reveals
+// this note is: markup nothing reveals is as silent as no markup.
+func TestStreamLossIsVisible(t *testing.T) {
+	t.Parallel()
+
+	page := renderedFleet(t)
+
+	hook := regexp.MustCompile(`data-fleet-stalled="([^"]*)"`).FindStringSubmatch(page)
+	if hook == nil {
+		t.Fatalf("the fleet page names no note for a stream that stopped, so a page that has missed changes goes on presenting the fleet as current:\n%s", page)
+	}
+
+	note := regexp.MustCompile(`<p[^>]*id="` + regexp.QuoteMeta(hook[1]) + `"[^>]*>([^<]*)</p>`).FindStringSubmatch(page)
+	if note == nil {
+		t.Fatalf("the fleet page points the live half at %q and renders no such element:\n%s", hook[1], page)
+	}
+	if !strings.Contains(note[0], "hidden") {
+		t.Errorf("the note renders visible (%q); a page that says its updates have stopped before they have says it about a stream that is working", note[0])
+	}
+	if strings.TrimSpace(note[1]) == "" {
+		t.Error("the note carries no copy at all, so revealing it would say nothing")
+	}
+	// The page cannot recover what it missed while the stream was gone — the
+	// reconnection brings no history with it — so the note has to name the one
+	// thing that does. A sentence that only announced the loss would leave an
+	// operator looking at a fleet they have been told not to trust with nothing
+	// to do about it.
+	if !strings.Contains(strings.ToLower(note[1]), "reload") {
+		t.Errorf("the note reads %q and names nothing the operator can do about it; only a fresh render restores a fleet this page can vouch for", strings.TrimSpace(note[1]))
+	}
+}
+
+// TestTheFleetNamesTheStreamAndTheCardItRefetches is the linkage that loses
+// silently, and it loses three ways at once: the page, the routes and the script
+// have to agree about two addresses and one identifier, and when they do not the
+// fleet renders perfectly and simply never changes.
+//
+// Both addresses are derived from the patterns the daemon registers rather than
+// spelled again here. A renamed route would otherwise leave every test in this
+// package passing and every open dashboard silently stale — which is issue #15
+// again, reintroduced by a rename nobody connected to it.
+//
+// The identifier is the third: the stream says only which session changed
+// (contracts/fleet-stream.md), so a card that does not carry its own identifier
+// in markup is a card the live half cannot find, replace, or remove.
+func TestTheFleetNamesTheStreamAndTheCardItRefetches(t *testing.T) {
+	t.Parallel()
+
+	page := renderedFleet(t)
+
+	stream := regexp.MustCompile(`data-fleet-stream="([^"]*)"`).FindStringSubmatch(page)
+	if stream == nil {
+		t.Fatalf("the fleet page names no stream, so nothing subscribes and the page is as static as it was in milestone 2:\n%s", page)
+	}
+	if want := strings.TrimPrefix(patternFleetStream, "GET "); stream[1] != want {
+		t.Errorf("the fleet page subscribes to %q and the daemon serves %q", stream[1], want)
+	}
+
+	// The card's address with the daemon's own route parameter still in it. The
+	// live half substitutes the identifier the stream named, so this is compared
+	// against the registered pattern verbatim rather than against a rendering of
+	// it — the two spellings are then one string.
+	card := regexp.MustCompile(`data-fleet-card="([^"]*)"`).FindStringSubmatch(page)
+	if card == nil {
+		t.Fatalf("the fleet page names no address for a card, so an event naming a session leads nowhere:\n%s", page)
+	}
+	if want := strings.TrimPrefix(patternSessionView, "GET "); card[1] != want {
+		t.Errorf("the fleet page re-fetches a card from %q and the daemon serves %q", card[1], want)
+	}
+	// FR-034 on this address for the reason the pane's stream hook carries it: a
+	// credential in a URL is a credential in a referrer header, a browser history
+	// and a proxy log, and what is on the other end of this one is an unsandboxed
+	// shell.
+	if strings.ContainsAny(card[1], "?#") {
+		t.Errorf("the card's address carries more than the path to the session (%q)", card[1])
+	}
+
+	// And the identifier on the card itself, at the component as well as on the
+	// page: the fleet's live half finds a card by it, and the create route's
+	// fragment is the same component rendered on its own.
+	view := actionableCard()
+	for what, markup := range map[string]string{"the fleet page": page, "the card component": renderComponent(t, "session-card", view)} {
+		if !strings.Contains(markup, `data-session="`+view.ID+`"`) {
+			t.Errorf("%s renders no data-session on the card, so an event naming that session matches nothing on the page:\n%s", what, markup)
+		}
+	}
+
+	// The single-session page carries no fleet hook, and that is load-bearing
+	// rather than tidy. It renders one card and no grid, so a live half attached
+	// to it would meet every change with the reload the fleet page's own shape
+	// changes call for — on a page whose shape can never be what that reload is
+	// for. A session that ends says so beside the pane there, on the stream that
+	// page already opens.
+	if session := renderComponent(t, "session", sessionPageView{
+		Operator: &access.VerifiedOperator{Email: "operator@example.com"},
+		Session:  view,
+		Pane:     paneView{ID: view.ID, Text: "$ go test ./..."},
+	}); strings.Contains(session, "data-fleet-stream") {
+		t.Errorf("the single-session page subscribes to the fleet stream; it has no grid for a card to arrive in:\n%s", session)
+	}
+}
+
 // forbiddenInTemplates is the testable half of Principle VII, plus the two
 // absences the policy in docs/security.md depends on.
 //

@@ -717,6 +717,71 @@ func TestTheScriptSpendsASubmitOnce(t *testing.T) {
 	}
 }
 
+// TestTheFleetClientSubscribesAndSaysWhenItStops is the script half of US3, and
+// the half TestStreamLossIsVisible cannot see: that test proves the fleet page
+// carries a prepared sentence about a stream that stopped, and markup nothing
+// ever reveals is exactly as silent as no markup at all.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed —
+// the same footing every other assertion in this file stands on. What makes them
+// worth making is the direction this whole task can be lost in silently: a live
+// half that is written, correct, and attached to nothing. This repository has
+// shipped that failure three times, and the symptom here is the one issue #15
+// reported in the first place — an open dashboard that never changes.
+//
+// The names are the load-bearing part. The daemon says which of three things
+// happened in the event's own name and puts one identifier in the data
+// (contracts/fleet-stream.md), so a client reading onmessage would receive every
+// change as the same undifferentiated thing and could not tell a session that
+// arrived from one that is gone.
+func TestTheFleetClientSubscribesAndSaysWhenItStops(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	query := regexp.MustCompile(`querySelectorAll\(\s*['"][^'"]*data-fleet-stream[^'"]*['"]\s*\)`)
+	if query.FindString(source) == "" {
+		t.Error("crswd.js never queries the document for the fleet's stream hook, so nothing subscribes and an open dashboard is as static as it was in milestone 2 (issue #15)")
+	}
+
+	for kind, why := range map[string]string{
+		"appeared": "a session that entered the fleet has no card on the page yet",
+		"changed":  "a session whose state or name moved is a card that now describes it wrongly",
+		"vanished": "a card for a session that is gone offers a control that ends nothing",
+	} {
+		if !regexp.MustCompile(`addEventListener\(\s*['"]` + kind + `['"]`).MatchString(source) {
+			t.Errorf("crswd.js listens for no %q event: %s", kind, why)
+		}
+	}
+
+	// FR-020. The hook is read here and the copy is over in the template, for the
+	// reason every other sentence this interface says is: a script that authored
+	// its own prose would be a second place to look for it.
+	if !strings.Contains(source, "dataset.fleetStalled") {
+		t.Error("crswd.js never reads the hook naming the fleet's stalled note, so a stream that stopped says nothing and the page presents a fleet it cannot vouch for (FR-020)")
+	}
+	// Two error handlers and not one: the pane's and this one. Every ending of the
+	// fleet stream arrives that way and none of them arrives as an event
+	// (contracts/fleet-stream.md), and the two streams answer it by different
+	// rules — a pane leaves a browser that is retrying alone, and a fleet cannot,
+	// because the changes that happened while it retried arrive as nothing at all.
+	// So a file carrying one handler has left one of the two streams ending in
+	// silence.
+	if n := len(regexp.MustCompile(`onerror\s*=`).FindAllString(source, -1)); n != 2 {
+		t.Errorf("crswd.js attaches %d EventSource error handlers; want 2 — the pane's and the fleet's", n)
+	}
+
+	// The card comes from the daemon and is parsed into an inert document before
+	// one element of it is taken. These are the sinks that would put the same
+	// bytes into the live document as markup instead, and neither is caught by
+	// the assignment sweep above — they are calls rather than assignments.
+	for _, sink := range []string{"insertAdjacentHTML", "document.write"} {
+		if strings.Contains(source, sink) {
+			t.Errorf("crswd.js carries %q; the answer to a card re-fetch is parsed and one element of it imported, which is what keeps a page a session printed into out of this document", sink)
+		}
+	}
+}
+
 // blockFor returns the body of the first block whose prelude contains marker,
 // so a test can assert about one rule rather than about the whole file. Braces
 // are counted, because a media query holds rules of its own.

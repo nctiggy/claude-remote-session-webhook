@@ -184,6 +184,30 @@ body {
   padding: var(--s5);
 }
 
+/* What the page says about itself rather than about a session: the fleet is no
+   longer being kept current, so the cards below it are a fleet the page cannot
+   vouch for (FR-020).
+
+   Prose a human wrote, so it is set in sans on the same terms as the notes
+   beside a pane — and in --text rather than --dim, because it is the answer to
+   something that has happened rather than an aside, which is the reading
+   .card-outcome already makes.
+
+   No state token. Those name what a session is (docs/design-system.md), and
+   this sentence is about the page; borrowing amber for it would be the parallel
+   palette that document forbids. The emphasis border is what separates it from
+   the fleet it sits above, and emphasis is exactly what --edge-bright is for. */
+.fleet-note {
+  margin: 0 0 var(--s5);
+  padding: var(--s3) var(--s4);
+  background: var(--surface);
+  border: var(--edge-width) solid var(--edge-bright);
+  border-radius: var(--r);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: var(--fs-prose);
+}
+
 /* The summary comes before any detail — a dashboard is scanned, not read. */
 .summary {
   display: flex;

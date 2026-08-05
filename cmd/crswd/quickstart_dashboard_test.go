@@ -383,7 +383,13 @@ func TestDashboardQuickstartStory1Fleet(t *testing.T) {
 		t.Error("the summary row renders after the cards it summarises")
 	}
 
-	if cards := strings.Count(page, `<article class="card">`); cards != 2 {
+	// The opener without its closing bracket, which is how the other seven counts
+	// of a card in this repository are spelled. This one pinned the whole tag, so
+	// it was an assertion about the card's attribute list rather than about how
+	// many cards a fleet of two renders — and T014 gave the card the identifier
+	// the fleet stream names it by (data-session). Nothing about the claim here
+	// changed: one card per owned session, on a page composed exactly as it was.
+	if cards := strings.Count(page, `<article class="card"`); cards != 2 {
 		t.Errorf("%d cards rendered, want one per owned session (2):\n%s", cards, page)
 	}
 	for _, want := range []string{first.ID, second.ID, "alpha", "beta"} {

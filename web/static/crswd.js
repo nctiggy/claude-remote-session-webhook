@@ -1,6 +1,7 @@
 /*
- * crswd.js — the dashboard's only script, and in this milestone it does three
- * things: the digital rain, the pane's live half, and spending a submit once.
+ * crswd.js — the dashboard's only script, and in this milestone it does four
+ * things: the digital rain, the pane's live half, spending a submit once, and
+ * keeping an open fleet current.
  *
  * It exists as a file rather than as markup because docs/security.md's policy is
  * sent with no `unsafe-inline` and no exception: a <script> body would be refused
@@ -305,5 +306,223 @@
 
   for (const form of document.querySelectorAll('form[data-submit-once]')) {
     spendOnce(form);
+  }
+
+  /*
+   * The fleet's live half (US3, issue #15, contracts/fleet-stream.md).
+   *
+   * The daemon says *what* changed and never *what it now looks like*: one
+   * identifier per event, under a name that says which of the three happened
+   * (research.md R6). So this listens by name rather than through onmessage —
+   * appeared, changed and vanished are three different things to do — and turns
+   * each one into a re-fetch of that session's own card. Nothing here is told
+   * the name, the state or the working directory, which is what keeps hours of
+   * open connection free of session data.
+   *
+   * What it re-fetches is one card and never the fleet. The address comes off
+   * the page (dashboard.html) with the daemon's own route parameter still in it,
+   * because this file is served to every page and knows about no session and no
+   * route; the same reason the pane reads its stream address off the element it
+   * updates.
+   *
+   * There are two changes it deliberately will not make, and both are the
+   * page's own composition: a card arriving when the page rendered the empty
+   * state, and the last card leaving. The fleet page chooses between the
+   * summary-and-grid and the empty state, and a script that made that choice a
+   * second time would be a second fleet page — with a second empty state, a
+   * second summary row and two places for either to be wrong. It reloads
+   * instead, which is the server composing the page again, and that is the
+   * whole of what a reload costs on a page whose only unsaved state is a create
+   * form the operator has not submitted.
+   *
+   * Nothing here animates. FR-022 is answered by the stylesheet's universal
+   * `transition: none` under a reduced-motion preference rather than by a rule
+   * remembered here, and a card is exchanged for its successor in one operation
+   * with no intermediate state for anything to fade between.
+   */
+  const watchFleet = (shell) => {
+    const stalled = document.getElementById(shell.dataset.fleetStalled);
+    const grid = () => shell.querySelector('.grid');
+    const cardFor = (id) => shell.querySelector(`article.card[data-session="${CSS.escape(id)}"]`);
+
+    /*
+     * FR-020, and the reason it is revealed and never hidden again: the page
+     * has missed a window it cannot ask about afterwards. EventSource reconnects
+     * on its own, which is the right recovery — a fresh request, authorised from
+     * scratch, re-subscribed — but the changes that happened while it was gone
+     * arrive as no event at all, so a note that hid itself on reconnection would
+     * be the page claiming a currency it never got back. Only a reload does
+     * that, and the copy over there says so.
+     */
+    const lostTheFleet = () => {
+      if (stalled) {
+        stalled.hidden = false;
+      }
+    };
+
+    let reloading = false;
+    const recompose = () => {
+      if (!reloading) {
+        reloading = true;
+        location.reload();
+      }
+    };
+
+    /*
+     * The summary row is derived from the cards below it, which is the rule the
+     * page states about itself — so this re-derives it from the cards that are
+     * there now rather than adding or subtracting one. It reads each row's own
+     * pill for the state it counts, so no state is named in this file: the two
+     * the daemon derives today and any the status component renders later are
+     * the same code path.
+     */
+    const recount = () => {
+      const fleet = grid();
+      if (!fleet) {
+        return;
+      }
+      for (const row of shell.querySelectorAll('.summary-state')) {
+        const pill = row.querySelector('.pill');
+        const count = row.querySelector('.summary-count');
+        if (!pill || !count) {
+          continue;
+        }
+        const state = Array.from(pill.classList).find((name) => name.startsWith('pill-'));
+        if (state) {
+          count.textContent = fleet.getElementsByClassName(state).length;
+        }
+      }
+    };
+
+    const drop = (id) => {
+      const here = cardFor(id);
+      if (!here) {
+        return;
+      }
+      here.remove();
+      const fleet = grid();
+      if (!fleet || fleet.childElementCount === 0) {
+        recompose();
+        return;
+      }
+      recount();
+    };
+
+    /*
+     * One card, re-fetched from the daemon rather than assembled here.
+     *
+     * The markup is the daemon's own — the same card template the page was
+     * rendered from — and it is parsed into an inert document before one element
+     * of it is taken. A parsed document runs nothing: no script in it executes,
+     * no image in it loads, and what is imported is the single <article> this
+     * event named. That matters because the answer is a whole page and a session
+     * page carries a pane, which is everything an unsandboxed program printed —
+     * it is escaped by html/template on the way out and it is left in the
+     * document nobody adopts, which is the one place it can do nothing at all.
+     *
+     * The request carries the operator's ambient credential and nothing else,
+     * exactly as the click that opens that page would; a card is authorised by
+     * the identity the daemon verifies, so the answer is the uniform not-found
+     * when the session is gone or was never this operator's. Both mean the same
+     * thing to a page: the card goes.
+     *
+     * Anything else that goes wrong reveals the note. A page that could not
+     * re-fetch a card it has been told changed is a page showing a card it
+     * cannot vouch for, which is FR-020 about one card instead of the fleet.
+     *
+     * The ticket is the ordering. Two changes to one session in quick
+     * succession are two requests, and nothing makes them answer in the order
+     * they were sent — so a response that is no longer the newest one for its
+     * session is dropped rather than painted over a fresher card.
+     */
+    const newest = new Map();
+    let issued = 0;
+
+    const refresh = (id) => {
+      if (!grid()) {
+        recompose();
+        return;
+      }
+
+      const ticket = (issued += 1);
+      newest.set(id, ticket);
+
+      fetch(shell.dataset.fleetCard.replace('{id}', encodeURIComponent(id)), {
+        credentials: 'same-origin',
+      })
+        .then((answer) => {
+          if (answer.status === 404) {
+            return null;
+          }
+          if (!answer.ok) {
+            throw new Error('the daemon did not answer with the card');
+          }
+          return answer.text();
+        })
+        .then((markup) => {
+          if (newest.get(id) !== ticket) {
+            return;
+          }
+          // Nothing outstanding for this session can be newer than the answer
+          // being applied, so the ticket is spent rather than kept: an entry per
+          // identifier this page ever saw would grow for as long as the tab is
+          // open, and one that is gone refuses a slower response just as well.
+          newest.delete(id);
+
+          if (markup === null) {
+            drop(id);
+            return;
+          }
+
+          const fetched = new DOMParser()
+            .parseFromString(markup, 'text/html')
+            .querySelector(`article.card[data-session="${CSS.escape(id)}"]`);
+          if (!fetched) {
+            lostTheFleet();
+            return;
+          }
+
+          const card = document.importNode(fetched, true);
+          const here = cardFor(id);
+          const fleet = grid();
+          if (here) {
+            here.replaceWith(card);
+          } else if (fleet) {
+            fleet.append(card);
+          } else {
+            // The fleet emptied while this request was in flight, so the page is
+            // the empty state now and composing one is not this file's to do.
+            recompose();
+            return;
+          }
+          recount();
+        })
+        .catch(lostTheFleet);
+    };
+
+    const live = new EventSource(shell.dataset.fleetStream);
+
+    // Decoded before the page is touched, on the same terms the pane decodes a
+    // screen: an event that could not be read leaves the fleet exactly as it is
+    // rather than acting on a fragment of itself.
+    const idOf = (event) => JSON.parse(event.data).id;
+
+    live.addEventListener('appeared', (event) => refresh(idOf(event)));
+    live.addEventListener('changed', (event) => refresh(idOf(event)));
+    live.addEventListener('vanished', (event) => drop(idOf(event)));
+
+    /*
+     * Every ending of this stream arrives here and none of them arrives as an
+     * event. The daemon names three and not one of them is a farewell
+     * (contracts/fleet-stream.md), so a shutdown, a restart, a severed
+     * connection and a subscriber this daemon dropped for falling behind are all
+     * one thing to a browser: a response that ended. Which is exactly why the
+     * page has a sentence for it.
+     */
+    live.onerror = lostTheFleet;
+  };
+
+  for (const shell of document.querySelectorAll('main[data-fleet-stream]')) {
+    watchFleet(shell);
   }
 })();

@@ -28,7 +28,18 @@
   cards is told them apart by exactly the string a sighted reader uses: without
   that, every nameless card in the fleet announces "no name recorded" and
   nothing else.
-*/}}<article class="card">
+
+  data-session is the same identifier again, on the element the fleet's live half
+  replaces and removes (US3, crswd.js). The stream names a change by identifier
+  and nothing else (contracts/fleet-stream.md), so this is what turns "session
+  9f2c… changed" into one card on this page — the card the paragraph below
+  renders the identifier *into* is the wrong thing to match on, because a name or
+  a working directory holding the same 32 characters would match it too.
+
+  It carries no credential, for the reason the link's href does not: an
+  identifier is a handle, and what authorises anything done with it is the
+  identity the daemon verifies on the request that arrives.
+*/}}<article class="card" data-session="{{ .ID }}">
 <h2 class="card-heading"><a class="card-link" href="/sessions/{{ .ID }}/view" aria-describedby="card-id-{{ .ID }}">{{ if .Name }}<span class="card-name" title="{{ .Name }}">{{ .Name }}</span>{{ else }}<span class="card-unknown">no name recorded</span>{{ end }}</a></h2>
 {{ template "status-pill" .DisplayState }}
 <p class="card-id" id="card-id-{{ .ID }}" title="{{ .ID }}">{{ .ID }}</p>
