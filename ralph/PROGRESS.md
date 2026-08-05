@@ -13526,3 +13526,138 @@ must be non-blocking, so a slow or absent subscriber may not delay a destroy, a 
 which means the test needs to prove a *nobody-listening* path still completes; and iteration 90's
 learning 1 applies to T013's stream fixture, where two servers mean two random `pageKey`s and any
 byte-for-byte page comparison must align them.
+
+## Iteration 92 (milestone 3, iteration 12) — 2026-08-05 06:56
+
+**Did:** **T012** — the fleet event source in `internal/session/manager.go`. `FleetEvent`
+(`Kind`, `ID`, `Owner`), the three wire verbs as `FleetAppeared`/`FleetVanished`/`FleetChanged`,
+`Manager.Subscribe(owner) (<-chan FleetEvent, cancel)`, and an unexported `fleetEvents` fan-out.
+Named test `TestEveryFleetChangeEmits` drives eleven paths, plus
+`TestASubscriberThatStoppedReadingIsDroppedNotWaitedFor`,
+`TestAFleetChangeCompletesWithNobodyListening`, `TestAFleetEventReachesOnlyItsOwner` and
+`TestEndingASubscriptionTwiceIsSafe`.
+
+**The emit is beside the store mutation, never in the caller, and that is the whole design.**
+Every path that changes the fleet ends in `Store.Add`, `Store.AddCapped` or `Store.Delete` inside
+`manager.go`, so the reaper announces a `vanished` without knowing an event source exists — it
+tears down through `Manager.Destroy` — and so do shutdown's `DestroyAll`, `Adopt`'s
+past-the-ceiling teardown, and `unreadable`'s confirmed-gone discovery (#21). #15 is precisely a
+fleet change with no request behind it, and the way not to miss one is not to keep a list of the
+paths that have to remember. **There is no code in `reaper.go` for this task at all**, which is
+the point rather than an omission.
+
+**All thirteen must-fail conditions were run, not reasoned about.** Each mutation applied, the
+named tests run, the mutation reverted:
+
+1. **The emit dropped from `Create`** → the `a create` case red.
+2. **The emit dropped from `rollback`'s orphan branch** → `a create whose teardown could not be
+   verified` red. That branch **keeps** the record, so the fleet gained a session even though the
+   create reported failure — a change only a reload would reveal.
+3. **`Destroy`'s emit dropped** → `a destroy`, `shutdown tearing the whole fleet down` **and
+   `the reaper's sweep`** red from one mutation. That is the load-bearing evidence for #15.
+4. **`Destroy` emitting before `confirmGone`** → `a destroy the host would not confirm` red
+   (plus double events elsewhere). Announcing a session gone while it may still be running is the
+   one lie Principle VI cannot afford in this direction either.
+5. **`Adopt`'s emit dropped** → `startup adoption` red.
+6. **`unreadable`'s emit dropped** → `a capture that finds the session already gone` red.
+7. **The `DisplayState` comparison and its emit dropped** → `activity that brings an idle session
+   back` red.
+8. **The comparison forced true (`|| true`)** → `activity on a session that was already running`
+   red. Every request would otherwise be a fleet change.
+9. **The non-blocking send replaced with a plain send** → the whole package **timed out**, parked
+   in `publish` on the goroutine that was destroying a session. A watcher held a teardown.
+10. **A full subscriber skipped instead of dropped** → the drop test red on the new
+    `select`/`default` tail (see learning 3).
+11. **The owner comparison removed from `publish`** → `TestAFleetEventReachesOnlyItsOwner` red.
+12. **`Subscribe("")`'s closed channel removed** → the same test red on its second assertion.
+13. **The membership check removed from `drop`** → `close of closed channel` panic. Both the
+    deferred cancel after a daemon-side drop and a doubled cancel are ordinary, not misuse.
+
+**Learned:**
+
+1. **`reaperAt` and `managerAt` build a *second* `Manager` over the same `Store`, so events belong
+   to the Manager the change went through, not to `f.mgr`.** The reaper case subscribes on
+   `r.mgr` and the idle-transition case on the manager it builds at the later clock. In production
+   this cannot arise — `newWithLayer1` builds one Manager and `Adopt`, `NewReaper`, `DestroyAll`
+   and every handler all take that one (`server.go:323`, `:742`, `:785`, `:901`) — but **any
+   httpapi fixture for T013 that mints a second Manager over one store will watch the wrong one.**
+2. **No sleeps and no timeouts are needed anywhere in these tests**, because `publish` sends on the
+   goroutine that changed the fleet: every event a change produced is already in the channel when
+   the call that made it returns. `fleetEventsSoFar` is a `select`/`default` drain, and a deadline
+   there would be hiding that property rather than testing it.
+3. **A blocking receive turns a real defect into a hang, so the drop assertion is a `select`.**
+   Mutation 10 first showed up as a 25-second timeout on `<-events`; the tail was rewritten to a
+   `select` with a `default` that says "open and empty after falling behind". Same defect, a
+   sentence instead of a stack trace. **T013's stream tests will want the same discipline.**
+4. **`DestroyAll` walks `store.snapshot()`, which is deliberately map-ordered**, so a multi-record
+   teardown has no assertable event order. `sortedFleet` compares which events happened rather
+   than in what sequence; no case here depends on order.
+5. **The only display transition the daemon *causes* is idle→running, and it is always genuine.**
+   `before == idle` implies `now >= LastActivity + IdleTimeout`, which implies `Touch` really
+   moved the clock — so the comparison cannot report a change the store did not make. The other
+   direction, running→idle, is caused by time passing with no code running at all. See NEEDS
+   CLARIFICATION.
+
+**NEEDS CLARIFICATION — who emits the `changed` when a session goes idle?**
+
+T012 lists "a `DisplayState` transition" among the paths it must cover, and
+`contracts/fleet-stream.md` has a contract test row `Idle deadline crossed → one changed`. **The
+manager has no path there.** Nothing executes when `IdleDeadline` passes; `DisplayState` is
+derived at render time and stored nowhere. Emitting it from `manager.go` would need either a
+ticker in the session package or a per-record memory of the last displayed state — new daemon-wide
+state, which is what R2 and milestone 2 both refused. The one place the transition is cheap is
+**T013's stream**, which already wakes once a second for its heartbeat and can compute
+`DisplayState` for the sessions it is watching: per-connection, no stored state, and it covers
+both directions. **This iteration implemented every transition the manager causes and left the
+time-driven one to T013 rather than guessing at new state.** The operator should confirm, and
+T013 should not be ticked while that row of its own contract is unmet.
+
+**Findings:**
+
+380. **`Manager.Subscribe` has no production caller until T013 lands.** The emit side does — every
+    emit sits on a path the daemon runs — but the subscription is reachable only from tests. This
+    is the exact shape of the three failures `AGENTS.md` names (a reaper with no caller,
+    `Store.Touch` with no caller, a PR-opener no workflow invoked), so **T013 is not optional and
+    must not be reordered behind T016–T020.**
+381. **`tasks.md` and the plan name `internal/session/manager.go`, while `plan.md`'s Structure
+    Decision says new behaviour lands in new files "rather than growing existing ones".** The task
+    file won — it is called the single source of truth — and `manager.go` is now 1,160 lines. If a
+    reviewer would rather have `internal/session/events.go`, the move is mechanical and touches no
+    behaviour. Recording the tension rather than resolving it unilaterally under AR-008.
+382. **`fleetBacklog` is 64 and nothing enforces a relationship to `CRSW_MAX_SESSIONS`.** The
+    reasoning is that shutdown is the largest burst and emits one event per record, so the backlog
+    must exceed the cap; an operator who set `CRSW_MAX_SESSIONS=100` would have a shutdown that
+    drops every open dashboard. Not a defect today (the default is 5 and the page recovers by
+    saying it lost the stream), but the two numbers are related and only this comment says so.
+383. **A rename (T016) and a compact (T019) each owe an emit, and neither gets one for free.**
+    T016 must emit `changed` explicitly — it writes the record through a new store method, not
+    through `Add`/`Delete`. T019 touches `LastActivity` directly rather than through `Resolve`, so
+    **it does not inherit the display-transition emit added here**; a compact that brings an idle
+    session back is a `changed` its own task must write.
+384. **Nothing yet asserts that two subscribers both receive an event**, only that one does and
+    that a stranger's does not. Two dashboard tabs is the ordinary case and the fan-out loop is
+    what would break. T013 or T015 should cover it at the stream.
+385. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307, 311–315,
+    317–323, 325, 327–328, 330–333, 335–379 carry over unchanged.** 306 still needs the operator's
+    answer; 342's `research.md` R1 discrepancy still wants confirming; 350's missing pin between
+    the two not-found bodies still stands; 360, 367, 371 and 372 are all T022's; 374's unowned swap
+    is still unowned; 378's two drifting checklists still want a ruling. Iteration 90's **NEEDS
+    CLARIFICATION on T023 vs T010 is still unanswered.** 340's lint caveat still applies:
+    `golangci-lint` on PATH is v1.62.2 and reads this repo's v2 config by running zero linters, so
+    `golangci-lint run` is a green that means nothing. The substitute run was `golangci-lint run
+    --no-config --disable-all -E bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused
+    --build-tags tmux,dev ./...`, clean with no new `//nolint`. `go build ./...`, `go test -count=1
+    ./...`, `go test -race ./internal/session ./internal/httpapi`, `go test -tags tmux ./...`,
+    `go test -tags dev ./...`, **`go test -tags quickstart ./cmd/crswd` (ran green, 28s)**,
+    `gofmt -l` and `go vet` under all four tags clean too. CI's pinned v2.12.2 is the check that
+    counts.
+
+**Left:** T013–T023. Next is **T013** — `internal/httpapi/fleet.go`, `GET /dashboard/fleet/stream`,
+per `contracts/fleet-stream.md`. Four things it needs from here: subscribe with
+`s.sessions.Subscribe(caller)` and **defer the cancel** (it is idempotent, and the daemon may have
+dropped the subscription already — a closed channel means "I could not keep you current", which
+must end the response so T014's page can say so); the payload is the id alone, so the
+`FleetEvent`'s `Owner` field is for routing and must not reach the wire; layer 1 + `crossSite` and
+**no page token**, with one `fleet.open` record per open; and iteration 90's learning 1 still
+applies to any byte-for-byte page comparison in its fixture, where two servers mean two random
+`pageKey`s. The NEEDS CLARIFICATION above is T013's to answer or to carry.
