@@ -123,6 +123,19 @@ type Server struct {
 	// middleware.
 	trail *audit.Logger
 
+	// pageKey is what a page token is minted and verified with (pagetoken.go).
+	//
+	// One per server for the reason there is one Authenticator, and one per
+	// *process* on top of that: it is read from crypto/rand at construction and
+	// never persisted, so a restart invalidates every outstanding token by
+	// construction. Two of them would be two keys, each refusing the tokens the
+	// other minted, which is a cross-site defence that refuses the operator.
+	//
+	// It is built here rather than passed in, like the roots and the caps and
+	// unlike the clock or the listener: a caller may say where tmux and the trail
+	// are, never what the browser door's second check is worth.
+	pageKey pageKey
+
 	// templates is the dashboard's template set, parsed from the embedded tree
 	// once at construction (see render.go). It is read-only from here on, so
 	// every handler executes the same set that startup proved compiles.
@@ -406,6 +419,17 @@ func newServer(
 		return nil, err
 	}
 
+	// A startup failure like every other missing piece of the auth path
+	// (docs/security.md §4). A daemon that could not read 32 random bytes can
+	// neither mint a page token nor verify one, so it would serve a dashboard
+	// whose every action it must refuse — and the tempting repair for that, a key
+	// derived from something already in hand, is the one research R2 rejects.
+	// Refusing to start is the honest version of the same news.
+	key, err := newPageKey()
+	if err != nil {
+		return nil, fmt.Errorf("httpapi: build the page token key: %w", err)
+	}
+
 	mux := http.NewServeMux()
 	s := &Server{
 		cfg: cfg,
@@ -422,6 +446,7 @@ func newServer(
 		authn:      authn,
 		browser:    browser,
 		trail:      trail,
+		pageKey:    key,
 		templates:  templates,
 		sessions:   sessions,
 		creates:    creates,

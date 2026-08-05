@@ -12515,3 +12515,87 @@ Both reverted; `git diff --stat` is 102 insertions and zero deletions in the two
 **Left:** T002–T023. Next is **T002 🔒** — `internal/httpapi/pagetoken.go`, the stateless page
 token, the first of the three security-critical tasks the plan says to have reviewed rather
 than to trust on green.
+
+---
+
+## Iteration 82 (milestone 3, iteration 2) — 2026-08-05 04:29
+
+**Did:** **T002 🔒** — `internal/httpapi/pagetoken.go`, the stateless page token.
+`<expiry>.<HMAC-SHA256(pageKey, identity "\n" expiry)>`, 64 lowercase hex, 12h lifetime,
+verified by recomputation against the **request's own** verified identity. `pageKey` is 32
+bytes from `crypto/rand` in `newServer`, held on the `Server` beside `authn` and `browser`,
+never persisted and never served. Nothing is stored: no map, no sweep, no "already minted"
+set — which is the whole of research R2, and why milestone 2's refusal of per-browser state
+is not quietly undone here.
+
+**The four must-fail conditions were run, not asserted in prose.** Each mutation was applied,
+the suite run, and the mutation reverted:
+
+1. Identity dropped from the MAC input → `TestTokenBoundToIdentity` fails on both directions
+   (`minted for A, as B` and the reverse), plus the format test and the malformed table's
+   undamaged control.
+2. Expiry dropped from the MAC input → `TestTokenExpiryIsCovered` fails on the extended
+   token *and* the shortened one.
+3. Expiry comparison removed (`if false`) → the two expired cases are accepted. Comparison
+   **inverted** (`now.Before` without the `!`) → all four cases fail, which is why the test
+   carries the two live instants as well as the two dead ones.
+4. `pageKey` derived from `CRSW_SHARED_SECRET`, in both shapes a hurried change would take —
+   the secret copied wholesale, and `sha256.Sum256(secret)` — each caught by
+   `TestPageKeyIsNotTheSharedSecret`. With the two-servers `t.Fatal` temporarily downgraded
+   to `t.Log` (also reverted), the *specific* assertions were confirmed to fire rather than
+   being dead code behind that fatal: "the page key is the shared secret itself", "the page
+   key is a hash of the shared secret", "the minted MAC is HMAC(CRSW_SHARED_SECRET, …)", and
+   the second server accepting the first's token.
+
+**Learnings for whoever comes next:**
+
+1. **Every negative test in this file carries its positive control, and that is not
+   decoration.** A `verify` that returned an error unconditionally satisfies all four of the
+   task's named tests. `TestMalformedTokensAreRefused` ends by verifying the *undamaged*
+   token for the same reason, and mutation 1 above proved that control fires.
+2. **`strconv.ParseInt` accepts `+1785749600` and `000…`, and the MAC covers the re-rendered
+   form** — so without a canonical-spelling check every instant would have an unbounded
+   family of tokens that all verify. `auth.sign` closes the identical hole on the request
+   timestamp; `verify` step 3 now closes this one. Two cases in the malformed table pin it.
+3. **The MAC is compared as hex text with `hmac.Equal`, and uppercase is refused at the shape
+   check** rather than being allowed to fail the compare. Same reasoning as
+   `session.hashToken` hashing the encoded token: hex has two spellings per byte, and an
+   accepted uppercase twin would be a second string authorising an action only one spelling
+   of which was ever minted.
+4. **T003 and T004 are the callers.** `mint` and `verify` take `now time.Time` as a
+   parameter, never `time.Now`, so the gate should pass `s.clock.Now()` — the same clock the
+   dashboard derives display state from. The form field name `crsw_page_token` is
+   deliberately *not* declared here: it is T003's, and AR-008 says do not reach for it early.
+5. **`unused` does not flag `mint`/`verify` despite having no production caller yet**, because
+   golangci-lint lints test files by default and the tests exercise both. Worth knowing before
+   somebody "fixes" a lint failure that is not there.
+
+**Findings:**
+
+338. **The page key is generated in `newServer`, so every `newTestServer` in the package now
+    reads 32 bytes from `crypto/rand`.** Cheap, and it is what makes the two-servers
+    assertion in `TestPageKeyIsNotTheSharedSecret` meaningful. Noted because a future fixture
+    that wants a *fixed* page key must set `s.pageKey` after construction — like `pinClock`
+    does — and must not add a constructor parameter for it, which would make "how bounded the
+    daemon is" a caller's choice.
+339. **Nothing yet proves a page token stays out of the trail.** `mint` returns a value and
+    records nothing, but the assertion belongs to T004 (`TestPageTokenNotInURLsOrLogs`) and
+    the corpus to T021. Same shape as finding 336: the `audit` package cannot enforce it.
+340. **The lint gate is still the v1 binary (#26).** `golangci-lint run` with the v2 config
+    proves nothing on this host. The substitute run was `golangci-lint run --no-config
+    --enable gosec,bodyclose,errcheck,govet,staticcheck,ineffassign,unused
+    ./internal/httpapi/...` — the repo's exact linter set under v1's implementations of them
+    — and it is clean. `go install …/v2/cmd/golangci-lint@v2.12.2` writes outside the working
+    directory and is still not on the Bash allowlist. CI's pinned v2.12.2 remains the check
+    that counts.
+341. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307,
+    311–315, 317–323, 325, 327–328, 330–333, 335–337 carry over unchanged.** 306 still needs
+    the operator's answer; the three browser-visual checks (SC-009/010/011) still need a
+    human. Nothing here touched them.
+
+**Left:** T003–T023. Next is **T003 🔒** — `internal/httpapi/browser.go`, the action gate in
+the order layer 1 → `crossSite` → token, with the one uniform `403` that is byte-identical
+across all five causes including `Content-Length`. It is the second of the three tasks the
+plan says to have reviewed rather than to trust on green, and it is the one that turns this
+file from a value into a defence: **T002's `mint` and `verify` have no production caller
+until T003 and T004 land.**
