@@ -632,10 +632,30 @@ func (d *destroyer) confirmed(t *testing.T) url.Values {
 func (d *destroyer) post(t *testing.T, id string, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
 
-	r := httptest.NewRequest(http.MethodPost, "/dashboard/sessions/"+id+"/destroy", strings.NewReader(form.Encode()))
+	return d.send(t, http.MethodPost, "/dashboard/sessions/"+id+"/destroy", secFetchSiteSameOrigin, form)
+}
+
+// send is post with the method, the path, and the browser's own account of where
+// the request came from all chosen by the caller — the three things the
+// acceptance suite below has to vary and a rendered card never does.
+//
+// post is expressed through it rather than beside it so that the request a
+// varied case sends differs from the ordinary one in exactly the field it means
+// to vary. Two builders would be two requests free to drift apart, and a case
+// refused for a difference it did not intend is a case proving something else.
+//
+// An initiator of absent sends no Sec-Fetch-Site header at all, which is a
+// different shape from sending an empty one and is one of the causes
+// contracts/actions.md requires to refuse.
+func (d *destroyer) send(t *testing.T, method, path, site string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := httptest.NewRequest(method, path, strings.NewReader(form.Encode()))
 	r.Header.Set(headerContentType, contentTypeForm)
 	r.Header.Set(headerAccessAssertion, d.keys.mint(t, d.keys.claims()))
-	r.Header.Set(headerSecFetchSite, secFetchSiteSameOrigin)
+	if site != absent {
+		r.Header.Set(headerSecFetchSite, site)
+	}
 
 	w := httptest.NewRecorder()
 	d.ServeHTTP(w, r)
@@ -1147,5 +1167,324 @@ func TestADestroyIdentifierOffTheAlphabetIsNoRoute(t *testing.T) {
 				t.Errorf("reason = %v; want %v", got, want)
 			}
 		})
+	}
+}
+
+// --- US1 acceptance (T008) --------------------------------------------------
+//
+// Everything above proves one of the destroy route's own answers. What is left
+// is the story's two claims that are about the route table and the gate rather
+// than about the handler behind them: that this path answers nothing but a POST,
+// and that each half of the cross-site defence refuses on its own.
+
+// headerAllow is the header a 405 carries, and the one no route on this door may
+// ever write: it names the methods a path really serves, which is the route table
+// the uniform unknown-route answer exists not to hand out.
+const headerAllow = "Allow"
+
+// TestADestroyIsNoRouteOnAnyOtherMethod is contracts/actions.md's method rule
+// with FR-033 behind it: a GET on the destroy path is an unknown route, answered
+// exactly as any other unknown route is — never a 405, and never with an Allow
+// header naming the method that would have worked.
+//
+// **Must fail when** a method-not-allowed path is added, and there are two ways
+// to add one. ServeMux answers 405 itself, with an Allow header naming the route
+// table, whenever a pattern matches the path but not the method and nothing else
+// matches — so deleting handleUnrouted's `/` catch-all turns every row below into
+// a 405. A hand-written 405 branch moves the same two things. Either way the
+// status assertion and the Allow assertion go red together.
+//
+// The two responses are compared whole rather than each being asserted a 404,
+// because "answered exactly as any other unknown route is" is the claim. A 404
+// that mentioned the method would satisfy a status assertion and still be the
+// enumeration this door's uniform answers close: it would tell a caller that
+// *something* is served at that address, which is what a route table is made of.
+//
+// Each request carries everything a destroy that would have worked carries — a
+// verified assertion, a same-origin initiator, a valid page token, the confirming
+// step — so the only thing left that can refuse it is the method. A row refused
+// for a missing token would be proving nothing about the route table.
+func TestADestroyIsNoRouteOnAnyOtherMethod(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{
+		http.MethodGet, http.MethodHead, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodOptions,
+	} {
+		t.Run(strings.ToLower(method), func(t *testing.T) {
+			t.Parallel()
+
+			d := newDestroyer(t)
+			live := d.live(t)
+
+			w := d.send(t, method, "/dashboard/sessions/"+live.ID+"/destroy", secFetchSiteSameOrigin, d.confirmed(t))
+
+			if w.Code == http.StatusMethodNotAllowed {
+				t.Fatalf("%s on the destroy path was answered %d with %s: %q — which method a path serves is not a caller's to learn",
+					method, w.Code, headerAllow, w.Header().Get(headerAllow))
+			}
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("%s on the destroy path was answered %d (%s); want %d — the unknown-route answer",
+					method, w.Code, w.Body.String(), http.StatusNotFound)
+			}
+			if got := w.Header().Get(headerAllow); got != "" {
+				t.Errorf("%s on the destroy path answered with %s: %q; want no such header", method, headerAllow, got)
+			}
+			if got := w.Body.String(); got == string(bodyActionNotFound) {
+				t.Errorf("%s on the destroy path was answered with the action's own not-found:\n%s\nwant the door's "+
+					"unknown-route page — the action's answer is a statement about a session, and this request reached no route",
+					method, got)
+			}
+
+			// The same method at a path nothing claims, on the same daemon and the
+			// same identity: what an unknown route really answers here, rather than
+			// this test's idea of it.
+			nowhere := d.send(t, method, "/dashboard/sessions/"+live.ID+"/nonesuch", secFetchSiteSameOrigin, d.confirmed(t))
+
+			if w.Code != nowhere.Code {
+				t.Errorf("%s on the destroy path answered %d; at a path nothing claims it answered %d — the two are distinguishable",
+					method, w.Code, nowhere.Code)
+			}
+			if got, want := w.Body.String(), nowhere.Body.String(); got != want {
+				t.Errorf("%s on the destroy path answered\n%s\nat a path nothing claims it answered\n%s\nthe two are distinguishable",
+					method, got, want)
+			}
+			if !maps.EqualFunc(w.Header(), nowhere.Header(), slices.Equal) {
+				t.Errorf("%s on the destroy path answered with headers %v; at a path nothing claims %v — the two are distinguishable",
+					method, w.Header(), nowhere.Header())
+			}
+
+			// Nothing was torn down, which is the half a status code cannot see: a
+			// route that acted and then answered 404 satisfies every comparison above.
+			if recorded, running := d.standing(t, live); !recorded || !running {
+				t.Errorf("%s on the destroy path left the record %v and the window %v; want both untouched",
+					method, recorded, running)
+			}
+			if got := d.kills(); got != 0 {
+				t.Errorf("%s on the destroy path asked the host to kill %d times; want 0", method, got)
+			}
+
+			// One record each, in the trail's existing vocabulary for a request that
+			// reached no route (data-model.md): an operator grepping for route.unknown
+			// finds a mistyped method among the mistyped paths, and nobody has to know
+			// this milestone happened in order to read it.
+			got := d.records(t)
+			if len(got) != 2 {
+				t.Fatalf("two requests emitted %d audit records (%v); FR-041 requires exactly one each", len(got), got)
+			}
+			for i, rec := range got {
+				if want := string(audit.ActionUnknownRoute); rec["action"] != want {
+					t.Errorf("record %d: action = %v; want %v — a %s that matched no route is not a destroy",
+						i, rec["action"], want, method)
+				}
+				if want := string(audit.Deny); rec["decision"] != want {
+					t.Errorf("record %d: decision = %v; want %v", i, rec["decision"], want)
+				}
+				if want := errScopeNoRoute.Error(); rec["reason"] != want {
+					t.Errorf("record %d: reason = %v; want %v", i, rec["reason"], want)
+				}
+			}
+		})
+	}
+}
+
+// defenceRow is one arrangement of the gate's two halves against the registered
+// destroy route: what the browser said about the initiator, what the form
+// carried, and which half must therefore be the one that refused.
+type defenceRow struct {
+	name string
+
+	// disabled names the half this row satisfies so that it cannot be the reason
+	// the request was refused. It is the whole point of the row and appears in
+	// every failure message, because a reader looking at a red line here needs to
+	// know which half was meant to be doing the work alone.
+	disabled string
+
+	site  string
+	token func(t *testing.T, d *destroyer) string
+
+	// refusedBy is the sentinel the remaining half leaves on the record. The
+	// response cannot carry it (FR-004), so this is the only place the claim
+	// "*this* half refused" can be made at all.
+	refusedBy error
+}
+
+// TestEitherHalfOfTheDefenceRefusesAlone is FR-002c and SC-001a: neither check
+// authorises a state change on its own, and neither is load-bearing only in the
+// other's company.
+//
+// Every row disables exactly one half by **satisfying** it, which is the only
+// disabling AR-005 permits and the only one this suite may leave behind: a build
+// tag or a flag that turned a check off would be a way to turn it off in the
+// shipping build, which is the defect this milestone was written to prevent. A
+// half that has nothing left to object to cannot be the reason a row was refused,
+// so the row carrying a valid token from a foreign initiator is the same-origin
+// half working alone, and the same-origin row carrying no token is the page-token
+// half working alone.
+//
+// **Must fail when** either half is load-bearing only in combination. A gate
+// spelled `if crossSite && tokenBad` admits both single-fault rows; a gate that
+// dropped one check entirely admits that check's rows. Either way the status, the
+// store and the host all move together, because the handler behind the gate is
+// the one that ends an unsandboxed shell.
+//
+// The recorded reason is asserted per row, and that is what makes this a proof
+// about *which* half refused rather than that something did. All six causes
+// answer a caller identically (FR-004), so the trail is the only place the two
+// halves are distinguishable — and a test reading the status alone would pass
+// just as happily on a gate where one check refused every row.
+func TestEitherHalfOfTheDefenceRefusesAlone(t *testing.T) {
+	t.Parallel()
+
+	valid := func(t *testing.T, d *destroyer) string {
+		t.Helper()
+		return mustMint(t, d.pageKey, testOperatorEmail, testTime)
+	}
+	none := func(*testing.T, *destroyer) string { return absent }
+
+	rows := []defenceRow{
+		{
+			// The page token alone. The initiator is the one value crossSiteAction
+			// admits, so that check has nothing to say about this request.
+			name:      "the form carried no page token",
+			disabled:  "the same-origin half",
+			site:      secFetchSiteSameOrigin,
+			token:     none,
+			refusedBy: errPageTokenMissing,
+		},
+		{
+			// The page token alone again, and the sharper half of it: a token that is
+			// real, unexpired, and minted by this very daemon — for somebody else.
+			// FR-007 at the route rather than at the function, which is where a
+			// handler that verified the token against a value out of the request
+			// would show up.
+			name:     "the form carried another identity's token",
+			disabled: "the same-origin half",
+			site:     secFetchSiteSameOrigin,
+			token: func(t *testing.T, d *destroyer) string {
+				t.Helper()
+				return mustMint(t, d.pageKey, testStrangerEmail, testTime)
+			},
+			refusedBy: errPageTokenMismatch,
+		},
+		{
+			// The same-origin half alone, and the milestone's central case: the token
+			// is exactly the one this operator's own page renders, and the browser
+			// says the request was initiated somewhere else (US1 scenario 3).
+			name:      "the browser said the request came from another site",
+			disabled:  "the page-token half",
+			site:      "cross-site",
+			token:     valid,
+			refusedBy: errActionCrossSite,
+		},
+		{
+			// Same-site is not same-origin. A sibling hostname under the same
+			// registrable domain is a different origin and a different page, and the
+			// contract admits exactly one spelling.
+			name:      "the request came from a sibling site",
+			disabled:  "the page-token half",
+			site:      "same-site",
+			token:     valid,
+			refusedBy: errActionCrossSite,
+		},
+		{
+			// A URL opened by no page at all — the case an Origin comparison cannot
+			// cleanly see, and the reason research R1 reused Sec-Fetch-Site.
+			name:      "no page initiated the request",
+			disabled:  "the page-token half",
+			site:      "none",
+			token:     valid,
+			refusedBy: errActionCrossSite,
+		},
+		{
+			// Absent is not evidence of same-origin initiation. crossSite admits it
+			// on the pane stream on purpose; crossSiteAction does not, because a
+			// check anything can opt out of by omitting a header is optional.
+			name:      "the browser said nothing about where the request came from",
+			disabled:  "the page-token half",
+			site:      absent,
+			token:     valid,
+			refusedBy: errActionCrossSite,
+		},
+		{
+			// Neither half satisfied, which is what a hostile page really sends: no
+			// token it could not compute, and an initiator it cannot lie about. The
+			// same-origin check is named on the record because it runs first and the
+			// order is fixed — the token is never examined.
+			name:      "a hostile page sent a bare request with the ambient cookie",
+			disabled:  "neither half",
+			site:      "cross-site",
+			token:     none,
+			refusedBy: errActionCrossSite,
+		},
+	}
+
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+
+			d := newDestroyer(t)
+			live := d.live(t)
+
+			form := d.confirmed(t)
+			if tok := row.token(t, d); tok == absent {
+				form.Del(fieldPageToken)
+			} else {
+				form.Set(fieldPageToken, tok)
+			}
+
+			w := d.send(t, http.MethodPost, "/dashboard/sessions/"+live.ID+"/destroy", row.site, form)
+
+			if w.Code != wantActionStatus {
+				t.Fatalf("with %s disabled, status = %d (%s); want %d — the other half authorised a state change on its own",
+					row.disabled, w.Code, w.Body.String(), wantActionStatus)
+			}
+			if got := w.Body.String(); got != wantActionBody {
+				t.Errorf("with %s disabled, body\n%s\nwant the gate's uniform refusal\n%s", row.disabled, got, wantActionBody)
+			}
+
+			// The session is the claim. A refusal that had already torn it down would
+			// be a refusal of nothing that matters (FR-003), and it is the only
+			// failure a status code cannot see.
+			if recorded, running := d.standing(t, live); !recorded || !running {
+				t.Errorf("with %s disabled, the refused destroy left the record %v and the window %v; want both untouched",
+					row.disabled, recorded, running)
+			}
+			if got := d.kills(); got != 0 {
+				t.Errorf("with %s disabled, the refused destroy asked the host to kill %d times; want 0",
+					row.disabled, got)
+			}
+
+			rec := d.only(t)
+			if got, want := rec["action"], string(audit.ActionDashboardReject); got != want {
+				t.Errorf("with %s disabled, action = %v; want %v", row.disabled, got, want)
+			}
+			if got, want := rec["decision"], string(audit.Deny); got != want {
+				t.Errorf("with %s disabled, decision = %v; want %v", row.disabled, got, want)
+			}
+			if got, want := rec["reason"], row.refusedBy.Error(); got != want {
+				t.Errorf("with %s disabled, reason = %v; want %v — the remaining half is not the one that refused",
+					row.disabled, got, want)
+			}
+		})
+	}
+
+	// The non-vacuity, and it has to destroy something rather than merely answer
+	// 200: every row above is satisfied by a route that refuses everyone, and a
+	// gate that refuses everyone is not a defence with two halves — it is a broken
+	// dashboard that would ship looking secure.
+	admitted := newDestroyer(t)
+	live := admitted.live(t)
+
+	w := admitted.post(t, live.ID, admitted.confirmed(t))
+	if w.Code != http.StatusOK {
+		t.Fatalf("a destroy satisfying both halves answered %d (%s); want %d",
+			w.Code, w.Body.String(), http.StatusOK)
+	}
+	if recorded, running := admitted.standing(t, live); recorded || running {
+		t.Errorf("a destroy satisfying both halves left the record %v and the window %v; want both gone", recorded, running)
+	}
+	if got, want := admitted.only(t)["action"], string(audit.ActionDashboardDestroy); got != want {
+		t.Errorf("action = %v; want %v — an admitted action is recorded as the action, not as a rejection", got, want)
 	}
 }
