@@ -13429,3 +13429,100 @@ reach the rate branch (`testLimiter(t, config.DefaultCreateRatePerMin, fixedCloc
 so no fixture can exhaust it; T008's answer to "disabled means satisfied" applies here too
 (iteration 88); and finding 363 says it owes a `GET`-is-no-route case — **already written** as
 `TestACreateIsNoRouteOnAnyOtherMethod` in iteration 89, so T011 should check before duplicating it.
+
+## Iteration 91 (milestone 3, iteration 11) — 2026-08-05 06:37
+
+**Did:** **T011** — the US2 acceptance suite, two tests in `internal/httpapi/actions_test.go`.
+`TestTheCapRefusesTheCreateAndLeavesTheFleetAsItWas` fills the fleet **through the door** and
+compares every surviving record whole, plus each window on the host, plus the page the operator
+reloads. `TestEveryCreateAttemptLeavesOneRecord` drives a run of nine attempts against one server —
+two refused by validation, one by the gate, five that worked, one past the cap — reading the trail
+after **every** attempt, with a second subtest for a spent create budget. Helpers added:
+`creator.fillToTheCap`, `creator.killed`, `describeSession`, and the `createAttempt` table.
+
+**The acceptance claim is about a run, and that is the whole reason these two tests are not a sixth
+variation of the cases above them.** Every earlier create case builds a fresh fixture, varies one
+field, and reads one response. Neither of T011's claims can be made that way: "existing sessions
+untouched" needs sessions that already exist *and* a later reading of them, and "one record per
+attempt" is a statement about a sequence. `TestBrowserCreateRefusesPastTheBoundsWithoutStartingAnything`
+counts records — five before, five after — and mutation 2 below is green under it.
+
+**All five must-fail conditions were run, not reasoned about.** Each mutation applied, the named
+tests run, the mutation reverted:
+
+1. **`m.store.AddCapped(s, m.maxSessions)` → `m.store.Add(s)`** (`internal/session/manager.go:223`)
+   → both new tests red, answering `200` with a sixth card. The non-vacuity: a cap nobody consults.
+2. **`AddCapped` evicts one record and still returns `ErrTooManySessions`** → **only**
+   `TestTheCapRefusesTheCreateAndLeavesTheFleetAsItWas` red, on three changed records and a missing
+   card on the page. The existing count-based cap case stayed green, which is precisely the gap the
+   whole-record comparison closes: same count, different fleet.
+3. **`s.creates.allow` neutered** → the spent-budget subtest red at the first over-budget create.
+4. **`ra.rec.Action = audit.ActionDashboardReject` dropped from `gateAction`** → the hostile-page
+   row red (`action = dashboard.create; want dashboard.reject`) **and** the closing count red
+   (`9 dashboard.create records; want 8`). T001's distinction has a test now.
+5. **`SetSessionID(created.ID)` dropped** → all five allowed rows red. A create recorded without
+   the session it started is a record an operator cannot follow to anything.
+
+**Learned:**
+
+1. **`c.page(t)` writes a `dashboard.view` record, so any "one record per attempt" count has to be
+   read before it.** This cost one red run. The fleet reload is an admitted request like any other;
+   the trail assertions now sit above it with a note saying why.
+2. **`session.Session` is comparable, so `got == was` is the right test for "untouched".** All ten
+   fields are comparable and the two values are copies of the same stored struct, so `==` is exact
+   where a field-by-field list would silently stop covering a field added later. `describeSession`
+   exists only for the failure message and deliberately omits `TokenHash`, which has its own
+   assertion — a moved hash is a re-minted credential and deserves its own sentence.
+3. **`Store.List` sorts by `CreatedAt` then `ID`, and the fixture clock does not move**, so five
+   sessions created in one test are ordered by id — deterministic, which is what lets the before and
+   after slices be compared index by index.
+4. **A refused create leaves no `session_id` on its record, and an allowed one leaves no `reason`.**
+   Both are `omitempty` in `audit.Emit`, so the assertions are `rec["…"] == nil`. That pairing is
+   worth keeping: it is how a reader tells "started nothing" from "started something" in the trail
+   without reading the reason text.
+5. **The gate's refusal is counted with the creates and recorded as something else.** An operator's
+   "how many times did this identity try to start a session" is the count of `dashboard.create`
+   records, and it is deliberately 8 of the 9 attempts — the hostile-page attempt never reached the
+   route. Finding 363's `GET`-is-no-route case was already written (iteration 89) and was not
+   duplicated.
+
+**Findings:**
+
+376. **Three refusals in a row is the shape the rate case needed and the cap case cannot have.** A
+    door that recorded the first refusal and then went quiet — a "log it once" that is a kindness on
+    a noisy endpoint — passes any single-request test. The cap cannot be probed the same way without
+    a second fleet, so **the repeated-refusal claim exists for the rate only**. If T012–T015 add a
+    path that refuses repeatedly, it owes the same case.
+377. **Nothing yet asserts what the *fleet page* renders after a refused create beyond the ids being
+    present.** The card bodies could be stale, wrong, or missing their action row and this suite
+    would not see it. T014 owns the page's live behaviour; **T021's leak corpus is the other half**,
+    and neither is written.
+378. **The two checklists have drifted: `specs/003-dashboard-actions/tasks.md` still shows T010 and
+    T011 open while `ralph/IMPLEMENTATION_PLAN.md` has both ticked.** `PROMPT.md` step 9 names the
+    plan alone, and T001–T009 were ticked in *both*, so the spec's own list stopped being ticked at
+    iteration 90 rather than by decision. Left alone rather than half-corrected: the plan says
+    `tasks.md` "is the single source of truth", so **the operator should say which file the loop
+    ticks**, and one of the two should stop carrying checkboxes.
+379. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307, 311–315,
+    317–323, 325, 327–328, 330–333, 335–375 carry over unchanged.** 306 still needs the operator's
+    answer; 342's `research.md` R1 discrepancy still wants confirming; 350's missing pin between the
+    two not-found bodies still stands; 360, 367, 371 and 372 are all T022's; 374's unowned swap is
+    still unowned. Iteration 90's **NEEDS CLARIFICATION on T023 vs T010 is still unanswered** and
+    this iteration did not touch it. 340's lint caveat still applies: `golangci-lint` on PATH is
+    v1.62.2 and reads this repo's v2 config by running zero linters, so `golangci-lint run` is a
+    green that means nothing. The substitute run was `golangci-lint run --no-config --disable-all -E
+    bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags tmux,dev ./...`,
+    clean with no new `//nolint`. `go build ./...`, `go test -count=1 ./...`, `go test -race
+    ./internal/httpapi`, `go test -tags tmux ./...`, `go test -tags dev ./...`, **`go test -tags
+    quickstart ./cmd/crswd` (ran green, 26s, all stories)**, `gofmt -l` and `go vet` under all four
+    tags clean too. CI's pinned v2.12.2 is the check that counts.
+
+**Left:** T012–T023. Next is **T012** — the fleet event source in `internal/session/manager.go`,
+emitting `appeared`/`vanished`/`changed` for **every** path that changes the fleet, with
+`TestEveryFleetChangeEmits` driving each one. It starts US3, which is independent of the remaining
+action stories (T016–T020) and closes #15. Three things it needs from here: the reaper and startup
+adoption are the two paths the task singles out and #15 is precisely the reaper's case; the emit
+must be non-blocking, so a slow or absent subscriber may not delay a destroy, a reap, or shutdown —
+which means the test needs to prove a *nobody-listening* path still completes; and iteration 90's
+learning 1 applies to T013's stream fixture, where two servers mean two random `pageKey`s and any
+byte-for-byte page comparison must align them.
