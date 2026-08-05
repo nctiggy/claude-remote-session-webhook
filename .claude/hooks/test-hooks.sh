@@ -77,6 +77,31 @@ else
   printf '  FAIL session-start JSON invalid\n'; fail=$((fail+1))
 fi
 
+# Constitution V: a guardrail is only real if it is tested. The first case below
+# is the regression test for the machine described in #26 — a pre-v2 binary that
+# reads the v2 config, runs zero linters, and exits 0. It fails without the
+# version check in session-start.sh.
+echo "session-start: golangci-lint major version"
+stub=$(mktemp -d)
+gcl_says() {                                  # stub whose --version prints $1
+  { echo '#!/bin/sh'; printf "printf '%%s\\\\n' %q\n" "$1"; } > "$stub/golangci-lint"
+  chmod +x "$stub/golangci-lint"
+}
+warns() { PATH="$stub:$PATH" "$SESSION" </dev/null 2>/dev/null | grep -q 'NOT v2'; }
+
+gcl_says 'golangci-lint has version 1.62.2 built with go1.23.3 from 09e1bcbf'
+if warns; then printf '  ok   v1 binary is flagged\n'; pass=$((pass+1))
+else printf '  FAIL v1 binary passed unflagged\n'; fail=$((fail+1)); fi
+
+gcl_says 'golangci-lint has version v2.12.2 built with go1.24.2 from a1b2c3d4'
+if warns; then printf '  FAIL v2 binary wrongly flagged\n'; fail=$((fail+1))
+else printf '  ok   v2 binary is silent\n'; pass=$((pass+1)); fi
+
+gcl_says 'no version number here at all'
+if warns; then printf '  ok   unparseable --version is flagged\n'; pass=$((pass+1))
+else printf '  FAIL unparseable --version slipped through\n'; fail=$((fail+1)); fi
+rm -rf "$stub"
+
 echo
 echo "passed: $pass   failed: $fail"
 [[ $fail -eq 0 ]]
