@@ -14148,3 +14148,90 @@ exists from T001; the control goes **outside** the card's single anchor, which T
 established for destroy — copy that placement rather than inventing a second one; and the browser
 gate (layer 1 → `crossSite` → page token) is `browser.go`'s, already applied to the other action
 routes, so the route is registered the way destroy's is and nothing about the gate is restated.
+
+## Iteration 97 (milestone 3, iteration 17) — 2026-08-05 08:18
+
+**Did:** **T017** — `POST /dashboard/sessions/{id}/rename`. `renameFromBrowser` and
+`refuseBrowserRename` in `internal/httpapi/actions.go`, registered with `handleAction` in
+`server.go`, the control in `web/templates/partials/session-card.html`, `.card-rename` in
+`web/static/crswd.css`, five route tests in `actions_test.go` and one component test in
+`partials_test.go`. Finding 405 is closed: `Manager.Rename` now has a production caller.
+
+**Four things worth not re-deriving.**
+
+1. **The handler is the destroy's shape with the confirm step removed and the mutation swapped**:
+   operator from context → `routableID` shape check → `Manager.View` → `SetSessionID` off the
+   daemon's own record → `Manager.Rename` → `renderPage("session-card", cardOf(renamed, …))`. The
+   name is **not** checked before the lookup, unlike the destroy's `confirm=yes`: a session this
+   operator may not act on has to answer identically whatever they asked to call it, or the two
+   refusals can be read against each other. The record rendered back is `Rename`'s return value,
+   never a re-read.
+2. **`refuseBrowserRename` has three arms over an error with two named causes.** `ErrInvalidName` →
+   `400` + `bodyActionRenameBadName`, reason via **`createReason`** (only its two name arms are
+   reachable, and the API door's words are deliberate — same fact, same journal entry, told apart by
+   the action). `ErrSessionNotFound`/`ErrSessionDead` → the uniform `notFoundAction`, because those
+   mean the record went away *between* `View` and `SetName`, which is T005's "no longer exists"
+   cause. A default `500` that is unreachable today, fail-closed like the destroy's.
+3. **The 400 body carries a third sentence the create's refusal does not** — "This session is still
+   called what it was." The answer *replaces the card*, so an operator told only that the name was
+   bad is looking at a slot where their session used to be (FR-031). It never repeats the rejected
+   name, asserted against both the response and the trail (FR-042).
+4. **The card now renders two forms**, so `TestTheCardsDestroyFormCarriesWhatTheRouteRequires` no
+   longer reads `forms[0]`. A `formPostingTo(forms, target)` helper picks a form by the address the
+   daemon serves — the only thing that identifies one — and the count assertion moved to 2. **T020
+   moves it to 3**; do that rather than deleting it. The rename field is pre-filled with the
+   record's current name, carries a real `<label>` whose `for` embeds the session id (a fleet of
+   cards would otherwise point every label at the first one), and its `maxlength`/`pattern` hints
+   are pinned to `session.MaxNameLen` and `ValidateName` by sweeping all 128 ASCII characters — the
+   create form's arrangement, copied because a drifted hint refuses in a native bubble this daemon
+   never wrote.
+
+**Must-fail conditions, verified by mutation rather than asserted:**
+
+- Registering the route with `handleBrowser` instead of `handleAction` fails
+  `TestRenameRunsBehindTheActionGate` on both halves — and also the success case and the two
+  tmux-target rows, because without the gate nothing parses the form and `PostForm` is empty.
+- Rendering a name other than the one the store now holds fails
+  `TestRenameRelabelsTheRecordAndAnswersWithItsCard`. The first draft asserted
+  `strings.Contains(body, newName)` and **passed** a mutation that appended to the rendered name;
+  it now reads the `card-name` span and compares it to the record. A `Contains` assertion about a
+  rendered value is worth distrusting for exactly this reason.
+
+**Findings:**
+
+408. **The rename is the first control on a card that takes an operator's text.** Nothing about it
+    is new surface — `html/template` escapes the pre-filled `value` on the same terms as the
+    `title` beside it, and `TestTheCardRendersCallerSuppliedTextAsText` already sweeps the card with
+    four hostile payloads — but T021's leak corpus should drive the *rename* route with a hostile
+    name, not only the create route. It is the one action route whose caller text is rendered back.
+409. **`bodyActionRenameFailed` and `errRenameRefused` are unreachable today.** `Manager.Rename`
+    returns only `ErrInvalidName`-wrapped errors and `Store.SetName`'s two sentinels, all of which
+    the first two arms catch. They stay because `refuseBrowserDestroy` and `refuseBrowserCreate`
+    both keep a fail-closed default and a rename that failed for a new reason must not answer 200;
+    naming it so a later reader does not delete it as dead.
+410. **Findings 400–404 and 406–407 carry over unchanged.** 405 is **closed** by this task. 400's
+    idle→`changed` row is still unowned. 306 still needs the operator's answer; 342, 350, 374 and
+    378 still stand; 360, 367, 371, 372, 395 and 397 are T022's. Iteration 90's **NEEDS
+    CLARIFICATION on T023 vs T010 is still unanswered.** 340's lint caveat still applies:
+    `golangci-lint` on PATH is v1.62.2 and reads this repo's v2 config by running zero linters, so
+    `golangci-lint run` is a green that means nothing — and `go install` of the v2 binary is not
+    permitted in this environment, so the substitute run is still the only real check. It was
+    `golangci-lint run --no-config --disable-all -E
+    bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags tmux,dev ./...`,
+    clean with no new `//nolint`. `go build ./...`, `go test -count=1 ./...`, `go test -race
+    ./internal/httpapi`, `gofmt -l` and `go vet` under all four tags (default, tmux, dev,
+    quickstart) are clean. The tagged *suites* were not run: this task touches `internal/httpapi`
+    and `web/` only — no tmux binary use, no `cmd/crswd`, no dev bypass — so `go vet -tags` is the
+    check AGENTS.md names for that case. T023 runs them for real.
+
+**Left:** T018–T023. Next is **T018** — `TestRenameThenIdentifierOperations` in
+`internal/httpapi/actions_test.go`: rename, then run **every** identifier-based operation and assert
+unchanged behaviour (SC-012), failing if any operation depends on the name. Four things it needs
+from here: the `renamer` fixture is in `actions_test.go` and gives it `live(t)`, `asked(t, name)`,
+`post(t, id, form)`, `send(t, method, path, site, form)` and `stored(t, s)` — reuse it rather than
+building a sixth fixture; the operations to sweep are the API's six (`contracts/http-api.md`) plus
+the dashboard's reads and the destroy, and the **API ones need a bearer token**, which `plant`
+returns as its second value; `TmuxName()` is `crswd-<id>` and iteration 96 already pinned it at the
+manager seam, so what is new here is the *wire*; and finding 406 offers a cheap extra row if the
+sweep wants it — nothing above the store refuses a rename of a dead record at the manager seam,
+though `View` and `SetName` both close the path.
