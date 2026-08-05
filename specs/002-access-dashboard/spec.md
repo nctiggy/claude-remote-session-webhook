@@ -323,6 +323,31 @@ request.
   owner-blind one. Milestone 1 keeps its only owner-blind lookup unexported on purpose;
   exporting it to satisfy this requirement would break the isolation rule
   `docs/auth-and-sessions.md` calls non-negotiable.
+- **FR-017a**: The fleet MUST keep describing the daemon's own records **after** the page
+  has been rendered. A session created, destroyed, or reaped since the load MUST appear or
+  disappear without the operator acting, within a bounded interval this milestone states.
+  FR-031 requires exactly this of pane output and nothing required it of the list itself,
+  which is why the first build of this milestone rendered the fleet once and never again
+  (#15) — and why every test passed while it did, each one rendering a fresh page. It is
+  the dashboard's own guarantee rather than a convenience: this page exists to say what is
+  executing on this host, and a fleet still showing a session the reaper destroyed twenty
+  minutes ago states the opposite of that, with the same authority as a card whose label
+  FR-019c makes agree with the reaper's own deadline.
+- **FR-017b**: A refresh MUST be one more of the reads FR-017 already describes — the
+  owner-scoped list, projected through the canonical components — and MUST NOT introduce a
+  second description of a session. A fleet reassembled in the browser out of data would be
+  the second card FR-024 calls a defect, written in the one language the design system
+  cannot reach.
+- **FR-017c**: A refresh MUST NOT advance any session's idle clock and MUST NOT reach a
+  mutating path. Watching is not driving (FR-034f, FR-022): a dashboard nobody is driving
+  must not postpone an idle deadline, and one that refreshes on a timer would otherwise
+  postpone it for as long as the tab lives.
+- **FR-017d**: A refresh MUST NOT be performed while the page is not being looked at, and
+  MUST happen when it is looked at again. An interval that runs in a hidden tab is one
+  request per interval per forgotten tab, each costing the daemon a render and the trail a
+  record (FR-016) for a page nobody is reading; refreshing on becoming visible instead
+  means the fleet is current at the only moment the guarantee is about — the moment
+  somebody reads it.
 - **FR-018**: Each session MUST show its name, state, working directory, and age.
 - **FR-018a**: A session adopted after a daemon restart has **no name and no working
   directory** — milestone 1 records neither, on purpose, because nothing on the host
@@ -488,6 +513,9 @@ request.
   test that fails if the output is ever treated as markup.
 - **SC-005**: The rendered dashboard references zero external origins.
 - **SC-006**: New session output becomes visible without a page reload.
+- **SC-006a**: A session created, destroyed, or reaped after the fleet was rendered appears
+  on it or disappears from it with **no operator action**, within the refresh interval
+  FR-017a requires the milestone to state.
 - **SC-007**: 100% of milestone 1's API operations behave identically before and after
   this milestone, verified by running milestone 1's own acceptance suite unchanged.
 - **SC-008**: Every request produces exactly one audit record, browser and API alike, and

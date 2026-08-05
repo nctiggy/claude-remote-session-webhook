@@ -144,6 +144,14 @@ vendored or otherwise. Embedding htmx now would mean shipping a third-party scri
 that nothing calls, purely as attack surface. It arrives with the first feature that
 swaps a partial.
 
+The fleet's refresh (FR-017a) is the requirement that most looks like `hx-trigger="every
+15s"` and is deliberately not it. Vendoring a library for one attribute is the trade this
+section already refuses, and the swap it would perform is an `innerHTML` write into a page
+the same door serves session output to — an assignment `docs/security.md` forbids on this
+client half and a test over `crswd.js` refuses outright. Reloading needs neither. When
+milestone 3 brings htmx for its first partial swap, this is the first thing that should
+become one.
+
 ---
 
 ## Read-only, structurally (FR-022)
@@ -190,6 +198,27 @@ Rendered from the owner-scoped list, in one page load with no further interactio
    scanned, not read.
 3. **Session grid** — one canonical card per owned session: name, state pill (text
    label always — FR-019), working directory, age. Cards link to the session view.
+
+**The fleet refreshes itself** (FR-017a–d). The page carries the interval the daemon
+chose as data — `data-refresh`, in seconds, on the shell — and `crswd.js` reloads the
+page when it elapses. It is a reload and not a partial swap for the reason below: this
+milestone ships no library that swaps one, and the two mechanisms a script has for
+putting markup on a page are the assignment `docs/security.md` forbids outright on this
+door's client half. A reload re-runs the whole of `GET /` — the same owner-scoped read,
+the same projection, the same canonical components — so the refresh cannot describe a
+session differently from the load (FR-017b), cannot advance an idle clock (FR-017c,
+FR-034f), and cannot reach a mutating path, because the browser door serves `GET` only.
+
+The interval is server-chosen so the page and the daemon cannot disagree about it, and it
+is 15 seconds: three orders of magnitude under the staleness FR-017a names, well over the
+stream's own second, and one trail record per interval per open tab (FR-016) rather than
+six. A hidden tab does not refresh at all and refreshes on becoming visible instead
+(FR-017d) — the fleet is current at the moment somebody reads it, which is the only moment
+the guarantee is about.
+
+The single-session page carries no such hook, deliberately: its pane is already live over
+`EventSource` ([stream.md](./stream.md)), and a reload under it would tear that stream down
+every interval and re-establish it.
 
 **The empty state** (FR-021): with zero sessions, the full-strength rain field and
 one sans-serif explanation that nothing is executing on this host — never a blank
@@ -261,6 +290,7 @@ removed (SC-017). Layer-1 validation itself is
 | Valid identity assertion, sessions exist | Summary row, one card per owned session, identity in header, one page load | FR-017, FR-018, FR-020, SC-003 |
 | Session idle past threshold vs recently active | Cards read **idle** / **running** as text; the derivation uses `IdleDeadline()` | FR-019a–c, SC-009 |
 | Zero sessions | Empty state with explanation; no action affordance | FR-021, FR-024a |
+| The fleet, and the single-session page beside it | The fleet carries the daemon's own refresh interval as data and the session page carries none; `crswd.js` reads that hook, reloads on it, and defers while the page is hidden | FR-017a–d, SC-006a |
 | Adopted session (no name, no workdir) | Explicit unknown statement; no invented placeholder | FR-018a |
 | Session name / output containing `<script>`, `<img onerror=…>`, unclosed tags, null bytes, invalid UTF-8 | Rendered as visible text; zero script execution | FR-028, FR-030, SC-004 |
 | Long name and long workdir | Truncated with `title`; layout intact | edge case |
