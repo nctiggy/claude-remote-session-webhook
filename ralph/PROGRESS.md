@@ -14235,3 +14235,102 @@ returns as its second value; `TmuxName()` is `crswd-<id>` and iteration 96 alrea
 manager seam, so what is new here is the *wire*; and finding 406 offers a cheap extra row if the
 sweep wants it — nothing above the store refuses a rename of a dead record at the manager seam,
 though `View` and `SetName` both close the path.
+
+## Iteration 98 (milestone 3, iteration 18) — 2026-08-05 08:33
+
+**Did:** **T018** — `TestRenameThenIdentifierOperations` in `internal/httpapi/actions_test.go`, plus
+the `identifierOp`/`observed` machinery and three small `renamer` helpers (`addressable`, `signed`,
+`browse`). Test-only: `git diff --stat` is one file. Eight rows, one per operation this daemon lets
+a caller address by identifier — the API's four session-scoped ones and the dashboard's four.
+
+**Five things worth not re-deriving.**
+
+1. **The claim is a comparison, not a table of expected answers.** Two sessions are planted alike on
+   **one** daemon (same owner, work dir, instant, label), one is renamed through the real route, and
+   each operation is driven against both. A list of expected answers written today agrees with the
+   code today whatever the code does; a comparison does not. One daemon rather than two is what
+   makes the comparison byte-for-byte — the page token both renders carry is the same server's, the
+   work dir both name is the same directory, and the clock behind both is the same fixed one. Two
+   `newRenamer(t)` calls differ in **all three** (`pageKey` is 32 fresh random bytes per `newServer`,
+   and `newSessionFixture` takes its own `t.TempDir()`), so the two-server arrangement is the one
+   that does not work.
+2. **Three rewrites, and they are deliberately not the same rewrite.** The answer (status, headers,
+   body) has both the id and the label rewritten out — a rename changes the label by definition. The
+   **host** lines (op + argv + stdin) have only the **id** rewritten: every tmux target is
+   `crswd-<id>` (FR-015), so a label reaching an argv at all is the defect, and leaving it
+   unrewritten is what lets the comparison see it. The **trail** likewise id-only, for a second
+   reason — a name is caller-supplied text and no record is built from it (FR-042). The audit
+   records are compared as canonical JSON strings, which works because `encoding/json` sorts a map's
+   keys.
+3. **`afterTheRename` is the same length as `originalName` on purpose**, and the test fatals if that
+   stops being true. The answers are compared whole, `Content-Length` included, and two labels of
+   different lengths would put an exception in every row that has nothing to do with the claim.
+4. **Every row carries the status the operation answers when it works** (`identifierOp.works`), and
+   that field is load-bearing rather than documentation — see the mutations below. The pane stream's
+   is **500**: a recorder cannot lift a write deadline, so an open that got past identity,
+   `crossSite`, the ownership lookup *and* the cap answers 500, which is what `stream_test.go`'s
+   `askToWatch` documents and what makes the row an assertion about the lookup. A stream that could
+   not find a renamed session would answer the uniform 404 instead.
+5. **Existing helpers were reused where they exist** — `getSession` and `deleteSession` from
+   `sessions_test.go` build two of the four API rows, so a change to how a session-scoped request is
+   spelled cannot leave this sweep driving a shape nothing else does. `signed` and `browse` are new
+   because nothing in the package built a prompt/output request from an arbitrary id, or a dashboard
+   read for one.
+
+**Must-fail conditions, verified by mutation rather than asserted.** All three assertion families
+were shown to bite, and each mutation was reverted:
+
+- `TmuxName()` deriving from `Name` when non-empty → **all eight rows red**, at the pre-flight guard
+  (`held.TmuxName() != subject.TmuxName()`), before any comparison runs.
+- `Manager.Prompt` building its target as `tmuxNamePrefix + s.Name` → **only the prompt row red**,
+  and red at the `works` guard: both halves answered 500, so *without that field the row would have
+  compared two refusals and reported agreement*. That is the whole reason `works` exists.
+- A harmless name-carrying host call (`m.tmux.Has(ctx, s.Name)` added to `Manager.Output`) → **the
+  two pane-capturing rows red**, at the host-line comparison, with the status still 200. This is the
+  case the host comparison exists for and the only one the other two guards cannot see.
+
+**Findings:**
+
+411. **On this daemon a name-derived tmux target cannot survive to be compared.** The fake seeds
+    `crswd-<id>`, so any handler that built a target from the label would fail outright and be caught
+    by `works` or by the pre-flight guard rather than by the host comparison. The host comparison is
+    therefore a belt for the case that *does* survive — an argv carrying the label without breaking,
+    such as a buffer name, a `set-option` value, or a future compact that labels its buffer. Worth
+    knowing before anyone decides that assertion is redundant and deletes it.
+412. **T020 must add a ninth row.** `identifierOps()` is the closed list of operations addressed by
+    identifier and the compact route does not exist yet; a fifth dashboard operation that never
+    joined this sweep is exactly the gap SC-012 is written against. The type comment says so, but a
+    comment is not a hook.
+413. **The API's two fleet-wide operations are deliberately out of the sweep.** `POST /sessions` and
+    `GET /sessions` name no identifier, so neither is SC-012's subject — but nothing anywhere asserts
+    that a renamed session still *lists* under its new label and its unchanged id. Cheap for T021 or
+    T023 if either wants it; not this task's.
+414. **Findings 400–404 and 406–410 carry over unchanged.** 405 stayed closed. 400's idle→`changed`
+    row is still unowned. 306 still needs the operator's answer; 342, 350, 374 and 378 still stand;
+    360, 367, 371, 372, 395 and 397 are T022's; 408's hostile-name row is T021's. Iteration 90's
+    **NEEDS CLARIFICATION on T023 vs T010 is still unanswered.** 340's lint caveat still applies:
+    `golangci-lint` on PATH is v1.62.2 and reads this repo's v2 config by running zero linters, so
+    `golangci-lint run` is a green that means nothing, and `go install` of the v2 binary is not
+    permitted in this environment. The substitute run was `golangci-lint run --no-config
+    --disable-all -E bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags
+    tmux,dev ./...`, clean with no new `//nolint`. `go build ./...`, `go test -count=1 ./...`, `go
+    test -race ./internal/httpapi`, `gofmt -l`, `goimports -l` and `go vet` under all four tags
+    (default, tmux, dev, quickstart) are clean. The tagged *suites* were not run: this task adds a
+    test to `internal/httpapi` and touches no production file — no tmux binary use, no `cmd/crswd`,
+    no dev bypass — so `go vet -tags` is the check AGENTS.md names for that case. T023 runs them for
+    real.
+
+**Left:** T019–T023. Next is **T019** — `Compact` in `internal/session/manager.go`: the literal bytes
+`/compact` plus a newline through the existing `load-buffer` + `paste-buffer -d` path, **never
+`send-keys`** (milestone 1 research D4: tmux's parser eats a trailing unescaped `;` before `-l`
+applies). Four things it needs from here: `Manager.Prompt` at `internal/session/manager.go:672` is
+the shape to copy — it fails closed on an empty `ID` and on `StateDead`, takes `name :=
+s.TmuxName()`, then `m.tmux.Paste(ctx, name, []byte(text))` followed by `m.tmux.SendKeys(ctx, name,
+enterKey)`, and its error strings deliberately name the session and nothing else; the task says
+Compact **touches `LastActivity`**, so it needs `Store.Touch` (Prompt's own touching is worth reading
+before assuming where it happens) and the emit that every other fleet-changing manager method makes;
+the delivered text is **never** audited or logged (FR-016b, AR-007), which is the same discipline
+`TestThePromptTextReachesNoAuditRecordOrLog` already pins for the prompt; and the test is
+`TestCompactUsesBufferPath` in `internal/session/manager_test.go` asserting the **argv**, which must
+fail when the bytes are delivered with `send-keys` — `tmuxctl.Fake.Calls()` returns `Op`, `Argv` and
+`Stdin`, and the prompt's own suite shows how to read them.

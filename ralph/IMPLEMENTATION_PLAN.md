@@ -122,7 +122,7 @@ if one looks wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and st
 
 - [x] T016 `internal/session/manager.go`: `Rename` — record only. **`TmuxName` is not touched**
 - [x] T017 `POST /dashboard/sessions/{id}/rename`, control outside the anchor
-- [ ] T018 Rename, then run **every** identifier-based operation and assert unchanged behaviour
+- [x] T018 Rename, then run **every** identifier-based operation and assert unchanged behaviour
 
 ### US5 — Compact (P5)
 

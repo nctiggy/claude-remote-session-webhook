@@ -95,7 +95,7 @@ API, and confirm the open page reflects both without interaction.
 
 - [ ] T017 `internal/httpapi/actions.go` + `web/templates/partials/session-card.html`: `POST /dashboard/sessions/{id}/rename`, form field `name`, `200` with the re-rendered card, `400` on an invalid name with the existing name unchanged. One `dashboard.rename` record. Control outside the card's anchor.
 
-- [ ] T018 `internal/httpapi/actions_test.go`: `TestRenameThenIdentifierOperations` — rename, then run **every** identifier-based operation and assert unchanged behaviour (SC-012). **Must fail when** any operation depends on the name.
+- [x] T018 `internal/httpapi/actions_test.go`: `TestRenameThenIdentifierOperations` — rename, then run **every** identifier-based operation and assert unchanged behaviour (SC-012). **Must fail when** any operation depends on the name.
 
 ---
 
