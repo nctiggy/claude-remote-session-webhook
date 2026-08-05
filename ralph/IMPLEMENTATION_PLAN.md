@@ -103,7 +103,7 @@ if one looks wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and st
 
 - [x] T006 `POST /dashboard/sessions/{id}/destroy`: requires `confirm=yes` (FR-029), verified teardown, `409` with the record **retained** when it cannot be verified. **No force path**
 - [x] T007 `web/templates/partials/session-card.html` + CSS: the control **outside** the card's single anchor. Outcome as text, never colour alone; a failure says so rather than silently reverting
-- [ ] T008 US1 acceptance: `GET` on the path is an unknown route, never `405`. **Each half of the defence disabled separately, the other still refuses.** AR-005 applies hardest here
+- [x] T008 US1 acceptance: `GET` on the path is an unknown route, never `405`. **Each half of the defence disabled separately, the other still refuses.** AR-005 applies hardest here
 
 ### US2 — Create from the browser (P2)
 

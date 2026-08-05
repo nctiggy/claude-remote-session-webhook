@@ -13082,3 +13082,99 @@ path is added), and **each half of the defence is disabled separately in the tes
 other still refusing (FR-002c, SC-001a). The seam must not exist in the shipping build — a build
 tag or flag that turns a check off is the exact defect this milestone was written to prevent. The
 two halves are `crossSite` and the page-token check, both in `admitAction` in `browser.go`.
+
+## Iteration 88 (milestone 3, iteration 8) — 2026-08-05 05:45
+
+**Did:** **T008** — the US1 acceptance suite in `internal/httpapi/actions_test.go`. Two tests, no
+shipping code changed: `TestEitherHalfOfTheDefenceRefusesAlone` (seven rows against the
+**registered** destroy route) and `TestADestroyIsNoRouteOnAnyOtherMethod` (six methods). The
+`destroyer` fixture gained `send`, which is `post` with the method, the path and `Sec-Fetch-Site`
+chosen by the caller; `post` now goes through it, so a varied case differs from the ordinary one
+in exactly the field it means to vary.
+
+**"Disabled" means *satisfied*, and that is the one decision T008's contract left open.** The task
+says each half is "disabled **separately in the test build**", while AR-005 says a test satisfies
+these checks and never disables them, and the shipping build must keep no way to turn one off.
+Both are met by satisfying the half that is not on trial: a check with nothing left to object to
+cannot be the reason a row was refused, so a valid token plus a foreign initiator is the
+same-origin half working alone, and a same-origin request with no token is the page-token half
+working alone. **The rejected alternative was a pair of mutant gates in the test build** — a
+`crossSiteOnly` and a `tokenOnly` composition calling the same two functions `admitAction` calls.
+They would have read as the literal "disabled", and they prove nothing a shipping defect can move:
+a gate spelled `if crossSite && tokenBad` leaves both mutants green, because neither runs the real
+gate. A test that cannot fail is not verification, so they are not there. **T011, T018 and T020
+face the same wording and should reach the same answer.**
+
+**The recorded reason is what makes this a proof, not the status.** All six refusal causes answer
+a caller identically (FR-004), so the response cannot say which half refused — the trail is the
+only place that claim exists. Each row therefore asserts `reason` equals its own sentinel, which
+is what catches a gate where one check refuses everything and the other is decoration. This is
+also why the "hostile page sent a bare request" row (neither half satisfied) expects
+`errActionCrossSite` and not a token reason: the order is fixed, so the token is never examined.
+
+**All four must-fail conditions were run, not reasoned about.** Each mutation applied to
+`browser.go`/`server.go`, the tests run, the mutation reverted (`git diff` clean afterwards):
+
+1. **`crossSiteAction` neutered in `admitAction`** → the four initiator rows red, plus the
+   neither-half row (it falls through to the token check and records the wrong reason). The two
+   token rows stay green — they are refused by the half that survived, which is the point.
+2. **The token check replaced with `return nil`** → exactly the two token rows red, the initiator
+   rows green. The two mutations are disjoint, which is the independence claim stated backwards.
+3. **A gate load-bearing only in combination** (`if tokenErr != nil && crossed`) → all seven rows
+   red. This is the defect SC-001a names and the reason the suite exists.
+4. **`handleUnrouted`'s `/` catch-all deleted** → every method row answers `405` with
+   `Allow: POST`, which is the exact string the test prints. A hand-written 405 branch moves the
+   same two assertions.
+
+**Learned:**
+
+1. **`GET` on the destroy path is byte-identical to a path nothing claims — verified, not
+   assumed.** Both reach `notFound` through the `/` catch-all, and `notFoundView` carries only the
+   operator and the empty state's copy, so no request-specific byte enters the page. The test
+   drives **both** requests through one `destroyer` and compares status, body and the whole header
+   map, which is only sound because of that; a page that ever renders the requested path would
+   break it, and should.
+2. **A method row must carry a request that would otherwise have worked.** Each sends the
+   assertion, `Sec-Fetch-Site: same-origin`, a valid page token and `confirm=yes`, so the only
+   thing left that can refuse is the method. A row refused for a missing token would go green
+   through a 405 being added.
+3. **`same-site` and `none` had no action-route case until now.** `refusalCauses` (T003) covers
+   `cross-site` and absent; the contract admits exactly one spelling, so the acceptance suite adds
+   the other two. `none` is the case an `Origin` comparison cannot cleanly see (research R1).
+4. **The non-vacuity has to destroy something.** Every refusal row is satisfied by a route that
+   refuses everyone, and a gate that refuses everyone is a broken dashboard that ships looking
+   secure — so the closing case asserts the record **and** the window are gone, not merely a 200.
+
+**Findings:**
+
+362. **`TestDestroyRunsBehindTheActionGate` (T006) is now a strict subset of the new suite.** Its
+    two cases are the "no page token" and "cross-site" rows, with a weaker record assertion
+    (`dashboard.reject`, not the reason). It stays — its own comment says it is the *registration*
+    claim the independence proof rests on, and AR-008 forbids tidying it away — but a future hand
+    consolidating these should keep the reason assertions.
+363. **Nothing yet asserts that a method other than `POST` reaches no route on the API door's
+    paths under this milestone's rules.** The contract's row is "`GET` on each of the four paths";
+    only destroy exists, so T009, T017 and T020 each owe their own method case. **They are the
+    tasks most likely to skip it**, because the route works without one.
+364. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307, 311–315,
+    317–323, 325, 327–328, 330–333, 335–361 carry over unchanged.** 306 still needs the operator's
+    answer; 342's `research.md` R1 discrepancy still wants confirming; 350's missing pin between
+    the two not-found bodies still stands; 358's unswapped fragment is still the MVP's most visible
+    rough edge and still has no owner; 360's absent Button and Modal partials are still T022's to
+    document. 340's lint caveat still applies: `golangci-lint` on PATH is v1.62.2 and reads this
+    repo's v2 config by running zero linters, so `golangci-lint run` is a green that means nothing.
+    The substitute run was `golangci-lint run --no-config --disable-all -E
+    bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags tmux,dev ./...`,
+    clean with no new `//nolint`. `go build ./...`, `go test ./...`, `go test -race
+    ./internal/httpapi`, `go test -tags dev ./...`, `gofmt -l` and `go vet` under all three tags
+    clean too. CI's pinned v2.12.2 is the check that counts.
+
+**Left:** T009–T023. **T001–T008 are the milestone's shippable MVP and are now complete**: a
+dashboard that can destroy a session, with both halves of the cross-site defence proven
+independently load-bearing. Next is **T009** — `POST /dashboard/sessions`, which must **call**
+milestone 1's `work_dir` validation rather than reimplement it (AR-008), answer the four refusals
+with **one** message because distinguishing "does not exist" from "not permitted" is a filesystem
+oracle, and **discard the bearer token it mints** without it reaching a response, a template or a
+log (FR-013). Its outcome fragments must be added to `renderedClasses`' `actionFragments` map
+(iteration 87's learning 1) or their classes ship unstyled with nothing to say so, and per finding
+363 it owes a `GET`-is-no-route case of its own.
