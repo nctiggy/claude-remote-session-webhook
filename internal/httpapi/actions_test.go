@@ -13,11 +13,14 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,6 +29,7 @@ import (
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 )
@@ -1486,5 +1490,778 @@ func TestEitherHalfOfTheDefenceRefusesAlone(t *testing.T) {
 	}
 	if got, want := admitted.only(t)["action"], string(audit.ActionDashboardDestroy); got != want {
 		t.Errorf("action = %v; want %v — an admitted action is recorded as the action, not as a rejection", got, want)
+	}
+}
+
+// --- US2: create from the browser (T009) ------------------------------------
+//
+// The other direction of the same authority. A destroy ends an unsandboxed shell;
+// this route starts one, on a door whose credential is an ambient cookie — which
+// is why it is registered through the same gate, and why the claims below are
+// about what reached the host as much as about what the caller was told.
+
+// The create's own answers, quoted here rather than read from the constants
+// actions.go writes, for the reason every other body in this file is: a test
+// asserting against the variable proves only that the code agrees with itself.
+const (
+	wantCreateBadNameBody    = `<p class="card-outcome">That is not a usable session name. Use letters, digits and hyphens, up to 64 characters.</p>`
+	wantCreateBadWorkDirBody = `<p class="card-outcome">This daemon may not start a session in that working directory.</p>`
+	wantCreateLimitedBody    = `<p class="card-outcome">No session was started: this host is at its limit for now. Destroy one, or try again shortly.</p>`
+	wantCreateFailedBody     = `<p class="card-outcome">The session could not be started.</p>`
+)
+
+// createPath is the route from contracts/actions.md's table, written out rather
+// than read from patternDashboardCreate: what a browser posts to is the
+// contract's string, and a test that asked the code where to post could not
+// notice the two parting company.
+const createPath = "/dashboard/sessions"
+
+// creator is the registered create route with everything behind it readable: the
+// store, the fake host, and the trail.
+//
+// It is destroyer's shape for the other route rather than a method on it. The two
+// stories arrange different things — one plants a session, the other must find
+// that none was planted — and a fixture serving both would be one whose helpers
+// are half unused at every call site.
+type creator struct {
+	*testServer
+	keys *keyServer
+}
+
+func newCreator(t *testing.T) *creator {
+	t.Helper()
+
+	keys := newKeyServer(t)
+	return &creator{testServer: newAuditedServerWith(t, keys.validator(t)), keys: keys}
+}
+
+// asked is the form a rendered create control submits: the render's page token,
+// and the two fields contracts/actions.md fixes.
+func (c *creator) asked(t *testing.T, name, workDir string) url.Values {
+	t.Helper()
+
+	form := url.Values{}
+	form.Set(fieldPageToken, mustMint(t, c.pageKey, testOperatorEmail, testTime))
+	form.Set(fieldName, name)
+	form.Set(fieldWorkDir, workDir)
+	return form
+}
+
+// wellFormed is the create every case below varies from — a name on the permitted
+// alphabet and a real directory under the fixture's approved root.
+func (c *creator) wellFormed(t *testing.T) url.Values {
+	t.Helper()
+	return c.asked(t, "refactor-auth", c.fixture.repo)
+}
+
+// post submits one form at the create route, as the browser this daemon rendered
+// the page for.
+func (c *creator) post(t *testing.T, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	return c.send(t, http.MethodPost, createPath, secFetchSiteSameOrigin, form)
+}
+
+// send is post with the method, the path and the browser's own account of where
+// the request came from all chosen by the caller — destroyer.send's arrangement,
+// and for its reason: a varied case must differ from the ordinary one in exactly
+// the field it means to vary.
+func (c *creator) send(t *testing.T, method, path, site string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := httptest.NewRequest(method, path, strings.NewReader(form.Encode()))
+	r.Header.Set(headerContentType, contentTypeForm)
+	r.Header.Set(headerAccessAssertion, c.keys.mint(t, c.keys.claims()))
+	if site != absent {
+		r.Header.Set(headerSecFetchSite, site)
+	}
+
+	w := httptest.NewRecorder()
+	c.ServeHTTP(w, r)
+	return w
+}
+
+// page opens the fleet as the same operator, which is where a session appears
+// once the create that made it has been answered.
+func (c *creator) page(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set(headerAccessAssertion, c.keys.mint(t, c.keys.claims()))
+
+	w := httptest.NewRecorder()
+	c.ServeHTTP(w, r)
+	return w
+}
+
+// owned is every record this operator holds, read from the store rather than from
+// a page: a claim that nothing was created is about the daemon's own state and not
+// about what it chose to render.
+func (c *creator) owned() []session.Session { return c.fixture.store.List(auth.CallerOperator) }
+
+// started counts the sessions the host was asked to start.
+//
+// It is asserted alongside the store everywhere below because the two answer
+// different halves of one question. A record with no window is a create that never
+// reached the host; a window with no record is a live unsandboxed shell nothing can
+// see, which is the failure Principle VI is about — and a refusal that started
+// something before refusing looks, in the store alone, exactly like one that
+// started nothing.
+func (c *creator) started() int {
+	n := 0
+	for _, call := range c.fixture.tmux.Calls() {
+		if call.Op == tmuxctl.OpNew {
+			n++
+		}
+	}
+	return n
+}
+
+// TestBrowserCreateStartsTheSessionAndAnswersWithItsCard is US2's first scenario
+// end to end: the operator's own create, validated by milestone 1's rules, started
+// on the host, and answered with the card the fleet will draw for it.
+//
+// **Must fail when** the route stops calling Manager.Create — the store and the
+// host both go quiet — or when it answers with something other than the canonical
+// card, which is what makes a created session look on arrival exactly as it will
+// look on every later page load.
+//
+// The card is asserted to carry a page token as well. A card whose form had none
+// would render no action row at all (session-card.html), so the session this route
+// just started would be the one card on the fleet the operator cannot act on until
+// they reload.
+func TestBrowserCreateStartsTheSessionAndAnswersWithItsCard(t *testing.T) {
+	t.Parallel()
+
+	c := newCreator(t)
+
+	w := c.post(t, c.wellFormed(t))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusOK)
+	}
+	if got, want := w.Header().Get(headerContentType), wantActionContentType; got != want {
+		t.Errorf("%s = %q; want %q", headerContentType, got, want)
+	}
+	if got, want := w.Header().Get(headerContentTypeOptions), wantActionNosniff; got != want {
+		t.Errorf("%s = %q; want %q — a create's answer carries the same headers a page does",
+			headerContentTypeOptions, got, want)
+	}
+
+	owned := c.owned()
+	if len(owned) != 1 {
+		t.Fatalf("the store holds %d records after one create; want exactly 1", len(owned))
+	}
+	live := owned[0]
+
+	if live.Owner != auth.CallerOperator {
+		t.Errorf("the created session is owned by %q; want %q — the owner is the verified identity, never a field",
+			live.Owner, auth.CallerOperator)
+	}
+	if want := "refactor-auth"; live.Name != want {
+		t.Errorf("name = %q; want %q", live.Name, want)
+	}
+	if live.WorkDir != c.fixture.repo {
+		t.Errorf("work_dir = %q; want the resolved %q", live.WorkDir, c.fixture.repo)
+	}
+
+	// The host, which is the half the store cannot see: a record for a session
+	// nobody started is a card describing nothing.
+	running, err := c.fixture.tmux.Has(context.Background(), live.TmuxName())
+	if err != nil {
+		t.Fatalf("ask the fake host about %s: %v", live.TmuxName(), err)
+	}
+	if !running {
+		t.Errorf("the host is not running %s; a created session with no window is a card describing nothing",
+			live.TmuxName())
+	}
+	if dir, ok := c.fixture.tmux.WorkDir(live.TmuxName()); !ok || dir != c.fixture.repo {
+		t.Errorf("the host started %s in %q (found: %t); want the resolved %q",
+			live.TmuxName(), dir, ok, c.fixture.repo)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, `<article class="card"`) {
+		t.Errorf("the answer is not the canonical card:\n%s", body)
+	}
+	for what, want := range map[string]string{
+		"the identifier":        live.ID,
+		"the name":              live.Name,
+		"the working directory": live.WorkDir,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the card does not carry %s (%q):\n%s", what, want, body)
+		}
+	}
+	if !strings.Contains(body, fieldPageToken) {
+		t.Errorf("the card carries no %s, so the session it announces offers no control the gate would admit:\n%s",
+			fieldPageToken, body)
+	}
+
+	rec := c.only(t)
+	if got, want := rec["action"], string(audit.ActionDashboardCreate); got != want {
+		t.Errorf("action = %v; want %v — a browser create is not the API's session.create", got, want)
+	}
+	if got, want := rec["decision"], string(audit.Allow); got != want {
+		t.Errorf("decision = %v; want %v", got, want)
+	}
+	if got := rec["session_id"]; got != live.ID {
+		t.Errorf("session_id = %v; want %q", got, live.ID)
+	}
+}
+
+// servedTheToken reports whether any run of TokenLen characters in what was served
+// is the bearer token behind hash.
+//
+// A sliding window rather than a search for a known string, because there is no
+// known string: the plaintext exists for the length of one assignment in
+// createFromBrowser and is never named, so a test cannot be handed it. What the
+// daemon keeps is the hash, and hashing every candidate run against it asks the
+// only question there is to ask — is the credential for this record anywhere in
+// these bytes — without caring what markup surrounds it.
+func servedTheToken(served string, hash [sha256.Size]byte) bool {
+	for i := 0; i+session.TokenLen <= len(served); i++ {
+		if sha256.Sum256([]byte(served[i:i+session.TokenLen])) == hash {
+			return true
+		}
+	}
+	return false
+}
+
+// TestBrowserCreateNeverServesToken is FR-013 at the browser door: the bearer
+// token a create mints reaches no response, no template, and no record.
+//
+// **Must fail when** the token is passed to the template. Handing it to cardOf in
+// place of the page token renders it into the new card's hidden field, and the
+// sweep finds it there — which is the whole point of sweeping the bytes rather
+// than asserting that some particular field is absent: a token disclosed through a
+// field nobody thought to check is disclosed all the same.
+//
+// The fleet page is swept as well as the answer, because the two are different
+// claims. The first is that this route did not write the token out; the second is
+// that nothing kept it where a later render could. Store.List hands every field of
+// the record to the page handler, and the difference between a page that never
+// shows the credential and one that happens not to today is the difference between
+// a record holding a hash and a record holding the token.
+//
+// The trail is swept for the reason a leak test exists at all: a session token in
+// journald is the key to an unsandboxed shell, and it would sit there long after
+// the response that could have carried it was gone.
+func TestBrowserCreateNeverServesToken(t *testing.T) {
+	t.Parallel()
+
+	// The sweep, proved able to find a token before it is used to claim there is
+	// none. Without this every assertion below is satisfied by a search that
+	// matches nothing whatever it is handed.
+	planted, hash, err := session.NewToken()
+	if err != nil {
+		t.Fatalf("session.NewToken = _, _, %v; want a credential", err)
+	}
+	if !servedTheToken(`<p class="card-outcome">`+planted+`</p>`, hash) {
+		t.Fatal("the sweep cannot find a token it was handed, so finding none below would prove nothing")
+	}
+
+	c := newCreator(t)
+
+	w := c.post(t, c.wellFormed(t))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusOK)
+	}
+
+	owned := c.owned()
+	if len(owned) != 1 {
+		t.Fatalf("the store holds %d records after one create; want exactly 1", len(owned))
+	}
+	live := owned[0]
+
+	if servedTheToken(w.Body.String(), live.TokenHash) {
+		t.Errorf("the create's own answer carries the session's bearer token:\n%s", w.Body.String())
+	}
+
+	page := c.page(t)
+	if page.Code != http.StatusOK {
+		t.Fatalf("GET / after the create = %d (%s); want %d", page.Code, page.Body.String(), http.StatusOK)
+	}
+	if servedTheToken(page.Body.String(), live.TokenHash) {
+		t.Errorf("the fleet page rendered after the create carries the session's bearer token:\n%s", page.Body.String())
+	}
+
+	if servedTheToken(c.sink.String(), live.TokenHash) {
+		t.Errorf("the audit trail carries the session's bearer token:\n%s", c.sink.String())
+	}
+}
+
+// workDirRefusal is one way a working directory can be refused, and the reason it
+// must leave on the record.
+//
+// The reasons differ from each other on purpose, and the bodies must not. FR-012
+// wants an operator to be able to read which rule refused; the filesystem-oracle
+// argument wants a caller to be unable to.
+type workDirRefusal struct {
+	name   string
+	dir    func(t *testing.T, c *creator) string
+	reason error
+}
+
+func workDirRefusals() []workDirRefusal {
+	return []workDirRefusal{
+		{
+			name:   "a traversal out of the approved root",
+			dir:    func(_ *testing.T, c *creator) string { return c.fixture.repo + "/../.." },
+			reason: session.ErrWorkDirOutsideRoots,
+		},
+		{
+			name:   "an absolute path outside the approved roots",
+			dir:    func(_ *testing.T, c *creator) string { return filepath.Dir(c.fixture.root) },
+			reason: session.ErrWorkDirOutsideRoots,
+		},
+		{
+			// Inside an approved root by spelling and outside it by resolution,
+			// which is the whole reason ResolveWorkDir runs EvalSymlinks.
+			name: "a symlink inside a root pointing out of it",
+			dir: func(t *testing.T, c *creator) string {
+				t.Helper()
+
+				outside, err := filepath.EvalSymlinks(t.TempDir())
+				if err != nil {
+					t.Fatalf("resolve a directory outside the approved root: %v", err)
+				}
+				link := filepath.Join(c.fixture.root, "escape")
+				if err := os.Symlink(outside, link); err != nil {
+					t.Fatalf("link %s out of the approved root: %v", link, err)
+				}
+				return link
+			},
+			reason: session.ErrWorkDirOutsideRoots,
+		},
+		{
+			name: "a regular file rather than a directory",
+			dir: func(t *testing.T, c *creator) string {
+				t.Helper()
+
+				file := filepath.Join(c.fixture.root, "notes.txt")
+				if err := os.WriteFile(file, []byte("not a directory"), 0o600); err != nil {
+					t.Fatalf("write %s: %v", file, err)
+				}
+				return file
+			},
+			reason: session.ErrWorkDirNotDirectory,
+		},
+		{
+			// The row the oracle argument is really about. A directory that is
+			// simply not there must be refused in the same words as one that is
+			// there and not permitted, or a caller holding a form can map this host
+			// by reading the difference.
+			name:   "a directory that is not there at all",
+			dir:    func(_ *testing.T, c *creator) string { return filepath.Join(c.fixture.root, "nope") },
+			reason: session.ErrWorkDirUnresolvable,
+		},
+	}
+}
+
+// TestWorkDirRefusalsAreOneMessage is FR-012: every working-directory refusal
+// answers with the identical bytes, and the rule that refused is kept server-side.
+//
+// **Must fail when** the messages diverge. Each row is compared against the first
+// row's whole response — status, body and Content-Length — rather than each being
+// asserted a 400, because "one message" is the claim and a second body that
+// happened to also be a 400 would satisfy anything weaker.
+//
+// The rows are driven in one loop rather than as parallel subtests for that
+// comparison's sake: the claim is *between* rows, so the responses have to exist
+// at the same time to be compared at all.
+//
+// Nothing is created on any of them, asserted in the store and on the host both. A
+// refusal that started a session before refusing would be a filesystem oracle with
+// an unsandboxed shell attached.
+func TestWorkDirRefusalsAreOneMessage(t *testing.T) {
+	t.Parallel()
+
+	var (
+		firstName string
+		first     *httptest.ResponseRecorder
+	)
+
+	for _, row := range workDirRefusals() {
+		c := newCreator(t)
+		w := c.post(t, c.asked(t, "refactor-auth", row.dir(t, c)))
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d (%s); want %d", row.name, w.Code, w.Body.String(), http.StatusBadRequest)
+		}
+		if got := w.Body.String(); got != wantCreateBadWorkDirBody {
+			t.Errorf("%s: body\n%s\nwant\n%s", row.name, got, wantCreateBadWorkDirBody)
+		}
+		if got, want := w.Header().Get(headerContentLength), strconv.Itoa(len(wantCreateBadWorkDirBody)); got != want {
+			t.Errorf("%s: %s = %q; want %q", row.name, headerContentLength, got, want)
+		}
+
+		if first == nil {
+			firstName, first = row.name, w
+		} else {
+			if w.Code != first.Code {
+				t.Errorf("%s answered %d; %s answered %d — the two are distinguishable",
+					row.name, w.Code, firstName, first.Code)
+			}
+			if got, want := w.Body.String(), first.Body.String(); got != want {
+				t.Errorf("%s answered\n%s\n%s answered\n%s\nthe two are distinguishable", row.name, got, firstName, want)
+			}
+			if got, want := w.Header().Get(headerContentLength), first.Header().Get(headerContentLength); got != want {
+				t.Errorf("%s answered %s: %q; %s answered %q — the two are distinguishable",
+					row.name, headerContentLength, got, firstName, want)
+			}
+		}
+
+		if owned := c.owned(); len(owned) != 0 {
+			t.Errorf("%s: the store holds %d records; want none — a refused create creates nothing", row.name, len(owned))
+		}
+		if got := c.started(); got != 0 {
+			t.Errorf("%s: the host was asked to start %d sessions; want 0", row.name, got)
+		}
+
+		// The half a caller may not have, kept where the operator can read it.
+		rec := c.only(t)
+		if got, want := rec["action"], string(audit.ActionDashboardCreate); got != want {
+			t.Errorf("%s: action = %v; want %v — a refused create is still a create", row.name, got, want)
+		}
+		if got, want := rec["decision"], string(audit.Deny); got != want {
+			t.Errorf("%s: decision = %v; want %v", row.name, got, want)
+		}
+		if got, want := rec["reason"], row.reason.Error(); got != want {
+			t.Errorf("%s: reason = %v; want %v — the rule that refused is the one thing kept server-side",
+				row.name, got, want)
+		}
+	}
+}
+
+// TestBrowserCreateRefusesAnUnusableName is the other 400, and the half of it that
+// matters: the answer names the field and says nothing whatever about the host.
+//
+// **Must fail when** the name check stops running — every row then answers with a
+// card and a session started — or when its answer starts describing the
+// filesystem, which the comparison against the working directory's own refusal
+// catches: a name refusal that spoke of directories would let a caller ask
+// questions about the host by sending a name that cannot pass.
+//
+// The colon is not decoration. A tmux target is `session:window.pane`, so a name
+// carrying one addresses a different window — it is the case ValidateName keeps a
+// sentinel of its own for, and the reason this route may not invent a second
+// alphabet.
+func TestBrowserCreateRefusesAnUnusableName(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		name   string
+		reason error
+	}{
+		"no name at all":               {name: "", reason: session.ErrInvalidName},
+		"a tmux target":                {name: "refactor:1", reason: session.ErrNameIsTmuxTarget},
+		"a space":                      {name: "refactor auth", reason: session.ErrInvalidName},
+		"longer than the alphabet":     {name: strings.Repeat("a", session.MaxNameLen+1), reason: session.ErrInvalidName},
+		"a character off the alphabet": {name: "refactor/auth", reason: session.ErrInvalidName},
+	}
+
+	for what, tc := range cases {
+		t.Run(what, func(t *testing.T) {
+			t.Parallel()
+
+			c := newCreator(t)
+			w := c.post(t, c.asked(t, tc.name, c.fixture.repo))
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusBadRequest)
+			}
+			if got := w.Body.String(); got != wantCreateBadNameBody {
+				t.Errorf("body\n%s\nwant\n%s", got, wantCreateBadNameBody)
+			}
+			if got := w.Body.String(); got == wantCreateBadWorkDirBody {
+				t.Errorf("a refused name was answered with the working directory's own refusal:\n%s", got)
+			}
+
+			if owned := c.owned(); len(owned) != 0 {
+				t.Errorf("the store holds %d records; want none", len(owned))
+			}
+			if got := c.started(); got != 0 {
+				t.Errorf("the host was asked to start %d sessions; want 0", got)
+			}
+			if got, want := c.only(t)["reason"], tc.reason.Error(); got != want {
+				t.Errorf("reason = %v; want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestBrowserCreateRefusesPastTheBoundsWithoutStartingAnything is the 429, in both
+// of the conditions that produce it, with the fleet asserted untouched under each.
+//
+// **Must fail when** either bound stops being consulted on this door. The cap is
+// Manager.Create's own and would answer with a sixth card on a host that permits
+// five; the rate is this handler's call to the limiter, and dropping it would give
+// the operator a second create budget by opening a browser — one per door rather
+// than one per identity, which is a limit that does not limit.
+//
+// One body answers both, which is the assertion the two halves share: an operator
+// is told nothing was started, and reads which bound it was in the trail.
+func TestBrowserCreateRefusesPastTheBoundsWithoutStartingAnything(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the concurrent-session cap", func(t *testing.T) {
+		t.Parallel()
+
+		c := newCreator(t)
+		for range config.DefaultMaxSessions {
+			c.fixture.plant(t, session.Session{Name: "already-running", WorkDir: c.fixture.repo})
+		}
+
+		w := c.post(t, c.wellFormed(t))
+
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusTooManyRequests)
+		}
+		if got := w.Body.String(); got != wantCreateLimitedBody {
+			t.Errorf("body\n%s\nwant\n%s", got, wantCreateLimitedBody)
+		}
+		if got := len(c.owned()); got != config.DefaultMaxSessions {
+			t.Errorf("the store holds %d records after a refused create; want the %d that were already there",
+				got, config.DefaultMaxSessions)
+		}
+		if got := c.started(); got != 0 {
+			t.Errorf("the host was asked to start %d sessions; want 0 — the cap is answered before anything runs", got)
+		}
+		if got, want := c.only(t)["reason"], errCreateCapReached.Error(); got != want {
+			t.Errorf("reason = %v; want %v", got, want)
+		}
+	})
+
+	t.Run("the create rate", func(t *testing.T) {
+		t.Parallel()
+
+		c := newCreator(t)
+		// The production pair — six a minute bursting to three (research D11) —
+		// rather than the fixture's deliberately unreachable budget, on a clock that
+		// does not move, so the bucket empties and stays empty. The burst is asked
+		// for rather than written down: a change to how it is derived from the rate
+		// moves this case with it.
+		c.creates = testLimiter(t, config.DefaultCreateRatePerMin, fixedClock{at: testTime})
+		burst := burstFor(config.DefaultCreateRatePerMin)
+
+		for i := range burst {
+			if w := c.post(t, c.wellFormed(t)); w.Code != http.StatusOK {
+				t.Fatalf("create %d of the burst = %d (%s); want %d", i+1, w.Code, w.Body.String(), http.StatusOK)
+			}
+		}
+
+		w := c.post(t, c.wellFormed(t))
+
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("the create after a spent budget = %d (%s); want %d",
+				w.Code, w.Body.String(), http.StatusTooManyRequests)
+		}
+		if got := w.Body.String(); got != wantCreateLimitedBody {
+			t.Errorf("body\n%s\nwant\n%s", got, wantCreateLimitedBody)
+		}
+		if got := len(c.owned()); got != burst {
+			t.Errorf("the store holds %d records; want the %d the budget allowed", got, burst)
+		}
+		if got := c.started(); got != burst {
+			t.Errorf("the host was asked to start %d sessions; want the %d the budget allowed — "+
+				"a request over budget costs no tmux command", got, burst)
+		}
+
+		records := c.records(t)
+		if len(records) != burst+1 {
+			t.Fatalf("%d requests emitted %d audit records (%v); FR-041 requires exactly one each",
+				burst+1, len(records), records)
+		}
+		if got, want := records[burst]["reason"], errCreateRateExceeded.Error(); got != want {
+			t.Errorf("reason = %v; want %v — the rate and the cap are one answer to the caller and two on the record",
+				got, want)
+		}
+	})
+}
+
+// TestBrowserCreateSaysSoWhenTheHostRefuses is the 500: the session could not be
+// started, said in the words of something that failed rather than by a card that
+// never appeared.
+//
+// **Must fail when** the failure is answered with a card, or with an empty body —
+// either of which renders as a control that did nothing at all, which is the
+// silent failure FR-031 forbids.
+//
+// The record is asserted gone as well. Manager.Create's rollback verifies the
+// teardown and drops the record only once the host confirms nothing survived, so a
+// record left here would be a session this daemon believes in and the host has
+// never heard of.
+func TestBrowserCreateSaysSoWhenTheHostRefuses(t *testing.T) {
+	t.Parallel()
+
+	c := newCreator(t)
+	c.fixture.tmux.FailOp(tmuxctl.OpNew, errors.New("no server running on /tmp/tmux-crswd"))
+
+	w := c.post(t, c.wellFormed(t))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusInternalServerError)
+	}
+	if got := w.Body.String(); got != wantCreateFailedBody {
+		t.Errorf("body\n%s\nwant\n%s", got, wantCreateFailedBody)
+	}
+	if owned := c.owned(); len(owned) != 0 {
+		t.Errorf("the store holds %d records after a create the host refused; want none", len(owned))
+	}
+
+	rec := c.only(t)
+	if got, want := rec["decision"], string(audit.Deny); got != want {
+		t.Errorf("decision = %v; want %v", got, want)
+	}
+	if got, want := rec["reason"], errCreateRefused.Error(); got != want {
+		t.Errorf("reason = %v; want %v", got, want)
+	}
+	// Not one byte of tmux's own account of the failure. It is a fact about the
+	// host, and the trail may not carry it (FR-042).
+	if strings.Contains(c.sink.String(), "no server running") {
+		t.Errorf("the trail carries the host's own error text:\n%s", c.sink.String())
+	}
+}
+
+// TestBrowserCreateRunsBehindTheActionGate is the claim T003 cannot make about
+// itself, for the route that starts an unsandboxed shell: it is registered
+// *through* the gate.
+//
+// **Must fail when** the route is registered with handleBrowser rather than
+// handleAction. Both halves are driven because either one alone leaves the other's
+// absence invisible on this route; the independence proof itself is T008's.
+//
+// The store and the host are asserted quiet afterwards, which is the half a status
+// code cannot see: a gate that refused *after* the handler ran would answer 403
+// and still have started a session (FR-003).
+func TestBrowserCreateRunsBehindTheActionGate(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]func(t *testing.T, c *creator) (url.Values, string){
+		"the form carried no page token": func(t *testing.T, c *creator) (url.Values, string) {
+			t.Helper()
+			form := c.wellFormed(t)
+			form.Del(fieldPageToken)
+			return form, secFetchSiteSameOrigin
+		},
+		"the browser said the request came from another site": func(t *testing.T, c *creator) (url.Values, string) {
+			t.Helper()
+			return c.wellFormed(t), "cross-site"
+		},
+	}
+
+	for name, arrange := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			c := newCreator(t)
+			form, site := arrange(t, c)
+
+			w := c.send(t, http.MethodPost, createPath, site, form)
+
+			if w.Code != wantActionStatus {
+				t.Fatalf("status = %d (%s); want %d — the create route is not behind the gate",
+					w.Code, w.Body.String(), wantActionStatus)
+			}
+			if got := w.Body.String(); got != wantActionBody {
+				t.Errorf("body\n%s\nwant the gate's uniform refusal\n%s", got, wantActionBody)
+			}
+			if owned := c.owned(); len(owned) != 0 {
+				t.Errorf("a refused create left %d records; want none", len(owned))
+			}
+			if got := c.started(); got != 0 {
+				t.Errorf("a refused create asked the host to start %d sessions; want 0 — "+
+					"the gate runs before any state change", got)
+			}
+			if got, want := c.only(t)["action"], string(audit.ActionDashboardReject); got != want {
+				t.Errorf("action = %v; want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestACreateIsNoRouteOnAnyOtherMethod is contracts/actions.md's method rule for
+// the second of the four paths, and the case finding 363 says each of them owes:
+// the route works without it, so nothing else here would notice a 405 appearing.
+//
+// **Must fail when** a method-not-allowed path is added. Deleting handleUnrouted's
+// `/` catch-all turns every row below into a 405 with an Allow header naming POST,
+// which is the route table this door's uniform answers exist not to hand out; a
+// hand-written 405 branch moves the same two assertions.
+//
+// The two responses are compared whole rather than each being asserted a 404,
+// because "answered exactly as any other unknown route is" is the claim: a 404
+// that mentioned the path would tell a caller that *something* is served at that
+// address.
+//
+// Each request carries everything a create that would have worked carries — a
+// verified assertion, a same-origin initiator, a valid page token, both fields —
+// so the only thing left that can refuse it is the method.
+func TestACreateIsNoRouteOnAnyOtherMethod(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{
+		http.MethodGet, http.MethodHead, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodOptions,
+	} {
+		t.Run(strings.ToLower(method), func(t *testing.T) {
+			t.Parallel()
+
+			c := newCreator(t)
+
+			w := c.send(t, method, createPath, secFetchSiteSameOrigin, c.wellFormed(t))
+
+			if w.Code == http.StatusMethodNotAllowed {
+				t.Fatalf("%s on the create path was answered %d with %s: %q — which method a path serves is not a caller's to learn",
+					method, w.Code, headerAllow, w.Header().Get(headerAllow))
+			}
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("%s on the create path was answered %d (%s); want %d — the unknown-route answer",
+					method, w.Code, w.Body.String(), http.StatusNotFound)
+			}
+			if got := w.Header().Get(headerAllow); got != "" {
+				t.Errorf("%s on the create path answered with %s: %q; want no such header", method, headerAllow, got)
+			}
+
+			// The same method at a path nothing claims, on the same daemon and the
+			// same identity: what an unknown route really answers here, rather than
+			// this test's idea of it.
+			nowhere := c.send(t, method, "/dashboard/nonesuch", secFetchSiteSameOrigin, c.wellFormed(t))
+
+			if w.Code != nowhere.Code {
+				t.Errorf("%s on the create path answered %d; at a path nothing claims it answered %d — the two are distinguishable",
+					method, w.Code, nowhere.Code)
+			}
+			if got, want := w.Body.String(), nowhere.Body.String(); got != want {
+				t.Errorf("%s on the create path answered\n%s\nat a path nothing claims it answered\n%s\nthe two are distinguishable",
+					method, got, want)
+			}
+			if !maps.EqualFunc(w.Header(), nowhere.Header(), slices.Equal) {
+				t.Errorf("%s on the create path answered with headers %v; at a path nothing claims %v — the two are distinguishable",
+					method, w.Header(), nowhere.Header())
+			}
+
+			// Nothing was started, which is the half a status code cannot see.
+			if owned := c.owned(); len(owned) != 0 {
+				t.Errorf("%s on the create path left %d records; want none", method, len(owned))
+			}
+			if got := c.started(); got != 0 {
+				t.Errorf("%s on the create path asked the host to start %d sessions; want 0", method, got)
+			}
+
+			got := c.records(t)
+			if len(got) != 2 {
+				t.Fatalf("two requests emitted %d audit records (%v); FR-041 requires exactly one each", len(got), got)
+			}
+			for i, rec := range got {
+				if want := string(audit.ActionUnknownRoute); rec["action"] != want {
+					t.Errorf("record %d: action = %v; want %v — a %s that matched no route is not a create",
+						i, rec["action"], want, method)
+				}
+				if want := errScopeNoRoute.Error(); rec["reason"] != want {
+					t.Errorf("record %d: reason = %v; want %v", i, rec["reason"], want)
+				}
+			}
+		})
 	}
 }

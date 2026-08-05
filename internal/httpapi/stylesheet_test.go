@@ -344,12 +344,20 @@ const composedClass = "\x00"
 // They are markup all the same. Without them here, a class only a fragment
 // carries is styled by a rule "no template renders" in one direction and served
 // unstyled in the other, and both failures look like the opposite mistake.
+// A create's own four join them for the same reason, from the other direction: a
+// refused create has no record to render a card from, so what the operator is
+// told is composed in Go as well. Every action route this milestone adds owes
+// this map its answers, or the class they carry is invisible to both sweeps.
 var actionFragments = map[string][]byte{
-	"the destroyed marker":    bodyActionDestroyed,
-	"the unconfirmed refusal": bodyActionUnconfirmed,
-	"the unverified teardown": bodyActionTeardownUnverified,
-	"the failed destroy":      bodyActionDestroyFailed,
-	"the action not-found":    bodyActionNotFound,
+	"the destroyed marker":            bodyActionDestroyed,
+	"the unconfirmed refusal":         bodyActionUnconfirmed,
+	"the unverified teardown":         bodyActionTeardownUnverified,
+	"the failed destroy":              bodyActionDestroyFailed,
+	"the action not-found":            bodyActionNotFound,
+	"the refused session name":        bodyActionCreateBadName,
+	"the refused working directory":   bodyActionCreateBadWorkDir,
+	"the create refused by the bound": bodyActionCreateLimited,
+	"the failed create":               bodyActionCreateFailed,
 }
 
 // renderedClasses is every class name the embedded templates put in the markup,

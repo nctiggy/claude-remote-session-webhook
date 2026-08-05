@@ -277,6 +277,228 @@ func (s *Server) refuseBrowserDestroy(w http.ResponseWriter, r *http.Request, er
 	s.writeFragment(w, http.StatusInternalServerError, bodyActionDestroyFailed)
 }
 
+// --- Create ----------------------------------------------------------------
+//
+// The second route on this door that changes something, and the one that starts
+// an unsandboxed shell rather than ending one (US2).
+
+// patternDashboardCreate is the create route, from contracts/actions.md's table.
+//
+// It carries no {id}, because a create names no session — the session is what it
+// makes. So there is no shape check in front of it and no ownership question
+// behind it: what this route makes is owned by the identity layer 1 verified, and
+// nothing the form carries can name another owner (FR-012). A create is therefore
+// the one action on this door with no uniform not-found to give.
+//
+// The method is part of the pattern for the reason the destroy's is: a GET here
+// matches no pattern of this route's, falls to handleUnrouted's `/`, and is
+// answered as a path nothing claims — never a 405 and never an Allow header
+// (FR-033).
+const patternDashboardCreate = "POST /dashboard/sessions"
+
+// The two fields a create carries beside the token the gate reads
+// (contracts/actions.md).
+//
+// Spelled once here so the field this handler reads has one spelling. The form
+// that submits them is T010's, in a template set parsed with no function map, so
+// the markup spells them a second time and a test is what holds the two together
+// — the arrangement `confirm` already has on the card.
+const (
+	fieldName    = "name"
+	fieldWorkDir = "work_dir"
+)
+
+// The four things a create can answer other than a card, each a fragment for the
+// reason the destroy's are: the caller is a page, not a client reading JSON.
+//
+// None is quoted from contracts/actions.md, which fixes what each must *say* and
+// not the words — a fragment naming the field for a bad name, one that speaks of
+// permission and never of existence for a working directory, one that says the
+// limit was reached, and one that says the session could not be started. Each is
+// a text node carrying no colour, no markup and no control, which is FR-030 and
+// FR-031 met where the answer is written; they share the class the destroy's
+// outcomes carry, because what an operator is told after an action is one
+// component and not five.
+var (
+	// bodyActionCreateBadName answers a name ValidateName refused. It names the
+	// field and states the alphabet, and says nothing whatever about the
+	// filesystem: the two fields are validated in one call, and an answer that
+	// mentioned the directory while refusing the name would be a way to ask
+	// questions about the host by sending a name that cannot pass.
+	bodyActionCreateBadName = []byte(`<p class="card-outcome">That is not a usable session name. Use letters, digits and hyphens, up to 64 characters.</p>`)
+
+	// bodyActionCreateBadWorkDir is the single answer every working-directory
+	// refusal shares — traversal, an absolute path outside the approved roots, a
+	// symlink that resolves out of them, a path that is not a directory, and a
+	// path that is not there at all (FR-012).
+	//
+	// One message is the whole point. ResolveWorkDir tells those apart and the
+	// trail keeps the difference, but a caller who could read it would hold a
+	// filesystem oracle: ask for a path, learn from the wording whether it exists,
+	// and map a host through a form. It speaks only of what this daemon permits,
+	// which is a fact about the daemon's own configuration rather than about the
+	// machine it runs on.
+	bodyActionCreateBadWorkDir = []byte(`<p class="card-outcome">This daemon may not start a session in that working directory.</p>`)
+
+	// bodyActionCreateLimited is the 429, and it is one body for the
+	// concurrent-session cap and for the create rate alike — the arrangement
+	// bodyTooManyRequests has on the API door and for the reason it has it: the
+	// answer to either is to wait or to destroy something, so there is nothing a
+	// caller could do with the difference. Which of the two it was is on the
+	// record.
+	//
+	// It says nothing was started, because that is the fact the operator needs: a
+	// refusal that only named a limit would leave them wondering whether a session
+	// they cannot see is now running.
+	bodyActionCreateLimited = []byte(`<p class="card-outcome">No session was started: this host is at its limit for now. Destroy one, or try again shortly.</p>`)
+
+	// bodyActionCreateFailed is the fail-closed answer for a create that failed
+	// for a reason no sentinel explains, and for the orphan case with it.
+	//
+	// It deliberately does not say a shell may have survived. The record Create
+	// kept is what the reaper will collect, the caller holds no credential for it
+	// — the token was discarded — and a create that ended here started nothing the
+	// operator can drive, so the honest short answer is the one they can act on.
+	// The orphan itself is the trail's business, under the same reason the API
+	// door records for it, where an operator is already reading.
+	bodyActionCreateFailed = []byte(`<p class="card-outcome">The session could not be started.</p>`)
+)
+
+// createFromBrowser is POST /dashboard/sessions (US2, contracts/actions.md).
+//
+// Everything that authorises it has already run: handleAction wrapped this
+// handler in the gate, so layer 1 has verified an identity, the browser has said
+// the request came from this page, and the form has carried a token minted for
+// that identity. What is left is the budget, the manager, and the card.
+//
+// The validation is Manager.Create's and nothing else. ValidateName and
+// ResolveWorkDir are the rules milestone 1 wrote — cleaned, symlink-resolved,
+// contained at a path-separator boundary — and this route reaches them by calling
+// the same method POST /sessions calls (AR-008). A handler that re-checked here
+// would be a second copy of the allowlist, free to disagree with the first about
+// which directories on this host may hold an unsandboxed shell.
+//
+// The bearer token is discarded at the assignment below and never named (FR-013).
+// A session created from the browser is drivable from the browser; driving it
+// from the API would need a credential the operator was never handed, which is
+// the accepted consequence of not handing credentials to a page — a page can keep
+// one only in a URL or in something a script can read, and neither may hold the
+// key to an unsandboxed shell.
+func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
+	operator, ok := OperatorFrom(r.Context())
+	if !ok {
+		// Fail closed on the path that should not happen, the way every other
+		// handler on this door does: the gate in front puts the operator in the
+		// context, so a false here is a route wired without one.
+		AuditFrom(r.Context()).Deny(errDashboardNoOperator.Error())
+		s.refuseBrowser(w)
+		return
+	}
+
+	// The same per-caller budget POST /sessions spends, keyed by the same identity
+	// (FR-037). Both doors resolve to one owner by construction (FR-037a), so the
+	// operator has one create budget rather than one per door — a second door with
+	// a budget of its own would be a way to spend twice as fast by alternating.
+	//
+	// Ahead of the manager, so a request over budget costs no path resolution and
+	// no tmux command, which is where limitCreates sits on the other door and for
+	// the same reason. It cannot be that middleware itself: that one spends the
+	// layer-2 caller CallerFrom returns, and there is none on this door.
+	if !s.creates.allow(operator.Owner) {
+		AuditFrom(r.Context()).Deny(errCreateRateExceeded.Error())
+		s.writeFragment(w, http.StatusTooManyRequests, bodyActionCreateLimited)
+		return
+	}
+
+	// The form was parsed by the gate, under the configured body limit, and the
+	// two fields are read from PostForm rather than Form for the reason the token
+	// is: a create this daemon would accept from a query string is a session a
+	// link can start.
+	//
+	// The owner is the identity layer 1 verified and never a field. A form that
+	// could name its own owner would make every later ownership check a formality,
+	// which is why there is no owner field to read and nothing here that would
+	// read one.
+	//
+	// The token is discarded here, in the assignment: not stored, not logged, not
+	// passed on, not given a name that a later edit could reach for. It is the
+	// strongest form FR-013 has in this language.
+	created, _, err := s.sessions.Create(r.Context(), session.CreateRequest{
+		Owner:   operator.Owner,
+		Name:    r.PostForm.Get(fieldName),
+		WorkDir: r.PostForm.Get(fieldWorkDir),
+	})
+	if err != nil {
+		s.refuseBrowserCreate(w, r, err)
+		return
+	}
+
+	// The id off the daemon's own record, never a byte the form carried — the rule
+	// SetSessionID exists to keep. It is what makes a create findable in the trail
+	// rather than merely present in it.
+	AuditFrom(r.Context()).SetSessionID(created.ID)
+
+	// The card, rendered from the one projection the fleet and the session page
+	// render from (cardOf), so a session's first appearance describes it exactly as
+	// every later one will.
+	//
+	// The page token is the one the request carried, rendered back into the new
+	// card's own form rather than a second one minted here. A page is rendered for
+	// one identity at one instant and every form on it carries that render's token
+	// (T004); this card joins exactly that page, so the token that belongs on it is
+	// that page's own. Minting would give one card a later expiry than its
+	// siblings, and would put a mint *after* a session exists — where the only
+	// honest answer to a failure is a 500 for a create that succeeded. Nothing
+	// arbitrary can reach this line: admitAction verified the value as a MAC over
+	// this operator's identity before the handler ran, so what is written back is a
+	// value this daemon minted for this browser and not caller-chosen text.
+	//
+	// renderPage rather than a fragment writer of its own. What it does is what a
+	// fragment built from a template needs — built into a buffer first, so a
+	// template that failed halfway cannot leave a browser holding half a card under
+	// a 200, and answered with no body at all when it does. That answer is right
+	// here for a reason it is not right anywhere else on this route: the session was
+	// started, so a fragment saying it could not be would be a lie, and the fleet
+	// the operator reloads will show the card this render could not.
+	s.renderPage(w, r, http.StatusOK, "session-card", cardOf(*created, s.clock.Now(), r.PostForm.Get(fieldPageToken)))
+}
+
+// refuseBrowserCreate maps a Create failure onto the answer contracts/actions.md
+// gives it, and it is refuseCreate's shape on the other door: the same four
+// branches, over the same sentinels, differing only in what a browser is handed.
+//
+// The reasons are the API door's own, deliberately, exactly as refuseBrowserDestroy
+// borrows that door's. The same fact deserves the same words in the journal
+// whichever door reported it; what tells them apart is the action the middleware
+// already set — dashboard.create against session.create.
+//
+// createReason is what turns the two general sentinels into the specific one an
+// operator can act on — outside the roots, not a directory, unresolvable — and it
+// reaches the record alone. The caller gets one body per field whichever of them
+// applied, which is the half FR-012 is about.
+func (s *Server) refuseBrowserCreate(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, session.ErrInvalidName):
+		AuditFrom(r.Context()).Deny(createReason(err).Error())
+		s.writeFragment(w, http.StatusBadRequest, bodyActionCreateBadName)
+	case errors.Is(err, session.ErrInvalidWorkDir):
+		AuditFrom(r.Context()).Deny(createReason(err).Error())
+		s.writeFragment(w, http.StatusBadRequest, bodyActionCreateBadWorkDir)
+	case errors.Is(err, session.ErrTooManySessions):
+		// A full fleet is a 429 and not a 400, for the reason the API door gives:
+		// nothing the operator sent is wrong, and the only fix is to wait or to
+		// destroy something.
+		AuditFrom(r.Context()).Deny(errCreateCapReached.Error())
+		s.writeFragment(w, http.StatusTooManyRequests, bodyActionCreateLimited)
+	case errors.Is(err, session.ErrOrphanedSession):
+		AuditFrom(r.Context()).Deny(errCreateOrphaned.Error())
+		s.writeFragment(w, http.StatusInternalServerError, bodyActionCreateFailed)
+	default:
+		AuditFrom(r.Context()).Deny(errCreateRefused.Error())
+		s.writeFragment(w, http.StatusInternalServerError, bodyActionCreateFailed)
+	}
+}
+
 // writeFragment writes one action's answer: the type, the length, the status and
 // the bytes, in that order and in one place.
 //

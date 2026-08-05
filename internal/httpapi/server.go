@@ -491,6 +491,11 @@ func newServer(
 	// handleAction exists one line below handleBrowser rather than instead of it:
 	// everything above only reads, and a read is authorised by layer 1 alone.
 	s.handleAction(patternDashboardDestroy, audit.ActionDashboardDestroy, s.destroyFromBrowser)
+	// The second, and the one that starts an unsandboxed shell rather than ending
+	// one. It goes through handleAction like the destroy above and unlike the
+	// pages: a route that spawns a Claude session on an ambient Access cookie alone
+	// is the exact request a hostile third-party page can cause a browser to send.
+	s.handleAction(patternDashboardCreate, audit.ActionDashboardCreate, s.createFromBrowser)
 	// One route per embedded asset, so `/static/` names exactly the files the
 	// binary carries and a path that is not one of them is a path nothing claims
 	// (contracts/dashboard.md's route table; see loadAssets for why a wildcard is
