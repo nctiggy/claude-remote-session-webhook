@@ -14559,3 +14559,110 @@ with a real audit sink — `destroyer`, `creator`, `renamer` and `compactor`, ea
 method/path/site/form — so the corpus can be built by driving them rather than by hand-rolling
 requests. Finding 408's hostile-name row belongs in the same task: a create or rename carrying a
 name built from a secret-looking literal, asserting the record never quotes it back.
+
+---
+
+## Iteration 101 (milestone 3, iteration 21) — 2026-08-05 10:00
+
+**Did:** **T021** — extended `internal/audit/leak_test.go` to the browser door's mutating half.
+New in that file: `browserAction` + `act` (a form-encoded POST through the real router carrying a
+real assertion, `Sec-Fetch-Site: same-origin` and a real page token), `hiddenProof`/`cardDestroyForm`
++ `proofFrom`/`idFrom` (read the token and the new session's id back out of rendered markup),
+`driveTheActionRoutes` (twelve requests over all four routes), `watchTheFleet`, four new marks, six
+new rows in the honesty test's action list and two in its "reached" table.
+
+**Six things worth not re-deriving.**
+
+1. **Iteration 100's handover was wrong about the helpers, and the reason is structural.**
+   `destroyer`, `creator`, `renamer` and `compactor` are in `package httpapi` (internal tests,
+   because the gate under test is an unexported method). `leak_test.go` is `package audit_test` and
+   imports `internal/httpapi` — the one import direction that makes the file possible at all — so it
+   can never reach them. The requests are hand-rolled here, which is the same reason `sendTo`
+   computes its HMAC by hand rather than calling the auth package.
+2. **The page token cannot be a fixture constant, so it is collected from the render.** `pageKey` is
+   32 bytes from `crypto/rand` at startup and is served by no route, so nothing outside
+   `internal/httpapi` can mint one. `proofFrom` regexes the hidden field out of `r.fleetBody` — which
+   is also the honest thing: it is exactly what a browser does, and it means every admitted action
+   below satisfies the gate rather than disabling it (AR-005). A forged, *marked* token drives the
+   refusal half.
+3. **`refuseBrowserCompact` is unreachable through the route's not-found arm — the first mutation
+   proved it by not failing.** `compactFromBrowser` answers a bad id from its own `View` error path
+   and never enters that switch, so a corpus that only drives an unknown id leaves the whole
+   refusal map undriven. The fix is `r.tmux.FailOp(tmuxctl.OpPaste, errHostError)` around one
+   compact, which reaches the `default` arm *and* puts the marked host error in scope on this route.
+   **Any future "does this route leak" corpus should check which arm it actually lands in.**
+4. **Pane escape sequences need two spellings, and they catch different sinks.** The audit trail is
+   JSON, where an encoder writes U+001B as a four-hex-digit backslash escape and the raw byte never
+   appears; the daemon's log output is plain text, where it does. Both marks were falsified separately (see below), and the
+   honesty test now encodes the raw sequence with `encoding/json` and asserts the JSON mark is the
+   spelling that comes out — a mark nothing can match is a mark that passes for ever.
+   `paneEscapeJSON` is built as `` `\u` + "001b[31m" `` deliberately: written whole it is a
+   backslash-u escape, and the tool hazard at line 597 of this file would silently turn it into the
+   byte it is supposed to be looking for the *spelling* of.
+5. **The fleet stream is ended by its heartbeat, not by an event, and that is a choice.** `follow`
+   writes nothing between changes, so `streamPeer` (which cancels on the first write) is released by
+   the 1-second `streamInterval` tick. Publishing a change instead would mean a second goroutine
+   while this one is blocked in `ServeHTTP`, and what the sweep needs is the record written at the
+   open — before either could arrive. Cost: ~1s per `driveEveryOperation`, so ~2s on the package.
+   T015 drives the event path.
+6. **The browser's actions run against a session the browser itself created.** The API's session
+   has to survive to `DELETE /sessions/{id}` at the end of `driveEveryOperation`; a browser destroy
+   would end it half way through. `idFrom` reads the new id out of the card the create answered
+   with, via the destroy form's `action`.
+
+**Must-fail conditions, verified by mutation rather than asserted.** Each mutation was reverted:
+
+- `gateAction`'s `ra.Deny(err.Error())` → `+ ": " + r.PostForm.Get(fieldPageToken)` → **red**, `a
+  page token a caller presented appears in the audit trail`. This catches the *forged* token only;
+  the admitted requests never reach a `Deny`.
+- `refuseBrowserCreate`'s bad-name arm → the same suffix → **red**, `the page token a render handed
+  a browser appears in the audit trail`. That is the mark the daemon authored rather than the
+  fixture, and it needed a driven path where a real token is in scope.
+- `refuseBrowserRename`'s bad-name arm → `+ ": " + r.PostForm.Get(fieldName)` → **red**, `the
+  session name a caller chose`. Finding 408's row.
+- `refuseBrowserCompact`'s `default` arm → `+ ": /compact"` → **red**, `the text a compact
+  delivered`. On the *not-found* arm the same mutation stayed green — see point 3.
+- `Manager.Output` dropping `tmuxctl.Strip` **plus** `writeJSON` reporting the payload → **red**, `a
+  pane's escape sequences as JSON writes them appears in the daemon's log output`; with `%v` on the
+  view struct instead of `%s` on the marshalled bytes → **red**, `a pane's escape sequences, raw`.
+  Two edits are needed because `Strip` runs at exactly one line and nothing downstream of it holds a
+  control byte — which is what these marks really guard: the moment a *raw* capture reaches a sink.
+- `r.watchTheFleet` removed from `driveTheBrowserDoor` → **`TestTheLeakSuiteReallyDrivesTheDaemon`
+  red** at `the run emitted no fleet.open record`.
+
+**Findings:**
+
+423. **`refuseBrowserRename`'s not-found arm and `refuseBrowserCompact`'s are both undriven by any
+    corpus, and neither is reachable without the reaper racing a request.** Finding 409 already
+    named `bodyActionRenameFailed`/`errRenameRefused` as unreachable; this is the same shape one
+    level down. They are correct to keep — fail-closed defaults — but no test in this repo executes
+    them, so a wrong `resolveReason` there would ship. Noting rather than fixing: manufacturing the
+    race needs a seam in `Store.Touch` that AR-008 puts outside this task.
+424. **The browser destroy in this corpus never drives the 409.** The API door's unverified-teardown
+    case is swept (`SurviveKill` on the second session), but `refuseBrowserDestroy`'s
+    `ErrOrphanedSession` arm is not — it would need a third session created through the form. It
+    borrows the API door's own reason string, which is already swept, so nothing new is in scope
+    there; a later widening of that arm's reason would need this row.
+425. **Findings 400–412 and 414–422 carry over.** 416 is **closed** by this task; 408 is **closed**.
+    306 still needs the operator's answer; 342, 350, 374, 378, 401, 402, 405, 409, 419, 420 and 421
+    still stand; 360, 367, 371, 372, 395 and 397 are T022's. Iteration 90's **NEEDS CLARIFICATION on
+    T023 vs T010 is still unanswered.** 340's lint caveat still applies: `golangci-lint` on PATH is
+    v1.62.2 and reads this repo's v2 config by running zero linters, so `golangci-lint run` is a
+    green that means nothing, and `go install` of the v2 binary is not permitted in this environment.
+    The substitute run was `golangci-lint run --no-config --disable-all -E
+    bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags tmux,dev ./...`,
+    clean with no new `//nolint`. `go build ./...`, `go test -count=1 ./...`, `go test -race
+    ./internal/audit`, `gofmt -l` and `go vet` under all four tags (default, tmux, dev, quickstart)
+    are clean, and the pre-commit gitleaks hook passed on the staged diff — worth noting because
+    `hostileRename` is deliberately credential-shaped. The tagged *suites* were not run: this task
+    touches one test file, drives tmux only through the fake, and changes neither `internal/tmuxctl`,
+    `cmd/crswd`, nor the dev bypass — so `go vet -tags` is the check `AGENTS.md` names for that case.
+    T023 runs them for real.
+
+**Left:** T022 and T023. Next is **T022** — amend `docs/auth-and-sessions.md`, `docs/security.md`
+and `docs/components.md`, all three of which still describe a browser that can only read. What it
+needs from here: the shipped surface is four `POST /dashboard/…` routes plus
+`GET /dashboard/fleet/stream`, admitted by `authorizeAction` (layer 1 → `crossSiteAction` → page
+token) in `internal/httpapi/browser.go`; the page token is stateless and documented at the top of
+`internal/httpapi/pagetoken.go`; the six new audit actions are in `internal/audit/audit.go`. Findings
+360, 367, 371, 372, 395 and 397 are the specific doc lines earlier iterations flagged as wrong.
