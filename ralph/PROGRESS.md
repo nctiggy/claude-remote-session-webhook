@@ -13661,3 +13661,134 @@ must end the response so T014's page can say so); the payload is the id alone, s
 **no page token**, with one `fleet.open` record per open; and iteration 90's learning 1 still
 applies to any byte-for-byte page comparison in its fixture, where two servers mean two random
 `pageKey`s. The NEEDS CLARIFICATION above is T013's to answer or to carry.
+
+## Iteration 93 (milestone 3, iteration 13) — 2026-08-05 07:13
+
+**Did:** **T013** — `internal/httpapi/fleet.go`, `GET /dashboard/fleet/stream`, per
+`contracts/fleet-stream.md`. The route, `fleetPayload`, `fleetEvent` (the framing), `fleetStream`
+(the handler) and `stream.follow` (the two-source loop), registered through `handleBrowser` under
+`audit.ActionFleetOpen`. Named tests `TestFleetStreamOwnershipFiltered`, `TestFleetPayloadIsIdOnly`
+and `TestOneRecordPerOpen` in `internal/httpapi/fleet_test.go`, plus
+`TestTheFleetStreamAdmitsOnlyTheDashboardsOwnOpen` (the contract's two authorisation rows, six
+cases) and `TestTwoTabsOnOneFleetBothHearTheChange` (finding 384, now closed).
+
+**It is the pane stream with the reader replaced by a subscription, and that is the whole of why
+the reaper is covered.** Nothing about a reap is a request, so a route that polled would have to
+re-read and diff the store every tick — the fleet snapshot R6 rejected, moved onto the server.
+`Manager.Subscribe` now has a production caller, which closes finding 380.
+
+**All six must-fail conditions were run, not reasoned about.** Each mutation applied, the named
+tests run, the mutation reverted:
+
+1. **The owner comparison removed from `fleetEvents.publish`** → `TestFleetStreamOwnershipFiltered`
+   red on the *first* change to arrive being the stranger's session. The order is the test: publish
+   runs on the goroutine that changed the fleet, so an unfiltered stream queues the foreign event
+   ahead of the owned one.
+2. **`fleetPayload` given an `Owner` field** → `TestFleetPayloadIsIdOnly` red on the wire bytes.
+3. **A record emitted per event** (`follow` given a `record func()`, `ra.emitted` reset per event) →
+   `TestOneRecordPerOpen` red with 3 `fleet.open` records for one open and two changes.
+4. **The `crossSite` call disabled** → three rows of the admission table red: `cross-site`,
+   `same-site` and `none` all answered 500 (admitted) instead of the uniform 401.
+5. **The route registered on the bare mux instead of `handleBrowser`** (layer 1 skipped) → every
+   row of the admission table red, most of them on `0 audit records`.
+6. **`publish` stopping after the first successful send** → `TestTwoTabsOnOneFleetBothHearTheChange`
+   red — the second tab read 300 heartbeats and no change.
+
+**Learned:**
+
+1. **A recorder-driven open of this route answers 500 when it is *admitted*.** `openStream` lifts
+   the write deadline through `http.ResponseController`, which an `httptest.ResponseRecorder`
+   cannot do, so the whole authorisation table is drivable without binding a socket:
+   401 = refused, 500 = admitted, and nothing else means either. That is `askToWatch`'s trick from
+   milestone 2 and it transfers unchanged.
+2. **The handler subscribes before `openStream`, so a test that opens the stream and *then* causes
+   a change has no race.** `http.Client.Do` returns once the head is flushed, and the head is
+   flushed after the subscription exists. No sleeps and no retry loops are needed anywhere in
+   `fleet_test.go`.
+3. **`plant` does not emit** — it writes through `Store.Add` directly rather than through the
+   manager — so a fixture can stage a fleet silently and the first event on the wire is the one the
+   test caused. `Manager.Create`/`Destroy` are the ways to make one.
+4. **The "one record per open" count has to be taken after `Shutdown`.** The record is written at
+   the open (FR-016a) and the middleware's deferred emit runs when the handler unwinds, which is
+   whenever the browser goes away and on net/http's goroutine — a count taken while the stream is
+   open can only ever say "no second record *yet*". `TestOneStreamRequestLeavesExactlyOneRecordBehind`
+   set that precedent and it is the same here.
+5. **A first attempt at mutation 3 (an inline `for ev := range events` with no `ctx`/`closing`
+   select) failed the test on a 10s shutdown timeout rather than on the record count.** A mutation
+   that also breaks the ending is not a test of the claim; the callback form is.
+
+**NEEDS CLARIFICATION — carried from iteration 92, still unanswered: who emits the `changed` when a
+session goes *idle*?**
+
+`contracts/fleet-stream.md` has a contract test row "Idle deadline crossed → one `changed`".
+**Nothing in this milestone satisfies it, and no remaining task owns it.** T012 emits every
+transition the manager *causes*; the running→idle direction is caused by time passing with no code
+running at all. Iteration 92 suggested this stream could compute `DisplayState` per tick, since it
+wakes once a second anyway. **This iteration did not, for a reason iteration 92 could not see:**
+the manager already emits `changed` on idle→running, so a stream that also compared displayed state
+per tick would emit a *second* `changed` for that direction and break the contract's "exactly one"
+rows — and an asymmetric comparison firing only on running→idle is a rule no document names. It
+would also mean listing the owner's fleet once per second per connection, which no research entry
+covers. **The operator should rule.** T015's own list does not include this row either, so it
+belongs to nobody; T013 is ticked for the scope `tasks.md` names, with this row explicitly unmet.
+
+**Findings:**
+
+386. **Discrepancy inside `contracts/fleet-stream.md` itself.** Its authorisation section says
+    "Sec-Fetch-Site must be exactly `same-origin`" and, one line above, "the existing `crossSite(r)`"
+    and "Identical to the pane stream". Those disagree: `crossSite` *admits* an absent header on
+    purpose (a non-browser client sends none). This iteration used `crossSite`, which is what both
+    `tasks.md` and the contract name by function, and what "identical to the pane stream" requires.
+    It is safe on this route for the reason it is safe on the pane stream — a hostile page's fetch
+    always carries the header, and the absent case is a curl that already holds the operator's
+    credential. **`crossSiteAction` (absent refuses) is the other reading**, and if the operator
+    wants it, the change is one identifier and one row of the admission table.
+387. **The fleet stream is not counted against `CRSW_MAX_STREAMS`, and no document says whether it
+    should be.** The contract's response section lists no 429 and neither `tasks.md` nor the plan
+    mentions a cap, so adding one would have been inventing a requirement. But it is a second class
+    of long-lived connection on this daemon, and `streamCap`'s own comment says what it bounds is
+    connections doing periodic work. The fleet stream does no exec work — its cost is a heartbeat
+    write and a channel — so this is a bound question rather than a load question. **Principle VI
+    says bounds are structural; an operator ruling would settle it.**
+388. **A dropped subscriber ends the response with no farewell event, deliberately.** The contract
+    names three events and none is an ending, so a fourth invented here would be one no page has a
+    rule for. A connection that simply ends is what every `EventSource` reports, which is what
+    FR-020 needs T014's page to be able to say — and the automatic reconnection that follows is the
+    right recovery (re-authorise, re-subscribe, re-fetch) rather than the scanner the pane stream's
+    `event: end` exists to prevent. **T014 must not assume a farewell.**
+389. **Nothing yet drives a *severed* fleet stream.** The dropped-subscriber path (`fleetBacklog`
+    exceeded) is covered in `manager_test.go` at the channel and nowhere at the wire, because
+    filling a 64-event backlog needs a reader that has stopped reading while the daemon keeps
+    changing the fleet. **T014 owns the page half (FR-020) and T015 the stream half**; neither is
+    written.
+390. **The heartbeat is not suppressed by an event written a moment earlier.** One comment per
+    second per open dashboard, on a connection just proved alive. Suppressing it would need a timer
+    reset from two places and would make a quiet stream's cadence depend on when the fleet last
+    changed. Recorded because T015 asserts "a quiet stream past one second yields a heartbeat", and
+    a *busy* stream yields both.
+391. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307, 311–315,
+    317–323, 325, 327–328, 330–333, 335–379, 381–383, 385 carry over unchanged.** 380 and 384 are
+    closed by this iteration. 306 still needs the operator's answer; 342's `research.md` R1
+    discrepancy still wants confirming; 350's missing pin between the two not-found bodies still
+    stands; 360, 367, 371 and 372 are all T022's; 374's unowned swap is still unowned; 378's two
+    drifting checklists still want a ruling. Iteration 90's **NEEDS CLARIFICATION on T023 vs T010 is
+    still unanswered.** 340's lint caveat still applies: `golangci-lint` on PATH is v1.62.2 and
+    reads this repo's v2 config by running zero linters, so `golangci-lint run` is a green that
+    means nothing. The substitute run was `golangci-lint run --no-config --disable-all -E
+    bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags tmux,dev ./...`,
+    clean with no new `//nolint`. `go build ./...`, `go test -count=1 ./...`, `go test -race
+    ./internal/httpapi ./internal/session`, `go test -tags tmux ./...`, `go test -tags dev ./...`,
+    **`go test -tags quickstart ./cmd/crswd` (ran green, 27s)**, `gofmt -l`, `goimports -l` and
+    `go vet` under all four tags clean too. CI's pinned v2.12.2 is the check that counts.
+
+**Left:** T014–T023. Next is **T014** — `web/static/crswd.js` + `web/templates/partials/`:
+subscribe to `GET /dashboard/fleet/stream`, re-fetch **only the affected card** on each event, and
+say so when the stream is severed (FR-020), with `TestStreamLossIsVisible` in
+`internal/httpapi/partials_test.go`. Four things it needs from here: the payload is `{"id":"..."}`
+and the event *name* (`appeared`/`changed`/`vanished`) is what says which of the three happened, so
+`addEventListener` per name rather than `onmessage`; a severed stream arrives as an `EventSource`
+error and **not** as an event (finding 388), and the reconnection after it is automatic and
+correct; the card to re-fetch is at `GET /sessions/{id}/view` — but finding 374's unowned swap is
+still unowned, and a bare `<article>` fragment is what the create route already answers with; and
+FR-022 forbids animating an update, which #23's universal `transition: none` already covers as long
+as nothing new escapes it.
