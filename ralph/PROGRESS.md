@@ -12445,4 +12445,73 @@ the contract names: `go build ./...`, `go vet ./...`, `go test ./...`, `golangci
 finding 306's clarification, and the unowned documentation-drift findings (319, 322, 325,
 327, 333).
 
-RALPH_COMPLETE
+RALPH_COMPLETE — milestone 2 (T001–T034). Annotated rather than left bare so it no longer
+matches `loop.sh`'s `grep -qxF`, which scans the whole notebook: see iteration 81, finding 335.
+
+---
+
+## Iteration 81 (milestone 3, iteration 1) — 2026-08-05 04:18
+
+**Did:** **T001** — the six audit actions milestone 3 speaks: `dashboard.create`,
+`dashboard.destroy`, `dashboard.rename`, `dashboard.compact`, `dashboard.reject`,
+`fleet.open`, in `internal/audit/audit.go`. Vocabulary only; `Record`'s fields are untouched,
+which is the point of FR-016 freezing the shape. `TestDashboardActionsAreDistinctFromAPI`
+in `internal/audit/audit_test.go` asserts each spelling and that none collides with the
+fourteen the trail already spoke.
+
+**The must-fail condition was run, not asserted in prose.** Two ways, because the reuse can
+arrive in two shapes:
+
+1. `ActionDashboardDestroy Action = "session.destroy"` alone → **build failure**, not a test
+   failure: `TestEmitAcceptsEveryDocumentedAction`'s map is keyed by the constants, and Go
+   rejects a duplicate constant key in a map literal. That test's own comment predicted this
+   ("two constants sharing one spelling a compile error") and it holds for the six new ones
+   now that they are in the map.
+2. The same, plus the two test maps "fixed" to agree with it — the path a hurried later
+   change actually takes → `TestDashboardActionsAreDistinctFromAPI` fails with
+   `"session.destroy" is also ActionSessionDestroy`. This is why the new test keys on the
+   literal *and* looks the constant up in the existing set: either check alone has a hole
+   the other closes.
+
+Both reverted; `git diff --stat` is 102 insertions and zero deletions in the two files.
+
+**Learnings for whoever comes next:**
+
+1. **`TestEmitAcceptsEveryDocumentedAction` is not optional to extend.** Its name is a claim
+   and its map-literal keying is load-bearing — a new action left out of it silently gives up
+   the compile-time collision check for that action. Add the row in the same task that adds
+   the constant.
+2. **The linter is v1 on this host, so `golangci-lint run` proved nothing** (the session-start
+   hook's warning, #26). `go install …/v2/cmd/golangci-lint@v2.12.2` is not on the Bash
+   allowlist and was refused, so the substitute was `golangci-lint run --no-config
+   ./internal/audit/...`, which makes the v1 binary run its own defaults (errcheck, gosimple,
+   govet, ineffassign, staticcheck, unused) instead of reading a v2 config it cannot parse.
+   Clean. That is a real signal on a subset of the v2 linter set, not the contract's check —
+   CI's pinned v2.12.2 is still the one that counts. Use this fallback rather than reporting a
+   silent v1 run as green.
+3. **The action-name questions are already answered in `research.md` R5, not just in
+   `tasks.md`.** R5 carries the rejected alternative (reuse `session.create` with a caller
+   field) and the grep argument behind the prefix, which is what the doc comments cite.
+
+**Findings:**
+
+335. **`loop.sh` would have stopped before milestone 3's second iteration.** `grep -qxF
+    "RALPH_COMPLETE"` scans the entire notebook, and milestone 2's terminator was still a
+    line of its own — so handing the loop to a fresh plan (58a4ba7) left a loop that exits
+    after one iteration regardless of the plan. Fixed here by annotating that line so it no
+    longer matches exactly, which keeps the record of milestone 2's completion while freeing
+    the signal. **A future milestone handover must do the same**, or `loop.sh` should compare
+    only the file's last line — the latter is the real fix and is not this task's to make.
+336. **`dashboard.compact`'s constant is the one an implementer will be tempted to misuse.**
+    T019/T020 forbid the delivered text from being audited, and nothing in the `audit`
+    package can enforce that — `Reason` is a free string. The leak corpus (T021) is where it
+    becomes checkable, which is why T021 exists; noted so it is not assumed to be covered
+    already.
+337. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307,
+    311–315, 317–323, 325, 327–328, 330–333 carry over unchanged** from milestone 2. 306 still
+    needs the operator's answer, and the three browser-visual checks (SC-009/010/011) still
+    need a human. Nothing in this iteration touched them.
+
+**Left:** T002–T023. Next is **T002 🔒** — `internal/httpapi/pagetoken.go`, the stateless page
+token, the first of the three security-critical tasks the plan says to have reviewed rather
+than to trust on green.

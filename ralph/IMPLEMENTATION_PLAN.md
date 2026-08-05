@@ -90,7 +90,7 @@ if one looks wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and st
 
 ### Setup
 
-- [ ] T001 `internal/audit/audit.go`: six new constants — `dashboard.create`, `dashboard.destroy`, `dashboard.rename`, `dashboard.compact`, `dashboard.reject`, `fleet.open`. `dashboard.reject` is deliberately **not** `access.reject`: an identity that passed layer 1 and then failed the cross-site check is a different and more alarming event than one that never got in
+- [x] T001 `internal/audit/audit.go`: six new constants — `dashboard.create`, `dashboard.destroy`, `dashboard.rename`, `dashboard.compact`, `dashboard.reject`, `fleet.open`. `dashboard.reject` is deliberately **not** `access.reject`: an identity that passed layer 1 and then failed the cross-site check is a different and more alarming event than one that never got in
 
 ### Foundation — the cross-site gate (blocks every story)
 
