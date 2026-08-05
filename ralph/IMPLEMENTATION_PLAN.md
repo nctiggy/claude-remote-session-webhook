@@ -90,50 +90,50 @@ if one looks wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and st
 
 ### Setup
 
-- [ ] T001 `internal/audit/audit.go`: six new constants — `dashboard.create`, `dashboard.destroy`, `dashboard.rename`, `dashboard.compact`, `dashboard.reject`, `fleet.open`. `dashboard.reject` is deliberately **not** `access.reject`: an identity that passed layer 1 and then failed the cross-site check is a different and more alarming event than one that never got in
+- [x] T001 `internal/audit/audit.go`: six new constants — `dashboard.create`, `dashboard.destroy`, `dashboard.rename`, `dashboard.compact`, `dashboard.reject`, `fleet.open`. `dashboard.reject` is deliberately **not** `access.reject`: an identity that passed layer 1 and then failed the cross-site check is a different and more alarming event than one that never got in
 
 ### Foundation — the cross-site gate (blocks every story)
 
-- [ ] T002 🔒 `internal/httpapi/pagetoken.go`: mint and verify, **stateless** — no map, no sweep. `<expiry>.<HMAC-SHA256(pageKey, identity + "\n" + expiry)>`, `pageKey` 32 random bytes at startup, unrelated to `CRSW_SHARED_SECRET`, never served. `hmac.Equal`, never `==`. Four tests, each with its must-fail condition
-- [ ] T003 🔒 `internal/httpapi/browser.go`: the gate, in the exact order layer 1 → `crossSite` → token, before any handler and before any state change. **Reuse `crossSite` from `stream.go`; do not add an `Origin` check.** One uniform `403`, byte-identical across all five causes including `Content-Length`; the failed check named **server-side only**
-- [ ] T004 🔒 `internal/httpapi/dashboard.go` + templates: one token per render, bound to that request's verified identity, in a hidden `crsw_page_token` field. Never in a URL, a cookie, a `data-` attribute, or a log
-- [ ] T005 `internal/httpapi/actions.go`: the shared uniform `404` for unknown, not-owned, and no-longer-exists. One function, no reason parameter — there is nothing a caller could pass that may change a byte
+- [x] T002 🔒 `internal/httpapi/pagetoken.go`: mint and verify, **stateless** — no map, no sweep. `<expiry>.<HMAC-SHA256(pageKey, identity + "\n" + expiry)>`, `pageKey` 32 random bytes at startup, unrelated to `CRSW_SHARED_SECRET`, never served. `hmac.Equal`, never `==`. Four tests, each with its must-fail condition
+- [x] T003 🔒 `internal/httpapi/browser.go`: the gate, in the exact order layer 1 → `crossSite` → token, before any handler and before any state change. **Reuse `crossSite` from `stream.go`; do not add an `Origin` check.** One uniform `403`, byte-identical across all five causes including `Content-Length`; the failed check named **server-side only**
+- [x] T004 🔒 `internal/httpapi/dashboard.go` + templates: one token per render, bound to that request's verified identity, in a hidden `crsw_page_token` field. Never in a URL, a cookie, a `data-` attribute, or a log
+- [x] T005 `internal/httpapi/actions.go`: the shared uniform `404` for unknown, not-owned, and no-longer-exists. One function, no reason parameter — there is nothing a caller could pass that may change a byte
 
 ### US1 — Destroy from the browser (P1, MVP)
 
-- [ ] T006 `POST /dashboard/sessions/{id}/destroy`: requires `confirm=yes` (FR-029), verified teardown, `409` with the record **retained** when it cannot be verified. **No force path**
-- [ ] T007 `web/templates/partials/session-card.html` + CSS: the control **outside** the card's single anchor. Outcome as text, never colour alone; a failure says so rather than silently reverting
-- [ ] T008 US1 acceptance: `GET` on the path is an unknown route, never `405`. **Each half of the defence disabled separately, the other still refuses.** AR-005 applies hardest here
+- [x] T006 `POST /dashboard/sessions/{id}/destroy`: requires `confirm=yes` (FR-029), verified teardown, `409` with the record **retained** when it cannot be verified. **No force path**
+- [x] T007 `web/templates/partials/session-card.html` + CSS: the control **outside** the card's single anchor. Outcome as text, never colour alone; a failure says so rather than silently reverting
+- [x] T008 US1 acceptance: `GET` on the path is an unknown route, never `405`. **Each half of the defence disabled separately, the other still refuses.** AR-005 applies hardest here
 
 ### US2 — Create from the browser (P2)
 
-- [ ] T009 `POST /dashboard/sessions`: reuse milestone 1's validation by **calling it**, not reimplementing it. The four `work_dir` refusals share **one** message — distinguishing "does not exist" from "not permitted" is a filesystem oracle. **The bearer token is discarded, never served**
-- [ ] T010 The create form; submit disables on submission — the only genuine idempotence exposure of the four actions
-- [ ] T011 US2 acceptance: `429` at the cap with existing sessions untouched, one record per attempt including refusals
+- [x] T009 `POST /dashboard/sessions`: reuse milestone 1's validation by **calling it**, not reimplementing it. The four `work_dir` refusals share **one** message — distinguishing "does not exist" from "not permitted" is a filesystem oracle. **The bearer token is discarded, never served**
+- [x] T010 The create form; submit disables on submission — the only genuine idempotence exposure of the four actions
+- [x] T011 US2 acceptance: `429` at the cap with existing sessions untouched, one record per attempt including refusals
 
 ### US3 — The fleet stays current (P3, closes #15)
 
-- [ ] T012 `internal/session/manager.go`: an event source covering **every** path that changes the fleet — including the reaper and startup adoption. Non-blocking: a slow subscriber must never delay a destroy or shutdown. The reaper is the case most likely to be missed and is exactly what #15 reported
-- [ ] T013 `internal/httpapi/fleet.go`: `GET /dashboard/fleet/stream`. Layer 1 + `crossSite`, **no page token** — it mutates nothing. Payload is `{"id":"..."}` only. Ownership filtered **before the event is written**. One `fleet.open` record per open, not per event
-- [ ] T014 `web/static/crswd.js` + templates: re-fetch only the affected card; a severed stream **says so** rather than presenting a fleet it cannot vouch for
-- [ ] T015 US3 acceptance: API create yields `appeared`, a reaper destroy yields `vanished`, a quiet stream yields a heartbeat comment
+- [x] T012 `internal/session/manager.go`: an event source covering **every** path that changes the fleet — including the reaper and startup adoption. Non-blocking: a slow subscriber must never delay a destroy or shutdown. The reaper is the case most likely to be missed and is exactly what #15 reported
+- [x] T013 `internal/httpapi/fleet.go`: `GET /dashboard/fleet/stream`. Layer 1 + `crossSite`, **no page token** — it mutates nothing. Payload is `{"id":"..."}` only. Ownership filtered **before the event is written**. One `fleet.open` record per open, not per event
+- [x] T014 `web/static/crswd.js` + templates: re-fetch only the affected card; a severed stream **says so** rather than presenting a fleet it cannot vouch for
+- [x] T015 US3 acceptance: API create yields `appeared`, a reaper destroy yields `vanished`, a quiet stream yields a heartbeat comment
 
 ### US4 — Rename (P4)
 
-- [ ] T016 `internal/session/manager.go`: `Rename` — record only. **`TmuxName` is not touched**
-- [ ] T017 `POST /dashboard/sessions/{id}/rename`, control outside the anchor
-- [ ] T018 Rename, then run **every** identifier-based operation and assert unchanged behaviour
+- [x] T016 `internal/session/manager.go`: `Rename` — record only. **`TmuxName` is not touched**
+- [x] T017 `POST /dashboard/sessions/{id}/rename`, control outside the anchor
+- [x] T018 Rename, then run **every** identifier-based operation and assert unchanged behaviour
 
 ### US5 — Compact (P5)
 
-- [ ] T019 `internal/session/manager.go`: `Compact` — `/compact` + newline via `load-buffer` + `paste-buffer -d`, **never `send-keys`**. Touches `LastActivity`. The delivered text is never audited
-- [ ] T020 `POST /dashboard/sessions/{id}/compact` → `202`. **Says delivered, never compacted**
+- [x] T019 `internal/session/manager.go`: `Compact` — `/compact` + newline via `load-buffer` + `paste-buffer -d`, **never `send-keys`**. Touches `LastActivity`. The delivered text is never audited
+- [x] T020 `POST /dashboard/sessions/{id}/compact` → `202`. **Says delivered, never compacted**
 
 ### Ship it
 
-- [ ] T021 `internal/audit/leak_test.go`: extend the corpus to all four action routes and the fleet stream. Nothing yet proves the *action* routes do not leak
-- [ ] T022 Amend `docs/auth-and-sessions.md`, `docs/security.md` and `docs/components.md` — all three describe a browser that can only read
-- [ ] T023 Run `specs/003-dashboard-actions/quickstart.md` end to end plus both tagged suites, and confirm milestone 1 and 2 acceptance passes **unchanged**. A story needing edits to accommodate this milestone is a regression to fix in the code, not in the test
+- [x] T021 `internal/audit/leak_test.go`: extend the corpus to all four action routes and the fleet stream. Nothing yet proves the *action* routes do not leak
+- [x] T022 Amend `docs/auth-and-sessions.md`, `docs/security.md` and `docs/components.md` — all three describe a browser that can only read
+- [x] T023 Run `specs/003-dashboard-actions/quickstart.md` end to end plus both tagged suites, and confirm milestone 1 and 2 acceptance passes **unchanged**. A story needing edits to accommodate this milestone is a regression to fix in the code, not in the test
 
 ---
 

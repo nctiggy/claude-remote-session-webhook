@@ -537,6 +537,37 @@ func (st *Store) SetCredential(id string, hash [32]byte) error {
 	return nil
 }
 
+// SetName replaces a record's display label (FR-015). It is the only writer of
+// Name after Add, and it writes no other field.
+//
+// What it cannot reach is the point rather than an omission. TmuxName derives
+// from the ID, and there is no parameter here that could carry a new one — so
+// "a rename does not touch tmux" is a property of this signature rather than of
+// its body, and stays true however the body is later edited.
+//
+// The name is not validated here. ValidateName runs in Manager.Rename, which is
+// the same call Create makes, so there is one check rather than two free to come
+// to disagree about what a name may be.
+//
+// A dead session is refused, as Touch and SetCredential refuse one: its record is
+// waiting to be collected, and a new label on it would be a card the dashboard is
+// about to stop drawing under a name nobody has seen before.
+func (st *Store) SetName(id, name string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	s, ok := st.byID[id]
+	if !ok {
+		return fmt.Errorf("set name: %w", ErrSessionNotFound)
+	}
+	if s.State == StateDead {
+		return fmt.Errorf("set name: %w", ErrSessionDead)
+	}
+	s.Name = name
+	st.byID[id] = s
+	return nil
+}
+
 // Delete drops a record and its token hash (FR-020).
 //
 // The record is overwritten before it is removed so the hash bytes do not sit in

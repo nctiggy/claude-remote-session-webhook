@@ -137,6 +137,19 @@ func (e *Exec) Paste(ctx context.Context, name string, payload []byte) error {
 // CapturePane returns tmux's rendered screen verbatim. It is already plain text
 // because argvCapturePane never passes -e; the defensive stripper is a separate
 // second line of defence.
+//
+// The size of what comes back is bounded, but only by argv: argvCapturePane
+// passes -p with no -S or -E, so tmux returns the *visible screen* rather than
+// the scrollback behind it. That is why callers can size a buffer from the
+// result's length without a limit of their own — it is a screen, not a history,
+// and a detached session keeps tmux's default dimensions.
+//
+// Adding -S to capture scrollback would remove that bound silently, and every
+// caller downstream would keep assuming it. If that is ever wanted, give this
+// function an explicit byte limit in the same change rather than after it
+// (issue #41). CodeQL flags the downstream allocation for overflow, which is
+// unreachable — a len() cannot overflow when the heap already holds the data it
+// measures — but the reason the allocation is *small* lives here, not there.
 func (e *Exec) CapturePane(ctx context.Context, name string) (string, error) {
 	stdout, stderr, err := e.run(ctx, argvCapturePane(name), nil)
 	if err != nil {

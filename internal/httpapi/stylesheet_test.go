@@ -335,11 +335,39 @@ var templateAction = regexp.MustCompile(`(?s)\{\{.*?\}\}`)
 
 const composedClass = "\x00"
 
-// renderedClasses is every class name the embedded templates put in the markup.
+// actionFragments is the markup an action route writes for itself.
+//
+// Every other byte a browser is handed comes out of web/templates, and the
+// sweeps below walk that tree — but an action's answer replaces the card it
+// acted on, and by the time a destroy has an answer there is no record left to
+// render a card from, so those four sentences are composed in Go (actions.go).
+// They are markup all the same. Without them here, a class only a fragment
+// carries is styled by a rule "no template renders" in one direction and served
+// unstyled in the other, and both failures look like the opposite mistake.
+// A create's own four join them for the same reason, from the other direction: a
+// refused create has no record to render a card from, so what the operator is
+// told is composed in Go as well. Every action route this milestone adds owes
+// this map its answers, or the class they carry is invisible to both sweeps.
+var actionFragments = map[string][]byte{
+	"the destroyed marker":            bodyActionDestroyed,
+	"the unconfirmed refusal":         bodyActionUnconfirmed,
+	"the unverified teardown":         bodyActionTeardownUnverified,
+	"the failed destroy":              bodyActionDestroyFailed,
+	"the action not-found":            bodyActionNotFound,
+	"the refused session name":        bodyActionCreateBadName,
+	"the refused working directory":   bodyActionCreateBadWorkDir,
+	"the create refused by the bound": bodyActionCreateLimited,
+	"the failed create":               bodyActionCreateFailed,
+}
+
+// renderedClasses is every class name the embedded templates put in the markup,
+// plus every one the action routes write themselves.
 func renderedClasses(t *testing.T) map[string]string {
 	t.Helper()
 
 	out := make(map[string]string)
+	fromTemplates := 0
+
 	err := fs.WalkDir(web.Templates, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
@@ -354,7 +382,7 @@ func renderedClasses(t *testing.T) map[string]string {
 				if strings.Contains(name, composedClass) {
 					continue
 				}
-				out[name] = p
+				out[name], fromTemplates = p, fromTemplates+1
 			}
 		}
 		return nil
@@ -362,8 +390,23 @@ func renderedClasses(t *testing.T) map[string]string {
 	if err != nil {
 		t.Fatalf("walk the embedded template tree: %v", err)
 	}
-	if len(out) == 0 {
+	if fromTemplates == 0 {
 		t.Fatal("the templates render no class at all, so this comparison asserts nothing")
+	}
+
+	// Counted before the fragments are folded in, so a template tree that stopped
+	// rendering classes altogether still fails here rather than being covered by
+	// the four sentences a destroy answers with.
+	found := 0
+	for what, fragment := range actionFragments {
+		for _, attr := range classAttr.FindAllStringSubmatch(string(fragment), -1) {
+			for _, name := range strings.Fields(attr[1]) {
+				out[name], found = what, found+1
+			}
+		}
+	}
+	if found == 0 {
+		t.Fatal("no action fragment carries a class, so the outcome an operator is shown is styled by nothing")
 	}
 	return out
 }
@@ -631,6 +674,111 @@ func TestTheStreamClientClosesWhenTheSessionEnds(t *testing.T) {
 	// thing on the page at the moment it became the only thing on it.
 	if wrote := strings.Count(source, "pane.textContent ="); wrote != 1 {
 		t.Errorf("crswd.js writes the pane's content %d times; want exactly 1 — the ending is said beside the screen, not over it", wrote)
+	}
+}
+
+// TestTheScriptSpendsASubmitOnce is research.md R7's one genuine idempotence
+// exposure, held at the file that closes it.
+//
+// Three of the four actions are idempotent by their own semantics: a second
+// destroy finds no record, a second rename is the same end state, and a second
+// compact is a second delivery the operator asked for. A second create is a
+// second unsandboxed shell, and nothing about the response tells the operator
+// afterwards that they made two.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed
+// — the same footing every other assertion in this file stands on. What makes
+// them worth making is the direction the whole guard can be lost in silently: a
+// handler that is written, correct, and attached to nothing. A query naming the
+// attribute the form renders is as close to "something calls it" as a language
+// Go cannot execute allows, and it is the same shape the pane's own hook is held
+// by above.
+func TestTheScriptSpendsASubmitOnce(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	query := regexp.MustCompile(`querySelectorAll\(\s*['"][^'"]*data-submit-once[^'"]*['"]\s*\)`)
+	if query.FindString(source) == "" {
+		t.Error("crswd.js never queries the document for a form carrying data-submit-once, so no submit is ever spent and a double-click on the create is two sessions")
+	}
+	if !regexp.MustCompile(`addEventListener\(\s*['"]submit['"]`).MatchString(source) {
+		t.Error("crswd.js listens for no submit event; a click handler would fire before the browser's own constraint validation and spend the control on a submission that never happened")
+	}
+	if !regexp.MustCompile(`\.disabled\s*=\s*true`).MatchString(source) {
+		t.Error("crswd.js disables nothing on submission, which is what contracts/actions.md asks the create's control to do to itself")
+	}
+
+	// The in-progress state beside it (FR-031). A control that greys out in
+	// silence reads as a page that has broken, which is the state an operator
+	// answers by clicking again.
+	if !strings.Contains(source, "dataset.submitOnce") {
+		t.Error("crswd.js never reads the hook naming the in-progress note, so a spent control says nothing about why (FR-031)")
+	}
+}
+
+// TestTheFleetClientSubscribesAndSaysWhenItStops is the script half of US3, and
+// the half TestStreamLossIsVisible cannot see: that test proves the fleet page
+// carries a prepared sentence about a stream that stopped, and markup nothing
+// ever reveals is exactly as silent as no markup at all.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed —
+// the same footing every other assertion in this file stands on. What makes them
+// worth making is the direction this whole task can be lost in silently: a live
+// half that is written, correct, and attached to nothing. This repository has
+// shipped that failure three times, and the symptom here is the one issue #15
+// reported in the first place — an open dashboard that never changes.
+//
+// The names are the load-bearing part. The daemon says which of three things
+// happened in the event's own name and puts one identifier in the data
+// (contracts/fleet-stream.md), so a client reading onmessage would receive every
+// change as the same undifferentiated thing and could not tell a session that
+// arrived from one that is gone.
+func TestTheFleetClientSubscribesAndSaysWhenItStops(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	query := regexp.MustCompile(`querySelectorAll\(\s*['"][^'"]*data-fleet-stream[^'"]*['"]\s*\)`)
+	if query.FindString(source) == "" {
+		t.Error("crswd.js never queries the document for the fleet's stream hook, so nothing subscribes and an open dashboard is as static as it was in milestone 2 (issue #15)")
+	}
+
+	for kind, why := range map[string]string{
+		"appeared": "a session that entered the fleet has no card on the page yet",
+		"changed":  "a session whose state or name moved is a card that now describes it wrongly",
+		"vanished": "a card for a session that is gone offers a control that ends nothing",
+	} {
+		if !regexp.MustCompile(`addEventListener\(\s*['"]` + kind + `['"]`).MatchString(source) {
+			t.Errorf("crswd.js listens for no %q event: %s", kind, why)
+		}
+	}
+
+	// FR-020. The hook is read here and the copy is over in the template, for the
+	// reason every other sentence this interface says is: a script that authored
+	// its own prose would be a second place to look for it.
+	if !strings.Contains(source, "dataset.fleetStalled") {
+		t.Error("crswd.js never reads the hook naming the fleet's stalled note, so a stream that stopped says nothing and the page presents a fleet it cannot vouch for (FR-020)")
+	}
+	// Two error handlers and not one: the pane's and this one. Every ending of the
+	// fleet stream arrives that way and none of them arrives as an event
+	// (contracts/fleet-stream.md), and the two streams answer it by different
+	// rules — a pane leaves a browser that is retrying alone, and a fleet cannot,
+	// because the changes that happened while it retried arrive as nothing at all.
+	// So a file carrying one handler has left one of the two streams ending in
+	// silence.
+	if n := len(regexp.MustCompile(`onerror\s*=`).FindAllString(source, -1)); n != 2 {
+		t.Errorf("crswd.js attaches %d EventSource error handlers; want 2 — the pane's and the fleet's", n)
+	}
+
+	// The card comes from the daemon and is parsed into an inert document before
+	// one element of it is taken. These are the sinks that would put the same
+	// bytes into the live document as markup instead, and neither is caught by
+	// the assignment sweep above — they are calls rather than assignments.
+	for _, sink := range []string{"insertAdjacentHTML", "document.write"} {
+		if strings.Contains(source, sink) {
+			t.Errorf("crswd.js carries %q; the answer to a card re-fetch is parsed and one element of it imported, which is what keeps a page a session printed into out of this document", sink)
+		}
 	}
 }
 

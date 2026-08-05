@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
@@ -285,5 +286,217 @@ func (s *Server) refuseBrowser(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusUnauthorized)
 	if _, err := w.Write(bodyBrowserRefused); err != nil {
 		s.report(fmt.Errorf("write the browser door's refusal: %w", err))
+	}
+}
+
+// --- The action gate -------------------------------------------------------
+//
+// Everything above this line is layer 1, and every route it guards only reads.
+// What follows is what a route that *changes* something passes in addition
+// (contracts/actions.md): the two checks that together answer "did the operator's
+// own dashboard page ask for this, or did something else ask on their behalf".
+//
+// The daemon's layer-1 credential is an ambient Access cookie. It rides on
+// requests a hostile third-party page triggers, and the edge turns those into a
+// valid assertion this daemon accepts — so until this milestone every mutating
+// route demanded an HMAC signature no browser can produce, and that, not the
+// cookie, is what made the ambient credential safe. The first route that accepts
+// a form ends that argument. These two checks replace it.
+
+// fieldPageToken is the form field a mutating dashboard request carries its page
+// token in (contracts/actions.md), spelled once so that the field a page renders
+// and the field the gate reads cannot drift apart.
+const fieldPageToken = "crsw_page_token" //nolint:gosec // G101 false positive: this is the field's *name*, which every rendered page carries in plain sight. The value it names is minted in pagetoken.go and appears in no source file.
+
+// headerContentLength is written by hand on the one response whose length is part
+// of what it promises. See refuseAction.
+const headerContentLength = "Content-Length"
+
+// bodyActionRefused is the gate's uniform denial, byte for byte from
+// contracts/actions.md, and there is exactly one spelling of it for the reason
+// bodyBrowserRefused has exactly one: FR-004 is satisfied by every failure
+// producing the *identical* response, and a body built per call site is a body
+// that eventually differs by a space.
+//
+// Six reasons end here — a cross-site initiator, an absent one, and pagetoken.go's
+// four — and none of them is distinguishable from outside. The difference between
+// "malformed" and "not yours" is which forgery to try next.
+//
+// It references no stylesheet, no script and no external origin, so it renders
+// the same under the CSP as without one.
+var bodyActionRefused = []byte(`<!doctype html><title>refused</title><p>This action was refused.</p>`)
+
+// The gate's own refusals, authored here and for the trail alone.
+//
+// Neither is ever written into a response: every failure of step 2 or step 3
+// leaves through refuseAction, which writes one fixed body. They are distinct
+// sentinels for the reason internal/access's are — the operator reading their
+// journal needs to know which check refused, and this is the only place it is
+// kept.
+var (
+	// errActionCrossSite is the same-origin half doing its job (FR-002a).
+	//
+	// It deliberately does not spell any of the values Sec-Fetch-Site can carry,
+	// for the reason errStreamCrossSite does not: the header is caller-authored
+	// text, and a reason that quoted one is a reason nobody can tell apart from a
+	// reason built from the request (FR-042).
+	errActionCrossSite = errors.New("a mutating dashboard request came from somewhere other than the dashboard")
+
+	// errActionFormUnreadable is a body that could not be taken apart into fields
+	// at all — over the configured limit, or not form-encoded.
+	//
+	// Its own sentinel rather than folded into "no token", for the reason
+	// errPageTokenMissing is not errPageTokenMalformed: on the record, a form that
+	// never arrived and a form that arrived without the field are different
+	// faults, and the record is the only place either one is visible.
+	errActionFormUnreadable = errors.New("the mutating request's form could not be read")
+)
+
+// authorizeAction is the browser door with the action gate on it: the three
+// checks contracts/actions.md fixes, in the order it fixes them.
+//
+//  1. Layer 1, the Cloudflare Access assertion — authenticateBrowser, unchanged.
+//  2. The same-origin check, crossSite from stream.go **reused** rather than an
+//     Origin comparison added beside it (research R1).
+//  3. The page token from the form, verified against the identity step 1
+//     produced (pagetoken.go).
+//
+// The order is load-bearing rather than tidy, and the composition is what
+// enforces it: the gate is wrapped *inside* authenticateBrowser, so a route
+// cannot be registered with the two the other way round without rewriting this
+// line. That is what makes FR-008 structural instead of bookkeeping — an identity
+// whose Access session has ended is refused by the door in front, so its token is
+// never examined and no record can drift out of step with the Access session,
+// because there is no record.
+//
+// Steps 2 and 3 are independently load-bearing (FR-002c). Either one alone
+// refuses, and neither is tested only in the other's company: two checks never
+// tested apart are one check with extra steps.
+func (s *Server) authorizeAction(action audit.Action, next http.Handler) http.Handler {
+	return s.authenticateBrowser(action, s.gateAction(next))
+}
+
+// gateAction is steps 2 and 3 themselves, and it runs before next is called —
+// before any handler, and therefore before any state changes (FR-003). A request
+// that is going to be refused never reaches the code that could tear a session
+// down, so "refused" and "refused after acting" cannot be the same event.
+func (s *Server) gateAction(next http.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		operator, ok := OperatorFrom(r.Context())
+		if !ok {
+			// Fail closed on the path that should not happen: the door in front
+			// puts the operator in the context, so a false here is a gate wired
+			// without one. It answers with layer 1's refusal rather than the
+			// action's, because what failed is layer 1's promise and not the
+			// caller's request.
+			AuditFrom(r.Context()).Deny(errDashboardNoOperator.Error())
+			s.refuseBrowser(w)
+			return
+		}
+
+		if err := s.admitAction(w, r, operator); err != nil {
+			if ra := AuditFrom(r.Context()); ra != nil {
+				// dashboard.reject and not access.reject, set the way layer 1's
+				// refusal above sets its own action (FR-026, research R5): an
+				// identity that got in and *then* failed the cross-site check is a
+				// different and more alarming event than one that never got in, and
+				// an operator counting one must not be counting the other with it.
+				ra.rec.Action = audit.ActionDashboardReject
+				// Every reason reachable here is a sentinel authored in this
+				// package — the two above and pagetoken.go's four — so the record
+				// names the check that refused without carrying a byte the caller
+				// wrote (FR-035, FR-042). The caller learns none of it.
+				ra.Deny(err.Error())
+			}
+			s.refuseAction(w)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	}
+}
+
+// admitAction runs the two checks and reports which one refused.
+//
+// It returns the sentinel rather than a boolean because the two audiences differ:
+// the caller gets one response whichever it was, and the trail gets the truth.
+func (s *Server) admitAction(w http.ResponseWriter, r *http.Request, operator *access.VerifiedOperator) error {
+	// Step 2, before the body is read: a request the browser itself calls
+	// cross-site costs this daemon one header lookup and nothing else, which is
+	// the arrangement sessionStream has and for the same reason.
+	if crossSiteAction(r) {
+		return errActionCrossSite
+	}
+
+	// The same bound the API door decodes under. ParseForm carries its own 10MB
+	// ceiling, which is three orders of magnitude more than two short fields can
+	// need, and a limit nobody chose is not a limit.
+	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxBodyBytes)
+	if err := r.ParseForm(); err != nil {
+		// Not the parse error, which names a type from net/http and a byte count
+		// derived from what the caller sent. The constant says what happened.
+		return errActionFormUnreadable
+	}
+
+	// Step 3, out of PostForm and deliberately never out of Form: the second holds
+	// the query string too, and a token this daemon would accept from a URL is a
+	// token in a referrer header, a browser history and a proxy log — the exact
+	// disclosure T004 keeps it out of links to avoid. A page that put it there
+	// must fail rather than work.
+	//
+	// The identity is the operator layer 1 verified and never a value read out of
+	// the body, the token, or a header the caller chose. That is the whole of
+	// FR-007. Absent, malformed, expired and not-yours are pagetoken.go's four
+	// sentinels; verify decides which, and the clock is the server's own — the
+	// same one that measured the expiry at the mint.
+	return s.pageKey.verify(r.PostForm.Get(fieldPageToken), operator.Email, s.clock.Now())
+}
+
+// crossSiteAction is step 2: crossSite, plus the one thing a mutating route needs
+// that a stream does not — the header must be *there*.
+//
+// crossSite admits an absent Sec-Fetch-Site on purpose (research D8,
+// docs/security.md): browsers send the header and non-browser clients do not, so
+// requiring it on the pane stream would refuse the quickstart's curl while adding
+// nothing against the attack it is about. That argument does not survive the move
+// to a route that changes something. The only legitimate caller of an action
+// route is a form this daemon rendered, submitted by a browser, which always
+// sends the header; a script that wants to change something uses the API door and
+// its signature (FR-005). So absent refuses here, which is what
+// contracts/actions.md and FR-002a both require: an absent header is not evidence
+// of same-origin initiation, and treating it as such makes the check optional for
+// anything that can omit it.
+//
+// crossSite itself is untouched, and that is deliberate rather than incidental.
+// The stream's behaviour is milestone 2's, tested, and FR-014's promise is that
+// this milestone changes no response an existing client already sees.
+func crossSiteAction(r *http.Request) bool {
+	return crossSite(r) || r.Header.Get(headerSecFetchSite) == ""
+}
+
+// refuseAction answers every failure of step 2 or step 3 identically (FR-004,
+// SC-001): one status, one header set, one body, one Content-Length, whichever of
+// the six reasons applied.
+//
+// It takes no reason argument, for the reason refuseBrowser takes none: there is
+// nothing a caller could pass that would be allowed to change a byte, so the
+// parameter would only be an invitation.
+//
+// 403 and not this door's 401 (contracts/actions.md). A 401 says "authenticate",
+// and this caller already did, successfully — reusing it would tell an attacker
+// their Access credential was the problem when it was not, and would invite a
+// browser to re-prompt for a login that cannot help.
+//
+// The length is written rather than left to net/http, so that byte-identical is a
+// property of this function rather than a property of how the response happened
+// to be buffered. Everything else the response carries — nosniff among it — was
+// written by setBrowserSecurityHeaders before layer 1 ran, so this refusal leaves
+// with the identical header set to a served page (FR-026).
+func (s *Server) refuseAction(w http.ResponseWriter) {
+	w.Header().Set(headerContentType, contentTypeHTML)
+	w.Header().Set(headerContentLength, strconv.Itoa(len(bodyActionRefused)))
+	w.WriteHeader(http.StatusForbidden)
+	if _, err := w.Write(bodyActionRefused); err != nil {
+		s.report(fmt.Errorf("write the browser door's action refusal: %w", err))
 	}
 }

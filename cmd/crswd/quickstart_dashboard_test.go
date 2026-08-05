@@ -296,12 +296,35 @@ func TestDashboardQuickstartStory1Fleet(t *testing.T) {
 	// Empty first (FR-021): the explanatory state, not a blank region, with no
 	// "start a session" action (FR-024a) and the operator's address in the
 	// header (FR-020).
+	//
+	// Two of these assertions were narrowed by milestone 3's T010, and the
+	// narrowing is worth reading before it is trusted. They used to be page-wide,
+	// and they used to hold that this dashboard could not act at all: the copy
+	// read "This dashboard only watches — sessions are started through the API",
+	// and no string anywhere on the page was allowed to offer to start one.
+	//
+	// That is the precise limitation milestone 3 exists to remove — its spec opens
+	// by calling this "the read-only fleet dashboard from milestone 2 becomes able
+	// to act" — so the page now carries a create form, outside the empty state,
+	// and the two assertions could not survive as written by any means other than
+	// naming the control something it is not.
+	//
+	// What they assert instead is every claim they were really making, scoped to
+	// the section they were about: the empty state explains itself rather than
+	// rendering a blank region, it renders no action row of its own, and it does
+	// not itself offer a control. FR-024a is untouched — the component's Action
+	// parameter is still absent, now because docs/design-system.md keeps a form
+	// off the full-strength rain behind this section rather than because no route
+	// exists to take it. **T023 owes this edit a ratification**: its own wording
+	// says a story needing changes to accommodate this milestone is a regression
+	// to fix in the code, and this is the one case where the code doing the
+	// accommodating is the milestone's own plan.
 	empty := d.browse("/", jwt)
 	if empty.Status != http.StatusOK {
 		t.Fatalf("GET / = %d, want 200: %s", empty.Status, empty.Body)
 	}
 	page := string(empty.Body)
-	for _, want := range []string{"No sessions running", "This dashboard only watches", dashOperator} {
+	for _, want := range []string{"No sessions running", "Nothing is executing on this host right now", dashOperator} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the empty fleet does not say %q:\n%s", want, page)
 		}
@@ -309,8 +332,20 @@ func TestDashboardQuickstartStory1Fleet(t *testing.T) {
 	if strings.Contains(page, "empty-action") {
 		t.Error("the empty state renders an action row; this milestone passes none (FR-024a)")
 	}
-	if strings.Contains(strings.ToLower(page), "start a session") {
-		t.Error("the empty state offers to start a session, which the dashboard cannot do")
+
+	// The section itself, not the page. Sliced at its own closing tag, which the
+	// create form's section comes after — so a control that migrated into the
+	// empty state is caught here exactly as it was before.
+	emptySection := page
+	if _, after, ok := strings.Cut(page, `<section class="empty">`); ok {
+		emptySection, _, _ = strings.Cut(after, "</section>")
+	} else {
+		t.Errorf("the page renders no empty state at all:\n%s", page)
+	}
+	for _, offer := range []string{"start a session", "<form", "<button"} {
+		if strings.Contains(strings.ToLower(emptySection), offer) {
+			t.Errorf("the empty state offers %q; the rain runs at full strength behind it, and the design system keeps a control off the rain:\n%s", offer, emptySection)
+		}
 	}
 
 	// SC-005 and FR-034c, the document's three greps — against the headers as
@@ -348,7 +383,13 @@ func TestDashboardQuickstartStory1Fleet(t *testing.T) {
 		t.Error("the summary row renders after the cards it summarises")
 	}
 
-	if cards := strings.Count(page, `<article class="card">`); cards != 2 {
+	// The opener without its closing bracket, which is how the other seven counts
+	// of a card in this repository are spelled. This one pinned the whole tag, so
+	// it was an assertion about the card's attribute list rather than about how
+	// many cards a fleet of two renders — and T014 gave the card the identifier
+	// the fleet stream names it by (data-session). Nothing about the claim here
+	// changed: one card per owned session, on a page composed exactly as it was.
+	if cards := strings.Count(page, `<article class="card"`); cards != 2 {
 		t.Errorf("%d cards rendered, want one per owned session (2):\n%s", cards, page)
 	}
 	for _, want := range []string{first.ID, second.ID, "alpha", "beta"} {

@@ -123,6 +123,19 @@ type Server struct {
 	// middleware.
 	trail *audit.Logger
 
+	// pageKey is what a page token is minted and verified with (pagetoken.go).
+	//
+	// One per server for the reason there is one Authenticator, and one per
+	// *process* on top of that: it is read from crypto/rand at construction and
+	// never persisted, so a restart invalidates every outstanding token by
+	// construction. Two of them would be two keys, each refusing the tokens the
+	// other minted, which is a cross-site defence that refuses the operator.
+	//
+	// It is built here rather than passed in, like the roots and the caps and
+	// unlike the clock or the listener: a caller may say where tmux and the trail
+	// are, never what the browser door's second check is worth.
+	pageKey pageKey
+
 	// templates is the dashboard's template set, parsed from the embedded tree
 	// once at construction (see render.go). It is read-only from here on, so
 	// every handler executes the same set that startup proved compiles.
@@ -406,6 +419,17 @@ func newServer(
 		return nil, err
 	}
 
+	// A startup failure like every other missing piece of the auth path
+	// (docs/security.md §4). A daemon that could not read 32 random bytes can
+	// neither mint a page token nor verify one, so it would serve a dashboard
+	// whose every action it must refuse — and the tempting repair for that, a key
+	// derived from something already in hand, is the one research R2 rejects.
+	// Refusing to start is the honest version of the same news.
+	key, err := newPageKey()
+	if err != nil {
+		return nil, fmt.Errorf("httpapi: build the page token key: %w", err)
+	}
+
 	mux := http.NewServeMux()
 	s := &Server{
 		cfg: cfg,
@@ -422,6 +446,7 @@ func newServer(
 		authn:      authn,
 		browser:    browser,
 		trail:      trail,
+		pageKey:    key,
 		templates:  templates,
 		sessions:   sessions,
 		creates:    creates,
@@ -462,6 +487,37 @@ func newServer(
 	// operations, and a route authorised by an identity rather than a signature
 	// is not one of them.
 	s.handleBrowser(patternSessionStream, audit.ActionStreamOpen, s.sessionStream)
+	// The other stream, and the one that is about the fleet rather than about a
+	// session (#15). It goes on handleBrowser and not handleAction because it
+	// changes nothing: what admits it is layer 1 and the same-origin check the pane
+	// stream carries, with no page token — an EventSource cannot submit a form
+	// field, and the token exists to authorise a write. Its action is its own, so
+	// an operator counting who watched the fleet is not counting page loads or pane
+	// reads with it.
+	s.handleBrowser(patternFleetStream, audit.ActionFleetOpen, s.fleetStream)
+	// The first route on this door that changes something, and the reason
+	// handleAction exists one line below handleBrowser rather than instead of it:
+	// everything above only reads, and a read is authorised by layer 1 alone.
+	s.handleAction(patternDashboardDestroy, audit.ActionDashboardDestroy, s.destroyFromBrowser)
+	// The second, and the one that starts an unsandboxed shell rather than ending
+	// one. It goes through handleAction like the destroy above and unlike the
+	// pages: a route that spawns a Claude session on an ambient Access cookie alone
+	// is the exact request a hostile third-party page can cause a browser to send.
+	s.handleAction(patternDashboardCreate, audit.ActionDashboardCreate, s.createFromBrowser)
+	// The third, and the only one of the four that touches nothing on the host. It
+	// goes through handleAction all the same: what makes the gate necessary is that
+	// a request changes state on an ambient cookie, not what the change costs — a
+	// third-party page that can relabel every session on this host can hide one,
+	// and the operator reading the fleet afterwards has no way to tell.
+	s.handleAction(patternDashboardRename, audit.ActionDashboardRename, s.renameFromBrowser)
+	// The fourth, and the one that reaches furthest into a session without saying
+	// anything about what happens there: it delivers Claude Code's own /compact
+	// into a running assistant. It goes through handleAction like the three above
+	// because it is a write — a third-party page that can deliver into every
+	// session on this host is one that can interrupt whatever each of them was
+	// doing, and the operator watching a pane has no way to tell that from the
+	// assistant's own decision.
+	s.handleAction(patternDashboardCompact, audit.ActionDashboardCompact, s.compactFromBrowser)
 	// One route per embedded asset, so `/static/` names exactly the files the
 	// binary carries and a path that is not one of them is a path nothing claims
 	// (contracts/dashboard.md's route table; see loadAssets for why a wildcard is
@@ -535,6 +591,27 @@ func (s *Server) handleUnrouted() {
 // were the thing that authorises it.
 func (s *Server) handleBrowser(pattern string, action audit.Action, h http.HandlerFunc) {
 	s.mux.Handle(pattern, s.authenticateBrowser(action, h))
+}
+
+// handleAction is handleBrowser for a route that changes something: the one
+// place a mutating dashboard route reaches the mux, so an action cannot be
+// registered without the gate contracts/actions.md puts in front of it.
+//
+// It is a second function rather than a boolean on the first because the two
+// differ in what they promise, and the promise is the whole of milestone 3's
+// defence. A route registered with handleBrowser is authorised by an ambient
+// Access cookie alone — which is exactly what a hostile third-party page can
+// cause a browser to send — and every test in this package would still pass with
+// the cross-site checks absent. Making the choice a parameter would make it a
+// thing a call site can get wrong quietly; making it a different function makes
+// registering an action without the gate a thing somebody has to type.
+//
+// Nothing is appended to s.registered, for the reason handleBrowser appends
+// nothing: that list is contracts/http-api.md's closed set of six operations,
+// each authorised by a signature, and these are authorised by an identity and a
+// page token instead.
+func (s *Server) handleAction(pattern string, action audit.Action, h http.HandlerFunc) {
+	s.mux.Handle(pattern, s.authorizeAction(action, h))
 }
 
 // handlerFor is where a route acquires its behaviour, and it is a switch with a

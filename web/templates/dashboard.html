@@ -9,17 +9,21 @@
   docs/security.md is sent unmodified, so any of the three would fail in a
   browser rather than in review. The stylesheet and the script are the two
   embedded assets, each referenced by path — the script carries the rain the
-  header below renders a canvas for, and it has to be a file for exactly the
-  reason an inline one would fail.
+  header below renders a canvas for and the live half that keeps this fleet
+  current (US3), and it has to be a file for exactly the reason an inline one
+  would fail.
 
   No colour, size, or font is expressed here at all — design-system.md's first
   non-negotiable is that they live in tokens, and a page has nothing to say about
   them.
 
-  There is no <form>, no submit control, and no reference to any of the six API
-  operations. The dashboard is read-only (FR-022) and that is structural rather
-  than a rendering choice: the browser door serves GET only, and a browser holds
-  no shared secret to sign a mutation with.
+  This page can now act, which it could not through milestone 2. What makes that
+  safe is not on this page and deliberately cannot be: the browser door's gate
+  (browser.go) verifies the Access identity, then the initiator, then a token
+  minted for that identity — before any handler runs. What is on the page is the
+  evidence, in a hidden field inside each form, and nothing here references any
+  of the six API operations: a browser holds no shared secret and every form
+  below posts to this door's own /dashboard/ routes.
 */}}<!doctype html>
 <html lang="en">
 <head>
@@ -30,16 +34,74 @@
 <script src="/static/crswd.js" defer></script>
 </head>
 <body>
-{{ template "header" .Operator }}
-<main class="shell">
+{{ template "header" .Operator }}{{/*
+  The three hooks the fleet's live half reads, on the element that holds the
+  fleet (US3, issue #15, crswd.js). They are attributes rather than constants in
+  the script for the reason the pane's are: that file is one embedded asset
+  served to every page, it knows about no route and no session, and the CSP
+  forbids the inline script that would otherwise tell it. A page that carries
+  none of these is a page the live half leaves alone, which is what keeps the
+  single-session view out of it — that page has the pane's own stream, and a
+  session that ends says so there. It is also a page with one card and no grid,
+  so a live half attached to it would answer every change with the reload the
+  shape changes below call for, on a page that can never take one usefully. The
+  pin is in partials_test.go.
+
+  data-fleet-stream is the address of the stream itself
+  (contracts/fleet-stream.md), and data-fleet-card is the address of one card,
+  with the daemon's own route parameter left in it: the live half substitutes the
+  identifier the stream named. It is spelled exactly as the daemon registers the
+  route so the two cannot drift — the pin is in partials_test.go, and the symptom
+  of a drift is a fleet that renders perfectly and never changes.
+
+  What the re-fetch asks for is a whole page, of which the live half takes the
+  one card. That is the smallest thing this daemon can be asked for that names a
+  single session, and it is the same address the card's own heading links to: no
+  route is added here, and nothing new is exposed to a browser that could already
+  open that page by clicking the card.
+*/}}
+<main class="shell" data-fleet-stream="/dashboard/fleet/stream" data-fleet-card="/sessions/{id}/view" data-fleet-stalled="fleet-stalled">
+{{/*
+  What the page says when it can no longer keep itself current (FR-020).
+
+  It ships hidden and the live half reveals it, on any interruption of the
+  stream and not only on one it cannot recover from: while the browser is
+  reconnecting, changes are happening on this host that this page will never
+  hear about, and the cards below are a fleet it cannot vouch for. That is the
+  daemon restart in acceptance scenario 3 and it is also the subscriber this
+  daemon drops on purpose when it falls behind — neither arrives as an event,
+  both arrive as a connection that ended (contracts/fleet-stream.md).
+
+  It stays once shown. The reconnection that follows is automatic and correct,
+  but nothing fills the gap it left, so a note that hid itself again would be
+  the page claiming a currency it did not recover. Only a reload does that, and
+  the copy says so.
+
+  Hidden with the attribute rather than with a class, as the pane's notes are:
+  `hidden` is the browser's own, needs no rule in the stylesheet and cannot be
+  defeated by one — and a note that failed to hide would be a page announcing a
+  failure on every load.
+
+  role="status" because this is a state change nobody is looking at when it
+  happens (docs/components.md's accessibility floor). An operator watching a
+  fleet has no reason to re-read the top of the page, and this is the one
+  sentence here that is not about a session.
+*/}}<p class="fleet-note" id="fleet-stalled" role="status" hidden>Live updates stopped. Sessions may have started or ended on this host without this page hearing about it, so reload to see the fleet as it is now.</p>
 {{/*
   The summary before any detail — a dashboard is scanned, not read
   (docs/design-system.md's layout). Each count is derived from the cards below
-  it, so the row cannot claim a fleet the grid does not show.
+  it, so the row cannot claim a fleet the grid does not show. The live half
+  re-derives it from the same cards after every change it makes to the grid,
+  which is that rule kept rather than a second one: a script that replaced a
+  card and left this row alone would make the page disagree with itself about
+  the one number an operator scans it for.
 
   It renders only alongside the grid. With nothing owned there is no detail for a
   summary to come before, and a row of zeroes above the empty state would be
-  detail where FR-021 asks for an explanation.
+  detail where FR-021 asks for an explanation. That is also why the live half
+  reloads rather than composing either shape: choosing between this row with its
+  grid and the empty state is the page's own decision, made here, and a script
+  that made it a second time would be a second fleet page.
 */}}{{ if .Sessions }}<ul class="summary">
 {{ range .Summary }}<li class="summary-state">{{ template "status-pill" .State }} <span class="summary-count">{{ .Count }}</span></li>
 {{ end }}</ul>
@@ -47,6 +109,18 @@
 {{ range .Sessions }}{{ template "session-card" . }}
 {{ end }}</div>
 {{ else }}{{ template "empty" .Empty }}
-{{ end }}</main>
+{{ end }}{{/*
+  The create form, after the fleet and outside both branches above (T010).
+
+  After, because a dashboard is scanned for what is running on this host before
+  it is read for what to do next — the same argument that puts the summary before
+  the grid. Outside both, because an operator who owns nothing is the one who
+  most needs it: a form rendered only beside the grid would be missing from the
+  one page where the fleet is empty.
+
+  It renders nothing at all when this render minted no token, which is what makes
+  a page that cannot authorise a create offer none.
+*/}}{{ template "create-form" .Create }}
+</main>
 </body>
 </html>

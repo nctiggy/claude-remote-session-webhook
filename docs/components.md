@@ -1,7 +1,7 @@
 # Components
 
-> Loaded when: adding or changing a session card, status pill, pane viewer, button,
-> form, or modal.
+> Loaded when: adding or changing a session card, status pill, pane viewer, action
+> control, button, form, or modal.
 
 **The rule: use these. Do not invent a second one.**
 
@@ -10,43 +10,74 @@ UI primitive, search for an existing one. If it *almost* fits, add a parameter �
 not fork it.
 
 These are Go `html/template` partials in `web/templates/partials/`, rendered
-server-side and swapped by htmx. There is no client-side component framework, and
-adding one is a decision for a PR, not a convenience.
+server-side. **There is no htmx in this tree, and no client-side component
+framework.** The page loads one script — `web/static/crswd.js` — and it draws
+rain, reads panes and follows the fleet stream; every control that changes
+something is a plain form post that works with the script switched off. Adding a
+library is a decision for a PR, not a convenience.
 
 ## Canonical inventory
 
+These exist. Use them.
+
 | Component | Path | Use for |
 |---|---|---|
-| Button | `partials/button.html` | Every clickable action |
-| Field | `partials/field.html` | Every text entry, with its label |
-| Form | `partials/form.html` | Every submission + validation |
-| Modal | `partials/modal.html` | Every blocking confirmation |
 | Header | `partials/header.html` | Product identity left, operator identity right; ambient rain canvas |
-| Session card | `partials/session-card.html` | One session in the list |
+| Session card | `partials/session-card.html` | One session in the list, with its action row |
 | Status pill | `partials/status-pill.html` | Session state, everywhere it appears |
 | Pane viewer | `partials/pane.html` | Live terminal output |
-| Toast | `partials/toast.html` | Transient feedback |
+| Create form | `partials/create-form.html` | The one control that starts a session |
+| Page token | `partials/page-token.html` | The hidden field **every** mutating form carries |
 | Empty state | `partials/empty.html` | Full-strength rain field + one sans-serif explanation |
 | Rain canvas | `partials/rain.html` | `<canvas class="rain">` — header and empty state only |
 
+### Specified here, not built
+
+Button, Field, Form, Modal and Toast are named by this document and have **no
+partial on disk**. They were written as an inventory before there was anything to
+put in one: milestone 2's dashboard could only read, so it needed no control, and
+milestone 3's four actions each needed a fragment of markup rather than a
+component with a call site. Field is covered by Form below; Toast has no section
+and no use — this dashboard answers an action in place, next to the control, with
+`.card-outcome`, rather than in something that floats away on a timer.
+
+That is not permission to invent a second vocabulary. The class names in those
+sections are the ones the shipped templates already use — `.button`,
+`.button-danger`, `.button-primary`, `.field`, `.field-label`, `.field-input` —
+so the day one of them earns a partial, the markup lifts into it unchanged. What
+is forbidden is a *third* spelling: a control styled with anything else is a
+second button component, which is the defect this document exists to prevent.
+
+Their `{{ template "x" (dict …) }}` call sites below are illustrative. **This
+template set is parsed with no function map**, so there is no `dict` to call — a
+partial takes the dot, and a value it needs is a field on the view the handler
+built. A new partial follows that, not the sketch.
+
 ## Button
 
-Variants are a parameter, never a new component.
+There is no Button partial. A control is a `<button class="button" …>` inside
+the form it submits, and the variants are the classes the stylesheet defines:
 
-```gotemplate
-{{ template "button" (dict
-     "Variant" "primary"        /* primary | secondary | danger | ghost */
-     "Size"    "md"             /* sm | md */
-     "Label"   "Create session"
-     "HxPost"  "/sessions"
-     "HxConfirm" "") }}
-```
+| Class | Use for | Where it is today |
+|---|---|---|
+| `.button` | Every ordinary action | Rename, Compact |
+| `.button .button-primary` | The one action a view exists for | Start session |
+| `.button .button-danger` | An action that ends an unsandboxed shell | Destroy |
 
 Rules:
 - Exactly one `primary` button per view. If you need two, one is not primary.
-- In-flight state must disable the button — use `hx-disabled-elt="this"`. A
-  double-submit spawns two sessions, which is a real bug here, not a UX quirk.
-- Destructive actions use `Variant: "danger"` **and** a confirmation modal.
+- **A control that changes something lives inside its own `<form method="post">`,
+  and that form carries the page token.** See Action controls below.
+- In-flight state must disable the button where a double submit is a real event —
+  `data-submit-once` on the form, handled by `crswd.js`. It is on the create form
+  and deliberately nowhere else: a second create is a second unsandboxed shell,
+  while a second destroy finds no record, a second rename is the same end state,
+  and a second compact is a second delivery the operator asked for.
+- Destructive actions use `.button-danger` **and** a confirming step. That step is
+  a hidden field the page sends deliberately (`confirm=yes`), **not a modal** —
+  there is no Modal partial, and a `<dialog>` would need script for an action that
+  currently needs none. Colour is reinforcement and never the signal: the label
+  reads "Destroy" and the outcome is a sentence.
 
 ## Status pill
 
@@ -64,19 +95,80 @@ session that reads as green is a bug.
 
 ## Session card
 
-One session: name, state pill, working directory, age, and its action row.
+One session: name, state pill, identifier, working directory, age, and its
+action row.
 
 ```gotemplate
-{{ template "session-card" .Session }}
+{{/* The dot is one card's view — ID, Name, DisplayState, WorkDir, Age,
+     PageToken — built by cardOf() in internal/httpapi. An empty PageToken
+     renders no action row. */}}
+{{ template "session-card" . }}
 ```
 
 Rules:
 - The card is the **only** place a session's summary is composed. The list view and
-  the detail header both use it.
-- The action row uses Button, never raw `<button>`.
-- Destroy is `danger` + confirmation. Compact and rename are `secondary`.
+  the detail header both use it, and the fleet stream re-fetches this same card.
+- The card carries **exactly one `<a>`** — the heading. No control is nested inside
+  it: a link wrapping a submit control is two things occupying one target, and one
+  of these controls ends an unsandboxed shell.
+- Destroy is `.button-danger` + `confirm=yes`. Rename and Compact are plain
+  `.button`.
 - Working directory renders as text, truncated with a `title` attribute — it is
   caller-supplied (see `security.md`).
+- An absent name or working directory renders as a sentence saying the value is
+  unknown, in dim sans. Never a placeholder that reads like a real name or a real
+  path: a card showing an invented directory tells an operator something false
+  about an unsandboxed shell.
+
+## Action controls
+
+The four things the dashboard can change, and the shape all four share. Read
+`docs/auth-and-sessions.md` before altering any of it — the markup here is half of
+a security control, not decoration.
+
+```gotemplate
+{{ with .PageToken }}
+<form method="post" action="/dashboard/sessions/{{ $.ID }}/destroy">
+  {{ template "page-token" . }}
+  <input type="hidden" name="confirm" value="yes">
+  <button class="button button-danger" type="submit"
+          aria-describedby="card-id-{{ $.ID }}">Destroy</button>
+</form>
+{{ end }}
+```
+
+| Action | Route | Answers with |
+|---|---|---|
+| Destroy | `POST /dashboard/sessions/{id}/destroy` | `200` and a sentence; `409` when teardown could not be verified, and the record is **retained** |
+| Create | `POST /dashboard/sessions` | `200` and the new card; `429` at the cap or the rate limit |
+| Rename | `POST /dashboard/sessions/{id}/rename` | `200` and the renamed card |
+| Compact | `POST /dashboard/sessions/{id}/compact` | `202` — **delivered**, never "compacted" |
+
+All four also answer `400` for input they refuse, `404` for a session that is not
+this operator's to act on, and `500` when the host would not do it — each one
+`.card-outcome` sentence and never a status alone.
+
+Rules — these are security rules as much as design rules:
+- **Every mutating form includes `{{ template "page-token" . }}`.** It renders a
+  hidden `crsw_page_token` field and nothing else. Never a URL, never a cookie,
+  never a `data-` attribute. A form without it is refused by the gate, uniformly
+  and with no way for the page to tell why.
+- **The whole row renders from the token** (`{{ with .PageToken }}`). A card built
+  without one offers no controls rather than controls that are certain to fail —
+  the same discipline that makes an absent name a sentence instead of a
+  placeholder. This is what fills the action-row parameter earlier versions of this
+  document described as present-but-empty.
+- **The outcome is text.** A route answers with `<p class="card-outcome">…</p>`,
+  which replaces what it acted on. One class for all of them, success and failure
+  alike: an outcome is told apart by what it says, never by a shade. A control that
+  failed must say so — a card that quietly comes back unchanged is the silent
+  revert this dashboard forbids.
+- **Compact reports delivery, not compaction.** The daemon hands `/compact` to the
+  session and cannot see what the assistant does with it. Copy that claims
+  otherwise asserts something this daemon never observed.
+- Each button is `aria-describedby` its session's identifier. A fleet of adopted
+  sessions has no names, so without it a screen reader hears a column of controls
+  announcing the same word, each acting on a different shell.
 
 ## Pane viewer
 
@@ -156,25 +248,52 @@ Rules — these are security rules as much as design rules:
 
 ## Form
 
+No Form partial. Two forms are shipped, and they are the pattern: the create form
+(`partials/create-form.html`, outside every card, because a create names no
+session) and the rename on the card. A text entry is a `<div class="field">`
+holding a `<label class="field-label">` and an `<input class="field-input">`.
+
 ```gotemplate
-{{ template "form" (dict
-     "Action" "/sessions" "Method" "post"
-     "Fields" .Fields "Error" .Error) }}
+<div class="field">
+  <label class="field-label" for="create-name">Name</label>
+  <input class="field-input" id="create-name" type="text" name="name"
+         required maxlength="64" pattern="[-a-zA-Z0-9]+"
+         autocomplete="off" spellcheck="false">
+</div>
 ```
 
 Rules:
 - Every input has a `<label>`. A placeholder is not a label.
-- Show the error next to the field, not only in a toast.
-- Validation is server-side and authoritative; client hints are convenience only.
-- Disable submit while in flight.
+- **`id` and `for` are qualified by the session's identifier** on anything a card
+  renders. A fleet of cards each carrying `id="rename-name"` is a page where every
+  label names the first one.
+- Show the error where the operator is looking: a refused action replaces what it
+  acted on with `.card-outcome`, next to the control, not only somewhere transient.
+- **Validation is server-side and authoritative.** Client hints are convenience,
+  and they are pinned to the daemon's own rules by a test — a hint that drifted
+  would refuse a name this daemon would have accepted, in a native bubble this
+  daemon never wrote. There is deliberately **no hint on the working directory**:
+  the roots are configuration, and a pattern spelling them puts a map of the host
+  in the markup.
+- Disable submit while in flight where a double submit is a real event — see
+  Button.
 
 ## Modal
 
+**Not built, and nothing needs one.** The confirming step for the one destructive
+action is a hidden field the page sends deliberately (`confirm=yes`), which costs
+the same deliberate act and needs no script; a `<dialog>` needs script to open,
+and this tree's one script draws rain and reads panes.
+
+Kept as a specification so that the first blocking confirmation that genuinely
+needs one is built once, to these rules, rather than improvised:
+
 ```gotemplate
+{{/* Illustrative — see "Specified here, not built" above. */}}
 {{ template "modal" (dict
      "Title" "Destroy session?"
      "Body"  "This kills the tmux session and any work in it. Not reversible."
-     "Confirm" (dict "Variant" "danger" "Label" "Destroy" "HxDelete" "/sessions/abc")) }}
+     "Confirm" (dict "Variant" "danger" "Label" "Destroy")) }}
 ```
 
 Rules:
@@ -190,8 +309,17 @@ Non-negotiable, applies to everything above:
 - Visible focus ring. Never `outline: none` without a replacement.
 - Interactive elements are `<button>`/`<a>`, not a `<div>` with a handler.
 - Icon-only controls carry an accessible name.
-- Live regions (`aria-live="polite"`) announce state changes and toasts. The pane
-  itself is **not** a live region — announcing every terminal line is unusable.
+- Live regions (`aria-live="polite"`, or `role="status"`, which is that role by
+  another name) announce **the state changes nobody is looking at**: a live
+  connection that stopped, a background thing that failed. The severed-fleet note
+  carries `role="status"` for exactly that reason — it appears when the operator is
+  not acting.
+- Nothing else is announced, and the boundary is deliberate. The pane itself is
+  **not** a live region — announcing every terminal line is unusable — and neither
+  is the card grid: a fleet on a busy host changes without the operator's
+  involvement, and narrating every arrival and departure is the same noise. An
+  outcome the operator just caused needs no live region either; it replaces the
+  control they used, where focus already is.
 
 ## Empty state
 
@@ -199,13 +327,20 @@ The one surface where the rain runs at full strength — there is no data compet
 with it, so it fills the void instead of leaving a shrug.
 
 ```gotemplate
-{{ template "empty" (dict
-     "Title" "No sessions running"
-     "Body"  "Nothing is executing on this host right now. Start one to open a Claude session in a tmux window."
-     "Action" (dict "Label" "Start a session" "HxPost" "/sessions")) }}
+{{/* Title and Body. The dot is an emptyView; the Action field exists and this
+     dashboard passes none. */}}
+{{ template "empty" . }}
 ```
 
 Rules:
+- **The `Action` parameter stays absent here, and the create form sits beside the
+  empty state rather than inside it.** That is this document's own rule applied to
+  itself: the empty state is the one surface where the rain runs at full strength,
+  and rain never goes behind reading content — "not a pane, a card grid, a form, or
+  a table". A form nested in the rain field is that violation. The not-found page
+  passes no action either, for a different reason: an operator who has just been
+  told a page does not exist is owed the fact that asking touched nothing, not a
+  navigation affordance this door does not serve.
 - Rain at `.5` opacity behind, message burned through with a radial vignette so the
   text never fights the glyphs.
 - Body copy is **sans**, not mono — a human wrote it (see `design-system.md`).

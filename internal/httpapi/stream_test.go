@@ -2485,3 +2485,34 @@ func TestOneStreamRequestLeavesExactlyOneRecordBehind(t *testing.T) {
 			opens, audit.ActionStreamOpen)
 	}
 }
+
+// TestScreenEventRefusesAnOversizedScreen pins the bound screenEvent's
+// allocation relies on.
+//
+// It is not defending against a large pane — capture-pane takes the visible
+// screen, which cannot approach this size. It is defending against that stopping
+// being true: adding -S upstream would capture scrollback instead, and every
+// caller sizing a buffer from the result would go on assuming a bound that no
+// longer held (issue #41).
+//
+// The refusal, rather than truncation, is the point. send() does not record an
+// unframed screen as sent, so a refused screen is retried on the next capture
+// instead of leaving the stream quiet on a stale one.
+func TestScreenEventRefusesAnOversizedScreen(t *testing.T) {
+	t.Parallel()
+
+	if _, err := screenEvent(strings.Repeat("x", 64)); err != nil {
+		t.Fatalf("screenEvent(small screen) = %v; want it framed", err)
+	}
+
+	oversized := strings.Repeat("x", maxScreenBytes+1)
+	_, err := screenEvent(oversized)
+	if !errors.Is(err, errScreenTooLarge) {
+		t.Fatalf("screenEvent(oversized) = %v; want %v", err, errScreenTooLarge)
+	}
+
+	// The screen itself must not travel in the error, however large (FR-042).
+	if strings.Contains(err.Error(), "xxxxxxxx") {
+		t.Error("the refusal carries pane content; only its size may be named")
+	}
+}

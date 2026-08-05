@@ -100,6 +100,37 @@ const (
 	// It is the stream's only record — there is deliberately no close record,
 	// which would make "exactly one per request" false at this door alone.
 	ActionStreamOpen Action = "stream.open"
+
+	// The browser door's four actions, its refusal, and the fleet stream — the
+	// vocabulary milestone 3 adds (research R5). They are prefixed rather than
+	// flagged: FR-024 wants a browser-initiated change distinguishable from the
+	// API's, and a `caller` field on session.create would leave `grep
+	// 'dashboard\.'` unable to answer "what did the browser change".
+
+	// ActionDashboardCreate, ActionDashboardDestroy, ActionDashboardRename and
+	// ActionDashboardCompact are the four named actions the dashboard can take.
+	// dashboard.compact records that /compact was delivered, never that a
+	// compaction happened — the daemon cannot see what the assistant is carrying
+	// — and, like every record here, carries none of the delivered text (FR-016b).
+	ActionDashboardCreate  Action = "dashboard.create"
+	ActionDashboardDestroy Action = "dashboard.destroy"
+	ActionDashboardRename  Action = "dashboard.rename"
+	ActionDashboardCompact Action = "dashboard.compact"
+
+	// ActionDashboardReject is a mutating browser request refused by the
+	// cross-site defence, and is deliberately not ActionAccessReject: an identity
+	// that passed layer 1 and then failed the cross-site check is a different and
+	// far more alarming event than one that never got in, and FR-026 needs an
+	// operator to tell an attack from a mistake. Collapsing the two would bury it
+	// in the noise of ordinary sign-in failures. Reason names which check failed
+	// and stays server-side, since the response itself is uniform (FR-004).
+	ActionDashboardReject Action = "dashboard.reject"
+
+	// ActionFleetOpen is one fleet stream opened — one record per open, not per
+	// event, for the reason ActionStreamOpen gives: the alternative is a trail
+	// whose volume is set by how busy the fleet is rather than by who asked to
+	// watch it.
+	ActionFleetOpen Action = "fleet.open"
 )
 
 // Decision is the allow/deny outcome, and unlike Action it is closed: two

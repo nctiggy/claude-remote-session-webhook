@@ -52,13 +52,31 @@ type sessionView struct {
 	// to build.
 	Age string
 
-	// Actions is the action row docs/components.md documents on this component:
-	// destroy, compact, rename. This milestone passes none (FR-024a). The
-	// dashboard is read-only (FR-022) and a browser holds no shared secret, so
-	// the row would be non-functional as well as out of scope — the parameter
-	// exists so milestone 3 fills a row that is already there rather than
-	// restoring markup this milestone deleted.
-	Actions []actionView
+	// PageToken is the value every action form on this card submits: minted
+	// for this render and bound to the identity layer 1 verified for it
+	// (FR-002b, FR-007, contracts/actions.md). It is the card's parameter rather
+	// than the page's because the per-session forms are the card's own, and one
+	// value is handed to every card a page draws — a fleet of ten renders one
+	// token, not ten, because a page is rendered for one identity at one instant
+	// and a second mint would be a second expiry that nothing is truer for.
+	//
+	// It reaches the browser in a hidden field and in nothing else: never a URL,
+	// never a cookie, never a data- attribute, never a record. A token in a link
+	// is a token in a referrer header, a browser history, and a proxy log — which
+	// is also why the gate reads it out of PostForm and never out of Form.
+	//
+	// Empty renders no field at all (partials/page-token.html), which is what
+	// makes the zero value safe: a card built without a token offers nothing that
+	// looks like one. That is FR-018a's discipline — state the absence, never
+	// render something that reads like a value — applied to a credential.
+	//
+	// It is also what decides whether the card renders its action row at all. The
+	// row was milestone 2's absent parameter (FR-024a), kept so that this
+	// milestone would fill a container rather than restore one; what fills it is
+	// a form, and a form with no token is a control the gate is certain to
+	// refuse. So there is one value here rather than two, and no arrangement in
+	// which a card offers an action it could not authorise.
+	PageToken string
 }
 
 // paneView is the pane viewer's parameters (docs/components.md): one session's
@@ -107,6 +125,27 @@ type emptyView struct {
 	// reason the card's row is absent (FR-024a). A pointer rather than a slice
 	// because the component documents one.
 	Action *actionView
+}
+
+// createFormView is the create form's whole parameter list (T010): the token
+// its submission has to present, and nothing else.
+//
+// One field, because a create names no session. The other three forms this
+// milestone adds are the card's and take the card's own projection with them;
+// this one has nothing to describe — what it makes is what it is for — so the
+// only thing it needs is the evidence the gate demands.
+//
+// It is a type of its own rather than the bare string for the reason every other
+// component's parameters are a struct: this template set is parsed with no
+// function map, so a component's parameters are exactly the fields of what it is
+// executed against, and a component that grows one grows it here.
+type createFormView struct {
+	// PageToken is the render's own token, the same value every card on the
+	// same page carries (see sessionView.PageToken for why one render mints
+	// one). Empty renders no form at all rather than a form with an empty
+	// field: a control the gate is certain to refuse is worse than no control,
+	// because an operator cannot tell the two apart until they use it.
+	PageToken string
 }
 
 // actionView is one entry in an action row, and it is deliberately empty.

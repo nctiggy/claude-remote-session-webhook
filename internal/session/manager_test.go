@@ -1004,6 +1004,127 @@ func TestListIsScopedToItsOwner(t *testing.T) {
 	}
 }
 
+// hostSessions is every session name the host holds, sorted, so a test can say
+// the host is exactly as it was rather than that some particular window survived.
+func hostSessions(t *testing.T, f managerFixture) []string {
+	t.Helper()
+
+	infos, err := f.tmux.List(context.Background())
+	if err != nil {
+		t.Fatalf("the host could not be listed: %v", err)
+	}
+	names := make([]string, 0, len(infos))
+	for _, info := range infos {
+		names = append(names, info.Name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// FR-015 and SC-012, pinned where the change happens. A rename is a record-only
+// change: the tmux name derives from the identifier, so the window a session
+// addresses before the rename is the window it addresses after.
+//
+// The way to hold that is not to compare two strings afterwards — an
+// implementation that renamed the window would leave TmuxName agreeing with
+// itself while the host no longer had that session. So the claim is made three
+// ways: the rename runs no tmux command at all, the host's session names are
+// unchanged, and the stored record differs in exactly one field.
+//
+// The new label is hostileLabel, which no path the fixture builds and no id the
+// daemon mints can contain, so its absence from every argv is proof rather than
+// coincidence.
+func TestRenameLeavesTmuxNameAlone(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+
+	before := mustStored(t, f, s.ID)
+	hostBefore := hostSessions(t, f)
+	calls := len(f.tmux.Calls())
+
+	renamed, err := f.mgr.Rename(before, hostileLabel)
+	if err != nil {
+		t.Fatalf("Rename() unexpected error: %v", err)
+	}
+
+	// Read before the host is listed again, so that the listing itself is not
+	// one of the calls being counted.
+	if extra := f.tmux.Calls()[calls:]; len(extra) != 0 {
+		t.Errorf("the rename ran %v; a record-only change costs no tmux command", extra)
+	}
+	if got := hostSessions(t, f); !slices.Equal(got, hostBefore) {
+		t.Errorf("the host now holds %v, want %v unchanged", got, hostBefore)
+	}
+
+	after := mustStored(t, f, s.ID)
+	if after.TmuxName() != before.TmuxName() {
+		t.Errorf("the record now addresses %q, want %q: the tmux name derives from the id", after.TmuxName(), before.TmuxName())
+	}
+
+	// Every other field is compared as one value rather than named one at a
+	// time, so a field added to Session later is held to this rule without the
+	// test being revisited.
+	want := before
+	want.Name = hostileLabel
+	if after != want {
+		t.Errorf("the stored record is %+v, want %+v: a rename changes the name and nothing else", after, want)
+	}
+	if renamed != want {
+		t.Errorf("Rename() returned %+v, want the record as stored %+v", renamed, want)
+	}
+}
+
+// The same validation as create, because it is the same call. A name create
+// refuses must not be reachable by renaming into it, and the existing name must
+// survive the refusal — which is the contract's 400 (contracts/actions.md).
+func TestRenameRefusesWhatCreateRefuses(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		to   string
+		want error
+	}{
+		{"an empty name", "", ErrInvalidName},
+		{"a name over the ceiling", strings.Repeat("a", MaxNameLen+1), ErrInvalidName},
+		{"a name that is a tmux window target", "repo:1", ErrNameIsTmuxTarget},
+		{"a name that is a tmux pane target", "repo.1", ErrNameIsTmuxTarget},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newManagerFixture(t)
+			s, _ := mustCreate(t, f, f.request())
+			before := mustStored(t, f, s.ID)
+			calls := len(f.tmux.Calls())
+
+			renamed, err := f.mgr.Rename(before, tc.to)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Rename() = _, %v; want one wrapping %v", err, tc.want)
+			}
+			if renamed != (Session{}) {
+				t.Errorf("Rename() returned %+v alongside an error, want the zero record", renamed)
+			}
+			// The rejected name is caller-supplied text, and an error travels to
+			// the log the trail may not carry it in (FR-042). ValidateName says
+			// what the rule is, never what was sent.
+			if tc.to != "" && strings.Contains(err.Error(), tc.to) {
+				t.Errorf("Rename() error %q repeats the name the caller sent", err)
+			}
+			if after := mustStored(t, f, s.ID); after != before {
+				t.Errorf("the refused rename left %+v, want %+v unchanged", after, before)
+			}
+			if extra := f.tmux.Calls()[calls:]; len(extra) != 0 {
+				t.Errorf("a refused rename ran %v, want no tmux command", extra)
+			}
+		})
+	}
+}
+
 // Prompt's two commands, in the only order that delivers anything: the bytes
 // reach tmux on stdin, and only then is Return pressed. The payload is one
 // research D4 verified send-keys would mangle, and it must appear on no command
@@ -1106,6 +1227,132 @@ func TestPromptNamesNoPromptTextInItsError(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), hostileLabel) {
 		t.Errorf("Prompt() error %q carries the caller's own prompt text", err)
+	}
+}
+
+// FR-016's delivery, asserted as the argv it becomes. The bytes reach tmux on
+// stdin through the load-buffer path prompt text takes, and the newline is among
+// them — so there is no send-keys on this path at all, which is what the count
+// below is really saying: a delivery that pressed Return, or one that typed the
+// command with send-keys -l, adds a third command and fails here.
+//
+// The payload is spelled out rather than read from compactCommand, so an edit to
+// the constant cannot quietly move what this test is checking for.
+func TestCompactUsesBufferPath(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+	before := len(f.tmux.Calls())
+
+	if err := f.mgr.Compact(context.Background(), *s); err != nil {
+		t.Fatalf("Compact() unexpected error: %v", err)
+	}
+
+	name := "crswd-" + s.ID
+	pane := "=" + name + ":"
+	want := []tmuxctl.Call{
+		{Op: tmuxctl.OpPaste, Argv: []string{"tmux", "load-buffer", "-b", name, "-"}, Stdin: []byte("/compact\n")},
+		{Op: tmuxctl.OpPaste, Argv: []string{"tmux", "paste-buffer", "-d", "-b", name, "-t", pane}},
+	}
+
+	got := f.tmux.Calls()[before:]
+	if len(got) != len(want) {
+		t.Fatalf("Compact() ran %d tmux commands, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Op != want[i].Op || !slices.Equal(got[i].Argv, want[i].Argv) {
+			t.Errorf("command %d is %s %q, want %s %q", i, got[i].Op, got[i].Argv, want[i].Op, want[i].Argv)
+		}
+		if !bytes.Equal(got[i].Stdin, want[i].Stdin) {
+			t.Errorf("command %d stdin = %q, want %q", i, got[i].Stdin, want[i].Stdin)
+		}
+		if slices.ContainsFunc(got[i].Argv, func(arg string) bool { return strings.Contains(arg, "/compact") }) {
+			t.Errorf("command %d put the delivered text on the command line: %q", i, got[i].Argv)
+		}
+	}
+}
+
+// data-model.md's one field change for this milestone. Compact is activity — it
+// delivers into the session exactly as a prompt does — so it defers the idle
+// deadline exactly as a prompt does.
+//
+// The API path gets that from Resolve. This is the other path: a browser holds no
+// per-session credential, so it reaches its session through View, which is
+// required not to touch the clock (FR-034f). If this method did not, nothing on
+// that path would, and the reaper would go on measuring a session an operator is
+// driving as idle.
+func TestCompactDefersTheIdleDeadline(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+
+	// Later than creation on purpose, for the reason the View/Resolve pair needs
+	// it: Store.Touch only ever moves the clock forward, so a daemon whose clock
+	// stood still where the record was written would prove nothing.
+	later := f.now.Add(30 * time.Minute)
+	mgr := f.managerAt(t, f.store, later)
+
+	if err := mgr.Compact(context.Background(), *s); err != nil {
+		t.Fatalf("Compact() unexpected error: %v", err)
+	}
+
+	stored := mustStored(t, f, s.ID)
+	if !stored.LastActivity.Equal(later) {
+		t.Errorf("the compact left the idle clock at %v, want it advanced to %v", stored.LastActivity, later)
+	}
+	if !stored.IdleDeadline().Equal(later.Add(IdleTimeout)) {
+		t.Errorf("the idle deadline is %v, want the hour after the compact %v", stored.IdleDeadline(), later.Add(IdleTimeout))
+	}
+}
+
+// The two records Compact refuses before it executes anything — Prompt's two,
+// refused for Prompt's reasons. Neither is reachable through a handler: View
+// answers a dead session as it answers an unknown id, and no route can produce a
+// record with no id at all. They are checked here because nothing above this
+// package can reach them, and a guard nothing exercises is a guard that will be
+// missing when something does.
+func TestCompactRefusesWhatItCannotDeliver(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	live, _ := mustCreate(t, f, f.request())
+
+	dead := *live
+	dead.State = StateDead
+
+	cases := map[string]struct {
+		session Session
+		want    error
+	}{
+		"a dead session":      {dead, ErrSessionDead},
+		"a record with no id": {Session{Owner: auth.CallerOperator, State: StateStarting}, ErrSessionNotFound},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			// Counted rather than compared: the fixture's create already ran four
+			// commands, and what this asserts is that the refusal added none.
+			before := len(f.tmux.Calls())
+			stored := mustStored(t, f, live.ID)
+
+			if err := f.mgr.Compact(context.Background(), c.session); !errors.Is(err, c.want) {
+				t.Fatalf("Compact() = %v, want %v", err, c.want)
+			}
+			if after := len(f.tmux.Calls()); after != before {
+				t.Errorf("the refused compact ran %v; a refusal must cost no tmux command",
+					f.tmux.Calls()[before:after])
+			}
+			// The live record is the one a mistaken guard would have touched: both
+			// refusals name a session the store either holds under another state or
+			// does not hold at all.
+			if after := mustStored(t, f, live.ID); after != stored {
+				t.Errorf("the refused compact left %+v, want %+v unchanged", after, stored)
+			}
+		})
 	}
 }
 
@@ -2101,5 +2348,424 @@ func TestNewManagerUsesTheHostClock(t *testing.T) {
 	}
 	if _, ok := m.clock.(systemClock); !ok {
 		t.Errorf("NewManager() clock is %T, want systemClock", m.clock)
+	}
+}
+
+// fleetEventsSoFar is everything already delivered to a subscription.
+//
+// It needs no timeout and no polling because there is nothing to wait for:
+// publish sends on the goroutine that changed the fleet, so every event a change
+// produced is in the channel before the call that made it has returned. A
+// deadline here would be hiding that property rather than testing it.
+func fleetEventsSoFar(t *testing.T, ch <-chan FleetEvent) []FleetEvent {
+	t.Helper()
+
+	var got []FleetEvent
+	for {
+		select {
+		case ev, open := <-ch:
+			if !open {
+				t.Fatal("the subscription was closed while the fleet was changing; a watcher is only ever dropped for falling behind")
+			}
+			got = append(got, ev)
+		default:
+			return got
+		}
+	}
+}
+
+// sortedFleet orders events so that a comparison is about which ones happened
+// rather than in what order. Shutdown is why: DestroyAll walks the store's
+// snapshot, which is deliberately in map order, so the sequence of a multi-record
+// teardown is not a property anything may assert.
+func sortedFleet(evs []FleetEvent) []FleetEvent {
+	out := slices.Clone(evs)
+	slices.SortFunc(out, func(a, b FleetEvent) int {
+		if c := strings.Compare(a.ID, b.ID); c != 0 {
+			return c
+		}
+		return strings.Compare(string(a.Kind), string(b.Kind))
+	})
+	return out
+}
+
+func appeared(id string) FleetEvent {
+	return FleetEvent{Kind: FleetAppeared, ID: id, Owner: auth.CallerOperator}
+}
+
+func vanished(id string) FleetEvent {
+	return FleetEvent{Kind: FleetVanished, ID: id, Owner: auth.CallerOperator}
+}
+
+// A fleet an operator is watching may not change behind their back (#15): the
+// reaper destroyed a session while the dashboard went on drawing it as running,
+// because nothing told the page. Every path that adds a record, removes one, or
+// changes how one is drawn is driven here, through the same subscription the
+// stream will hold.
+//
+// The three cases that expect nothing are the non-vacuous half. A create rolled
+// back cleanly, a destroy the host would not confirm, and a request to a session
+// that was already running all leave the fleet exactly as they found it, and
+// announcing any of them would have an open page fetching a card that never
+// appeared or dropping one that is still running.
+func TestEveryFleetChangeEmits(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		// arrange sets the case up and returns two things: the Manager whose
+		// events it is about, and the change to make once a subscriber is
+		// watching. They are separate because the subscription must exist before
+		// the change does — and because the Manager is not always the fixture's
+		// own. The reaper and a restart each build a second one over the same
+		// store, and an event belongs to the Manager the change went through.
+		arrange func(t *testing.T, f managerFixture) (*Manager, func(t *testing.T) []FleetEvent)
+	}{
+		{
+			name: "a create",
+			arrange: func(_ *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
+				return f.mgr, func(t *testing.T) []FleetEvent {
+					s, _ := mustCreate(t, f, f.request())
+					return []FleetEvent{appeared(s.ID)}
+				}
+			},
+		},
+		{
+			// The record is kept, so the fleet gained a session even though the
+			// create reported failure — and the dashboard will draw it.
+			name: "a create whose teardown could not be verified",
+			arrange: func(_ *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
+				return f.mgr, func(t *testing.T) []FleetEvent {
+					f.tmux.FailOp(tmuxctl.OpSendKeys, errTmuxBroken)
+					f.tmux.FailOp(tmuxctl.OpKill, errTmuxBroken)
+
+					if _, _, err := f.mgr.Create(context.Background(), f.request()); !errors.Is(err, ErrOrphanedSession) {
+						t.Fatalf("Create() = _, _, %v; want one wrapping %v", err, ErrOrphanedSession)
+					}
+					held := f.store.List(auth.CallerOperator)
+					if len(held) != 1 {
+						t.Fatalf("the store holds %d records after an unverifiable teardown, want the retained one", len(held))
+					}
+					return []FleetEvent{appeared(held[0].ID)}
+				}
+			},
+		},
+		{
+			name: "a create rolled back cleanly",
+			arrange: func(_ *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
+				return f.mgr, func(t *testing.T) []FleetEvent {
+					f.tmux.FailOp(tmuxctl.OpSendKeys, errTmuxBroken)
+
+					if _, _, err := f.mgr.Create(context.Background(), f.request()); err == nil {
+						t.Fatal("Create() succeeded with send-keys failing")
+					}
+					if n := f.store.Len(); n != 0 {
+						t.Fatalf("the store holds %d records after a verified rollback, want 0", n)
+					}
+					return nil
+				}
+			},
+		},
+		{
+			name: "a destroy",
+			arrange: func(t *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
+				s, _ := mustCreate(t, f, f.request())
+				return f.mgr, func(t *testing.T) []FleetEvent {
+					if err := f.mgr.Destroy(context.Background(), *s); err != nil {
+						t.Fatalf("Destroy() unexpected error: %v", err)
+					}
+					return []FleetEvent{vanished(s.ID)}
+				}
+			},
+		},
+		{
+			// The record is retained for the next sweep, so nothing left the
+			// fleet — which is the one thing a page must not be told.
+			name: "a destroy the host would not confirm",
+			arrange: func(t *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
+				s, _ := mustCreate(t, f, f.request())
+				return f.mgr, func(t *testing.T) []FleetEvent {
+					f.tmux.FailOp(tmuxctl.OpKill, errTmuxBroken)
+
+					if err := f.mgr.Destroy(context.Background(), *s); !errors.Is(err, ErrOrphanedSession) {
+						t.Fatalf("Destroy() = %v; want one wrapping %v", err, ErrOrphanedSession)
+					}
+					if _, err := f.store.Get(s.ID, auth.CallerOperator); err != nil {
+						t.Fatalf("the record was dropped on an unconfirmed teardown: Get() = _, %v", err)
+					}
+					return nil
+				}
+			},
+		},
+		{
+			// Shutdown, and the reason a slow subscriber may not hold one: two
+			// records, one event each, on the way out of the process.
+			name: "shutdown tearing the whole fleet down",
+			arrange: func(t *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
+				first, _ := mustCreate(t, f, f.request())
+				second, _ := mustCreate(t, f, f.request())
+				return f.mgr, func(t *testing.T) []FleetEvent {
+					if _, err := f.mgr.DestroyAll(context.Background()); err != nil {
+						t.Fatalf("DestroyAll() unexpected error: %v", err)
+					}
+					return []FleetEvent{vanished(first.ID), vanished(second.ID)}
+				}
+			},
+		},
+		{
+			// Issue #15 itself. Nobody asked for this teardown, so the event is
+			// the only way an open page can learn of it.
+			name: "the reaper's sweep",
+			arrange: func(t *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
+				s, _ := mustCreate(t, f, f.request())
+				r := reaperAt(t, f, f.now.Add(IdleTimeout))
+				return r.mgr, func(t *testing.T) []FleetEvent {
+					if reaped := mustSweep(t, r); len(reaped) != 1 {
+						t.Fatalf("the sweep took %d sessions, want the idle one", len(reaped))
+					}
+					return []FleetEvent{vanished(s.ID)}
+				}
+			},
+		},
+		{
+			name: "startup adoption",
+			arrange: func(_ *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
+				id := testID("a")
+				f.seedSurvivor(id, f.now.Add(-2*time.Hour))
+				return f.mgr, func(t *testing.T) []FleetEvent {
+					mustAdoptOne(t, f.mgr)
+					return []FleetEvent{appeared(id)}
+				}
+			},
+		},
+		{
+			// #21's discovery: a session that died on its own, found by the one
+			// thing a read does that touches the window.
+			name: "a capture that finds the session already gone",
+			arrange: func(t *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
+				s, _ := mustCreate(t, f, f.request())
+				f.tmux.Vanish(tmuxNamePrefix + s.ID)
+				return f.mgr, func(t *testing.T) []FleetEvent {
+					if _, err := f.mgr.Output(context.Background(), *s); !errors.Is(err, ErrSessionDead) {
+						t.Fatalf("Output() = _, %v; want %v", err, ErrSessionDead)
+					}
+					return []FleetEvent{vanished(s.ID)}
+				}
+			},
+		},
+		{
+			// No record entered or left, and the card an open page is drawing is
+			// wrong all the same: the pill said idle a moment ago.
+			name: "activity that brings an idle session back",
+			arrange: func(t *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
+				s, tok := mustCreate(t, f, f.request())
+				mgr := f.managerAt(t, f.store, f.now.Add(IdleTimeout))
+				return mgr, func(t *testing.T) []FleetEvent {
+					if _, err := mgr.Resolve(s.ID, auth.CallerOperator, tok); err != nil {
+						t.Fatalf("Resolve() unexpected error: %v", err)
+					}
+					return []FleetEvent{{Kind: FleetChanged, ID: s.ID, Owner: auth.CallerOperator}}
+				}
+			},
+		},
+		{
+			// No record entered or left, and the card an open page is drawing is
+			// wrong all the same: it carries a label the daemon no longer holds.
+			name: "a rename",
+			arrange: func(t *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
+				s, _ := mustCreate(t, f, f.request())
+				return f.mgr, func(t *testing.T) []FleetEvent {
+					if _, err := f.mgr.Rename(*s, hostileLabel); err != nil {
+						t.Fatalf("Rename() unexpected error: %v", err)
+					}
+					return []FleetEvent{{Kind: FleetChanged, ID: s.ID, Owner: auth.CallerOperator}}
+				}
+			},
+		},
+		{
+			// The Resolve case's fact, reached the way a browser reaches it. A
+			// compact defers the idle deadline (data-model.md), so the pill that
+			// said idle a moment ago is wrong — again with no record entering or
+			// leaving, and again with nobody but the operator's own action behind it.
+			name: "a compact that brings an idle session back",
+			arrange: func(t *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
+				s, _ := mustCreate(t, f, f.request())
+				mgr := f.managerAt(t, f.store, f.now.Add(IdleTimeout))
+				return mgr, func(t *testing.T) []FleetEvent {
+					if err := mgr.Compact(context.Background(), *s); err != nil {
+						t.Fatalf("Compact() unexpected error: %v", err)
+					}
+					return []FleetEvent{{Kind: FleetChanged, ID: s.ID, Owner: auth.CallerOperator}}
+				}
+			},
+		},
+		{
+			name: "activity on a session that was already running",
+			arrange: func(t *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
+				s, tok := mustCreate(t, f, f.request())
+				return f.mgr, func(t *testing.T) []FleetEvent {
+					if _, err := f.mgr.Resolve(s.ID, auth.CallerOperator, tok); err != nil {
+						t.Fatalf("Resolve() unexpected error: %v", err)
+					}
+					return nil
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newManagerFixture(t)
+			mgr, change := tc.arrange(t, f)
+
+			events, cancel := mgr.Subscribe(auth.CallerOperator)
+			defer cancel()
+
+			want := change(t)
+			got := fleetEventsSoFar(t, events)
+			if !slices.Equal(sortedFleet(got), sortedFleet(want)) {
+				t.Errorf("the fleet announced %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// The non-blocking half of FR-019a, stated the way it will actually be broken: a
+// dashboard tab that stopped reading — a laptop asleep, a browser that never
+// closed the connection — must not be able to hold a teardown open.
+//
+// The subscriber is filled to the brim first, so the destroy's event is the send
+// with nowhere to go. What follows is the whole ruling: the change completes, the
+// events already accepted are still delivered, and the subscription is *closed*
+// rather than quietly missing one. A page whose stream ends can say updates have
+// stopped (FR-020); one still receiving events with a gap in them cannot.
+func TestASubscriberThatStoppedReadingIsDroppedNotWaitedFor(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+
+	// The deferred cancel is itself an assertion: the publisher below closes
+	// this subscription, and a drop that was not idempotent would panic here
+	// rather than in the body.
+	events, cancel := f.mgr.Subscribe(auth.CallerOperator)
+	defer cancel()
+	for range fleetBacklog {
+		f.mgr.emit(FleetChanged, *s)
+	}
+
+	if err := f.mgr.Destroy(context.Background(), *s); err != nil {
+		t.Fatalf("Destroy() = %v; a watcher that stopped reading must not be able to hold a teardown", err)
+	}
+	if _, err := f.store.Get(s.ID, auth.CallerOperator); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("the record survived a destroy run against a full subscriber: Get() = _, %v, want %v", err, ErrSessionNotFound)
+	}
+
+	for i := range fleetBacklog {
+		if _, open := <-events; !open {
+			t.Fatalf("the subscription closed after %d of %d buffered events; nothing already accepted may be discarded", i, fleetBacklog)
+		}
+	}
+	// A select rather than a receive, so that a subscription left open and empty
+	// says so instead of hanging: the drop has already happened if it is going
+	// to, because publish runs on the goroutine the destroy above returned from.
+	select {
+	case ev, open := <-events:
+		if open {
+			t.Fatalf("the subscription is still open after falling behind, next %+v; a watcher that cannot be kept current must be dropped", ev)
+		}
+	default:
+		t.Fatal("the subscription is open and empty after falling behind; a watcher quietly missing an event is a page presenting a fleet it cannot vouch for")
+	}
+}
+
+// The other half of the same rule, and the ordinary case in production: for most
+// of a daemon's life nobody has a dashboard open at all. Every path that emits
+// must complete with no subscriber to send to.
+func TestAFleetChangeCompletesWithNobodyListening(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+
+	mustCreate(t, f, f.request())
+	destroyed, _ := mustCreate(t, f, f.request())
+	if err := f.mgr.Destroy(context.Background(), *destroyed); err != nil {
+		t.Fatalf("Destroy() with nobody watching: %v", err)
+	}
+
+	// One record left, and the sweep is the path that has no request behind it
+	// at all — the one #15 was reported against.
+	r := reaperAt(t, f, f.now.Add(IdleTimeout))
+	if got := mustSweep(t, r); len(got) != 1 {
+		t.Fatalf("the sweep took %d sessions with nobody watching, want the 1 left", len(got))
+	}
+
+	mustCreate(t, f, f.request())
+	if _, err := f.mgr.DestroyAll(context.Background()); err != nil {
+		t.Fatalf("DestroyAll() with nobody watching: %v", err)
+	}
+	if n := f.store.Len(); n != 0 {
+		t.Errorf("the store holds %d records after an unwatched shutdown, want 0", n)
+	}
+}
+
+// Being a stream rather than a page is not a way around the ownership check
+// (FR-019b). The filter is on the subscription rather than on what the
+// subscriber does with what it receives, so a second identity's session cannot
+// reach the wire even if the code that writes it forgets to look.
+func TestAFleetEventReachesOnlyItsOwner(t *testing.T) {
+	t.Parallel()
+
+	const otherOwner auth.CallerID = "a-second-operator"
+
+	f := newManagerFixture(t)
+
+	mine, cancelMine := f.mgr.Subscribe(auth.CallerOperator)
+	defer cancelMine()
+	theirs, cancelTheirs := f.mgr.Subscribe(otherOwner)
+	defer cancelTheirs()
+	// An identity nobody established. Store.Add refuses a record without an
+	// owner, so the only way to ask this is to have skipped the door.
+	nobody, cancelNobody := f.mgr.Subscribe("")
+	defer cancelNobody()
+
+	req := f.request()
+	req.Owner = otherOwner
+	s, _ := mustCreate(t, f, req)
+
+	if got := fleetEventsSoFar(t, mine); len(got) != 0 {
+		t.Errorf("another identity's session produced %v on this owner's subscription; want nothing at all", got)
+	}
+	want := []FleetEvent{{Kind: FleetAppeared, ID: s.ID, Owner: otherOwner}}
+	if got := fleetEventsSoFar(t, theirs); !slices.Equal(got, want) {
+		t.Errorf("the owning identity received %v, want %v", got, want)
+	}
+	if ev, open := <-nobody; open {
+		t.Errorf("Subscribe(\"\") is open and delivered %+v; a caller with no identity must receive nothing and find out at once", ev)
+	}
+}
+
+// Ending a subscription twice is the ordinary case rather than a misuse: the
+// stream defers its cancel and the daemon drops a subscriber that falls behind,
+// so both can happen to one subscription. A close that ran twice would panic in
+// a deferred call, taking down a goroutine that was cleaning up correctly.
+func TestEndingASubscriptionTwiceIsSafe(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	events, cancel := f.mgr.Subscribe(auth.CallerOperator)
+
+	cancel()
+	cancel()
+
+	if ev, open := <-events; open {
+		t.Errorf("a cancelled subscription is still open and delivered %+v", ev)
+	}
+	// Nothing reaches a subscription that ended, and the change itself is
+	// unaffected by having had one.
+	if _, _, err := f.mgr.Create(context.Background(), f.request()); err != nil {
+		t.Errorf("Create() after a cancelled subscription: %v", err)
 	}
 }

@@ -361,10 +361,37 @@ func TestTheFleetStatesWhatAnAdoptedSessionDoesNotKnow(t *testing.T) {
 	}
 }
 
+// sectionOf returns the contents of the first <section class="…"> on a rendered
+// page, so a claim about one region cannot be satisfied by markup somewhere else
+// on it. That distinction is the whole of the empty state's assertions now that
+// the page around it really does carry a control.
+func sectionOf(t *testing.T, page, class string) string {
+	t.Helper()
+
+	opener := `<section class="` + class + `">`
+	_, after, ok := strings.Cut(page, opener)
+	if !ok {
+		t.Fatalf("the page renders no %s:\n%s", opener, page)
+	}
+	body, _, ok := strings.Cut(after, "</section>")
+	if !ok {
+		t.Fatalf("the page's %s is never closed:\n%s", opener, page)
+	}
+	return body
+}
+
 // TestAnEmptyFleetExplainsItselfInsteadOfRenderingNothing is FR-021, and the
 // second half is FR-024a: docs/components.md documents this component with a
-// "Start a session" action, and it must not be here — a browser could not sign
-// the create, so the button would be broken as well as out of scope.
+// "Start a session" action, and it must not be here.
+//
+// The reason it must not be here has changed, and the assertion is worth keeping
+// precisely because of that. Through milestone 2 the answer was that no route
+// existed to take it. T009 and T010 built that route and its form, so the answer
+// is now the design system's: the empty state is the one surface where the rain
+// runs at full strength, and rain never goes behind reading content — "not a
+// pane, a card grid, a form, or a table". The create form is a sibling of this
+// section on the page, which is what the sweeps below are scoped to the section
+// to say.
 func TestAnEmptyFleetExplainsItselfInsteadOfRenderingNothing(t *testing.T) {
 	t.Parallel()
 
@@ -384,45 +411,122 @@ func TestAnEmptyFleetExplainsItselfInsteadOfRenderingNothing(t *testing.T) {
 	if strings.Contains(page, `class="summary"`) {
 		t.Errorf("an empty fleet rendered a summary of nothing:\n%s", page)
 	}
+
+	empty := sectionOf(t, page, "empty")
 	for _, offer := range mutationMarkup {
-		if strings.Contains(strings.ToLower(page), offer) {
-			t.Errorf("the empty state offers %q; there is no route behind this door to take it, and no secret to sign it with:\n%s", offer, page)
+		if strings.Contains(strings.ToLower(empty), offer) {
+			t.Errorf("the empty state offers %q; the rain runs at full strength behind this section, and the design system keeps a control off the rain:\n%s", offer, empty)
 		}
 	}
 	// The action row itself, which the sweep above cannot see: the component
 	// renders it as an empty container, so an action passed here would appear as a
 	// row holding nothing rather than as a control. FR-024a asks for the parameter
 	// to be absent at this call site, and this is that call site.
-	if strings.Contains(page, "empty-action") {
-		t.Errorf("the empty state rendered its action row; this milestone passes no action (FR-024a):\n%s", page)
-	}
-	if strings.Contains(page, "Start") {
-		t.Errorf("the empty state tells the operator to start a session, which this page cannot do:\n%s", page)
+	if strings.Contains(empty, "empty-action") {
+		t.Errorf("the empty state rendered its action row; this page passes no action (FR-024a):\n%s", empty)
 	}
 }
 
-// TestTheRenderedFleetOffersNothingToActWith is FR-024a at the call site rather
-// than at the component, which is where the requirement actually lives: the
-// components take an action row as a parameter and this milestone passes none,
-// so a test that only asked the card whether it *can* render a row says nothing
-// about whether the page asked it to.
+// TestTheRenderedFleetOffersTheCreateForm is T010 at the call site rather than
+// at the component, which is where it can be lost silently: the form is
+// perfectly capable of rendering for a page that never asks it to, and this
+// repository has shipped code nothing called three times.
 //
-// It was a surviving mutation before it was a test. Handing the card an action
-// left every other test in this package green, including both of the component
-// tests written for FR-024a in T013.
-func TestTheRenderedFleetOffersNothingToActWith(t *testing.T) {
+// The empty-fleet row is the one that matters. An operator who owns nothing is
+// exactly the operator who needs to start something, and a form rendered only
+// beside the grid would be missing from the one page where the fleet is empty —
+// a dashboard that can create only once it already has.
+func TestTheRenderedFleetOffersTheCreateForm(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]bool{
+		"an empty fleet":               false,
+		"a fleet with a session in it": true,
+	}
+
+	for name, populated := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFleet(t)
+			if populated {
+				f.fixture.plant(t, session.Session{Name: "refactor the reaper", WorkDir: f.fixture.repo})
+			}
+			page := f.view(t).Body.String()
+
+			create := sectionOf(t, page, "create")
+			form := cardForm.FindStringSubmatch(create)
+			if form == nil {
+				t.Fatalf("the create section on the rendered fleet holds no form, so the control T010 built reaches no operator:\n%s", create)
+			}
+
+			target := strings.TrimPrefix(patternDashboardCreate, "POST ")
+			if !strings.Contains(form[1], `action="`+target+`"`) {
+				t.Errorf("the create form does not post to %q, which is the route this daemon serves for it:\n%s", target, create)
+			}
+			// The token the gate demands, on the form rather than merely on the
+			// page: a hidden field outside every form is submitted by nothing.
+			if !hiddenTokenField.MatchString(form[2]) {
+				t.Errorf("the create form submits no %s, so the gate refuses it:\n%s", fieldPageToken, create)
+			}
+
+			// Outside every card, which is the placement the task is about: a create
+			// names no session, so a form drawn inside a card would act for whichever
+			// card happened to hold it — and would be drawn once per session on a
+			// page that needs it once.
+			if strings.Contains(create, "<article") {
+				t.Errorf("the create form is rendered inside a card:\n%s", create)
+			}
+			if strings.Contains(page, `action="`+target+`"`) && strings.Count(page, `action="`+target+`"`) != 1 {
+				t.Errorf("the page posts to %q %d times; one page offers one create:\n%s", target, strings.Count(page, `action="`+target+`"`), page)
+			}
+		})
+	}
+}
+
+// TestTheRenderedFleetOffersTheDestroyControl is US1 at the call site rather
+// than at the component, which is where it can be lost silently: the card is
+// perfectly capable of rendering a control that no page ever asks it for, and
+// this repository has shipped code nothing called three times.
+//
+// It is the inverse of the test that stood here through milestone 2, when the
+// same assertion read the other way round — no page passed an action, and a card
+// that rendered one anyway was the surviving mutation that test was written for.
+// What has not changed is that the claim is made about the page a browser is
+// handed, and about the card belonging to one session rather than about markup
+// somewhere on it.
+func TestTheRenderedFleetOffersTheDestroyControl(t *testing.T) {
 	t.Parallel()
 
 	f := newFleet(t)
-	f.fixture.plant(t, session.Session{Name: "refactor the reaper", WorkDir: f.fixture.repo})
+	live, _ := f.fixture.plant(t, session.Session{Name: "refactor the reaper", WorkDir: f.fixture.repo})
 	page := f.view(t).Body.String()
+	card := cardFor(t, page, live.ID)
 
-	if strings.Contains(page, "card-actions") {
-		t.Errorf("a card rendered its action row; the dashboard is read-only in this milestone (FR-022, FR-024a):\n%s", page)
+	if !strings.Contains(card, `class="card-actions"`) {
+		t.Fatalf("the card on the rendered fleet carries no action row, so the control T007 built reaches no operator:\n%s", card)
 	}
-	for _, offer := range mutationMarkup {
+	target := strings.Replace(strings.TrimPrefix(patternDashboardDestroy, "POST "), "{"+pathValueID+"}", live.ID, 1)
+	if !strings.Contains(card, `action="`+target+`"`) {
+		t.Errorf("the card's control does not post to %q, which is the route this daemon serves for it:\n%s", target, card)
+	}
+	// The token the gate demands, on the form rather than merely on the page: a
+	// hidden field outside every form is submitted by nothing.
+	form := cardForm.FindStringSubmatch(card)
+	if form == nil {
+		t.Fatalf("the card renders an action row holding no form:\n%s", card)
+	}
+	if !hiddenTokenField.MatchString(form[2]) {
+		t.Errorf("the card's destroy form submits no %s, so the gate refuses it:\n%s", fieldPageToken, card)
+	}
+
+	// The ways this tree does not wire a control, swept over the whole page. A
+	// form and a submit button are the milestone's own choice (research.md R4);
+	// an hx- attribute would do nothing at all here, and a handler attribute is
+	// refused by the policy the daemon sends rather than by review.
+	for _, offer := range scriptedMarkup {
 		if strings.Contains(strings.ToLower(page), offer) {
-			t.Errorf("the fleet page offers %q; the browser door serves GET only, and no page holds a secret to sign a mutation with:\n%s", offer, page)
+			t.Errorf("the fleet page wires a control with %q; this door's actions are plain form posts:\n%s", offer, page)
 		}
 	}
 }
@@ -698,14 +802,16 @@ func TestTheSessionPageRendersTheCardAndTheScreen(t *testing.T) {
 		t.Errorf("the page never says it shows the live screen rather than scrollback (FR-032a):\n%s", page)
 	}
 
-	// FR-024a and FR-022 on this page as well as on the fleet: the card takes an
-	// action row as a parameter and this page passes none either.
-	if strings.Contains(page, "card-actions") {
-		t.Errorf("the session page rendered an action row; the dashboard is read-only in this milestone:\n%s", page)
+	// The action row on this page as well as on the fleet. It is one component,
+	// so a session an operator opened is a session they can act on — a card that
+	// offered its control on one page and not the other would be the two-cards
+	// defect docs/components.md exists to prevent, wearing a permission's clothes.
+	if !strings.Contains(card, `class="card-actions"`) {
+		t.Errorf("the card on the session page carries no action row, and the fleet's does:\n%s", card)
 	}
-	for _, offer := range mutationMarkup {
+	for _, offer := range scriptedMarkup {
 		if strings.Contains(strings.ToLower(page), offer) {
-			t.Errorf("the session page offers %q; the browser door serves GET only and no page holds a secret to sign with:\n%s", offer, page)
+			t.Errorf("the session page wires a control with %q; this door's actions are plain form posts:\n%s", offer, page)
 		}
 	}
 }
@@ -1100,6 +1206,17 @@ func TestASecondOwnersSessionIsInvisibleThroughTheDashboardsOwnRoute(t *testing.
 		Owner: stranger, Name: "not yours", WorkDir: held.fixture.repo, LastActivity: idleAt(testTime),
 	})
 	empty := newFleet(t)
+	// The one byte string on these two pages that differs for a reason having
+	// nothing to do with the fleet. A page token is minted per render from a key
+	// drawn at startup, so two independently seeded daemons disagree about it the
+	// way two processes disagree about any secret — and since T010 an empty fleet
+	// carries one too, in the create form, where before this only a card did.
+	//
+	// Aligned rather than filtered out of the comparison, so the assertion stays
+	// byte for byte. With one key, one identity and one clock reading, the two
+	// mints are the same string, and a token that ever encoded something about
+	// what the host holds would still make these pages differ.
+	empty.pageKey = held.pageKey
 
 	withTheirs, withNothing := held.view(t), empty.view(t)
 	if withTheirs.Body.String() != withNothing.Body.String() {
@@ -1213,6 +1330,155 @@ func claimsFor(k *keyServer, email string) map[string]any {
 	claims := k.claims()
 	claims["email"] = email
 	return claims
+}
+
+// The three shapes a rendered value can take that decide whether it travels
+// anywhere: the field a form submits, the URL a browser follows, and the
+// attribute a script reads. Matching the attribute rather than searching the page
+// for a substring is the point — the claim is not "the token appears once" but
+// "every place that would carry it onwards is free of it".
+//
+// The field pattern is built from fieldPageToken, the constant the gate reads a
+// submitted token out of, so a template that renamed the field it renders is
+// caught here rather than at the first action that silently stops verifying.
+var (
+	hiddenTokenField = regexp.MustCompile(`<input type="hidden" name="` + fieldPageToken + `" value="([^"]*)">`)
+	linkedURL        = regexp.MustCompile(`(?:href|src|action)="([^"]*)"`)
+	dataAttribute    = regexp.MustCompile(`data-[a-zA-Z0-9-]+="([^"]*)"`)
+)
+
+// TestPageTokenNotInURLsOrLogs is T004's whole claim: a page carries the token
+// its own action forms will submit, in a hidden field and in nothing else.
+//
+// **Must fail when** the token is placed in a link — the URL sweep reads every
+// href, src and action on the page — or when it reaches a record, which the sweep
+// of the render's own trail reads. It fails just as directly when the field is not
+// rendered at all, and when the token is minted against anything other than the
+// identity layer 1 verified: a page whose token does not verify for its own viewer
+// is a page whose every action is refused with nothing to say why.
+//
+// The needle is the MAC rather than the whole token. The expiry is a timestamp and
+// discloses nothing; the MAC is the half a forger needs, and searching for it
+// catches a leak that carried the secret without its punctuation.
+func TestPageTokenNotInURLsOrLogs(t *testing.T) {
+	t.Parallel()
+
+	// Quoted from contracts/actions.md rather than read from the constant. A test
+	// that compared fieldPageToken with itself would go on passing through an edit
+	// to the contract's own word, and this is the name every form on every page
+	// and every submission the gate reads have to agree on.
+	if fieldPageToken != "crsw_page_token" { //nolint:gosec // G101 false positive, as on the constant itself in browser.go: this is the field's *name*, which every rendered page carries in plain sight. The value it names is minted per render and appears in no source file.
+		t.Fatalf("the token field is named %q; contracts/actions.md fixes it as %q", fieldPageToken, "crsw_page_token")
+	}
+
+	cases := []struct {
+		page string
+		open func(t *testing.T, f *fleet, id string) *httptest.ResponseRecorder
+	}{
+		{
+			page: "the fleet",
+			open: func(t *testing.T, f *fleet, _ string) *httptest.ResponseRecorder { return f.view(t) },
+		},
+		{
+			// The other page that renders a card, and therefore the other page
+			// whose card will carry action forms.
+			page: "the single-session page",
+			open: func(t *testing.T, f *fleet, id string) *httptest.ResponseRecorder { return f.viewOf(t, id) },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.page, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFleet(t)
+			live, _ := f.fixture.plant(t, session.Session{Name: "refactor the reaper", WorkDir: f.fixture.repo})
+
+			w := tc.open(t, f, live.ID)
+			page := w.Body.String()
+
+			fields := hiddenTokenField.FindAllStringSubmatch(page, -1)
+			if len(fields) == 0 {
+				t.Fatalf("%s renders no hidden %s field, so nothing it offers could ever be submitted:\n%s",
+					tc.page, fieldPageToken, page)
+			}
+			token := fields[0][1]
+			for _, field := range fields[1:] {
+				if field[1] != token {
+					t.Errorf("%s rendered two different tokens (%q and %q); one page render mints one token, and every form on it carries that one",
+						tc.page, token, field[1])
+				}
+			}
+
+			// FR-007 at the minting end. What the gate recomputes on a submission
+			// is this identity's MAC over this expiry, so a token bound to
+			// anything else — a claim off the request, a constant, nobody — is a
+			// page that cannot act. The clock is the fixture's own, the one the
+			// mint measured the expiry on.
+			if err := f.pageKey.verify(token, testOperatorEmail, testTime); err != nil {
+				t.Errorf("%s rendered a token that does not verify for the identity the page was rendered for: %v",
+					tc.page, err)
+			}
+
+			mac := token[strings.LastIndex(token, pageTokenSeparator)+1:]
+			needles := []struct{ what, value string }{
+				{"the page token", token},
+				{"the MAC the page token is made of", mac},
+			}
+
+			urls := linkedURL.FindAllStringSubmatch(page, -1)
+			if len(urls) == 0 {
+				t.Fatalf("%s renders no href, src or action at all, so their freedom from the token asserts nothing:\n%s",
+					tc.page, page)
+			}
+			for _, u := range urls {
+				for _, needle := range needles {
+					if strings.Contains(u[1], needle.value) {
+						t.Errorf("%s carries %s in a URL (%s); a token in a link is a token in a referrer header, a browser history and a proxy log",
+							tc.page, needle.what, u[0])
+					}
+				}
+			}
+
+			for _, attr := range dataAttribute.FindAllStringSubmatch(page, -1) {
+				for _, needle := range needles {
+					if strings.Contains(attr[1], needle.value) {
+						t.Errorf("%s carries %s in a data- attribute (%s), which is a place scripts and extensions read from for no benefit here",
+							tc.page, needle.what, attr[0])
+					}
+				}
+			}
+
+			// Every response header, which is where a Set-Cookie would be: the
+			// token must never become ambient, because a credential that rides on
+			// requests a hostile page triggers is the thing this one exists to
+			// refuse.
+			for name, values := range w.Header() {
+				for _, value := range values {
+					for _, needle := range needles {
+						if strings.Contains(value, needle.value) {
+							t.Errorf("%s carries %s in the %s response header (%q); the hidden field is the only place it belongs",
+								tc.page, needle.what, name, value)
+						}
+					}
+				}
+			}
+
+			// One record for the render, asserted before the trail is searched:
+			// a page that recorded nothing would carry the token zero times for
+			// entirely the wrong reason.
+			if got, want := f.only(t)["decision"], string(audit.Allow); got != want {
+				t.Errorf("%s was recorded as %v; want %v", tc.page, got, want)
+			}
+			trail := f.sink.String()
+			for _, needle := range needles {
+				if strings.Contains(trail, needle.value) {
+					t.Errorf("%s put %s on the record; a trail holds what the daemon derived and never what it handed the browser (FR-035, AR-007):\n%s",
+						tc.page, needle.what, trail)
+				}
+			}
+		})
+	}
 }
 
 // TestTheFleetsRecordCarriesNothingThePageRendered is FR-035 and SC-008 at this

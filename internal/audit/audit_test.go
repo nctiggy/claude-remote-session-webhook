@@ -246,6 +246,14 @@ func TestEmitAcceptsEveryDocumentedAction(t *testing.T) {
 		audit.ActionDashboardView:  "dashboard.view",
 		audit.ActionDashboardAsset: "dashboard.asset",
 		audit.ActionStreamOpen:     "stream.open",
+
+		// research.md R5's additions, the vocabulary of a browser that can write.
+		audit.ActionDashboardCreate:  "dashboard.create",
+		audit.ActionDashboardDestroy: "dashboard.destroy",
+		audit.ActionDashboardRename:  "dashboard.rename",
+		audit.ActionDashboardCompact: "dashboard.compact",
+		audit.ActionDashboardReject:  "dashboard.reject",
+		audit.ActionFleetOpen:        "fleet.open",
 	}
 	for action, want := range cases {
 		t.Run(want, func(t *testing.T) {
@@ -306,6 +314,69 @@ func TestEmitWritesTheBrowserDoorActionsInTheExistingShape(t *testing.T) {
 			}
 			if bare["caller"] != audit.CallerUnknown {
 				t.Errorf("caller = %v, want %q", bare["caller"], audit.CallerUnknown)
+			}
+		})
+	}
+}
+
+// FR-024: a change made from the browser must be distinguishable in the trail
+// from the same change made through the API, and FR-026 needs a cross-site
+// refusal to stand out from a layer-1 one. Both are properties of the spelling
+// alone, which is why they are asserted here rather than at the routes: a
+// browser action that reused session.destroy would leave every other test in
+// this package green — the record still emits, still parses, still carries the
+// documented seven keys — and the loss would surface only during an incident,
+// as a grep that quietly conflated two doors.
+func TestDashboardActionsAreDistinctFromAPI(t *testing.T) {
+	t.Parallel()
+
+	// Keyed by the literal so that two constants sharing one spelling is a
+	// duplicate-key compile error, the same construction the documented-action
+	// test relies on.
+	added := map[string]audit.Action{
+		"dashboard.create":  audit.ActionDashboardCreate,
+		"dashboard.destroy": audit.ActionDashboardDestroy,
+		"dashboard.rename":  audit.ActionDashboardRename,
+		"dashboard.compact": audit.ActionDashboardCompact,
+		"dashboard.reject":  audit.ActionDashboardReject,
+		"fleet.open":        audit.ActionFleetOpen,
+	}
+
+	// Every action the trail already spoke before this milestone — milestone 1's
+	// ten and the browser door's four. session.create and session.destroy are the
+	// two a dashboard action is most tempting to reuse, since the daemon does the
+	// identical work behind both.
+	existing := map[audit.Action]string{
+		audit.ActionSessionCreate:  "ActionSessionCreate",
+		audit.ActionSessionPrompt:  "ActionSessionPrompt",
+		audit.ActionSessionDestroy: "ActionSessionDestroy",
+		audit.ActionAuthReject:     "ActionAuthReject",
+		audit.ActionReaperDestroy:  "ActionReaperDestroy",
+		audit.ActionStartupAdopt:   "ActionStartupAdopt",
+		audit.ActionSessionList:    "ActionSessionList",
+		audit.ActionSessionDetail:  "ActionSessionDetail",
+		audit.ActionSessionOutput:  "ActionSessionOutput",
+		audit.ActionUnknownRoute:   "ActionUnknownRoute",
+		audit.ActionAccessReject:   "ActionAccessReject",
+		audit.ActionDashboardView:  "ActionDashboardView",
+		audit.ActionDashboardAsset: "ActionDashboardAsset",
+		audit.ActionStreamOpen:     "ActionStreamOpen",
+	}
+
+	for want, action := range added {
+		t.Run(want, func(t *testing.T) {
+			t.Parallel()
+
+			if string(action) != want {
+				t.Fatalf("action constant = %q, want %q", action, want)
+			}
+			if name, reused := existing[action]; reused {
+				t.Errorf("%q is also %s; a browser-initiated change must be distinguishable from the API's (FR-024)", want, name)
+			}
+			// noun.verb, the naming this package has used since milestone 1: one
+			// dot, both halves lowercase and non-empty.
+			if parts := strings.Split(want, "."); len(parts) != 2 || parts[0] == "" || parts[1] == "" || want != strings.ToLower(want) {
+				t.Errorf("action %q is not noun.verb", want)
 			}
 		})
 	}

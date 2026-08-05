@@ -15,6 +15,14 @@
 // the run produced and asserts that not one of those values is anywhere in them
 // (FR-042, FR-043, docs/security.md §3, SC-013).
 //
+// It drives the **browser door's mutating half** as well (T021): all four named
+// actions, each in the shapes that hold a marked value at the moment a record is
+// written, plus the fleet stream that reports what they changed. Those routes
+// hold three things no read on this door ever does — the page token that
+// authorised the change, a name a caller typed into a box on their own
+// dashboard, and the command a compact delivers into a live session — and each
+// of the three is swept for here.
+//
 // It drives the **browser door** on the same daemon and into the same trail
 // (T021c). That door is where the richest secrets are in scope at once: the page
 // a card links to renders a whole screen, the fleet renders every name and
@@ -48,8 +56,10 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -96,6 +106,16 @@ const (
 	// so a refusal that quoted the reason it gave would be a refusal built from
 	// the request rather than authored by this daemon.
 	markSite = "CANARY-SITE"
+
+	// markPageProof is the action routes' own (T021): the value a rendered page
+	// carries to prove a mutating request came from it. Two of them are swept —
+	// the one this daemon really minted, which is collected at the render because
+	// no fixture can predict it, and the forged one below.
+	//
+	// It is spelled for the proof rather than for the token it is, because
+	// gosec's G101 fires on any constant whose *name* says credential — the same
+	// reason markBearer is spelled for its header.
+	markPageProof = "CANARY-PAGEPROOF"
 )
 
 // The values themselves.
@@ -168,6 +188,61 @@ const (
 	// reason `cross-site` is — anything that is not `same-origin` is — and it is
 	// marked because the daemon is holding it while it decides to refuse.
 	hostileSite = markSite + "-a-page-the-operator-never-opened"
+
+	// browserName is the label the create form carries. It is a second name
+	// beside leakName so that a record built from the browser's create is
+	// distinguishable from one built from the API's — both match markName, which
+	// is what the sweep asks, and only one of them was ever typed into a form.
+	browserName = markName + "-from-the-browser"
+
+	// hostileRename is finding 408's row: a name inside FR-027's alphabet that is
+	// shaped like a credential.
+	//
+	// The rename is the one action route whose caller text is rendered back into
+	// the answer, so it is the one most likely to reach a record on the way past.
+	// Shaped like a credential rather than merely marked, because that is the
+	// case an operator would care about most: a trail that quoted a session name
+	// back would be quoting whatever an operator had been persuaded to type into
+	// the box, and a secret is a thing people get persuaded to type into boxes.
+	hostileRename = markName + "-signature-4f3c2b1a09e8d7c6b5a4938271605f4e"
+
+	// forgedPageProof is a page token this daemon never minted. What a caller
+	// presents is as unwelcome in the trail as what the daemon issued, and the
+	// gate is holding this one while it decides to refuse.
+	forgedPageProof = markPageProof + "-not-one-this-daemon-minted"
+)
+
+// compactDelivered is Claude Code's own command, and it is what a compact puts
+// into a session (FR-016b, AR-007).
+//
+// Spelled here rather than read from internal/session's own constant, for the
+// reason headerAssertion is spelled out: a fixture built out of the code under
+// test proves only that the code agrees with itself. It is not marked, because
+// it cannot be — the daemon authors these bytes and a canary would change what
+// reaches the session — so the sweep looks for the literal instead. That is
+// exactly the claim contracts/actions.md makes: the delivered text is never
+// audited, and neither is the route's own name for it.
+const compactDelivered = "/compact"
+
+// The pane's escape sequences, in the two spellings a sink can hold them in.
+//
+// markPane already catches a whole screen. These catch the narrower leak: a
+// record or a log line built from the *control* bytes of a capture — a terminal
+// title, an OSC reply, a colour run — none of which carries a canary, because
+// none of them is text a caller wrote.
+//
+// Both spellings are needed because the two sinks encode differently. The audit
+// trail is JSON, where an encoder writes U+001B as a backslash escape and the
+// raw byte never appears; the daemon's log output is plain text, where the raw
+// byte does. A sweep carrying only one of them would be blind to whichever sink
+// it did not match.
+var (
+	paneEscapeRaw = "\x1b[31m"
+
+	// Joined from two pieces rather than written whole: the whole of it is a
+	// backslash-u escape, and a tool that rewrote it into the byte it names would
+	// silently turn this mark into a duplicate of the one above.
+	paneEscapeJSON = `\u` + "001b[31m"
 )
 
 // headerAssertion is where the edge writes the browser's identity.
@@ -183,6 +258,27 @@ const headerAssertion = "Cf-Access-Jwt-Assertion"
 // standard rather than to this daemon, and a fixture taking it from the code
 // under test would prove only that the code agrees with itself.
 const headerFetchSite = "Sec-Fetch-Site"
+
+// siteSameOrigin is the one Sec-Fetch-Site value a mutating dashboard request is
+// admitted on, and contentTypeForm is what a browser submits a form as. Both
+// belong to a web standard rather than to this daemon, and both are spelled out
+// here for the reason headerFetchSite is.
+const (
+	siteSameOrigin  = "same-origin"
+	contentTypeForm = "application/x-www-form-urlencoded"
+)
+
+// The form fields contracts/actions.md fixes, spelled out for the reason the
+// headers above are: a fixture that read them from the code under test would
+// prove only that the code agrees with itself, and would keep passing through an
+// edit that renamed the field a real page submits.
+const (
+	fieldName    = "name"
+	fieldWorkDir = "work_dir"
+	fieldConfirm = "confirm"
+	fieldProof   = "crsw_page_token"
+	confirmYes   = "yes"
+)
 
 // leakKeyID is the key id the key server publishes its one key under.
 const leakKeyID = "leak-suite-key-1"
@@ -360,6 +456,16 @@ type leakRun struct {
 	fleetBody  string
 	viewBody   string
 	streamBody string
+
+	// The mutating half's own (T021). pageProof is the token the fleet render
+	// handed this browser, kept because it is the one marked value in this suite
+	// the daemon authors rather than the fixture — no constant can predict it, so
+	// the sweep has to collect it. The two cards are what the create and the
+	// rename answered with, which is where a name a caller typed comes back out.
+	pageProof       string
+	createdCard     string
+	renamedCard     string
+	fleetStreamBody string
 }
 
 func leakConfig(root, teamDomain string) *config.Config {
@@ -625,6 +731,271 @@ func (r *leakRun) present(t *testing.T, status int, what, path, assertion string
 	return got
 }
 
+// browserAction is one mutating request to the dashboard: the route, the
+// identity presented at layer 1, what the browser says about where the request
+// came from, and the form it carries.
+//
+// A struct rather than four parameters, for the reason leakRequest is one on the
+// other door: several of the cases below differ from an admitted one by exactly
+// one member, and a call site naming which member is a call site that says what
+// it is driving.
+type browserAction struct {
+	path      string
+	assertion string
+	site      string
+	form      url.Values
+}
+
+// act drives one mutating request through the browser door and fails unless the
+// daemon answered as expected.
+//
+// It carries three things a read on this door never does — the fetch-metadata
+// header the gate requires, a form-encoded body, and the page token inside it —
+// and nothing else: no signature and no bearer token, because a browser holds
+// neither (FR-012).
+//
+// The encoded body is kept whole, like the API door's, because FR-042 forbids a
+// record built from a body and not only from the interesting parts of one. The
+// response body is never printed, for the reason want's and present's are not.
+func (r *leakRun) act(t *testing.T, status int, what string, action browserAction) *httptest.ResponseRecorder {
+	t.Helper()
+
+	if !slices.Contains(r.assertions, action.assertion) {
+		r.assertions = append(r.assertions, action.assertion)
+	}
+
+	body := action.form.Encode()
+	if body != "" {
+		r.bodies = append(r.bodies, body)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, action.path, strings.NewReader(body))
+	req.Header.Set(headerAssertion, action.assertion)
+	req.Header.Set("Content-Type", contentTypeForm)
+	if action.site != "" {
+		req.Header.Set(headerFetchSite, action.site)
+	}
+
+	got := httptest.NewRecorder()
+	r.srv.ServeHTTP(got, req)
+	if got.Code != status {
+		t.Fatalf("%s answered %d; want %d", what, got.Code, status)
+	}
+	return got
+}
+
+// The two things this suite reads back out of rendered markup.
+//
+// Both patterns are contracts/actions.md's own shapes rather than anything taken
+// from the template set: a render that stopped emitting the hidden field, or a
+// card that stopped naming its session, fails here rather than quietly leaving
+// the sweep with nothing to look for.
+var (
+	hiddenProof = regexp.MustCompile(`name="` + fieldProof + `" value="([^"]+)"`)
+
+	cardDestroyForm = regexp.MustCompile(
+		fmt.Sprintf(`action="/dashboard/sessions/([0-9a-f]{%d})/destroy"`, session.IDLen))
+)
+
+// proofFrom takes the page token out of a page this daemon rendered.
+//
+// Collected rather than computed, because it cannot be computed: the key behind
+// it is 32 bytes read from the process's entropy at startup and served by no
+// route, which is the property that makes the token worth sweeping for at all.
+func (r *leakRun) proofFrom(t *testing.T, page string) string {
+	t.Helper()
+
+	found := hiddenProof.FindStringSubmatch(page)
+	if found == nil {
+		t.Fatal("the rendered page carries no page token, so no action below could be authorised")
+	}
+	return found[1]
+}
+
+// idFrom takes a session's identifier out of a card this daemon rendered, which
+// is how this suite learns the id of a session the browser itself created.
+func (r *leakRun) idFrom(t *testing.T, card string) string {
+	t.Helper()
+
+	found := cardDestroyForm.FindStringSubmatch(card)
+	if found == nil {
+		t.Fatal("the rendered card names no session, so every action below would drive nothing")
+	}
+	return found[1]
+}
+
+// driveTheActionRoutes runs the daemon through the browser door's mutating half
+// (T021): all four actions contracts/actions.md fixes, each in the shapes that
+// have a marked value in hand at the moment a record is written.
+//
+// Nothing before this proved these routes are silent. The read side was swept
+// when the door was added, and its records are written while the daemon holds a
+// screen and a verified address; these are written while it holds those *and*
+// three values no read has ever had — the page token that authorised the change,
+// the name a caller typed into a box on their own dashboard, and the command a
+// compact delivers into a live session.
+//
+// Every admitted request carries a real token and says same-origin, which is
+// AR-005 rather than convenience: a test satisfies the cross-site checks, it
+// never disables them. The two refusals at the end fail each half deliberately,
+// which is the other thing AR-005 asks for.
+//
+// The session these actions name is one the browser itself created. The API's
+// session has to survive to the end of driveEveryOperation, and a browser
+// destroy would end it half way through.
+func (r *leakRun) driveTheActionRoutes(t *testing.T, assertion string) {
+	t.Helper()
+
+	r.pageProof = r.proofFrom(t, r.fleetBody)
+	authorised := func(fields url.Values) url.Values {
+		fields.Set(fieldProof, r.pageProof)
+		return fields
+	}
+
+	// A create, and the card it answers with. It is the one action that mints a
+	// bearer token and hands it to nobody (FR-013) — a credential in scope with
+	// no field anywhere to hold it, which is the arrangement most likely to end
+	// with one in a record instead.
+	r.createdCard = r.act(t, http.StatusOK, "POST /dashboard/sessions", browserAction{
+		path: "/dashboard/sessions", assertion: assertion, site: siteSameOrigin,
+		form: authorised(url.Values{fieldName: {browserName}, fieldWorkDir: {r.repo}}),
+	}).Body.String()
+
+	id := r.idFrom(t, r.createdCard)
+	// A screen for it, so every later action against this session is decided by a
+	// daemon holding pane content along with everything else.
+	r.tmux.SetPane(session.Session{ID: id}.TmuxName(), paneText)
+
+	// The two ways a create is refused, each carrying something a refusal would be
+	// tempted to quote back: a name spelled as a tmux target, and a working
+	// directory no allowlist approves.
+	r.act(t, http.StatusBadRequest, "a browser create naming a tmux target", browserAction{
+		path: "/dashboard/sessions", assertion: assertion, site: siteSameOrigin,
+		form: authorised(url.Values{fieldName: {targetName}, fieldWorkDir: {r.repo}}),
+	})
+	r.act(t, http.StatusBadRequest, "a browser create outside every approved root", browserAction{
+		path: "/dashboard/sessions", assertion: assertion, site: siteSameOrigin,
+		form: authorised(url.Values{fieldName: {browserName}, fieldWorkDir: {outsideRoot}}),
+	})
+
+	// A rename carrying finding 408's credential-shaped name, and the card it
+	// comes back in. This is the one route on this door whose caller text is
+	// rendered into its own answer, so it is the one where a record built from
+	// the response would be built from something a caller wrote.
+	r.renamedCard = r.act(t, http.StatusOK, "POST /dashboard/sessions/{id}/rename", browserAction{
+		path: "/dashboard/sessions/" + id + "/rename", assertion: assertion, site: siteSameOrigin,
+		form: authorised(url.Values{fieldName: {hostileRename}}),
+	}).Body.String()
+	r.act(t, http.StatusBadRequest, "a browser rename naming a tmux target", browserAction{
+		path: "/dashboard/sessions/" + id + "/rename", assertion: assertion, site: siteSameOrigin,
+		form: authorised(url.Values{fieldName: {targetName}}),
+	})
+
+	// A compact. Its payload is the daemon's own and holds no secret, and it is
+	// swept all the same: contracts/actions.md forbids the delivered text from
+	// the trail whatever it happens to say, because the next payload delivered
+	// through this door may not be a constant.
+	r.act(t, http.StatusAccepted, "POST /dashboard/sessions/{id}/compact", browserAction{
+		path: "/dashboard/sessions/" + id + "/compact", assertion: assertion, site: siteSameOrigin,
+		form: authorised(url.Values{}),
+	})
+
+	// And a compact the host refused, which is the only way this route reaches
+	// its fail-closed answer at all — the not-found arm beside it needs a session
+	// that vanished between two reads of the store. It is worth driving twice
+	// over: the error tmux hands back carries pane-shaped text, so the daemon is
+	// holding *both* the delivered command and something it did not author while
+	// it decides what to record.
+	r.tmux.FailOp(tmuxctl.OpPaste, errHostError)
+	r.act(t, http.StatusInternalServerError, "a browser compact the host refused", browserAction{
+		path: "/dashboard/sessions/" + id + "/compact", assertion: assertion, site: siteSameOrigin,
+		form: authorised(url.Values{}),
+	})
+	r.tmux.FailOp(tmuxctl.OpPaste, nil)
+
+	// A destroy without the confirming step, and then with it. The first is the
+	// one refusal on this door that tears nothing down (FR-029); the second ends
+	// the session this function created.
+	r.act(t, http.StatusBadRequest, "a browser destroy that was not confirmed", browserAction{
+		path: "/dashboard/sessions/" + id + "/destroy", assertion: assertion, site: siteSameOrigin,
+		form: authorised(url.Values{}),
+	})
+	r.act(t, http.StatusOK, "POST /dashboard/sessions/{id}/destroy", browserAction{
+		path: "/dashboard/sessions/" + id + "/destroy", assertion: assertion, site: siteSameOrigin,
+		form: authorised(url.Values{fieldConfirm: {confirmYes}}),
+	})
+
+	// An action against an identifier this daemon never minted, which is the
+	// uniform not-found three of the four routes share.
+	r.act(t, http.StatusNotFound, "a browser compact of a session that never existed", browserAction{
+		path:      "/dashboard/sessions/" + strings.Repeat("e", session.IDLen) + "/compact",
+		assertion: assertion, site: siteSameOrigin, form: authorised(url.Values{}),
+	})
+
+	// The gate refusing, in each half separately (FR-002c). Both hold a
+	// caller-authored value while they decide — the fetch-metadata header a
+	// hostile page's form carries, and a page token nobody minted — and both are
+	// recorded as dashboard.reject rather than access.reject, because an identity
+	// that got in and then failed is a different event from one that never got in.
+	r.act(t, http.StatusForbidden, "a browser destroy from a page that is not the dashboard", browserAction{
+		path: "/dashboard/sessions/" + id + "/destroy", assertion: assertion, site: hostileSite,
+		form: authorised(url.Values{fieldConfirm: {confirmYes}}),
+	})
+	r.act(t, http.StatusForbidden, "a browser destroy carrying a page token nobody minted", browserAction{
+		path: "/dashboard/sessions/" + id + "/destroy", assertion: assertion, site: siteSameOrigin,
+		form: url.Values{fieldConfirm: {confirmYes}, fieldProof: {forgedPageProof}},
+	})
+}
+
+// watchTheFleet drives the fleet event stream (contracts/fleet-stream.md), which
+// is the browser door's second stream and the last route this sweep had never
+// read.
+//
+// Its record is written at the open (FR-016a) by a handler that has, at that
+// moment, subscribed to every change to every session this identity owns — names,
+// working directories, and the reaper's own teardowns among them — and is about
+// to hold that subscription for as long as the tab stays open. One record per
+// open is the whole of what the trail is allowed to say about it.
+//
+// The ending is the heartbeat rather than a change, and that is deliberate. A
+// change would have to be published from another goroutine while this one is
+// blocked inside ServeHTTP, and what this sweep needs from the route is the
+// record written before either could arrive. T015 is where the event path is
+// driven, and fleetPayload is what keeps a name off that wire.
+func (r *leakRun) watchTheFleet(t *testing.T, assertion string) {
+	t.Helper()
+
+	// The refusal first, so that the stream the sweep goes on to read is opened by
+	// a daemon that has already had a reason to write the header down.
+	refused := httptest.NewRequest(http.MethodGet, "/dashboard/fleet/stream", nil)
+	refused.Header.Set(headerAssertion, assertion)
+	refused.Header.Set(headerFetchSite, hostileSite)
+
+	got := httptest.NewRecorder()
+	r.srv.ServeHTTP(got, refused)
+	if got.Code != http.StatusUnauthorized {
+		t.Fatalf("a fleet stream opened from a page that is not the dashboard answered %d; want %d",
+			got.Code, http.StatusUnauthorized)
+	}
+
+	// And the admitted one, ended the way the pane stream's is: the peer cancels
+	// as soon as the first thing has been written, which is the same ending a
+	// closed tab gives and the only one available to a fixture with no socket.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	peer := &streamPeer{closed: cancel}
+	watched := httptest.NewRequest(http.MethodGet, "/dashboard/fleet/stream", nil).WithContext(ctx)
+	watched.Header.Set(headerAssertion, assertion)
+	watched.Header.Set(headerFetchSite, siteSameOrigin)
+	r.srv.ServeHTTP(peer, watched)
+
+	r.fleetStreamBody = peer.body.String()
+	if r.fleetStreamBody == "" {
+		t.Fatal("the fleet stream delivered nothing, so its record's silence about the fleet proves nothing")
+	}
+}
+
 // driveTheBrowserDoor runs the daemon through every way the dashboard answers
 // (T021c): the fleet, the page a card links to, an embedded asset, the two
 // not-founds, and layer 1 refusing.
@@ -666,6 +1037,12 @@ func (r *leakRun) driveTheBrowserDoor(t *testing.T, id string) {
 		"/", mintAssertion(t, forgedKeyID, r.identityClaims(allowedEmail)))
 
 	r.watchTheLiveStream(t, id, admitted)
+
+	// The mutating half of this door, and the stream that tells an open page what
+	// it changed (T021). Both run on the same admitted identity as the reads
+	// above, into the same trail.
+	r.driveTheActionRoutes(t, admitted)
+	r.watchTheFleet(t, admitted)
 }
 
 // watchTheLiveStream drives the one route that carries a session's screen for as
@@ -992,6 +1369,20 @@ func (r *leakRun) marks() []leakMark {
 		{"a signing key an assertion named", markKeyID},
 		{"a path a caller asked for", markPath},
 		{"the fetch-metadata header a caller sent", markSite},
+		// The mutating half's own (T021, contracts/actions.md).
+		{"a page token a caller presented", markPageProof},
+		{"the text a compact delivered", compactDelivered},
+		{"a pane's escape sequences, raw", paneEscapeRaw},
+		{"a pane's escape sequences as JSON writes them", paneEscapeJSON},
+	}
+
+	// The page token this daemon really minted. It is added here rather than
+	// listed above because it is the one swept value the daemon authored instead
+	// of the fixture: the key behind it is read from the process's entropy at
+	// startup, so no constant could name it and the render is the only place it
+	// can be collected from.
+	if r.pageProof != "" {
+		marks = append(marks, leakMark{"the page token a render handed a browser", r.pageProof})
 	}
 
 	for _, credential := range r.credentials {
@@ -1128,6 +1519,16 @@ func TestTheLeakSuiteReallyDrivesTheDaemon(t *testing.T) {
 		// And the live stream (T029), which is the browser door's fifth and the
 		// only record in this list written while the daemon is mid-response.
 		"stream.open",
+		// The mutating half's own (T021). dashboard.reject is deliberately in this
+		// list beside access.reject: the two are the same door refusing at two
+		// different depths, and a sweep that accepted either would pass on a run
+		// where the action gate never refused anything at all.
+		"dashboard.create", "dashboard.destroy", "dashboard.rename", "dashboard.compact",
+		"dashboard.reject",
+		// And the fleet stream, which is the second record in this list written
+		// while the daemon is mid-response — and the only one written by a handler
+		// that is about to stay open.
+		"fleet.open",
 	}
 	got := make(map[string]bool)
 	for _, rec := range run.records(t) {
@@ -1163,10 +1564,46 @@ func TestTheLeakSuiteReallyDrivesTheDaemon(t *testing.T) {
 		// The live stream's own screen, which is the value the record written at
 		// its open was holding when it was written.
 		{"the pane content", markPane, "the live output stream", run.streamBody},
+		// The mutating half's own two (T021). A rename is the one action that
+		// renders a caller's text back into its answer, and a compact is the one
+		// that puts daemon-authored text into a live session — so these are the
+		// two values the action routes had that no read on this door ever holds.
+		{"a credential-shaped session name", markName, "the card a rename rendered back", run.renamedCard},
+		{"the compact command", compactDelivered, "the payload that reached the host", run.pasted(t)},
 	} {
 		if !strings.Contains(reached.text, reached.mark) {
 			t.Errorf("%s never reached %s, so its absence from the trail proves nothing", reached.what, reached.where)
 		}
+	}
+
+	// The page token, which is the one swept value the daemon authored. Its
+	// evidence is that a render put it on a page and a handler wrote it back into
+	// a card — and, above that, that every admitted action carried it and none of
+	// them was refused, which driveTheActionRoutes already asserted.
+	if run.pageProof == "" {
+		t.Error("no page token was ever rendered, so the sweep proves nothing about one")
+	} else if !strings.Contains(run.createdCard, run.pageProof) {
+		t.Error("the card a create rendered back carries no page token, so the sweep is reading a value the daemon never put on a page")
+	}
+
+	// The pane's escape sequences live inside the pane content the rows above
+	// already prove reached the output response and both streams. This is the
+	// fixture checking itself: an edit that took the escapes out of paneText
+	// would leave two marks in the sweep that nothing ever produced.
+	if !strings.Contains(paneText, paneEscapeRaw) {
+		t.Error("the fixture's pane content carries no escape sequences, so the sweep's silence about them proves nothing")
+	}
+
+	// And that the JSON spelling really is the one an encoder produces. A mark
+	// nothing could ever match is a mark that passes for ever; encoding the raw
+	// sequence is what tells the two apart.
+	encoded, err := json.Marshal(paneEscapeRaw)
+	if err != nil {
+		t.Fatalf("encode the pane's escape sequences: %v", err)
+	}
+	if !strings.Contains(string(encoded), paneEscapeJSON) {
+		t.Errorf("a JSON encoder writes the pane's escape sequences as %s, not as %q; the sweep is looking for a spelling nothing produces",
+			encoded, paneEscapeJSON)
 	}
 
 	if len(run.credentials) == 0 {

@@ -28,7 +28,18 @@
   cards is told them apart by exactly the string a sighted reader uses: without
   that, every nameless card in the fleet announces "no name recorded" and
   nothing else.
-*/}}<article class="card">
+
+  data-session is the same identifier again, on the element the fleet's live half
+  replaces and removes (US3, crswd.js). The stream names a change by identifier
+  and nothing else (contracts/fleet-stream.md), so this is what turns "session
+  9f2c… changed" into one card on this page — the card the paragraph below
+  renders the identifier *into* is the wrong thing to match on, because a name or
+  a working directory holding the same 32 characters would match it too.
+
+  It carries no credential, for the reason the link's href does not: an
+  identifier is a handle, and what authorises anything done with it is the
+  identity the daemon verifies on the request that arrives.
+*/}}<article class="card" data-session="{{ .ID }}">
 <h2 class="card-heading"><a class="card-link" href="/sessions/{{ .ID }}/view" aria-describedby="card-id-{{ .ID }}">{{ if .Name }}<span class="card-name" title="{{ .Name }}">{{ .Name }}</span>{{ else }}<span class="card-unknown">no name recorded</span>{{ end }}</a></h2>
 {{ template "status-pill" .DisplayState }}
 <p class="card-id" id="card-id-{{ .ID }}" title="{{ .ID }}">{{ .ID }}</p>
@@ -39,16 +50,115 @@
 <dd>{{ .Age }}</dd>
 </dl>
 {{/*
-  The action row is a parameter this milestone passes none of (FR-024a). The
-  dashboard is read-only (FR-022), and a browser holds no shared secret, so
-  destroy, compact and rename would be non-functional here as well as out of
-  scope.
+  The action row, and the first control on this card that changes something on
+  the host (US1, FR-024a's parameter finally filled rather than restored).
 
-  It is guarded rather than removed so milestone 3 puts buttons inside a row
-  that already exists instead of restoring markup this one deleted. What goes
-  inside is docs/components.md's Button, which FR-024a forbids building now —
-  so the container is the whole of what this milestone can build, and the two
-  action-row tests prove both halves: nothing renders without the parameter,
-  and the row renders with it.
-*/}}{{ with .Actions }}<div class="card-actions"></div>{{ end }}
+  It is rendered from the page token rather than from a separate flag, and that
+  is the whole of what decides whether a card offers an action: the token is the
+  evidence the gate in browser.go demands, so a card rendered without one could
+  only offer a control the gate is certain to refuse. Milestone 2 kept the row
+  behind a parameter so this milestone would fill a container that already
+  existed; what tells a filled row from an empty one is now the one value that
+  makes its contents work. Both production call sites mint one (dashboard.go),
+  so every card a person sees carries this; a card built without one — which is
+  what a component test constructs — offers nothing, which is FR-018a's
+  discipline about absent values applied to an affordance.
+
+  The form is a sibling of the heading and never a descendant of it: the card
+  carries exactly one <a> and no control is nested inside it (FR-027). That is
+  not only a markup rule — an <a> wrapping a submit control is a link and a
+  button occupying one target, and the destroy is the one action here that ends
+  an unsandboxed shell.
+
+  A submit button and a plain form post, per research.md R4: keyboard operability
+  is then a property of the element rather than work (FR-028), the focus ring the
+  design system already sets applies to it untouched, and the action still works
+  with no script running at all. Nothing here is htmx: this tree loads one script
+  and it draws rain and reads panes.
+
+  Two hidden fields and no more. The token partial is the same one every form in
+  this milestone includes, so the field a page renders and the field the gate
+  reads stay one spelling. `confirm=yes` is FR-029's deliberate confirming step,
+  spelled here a second time because this template set is parsed with no function
+  map and cannot reach fieldConfirm/confirmYes in actions.go — the test is what
+  holds the two together.
+
+  What the operator is told afterwards is the route's answer and not this
+  template's: destroyed, unconfirmed, unverified, or failed, each a sentence
+  (actions.go). The card is replaced by it, so a failure states that it failed
+  instead of the card quietly returning as it was (FR-030, FR-031).
+
+  The button is described by the identifier for the reason the link above is: a
+  fleet of adopted cards would otherwise offer a column of controls that announce
+  the same word, each ending a different shell.
+*/}}{{ with .PageToken }}<div class="card-actions">
+<form method="post" action="/dashboard/sessions/{{ $.ID }}/destroy">{{ template "page-token" . }}<input type="hidden" name="confirm" value="yes"><button class="button button-danger" type="submit" aria-describedby="card-id-{{ $.ID }}">Destroy</button></form>
+{{/*
+  The second control on this card, and the only one of the four actions that
+  changes nothing on the host (US4). It sits in the same row, outside the same
+  single anchor, for the reason the destroy does (FR-027): a text entry nested
+  inside a link is a target a click cannot mean two things about.
+
+  It takes the row to itself rather than sitting beside the destroy, which is the
+  stylesheet's doing and not this template's. What belongs here is the ordering:
+  the destroy is first because it was, and moving it would be churn this
+  milestone's ground rules forbid.
+
+  The field carries a real <label>, per docs/components.md's Form rules — a
+  placeholder is not a label. Its `for` is the session's own identifier, like
+  every other id this card renders, because a fleet of cards each carrying a
+  field called "rename-name" would be a page where every label names the first
+  one. The button is described by the identifier for the reason the destroy's is:
+  a column of controls announcing the same word, each relabelling a different
+  session, tells a screen reader nothing.
+
+  The field is rendered with the name the daemon currently holds, so the operator
+  edits a label rather than recalling one. It discloses nothing the card does not
+  already show as text two lines above, and an adopted session — which has no
+  recorded name at all (FR-018a) — renders an empty field rather than an invented
+  one.
+
+  The client hints are the create form's, pinned to ValidateName by a test for
+  the reason that form's are: a hint that drifted would refuse a name this daemon
+  would have accepted, in a native bubble this daemon never wrote. Validation is
+  server-side and authoritative — the route calls the same ValidateName and
+  answers a refusal in words.
+
+  `name` is fieldName in actions.go, spelled here a second time because this
+  template set is parsed with no function map and cannot reach a Go constant. The
+  test in partials_test.go is what holds the two spellings together, exactly as
+  it does for `confirm=yes` above.
+
+  A plain form post and a submit button, per research.md R4, and no
+  data-submit-once: a second rename to the same name is the same end state, so
+  this is not the idempotence exposure the create is (research.md R7).
+*/}}<form class="card-rename" method="post" action="/dashboard/sessions/{{ $.ID }}/rename">{{ template "page-token" . }}<label class="field-label" for="rename-{{ $.ID }}">New name</label><input class="field-input" id="rename-{{ $.ID }}" type="text" name="name" value="{{ $.Name }}" required maxlength="64" pattern="[-a-zA-Z0-9]+" autocomplete="off" spellcheck="false"><button class="button" type="submit" aria-describedby="card-id-{{ $.ID }}">Rename</button></form>
+{{/*
+  The third control on this card, and the only one that reaches into the running
+  assistant (US5). It is outside the same single anchor as the other two, for the
+  reason they are (FR-027).
+
+  It is last rather than beside the destroy, and that is a decision twice over.
+  The rename above takes the row to itself, so appending leaves every existing
+  control exactly where it was — the churn this milestone's ground rules forbid.
+  It also keeps this button off the line the destroy sits on: two plain buttons
+  sharing a row are two targets a mis-aimed click can confuse, and one of them
+  ends an unsandboxed shell while this one asks a question the session may ignore.
+
+  One hidden field and no more. A compact carries nothing to choose: what is
+  delivered is a constant in the manager (FR-016), and a text field here would be
+  the general "type into the session" surface this milestone puts out of scope,
+  arriving as markup rather than as a decision.
+
+  No data-submit-once, unlike the create form. A second compact is a second
+  delivery the operator asked for, so this is not the idempotence exposure that
+  one is (research.md R7) — and the create's guard is the exception on this page
+  rather than the rule.
+
+  What the operator is told afterwards is the route's answer: that the compact was
+  *delivered*, never that it happened (actions.go, FR-016a). The daemon hands the
+  bytes to the session and cannot see what the assistant does with them, so the
+  card is replaced by a sentence that says exactly that much.
+*/}}<form method="post" action="/dashboard/sessions/{{ $.ID }}/compact">{{ template "page-token" . }}<button class="button" type="submit" aria-describedby="card-id-{{ $.ID }}">Compact</button></form>
+</div>{{ end }}
 </article>
