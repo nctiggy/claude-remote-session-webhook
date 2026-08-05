@@ -1230,6 +1230,132 @@ func TestPromptNamesNoPromptTextInItsError(t *testing.T) {
 	}
 }
 
+// FR-016's delivery, asserted as the argv it becomes. The bytes reach tmux on
+// stdin through the load-buffer path prompt text takes, and the newline is among
+// them — so there is no send-keys on this path at all, which is what the count
+// below is really saying: a delivery that pressed Return, or one that typed the
+// command with send-keys -l, adds a third command and fails here.
+//
+// The payload is spelled out rather than read from compactCommand, so an edit to
+// the constant cannot quietly move what this test is checking for.
+func TestCompactUsesBufferPath(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+	before := len(f.tmux.Calls())
+
+	if err := f.mgr.Compact(context.Background(), *s); err != nil {
+		t.Fatalf("Compact() unexpected error: %v", err)
+	}
+
+	name := "crswd-" + s.ID
+	pane := "=" + name + ":"
+	want := []tmuxctl.Call{
+		{Op: tmuxctl.OpPaste, Argv: []string{"tmux", "load-buffer", "-b", name, "-"}, Stdin: []byte("/compact\n")},
+		{Op: tmuxctl.OpPaste, Argv: []string{"tmux", "paste-buffer", "-d", "-b", name, "-t", pane}},
+	}
+
+	got := f.tmux.Calls()[before:]
+	if len(got) != len(want) {
+		t.Fatalf("Compact() ran %d tmux commands, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Op != want[i].Op || !slices.Equal(got[i].Argv, want[i].Argv) {
+			t.Errorf("command %d is %s %q, want %s %q", i, got[i].Op, got[i].Argv, want[i].Op, want[i].Argv)
+		}
+		if !bytes.Equal(got[i].Stdin, want[i].Stdin) {
+			t.Errorf("command %d stdin = %q, want %q", i, got[i].Stdin, want[i].Stdin)
+		}
+		if slices.ContainsFunc(got[i].Argv, func(arg string) bool { return strings.Contains(arg, "/compact") }) {
+			t.Errorf("command %d put the delivered text on the command line: %q", i, got[i].Argv)
+		}
+	}
+}
+
+// data-model.md's one field change for this milestone. Compact is activity — it
+// delivers into the session exactly as a prompt does — so it defers the idle
+// deadline exactly as a prompt does.
+//
+// The API path gets that from Resolve. This is the other path: a browser holds no
+// per-session credential, so it reaches its session through View, which is
+// required not to touch the clock (FR-034f). If this method did not, nothing on
+// that path would, and the reaper would go on measuring a session an operator is
+// driving as idle.
+func TestCompactDefersTheIdleDeadline(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+
+	// Later than creation on purpose, for the reason the View/Resolve pair needs
+	// it: Store.Touch only ever moves the clock forward, so a daemon whose clock
+	// stood still where the record was written would prove nothing.
+	later := f.now.Add(30 * time.Minute)
+	mgr := f.managerAt(t, f.store, later)
+
+	if err := mgr.Compact(context.Background(), *s); err != nil {
+		t.Fatalf("Compact() unexpected error: %v", err)
+	}
+
+	stored := mustStored(t, f, s.ID)
+	if !stored.LastActivity.Equal(later) {
+		t.Errorf("the compact left the idle clock at %v, want it advanced to %v", stored.LastActivity, later)
+	}
+	if !stored.IdleDeadline().Equal(later.Add(IdleTimeout)) {
+		t.Errorf("the idle deadline is %v, want the hour after the compact %v", stored.IdleDeadline(), later.Add(IdleTimeout))
+	}
+}
+
+// The two records Compact refuses before it executes anything — Prompt's two,
+// refused for Prompt's reasons. Neither is reachable through a handler: View
+// answers a dead session as it answers an unknown id, and no route can produce a
+// record with no id at all. They are checked here because nothing above this
+// package can reach them, and a guard nothing exercises is a guard that will be
+// missing when something does.
+func TestCompactRefusesWhatItCannotDeliver(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	live, _ := mustCreate(t, f, f.request())
+
+	dead := *live
+	dead.State = StateDead
+
+	cases := map[string]struct {
+		session Session
+		want    error
+	}{
+		"a dead session":      {dead, ErrSessionDead},
+		"a record with no id": {Session{Owner: auth.CallerOperator, State: StateStarting}, ErrSessionNotFound},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			// Counted rather than compared: the fixture's create already ran four
+			// commands, and what this asserts is that the refusal added none.
+			before := len(f.tmux.Calls())
+			stored := mustStored(t, f, live.ID)
+
+			if err := f.mgr.Compact(context.Background(), c.session); !errors.Is(err, c.want) {
+				t.Fatalf("Compact() = %v, want %v", err, c.want)
+			}
+			if after := len(f.tmux.Calls()); after != before {
+				t.Errorf("the refused compact ran %v; a refusal must cost no tmux command",
+					f.tmux.Calls()[before:after])
+			}
+			// The live record is the one a mistaken guard would have touched: both
+			// refusals name a session the store either holds under another state or
+			// does not hold at all.
+			if after := mustStored(t, f, live.ID); after != stored {
+				t.Errorf("the refused compact left %+v, want %+v unchanged", after, stored)
+			}
+		})
+	}
+}
+
 // Output's one command and what it does to the answer. The pane holds a colour
 // sequence, a title-setting OSC, and a raw control byte — none of which may
 // survive into a value the API will hand a client (FR-031) — and the instant
@@ -2451,6 +2577,23 @@ func TestEveryFleetChangeEmits(t *testing.T) {
 				return f.mgr, func(t *testing.T) []FleetEvent {
 					if _, err := f.mgr.Rename(*s, hostileLabel); err != nil {
 						t.Fatalf("Rename() unexpected error: %v", err)
+					}
+					return []FleetEvent{{Kind: FleetChanged, ID: s.ID, Owner: auth.CallerOperator}}
+				}
+			},
+		},
+		{
+			// The Resolve case's fact, reached the way a browser reaches it. A
+			// compact defers the idle deadline (data-model.md), so the pill that
+			// said idle a moment ago is wrong — again with no record entering or
+			// leaving, and again with nobody but the operator's own action behind it.
+			name: "a compact that brings an idle session back",
+			arrange: func(t *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
+				s, _ := mustCreate(t, f, f.request())
+				mgr := f.managerAt(t, f.store, f.now.Add(IdleTimeout))
+				return mgr, func(t *testing.T) []FleetEvent {
+					if err := mgr.Compact(context.Background(), *s); err != nil {
+						t.Fatalf("Compact() unexpected error: %v", err)
 					}
 					return []FleetEvent{{Kind: FleetChanged, ID: s.ID, Owner: auth.CallerOperator}}
 				}

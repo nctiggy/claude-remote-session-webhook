@@ -34,6 +34,18 @@ const claudeStartCommand = "claude --dangerously-skip-permissions"
 // arguments in order, so one exec both types the line and runs it.
 const enterKey = "Enter"
 
+// compactCommand is Claude Code's own /compact and the newline that submits it
+// (FR-016, research D2). Nine bytes, every one of them delivered as data.
+//
+// The newline rides in the payload rather than arriving afterwards as an Enter
+// key, which is the difference between this delivery and Prompt's two commands.
+// It is not that these bytes are dangerous — the daemon authored them, and they
+// carry no ";" for tmux's parser to eat. It is that a second way of putting
+// characters into a pane is the one a later hand copies for text this daemon did
+// not author, so there is one way, and FR-016 names it: the load-buffer path
+// prompt text already takes.
+const compactCommand = "/compact\n"
+
 // Clock is the daemon's view of time, injectable so that the deadlines derived
 // from a record are exact in a test rather than approximately now.
 //
@@ -694,6 +706,86 @@ func (m *Manager) Prompt(ctx context.Context, s Session, text string) error {
 	}
 	if err := m.tmux.SendKeys(ctx, name, enterKey); err != nil {
 		return fmt.Errorf("submit the prompt in session %s: %w", s.ID, err)
+	}
+	return nil
+}
+
+// Compact asks a session to compact itself, by delivering Claude Code's own
+// /compact into it (FR-016).
+//
+// What it may claim is the whole of its shape. The daemon cannot see what the
+// assistant is carrying, so nothing here observes a compaction: a nil error
+// means the bytes reached the pane and means nothing else (FR-016a). A caller
+// turning that into "compacted" would be asserting something no part of this
+// process looked at.
+//
+// The text is a constant and not a parameter, which is what keeps this a *named*
+// action rather than a way to type into a session from a browser — spec.md puts
+// that surface out of scope for this milestone, and a text argument here is how
+// it would arrive without anyone deciding to add it.
+//
+// The delivered bytes are never audited, logged, or named in an error (FR-016b,
+// AR-007), exactly as prompt text is not. They hold no secret, being the
+// daemon's own; the trail is searched for them anyway, because a record carrying
+// what was delivered into a session is the shape of the leak whatever this
+// particular payload says.
+//
+// The record is the one View returned, for the reason Prompt takes the one
+// Resolve returned: ownership has already been settled, the target derives from
+// the ID alone (FR-034), and there is no second lookup here to disagree with the
+// first.
+func (m *Manager) Compact(ctx context.Context, s Session) error {
+	// Prompt's two guards, refused for Prompt's reasons: an empty ID would build
+	// the bare prefix as a target, and a dead session's window is already gone.
+	// Neither is reachable behind View, and both fail closed here so that a
+	// future caller with a hand-made record cannot deliver into whatever an empty
+	// target names.
+	if s.ID == "" {
+		return fmt.Errorf("compact session: %w", ErrSessionNotFound)
+	}
+	if s.State == StateDead {
+		return fmt.Errorf("compact session %s: %w", s.ID, ErrSessionDead)
+	}
+
+	// The clock moves, and it moves before the bytes do. Both halves of that are
+	// decisions.
+	//
+	// It moves at all because compact is activity: it delivers into the session
+	// exactly as a prompt does, so it defers the idle deadline exactly as a
+	// prompt does (data-model.md). On the API path Resolve is what does this, and
+	// this is not that path — a browser presents no per-session credential, so it
+	// reaches its session through View, which is required *not* to touch the
+	// clock (FR-034f). A compact that left it alone too would be an operator
+	// driving a session the reaper is still measuring as idle.
+	//
+	// It moves first because Touch is the store's own answer to whether this
+	// record is still there and still live, taken under the store's lock rather
+	// than off the copy the caller is holding. A record the reaper collected
+	// between that caller's View and this call is refused here, before anything
+	// is pasted. The other order fails worse: a Touch that failed after a
+	// delivery had already landed would report a compact that did happen.
+	now := m.clock.Now()
+	displayed := s.DisplayState(now)
+	if err := m.store.Touch(s.ID, now); err != nil {
+		return fmt.Errorf("compact session %s: %w", s.ID, err)
+	}
+	s.LastActivity = now
+
+	// Resolve's comparison, here for Resolve's reason: a deferred idle deadline
+	// can move a card from idle back to running (data-model.md), which is a fleet
+	// change an operator would recognise even though no record entered or left.
+	// It sits beside the store mutation rather than after the delivery, so the
+	// event stays true whatever tmux then says — what changed is the record, and
+	// the record changed on the line above.
+	if after := s.DisplayState(now); after != displayed {
+		m.emit(FleetChanged, s)
+	}
+
+	// One call, and nothing after it. The newline is in the payload, so there is
+	// no Return to press and no send-keys on this path at all. The error names
+	// the session and never what was delivered.
+	if err := m.tmux.Paste(ctx, s.TmuxName(), []byte(compactCommand)); err != nil {
+		return fmt.Errorf("deliver the compact command to session %s: %w", s.ID, err)
 	}
 	return nil
 }
