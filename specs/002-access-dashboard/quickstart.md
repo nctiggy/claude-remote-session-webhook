@@ -143,6 +143,18 @@ dash / | grep -c  'Content-Security-Policy'      # 1 — the exact policy from d
 and working directory are unknown — an explicit statement, never a plausible-looking
 placeholder.
 
+**The fleet corrects itself without being reloaded** (SC-006a, FR-017a):
+
+```bash
+dash / | grep -o 'data-refresh="[0-9]*"'         # the interval the daemon chose
+```
+
+In the browser, leave the fleet open, create a session from the terminal, and touch
+nothing: the card must appear on its own inside that interval. Destroy it the same way
+and the card must go. A tab left in the background does **not** refresh on the timer
+(FR-017d) — it refreshes when you switch back to it, which is what to check rather than
+a request every interval in the trail.
+
 **In the browser** (SC-009, SC-010, SC-011): read the page in greyscale — every
 state still distinguishable by its label; walk it entirely by keyboard — a visible
 focus ring at every stop; set reduced motion — zero rain canvases render.
