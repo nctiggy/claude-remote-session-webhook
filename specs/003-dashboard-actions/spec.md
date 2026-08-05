@@ -226,6 +226,86 @@ An operator reduces a long-running session's accumulated context without losing 
 
 ---
 
+## Glossary
+
+Terms this specification uses in a fixed sense. They are recorded because each one has an
+ordinary-English reading that is subtly wrong here, and an implementer who applies the ordinary
+reading will produce something that passes review and fails the requirement.
+
+| Term | Means exactly | Does **not** mean |
+|---|---|---|
+| **Uniform response** | Byte-identical body, status, and headers — including `Content-Length`. Two responses that differ only in length are distinguishable, and a difference an attacker can measure is a disclosure | "Similar", "the same kind of error", or "also a 404" |
+| **Verified teardown** | The host was asked, after the kill, whether the session still exists, and answered that it does not. Only an affirmative absence counts | The kill command returned without error |
+| **Could not be verified** | A third outcome, distinct from success and from failure. The session may still be alive | A failure, or something to retry silently |
+| **Ownership check** | Comparing the target session's owner against the authenticated identity on *every* request, including when production has one identity | A filter applied when listing |
+| **Mutating request** | Any request that changes daemon or host state: create, destroy, rename, compact | Only requests using a particular HTTP method |
+| **Positive evidence** | Something the request affirmatively carries that a cross-origin page cannot produce. Absence is never evidence | The absence of something suspicious |
+| **Bound to identity** | Usable only by the identity it was minted for; presenting it as another identity fails | Issued while that identity was signed in |
+| **Delivered** (of `/compact`) | The bytes reached the session. Nothing about what the session then did | Compaction happened |
+
+## Anti-Requirements
+
+Things that must **not** be built. Each is listed because it is a plausible, well-intentioned thing
+to add while implementing something nearby — the failure mode is helpfulness, not carelessness.
+
+- **AR-001**: Do not add a route, parameter, or response field that reports whether a session
+  identifier exists. Every "does this exist" answer must go through the uniform response.
+- **AR-002**: Do not make any error message more specific in order to be more helpful. FR-004 is a
+  requirement, not a placeholder for better copy.
+- **AR-003**: Do not store the per-session bearer token anywhere the browser can reach, including
+  page state, local storage, and any response body other than the API's create response.
+- **AR-004**: Do not add a "force" or "skip verification" path to destroy. The unverified outcome
+  exists to be reported, not routed around.
+- **AR-005**: Do not weaken, bypass, or make conditional either half of the cross-site defence,
+  including for same-origin requests, development builds, or tests. Tests must satisfy the checks,
+  not disable them.
+- **AR-006**: Do not add retry logic that re-sends a mutating request. A retried destroy is a second
+  destroy.
+- **AR-007**: Do not log, audit, or include in an error the value of any browser credential, the
+  shared secret, prompt text, pane content, or the text delivered by compact.
+- **AR-008**: Do not refactor, rename, or "tidy" code outside the task at hand, however obvious the
+  improvement. Constitution IV governs this.
+- **AR-009**: Do not introduce a third-party dependency for CSRF handling, session management,
+  templating, or streaming. `go.sum` must remain absent.
+- **AR-010**: Do not make the fleet stream a general-purpose event channel. It carries changes to
+  the authenticated identity's own sessions and nothing else.
+
+## Verification Map
+
+Every requirement is verifiable, and this states how. It exists so that task generation is
+mechanical rather than interpretive: a task can be written directly from a row, and a reviewer can
+check the row rather than re-deriving the intent.
+
+| Requirements | Verified by | Must fail when |
+|---|---|---|
+| FR-001, FR-002a, FR-003 | A request per action carrying a valid identity credential but a foreign `Origin` | The `Origin` check is removed |
+| FR-002b | A request per action carrying a valid identity credential and correct `Origin` but no page token | The token check is removed |
+| FR-002c, SC-001a | Two tests, each disabling exactly one half of the defence | Either half is load-bearing only in combination |
+| FR-004 | Byte comparison of refusal responses across every distinct failure cause | Any cause produces a distinguishable response |
+| FR-005 | The existing milestone 1 API suite, unchanged and still passing | Any signed-API behaviour changes |
+| FR-006 | A search of every byte served to the browser — pages, assets, stream frames — for the secret | The secret reaches the browser by any path |
+| FR-007 | A credential minted for one identity, presented as a second | It is accepted for the second identity |
+| FR-008 | A credential presented after its identity's session ends | It is still accepted |
+| FR-009, FR-010 | Destroy via the browser path against a host that reports survival | Success is reported instead of unverified |
+| FR-011, FR-012 | Browser create with: a rejected name, a directory outside the approved roots, a symlink escaping them, a non-directory | Any is accepted, or a session is created |
+| FR-013 | Inspection of the create response and rendered page for the token | The token appears anywhere client-side |
+| FR-014, FR-015, SC-012 | Rename, then every identifier-based operation against the session | Any operation changes behaviour, or the tmux name changes |
+| FR-016, FR-016a | Compact, then confirm the session is alive and drivable | Success of the compaction itself is claimed |
+| FR-017, SC-009 | Every action against the synthetic second owner's session, byte-compared against an unknown identifier | Any action distinguishes the two |
+| FR-018 | The same action submitted twice concurrently | Two effects occur |
+| FR-019, FR-019b | A second identity's session created while the first identity's stream is open | It appears on the wrong stream |
+| FR-020, SC-011 | The stream severed, then the page inspected | The page continues to present the fleet as current |
+| FR-022 | Fleet update rendered under a reduced-motion preference | Anything animates |
+| FR-023, FR-024, SC-008 | A full exercise of every action, allowed and denied, then the audit log parsed | Any request produces zero or two records, or a browser action is indistinguishable from its API equivalent |
+| FR-025, FR-026, AR-007 | The same audit capture searched for every forbidden value | Any appears |
+| FR-027 | Count of anchors in the card template | It exceeds one |
+| FR-028, SC-007 | Keyboard-only traversal of every action control | Any control is unreachable or has no visible focus |
+| FR-029 | Destroy attempted without the confirming step | It proceeds |
+| FR-030, FR-031 | Outcome rendering inspected for text content and for the in-progress, complete, and failed states | An outcome is colour-only, or a failure renders as a revert |
+| FR-032, SC-010, AR-009 | Presence of `go.sum` | It exists |
+| FR-033 | The milestone 1 and 2 uniform-response suites, re-run | Any weakens |
+| FR-034 | Restart with sessions present | Anything survives that should not |
+
 ## Resolved Decisions
 
 Three decisions were the operator's rather than the specification's. All three are answered; the
