@@ -78,6 +78,18 @@ const patternSessionStream = "GET /sessions/{" + pathValueID + "}/stream"
 // guessing.
 const contentTypeEventStream = "text/event-stream; charset=utf-8"
 
+// maxScreenBytes caps one encoded screen. A tmux pane holds kilobytes — an
+// 80x24 default is about 2 KiB and a very large terminal a few hundred — so 8
+// MiB is roughly three orders of magnitude above anything reachable, chosen so
+// that it can only ever fire when the assumption behind it has broken rather
+// than when a pane is merely big. See screenEvent for what that assumption is.
+const maxScreenBytes = 8 << 20
+
+// errScreenTooLarge is returned rather than truncating. A half a screen is not
+// a smaller screen, it is a wrong one, and this route's whole framing design
+// exists to make a partial event impossible.
+var errScreenTooLarge = errors.New("encoded screen exceeds the wire limit")
+
 // streamInterval is the cadence contracts/stream.md fixes: one write per stream
 // per second. It sits under the lag a human notices and bounds the work a
 // watched session costs the host to one exec per second no matter how many tabs
@@ -163,6 +175,25 @@ func screenEvent(screen string) ([]byte, error) {
 		// not be encoded is still pane content, and pane content in an error string
 		// is pane content in whatever records the error (FR-042).
 		return nil, fmt.Errorf("encode the screen for the wire: %w", err)
+	}
+
+	// The bound the allocation below relies on, stated where it is relied upon.
+	//
+	// tmuxctl.CapturePane passes -p with no -S or -E, so what arrives is the
+	// visible screen rather than the scrollback behind it — kilobytes for any
+	// real pane. This check does not defend against that being large; it defends
+	// against it having *silently stopped being bounded*, which is what adding
+	// -S upstream would do (issue #41).
+	//
+	// The limit is deliberately far above any screen a terminal can hold, so it
+	// never truncates what a reader is trying to read. Refusing is also the right
+	// failure: send() does not record an unframed screen as sent, so the next
+	// capture retries rather than the stream going quiet on a stale screen.
+	//
+	// The size is safe to name in the error. The screen is not (FR-042).
+	if len(encoded) > maxScreenBytes {
+		return nil, fmt.Errorf("%w: %d bytes exceeds the %d-byte screen limit",
+			errScreenTooLarge, len(encoded), maxScreenBytes)
 	}
 
 	event := make([]byte, 0, len(dataField)+len(encoded)+len(groupEnd))
