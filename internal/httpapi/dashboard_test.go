@@ -401,28 +401,49 @@ func TestAnEmptyFleetExplainsItselfInsteadOfRenderingNothing(t *testing.T) {
 	}
 }
 
-// TestTheRenderedFleetOffersNothingToActWith is FR-024a at the call site rather
-// than at the component, which is where the requirement actually lives: the
-// components take an action row as a parameter and this milestone passes none,
-// so a test that only asked the card whether it *can* render a row says nothing
-// about whether the page asked it to.
+// TestTheRenderedFleetOffersTheDestroyControl is US1 at the call site rather
+// than at the component, which is where it can be lost silently: the card is
+// perfectly capable of rendering a control that no page ever asks it for, and
+// this repository has shipped code nothing called three times.
 //
-// It was a surviving mutation before it was a test. Handing the card an action
-// left every other test in this package green, including both of the component
-// tests written for FR-024a in T013.
-func TestTheRenderedFleetOffersNothingToActWith(t *testing.T) {
+// It is the inverse of the test that stood here through milestone 2, when the
+// same assertion read the other way round — no page passed an action, and a card
+// that rendered one anyway was the surviving mutation that test was written for.
+// What has not changed is that the claim is made about the page a browser is
+// handed, and about the card belonging to one session rather than about markup
+// somewhere on it.
+func TestTheRenderedFleetOffersTheDestroyControl(t *testing.T) {
 	t.Parallel()
 
 	f := newFleet(t)
-	f.fixture.plant(t, session.Session{Name: "refactor the reaper", WorkDir: f.fixture.repo})
+	live, _ := f.fixture.plant(t, session.Session{Name: "refactor the reaper", WorkDir: f.fixture.repo})
 	page := f.view(t).Body.String()
+	card := cardFor(t, page, live.ID)
 
-	if strings.Contains(page, "card-actions") {
-		t.Errorf("a card rendered its action row; the dashboard is read-only in this milestone (FR-022, FR-024a):\n%s", page)
+	if !strings.Contains(card, `class="card-actions"`) {
+		t.Fatalf("the card on the rendered fleet carries no action row, so the control T007 built reaches no operator:\n%s", card)
 	}
-	for _, offer := range mutationMarkup {
+	target := strings.Replace(strings.TrimPrefix(patternDashboardDestroy, "POST "), "{"+pathValueID+"}", live.ID, 1)
+	if !strings.Contains(card, `action="`+target+`"`) {
+		t.Errorf("the card's control does not post to %q, which is the route this daemon serves for it:\n%s", target, card)
+	}
+	// The token the gate demands, on the form rather than merely on the page: a
+	// hidden field outside every form is submitted by nothing.
+	form := cardForm.FindStringSubmatch(card)
+	if form == nil {
+		t.Fatalf("the card renders an action row holding no form:\n%s", card)
+	}
+	if !hiddenTokenField.MatchString(form[2]) {
+		t.Errorf("the card's destroy form submits no %s, so the gate refuses it:\n%s", fieldPageToken, card)
+	}
+
+	// The ways this tree does not wire a control, swept over the whole page. A
+	// form and a submit button are the milestone's own choice (research.md R4);
+	// an hx- attribute would do nothing at all here, and a handler attribute is
+	// refused by the policy the daemon sends rather than by review.
+	for _, offer := range scriptedMarkup {
 		if strings.Contains(strings.ToLower(page), offer) {
-			t.Errorf("the fleet page offers %q; the browser door serves GET only, and no page holds a secret to sign a mutation with:\n%s", offer, page)
+			t.Errorf("the fleet page wires a control with %q; this door's actions are plain form posts:\n%s", offer, page)
 		}
 	}
 }
@@ -698,14 +719,16 @@ func TestTheSessionPageRendersTheCardAndTheScreen(t *testing.T) {
 		t.Errorf("the page never says it shows the live screen rather than scrollback (FR-032a):\n%s", page)
 	}
 
-	// FR-024a and FR-022 on this page as well as on the fleet: the card takes an
-	// action row as a parameter and this page passes none either.
-	if strings.Contains(page, "card-actions") {
-		t.Errorf("the session page rendered an action row; the dashboard is read-only in this milestone:\n%s", page)
+	// The action row on this page as well as on the fleet. It is one component,
+	// so a session an operator opened is a session they can act on — a card that
+	// offered its control on one page and not the other would be the two-cards
+	// defect docs/components.md exists to prevent, wearing a permission's clothes.
+	if !strings.Contains(card, `class="card-actions"`) {
+		t.Errorf("the card on the session page carries no action row, and the fleet's does:\n%s", card)
 	}
-	for _, offer := range mutationMarkup {
+	for _, offer := range scriptedMarkup {
 		if strings.Contains(strings.ToLower(page), offer) {
-			t.Errorf("the session page offers %q; the browser door serves GET only and no page holds a secret to sign with:\n%s", offer, page)
+			t.Errorf("the session page wires a control with %q; this door's actions are plain form posts:\n%s", offer, page)
 		}
 	}
 }

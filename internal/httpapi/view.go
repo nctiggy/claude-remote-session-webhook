@@ -52,15 +52,7 @@ type sessionView struct {
 	// to build.
 	Age string
 
-	// Actions is the action row docs/components.md documents on this component:
-	// destroy, compact, rename. This milestone passes none (FR-024a). The
-	// dashboard is read-only (FR-022) and a browser holds no shared secret, so
-	// the row would be non-functional as well as out of scope — the parameter
-	// exists so milestone 3 fills a row that is already there rather than
-	// restoring markup this milestone deleted.
-	Actions []actionView
-
-	// PageToken is the value every action form on this card will submit: minted
+	// PageToken is the value every action form on this card submits: minted
 	// for this render and bound to the identity layer 1 verified for it
 	// (FR-002b, FR-007, contracts/actions.md). It is the card's parameter rather
 	// than the page's because the per-session forms are the card's own, and one
@@ -77,6 +69,13 @@ type sessionView struct {
 	// makes the zero value safe: a card built without a token offers nothing that
 	// looks like one. That is FR-018a's discipline — state the absence, never
 	// render something that reads like a value — applied to a credential.
+	//
+	// It is also what decides whether the card renders its action row at all. The
+	// row was milestone 2's absent parameter (FR-024a), kept so that this
+	// milestone would fill a container rather than restore one; what fills it is
+	// a form, and a form with no token is a control the gate is certain to
+	// refuse. So there is one value here rather than two, and no arrangement in
+	// which a card offers an action it could not authorise.
 	PageToken string
 }
 

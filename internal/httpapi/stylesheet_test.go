@@ -335,11 +335,31 @@ var templateAction = regexp.MustCompile(`(?s)\{\{.*?\}\}`)
 
 const composedClass = "\x00"
 
-// renderedClasses is every class name the embedded templates put in the markup.
+// actionFragments is the markup an action route writes for itself.
+//
+// Every other byte a browser is handed comes out of web/templates, and the
+// sweeps below walk that tree — but an action's answer replaces the card it
+// acted on, and by the time a destroy has an answer there is no record left to
+// render a card from, so those four sentences are composed in Go (actions.go).
+// They are markup all the same. Without them here, a class only a fragment
+// carries is styled by a rule "no template renders" in one direction and served
+// unstyled in the other, and both failures look like the opposite mistake.
+var actionFragments = map[string][]byte{
+	"the destroyed marker":    bodyActionDestroyed,
+	"the unconfirmed refusal": bodyActionUnconfirmed,
+	"the unverified teardown": bodyActionTeardownUnverified,
+	"the failed destroy":      bodyActionDestroyFailed,
+	"the action not-found":    bodyActionNotFound,
+}
+
+// renderedClasses is every class name the embedded templates put in the markup,
+// plus every one the action routes write themselves.
 func renderedClasses(t *testing.T) map[string]string {
 	t.Helper()
 
 	out := make(map[string]string)
+	fromTemplates := 0
+
 	err := fs.WalkDir(web.Templates, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
@@ -354,7 +374,7 @@ func renderedClasses(t *testing.T) map[string]string {
 				if strings.Contains(name, composedClass) {
 					continue
 				}
-				out[name] = p
+				out[name], fromTemplates = p, fromTemplates+1
 			}
 		}
 		return nil
@@ -362,8 +382,23 @@ func renderedClasses(t *testing.T) map[string]string {
 	if err != nil {
 		t.Fatalf("walk the embedded template tree: %v", err)
 	}
-	if len(out) == 0 {
+	if fromTemplates == 0 {
 		t.Fatal("the templates render no class at all, so this comparison asserts nothing")
+	}
+
+	// Counted before the fragments are folded in, so a template tree that stopped
+	// rendering classes altogether still fails here rather than being covered by
+	// the four sentences a destroy answers with.
+	found := 0
+	for what, fragment := range actionFragments {
+		for _, attr := range classAttr.FindAllStringSubmatch(string(fragment), -1) {
+			for _, name := range strings.Fields(attr[1]) {
+				out[name], found = what, found+1
+			}
+		}
+	}
+	if found == 0 {
+		t.Fatal("no action fragment carries a class, so the outcome an operator is shown is styled by nothing")
 	}
 	return out
 }

@@ -39,29 +39,48 @@
 <dd>{{ .Age }}</dd>
 </dl>
 {{/*
-  The token every action form on this card submits, minted once for the render
-  this card belongs to and bound to the identity layer 1 verified for it
-  (contracts/actions.md, FR-002b, FR-007). It is here rather than on the page
-  because the per-session forms are this component's own.
+  The action row, and the first control on this card that changes something on
+  the host (US1, FR-024a's parameter finally filled rather than restored).
 
-  It sits outside the row below because the row is still FR-024a's absent
-  parameter: the destroy control that will wrap this field in a <form> is T007's,
-  and a form built here to hold it would be that task done early and a control
-  nobody can operate. Until then the field submits nothing, which is the correct
-  behaviour for a card that offers nothing to submit — and the gate refuses every
-  action either way, so nothing is authorised by its presence.
-*/}}{{ template "page-token" .PageToken }}
-{{/*
-  The action row is a parameter this milestone passes none of (FR-024a). The
-  dashboard is read-only (FR-022), and a browser holds no shared secret, so
-  destroy, compact and rename would be non-functional here as well as out of
-  scope.
+  It is rendered from the page token rather than from a separate flag, and that
+  is the whole of what decides whether a card offers an action: the token is the
+  evidence the gate in browser.go demands, so a card rendered without one could
+  only offer a control the gate is certain to refuse. Milestone 2 kept the row
+  behind a parameter so this milestone would fill a container that already
+  existed; what tells a filled row from an empty one is now the one value that
+  makes its contents work. Both production call sites mint one (dashboard.go),
+  so every card a person sees carries this; a card built without one — which is
+  what a component test constructs — offers nothing, which is FR-018a's
+  discipline about absent values applied to an affordance.
 
-  It is guarded rather than removed so milestone 3 puts buttons inside a row
-  that already exists instead of restoring markup this one deleted. What goes
-  inside is docs/components.md's Button, which FR-024a forbids building now —
-  so the container is the whole of what this milestone can build, and the two
-  action-row tests prove both halves: nothing renders without the parameter,
-  and the row renders with it.
-*/}}{{ with .Actions }}<div class="card-actions"></div>{{ end }}
+  The form is a sibling of the heading and never a descendant of it: the card
+  carries exactly one <a> and no control is nested inside it (FR-027). That is
+  not only a markup rule — an <a> wrapping a submit control is a link and a
+  button occupying one target, and the destroy is the one action here that ends
+  an unsandboxed shell.
+
+  A submit button and a plain form post, per research.md R4: keyboard operability
+  is then a property of the element rather than work (FR-028), the focus ring the
+  design system already sets applies to it untouched, and the action still works
+  with no script running at all. Nothing here is htmx: this tree loads one script
+  and it draws rain and reads panes.
+
+  Two hidden fields and no more. The token partial is the same one every form in
+  this milestone includes, so the field a page renders and the field the gate
+  reads stay one spelling. `confirm=yes` is FR-029's deliberate confirming step,
+  spelled here a second time because this template set is parsed with no function
+  map and cannot reach fieldConfirm/confirmYes in actions.go — the test is what
+  holds the two together.
+
+  What the operator is told afterwards is the route's answer and not this
+  template's: destroyed, unconfirmed, unverified, or failed, each a sentence
+  (actions.go). The card is replaced by it, so a failure states that it failed
+  instead of the card quietly returning as it was (FR-030, FR-031).
+
+  The button is described by the identifier for the reason the link above is: a
+  fleet of adopted cards would otherwise offer a column of controls that announce
+  the same word, each ending a different shell.
+*/}}{{ with .PageToken }}<div class="card-actions">
+<form method="post" action="/dashboard/sessions/{{ $.ID }}/destroy">{{ template "page-token" . }}<input type="hidden" name="confirm" value="yes"><button class="button button-danger" type="submit" aria-describedby="card-id-{{ $.ID }}">Destroy</button></form>
+</div>{{ end }}
 </article>

@@ -34,6 +34,10 @@ func renderComponent(t *testing.T, component string, data any) string {
 
 // ownedCard is a session with everything the daemon can know about it: created
 // through the API, so it carries both of the fields adoption cannot.
+//
+// It carries no page token, which is deliberate and is what several of the
+// assertions below rest on: a card handed nothing to authorise an action with
+// offers none.
 func ownedCard() sessionView {
 	return sessionView{
 		ID:           "3f6c1d8e4b2a0957e1c3d5f7a9b1c3d5",
@@ -44,31 +48,63 @@ func ownedCard() sessionView {
 	}
 }
 
+// testCardToken is a page token's shape and deliberately not a plausible value.
+// The card is a template: it verifies nothing, so what it needs is a non-empty
+// string. contracts/actions.md writes its own placeholders as `<...>` for the
+// reason this one is spelled in words — a file full of high-entropy strings
+// trains scanners and readers alike to skip past them.
+const testCardToken = "expiry.not-a-real-mac" //nolint:gosec // G101 false positive, as on fieldPageToken in browser.go: the value is a placeholder chosen so that it cannot be mistaken for a credential, which is the opposite of the thing being reported.
+
+// actionableCard is ownedCard as a page really renders it: carrying the token
+// its action forms submit, which is the whole of what makes the card offer them.
+func actionableCard() sessionView {
+	card := ownedCard()
+	card.PageToken = testCardToken
+	return card
+}
+
 // mutationMarkup is every way a rendered component could offer to change
 // something on this host: the element docs/components.md's Button renders, the
 // htmx attributes it renders with, the form that would submit without either,
 // and the handler attribute the policy already forbids.
 var mutationMarkup = []string{"<button", "hx-post", "hx-put", "hx-patch", "hx-delete", "<form", "onclick"}
 
-// TestTheReadOnlyComponentsOfferNoAction is the third of the four independent
-// layers contracts/dashboard.md builds the read-only guarantee from: no mutating
-// route exists behind this door, no browser can sign one, the reads reach no
-// mutating path, and the templates render no affordance. This is that fourth
-// one, held at the component rather than at the page, because a card is composed
-// once and rendered everywhere.
-func TestTheReadOnlyComponentsOfferNoAction(t *testing.T) {
+// scriptedMarkup is the subset of the above that stays forbidden now that the
+// card really does carry a control (US1).
+//
+// A form and a submit button are what this milestone chose (research.md R4), so
+// they are no longer evidence of anything wrong. An hx- attribute and a handler
+// still are: this tree loads exactly one script, it draws rain and reads panes,
+// and the policy the daemon sends has no unsafe-inline — so either of these is
+// markup that either does nothing at all or is refused by the browser rather
+// than by review.
+var scriptedMarkup = []string{"hx-post", "hx-put", "hx-patch", "hx-delete", "onclick"}
+
+// TestAComponentHandedNothingToActWithOffersNoAction is the discipline milestone
+// 2 held for the whole dashboard, kept for the case it still applies to.
+//
+// A card offers its controls from the page token those controls submit
+// (view.go), so a card built without one has nothing it could authorise and
+// renders nothing that could be submitted. The empty state is the other half:
+// docs/components.md documents it with a "Start a session" action, and the
+// create form that fills it is T010's rather than this task's.
+//
+// The positive direction — a card handed a token renders the control, outside
+// its one anchor — is the two tests below. Both directions are needed: this one
+// alone is satisfied by a component that renders no control at all.
+func TestAComponentHandedNothingToActWithOffersNoAction(t *testing.T) {
 	t.Parallel()
 
 	rendered := map[string]string{
-		"the session card": renderComponent(t, "session-card", ownedCard()),
-		"the empty state":  renderComponent(t, "empty", emptyView{Title: "No sessions running", Body: "Nothing is executing on this host right now."}),
+		"a card with no page token": renderComponent(t, "session-card", ownedCard()),
+		"the empty state":           renderComponent(t, "empty", emptyView{Title: "No sessions running", Body: "Nothing is executing on this host right now."}),
 	}
 
 	for name, markup := range rendered {
 		lowered := strings.ToLower(markup)
 		for _, offer := range mutationMarkup {
 			if strings.Contains(lowered, offer) {
-				t.Errorf("%s rendered %q; the dashboard is read-only in this milestone and a browser could not sign the request anyway:\n%s", name, offer, markup)
+				t.Errorf("%s rendered %q; a control with nothing to authorise it is one the gate is certain to refuse:\n%s", name, offer, markup)
 			}
 		}
 	}
@@ -81,6 +117,11 @@ func TestTheReadOnlyComponentsOfferNoAction(t *testing.T) {
 // action row at all — which is precisely the outcome FR-024a forbids, because
 // milestone 3 would then be restoring markup rather than passing a parameter.
 // Supplying a row and watching it appear is what tells those two apart.
+//
+// The card's parameter is now the page token rather than a placeholder slice:
+// this milestone filled the row, and what a filled row needs is the value its
+// forms submit. The claim the test makes is unchanged — the row is a parameter
+// that can be absent, and it appears when one is supplied.
 func TestTheActionRowIsAnAbsentParameterAndNotDeletedMarkup(t *testing.T) {
 	t.Parallel()
 
@@ -92,7 +133,7 @@ func TestTheActionRowIsAnAbsentParameterAndNotDeletedMarkup(t *testing.T) {
 		"the session card": {
 			component: "session-card",
 			without:   ownedCard(),
-			with:      func() sessionView { v := ownedCard(); v.Actions = []actionView{{}}; return v }(),
+			with:      actionableCard(),
 			row:       "card-actions",
 		},
 		"the empty state": {
@@ -311,6 +352,101 @@ func TestTheLinkOnACardWithNoNameIsStillToldApartFromEveryOther(t *testing.T) {
 	}
 	if description != adopted.ID {
 		t.Errorf("the link's description reads %q; the identifier is the only thing that separates two adopted cards:\n%s", description, got)
+	}
+}
+
+// cardForm is one action form on a card, split into its attributes and its
+// contents.
+var cardForm = regexp.MustCompile(`(?s)<form\b([^>]*)>(.*?)</form>`)
+
+// TestCardHasExactlyOneAnchor is FR-027 on the card that finally has a control
+// to put somewhere.
+//
+// The count alone is not the requirement. A destroy button nested inside the
+// card's link would leave the count at one and still be the defect: a link and a
+// submit control occupying one target, where the control ends an unsandboxed
+// shell and the link merely opens a page. So the anchor's own contents are read
+// as well, and the control is confirmed to exist — a card rendering no control
+// at all would satisfy both of the other assertions and prove nothing.
+//
+// **Must fail when** a control is added inside the anchor: the second assertion
+// catches it where the first cannot.
+func TestCardHasExactlyOneAnchor(t *testing.T) {
+	t.Parallel()
+
+	got := renderComponent(t, "session-card", actionableCard())
+
+	anchors := cardAnchor.FindAllStringSubmatch(got, -1)
+	if len(anchors) != 1 {
+		t.Fatalf("a card carrying its action row renders %d links; the card carried exactly one before it had controls and FR-027 keeps it there:\n%s", len(anchors), got)
+	}
+	for _, control := range []string{"<form", "<button", "<input"} {
+		if strings.Contains(strings.ToLower(anchors[0][2]), control) {
+			t.Errorf("the card's link contains %q; a control nested in the anchor is one target holding two things to do, and one of them is irreversible:\n%s", control, got)
+		}
+	}
+
+	// The row is really there, so the two assertions above are about a card with
+	// something in it. Without this a component that dropped the control entirely
+	// would read as passing.
+	if !strings.Contains(got, `class="card-actions"`) {
+		t.Errorf("the card renders no action row at all, so nothing above was asserted about a control:\n%s", got)
+	}
+}
+
+// TestTheCardsDestroyFormCarriesWhatTheRouteRequires is the linkage that loses
+// silently: the markup, the route and the gate are three files that have to
+// agree about one address and two field names, and when they do not, the card
+// renders perfectly and every destroy is refused.
+//
+// The address is derived from the pattern the daemon registers rather than
+// spelled again here. The field names are compared against the constants
+// actions.go and browser.go read, because this template set is parsed with no
+// function map — a template cannot reach a Go constant, so the second spelling
+// is unavoidable and this is the only thing holding the two together.
+func TestTheCardsDestroyFormCarriesWhatTheRouteRequires(t *testing.T) {
+	t.Parallel()
+
+	card := actionableCard()
+	got := renderComponent(t, "session-card", card)
+
+	forms := cardForm.FindAllStringSubmatch(got, -1)
+	if len(forms) != 1 {
+		t.Fatalf("the card renders %d action forms; this milestone's card carries one, the destroy:\n%s", len(forms), got)
+	}
+	attributes, contents := forms[0][1], forms[0][2]
+
+	target := strings.Replace(strings.TrimPrefix(patternDashboardDestroy, "POST "), "{"+pathValueID+"}", card.ID, 1)
+	if !strings.Contains(attributes, `action="`+target+`"`) {
+		t.Errorf("the destroy form posts to <form%s> and the daemon serves %q:\n%s", attributes, target, got)
+	}
+	// A GET on that path is an unknown route rather than a 405 (T008), so a form
+	// that forgot its method would submit a query string to nothing at all — and
+	// would put the token in a URL on the way.
+	if !strings.Contains(strings.ToLower(attributes), `method="post"`) {
+		t.Errorf("the destroy form declares no post method (<form%s>); a GET on that path is a route this daemon does not serve:\n%s", attributes, got)
+	}
+
+	token := hiddenTokenField.FindStringSubmatch(contents)
+	if token == nil {
+		t.Fatalf("the destroy form carries no hidden %s field, so the gate refuses every submission of it:\n%s", fieldPageToken, got)
+	}
+	if token[1] != card.PageToken {
+		t.Errorf("the destroy form submits %q and the card was rendered with %q", token[1], card.PageToken)
+	}
+
+	// FR-029's confirming step, on the form rather than in the handler: a destroy
+	// that arrives without it is answered 400 with nothing torn down, which is a
+	// page of this daemon's silently failing to destroy anything.
+	if want := `name="` + fieldConfirm + `" value="` + confirmYes + `"`; !strings.Contains(contents, want) {
+		t.Errorf("the destroy form does not submit %s; the route refuses a destroy that never carried the confirming step:\n%s", want, got)
+	}
+
+	// The control itself is a submit button, which is what makes FR-028 a
+	// property of the markup rather than work: keyboard operability and the focus
+	// ring both come with the element.
+	if !strings.Contains(contents, `type="submit"`) {
+		t.Errorf("the destroy form holds no submit control, so nothing on the card operates it:\n%s", got)
 	}
 }
 

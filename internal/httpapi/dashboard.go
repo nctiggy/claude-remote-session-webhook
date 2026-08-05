@@ -251,8 +251,8 @@ func cardOf(live session.Session, now time.Time, token string) sessionView {
 		// production display as running, and reading it is what FR-019a forbids.
 		DisplayState: live.DisplayState(now),
 		Age:          formatAge(now.Sub(live.CreatedAt)),
-		// Actions is left absent (FR-024a). See view.go: the parameter exists so
-		// milestone 3 fills a row that is already there.
+		// The token is also what makes the card render its action row (view.go),
+		// so every card either offers a control it can authorise or offers none.
 		PageToken: token,
 	}
 }
