@@ -125,6 +125,102 @@ func TestLoadFromAcceptsEveryOptionalOverride(t *testing.T) {
 	}
 }
 
+// TestLoadFromDefaultsTheStartCommandToTodaysBehaviour is the promise the
+// configurable start command was added under (#38): an operator who sets nothing
+// gets exactly the daemon they had, typing exactly the line it always typed.
+func TestLoadFromDefaultsTheStartCommandToTodaysBehaviour(t *testing.T) {
+	t.Parallel()
+
+	pairs, _ := baseEnv(t)
+	// Set to whitespace rather than left out, so this covers both spellings of
+	// "the operator configured nothing": empty is the default here exactly as it
+	// is for every other optional variable.
+	pairs[config.EnvStartCommand] = "  "
+	pairs[config.EnvStartCommands] = ""
+	cfg := mustLoad(t, pairs)
+
+	if got := cfg.StartCommands.Len(); got != 1 {
+		t.Errorf("StartCommands.Len() = %d, want 1; an unconfigured daemon offers one command", got)
+	}
+	cmd, ok := cfg.StartCommands.Command("")
+	if !ok {
+		t.Fatal("a create naming no start command resolves to nothing")
+	}
+	if cmd != config.DefaultStartCommand {
+		t.Errorf("the default start command is %q, want %q", cmd, config.DefaultStartCommand)
+	}
+	if named, _ := cfg.StartCommands.Command(config.DefaultStartCommandName); named != cmd {
+		t.Errorf("%q resolves to %q, want the same command the empty name resolves to (%q)",
+			config.DefaultStartCommandName, named, cmd)
+	}
+	if _, ok := cfg.StartCommands.Command("rc"); ok {
+		t.Error("a name nobody configured resolves to a command")
+	}
+}
+
+// TestLoadFromTakesTheOperatorsStartCommands covers the two ways an operator
+// configures one, together: the default replaced, and a second name beside it.
+func TestLoadFromTakesTheOperatorsStartCommands(t *testing.T) {
+	t.Parallel()
+
+	const (
+		mine = "claude --resume"
+		rc   = "claude remote-control --permission-mode bypassPermissions"
+	)
+
+	pairs, _ := baseEnv(t)
+	pairs[config.EnvStartCommand] = mine
+	pairs[config.EnvStartCommands] = "rc=" + rc + ",quiet=claude --print"
+
+	cfg := mustLoad(t, pairs)
+
+	for name, want := range map[string]string{
+		"":                             mine,
+		config.DefaultStartCommandName: mine,
+		"rc":                           rc,
+		"quiet":                        "claude --print",
+	} {
+		got, ok := cfg.StartCommands.Command(name)
+		if !ok {
+			t.Errorf("Command(%q) resolved to nothing", name)
+			continue
+		}
+		if got != want {
+			t.Errorf("Command(%q) = %q, want %q", name, got, want)
+		}
+	}
+
+	// Sorted, so a dashboard renders the same order on every render.
+	if got, want := strings.Join(cfg.StartCommands.Names(), ","), "default,quiet,rc"; got != want {
+		t.Errorf("Names() = %s, want %s", got, want)
+	}
+}
+
+// TestConfigFormattingNeverSpellsAStartCommand keeps the command lines out of
+// anywhere a Config is formatted. They are not secret, but they are the closest
+// thing this daemon has to an executable payload, and a log line is not where an
+// operator should discover what their sessions are being started with.
+func TestConfigFormattingNeverSpellsAStartCommand(t *testing.T) {
+	t.Parallel()
+
+	const rc = "claude remote-control --permission-mode bypassPermissions"
+
+	pairs, _ := baseEnv(t)
+	pairs[config.EnvStartCommands] = "rc=" + rc
+
+	cfg := mustLoad(t, pairs)
+
+	for _, verb := range []string{"%v", "%s", "%#v"} {
+		got := fmt.Sprintf(verb, cfg)
+		if strings.Contains(got, rc) {
+			t.Errorf("Sprintf(%q) spells a start command line: %s", verb, got)
+		}
+		if !strings.Contains(got, "rc") {
+			t.Errorf("Sprintf(%q) = %s, want the configured names named", verb, got)
+		}
+	}
+}
+
 // TestLoadFromRejects is the table the task calls for: every missing, short, or
 // invalid case. Each entry mutates the working base environment, so a case that
 // stops failing is a real regression rather than a fixture that rotted.
@@ -467,6 +563,75 @@ func TestLoadFromRejects(t *testing.T) {
 				p[config.EnvAccessAllowedEmails] = goodEmail + " second@example.com"
 			},
 			wantIn: "whitespace",
+		},
+		{
+			// research D4: tmux's parser eats a ";" from the final argument before
+			// -l applies, so this command would be typed truncated. Refused here
+			// rather than delivered short, which is the failure that research
+			// exists to prevent.
+			name: "the start command carries a semicolon",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvStartCommand] = "claude --dangerously-skip-permissions ; rm -rf /"
+			},
+			wantIn: config.EnvStartCommand,
+		},
+		{
+			name: "a named start command carries a semicolon",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvStartCommands] = "rc=claude remote-control ; echo hi"
+			},
+			wantIn: config.EnvStartCommands,
+		},
+		{
+			// A newline would submit the line before it was finished, running half
+			// a command and typing the rest at whatever came up.
+			name: "a start command carries a newline",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvStartCommand] = "claude\n--dangerously-skip-permissions"
+			},
+			wantIn: "control character",
+		},
+		{
+			name:   "a start command entry has no name",
+			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvStartCommands] = "claude --print" },
+			wantIn: config.EnvStartCommands,
+		},
+		{
+			name:   "a start command entry is empty",
+			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvStartCommands] = "rc=claude,," },
+			wantIn: "empty entry",
+		},
+		{
+			name: "a start command name is outside the alphabet",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvStartCommands] = "Remote Control=claude"
+			},
+			wantIn: "[a-z0-9-]",
+		},
+		{
+			name: "a start command name is repeated",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvStartCommands] = "rc=claude,rc=claude --print"
+			},
+			wantIn: "twice",
+		},
+		{
+			name: "a named start command is empty",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvStartCommands] = "rc="
+			},
+			wantIn: config.EnvStartCommands,
+		},
+		{
+			// Which of two spellings of one value wins is the last thing to leave
+			// to chance: the answer decides what is typed into an unsandboxed shell
+			// on every create that names no command.
+			name: "the default start command is set twice",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvStartCommand] = "claude --resume"
+				p[config.EnvStartCommands] = config.DefaultStartCommandName + "=claude --print"
+			},
+			wantIn: config.EnvStartCommand,
 		},
 	}
 

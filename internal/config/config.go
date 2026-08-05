@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -48,6 +49,19 @@ const (
 
 	EnvMaxStreams = "CRSW_MAX_STREAMS"
 
+	// EnvStartCommand is the command line typed into a new session's shell. It
+	// names the command bound to DefaultStartCommandName, which is what a create
+	// that asks for no command in particular gets.
+	EnvStartCommand = "CRSW_START_COMMAND"
+
+	// EnvStartCommands is the named set a create may choose from, spelled
+	// `name=command line,name=command line`. A create carries a *name* and never
+	// a command line (see StartCommands), so this variable is the whole of what
+	// the daemon can be made to type — an operator who sets neither this nor
+	// EnvStartCommand has exactly one command, and it is the one the daemon has
+	// always used.
+	EnvStartCommands = "CRSW_START_COMMANDS"
+
 	envHome = "HOME"
 
 	// rootListSeparator is fixed at ":" rather than os.PathListSeparator: the
@@ -59,6 +73,20 @@ const (
 	// an address cannot carry one outside a quoted local part, which no Google
 	// identity has.
 	emailListSeparator = ","
+
+	// The two separators EnvStartCommands is spelled with. A command line may
+	// therefore not contain a comma, which is a limit worth stating rather than
+	// working around: every escape scheme that would lift it is a second grammar
+	// between an operator and the thing this daemon types into an unsandboxed
+	// shell. The name/command split is the *first* "=", so a command line may
+	// carry as many as it likes.
+	startCommandListSeparator = ","
+	startCommandNameSeparator = "="
+
+	// maxStartCommandNameLen bounds a name because a name reaches the audit
+	// trail. Anything longer is a command line typed into the wrong half of an
+	// entry.
+	maxStartCommandNameLen = 32
 )
 
 // Defaults for everything optional. There is deliberately no default for the
@@ -80,6 +108,17 @@ const (
 	// loaded host is watchable from two tabs before the daemon starts refusing.
 	// The spec fixes the property, not the number: capped, and refusing past it.
 	DefaultMaxStreams = 10
+
+	// DefaultStartCommand is what every session started before this was
+	// configurable at all, byte for byte. An operator who sets neither
+	// EnvStartCommand nor EnvStartCommands gets exactly the daemon they had.
+	DefaultStartCommand = "claude --dangerously-skip-permissions"
+
+	// DefaultStartCommandName is the name a create that asks for nothing in
+	// particular resolves to. It always exists — loadStartCommands fills it from
+	// EnvStartCommand or from DefaultStartCommand — so there is no configuration
+	// in which a create with no start_command has no command to run.
+	DefaultStartCommandName = "default"
 )
 
 // ApprovedRoot is a directory a session may run in, resolved once at startup so
@@ -93,6 +132,63 @@ type ApprovedRoot struct {
 	// in force. It drives the loud startup warning and the startup audit record.
 	IsDefault bool
 }
+
+// StartCommands is the operator's named set of command lines a session may be
+// started with, resolved once at startup.
+//
+// The names are the API. A create carries one of them and never a command line,
+// because a create route that took a command line would make this daemon a
+// general remote-shell service behind whatever authenticates that route rather
+// than a Claude session manager — the same reason a working directory is chosen
+// from an allowlist instead of being named freely (FR-028). What a caller can
+// influence is *which* of the operator's commands runs, and nothing else.
+//
+// Every command line here has already been through validateStartCommand, so a
+// value that came out of this type is safe to hand to tmux send-keys: it carries
+// no ";" for tmux's parser to eat (research D4) and no control byte that would
+// submit half a line. That check is at startup rather than at delivery so an
+// operator learns about it from the daemon refusing to boot, not from a session
+// that started with three quarters of a command.
+//
+// The zero value holds nothing and answers false to every lookup. Only Load
+// builds a usable one, which is what keeps "the set was validated" true of every
+// value of this type that exists.
+type StartCommands struct {
+	byName map[string]string
+}
+
+// Command is the command line for a name, and reports whether the name is one
+// the operator configured. An empty name is DefaultStartCommandName, so a create
+// that asks for nothing gets the daemon's default rather than a refusal.
+func (c StartCommands) Command(name string) (string, bool) {
+	if name == "" {
+		name = DefaultStartCommandName
+	}
+	cmd, ok := c.byName[name]
+	return cmd, ok
+}
+
+// Names is every configured name, sorted, so a dashboard renders them in the
+// same order on every render and a test can assert on the list.
+func (c StartCommands) Names() []string {
+	names := make([]string, 0, len(c.byName))
+	for name := range c.byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Len is how many commands are configured. Nothing enforces a cap on it: the set
+// comes from the environment the daemon was started with, which is the operator
+// themselves.
+func (c StartCommands) Len() int { return len(c.byName) }
+
+// String names the commands and never spells one. The command lines are not
+// secret, but they are the closest thing this daemon has to an executable
+// payload, and a Config is formatted into logs — so the names travel and the
+// bodies stay where they were configured.
+func (c StartCommands) String() string { return fmt.Sprintf("%v", c.Names()) }
 
 // Config is the validated configuration. Every field is safe to use as-is;
 // nothing here needs a second check on the request path.
@@ -129,6 +225,10 @@ type Config struct {
 	// MaxStreams bounds concurrent live-output streams, which are the one thing
 	// a browser can hold open indefinitely.
 	MaxStreams int
+
+	// StartCommands is the named set a create chooses from, always carrying
+	// DefaultStartCommandName.
+	StartCommands StartCommands
 }
 
 // String redacts the shared secret so that formatting a Config — in a log line,
@@ -138,9 +238,10 @@ type Config struct {
 // The allowed addresses are counted rather than named: they are a list of real
 // people, and this string is written wherever a Config is formatted.
 func (c Config) String() string {
-	return fmt.Sprintf("config{shared_secret:<redacted> roots:%v listen:%q max_sessions:%d create_rate_per_min:%d max_body_bytes:%d access_team_domain:%q access_aud:%q allowed_emails:%d max_streams:%d}",
+	return fmt.Sprintf("config{shared_secret:<redacted> roots:%v listen:%q max_sessions:%d create_rate_per_min:%d max_body_bytes:%d access_team_domain:%q access_aud:%q allowed_emails:%d max_streams:%d start_commands:%v}",
 		c.Roots, c.Listen, c.MaxSessions, c.CreateRatePerMin, c.MaxBodyBytes,
-		c.AccessTeamDomain, c.AccessAUD, len(c.AccessAllowedEmails), c.MaxStreams)
+		c.AccessTeamDomain, c.AccessAUD, len(c.AccessAllowedEmails), c.MaxStreams,
+		c.StartCommands)
 }
 
 // GoString mirrors String, so %#v is not a way around the redaction.
@@ -226,6 +327,10 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 	if err != nil {
 		return nil, err
 	}
+	startCommands, err := loadStartCommands(getenv)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Config{
 		SharedSecret:        secret,
@@ -238,7 +343,141 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 		AccessAUD:           aud,
 		AccessAllowedEmails: emails,
 		MaxStreams:          maxStreams,
+		StartCommands:       startCommands,
 	}, nil
+}
+
+// loadStartCommands builds the named set a create chooses from.
+//
+// Three shapes, and the first is the one that matters: with neither variable set
+// the set is exactly {default: DefaultStartCommand}, so a daemon nobody
+// configured types what it has always typed. EnvStartCommand replaces the
+// default's command line; EnvStartCommands adds names beside it.
+//
+// The two are refused together when both would name the default, rather than one
+// silently winning. Which of two spellings of one value takes effect is the
+// question an operator can least afford to guess about here: the answer decides
+// what gets typed into an unsandboxed shell on every create that names no
+// command.
+//
+// Every command line is validated, and a bad one is a startup failure rather
+// than a create-time refusal (docs/security.md §4) — see validateStartCommand for
+// what "bad" means and why it is settled here.
+func loadStartCommands(getenv func(string) string) (StartCommands, error) {
+	fallback := strings.TrimSpace(getenv(EnvStartCommand))
+	defaultSet := fallback != ""
+	if !defaultSet {
+		fallback = DefaultStartCommand
+	}
+	if err := validateStartCommand(EnvStartCommand, DefaultStartCommandName, fallback); err != nil {
+		return StartCommands{}, err
+	}
+
+	byName := map[string]string{DefaultStartCommandName: fallback}
+
+	raw := strings.TrimSpace(getenv(EnvStartCommands))
+	if raw == "" {
+		return StartCommands{byName: byName}, nil
+	}
+
+	named := map[string]bool{}
+	for _, entry := range strings.Split(raw, startCommandListSeparator) {
+		if strings.TrimSpace(entry) == "" {
+			return StartCommands{}, fmt.Errorf("%s contains an empty entry; refusing to start", EnvStartCommands)
+		}
+		name, command, found := strings.Cut(entry, startCommandNameSeparator)
+		if !found {
+			return StartCommands{}, fmt.Errorf("%s has an entry that is not %s; refusing to start",
+				EnvStartCommands, "name"+startCommandNameSeparator+"command")
+		}
+
+		name = strings.TrimSpace(name)
+		if err := validateStartCommandName(name); err != nil {
+			return StartCommands{}, err
+		}
+		if named[name] {
+			return StartCommands{}, fmt.Errorf("%s names %q twice; refusing to start", EnvStartCommands, name)
+		}
+		// Only the *second* definition of the default is a conflict, and only
+		// when the first came from the operator: a set that names the default
+		// while EnvStartCommand is unset is simply the operator spelling their
+		// default in the one variable that can also carry the others.
+		if name == DefaultStartCommandName && defaultSet {
+			return StartCommands{}, fmt.Errorf("%s and %s both set the %q start command; set it in one of them; refusing to start",
+				EnvStartCommand, EnvStartCommands, DefaultStartCommandName)
+		}
+
+		command = strings.TrimSpace(command)
+		if err := validateStartCommand(EnvStartCommands, name, command); err != nil {
+			return StartCommands{}, err
+		}
+
+		named[name] = true
+		byName[name] = command
+	}
+
+	return StartCommands{byName: byName}, nil
+}
+
+// validateStartCommandName holds a name to what a name is for: an identifier a
+// create carries, an operator types, and the audit trail records. Lowercase
+// letters, digits and hyphens only, so a name in a record cannot be mistaken for
+// anything else and cannot carry a byte a journal reader has to escape.
+func validateStartCommandName(name string) error {
+	if name == "" {
+		return fmt.Errorf("%s contains an entry with no name; refusing to start", EnvStartCommands)
+	}
+	if len(name) > maxStartCommandNameLen {
+		return fmt.Errorf("%s contains a name longer than %d characters; refusing to start", EnvStartCommands, maxStartCommandNameLen)
+	}
+	for _, c := range name {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return fmt.Errorf("%s contains a name outside [a-z0-9-]; refusing to start", EnvStartCommands)
+		}
+	}
+	return nil
+}
+
+// validateStartCommand is the whole of what an operator may make this daemon
+// type into a session's shell.
+//
+// The command is typed into the shell rather than being the tmux session's own
+// command (FR-018, research D3), which is unchanged by its being configurable:
+// if Claude were the session's command a crash would take the session and its
+// scrollback with it, and milestone 4's device-code relay needs a prompt to type
+// into.
+//
+// It is still delivered by SendKeys and *not* through Paste, and this check is
+// what keeps that safe. tmux's parser eats a trailing unescaped ";" from caller
+// text before -l ever applies (research D4), so a command line carrying one would
+// be delivered silently truncated — the exact failure that research exists to
+// prevent. The daemon's own constant was safe because it contains no ";" at all;
+// an operator's is safe because a ";" is refused here, at startup, where an
+// operator is reading a startup failure rather than wondering why a session came
+// up half-configured. Routing it through Paste instead would have worked too, and
+// was not chosen: the start command is configuration, not caller text, and giving
+// it the path that exists for hostile bytes would put the daemon's own start-up
+// keystrokes into a named tmux buffer any other client on the socket can read.
+//
+// Control bytes go for a related reason: a newline in a command line submits it
+// early, so half of one would run and the rest would be typed at whatever came
+// up. There is no escaping to be had here — this string is typed at a shell, so
+// what it says is what runs.
+func validateStartCommand(variable, name, command string) error {
+	if command == "" {
+		return fmt.Errorf("%s gives the %q start command an empty command line; refusing to start", variable, name)
+	}
+	if strings.Contains(command, ";") {
+		return fmt.Errorf("%s: the %q start command contains a %q, which tmux's parser would eat before the command was typed; refusing to start",
+			variable, name, ";")
+	}
+	for _, c := range command {
+		if unicode.IsControl(c) {
+			return fmt.Errorf("%s: the %q start command contains a control character, which would submit the line before it was finished; refusing to start",
+				variable, name)
+		}
+	}
+	return nil
 }
 
 // loadSecret returns errors that name the variable and nothing else. The value

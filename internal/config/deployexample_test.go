@@ -75,6 +75,13 @@ func unitEnvironment(t *testing.T) map[string]string {
 
 	env := make(map[string]string)
 	for _, assignment := range unitSettings(t)["Environment"] {
+		// systemd's own quoting, undone here: an unquoted Environment= ends at
+		// the first space, so a value with a space in it — a start command line —
+		// can only be written `Environment="NAME=a b"`. Reading past the quotes is
+		// what keeps such a variable visible to the checks below rather than
+		// looking like a name nothing declares.
+		assignment = strings.TrimSuffix(strings.TrimPrefix(assignment, `"`), `"`)
+
 		name, value, found := strings.Cut(assignment, "=")
 		if !found {
 			t.Fatalf("%s: Environment=%q is not an assignment", unitPath, assignment)
@@ -258,6 +265,10 @@ func TestUnitInlineValuesAreTheDaemonDefaults(t *testing.T) {
 		config.EnvCreateRatePerMin: strconv.Itoa(config.DefaultCreateRatePerMin),
 		config.EnvMaxBodyBytes:     strconv.FormatInt(config.DefaultMaxBodyBytes, 10),
 		config.EnvMaxStreams:       strconv.Itoa(config.DefaultMaxStreams),
+		config.EnvStartCommand:     config.DefaultStartCommand,
+		// Empty is this one's default: the named set adds to the default command
+		// and nothing else exists until an operator writes an entry.
+		config.EnvStartCommands: "",
 	} {
 		if got := set[name]; got != want {
 			t.Errorf("%s sets %s=%s, want the daemon's default %s", unitPath, name, got, want)
