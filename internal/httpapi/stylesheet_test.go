@@ -677,6 +677,46 @@ func TestTheStreamClientClosesWhenTheSessionEnds(t *testing.T) {
 	}
 }
 
+// TestTheScriptSpendsASubmitOnce is research.md R7's one genuine idempotence
+// exposure, held at the file that closes it.
+//
+// Three of the four actions are idempotent by their own semantics: a second
+// destroy finds no record, a second rename is the same end state, and a second
+// compact is a second delivery the operator asked for. A second create is a
+// second unsandboxed shell, and nothing about the response tells the operator
+// afterwards that they made two.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed
+// — the same footing every other assertion in this file stands on. What makes
+// them worth making is the direction the whole guard can be lost in silently: a
+// handler that is written, correct, and attached to nothing. A query naming the
+// attribute the form renders is as close to "something calls it" as a language
+// Go cannot execute allows, and it is the same shape the pane's own hook is held
+// by above.
+func TestTheScriptSpendsASubmitOnce(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	query := regexp.MustCompile(`querySelectorAll\(\s*['"][^'"]*data-submit-once[^'"]*['"]\s*\)`)
+	if query.FindString(source) == "" {
+		t.Error("crswd.js never queries the document for a form carrying data-submit-once, so no submit is ever spent and a double-click on the create is two sessions")
+	}
+	if !regexp.MustCompile(`addEventListener\(\s*['"]submit['"]`).MatchString(source) {
+		t.Error("crswd.js listens for no submit event; a click handler would fire before the browser's own constraint validation and spend the control on a submission that never happened")
+	}
+	if !regexp.MustCompile(`\.disabled\s*=\s*true`).MatchString(source) {
+		t.Error("crswd.js disables nothing on submission, which is what contracts/actions.md asks the create's control to do to itself")
+	}
+
+	// The in-progress state beside it (FR-031). A control that greys out in
+	// silence reads as a page that has broken, which is the state an operator
+	// answers by clicking again.
+	if !strings.Contains(source, "dataset.submitOnce") {
+		t.Error("crswd.js never reads the hook naming the in-progress note, so a spent control says nothing about why (FR-031)")
+	}
+}
+
 // blockFor returns the body of the first block whose prelude contains marker,
 // so a test can assert about one rule rather than about the whole file. Braces
 // are counted, because a media query holds rules of its own.

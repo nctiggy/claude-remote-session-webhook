@@ -13,6 +13,8 @@ import (
 	"io/fs"
 	"path"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -63,6 +65,13 @@ func actionableCard() sessionView {
 	return card
 }
 
+// createForm is the create form as a page really renders it. Its whole parameter
+// list is the token, so this is the only thing that separates a form from
+// nothing at all.
+func createForm() createFormView {
+	return createFormView{PageToken: testCardToken}
+}
+
 // mutationMarkup is every way a rendered component could offer to change
 // something on this host: the element docs/components.md's Button renders, the
 // htmx attributes it renders with, the form that would submit without either,
@@ -85,19 +94,27 @@ var scriptedMarkup = []string{"hx-post", "hx-put", "hx-patch", "hx-delete", "onc
 //
 // A card offers its controls from the page token those controls submit
 // (view.go), so a card built without one has nothing it could authorise and
-// renders nothing that could be submitted. The empty state is the other half:
-// docs/components.md documents it with a "Start a session" action, and the
-// create form that fills it is T010's rather than this task's.
+// renders nothing that could be submitted. The create form is the same rule at
+// the one component whose entire parameter list is that token: with none it is
+// not a form with an empty field, it is nothing at all.
 //
-// The positive direction — a card handed a token renders the control, outside
-// its one anchor — is the two tests below. Both directions are needed: this one
-// alone is satisfied by a component that renders no control at all.
+// The empty state is the third, and it stays here now that the page around it
+// can act. docs/components.md documents this component with a "Start a session"
+// action and T010 deliberately did not fill it: the empty state is the one
+// surface where the rain runs at full strength, and docs/design-system.md keeps
+// rain off reading content — "not a pane, a card grid, a form, or a table". The
+// create form is a sibling of this section on the page, never a parameter of it.
+//
+// The positive direction — a component handed a token renders the control — is
+// the tests below. Both directions are needed: this one alone is satisfied by a
+// component that renders no control at all.
 func TestAComponentHandedNothingToActWithOffersNoAction(t *testing.T) {
 	t.Parallel()
 
 	rendered := map[string]string{
-		"a card with no page token": renderComponent(t, "session-card", ownedCard()),
-		"the empty state":           renderComponent(t, "empty", emptyView{Title: "No sessions running", Body: "Nothing is executing on this host right now."}),
+		"a card with no page token":        renderComponent(t, "session-card", ownedCard()),
+		"a create form with no page token": renderComponent(t, "create-form", createFormView{}),
+		"the empty state":                  renderComponent(t, "empty", emptyView{Title: "No sessions running", Body: "Nothing is executing on this host right now."}),
 	}
 
 	for name, markup := range rendered {
@@ -450,6 +467,245 @@ func TestTheCardsDestroyFormCarriesWhatTheRouteRequires(t *testing.T) {
 	}
 }
 
+// attributeValue reads one attribute out of a rendered element's attribute list.
+// Built per call rather than kept as a package regexp because the name is the
+// thing under test in each case, and a helper that took a compiled pattern would
+// put the spelling back at the call site it is meant to check.
+func attributeValue(t *testing.T, attributes, name string) (string, bool) {
+	t.Helper()
+
+	match := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `="([^"]*)"`).FindStringSubmatch(attributes)
+	if match == nil {
+		return "", false
+	}
+	return match[1], true
+}
+
+// The two shapes the create form's assertions read out of it: an input with its
+// attributes, and a label with the input it names and the words it reads.
+var (
+	formInput = regexp.MustCompile(`<input\b([^>]*)>`)
+	formLabel = regexp.MustCompile(`(?s)<label\b[^>]*\bfor="([^"]*)"[^>]*>(.*?)</label>`)
+)
+
+// TestCreateFormCarriesToken is T010's named test, and the linkage that loses
+// silently: the form renders perfectly without the field, and every create it
+// submits is refused by the gate with one uniform 403 that says nothing about
+// which of the five causes applied.
+//
+// **Must fail when** the form renders without `crsw_page_token` — either because
+// the token partial was dropped, or because the field was renamed away from the
+// constant browser.go reads a submission out of.
+//
+// The second half is the direction a component gets wrong in the other
+// direction: a form built with no token at all must render nothing, rather than
+// a form carrying an empty field. An empty value looks like a token to
+// everything reading the markup and verifies as none, so the operator would meet
+// a control that fails only when they use it.
+func TestCreateFormCarriesToken(t *testing.T) {
+	t.Parallel()
+
+	got := renderComponent(t, "create-form", createForm())
+
+	forms := cardForm.FindAllStringSubmatch(got, -1)
+	if len(forms) != 1 {
+		t.Fatalf("the create form component renders %d forms; it is one form:\n%s", len(forms), got)
+	}
+	attributes, contents := forms[0][1], forms[0][2]
+
+	token := hiddenTokenField.FindStringSubmatch(contents)
+	if token == nil {
+		t.Fatalf("the create form carries no hidden %s field, so the gate refuses every submission of it:\n%s", fieldPageToken, got)
+	}
+	if token[1] != testCardToken {
+		t.Errorf("the create form submits %q and the component was rendered with %q", token[1], testCardToken)
+	}
+
+	// In the field and in nothing else. The form's own action is the one URL it
+	// renders, and a token in a URL is a token in a referrer header, a browser
+	// history and a proxy log — which is why the gate reads it out of PostForm.
+	if strings.Contains(attributes, testCardToken) {
+		t.Errorf("the create form carries the token in <form%s>; the hidden field is the only place it belongs", attributes)
+	}
+
+	if empty := renderComponent(t, "create-form", createFormView{}); strings.TrimSpace(empty) != "" {
+		t.Errorf("a create form built with no token rendered %q; a control the gate is certain to refuse is worse than no control, because an operator cannot tell the two apart until they use it", empty)
+	}
+}
+
+// TestTheCreateFormPostsWhatTheRouteReads is the destroy form's linkage for the
+// route that has two caller-supplied fields instead of one fixed one: the
+// markup, the route and the handler are three files that have to agree about an
+// address and two field names, and when they do not, the form renders perfectly
+// and every create is refused for a reason that reads like bad input.
+//
+// The address and both names are derived from what the daemon registers and
+// reads rather than spelled again here. This template set is parsed with no
+// function map, so a template cannot reach a Go constant and the second spelling
+// is unavoidable — this is the only thing holding the two together.
+func TestTheCreateFormPostsWhatTheRouteReads(t *testing.T) {
+	t.Parallel()
+
+	got := renderComponent(t, "create-form", createForm())
+
+	forms := cardForm.FindAllStringSubmatch(got, -1)
+	if len(forms) != 1 {
+		t.Fatalf("the create form component renders %d forms; it is one form:\n%s", len(forms), got)
+	}
+	attributes, contents := forms[0][1], forms[0][2]
+
+	target := strings.TrimPrefix(patternDashboardCreate, "POST ")
+	if !strings.Contains(attributes, `action="`+target+`"`) {
+		t.Errorf("the create form posts to <form%s> and the daemon serves %q:\n%s", attributes, target, got)
+	}
+	// A GET on that path is an unknown route rather than a 405, so a form that
+	// forgot its method would submit a query string to nothing at all — and would
+	// put the token in a URL on the way.
+	if !strings.Contains(strings.ToLower(attributes), `method="post"`) {
+		t.Errorf("the create form declares no post method (<form%s>); a GET on that path is a route this daemon does not serve:\n%s", attributes, got)
+	}
+
+	// The control itself is a submit button, which is what makes keyboard
+	// operability a property of the markup rather than work: the focus ring the
+	// design system sets applies to it untouched, and the form works with no
+	// script running.
+	if !strings.Contains(contents, `type="submit"`) {
+		t.Errorf("the create form holds no submit control, so nothing on the page operates it:\n%s", got)
+	}
+
+	// Every input the route reads, each with a real label naming it.
+	// docs/components.md's Form rules: a placeholder is not a label.
+	labelled := make(map[string]string)
+	for _, label := range formLabel.FindAllStringSubmatch(contents, -1) {
+		labelled[label[1]] = strings.TrimSpace(label[2])
+	}
+	for _, field := range []string{fieldName, fieldWorkDir} {
+		input := regexp.MustCompile(`<input\b[^>]*\bname="` + regexp.QuoteMeta(field) + `"[^>]*>`).FindString(contents)
+		if input == "" {
+			t.Errorf("the create form submits no %q field, and the handler reads the create's %s out of one:\n%s", field, field, got)
+			continue
+		}
+		id, ok := attributeValue(t, input, "id")
+		if !ok {
+			t.Errorf("the %q input carries no id (%s), so no label can name it", field, input)
+			continue
+		}
+		if labelled[id] == "" {
+			t.Errorf("the %q input is named by no label; a placeholder is not a label (docs/components.md):\n%s", field, got)
+		}
+	}
+}
+
+// TestTheCreateFormsHintsAgreeWithTheDaemonsRules is the half of a convenience
+// that stops being convenient the moment it drifts.
+//
+// docs/components.md permits client hints and makes server-side validation
+// authoritative, which is exactly the arrangement here: the route calls
+// ValidateName and answers a refusal in words. But a hint is not neutral when it
+// disagrees — a browser refusing a name this daemon would have accepted shows a
+// native bubble the daemon never wrote, about a rule it does not have, with
+// nothing on the page to say why.
+//
+// The alphabet is compared against ValidateName itself rather than against a
+// second spelling of the rule, so widening the daemon's own character class is
+// what fails this rather than someone's memory of it.
+func TestTheCreateFormsHintsAgreeWithTheDaemonsRules(t *testing.T) {
+	t.Parallel()
+
+	got := renderComponent(t, "create-form", createForm())
+
+	name := regexp.MustCompile(`<input\b[^>]*\bname="` + regexp.QuoteMeta(fieldName) + `"[^>]*>`).FindString(got)
+	if name == "" {
+		t.Fatalf("the create form renders no %q input at all:\n%s", fieldName, got)
+	}
+
+	if limit, ok := attributeValue(t, name, "maxlength"); !ok {
+		t.Errorf("the %q input sets no maxlength (%s); the daemon's ceiling is %d characters", fieldName, name, session.MaxNameLen)
+	} else if limit != strconv.Itoa(session.MaxNameLen) {
+		t.Errorf("the %q input stops at %s characters and the daemon accepts %d", fieldName, limit, session.MaxNameLen)
+	}
+
+	hint, ok := attributeValue(t, name, "pattern")
+	if !ok {
+		t.Fatalf("the %q input carries no pattern (%s); the alphabet below has nothing to compare against", fieldName, name)
+	}
+	// Anchored, because an HTML pattern is: the browser matches the whole value.
+	alphabet, err := regexp.Compile(`^(?:` + hint + `)$`)
+	if err != nil {
+		t.Fatalf("the %q input's pattern %q does not compile: %v", fieldName, hint, err)
+	}
+	for b := 0; b < 128; b++ {
+		char := string(rune(b))
+		hinted, accepted := alphabet.MatchString(char), session.ValidateName(char) == nil
+		if hinted != accepted {
+			t.Errorf("the browser hint %q %s %q and the daemon %s it; a hint that disagrees refuses in a bubble this daemon never wrote",
+				hint, map[bool]string{true: "accepts", false: "refuses"}[hinted], char,
+				map[bool]string{true: "accepts", false: "refuses"}[accepted])
+		}
+	}
+
+	// Both fields are required by the route — an empty name is ErrInvalidName and
+	// an empty working directory is ErrInvalidWorkDir — so a form that submits
+	// without them is a round trip whose only outcome is a refusal.
+	for _, field := range []string{fieldName, fieldWorkDir} {
+		input := regexp.MustCompile(`<input\b[^>]*\bname="` + regexp.QuoteMeta(field) + `"[^>]*>`).FindString(got)
+		if !regexp.MustCompile(`\brequired\b`).MatchString(input) {
+			t.Errorf("the %q input is not required (%s), and the route refuses an empty one", field, input)
+		}
+	}
+
+	// And no hint whatever on the working directory. The approved roots are this
+	// daemon's configuration; a pattern spelling them would put a map of the host
+	// in markup that every browser, extension and proxy on the path can read.
+	workDir := regexp.MustCompile(`<input\b[^>]*\bname="` + regexp.QuoteMeta(fieldWorkDir) + `"[^>]*>`).FindString(got)
+	if _, ok := attributeValue(t, workDir, "pattern"); ok {
+		t.Errorf("the %q input carries a pattern (%s); the approved roots are configuration, and a hint describing them is a map of this host in the markup", fieldWorkDir, workDir)
+	}
+
+	// Non-vacuity: the sweeps above are about inputs that really rendered.
+	if n := len(formInput.FindAllString(got, -1)); n < 3 {
+		t.Errorf("the create form renders %d inputs; want the two fields and the hidden token:\n%s", n, got)
+	}
+}
+
+// TestTheCreateFormSaysWhenItIsInFlight is FR-031's in-progress state, and it is
+// the pane's ended note in the other direction: there, a stream that stopped had
+// to say so; here, a control that has been spent has to say why.
+//
+// The failure mode is the same one. A button that greys out silently reads as a
+// page that has broken, and an operator who cannot tell a submission in flight
+// from one that went nowhere clicks again — which is exactly the second
+// unsandboxed shell this whole arrangement exists to prevent (research.md R7).
+//
+// The copy is in the template rather than in crswd.js for the reason every other
+// sentence the interface says is: a script that authored its own prose would be
+// a second place to look for it.
+func TestTheCreateFormSaysWhenItIsInFlight(t *testing.T) {
+	t.Parallel()
+
+	got := renderComponent(t, "create-form", createForm())
+
+	forms := cardForm.FindAllStringSubmatch(got, -1)
+	if len(forms) != 1 {
+		t.Fatalf("the create form component renders %d forms; it is one form:\n%s", len(forms), got)
+	}
+	hook, ok := attributeValue(t, forms[0][1], "data-submit-once")
+	if !ok {
+		t.Fatalf("the create form carries no data-submit-once hook (<form%s>), so nothing spends its submit and a double-click is two sessions:\n%s", forms[0][1], got)
+	}
+
+	note := regexp.MustCompile(`<p[^>]*id="` + regexp.QuoteMeta(hook) + `"[^>]*>([^<]*)</p>`).FindStringSubmatch(got)
+	if note == nil {
+		t.Fatalf("the create form points the script at %q and the render holds no such element:\n%s", hook, got)
+	}
+	if !strings.Contains(note[0], "hidden") {
+		t.Errorf("the in-progress note renders visible (%q); a page that says it before a submission says it about nothing", note[0])
+	}
+	if strings.TrimSpace(note[1]) == "" {
+		t.Error("the in-progress note carries no copy at all, so revealing it would say nothing")
+	}
+}
+
 // TestTheStatusPillAlwaysCarriesItsLabelAsText is FR-019 and the design system's
 // fifth non-negotiable: colour is reinforcement, never the only signal. Both
 // states this milestone derives are green, so colour alone does not distinguish
@@ -789,6 +1045,17 @@ func TestThePaneSaysWhenTheWatchedSessionEnded(t *testing.T) {
 	}
 }
 
+// components is every component a page composes: docs/components.md's canonical
+// inventory, plus the create form.
+//
+// The create form is in this list and not in that document, which is a gap that
+// document owes rather than a second card: T010 put the form in partials/
+// because a create is not a card's to offer, and docs/components.md has no Form
+// partial for it to be — the same absence its Button and Modal entries already
+// have. Keeping it here is what stops the next hand from inlining a second one
+// into a page while the document catches up.
+var components = []string{"header", "status-pill", "session-card", "create-form", "empty", "rain", "pane"}
+
 // TestEveryCanonicalComponentIsAPartial is FR-024 held by the shape of the tree:
 // pages compose components, components live in one place, and a second card is a
 // defect visible by inspection. It is a test rather than a convention because
@@ -797,7 +1064,7 @@ func TestEveryCanonicalComponentIsAPartial(t *testing.T) {
 	t.Parallel()
 
 	set := newTestServer(t, loopbackListen).templates
-	for _, component := range []string{"header", "status-pill", "session-card", "empty", "rain", "pane"} {
+	for _, component := range components {
 		if set.Lookup(component) == nil {
 			t.Errorf("the template set defines no %q component", component)
 		}
@@ -807,11 +1074,11 @@ func TestEveryCanonicalComponentIsAPartial(t *testing.T) {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		switch name := strings.TrimSuffix(path.Base(p), templateExt); name {
-		case "header", "status-pill", "session-card", "empty", "rain", "pane":
-			if dir := path.Dir(p); dir != "templates/partials" {
-				t.Errorf("the %s component lives in %s; docs/components.md puts every one of them in templates/partials", name, dir)
-			}
+		if !slices.Contains(components, strings.TrimSuffix(path.Base(p), templateExt)) {
+			return nil
+		}
+		if dir := path.Dir(p); dir != "templates/partials" {
+			t.Errorf("the %s component lives in %s; docs/components.md puts every one of them in templates/partials", path.Base(p), dir)
 		}
 		return nil
 	})

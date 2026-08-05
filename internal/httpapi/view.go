@@ -127,6 +127,27 @@ type emptyView struct {
 	Action *actionView
 }
 
+// createFormView is the create form's whole parameter list (T010): the token
+// its submission has to present, and nothing else.
+//
+// One field, because a create names no session. The other three forms this
+// milestone adds are the card's and take the card's own projection with them;
+// this one has nothing to describe — what it makes is what it is for — so the
+// only thing it needs is the evidence the gate demands.
+//
+// It is a type of its own rather than the bare string for the reason every other
+// component's parameters are a struct: this template set is parsed with no
+// function map, so a component's parameters are exactly the fields of what it is
+// executed against, and a component that grows one grows it here.
+type createFormView struct {
+	// PageToken is the render's own token, the same value every card on the
+	// same page carries (see sessionView.PageToken for why one render mints
+	// one). Empty renders no form at all rather than a form with an empty
+	// field: a control the gate is certain to refuse is worse than no control,
+	// because an operator cannot tell the two apart until they use it.
+	PageToken string
+}
+
 // actionView is one entry in an action row, and it is deliberately empty.
 //
 // What an action *is* — variant, label, target, confirmation — is

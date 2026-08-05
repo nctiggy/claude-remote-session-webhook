@@ -361,10 +361,37 @@ func TestTheFleetStatesWhatAnAdoptedSessionDoesNotKnow(t *testing.T) {
 	}
 }
 
+// sectionOf returns the contents of the first <section class="…"> on a rendered
+// page, so a claim about one region cannot be satisfied by markup somewhere else
+// on it. That distinction is the whole of the empty state's assertions now that
+// the page around it really does carry a control.
+func sectionOf(t *testing.T, page, class string) string {
+	t.Helper()
+
+	opener := `<section class="` + class + `">`
+	_, after, ok := strings.Cut(page, opener)
+	if !ok {
+		t.Fatalf("the page renders no %s:\n%s", opener, page)
+	}
+	body, _, ok := strings.Cut(after, "</section>")
+	if !ok {
+		t.Fatalf("the page's %s is never closed:\n%s", opener, page)
+	}
+	return body
+}
+
 // TestAnEmptyFleetExplainsItselfInsteadOfRenderingNothing is FR-021, and the
 // second half is FR-024a: docs/components.md documents this component with a
-// "Start a session" action, and it must not be here — a browser could not sign
-// the create, so the button would be broken as well as out of scope.
+// "Start a session" action, and it must not be here.
+//
+// The reason it must not be here has changed, and the assertion is worth keeping
+// precisely because of that. Through milestone 2 the answer was that no route
+// existed to take it. T009 and T010 built that route and its form, so the answer
+// is now the design system's: the empty state is the one surface where the rain
+// runs at full strength, and rain never goes behind reading content — "not a
+// pane, a card grid, a form, or a table". The create form is a sibling of this
+// section on the page, which is what the sweeps below are scoped to the section
+// to say.
 func TestAnEmptyFleetExplainsItselfInsteadOfRenderingNothing(t *testing.T) {
 	t.Parallel()
 
@@ -384,20 +411,76 @@ func TestAnEmptyFleetExplainsItselfInsteadOfRenderingNothing(t *testing.T) {
 	if strings.Contains(page, `class="summary"`) {
 		t.Errorf("an empty fleet rendered a summary of nothing:\n%s", page)
 	}
+
+	empty := sectionOf(t, page, "empty")
 	for _, offer := range mutationMarkup {
-		if strings.Contains(strings.ToLower(page), offer) {
-			t.Errorf("the empty state offers %q; there is no route behind this door to take it, and no secret to sign it with:\n%s", offer, page)
+		if strings.Contains(strings.ToLower(empty), offer) {
+			t.Errorf("the empty state offers %q; the rain runs at full strength behind this section, and the design system keeps a control off the rain:\n%s", offer, empty)
 		}
 	}
 	// The action row itself, which the sweep above cannot see: the component
 	// renders it as an empty container, so an action passed here would appear as a
 	// row holding nothing rather than as a control. FR-024a asks for the parameter
 	// to be absent at this call site, and this is that call site.
-	if strings.Contains(page, "empty-action") {
-		t.Errorf("the empty state rendered its action row; this milestone passes no action (FR-024a):\n%s", page)
+	if strings.Contains(empty, "empty-action") {
+		t.Errorf("the empty state rendered its action row; this page passes no action (FR-024a):\n%s", empty)
 	}
-	if strings.Contains(page, "Start") {
-		t.Errorf("the empty state tells the operator to start a session, which this page cannot do:\n%s", page)
+}
+
+// TestTheRenderedFleetOffersTheCreateForm is T010 at the call site rather than
+// at the component, which is where it can be lost silently: the form is
+// perfectly capable of rendering for a page that never asks it to, and this
+// repository has shipped code nothing called three times.
+//
+// The empty-fleet row is the one that matters. An operator who owns nothing is
+// exactly the operator who needs to start something, and a form rendered only
+// beside the grid would be missing from the one page where the fleet is empty —
+// a dashboard that can create only once it already has.
+func TestTheRenderedFleetOffersTheCreateForm(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]bool{
+		"an empty fleet":               false,
+		"a fleet with a session in it": true,
+	}
+
+	for name, populated := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFleet(t)
+			if populated {
+				f.fixture.plant(t, session.Session{Name: "refactor the reaper", WorkDir: f.fixture.repo})
+			}
+			page := f.view(t).Body.String()
+
+			create := sectionOf(t, page, "create")
+			form := cardForm.FindStringSubmatch(create)
+			if form == nil {
+				t.Fatalf("the create section on the rendered fleet holds no form, so the control T010 built reaches no operator:\n%s", create)
+			}
+
+			target := strings.TrimPrefix(patternDashboardCreate, "POST ")
+			if !strings.Contains(form[1], `action="`+target+`"`) {
+				t.Errorf("the create form does not post to %q, which is the route this daemon serves for it:\n%s", target, create)
+			}
+			// The token the gate demands, on the form rather than merely on the
+			// page: a hidden field outside every form is submitted by nothing.
+			if !hiddenTokenField.MatchString(form[2]) {
+				t.Errorf("the create form submits no %s, so the gate refuses it:\n%s", fieldPageToken, create)
+			}
+
+			// Outside every card, which is the placement the task is about: a create
+			// names no session, so a form drawn inside a card would act for whichever
+			// card happened to hold it — and would be drawn once per session on a
+			// page that needs it once.
+			if strings.Contains(create, "<article") {
+				t.Errorf("the create form is rendered inside a card:\n%s", create)
+			}
+			if strings.Contains(page, `action="`+target+`"`) && strings.Count(page, `action="`+target+`"`) != 1 {
+				t.Errorf("the page posts to %q %d times; one page offers one create:\n%s", target, strings.Count(page, `action="`+target+`"`), page)
+			}
+		})
 	}
 }
 
@@ -1123,6 +1206,17 @@ func TestASecondOwnersSessionIsInvisibleThroughTheDashboardsOwnRoute(t *testing.
 		Owner: stranger, Name: "not yours", WorkDir: held.fixture.repo, LastActivity: idleAt(testTime),
 	})
 	empty := newFleet(t)
+	// The one byte string on these two pages that differs for a reason having
+	// nothing to do with the fleet. A page token is minted per render from a key
+	// drawn at startup, so two independently seeded daemons disagree about it the
+	// way two processes disagree about any secret — and since T010 an empty fleet
+	// carries one too, in the create form, where before this only a card did.
+	//
+	// Aligned rather than filtered out of the comparison, so the assertion stays
+	// byte for byte. With one key, one identity and one clock reading, the two
+	// mints are the same string, and a token that ever encoded something about
+	// what the host holds would still make these pages differ.
+	empty.pageKey = held.pageKey
 
 	withTheirs, withNothing := held.view(t), empty.view(t)
 	if withTheirs.Body.String() != withNothing.Body.String() {

@@ -1,6 +1,6 @@
 /*
- * crswd.js — the dashboard's only script, and in this milestone it does two
- * things: the digital rain, and the pane's live half.
+ * crswd.js — the dashboard's only script, and in this milestone it does three
+ * things: the digital rain, the pane's live half, and spending a submit once.
  *
  * It exists as a file rather than as markup because docs/security.md's policy is
  * sent with no `unsafe-inline` and no exception: a <script> body would be refused
@@ -262,5 +262,48 @@
 
   for (const pane of document.querySelectorAll('pre.pane[data-stream]')) {
     watch(pane);
+  }
+
+  /*
+   * The submit-once guard (T010, research.md R7).
+   *
+   * FR-018 — a repeated action must not duplicate its effect — is satisfied by
+   * three of the four actions' own semantics: a second destroy finds no record,
+   * a second rename is the same end state, and a second compact is a second
+   * delivery the operator asked for. The create is the exception. Two rapid
+   * submissions are two unsandboxed shells, and no amount of re-reading the
+   * response tells them apart afterwards.
+   *
+   * This is the guard and not the bound. What actually stops a runaway is the
+   * concurrent-session cap and the create rate limit, both server-side and both
+   * out of a browser's reach; a page with scripting disabled is refused by those
+   * exactly as it is today. All this removes is the double-click that would
+   * spend one of them by accident.
+   *
+   * Disabled inside the submit event, which fires after the browser has decided
+   * to submit — so a form the browser refused on its own constraint validation
+   * is left with a live control, which is the only useful state to leave it in.
+   * The control carries no name attribute, so disabling it removes nothing from
+   * the entry list the form sends; disabling the fields would.
+   *
+   * The in-progress state FR-031 asks for is the note the form names, revealed
+   * here and written over there. A control that merely greyed out would say the
+   * page had stopped rather than that the host was working, and the copy belongs
+   * to the template for the reason the pane's ended note does.
+   */
+  const spendOnce = (form) => {
+    form.addEventListener('submit', () => {
+      for (const control of form.querySelectorAll('button[type="submit"]')) {
+        control.disabled = true;
+      }
+      const note = document.getElementById(form.dataset.submitOnce);
+      if (note) {
+        note.hidden = false;
+      }
+    });
+  };
+
+  for (const form of document.querySelectorAll('form[data-submit-once]')) {
+    spendOnce(form);
   }
 })();

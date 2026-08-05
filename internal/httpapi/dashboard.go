@@ -64,16 +64,22 @@ var errDashboardNoOperator = errors.New("a dashboard route was reached with no v
 // The empty state's copy, supplied at the call site the way docs/components.md
 // documents its parameters.
 //
-// The body is deliberately not that document's, which reads "Nothing is
-// executing on this host right now. Start one to open a Claude session in a tmux
-// window." There is no "start one" here: the dashboard is read-only (FR-022),
-// the component's action parameter is absent (FR-024a), and a browser holds no
-// shared secret to sign a create with even if it rendered a button. Copy that
-// tells an operator to do something the page cannot do is a worse empty state
-// than no copy at all.
+// The body used to end "this dashboard only watches — sessions are started
+// through the API", which was true for exactly as long as the browser door
+// served GET alone. T009 gave it a create and T010 gave that create a form, so
+// the sentence became the one thing an empty state must never be: a page telling
+// an operator it cannot do something it is offering to do two elements further
+// down. It points at the form rather than describing the mechanism, because
+// what an operator needs here is where to go next.
+//
+// The component's Action parameter stays absent all the same (FR-024a), and now
+// for a design-system reason rather than a milestone one: the empty state is the
+// one surface where the rain runs at full strength, and docs/design-system.md
+// keeps rain off reading content — "not a pane, a card grid, a form, or a
+// table". The form is a sibling of this section, not a parameter of it.
 const (
 	emptyFleetTitle = "No sessions running"
-	emptyFleetBody  = "Nothing is executing on this host right now. This dashboard only watches — sessions are started through the API."
+	emptyFleetBody  = "Nothing is executing on this host right now. The form below starts a Claude session in a tmux window on this host."
 )
 
 // fleetView is the whole of what the fleet page renders against.
@@ -102,6 +108,13 @@ type fleetView struct {
 	// (FR-021). It is built unconditionally because it costs two constants; the
 	// page chooses between it and the grid.
 	Empty emptyView
+
+	// Create is the create form, which renders whichever of those two the page
+	// chose (T010). An operator who owns nothing is exactly the operator most
+	// in need of it, so it is a sibling of both rather than a companion of the
+	// grid — and it is the fleet's control rather than a card's, because a
+	// create names no session.
+	Create createFormView
 }
 
 // sessionPageView is the whole of what the single-session page renders against:
@@ -228,6 +241,11 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string) fleetVie
 		Summary:  summarise(views),
 		Sessions: views,
 		Empty:    emptyView{Title: emptyFleetTitle, Body: emptyFleetBody},
+		// The render's own token, the same value every card above carries. The
+		// form is one more thing on this page that acts for this identity at this
+		// instant, so it is handed the page's token rather than a second mint —
+		// the reason cardOf takes one as a parameter instead of issuing one.
+		Create: createFormView{PageToken: token},
 	}
 }
 

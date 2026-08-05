@@ -16,10 +16,13 @@
   non-negotiable is that they live in tokens, and a page has nothing to say about
   them.
 
-  There is no <form>, no submit control, and no reference to any of the six API
-  operations. The dashboard is read-only (FR-022) and that is structural rather
-  than a rendering choice: the browser door serves GET only, and a browser holds
-  no shared secret to sign a mutation with.
+  This page can now act, which it could not through milestone 2. What makes that
+  safe is not on this page and deliberately cannot be: the browser door's gate
+  (browser.go) verifies the Access identity, then the initiator, then a token
+  minted for that identity — before any handler runs. What is on the page is the
+  evidence, in a hidden field inside each form, and nothing here references any
+  of the six API operations: a browser holds no shared secret and every form
+  below posts to this door's own /dashboard/ routes.
 */}}<!doctype html>
 <html lang="en">
 <head>
@@ -47,6 +50,18 @@
 {{ range .Sessions }}{{ template "session-card" . }}
 {{ end }}</div>
 {{ else }}{{ template "empty" .Empty }}
-{{ end }}</main>
+{{ end }}{{/*
+  The create form, after the fleet and outside both branches above (T010).
+
+  After, because a dashboard is scanned for what is running on this host before
+  it is read for what to do next — the same argument that puts the summary before
+  the grid. Outside both, because an operator who owns nothing is the one who
+  most needs it: a form rendered only beside the grid would be missing from the
+  one page where the fleet is empty.
+
+  It renders nothing at all when this render minted no token, which is what makes
+  a page that cannot authorise a create offer none.
+*/}}{{ template "create-form" .Create }}
+</main>
 </body>
 </html>

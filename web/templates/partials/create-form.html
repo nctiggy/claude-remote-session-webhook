@@ -1,0 +1,74 @@
+{{/*
+  The create form — the one control on this dashboard that starts an unsandboxed
+  shell rather than ending one (US2, contracts/actions.md).
+
+  It is outside every card, and that is structural rather than tidy. A card is
+  one session (docs/components.md) and every form on it acts on that session; a
+  create names none, because the session is what it makes. Nested in a card it
+  would be a control whose target is whichever card happened to hold it, drawn
+  once per session on a page that needs it once.
+
+  It is outside the empty state as well, which is the other place
+  docs/components.md documents an action — and that is the design system's rule
+  rather than a preference: the empty state is the one surface where the rain
+  runs at full strength, and rain never goes behind reading content, "not a pane,
+  a card grid, a form, or a table". So the empty state's Action parameter stays
+  absent (FR-024a) and this section sits beside it.
+
+  It renders from the page token for the reason the card's action row does: the
+  token is the evidence the gate in browser.go demands, so a form rendered
+  without one could only offer a control the gate is certain to refuse. A
+  component built with no token renders nothing at all rather than an empty
+  field — FR-018a's discipline about absent values, applied to an affordance.
+
+  The three fields the route reads are the contract's three, and two of them are
+  spelled here a second time: `name` and `work_dir` are fieldName and
+  fieldWorkDir in actions.go, unreachable from a template set parsed with no
+  function map. The test in partials_test.go is what holds the two spellings
+  together — the arrangement `confirm=yes` already has on the card. The third is
+  the token partial, so the field a page renders and the field the gate reads
+  stay one spelling.
+
+  A plain form post and a submit button, per research.md R4: keyboard operability
+  is a property of the element rather than work (FR-028), the focus ring the
+  design system already sets applies untouched, and the form still works with no
+  script running at all. Nothing here is htmx.
+
+  Every input carries a real <label>, per docs/components.md's Form rules — a
+  placeholder is not a label, and there are none here.
+
+  The client hints are exactly that. Validation is server-side and authoritative:
+  the route calls milestone 1's ValidateName and ResolveWorkDir and answers a
+  refusal in words, and nothing a browser decides is permitted to be the reason a
+  session does or does not start. They are pinned to the daemon's own rules by a
+  test all the same, because a hint that drifted would refuse a name this daemon
+  would have accepted, in a browser, with nothing on the page to say why. There
+  is deliberately no hint on the working directory: the roots are the daemon's
+  configuration, and a pattern spelling them would put a map of this host in the
+  markup.
+
+  The submit disables itself on submission (crswd.js). It is the one genuine
+  idempotence exposure of the four actions — a second destroy finds no record, a
+  second rename is the same end state, a second compact is a second delivery the
+  operator asked for, and a second create is a second unsandboxed shell
+  (research.md R7). The button carries no name attribute, so disabling it removes
+  nothing from what the form submits.
+
+  The note beside it is FR-031's in-progress state, hidden until the submission
+  reveals it. Its copy lives here rather than in the script for the reason the
+  pane's ended note does: what the interface says to a person belongs to a
+  template.
+*/}}{{ with .PageToken }}<section class="create">
+<h2 class="create-heading">Start a session</h2>
+<form class="create-form" method="post" action="/dashboard/sessions" data-submit-once="create-busy">{{ template "page-token" . }}<div class="field">
+<label class="field-label" for="create-name">Name</label>
+<input class="field-input" id="create-name" type="text" name="name" required maxlength="64" pattern="[-a-zA-Z0-9]+" autocomplete="off" spellcheck="false">
+</div>
+<div class="field">
+<label class="field-label" for="create-work-dir">Working directory</label>
+<input class="field-input" id="create-work-dir" type="text" name="work_dir" required autocomplete="off" spellcheck="false">
+</div>
+<button class="button button-primary" type="submit">Start session</button>
+</form>
+<p class="create-note" id="create-busy" hidden>Starting a session. This page is replaced by the new card when the host answers.</p>
+</section>{{ end }}

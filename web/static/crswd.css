@@ -366,6 +366,104 @@ body {
   font-size: var(--fs-prose);
 }
 
+/* The create form's container. It is a panel rather than a card — a card is one
+   session (docs/components.md) and a create names none — so it borrows the
+   card's surface and border without its grid or its hover, which belong to
+   something clickable.
+
+   It sits after the fleet, which is the same argument that puts the summary
+   before the grid: a dashboard is scanned for what is running on this host
+   before it is read for what to do next. */
+.create {
+  margin-block-start: var(--s5);
+  padding: var(--s4);
+  background: var(--surface);
+  border: var(--edge-width) solid var(--edge);
+  border-radius: var(--r);
+}
+
+/* A section eyebrow, per the design system's typography table, rather than
+   another heading competing with the card names above it. */
+.create-heading {
+  margin: 0 0 var(--s4);
+  color: var(--dim);
+  font-size: var(--fs-eyebrow);
+  font-weight: 600;
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+}
+
+/* Fields stacked with the control last, so the tab order follows the visual
+   order (the accessibility floor) without anything here setting one. Items are
+   start-aligned so the submit is its own width rather than the panel's. */
+.create-form {
+  display: grid;
+  justify-items: start;
+  gap: var(--s3);
+}
+
+/* One text entry with its label. Bounded by the grid's own track token rather
+   than by a width invented for a form: a working directory is long, and an
+   input that spans a 1160px shell is a line nobody can read the end of. */
+.field {
+  display: grid;
+  gap: var(--s1);
+  inline-size: min(100%, var(--card-min));
+}
+
+.field-label {
+  color: var(--dim);
+  font-size: var(--fs-eyebrow);
+  font-weight: 600;
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+}
+
+/* An input inherits neither the page's font nor its colours, so both are set
+   here for the reason the button's family is: a dashboard whose fields are the
+   platform's default is a dashboard with a piece of somebody else's interface
+   in it. The ground rather than the surface, so the field reads as a hole in the
+   panel rather than as another panel. */
+.field-input {
+  min-inline-size: 0;
+  padding: var(--s2);
+  background: var(--ground);
+  border: var(--edge-width) solid var(--edge-bright);
+  border-radius: var(--r);
+  color: var(--text);
+  font: var(--fs-body)/var(--lh-body) var(--mono);
+}
+
+/* The page's one primary control (docs/components.md: exactly one per view).
+   --phosphor on --surface is ≈16:1, and it is spent here because this is the
+   single thing on the page an operator came to do — the destroys are dangerous
+   rather than primary, and the links are the content. */
+.button-primary {
+  border-color: var(--phosphor);
+  color: var(--phosphor);
+}
+
+/* A control that has already been spent. It stops looking clickable and stops
+   claiming the emphasis it had, which is what makes an action in progress
+   distinguishable from one waiting to be taken — reinforced by the note beside
+   it, because a shade is never the signal on its own. */
+.button:disabled {
+  border-color: var(--edge);
+  color: var(--dim);
+  cursor: default;
+}
+
+/* What the page says while the host is working, rather than what it answered:
+   prose a human wrote, so it is set in sans on the same terms as a note beside a
+   pane. It is hidden markup until the submission reveals it, so a page that
+   never submits never says it. */
+.create-note {
+  margin: var(--s3) 0 0;
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: var(--fs-prose);
+}
+
 /* The one way session state is rendered anywhere. The label is always text and
    always present; the dot is reinforcement, never the state itself. */
 .pill {
