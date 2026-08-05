@@ -97,7 +97,7 @@ if one looks wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and st
 - [x] T002 🔒 `internal/httpapi/pagetoken.go`: mint and verify, **stateless** — no map, no sweep. `<expiry>.<HMAC-SHA256(pageKey, identity + "\n" + expiry)>`, `pageKey` 32 random bytes at startup, unrelated to `CRSW_SHARED_SECRET`, never served. `hmac.Equal`, never `==`. Four tests, each with its must-fail condition
 - [x] T003 🔒 `internal/httpapi/browser.go`: the gate, in the exact order layer 1 → `crossSite` → token, before any handler and before any state change. **Reuse `crossSite` from `stream.go`; do not add an `Origin` check.** One uniform `403`, byte-identical across all five causes including `Content-Length`; the failed check named **server-side only**
 - [x] T004 🔒 `internal/httpapi/dashboard.go` + templates: one token per render, bound to that request's verified identity, in a hidden `crsw_page_token` field. Never in a URL, a cookie, a `data-` attribute, or a log
-- [ ] T005 `internal/httpapi/actions.go`: the shared uniform `404` for unknown, not-owned, and no-longer-exists. One function, no reason parameter — there is nothing a caller could pass that may change a byte
+- [x] T005 `internal/httpapi/actions.go`: the shared uniform `404` for unknown, not-owned, and no-longer-exists. One function, no reason parameter — there is nothing a caller could pass that may change a byte
 
 ### US1 — Destroy from the browser (P1, MVP)
 

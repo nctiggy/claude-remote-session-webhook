@@ -12789,3 +12789,70 @@ take none for the same reason, and this is the third. Note it is a *different* b
 `renderNotFound`'s page (browser.go), which is the full not-found *page* for a route that does
 not exist; this one is a fragment for an action against a session that is not there. Test
 `TestNotFoundUniform`, must fail when unknown and not-owned produce different bytes.
+
+## Iteration 85 (milestone 3, iteration 5) — 2026-08-05 05:00
+
+**Did:** **T005** — new `internal/httpapi/actions.go`: `bodyActionNotFound` and
+`Server.notFoundAction`, the uniform `404` for an id no session ever had, one another operator
+owns, and one whose session is already gone. `404`, `text/html; charset=utf-8`, `nosniff`,
+`Content-Length`, body exactly the contract's literal. No reason parameter, mirroring
+`refuseBrowser` and `refuseAction`. Test `TestNotFoundUniform` in `actions_test.go`.
+
+**Learned:**
+
+1. **The three causes are two sentinels, not three.** `Manager.View` → `Store.Get` takes the
+   owner, so an unknown id and another owner's id are *one* answer (`ErrSessionNotFound`) from
+   one lookup — the uniformity FR-017 asks for is already load-bearing in the resolver, and the
+   only thing this task had to keep uniform was the *response*. A dead record is
+   `ErrSessionDead`, distinct on the record and identical to the caller.
+2. **The test drives the real resolver, and that is the whole difference between teeth and
+   none.** Calling `notFoundAction` three times would assert that one function agrees with
+   itself. `lookupDoor` puts the lookup `sessionPage` already does behind the T003 gate —
+   `View`, `resolveReason`, the not-found — so the three causes are the resolver's own answers.
+   Both must-fail conditions were run: a branch answering "not yours" differently from
+   "unknown" → red on the body, the `Content-Length` and the whole-header comparison; a branch
+   distinguishing an ended session → red the same way. Reverted both.
+3. **`r.SetPathValue` is how a fixture handler gets an `{id}` with no mux behind it.** Go 1.22+,
+   already available on this repo's 1.23. `actionDoor` never needed it because nothing behind
+   the gate looked a session up; every later action fixture will.
+4. **The record for a not-found is `dashboard.destroy` with `decision: deny`, not
+   `dashboard.reject`.** The gate admitted this identity — what failed is the lookup, not the
+   cross-site check — and `authenticateBrowser` has already set the action by then, so the
+   handler only calls `Deny(resolveReason(err))`. `dashboard.reject` stays reserved for T003's
+   gate, which is what makes an operator's count of one not a count of the other.
+5. **`Content-Length` is written by hand, as in `refuseAction`.** All three causes go through
+   one function so net/http would compute the same number anyway; writing it makes
+   byte-identity a property of the function rather than of how the response was buffered, and
+   the test asserts it separately from the header map for the same reason.
+
+**Findings:**
+
+349. **`notFoundAction` has no production caller until T006** — the same shape as finding 343,
+    and deliberate: `unused` is satisfied by the test caller. **T006 must answer its unknown,
+    not-owned and already-gone cases through this function**, and must register its route
+    through `authorizeAction`; a destroy that wrote its own 404, or one registered with plain
+    `handleBrowser`, leaves every test in this package green with the milestone's defence or
+    its uniformity absent.
+350. **Nothing yet pins `bodyActionNotFound` against `renderNotFound`'s page.** They are
+    deliberately different — a fragment for an action against a missing session, versus the
+    full page for a route that does not exist — but no test states that, so a future hand
+    could collapse one into the other and only the contract would notice. Not added here:
+    AR-008, and T021's leak corpus is the place that already sweeps action-route responses.
+351. **Findings 203–205, 216, 275, 278, 280–283, 285, 292–293, 298, 300–301, 303–307,
+    311–315, 317–323, 325, 327–328, 330–333, 335–348 carry over unchanged.** 306 still needs
+    the operator's answer; 342's `research.md` R1 discrepancy still wants confirming; 343's and
+    349's warning about T006 is the live one; the three browser-visual checks (SC-009/010/011)
+    still need a human. 340's lint caveat still applies: `golangci-lint` on PATH is v1.62.2 and
+    reads this repo's v2 config by running zero linters, so `golangci-lint run` is a green that
+    means nothing. The substitute run was `golangci-lint run --no-config --disable-all -E
+    bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags tmux,dev ./...`,
+    clean. `go test -race ./internal/httpapi` clean too. CI's pinned v2.12.2 is the check that
+    counts.
+
+**Left:** T006–T023. Next is **T006** — `POST /dashboard/sessions/{id}/destroy`, the first route
+that actually changes something. Register it with `s.authorizeAction(audit.ActionDashboardDestroy, h)`
+next to `handleBrowser` (finding 343). `confirm=yes` required or `400` with **nothing torn down**;
+verified teardown on success, `200` with the card fragment; `409` with the record **retained** and
+audited prominently when teardown cannot be verified; **no force path** (AR-004). Its three
+not-found cases go through `notFoundAction`, and `TestDestroyCrossOwnerUniform` asserts they are
+byte-identical to an unknown id.
