@@ -306,6 +306,11 @@ const patternDashboardCreate = "POST /dashboard/sessions"
 const (
 	fieldName    = "name"
 	fieldWorkDir = "work_dir"
+
+	// fieldStartCommand names which of the operator's configured commands to
+	// type into the new session's shell (#38). It carries a name; the command
+	// line it maps to never leaves the daemon's configuration.
+	fieldStartCommand = "start_command"
 )
 
 // The four things a create can answer other than a card, each a fragment for the
@@ -339,6 +344,11 @@ var (
 	// which is a fact about the daemon's own configuration rather than about the
 	// machine it runs on.
 	bodyActionCreateBadWorkDir = []byte(`<p class="card-outcome">This daemon may not start a session in that working directory.</p>`)
+
+	// Names the field rather than the value: the operator picked from a list
+	// this page rendered, so a mismatch means the list and the daemon disagree,
+	// which is worth saying plainly rather than blaming the choice.
+	bodyActionCreateBadStartCommand = []byte(`<p class="card-outcome">That start command is not one this daemon is configured with.</p>`)
 
 	// bodyActionCreateLimited is the 429, and it is one body for the
 	// concurrent-session cap and for the create rate alike — the arrangement
@@ -424,9 +434,10 @@ func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
 	// passed on, not given a name that a later edit could reach for. It is the
 	// strongest form FR-013 has in this language.
 	created, _, err := s.sessions.Create(r.Context(), session.CreateRequest{
-		Owner:   operator.Owner,
-		Name:    r.PostForm.Get(fieldName),
-		WorkDir: r.PostForm.Get(fieldWorkDir),
+		Owner:        operator.Owner,
+		Name:         r.PostForm.Get(fieldName),
+		WorkDir:      r.PostForm.Get(fieldWorkDir),
+		StartCommand: r.PostForm.Get(fieldStartCommand),
 	})
 	if err != nil {
 		s.refuseBrowserCreate(w, r, err)
@@ -484,6 +495,14 @@ func (s *Server) refuseBrowserCreate(w http.ResponseWriter, r *http.Request, err
 	case errors.Is(err, session.ErrInvalidWorkDir):
 		AuditFrom(r.Context()).Deny(createReason(err).Error())
 		s.writeFragment(w, http.StatusBadRequest, bodyActionCreateBadWorkDir)
+	case errors.Is(err, session.ErrUnknownStartCommand):
+		// A 400 rather than a 500: the operator named something this daemon does
+		// not have, which is a request to fix rather than a fault to report. The
+		// name is refused rather than falling back to the default, because a
+		// caller who asked for remote control and silently got a plain session
+		// has no way to discover that is what happened.
+		AuditFrom(r.Context()).Deny(createReason(err).Error())
+		s.writeFragment(w, http.StatusBadRequest, bodyActionCreateBadStartCommand)
 	case errors.Is(err, session.ErrTooManySessions):
 		// A full fleet is a 429 and not a 400, for the reason the API door gives:
 		// nothing the operator sent is wrong, and the only fix is to wait or to

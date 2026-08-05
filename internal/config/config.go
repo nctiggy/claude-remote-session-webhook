@@ -157,6 +157,25 @@ type StartCommands struct {
 	byName map[string]string
 }
 
+// NewStartCommands builds a set from names already validated by their caller.
+//
+// It exists because the loader reads the environment, and the packages that
+// *use* a set — session, and its tests — have no environment to read. Without
+// this the only way to exercise a configured daemon from another package is to
+// set process-wide variables, which is a test that cannot run in parallel with
+// its neighbours.
+//
+// It copies the map. A set that shared storage with its caller would be a value
+// whose meaning could change after it was handed over, and the whole point of
+// this type is that the resolved command line is fixed at load.
+func NewStartCommands(byName map[string]string) StartCommands {
+	out := StartCommands{byName: make(map[string]string, len(byName))}
+	for name, cmd := range byName {
+		out.byName[name] = cmd
+	}
+	return out
+}
+
 // Command is the command line for a name, and reports whether the name is one
 // the operator configured. An empty name is DefaultStartCommandName, so a create
 // that asks for nothing gets the daemon's default rather than a refusal.

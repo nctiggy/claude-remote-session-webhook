@@ -108,6 +108,16 @@ type Session struct {
 	// deliberately not part of any tmux target — see TmuxName.
 	Name string
 
+	// StartCommand is the name — never the command line — of the command typed
+	// into this session's shell (#38). The name is what a card shows, what the
+	// audit trail records, and what a restart resolves again; the line itself is
+	// configuration and stays in config, because a record carrying a command
+	// line would be a record that could be made to carry any command line.
+	//
+	// Empty means the daemon's default, which is what every session created
+	// before this field existed was started with.
+	StartCommand string
+
 	// WorkDir is the canonical, symlink-resolved, allowlist-checked directory
 	// from ResolveWorkDir (FR-028). Never the caller's spelling of it.
 	WorkDir string
@@ -231,6 +241,12 @@ var (
 	// dead is the end of the state machine in data-model.md, and a dead session
 	// is answered exactly as an id nobody was ever issued is.
 	ErrSessionDead = errors.New("session is dead")
+
+	// ErrUnknownStartCommand is a create naming a start command the operator did
+	// not configure. It is refused rather than falling back to the default: a
+	// caller that asked for remote control and silently got a plain session has
+	// no way to discover that is what happened (#38).
+	ErrUnknownStartCommand = errors.New("no such start command")
 
 	// ErrCredentialNotPending marks a claim on a session whose credential has
 	// already been handed out. It is not reachable through the API — ClaimPending
