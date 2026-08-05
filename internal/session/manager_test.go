@@ -2769,3 +2769,87 @@ func TestEndingASubscriptionTwiceIsSafe(t *testing.T) {
 		t.Errorf("Create() after a cancelled subscription: %v", err)
 	}
 }
+
+// TestTheStartCommandIsTheConfiguredOne is #38's wiring, asserted at the one
+// place it can be observed: the argv the host was actually given.
+//
+// The default path is checked alongside the configured one because the whole
+// promise of this feature is that an operator who configures nothing gets the
+// daemon they already had. A manager that was never given a set must still type
+// the built-in command, and it must still type it through send-keys with the
+// line the operator never chose.
+func TestTheStartCommandIsTheConfiguredOne(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unconfigured means the built-in default", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		if _, _, err := f.mgr.Create(context.Background(), f.request()); err != nil {
+			t.Fatalf("Create() = %v", err)
+		}
+		assertTypedIntoTheShell(t, f.tmux, claudeStartCommand)
+	})
+
+	t.Run("a configured name is the line that gets typed", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		f.mgr.SetStartCommands(config.NewStartCommands(map[string]string{
+			"default": "claude",
+			"rc":      "claude remote-control --permission-mode bypassPermissions",
+		}))
+
+		req := f.request()
+		req.StartCommand = "rc"
+		if _, _, err := f.mgr.Create(context.Background(), req); err != nil {
+			t.Fatalf("Create() = %v", err)
+		}
+		assertTypedIntoTheShell(t, f.tmux, "claude remote-control --permission-mode bypassPermissions")
+	})
+
+	// The refusal is the half worth having. A create that named a command this
+	// daemon does not have must leave nothing behind — no record, no tmux
+	// session, no token — exactly as an unusable name does, and it must not
+	// quietly fall back to the default, because a caller who asked for remote
+	// control and got a plain session has no way to find that out.
+	t.Run("an unknown name creates nothing", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		req := f.request()
+		req.StartCommand = "no-such-command"
+
+		_, _, err := f.mgr.Create(context.Background(), req)
+		if !errors.Is(err, ErrUnknownStartCommand) {
+			t.Fatalf("Create(unknown start command) = %v; want %v", err, ErrUnknownStartCommand)
+		}
+		if got := len(f.store.List(f.request().Owner)); got != 0 {
+			t.Errorf("the store holds %d records; a refused create leaves none", got)
+		}
+		for _, call := range f.tmux.Calls() {
+			if call.Op == tmuxctl.OpNew {
+				t.Error("a refused create started a tmux session")
+			}
+		}
+	})
+}
+
+// assertTypedIntoTheShell finds the send-keys the start performed and checks the
+// line it carried.
+func assertTypedIntoTheShell(t *testing.T, fake *tmuxctl.Fake, want string) {
+	t.Helper()
+
+	for _, call := range fake.Calls() {
+		if call.Op != tmuxctl.OpSendKeys {
+			continue
+		}
+		for _, arg := range call.Argv {
+			if arg == want {
+				return
+			}
+		}
+		t.Fatalf("send-keys argv = %q; want it to carry %q", call.Argv, want)
+	}
+	t.Fatalf("nothing was typed into the shell at all; want %q", want)
+}

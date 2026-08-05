@@ -67,6 +67,18 @@ Environment=CRSW_CREATE_RATE_PER_MIN=6
 Environment=CRSW_MAX_BODY_BYTES=65536
 Environment=CRSW_MAX_STREAMS=10
 
+# The two start-command variables are quoted because a command line has spaces
+# in it, and an unquoted `Environment=` assignment ends at the first one.
+#
+# What is set here is typed into every new session's shell. The default below is
+# what the daemon typed before this was configurable at all, and the named set is
+# empty, so both lines can be deleted without changing anything. A create picks
+# from the set BY NAME and can never send a command line of its own — see
+# `.env.example`, and read `docs/security.md` before adding an entry that starts
+# a second unsupervised path into the same unsandboxed shell.
+Environment="CRSW_START_COMMAND=claude --dangerously-skip-permissions"
+Environment="CRSW_START_COMMANDS="
+
 # There is no unit setting for the idle timeout (60m), the absolute session
 # lifetime (24h) or the signed-request timestamp window (300s). They are
 # constants in the code: they bound the host, and a deployment that could widen

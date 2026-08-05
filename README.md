@@ -127,6 +127,8 @@ stands in for the permission prompt that is gone.
 | `CRSW_MAX_SESSIONS` | no | `5` | not a whole number, or below 1 |
 | `CRSW_CREATE_RATE_PER_MIN` | no | `6` | not a whole number, or below 1 |
 | `CRSW_MAX_BODY_BYTES` | no | `65536` | not a whole number, or below 1 |
+| `CRSW_START_COMMAND` | no | `claude --dangerously-skip-permissions` | empty, or carrying a `;` or a control character |
+| `CRSW_START_COMMANDS` | no | empty — only `default` | an entry is empty, is not `name=command`, names a name twice, names a name outside `[a-z0-9-]`, re-defines `default` alongside `CRSW_START_COMMAND`, or carries a command the rule above refuses |
 
 Generate the secret with `openssl rand -hex 32`. It is never logged, never put in
 an error string, and never echoed back — not even its length. Formatting a

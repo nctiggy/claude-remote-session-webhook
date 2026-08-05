@@ -55,6 +55,13 @@ const timestampFormat = time.RFC3339
 type createRequest struct {
 	Name    string `json:"name"`
 	WorkDir string `json:"work_dir"`
+
+	// StartCommand names one of the operator's configured commands (#38). It is
+	// a name, never a command line: a create route that accepted a command line
+	// would be a remote shell wearing a session manager's clothes. Absent means
+	// the daemon's default, so every client written before this field keeps
+	// working unchanged.
+	StartCommand string `json:"start_command"`
 }
 
 // createResponse is the contract's 201 body, in the contract's field order.
@@ -315,9 +322,10 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	created, token, err := s.sessions.Create(r.Context(), session.CreateRequest{
-		Owner:   caller.ID,
-		Name:    req.Name,
-		WorkDir: req.WorkDir,
+		Owner:        caller.ID,
+		Name:         req.Name,
+		WorkDir:      req.WorkDir,
+		StartCommand: req.StartCommand,
 	})
 	if err != nil {
 		s.refuseCreate(w, r, err)
@@ -406,6 +414,7 @@ func createReason(err error) error {
 	// ErrInvalidWorkDir, so the general two must come last or they would answer
 	// for everything.
 	for _, reason := range []error{
+		session.ErrUnknownStartCommand,
 		session.ErrNameIsTmuxTarget,
 		session.ErrWorkDirNotAbsolute,
 		session.ErrWorkDirUnresolvable,

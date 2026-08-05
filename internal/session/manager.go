@@ -97,6 +97,11 @@ var (
 // construction except the subscriber set, which carries its own lock, and the
 // store and controller are both concurrency-safe.
 type Manager struct {
+	// startCommands is the operator's named set (#38). The zero value means
+	// "only the daemon's own default", which is what every caller predating
+	// this feature means.
+	startCommands config.StartCommands
+
 	tmux  tmuxctl.Controller
 	store *Store
 	roots []config.ApprovedRoot
@@ -116,6 +121,37 @@ type Manager struct {
 
 // NewManager builds a Manager on the host clock. This is the constructor the
 // daemon uses; tests reach for NewManagerWithClock.
+// SetStartCommands gives the manager the operator's named command set (#38).
+//
+// It is a setter rather than a constructor parameter because every existing
+// caller — and every test — means "the daemon's own default", and threading a
+// fourth argument through all of them to say so would be the churn AR-008
+// forbids. A manager that was never given a set starts sessions with
+// claudeStartCommand, which is exactly what it did before this existed.
+func (m *Manager) SetStartCommands(cmds config.StartCommands) { m.startCommands = cmds }
+
+// resolveStartCommand turns the name a create asked for into the command line
+// typed into the session's shell.
+//
+// An unconfigured manager answers the built-in default for any name, so the
+// zero value is the daemon that shipped before this feature. A configured one
+// refuses a name it does not know: a create that asks for "rc" on a daemon with
+// no "rc" must not quietly get a plain session, because the operator would have
+// no way to tell that is what happened.
+func (m *Manager) resolveStartCommand(name string) (string, error) {
+	if len(m.startCommands.Names()) == 0 {
+		if name == "" || name == config.DefaultStartCommandName {
+			return claudeStartCommand, nil
+		}
+		return "", fmt.Errorf("%w: %q", ErrUnknownStartCommand, name)
+	}
+	cmd, ok := m.startCommands.Command(name)
+	if !ok {
+		return "", fmt.Errorf("%w: %q", ErrUnknownStartCommand, name)
+	}
+	return cmd, nil
+}
+
 func NewManager(tmux tmuxctl.Controller, store *Store, roots []config.ApprovedRoot, maxSessions int) (*Manager, error) {
 	return NewManagerWithClock(tmux, store, roots, maxSessions, systemClock{})
 }
@@ -326,6 +362,12 @@ type CreateRequest struct {
 	// Owner is the authenticated identity, derived server-side (FR-012).
 	Owner auth.CallerID
 
+	// StartCommand names which configured command to type into the new session's
+	// shell (#38). Empty means the daemon's default. It is a name, never a
+	// command line — a create route that accepted a command line would be a
+	// remote shell wearing a session manager's clothes.
+	StartCommand string
+
 	// Name is the display label, validated by ValidateName. It reaches no tmux
 	// target (FR-034).
 	Name string
@@ -364,6 +406,14 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 	if req.Owner == "" {
 		return nil, "", fmt.Errorf("create session: %w", ErrMissingOwner)
 	}
+	// Refused here rather than at start: a create that named a command this
+	// daemon does not have must produce no record, no tmux session and no token,
+	// exactly as an unusable name or a forbidden directory does. Resolving it at
+	// start would mean tearing down something already built.
+	if _, err := m.resolveStartCommand(req.StartCommand); err != nil {
+		return nil, "", err
+	}
+
 	if err := ValidateName(req.Name); err != nil {
 		return nil, "", fmt.Errorf("create session: %w", err)
 	}
@@ -383,12 +433,13 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 
 	now := m.clock.Now()
 	s := Session{
-		ID:        id,
-		Owner:     req.Owner,
-		Name:      req.Name,
-		WorkDir:   workDir,
-		TokenHash: hash,
-		CreatedAt: now,
+		ID:           id,
+		Owner:        req.Owner,
+		Name:         req.Name,
+		StartCommand: req.StartCommand,
+		WorkDir:      workDir,
+		TokenHash:    hash,
+		CreatedAt:    now,
 		// Equal to CreatedAt, not a second reading of the clock: a session that
 		// has never been used has been idle since it was created.
 		LastActivity: now,
@@ -1253,7 +1304,15 @@ func (m *Manager) start(ctx context.Context, s Session) error {
 	if err := m.tmux.SetOption(ctx, name, tmuxctl.OptionOwner, string(s.Owner)); err != nil {
 		return fmt.Errorf("mark tmux session owner: %w", err)
 	}
-	if err := m.tmux.SendKeys(ctx, name, claudeStartCommand, enterKey); err != nil {
+	// The command is resolved from the name the record carries, not from the
+	// request: by the time a session is being started its name has already been
+	// checked against the configured set, and re-reading caller input here would
+	// be a second place for that check to be missing.
+	command, err := m.resolveStartCommand(s.StartCommand)
+	if err != nil {
+		return fmt.Errorf("resolve the start command for session %s: %w", s.ID, err)
+	}
+	if err := m.tmux.SendKeys(ctx, name, command, enterKey); err != nil {
 		return fmt.Errorf("send the claude start command: %w", err)
 	}
 

@@ -324,6 +324,12 @@ func newWithLayer1(
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the session manager: %w", err)
 	}
+	// The named start-command set reaches the manager here, and nowhere else
+	// (#38). Without this line the whole of internal/config's start-command
+	// handling is configuration nothing reads — which is the failure this repo
+	// has now shipped three times, and the reason the setter exists rather than
+	// the manager reading the environment itself.
+	sessions.SetStartCommands(cfg.StartCommands)
 	creates, err := newLimiter(cfg.CreateRatePerMin, systemClock{})
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the create rate limiter: %w", err)
