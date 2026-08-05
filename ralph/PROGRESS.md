@@ -14334,3 +14334,114 @@ the delivered text is **never** audited or logged (FR-016b, AR-007), which is th
 `TestCompactUsesBufferPath` in `internal/session/manager_test.go` asserting the **argv**, which must
 fail when the bytes are delivered with `send-keys` — `tmuxctl.Fake.Calls()` returns `Op`, `Argv` and
 `Stdin`, and the prompt's own suite shows how to read them.
+
+---
+
+## Iteration 99 (milestone 3, iteration 19) — 2026-08-05 08:42
+
+**Did:** **T019** — `Manager.Compact` and the `compactCommand` constant in
+`internal/session/manager.go`, with `TestCompactUsesBufferPath`,
+`TestCompactDefersTheIdleDeadline`, `TestCompactRefusesWhatItCannotDeliver` and one new row in
+`TestEveryFleetChangeEmits` in `internal/session/manager_test.go`. Two files.
+
+**Five things worth not re-deriving.**
+
+1. **Compact is *not* Prompt's two-command shape. The newline is in the payload and there is no
+   `SendKeys` on this path at all.** Prompt pastes the text and then presses Return;
+   `contracts/actions.md` §compact says "the literal 8 bytes `/compact` followed by a newline …
+   using the same `load-buffer` + `paste-buffer -d` path prompts use — never `send-keys`", so
+   `compactCommand` is `"/compact\n"` and the single `m.tmux.Paste` is the whole delivery. **T020
+   must not add a submit**, and the argv test counts commands, so one would be caught.
+2. **The touch had to live in `Compact`, because the browser path has nowhere else to put it.** On
+   the API path the idle clock moves in `Resolve` (`manager.go:475`) before `Prompt` is ever
+   called; a browser presents no per-session credential and reaches its session through `View`,
+   which is *required* not to touch it (FR-034f). So `Compact` calls `m.store.Touch(s.ID, now)` on
+   the manager's own clock.
+3. **The touch runs *before* the paste, and that order is load-bearing in one direction only.**
+   `Touch` is the store's own answer, under the store's lock, to whether the record is still there
+   and still live — so a record the reaper collected between the caller's `View` and this call is
+   refused before any bytes land. The other order fails worse: a `Touch` that failed *after* a
+   successful delivery would report a compact that did happen.
+4. **The emit is `Resolve`'s conditional one, not `Rename`'s unconditional one.** `data-model.md`
+   says a deferred idle deadline can move a card from `idle` back to `running`, "which is correct,
+   and is a `changed` event on the fleet stream" — so `DisplayState` is read either side of the
+   touch and only a difference emits. A compact on an already-running session announces nothing,
+   exactly as `Resolve` on one does; emitting unconditionally would make every compact a re-fetch on
+   every open page.
+5. **The error names the word, never the bytes.** The literal `/compact` is on the forbidden-value
+   list of `contracts/actions.md`'s audit row (T021's), so the paste failure reads `deliver the
+   compact command to session %s` and the constant is printed nowhere. The test that pins the argv
+   also asserts `/compact` appears in no `Argv` element, the way the prompt's does.
+
+**Must-fail conditions, verified by mutation rather than asserted.** Each mutation was reverted:
+
+- `m.tmux.Paste(ctx, name, []byte(compactCommand))` → `m.tmux.SendKeys(ctx, name, compactCommand)`
+  → **`TestCompactUsesBufferPath` red** at the command count (`ran 1 tmux commands, want 2`). This is
+  the task's own named must-fail.
+- `compactCommand` with its newline dropped → **same test red** at `command 0 stdin = "/compact",
+  want "/compact\n"`. The payload is spelled out in the test rather than read from the constant on
+  purpose, so an edit to the constant cannot move what the test checks for.
+- The `m.store.Touch` call deleted → **`TestCompactDefersTheIdleDeadline` red** on both the clock
+  and the deadline derived from it.
+- The `m.emit(FleetChanged, s)` deleted → **`TestEveryFleetChangeEmits/a_compact_that_brings_an_idle_session_back`
+  red** — "the fleet announced []".
+
+**Findings:**
+
+415. **A compact that fails has still moved the idle clock, and may already have announced a
+    `changed` event.** The touch and the emit precede the paste (see 3 above), so a paste that
+    errors leaves a deferred deadline and an open page re-fetching a card for an action that then
+    answers 500. This is deliberate and it is the API path's existing behaviour — `Resolve` touches
+    before `Prompt` runs, and a failing prompt does not put the clock back — but it is the kind of
+    thing a later iteration "tidies" by moving the touch after the delivery, which reintroduces the
+    worse failure named in 3. The record is honest either way: what the event claims is that the
+    *record* changed, and it did.
+416. **Nothing yet proves the delivered text stays out of the trail.**
+    `TestThePromptTextReachesNoAuditRecordOrLog` pins that discipline for prompt text; the `/compact`
+    entry in `contracts/actions.md`'s audit row is **T021's** and its corpus does not cover the
+    action routes yet. This iteration only established that the *manager* never names the bytes —
+    the handler and its record are T020's and T021's.
+417. **Finding 411's hypothetical did not materialise.** It warned that a "future compact that
+    labels its buffer" would be the case the host-line comparison in
+    `TestRenameThenIdentifierOperations` exists to catch. `Compact` reuses `Paste`, whose buffer is
+    named `crswd-<id>` by `argvLoadBuffer`, so it carries no label into an argv and adds no
+    name-derived target. The comparison is still worth keeping for the next such argv; this was not
+    it.
+418. **Findings 400–412 and 414 carry over unchanged.** 400's idle→`changed` acceptance row is still
+    unowned by any task, and it now has a *second* manager-level producer — `Resolve` and `Compact`
+    both emit it — which makes the missing acceptance coverage cheaper to add and no less absent.
+    306 still needs the operator's answer; 342, 350, 374, 378, 401, 402 and 405 still stand; 360,
+    367, 371, 372, 395 and 397 are T022's; 408's hostile-name row is T021's; 412's ninth
+    `identifierOps()` row is T020's. Iteration 90's **NEEDS CLARIFICATION on T023 vs T010 is still
+    unanswered.** 340's lint caveat still applies: `golangci-lint` on PATH is v1.62.2 and reads this
+    repo's v2 config by running zero linters, so `golangci-lint run` is a green that means nothing,
+    and `go install` of the v2 binary is not permitted in this environment. The substitute run was
+    `golangci-lint run --no-config --disable-all -E
+    bodyclose,errcheck,gosec,govet,staticcheck,ineffassign,unused --build-tags tmux,dev ./...`,
+    clean with no new `//nolint`. `go build ./...`, `go test -count=1 ./...`, `go test -race
+    ./internal/session`, `gofmt -l`, `goimports -l` and `go vet` under all four tags (default, tmux,
+    dev, quickstart) are clean. The tagged *suites* were not run: this task changes
+    `internal/session`, which drives tmux only through the fake, and touches neither `internal/tmuxctl`,
+    `cmd/crswd`, nor the dev bypass — so `go vet -tags` is the check `AGENTS.md` names for that case.
+    T023 runs them for real.
+
+**Left:** T020–T023. Next is **T020** — `POST /dashboard/sessions/{id}/compact` in
+`internal/httpapi/actions.go` plus the control in `web/templates/partials/session-card.html`.
+Six things it needs from here. The handler shape is `renameFromBrowser` at
+`internal/httpapi/actions.go:574`: `OperatorFrom` or fail closed with `errDashboardNoOperator`,
+`routableID(id)` or `renderNotFound`, `s.sessions.View(id, operator.Owner)` or `notFoundAction`
+with `resolveReason(err)`, then `AuditFrom(r.Context()).SetSessionID(live.ID)` before the action —
+but the answer is **not** a re-rendered card: the contract fixes the body bytes, so it is
+`s.writeFragment(w, http.StatusAccepted, …)` with exactly `<p class="card-outcome">Compact
+delivered. The session decides what to do with it.</p>`. `audit.ActionDashboardCompact` already
+exists (`internal/audit/audit.go:118`, T001) and the route registers beside the other three at
+`internal/httpapi/server.go:512` via `s.handleAction(patternDashboardCompact,
+audit.ActionDashboardCompact, s.compactFromBrowser)` — `handleAction` is what wraps the gate, so a
+route registered any other way is a mutating route with no cross-site defence. The pattern constant
+follows `patternDashboardRename` exactly, method inside the pattern so a `GET` falls to
+`handleUnrouted` rather than a 405. The control goes **outside** the card's single anchor (FR-027),
+like the destroy's and the rename's. `Manager.Compact` returns only `error` and a nil means the
+bytes landed — the "delivered, never compacted" sentence is the handler's to write (FR-016a), and
+`TestCompactReportsDeliveryNotSuccess` must fail when the response claims the compaction succeeded.
+Finding 412 applies: `identifierOps()` in `internal/httpapi/actions_test.go` is the closed list of
+identifier-addressed operations and needs a ninth row for this route.

@@ -126,7 +126,7 @@ if one looks wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and st
 
 ### US5 — Compact (P5)
 
-- [ ] T019 `internal/session/manager.go`: `Compact` — `/compact` + newline via `load-buffer` + `paste-buffer -d`, **never `send-keys`**. Touches `LastActivity`. The delivered text is never audited
+- [x] T019 `internal/session/manager.go`: `Compact` — `/compact` + newline via `load-buffer` + `paste-buffer -d`, **never `send-keys`**. Touches `LastActivity`. The delivered text is never audited
 - [ ] T020 `POST /dashboard/sessions/{id}/compact` → `202`. **Says delivered, never compacted**
 
 ### Ship it
