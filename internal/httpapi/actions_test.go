@@ -2265,3 +2265,440 @@ func TestACreateIsNoRouteOnAnyOtherMethod(t *testing.T) {
 		})
 	}
 }
+
+// --- US2 acceptance (T011) --------------------------------------------------
+//
+// The story's own scenarios, asked of a *run* rather than of a request. Every
+// case above varies one thing against a fresh fixture and reads what came back;
+// these two ask what a sequence of attempts leaves behind — the fleet the
+// operator still has, and the trail the operator can count. Neither is a
+// property any single request can be asked about, which is why the cases above
+// can all be green while both of these are false.
+
+// fillToTheCap starts config.DefaultMaxSessions sessions through the door under
+// test, and returns what the store then holds.
+//
+// Through the door rather than through fixture.plant, which is this suite's
+// difference from TestBrowserCreateRefusesPastTheBoundsWithoutStartingAnything
+// above: a planted record proves the cap is counted, and only sessions this
+// route really started prove that the fleet it counts is the one it built. It is
+// also what makes the trail hold a record per session below, where "one per
+// attempt" stops being a claim about one request.
+func (c *creator) fillToTheCap(t *testing.T) []session.Session {
+	t.Helper()
+
+	for i := range config.DefaultMaxSessions {
+		if w := c.post(t, c.asked(t, "running-"+strconv.Itoa(i), c.fixture.repo)); w.Code != http.StatusOK {
+			t.Fatalf("create %d of the cap's %d = %d (%s); want %d",
+				i+1, config.DefaultMaxSessions, w.Code, w.Body.String(), http.StatusOK)
+		}
+	}
+
+	held := c.owned()
+	if len(held) != config.DefaultMaxSessions {
+		t.Fatalf("the store holds %d records after filling the fleet; want the cap's %d",
+			len(held), config.DefaultMaxSessions)
+	}
+	return held
+}
+
+// killed counts the teardowns that reached the host, which is what tells a
+// refusal that made room for itself from one that changed nothing: a create that
+// killed a window and then refused leaves a store of the same size as one that
+// never acted.
+func (c *creator) killed() int {
+	n := 0
+	for _, call := range c.fixture.tmux.Calls() {
+		if call.Op == tmuxctl.OpKill {
+			n++
+		}
+	}
+	return n
+}
+
+// describeSession is a record's fields for a failure message, so that a fleet
+// that moved says what moved rather than that two structs differ.
+//
+// The credential hash is deliberately absent. It is neither readable nor
+// diagnosable, and it has an assertion of its own below: a hash that changed is
+// a re-minted credential, which is a different fault from a renamed session and
+// is owed a different sentence.
+func describeSession(s session.Session) string {
+	return strings.Join([]string{
+		"id=" + s.ID,
+		"owner=" + string(s.Owner),
+		"name=" + s.Name,
+		"work_dir=" + s.WorkDir,
+		"state=" + string(s.State),
+		"created=" + s.CreatedAt.Format(time.RFC3339Nano),
+		"activity=" + s.LastActivity.Format(time.RFC3339Nano),
+		"adopted=" + strconv.FormatBool(s.Adopted),
+		"credential_pending=" + strconv.FormatBool(s.CredentialPending),
+	}, " ")
+}
+
+// TestTheCapRefusesTheCreateAndLeavesTheFleetAsItWas is US2 scenario 3 end to
+// end: with the concurrent-session cap reached, the next create is refused with
+// something an operator can act on, and every session already running is exactly
+// as it was — in the store, on the host, and on the page they will reload.
+//
+// **Must fail when** the refusal is not free of side effects. The status code
+// cannot make that claim: a create that made room for itself — reaping the
+// oldest record, killing its window, re-minting its credential — answers 429
+// just the same and leaves the operator's fleet quietly different, which is the
+// helpfulness a later hand adds to this branch when a full fleet looks like a
+// problem to solve rather than a limit to report. The records are compared whole
+// rather than counted, which is what separates this from the cap case above.
+//
+// It must also fail when the cap stops being consulted at all, which is the
+// non-vacuity: a sixth create that succeeded answers 200 with a card.
+func TestTheCapRefusesTheCreateAndLeavesTheFleetAsItWas(t *testing.T) {
+	t.Parallel()
+
+	c := newCreator(t)
+	before := c.fillToTheCap(t)
+	startedFilling := c.started()
+
+	w := c.post(t, c.asked(t, "one-too-many", c.fixture.repo))
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("the create at the cap = %d (%s); want %d", w.Code, w.Body.String(), http.StatusTooManyRequests)
+	}
+	if got := w.Body.String(); got != wantCreateLimitedBody {
+		t.Errorf("body\n%s\nwant\n%s", got, wantCreateLimitedBody)
+	}
+
+	after := c.owned()
+	if len(after) != len(before) {
+		t.Fatalf("the fleet held %d sessions before the refused create and %d after", len(before), len(after))
+	}
+	for i, was := range before {
+		got := after[i]
+		if got == was {
+			continue
+		}
+		if got.TokenHash != was.TokenHash {
+			t.Errorf("the refused create re-minted the credential of session %s, which nobody asked it to touch", was.ID)
+		}
+		t.Errorf("the refused create changed a session that was already running:\nbefore %s\nafter  %s",
+			describeSession(was), describeSession(got))
+	}
+
+	// The host, which is the half the store cannot see: a record that survived a
+	// refusal whose window did not is a card describing nothing.
+	for _, was := range before {
+		running, err := c.fixture.tmux.Has(context.Background(), was.TmuxName())
+		if err != nil {
+			t.Fatalf("ask the fake host about %s: %v", was.TmuxName(), err)
+		}
+		if !running {
+			t.Errorf("the refused create left %s off the host; want the window it had before", was.TmuxName())
+		}
+	}
+	if got := c.started(); got != startedFilling {
+		t.Errorf("the host was asked to start %d sessions in all; want the %d that filled the fleet — a refusal starts nothing",
+			got, startedFilling)
+	}
+	if got := c.killed(); got != 0 {
+		t.Errorf("the refused create asked the host to kill %d windows; want 0 — a create at the cap does not make room for itself", got)
+	}
+
+	// One record per attempt, and the bound named on the last of them — the half
+	// the caller is deliberately not told, since one body answers the cap and the
+	// rate alike.
+	//
+	// Read before the page below, which is an admitted request and leaves a
+	// dashboard.view of its own.
+	records := c.records(t)
+	if want := config.DefaultMaxSessions + 1; len(records) != want {
+		t.Fatalf("%d attempts left %d records (%v); FR-041 requires exactly one each", want, len(records), records)
+	}
+	last := records[len(records)-1]
+	if got, want := last["action"], string(audit.ActionDashboardCreate); got != want {
+		t.Errorf("action = %v; want %v — a create refused at the cap is still a create", got, want)
+	}
+	if got, want := last["decision"], string(audit.Deny); got != want {
+		t.Errorf("decision = %v; want %v", got, want)
+	}
+	if got, want := last["reason"], errCreateCapReached.Error(); got != want {
+		t.Errorf("reason = %v; want %v — the cap and the rate are one answer to the caller and two on the record", got, want)
+	}
+	if got := last["session_id"]; got != nil {
+		t.Errorf("the refused create's record names session %v; it started none", got)
+	}
+
+	// What the operator sees next, which is where "existing sessions are
+	// unaffected" is really read: a fleet that lost a card renders exactly as one
+	// whose session was never there.
+	page := c.page(t)
+	if page.Code != http.StatusOK {
+		t.Fatalf("GET / after the refused create = %d (%s); want %d", page.Code, page.Body.String(), http.StatusOK)
+	}
+	for _, was := range before {
+		if !strings.Contains(page.Body.String(), was.ID) {
+			t.Errorf("the fleet rendered after the refused create does not carry session %s:\n%s", was.ID, page.Body.String())
+		}
+	}
+}
+
+// createAttempt is one request at the create route, and the single record it
+// must leave behind.
+type createAttempt struct {
+	name string
+
+	// site is the browser's own account of where the request came from. Rows
+	// leave it unset unless varying it is the point: an ordinary submission comes
+	// from the page this daemon rendered, and the one row that says otherwise is
+	// here to show what a refusal *before* the handler is counted as instead.
+	site string
+
+	form func(t *testing.T, c *creator) url.Values
+
+	status   int
+	action   audit.Action
+	decision audit.Decision
+
+	// reason is the sentinel the record must carry, and it is nil on the rows
+	// that were carried out: an allowed create explains nothing, because there is
+	// nothing for an operator to act on.
+	reason error
+}
+
+// createAttempts is one operator's run at the create control — two attempts the
+// validation refused, one a hostile page sent, the fleet filled to the cap, and
+// one attempt past it.
+//
+// The order is load-bearing, which is why this is a slice driven in sequence
+// rather than a map of independent cases: the refusals come first so that they
+// are answered by a daemon with room to spare, and the last row is refused only
+// because the five before it succeeded.
+func createAttempts() []createAttempt {
+	wellFormed := func(t *testing.T, c *creator) url.Values {
+		t.Helper()
+		return c.wellFormed(t)
+	}
+
+	attempts := []createAttempt{
+		{
+			name: "a name the daemon refuses",
+			form: func(t *testing.T, c *creator) url.Values {
+				t.Helper()
+				return c.asked(t, "refactor:1", c.fixture.repo)
+			},
+			status:   http.StatusBadRequest,
+			action:   audit.ActionDashboardCreate,
+			decision: audit.Deny,
+			reason:   session.ErrNameIsTmuxTarget,
+		},
+		{
+			name: "a working directory outside the approved roots",
+			form: func(t *testing.T, c *creator) url.Values {
+				t.Helper()
+				return c.asked(t, "refactor-auth", filepath.Dir(c.fixture.root))
+			},
+			status:   http.StatusBadRequest,
+			action:   audit.ActionDashboardCreate,
+			decision: audit.Deny,
+			reason:   session.ErrWorkDirOutsideRoots,
+		},
+		{
+			// Counted with the rest and recorded as something else, which is T001's
+			// whole argument: an identity that passed layer 1 and then failed the
+			// cross-site check is a more alarming event than a create the daemon
+			// refused, and an operator counting one must not be counting the other.
+			name:     "a create a hostile page sent on the operator's cookie",
+			site:     "cross-site",
+			form:     wellFormed,
+			status:   http.StatusForbidden,
+			action:   audit.ActionDashboardReject,
+			decision: audit.Deny,
+			reason:   errActionCrossSite,
+		},
+	}
+
+	for i := range config.DefaultMaxSessions {
+		attempts = append(attempts, createAttempt{
+			name: "a well-formed create, " + strconv.Itoa(i+1) + " of the cap's " + strconv.Itoa(config.DefaultMaxSessions),
+			form: func(t *testing.T, c *creator) url.Values {
+				t.Helper()
+				return c.asked(t, "running-"+strconv.Itoa(i), c.fixture.repo)
+			},
+			status:   http.StatusOK,
+			action:   audit.ActionDashboardCreate,
+			decision: audit.Allow,
+		})
+	}
+
+	return append(attempts, createAttempt{
+		name:     "the create past the cap",
+		form:     wellFormed,
+		status:   http.StatusTooManyRequests,
+		action:   audit.ActionDashboardCreate,
+		decision: audit.Deny,
+		reason:   errCreateCapReached,
+	})
+}
+
+// TestEveryCreateAttemptLeavesOneRecord is FR-041 across a run: every attempt at
+// the create route leaves exactly one record, and the refused ones are recorded
+// as creates alongside the ones that worked.
+//
+// **Must fail when** an attempt goes unrecorded, is recorded twice, or is
+// recorded as something it was not. The trail is read after every attempt rather
+// than once at the end, so a run that drifts says which attempt broke it — and
+// the count is what a refusal returning early past the audit takes with it,
+// silently, on the one door where "how many sessions did this identity try to
+// start" is the question an operator asks first.
+//
+// The two subtests reach the two bounds, which are refused in different places:
+// the cap is Manager.Create's and is only reachable by really filling a fleet,
+// while the rate is this handler's own and is refused before the manager is
+// called at all. A suite driving one of them would leave the other's records
+// unasserted.
+func TestEveryCreateAttemptLeavesOneRecord(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a run the daemon answered five different ways", func(t *testing.T) {
+		t.Parallel()
+
+		c := newCreator(t)
+		attempts, allowed, creates := createAttempts(), 0, 0
+
+		for i, row := range attempts {
+			site := row.site
+			if site == "" {
+				site = secFetchSiteSameOrigin
+			}
+
+			w := c.send(t, http.MethodPost, createPath, site, row.form(t, c))
+
+			if w.Code != row.status {
+				t.Fatalf("attempt %d (%s): status = %d (%s); want %d",
+					i+1, row.name, w.Code, w.Body.String(), row.status)
+			}
+			if row.decision == audit.Allow {
+				allowed++
+			}
+			if row.action == audit.ActionDashboardCreate {
+				creates++
+			}
+
+			got := c.records(t)
+			if len(got) != i+1 {
+				t.Fatalf("after %d attempts the trail holds %d records (%v); FR-041 requires exactly one each",
+					i+1, len(got), got)
+			}
+
+			rec := got[i]
+			if got, want := rec["action"], string(row.action); got != want {
+				t.Errorf("attempt %d (%s): action = %v; want %v", i+1, row.name, got, want)
+			}
+			if got, want := rec["decision"], string(row.decision); got != want {
+				t.Errorf("attempt %d (%s): decision = %v; want %v", i+1, row.name, got, want)
+			}
+			switch {
+			case row.reason != nil:
+				if got, want := rec["reason"], row.reason.Error(); got != want {
+					t.Errorf("attempt %d (%s): reason = %v; want %v", i+1, row.name, got, want)
+				}
+				if got := rec["session_id"]; got != nil {
+					t.Errorf("attempt %d (%s): the record names session %v; the attempt started none",
+						i+1, row.name, got)
+				}
+			default:
+				if got := rec["reason"]; got != nil {
+					t.Errorf("attempt %d (%s): reason = %v; an allowed create explains nothing", i+1, row.name, got)
+				}
+				// The record is findable, which is what SetSessionID is for: a create
+				// recorded without the session it started is a record an operator
+				// cannot follow to anything.
+				if got := rec["session_id"]; got == nil || got == "" {
+					t.Errorf("attempt %d (%s): the record names no session; the attempt started one", i+1, row.name)
+				}
+			}
+		}
+
+		if got := len(c.owned()); got != allowed {
+			t.Errorf("the store holds %d records after the run; want the %d attempts that were carried out", got, allowed)
+		}
+		if got := c.started(); got != allowed {
+			t.Errorf("the host was asked to start %d sessions; want the %d attempts that were carried out", got, allowed)
+		}
+
+		// The count an operator really takes from the trail: how many times this
+		// identity asked this daemon to start a session. It is every attempt that
+		// reached the handler and no attempt that did not.
+		got := 0
+		for _, rec := range c.records(t) {
+			if rec["action"] == string(audit.ActionDashboardCreate) {
+				got++
+			}
+		}
+		if got != creates {
+			t.Errorf("the trail holds %d dashboard.create records; want %d — one per attempt that reached the route",
+				got, creates)
+		}
+	})
+
+	t.Run("a spent create budget", func(t *testing.T) {
+		t.Parallel()
+
+		c := newCreator(t)
+		// The seam the rate branch is only reachable through: testConfig carries a
+		// budget no fixture can exhaust, so this puts the production pair on the
+		// server — six a minute bursting to three (research D11) — on a clock that
+		// does not move, so the bucket empties and stays empty.
+		c.creates = testLimiter(t, config.DefaultCreateRatePerMin, fixedClock{at: testTime})
+		burst := burstFor(config.DefaultCreateRatePerMin)
+
+		for i := range burst {
+			if w := c.post(t, c.asked(t, "running-"+strconv.Itoa(i), c.fixture.repo)); w.Code != http.StatusOK {
+				t.Fatalf("create %d of the burst = %d (%s); want %d", i+1, w.Code, w.Body.String(), http.StatusOK)
+			}
+		}
+
+		// More than one refusal, which is the half a single over-budget request
+		// cannot ask about: a door that recorded the first and then went quiet — the
+		// "log it once" that is a kindness on a noisy endpoint and a blind spot on
+		// the one that starts unsandboxed shells — answers all three of these 429
+		// exactly as this daemon does.
+		const overBudget = 3
+		for i := range overBudget {
+			w := c.post(t, c.wellFormed(t))
+
+			if w.Code != http.StatusTooManyRequests {
+				t.Fatalf("over-budget create %d = %d (%s); want %d",
+					i+1, w.Code, w.Body.String(), http.StatusTooManyRequests)
+			}
+			if got := w.Body.String(); got != wantCreateLimitedBody {
+				t.Errorf("over-budget create %d: body\n%s\nwant\n%s", i+1, got, wantCreateLimitedBody)
+			}
+		}
+
+		records := c.records(t)
+		if want := burst + overBudget; len(records) != want {
+			t.Fatalf("%d attempts left %d records (%v); FR-041 requires exactly one each", want, len(records), records)
+		}
+		for i, rec := range records {
+			if got, want := rec["action"], string(audit.ActionDashboardCreate); got != want {
+				t.Errorf("record %d: action = %v; want %v — a create refused for its rate is still a create", i, got, want)
+			}
+		}
+		for i, rec := range records[burst:] {
+			if got, want := rec["decision"], string(audit.Deny); got != want {
+				t.Errorf("over-budget record %d: decision = %v; want %v", i+1, got, want)
+			}
+			if got, want := rec["reason"], errCreateRateExceeded.Error(); got != want {
+				t.Errorf("over-budget record %d: reason = %v; want %v", i+1, got, want)
+			}
+		}
+
+		if got := len(c.owned()); got != burst {
+			t.Errorf("the store holds %d records; want the %d the budget allowed", got, burst)
+		}
+		if got := c.started(); got != burst {
+			t.Errorf("the host was asked to start %d sessions; want the %d the budget allowed — "+
+				"a request over budget costs no tmux command", got, burst)
+		}
+	})
+}
