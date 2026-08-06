@@ -419,7 +419,7 @@ func formPostingTo(forms [][]string, target string) (attributes, contents string
 }
 
 // TestCardHasExactlyOneAnchor is FR-027 on the card that finally has a control
-// to put somewhere.
+// to put somewhere, and it is now asserted on both surfaces (#60).
 //
 // The count alone is not the requirement. A destroy button nested inside the
 // card's link would leave the count at one and still be the defect: a link and a
@@ -428,28 +428,101 @@ func formPostingTo(forms [][]string, target string) (attributes, contents string
 // as well, and the control is confirmed to exist — a card rendering no control
 // at all would satisfy both of the other assertions and prove nothing.
 //
+// Both surfaces, because the anchor grew to hold the whole readable half and the
+// session page's card carries one control the fleet's does not. A rule that held
+// on the fleet and not on the page an operator opens would be FR-027 enforced
+// where it is easiest rather than where a card is.
+//
 // **Must fail when** a control is added inside the anchor: the second assertion
-// catches it where the first cannot.
+// catches it where the first cannot. And when the rename disclosure drifts into
+// the anchor it is beside — <summary> is a control the way a button is, and a
+// <details> inside a link is a target that opens a page when you try to use it.
 func TestCardHasExactlyOneAnchor(t *testing.T) {
 	t.Parallel()
 
-	got := renderComponent(t, "session-card", actionableCard())
+	for surface, card := range map[string]sessionView{
+		"the fleet's card":          actionableCard(),
+		"the session page's card":   renameableCard(),
+		"a card with no page token": ownedCard(),
+	} {
+		t.Run(surface, func(t *testing.T) {
+			t.Parallel()
 
-	anchors := cardAnchor.FindAllStringSubmatch(got, -1)
-	if len(anchors) != 1 {
-		t.Fatalf("a card carrying its action row renders %d links; the card carried exactly one before it had controls and FR-027 keeps it there:\n%s", len(anchors), got)
-	}
-	for _, control := range []string{"<form", "<button", "<input"} {
-		if strings.Contains(strings.ToLower(anchors[0][2]), control) {
-			t.Errorf("the card's link contains %q; a control nested in the anchor is one target holding two things to do, and one of them is irreversible:\n%s", control, got)
-		}
+			got := renderComponent(t, "session-card", card)
+
+			anchors := cardAnchor.FindAllStringSubmatch(got, -1)
+			if len(anchors) != 1 {
+				t.Fatalf("%s renders %d links; the card carried exactly one before it had controls and FR-027 keeps it there:\n%s", surface, len(anchors), got)
+			}
+			for _, control := range []string{"<form", "<button", "<input", "<details", "<summary"} {
+				if strings.Contains(strings.ToLower(anchors[0][2]), control) {
+					t.Errorf("%s puts %q inside its link; a control nested in the anchor is one target holding two things to do, and one of them is irreversible:\n%s", surface, control, got)
+				}
+			}
+		})
 	}
 
-	// The row is really there, so the two assertions above are about a card with
-	// something in it. Without this a component that dropped the control entirely
-	// would read as passing.
-	if !strings.Contains(got, `class="card-actions"`) {
+	// The row is really there on a card that can authorise one, so the assertions
+	// above are about a card with something in it. Without this a component that
+	// dropped the control entirely would read as passing.
+	if got := renderComponent(t, "session-card", actionableCard()); !strings.Contains(got, `class="card-actions"`) {
 		t.Errorf("the card renders no action row at all, so nothing above was asserted about a control:\n%s", got)
+	}
+}
+
+// TestTheRenameIsRevealedAndOnlyOnTheSessionsOwnPage is the third of #60's three
+// requests, and the one that pays for the other two: the lower half of a fleet
+// card is simpler because this is not in it.
+//
+// Two claims, and the second is the one that loses silently. A fleet card that
+// renders the disclosure is the always-open field this replaces wearing a
+// summary, twenty of them to a page; a session page that renders none has moved
+// the control nowhere and taken renaming off the dashboard altogether.
+//
+// The disclosure is asserted closed, because a <details open> is exactly the
+// resident field this issue is about — it must not remember being open, or an
+// operator returning to a page finds a field waiting that they did not ask for.
+// And its summary is asserted to carry a word: a bare glyph fails the rule
+// FR-030 applies to state, never by symbol alone.
+func TestTheRenameIsRevealedAndOnlyOnTheSessionsOwnPage(t *testing.T) {
+	t.Parallel()
+
+	rename := strings.Replace(strings.TrimPrefix(patternDashboardRename, "POST "), "{"+pathValueID+"}", ownedCard().ID, 1)
+
+	fleet := renderComponent(t, "session-card", actionableCard())
+	if strings.Contains(fleet, rename) {
+		t.Errorf("the fleet's card posts to %q; renaming belongs on the page where an operator is looking at the one session they would be naming:\n%s", rename, fleet)
+	}
+	if strings.Contains(fleet, "<details") || strings.Contains(fleet, "card-rename") {
+		t.Errorf("the fleet's card renders a rename control; #60 leaves it none, disclosed or otherwise:\n%s", fleet)
+	}
+
+	page := renderComponent(t, "session-card", renameableCard())
+	if !strings.Contains(page, rename) {
+		t.Fatalf("the session page's card posts to no rename at all, so the control was removed rather than moved:\n%s", page)
+	}
+
+	disclosure := regexp.MustCompile(`(?s)<details\b([^>]*)>(.*?)</details>`).FindStringSubmatch(page)
+	if disclosure == nil {
+		t.Fatalf("the rename is not a disclosure; an always-visible field pre-filled with the current name reads as something an operator is meant to be editing:\n%s", page)
+	}
+	if regexp.MustCompile(`\bopen\b`).MatchString(disclosure[1]) {
+		t.Errorf("the rename disclosure renders open (<details%s>); it must be closed on every render, or a page an operator returns to has a field waiting they did not ask for", disclosure[1])
+	}
+	summary := regexp.MustCompile(`(?s)<summary\b[^>]*>(.*?)</summary>`).FindStringSubmatch(disclosure[2])
+	if summary == nil {
+		t.Fatalf("the disclosure carries no summary, so the only thing that opens it is the browser's own default label:\n%s", page)
+	}
+	if word := strings.TrimSpace(summary[1]); !regexp.MustCompile(`^[A-Za-z][A-Za-z ]*$`).MatchString(word) {
+		t.Errorf("the disclosure's control reads %q; it is a word and never a glyph, for the reason a state is never a colour alone (FR-030)", word)
+	}
+
+	// A card that could not authorise a rename offers none, disclosed or
+	// otherwise — the discipline every other control on this card follows.
+	unauthorised := ownedCard()
+	unauthorised.Rename = true
+	if got := renderComponent(t, "session-card", unauthorised); strings.Contains(got, "<details") {
+		t.Errorf("a card with no page token still discloses a rename; the gate is certain to refuse it, and a control an operator cannot tell apart from a working one until they use it is worse than none:\n%s", got)
 	}
 }
 

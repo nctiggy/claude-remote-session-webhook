@@ -843,6 +843,72 @@ func TestTheFleetUpdatesInPlaceRatherThanReloading(t *testing.T) {
 	}
 }
 
+// TestTheCardsTwoHalvesAreSeparatedByARule is #60's boundary, held where it is
+// drawn.
+//
+// The rule is what makes the anchor safe to grow: everything above it is what
+// the session is, everything below it does something, and the card carries
+// exactly one link because the two halves are told apart by a line rather than
+// by which words happen to be underlined. A card that lost it would be a block
+// link with a row of buttons floating in it.
+//
+// Two assertions, and the second is the one a screenshot would not catch. The
+// separator must not be the only cue — a browser that failed to draw the border,
+// a high-contrast mode that dropped it, an operator who cannot see it at all —
+// so the spacing carries the boundary too, for the same reason a state is never
+// a colour alone (FR-030).
+func TestTheCardsTwoHalvesAreSeparatedByARule(t *testing.T) {
+	t.Parallel()
+
+	rule := blockFor(t, stylesheet(t), ".card-actions")
+
+	edge := regexp.MustCompile(`(?i)border-block-start\s*:\s*([^;}]+)`).FindStringSubmatch(rule)
+	if edge == nil {
+		t.Fatalf("the action row has no top edge, so nothing separates what a session is from what can be done to it: %q", rule)
+	}
+	for _, token := range []string{"var(--edge-width)", "var(--edge)"} {
+		if !strings.Contains(edge[1], token) {
+			t.Errorf("the rule between the card's halves is drawn as %q and does not spend %s; a boundary is the design system's own edge, not a length and a colour invented here", strings.TrimSpace(edge[1]), token)
+		}
+	}
+
+	space := regexp.MustCompile(`(?i)padding-block-start\s*:\s*([^;}]+)`).FindStringSubmatch(rule)
+	if space == nil || !strings.Contains(space[0], "var(--s") {
+		t.Errorf("the action row sets no spacing above its controls from a spacing token (%q); the line must not be the only thing dividing the card, for the reason a state is never a colour alone", rule)
+	}
+}
+
+// TestTheFleetTakesNoRenameFromTheCardItRefetches is the hole #60 leaves in the
+// fleet's live half.
+//
+// The card is one component with one parameter between its two surfaces, and
+// what the fleet re-fetches when a session changes is the session's *own page* —
+// the surface that carries the rename. So the disclosure arrives in the grid on
+// every card the stream refreshes unless something takes it off, and the symptom
+// is a fleet that renders correctly on load and grows a rename control the first
+// time a session changes state.
+//
+// It is removed rather than fetched around. A second address serving a
+// fleet-shaped card would be the second card docs/components.md exists to
+// prevent, and this file still writes no sentence, no row and no number the
+// daemon did not — removing what the surface does not carry is not composing.
+//
+// **Must fail when** the strip goes and the fleet quietly acquires the control
+// this issue moved off it.
+func TestTheFleetTakesNoRenameFromTheCardItRefetches(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	strip := regexp.MustCompile(`card-rename`)
+	if !strip.MatchString(source) {
+		t.Fatal("crswd.js never mentions the rename disclosure, so a card lifted out of a session page keeps a control the fleet renders on no card of its own (#60)")
+	}
+	if !regexp.MustCompile(`(?s)details\.card-rename['"]\s*\)\s*\)\s*\{\s*\w+\.remove\(`).MatchString(source) {
+		t.Error("crswd.js finds the rename disclosure on a re-fetched card and does not remove it; the fleet's card renders no rename control, and one imported from the session's page is that rule broken by the update rather than by the render")
+	}
+}
+
 // blockFor returns the body of the first block whose prelude contains marker,
 // so a test can assert about one rule rather than about the whole file. Braces
 // are counted, because a media query holds rules of its own.

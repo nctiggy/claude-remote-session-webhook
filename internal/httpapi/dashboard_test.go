@@ -594,6 +594,45 @@ func TestTheRenderedFleetOffersTheDestroyControl(t *testing.T) {
 	}
 }
 
+// TestOnlyTheSessionsOwnPageOffersTheRename is #60 at the call sites rather than
+// at the component, which is where it can be lost silently.
+//
+// partials_test.go holds the card to the parameter: handed the session page's
+// surface it discloses a rename, handed the fleet's it renders none. Neither
+// claim says anything about which surface each page actually passes, and a
+// dashboard that passed the wrong one would render a card that is correct about
+// a page it is not on. The two pages are served here and read for the control.
+//
+// The rename route is the thing looked for rather than a class or an element: it
+// is what the daemon serves, it cannot be renamed by a stylesheet, and a card
+// that posts to it is a card offering the action whatever the markup around it
+// is called.
+func TestOnlyTheSessionsOwnPageOffersTheRename(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "refactor the reaper", WorkDir: f.fixture.repo})
+	rename := strings.Replace(strings.TrimPrefix(patternDashboardRename, "POST "), "{"+pathValueID+"}", live.ID, 1)
+
+	fleet := cardFor(t, f.view(t).Body.String(), live.ID)
+	if strings.Contains(fleet, rename) {
+		t.Errorf("the card on the rendered fleet offers a rename; it belongs on the page where an operator is already looking at the one session they would be naming (#60):\n%s", fleet)
+	}
+
+	page := f.viewOf(t, live.ID).Body.String()
+	card := cardFor(t, page, live.ID)
+	if !strings.Contains(card, rename) {
+		t.Errorf("the card on the session's own page offers no rename, so the control was removed from the dashboard rather than moved to the surface that should carry it:\n%s", card)
+	}
+	// And it answers where every other action on this page answers. Without the
+	// region, the form posts and the browser replaces this whole page with the
+	// handler's one sentence — which is the white page issue #42 fixed for the
+	// fleet and left standing here.
+	if !strings.Contains(page, `id="action-toast"`) {
+		t.Errorf("the session page carries no action toast, so an action started here navigates away to a bare fragment:\n%s", page)
+	}
+}
+
 // TestOpeningTheFleetLeavesTheIdleClockWhereItWas is FR-034f at the first
 // production caller of the non-touching read T012 added.
 //
