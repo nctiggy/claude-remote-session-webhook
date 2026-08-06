@@ -85,7 +85,8 @@ jobs:
             local n="$1"
             echo "number=$n" >> "$GITHUB_OUTPUT"
             gh issue view "$n" --repo "$REPO" --json title --jq '"title=" + .title' >> "$GITHUB_OUTPUT"
-            local eof="EOF_$(openssl rand -hex 12)"
+            local eof
+            eof="EOF_$(openssl rand -hex 12)"
             {
               echo "body<<$eof"
               gh issue view "$n" --repo "$REPO" --json body --jq .body
