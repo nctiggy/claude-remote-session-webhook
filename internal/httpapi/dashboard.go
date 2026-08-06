@@ -233,7 +233,7 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string) fleetVie
 	owned := s.sessions.List(operator.Owner)
 	views := make([]sessionView, 0, len(owned))
 	for _, live := range owned {
-		views = append(views, cardOf(live, now, token))
+		views = append(views, cardOf(live, now, token, fleetSurface))
 	}
 
 	return fleetView{
@@ -254,6 +254,24 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string) fleetVie
 	}
 }
 
+// cardSurface is which page is asking for a card (#60).
+//
+// The card is one component and the two surfaces differ by one control, so what
+// differs is passed in rather than forked: a fleet is scanned and a session page
+// is read, and renaming belongs to the reading. A named type rather than a bare
+// bool because both call sites below then say which surface they are, and a
+// fourth positional argument spelled `true` says nothing at all.
+type cardSurface bool
+
+const (
+	// fleetSurface is the grid: many cards, none of them the thing the operator
+	// came to look at.
+	fleetSurface cardSurface = false
+	// sessionSurface is the session's own page, where an operator is already
+	// looking at exactly the session they would be naming.
+	sessionSurface cardSurface = true
+)
+
 // cardOf projects one record into the parameters the card renders from.
 //
 // One function because there is one card (docs/components.md, FR-024): the fleet
@@ -264,7 +282,7 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string) fleetVie
 //
 // The token is the render's, passed through rather than minted here, so the one
 // function that projects a card cannot become a second place a token is issued.
-func cardOf(live session.Session, now time.Time, token string) sessionView {
+func cardOf(live session.Session, now time.Time, token string, surface cardSurface) sessionView {
 	return sessionView{
 		ID:      live.ID,
 		Name:    live.Name,
@@ -278,6 +296,9 @@ func cardOf(live session.Session, now time.Time, token string) sessionView {
 		// The token is also what makes the card render its action row (view.go),
 		// so every card either offers a control it can authorise or offers none.
 		PageToken: token,
+		// Which surface is rendering, and the only thing the two disagree about
+		// (#60). The fleet renders no rename control at all.
+		Rename: surface == sessionSurface,
 	}
 }
 
@@ -351,7 +372,7 @@ func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
 
 	s.renderPage(w, r, http.StatusOK, "session", sessionPageView{
 		Operator: operator,
-		Session:  cardOf(live, s.clock.Now(), token),
+		Session:  cardOf(live, s.clock.Now(), token, sessionSurface),
 		Pane:     pane,
 	})
 }

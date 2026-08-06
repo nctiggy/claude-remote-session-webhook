@@ -264,7 +264,7 @@ func TestTheCardStatesWhatTheDaemonDoesNotKnow(t *testing.T) {
 }
 
 // The four shapes the assertions below read out of a rendered card: any link,
-// the heading that has to hold it, the paragraph the identifier is rendered into
+// the heading it has to hold, the paragraph the identifier is rendered into
 // once it is no longer the link itself, and the link's reference to it.
 var (
 	cardAnchor      = regexp.MustCompile(`(?s)<a\b([^>]*)>(.*?)</a>`)
@@ -272,6 +272,15 @@ var (
 	cardIdentifier  = regexp.MustCompile(`(?s)<p[^>]*\bclass="card-id"[^>]*>(.*?)</p>`)
 	cardDescribedBy = regexp.MustCompile(`aria-describedby="([^"]*)"`)
 )
+
+// renameableCard is a card on the one surface that offers the rename: the
+// session's own page, where an operator is already looking at the session they
+// would be naming (#60).
+func renameableCard() sessionView {
+	card := actionableCard()
+	card.Rename = true
+	return card
+}
 
 // describedBy is the text of the element an aria-describedby names. Built per
 // call because the id it matches is the session's own, which is the whole point:
@@ -288,19 +297,26 @@ func describedBy(t *testing.T, markup, id string) (string, bool) {
 	return strings.TrimSpace(match[1]), true
 }
 
-// TestTheCardLinksTheNameAndNotOnlyTheIdentifier is issue #16.
+// TestTheCardLinksTheWholeReadableHalf is issue #16 as issue #60 leaves it.
 //
-// The accessibility floor was already met before this: the identifier was a real
-// <a>, focus-ringed, in tab order, and every card was reachable. What was wrong
-// was the affordance. The card reads as clickable end to end, the heading is the
-// session's name, and the only thing that opened the session was the 32-character
-// hex — so a mouse aimed at the obvious target hit nothing and a keyboard landed
-// on the least human-readable string on the card.
+// The accessibility floor was met before either: the identifier was a real <a>,
+// focus-ringed, in tab order, and every card was reachable. What was wrong was
+// the affordance. First the only link was the 32-character hex, so a mouse aimed
+// at the obvious target hit nothing and a keyboard landed on the least
+// human-readable string on the card (#16). Then the link was the name and
+// nothing else — a few words of target on a card that reads as clickable end to
+// end, which is the same defect with a better label (#60).
 //
-// One link and not two. A card that linked the name and went on linking the hex
-// would put two identical destinations next to each other in every link list,
-// which reads worse than the arrangement being fixed rather than better.
-func TestTheCardLinksTheNameAndNotOnlyTheIdentifier(t *testing.T) {
+// So the anchor is the whole readable half: the name, the pill, the identifier
+// and the meta list, everything above the rule. One link still, and not two: a
+// card that wrapped the block and went on linking the name inside it would put
+// two identical destinations next to each other in every link list.
+//
+// The identifier is inside the link now and still rendered as text, which is
+// what the last two assertions are about — it is the only handle a session with
+// no name has, and a card that lost it while gaining a bigger target would have
+// traded one #16 for another.
+func TestTheCardLinksTheWholeReadableHalf(t *testing.T) {
 	t.Parallel()
 
 	card := ownedCard()
@@ -315,23 +331,32 @@ func TestTheCardLinksTheNameAndNotOnlyTheIdentifier(t *testing.T) {
 	if target := "/sessions/" + card.ID + "/view"; !strings.Contains(attributes, `href="`+target+`"`) {
 		t.Errorf("the card's link does not open %s:\n%s", target, got)
 	}
-	if !strings.Contains(text, card.Name) {
-		t.Errorf("the card's link reads %q and the session is called %q; the name is what an operator reads and aims at:\n%s", text, card.Name, got)
-	}
-	if strings.Contains(text, card.ID) {
-		t.Errorf("the identifier is the link's own text; it is the handle, not the label:\n%s", got)
+
+	// Everything a card says about what a session *is*, inside the one anchor.
+	// The pill is here for the same reason the rest is: it is text, not a
+	// control, and a state an operator can read but not aim at is the target
+	// this issue is making bigger with a hole in it.
+	for what, want := range map[string]string{
+		"the name":              card.Name,
+		"the identifier":        card.ID,
+		"the working directory": card.WorkDir,
+		"the age":               card.Age,
+		"the state pill":        string(card.DisplayState),
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the card's link does not contain %s (%q); the anchor is the readable half of the card and not a phrase inside it:\n%s", what, want, got)
+		}
 	}
 
 	heading := cardHeading.FindStringSubmatch(got)
 	if heading == nil {
 		t.Fatalf("the card renders no heading:\n%s", got)
 	}
-	if !strings.Contains(heading[1], "<a") {
-		t.Errorf("the card's heading is not the link, so the name is still inert:\n%s", got)
+	if !strings.Contains(text, heading[0]) {
+		t.Errorf("the card's heading is outside the link, so the name is inert again:\n%s", got)
 	}
 
-	// Still rendered, and now as text. It is the only handle a session with no
-	// name has, so linking the name must not have cost the card the identifier.
+	// Rendered as text, and as the only handle a session with no name has.
 	identifier := cardIdentifier.FindStringSubmatch(got)
 	if identifier == nil || strings.TrimSpace(identifier[1]) != card.ID {
 		t.Errorf("the card does not render the identifier as text; a session with no name would have no handle left:\n%s", got)
@@ -445,8 +470,8 @@ func TestTheCardsDestroyFormCarriesWhatTheRouteRequires(t *testing.T) {
 	got := renderComponent(t, "session-card", card)
 
 	forms := cardForm.FindAllStringSubmatch(got, -1)
-	if len(forms) != 3 {
-		t.Fatalf("the card renders %d action forms; this milestone's card carries three, the destroy, the rename and the compact:\n%s", len(forms), got)
+	if len(forms) != 2 {
+		t.Fatalf("the fleet's card renders %d action forms; it carries two, the destroy and the compact — the rename is a disclosure on the session's own page (#60):\n%s", len(forms), got)
 	}
 
 	target := strings.Replace(strings.TrimPrefix(patternDashboardDestroy, "POST "), "{"+pathValueID+"}", card.ID, 1)
@@ -497,12 +522,17 @@ func TestTheCardsDestroyFormCarriesWhatTheRouteRequires(t *testing.T) {
 //
 // The label is asserted because docs/components.md requires one on every input
 // and a placeholder is not a label — and its `for` is asserted to name *this*
-// card's field, because a fleet is many cards and a label pointing at another
-// card's input reads correctly while operating the wrong session.
+// card's field, because the card is one component and the id it renders has to
+// be the session's own wherever it is drawn.
+//
+// The card is the session page's now (#60). The form moved into a disclosure and
+// off the fleet; everything this test holds it to is unchanged, which is the
+// point of asserting it against the surface that renders it rather than deleting
+// it with the row it used to sit in.
 func TestTheCardsRenameFormCarriesWhatTheRouteRequires(t *testing.T) {
 	t.Parallel()
 
-	card := actionableCard()
+	card := renameableCard()
 	got := renderComponent(t, "session-card", card)
 
 	forms := cardForm.FindAllStringSubmatch(got, -1)
@@ -558,7 +588,7 @@ func TestTheCardsRenameFormCarriesWhatTheRouteRequires(t *testing.T) {
 	if value, ok := attributeValue(t, name, "value"); !ok || value != card.Name {
 		t.Errorf("the %q input renders value %q (present: %t); want the session's current name %q", fieldName, value, ok, card.Name)
 	}
-	adopted := actionableCard()
+	adopted := renameableCard()
 	adopted.Name = ""
 	nameless := regexp.MustCompile(`<input\b[^>]*\bname="` + regexp.QuoteMeta(fieldName) + `"[^>]*>`).
 		FindString(renderComponent(t, "session-card", adopted))

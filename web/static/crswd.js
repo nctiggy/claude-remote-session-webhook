@@ -309,6 +309,38 @@
   }
 
   /*
+   * The rename disclosure's one convenience (#60).
+   *
+   * The control needs nothing from this file: <details> opens, closes, takes a
+   * Tab and announces itself with no script at all, which is why it is the
+   * element and not a div with a class. What is added here is the selection —
+   * the field is rendered holding the name the daemon currently has, and the
+   * common case is a small correction, so an operator who opens this should be
+   * one keystroke from replacing it rather than clearing it first.
+   *
+   * Delegated from the document, for the reason the action forms are: a card
+   * replaced by the fleet's live half is a new element that never had a
+   * listener. `toggle` does not bubble, so the capture phase is what sees it.
+   */
+  document.addEventListener(
+    'toggle',
+    (event) => {
+      const disclosure = event.target;
+      if (!(disclosure instanceof HTMLDetailsElement) || !disclosure.open) {
+        return;
+      }
+      if (!disclosure.classList.contains('card-rename')) {
+        return;
+      }
+      const field = disclosure.querySelector('input[type="text"]');
+      if (field) {
+        field.select();
+      }
+    },
+    true,
+  );
+
+  /*
    * The fleet's live half (US3, issue #15, contracts/fleet-stream.md).
    *
    * The daemon says *what* changed and never *what it now looks like*: one
@@ -575,6 +607,24 @@
           }
 
           const card = document.importNode(fetched, true);
+
+          /*
+           * What was fetched is the session's own page, and that is the one
+           * surface carrying the rename (#60). This grid is not, so the
+           * disclosure comes off the card on the way in — the fleet renders no
+           * rename control at all, and a card that arrived here holding one
+           * would be the fleet quietly acquiring the control the change moved
+           * off it.
+           *
+           * Removing rather than fetching something else: a second address
+           * serving a fleet-shaped card would be a second card, which is the
+           * defect docs/components.md exists to prevent. Nothing is written
+           * here — this file still renders no sentence, no row and no number the
+           * daemon did not.
+           */
+          for (const disclosure of card.querySelectorAll('details.card-rename')) {
+            disclosure.remove();
+          }
           const here = cardFor(id);
           const fleet = grid();
           if (here) {
@@ -776,6 +826,15 @@
       reenable();
       if (form.matches('.create-form')) {
         form.reset();
+      }
+      // Applying closes the disclosure it was in (#60). The field is revealed
+      // for one edit and the outcome is in the toast, so a form left standing
+      // open afterwards is the resident control the disclosure exists instead
+      // of. Only when the host took it: a name that was refused is one the
+      // operator is about to correct, and closing the field under them would be
+      // this page throwing away the edit it just told them to fix.
+      if (answer.ok) {
+        form.closest('details[open]')?.removeAttribute('open');
       }
     } catch {
       // A request that never reached the host is the one case where the operator

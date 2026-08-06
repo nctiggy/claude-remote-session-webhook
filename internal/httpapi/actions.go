@@ -471,7 +471,12 @@ func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
 	// here for a reason it is not right anywhere else on this route: the session was
 	// started, so a fragment saying it could not be would be a lie, and the fleet
 	// the operator reloads will show the card this render could not.
-	s.renderPage(w, r, http.StatusOK, "session-card", cardOf(*created, s.clock.Now(), r.PostForm.Get(fieldPageToken)))
+	//
+	// The fleet's surface, because the create form is on the fleet and nowhere
+	// else: the card this answers with is the card that joins that grid, and a
+	// rename control arriving on it would be the one thing the fleet's own cards
+	// do not carry (#60).
+	s.renderPage(w, r, http.StatusOK, "session-card", cardOf(*created, s.clock.Now(), r.PostForm.Get(fieldPageToken), fleetSurface))
 }
 
 // refuseBrowserCreate maps a Create failure onto the answer contracts/actions.md
@@ -654,7 +659,13 @@ func (s *Server) renameFromBrowser(w http.ResponseWriter, r *http.Request) {
 	// is one that outlives them. Nothing arbitrary can reach this line — admitAction
 	// verified the value as a MAC over this operator's identity before the handler
 	// ran.
-	s.renderPage(w, r, http.StatusOK, "session-card", cardOf(renamed, s.clock.Now(), r.PostForm.Get(fieldPageToken)))
+	//
+	// The session page's surface, because that is the only page carrying the
+	// control this request came from (#60). A card answered back to the page it
+	// was submitted from has to be the card that page renders, or a rename with
+	// no script running lands the operator on a card that cannot be renamed
+	// again.
+	s.renderPage(w, r, http.StatusOK, "session-card", cardOf(renamed, s.clock.Now(), r.PostForm.Get(fieldPageToken), sessionSurface))
 }
 
 // refuseBrowserRename maps a Rename failure onto the answer contracts/actions.md

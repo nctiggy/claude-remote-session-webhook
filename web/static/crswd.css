@@ -171,8 +171,8 @@ body {
    that happened to be sitting where the logo goes. The convention that a
    wordmark returns you to the front page is old enough to be the affordance by
    itself, which is the one place that argument holds: it would not hold for a
-   word inside a sentence, and .card-link keeps its underline for exactly that
-   reason.
+   word inside a sentence, and the card's heading keeps its underline for exactly
+   that reason.
 
    The hover cue is the glow rather than a rule appearing, so nothing about the
    mark's shape or spacing changes when a pointer crosses it. Keyboard users are
@@ -294,10 +294,30 @@ body {
   border-color: var(--edge-bright);
 }
 
+/* The card's readable half (#60): everything the anchor wraps, and — on the
+   session's own page — the rename disclosure beside it. Two columns, because
+   the disclosure sits next to the name it edits rather than in a section of its
+   own; the first is allowed to be narrower than its content so a long name or
+   path still truncates inside it. On the fleet there is no second child at all,
+   and a grid with one item spends no gap. */
+.card-read {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--s3);
+}
+
+/* The underline is the link's affordance, and it stays on the name now that the
+   anchor wraps the whole readable half. Under the identifier, the path and the
+   age as well it would be four lines of decoration rather than one affordance —
+   and none of those is the word the card is about. */
 .card-heading {
   margin: 0;
   font-size: inherit;
   font-weight: 700;
+  text-decoration: underline;
+  text-decoration-color: var(--edge-bright);
+  transition: text-decoration-color var(--transition);
 }
 
 /* Caller-supplied text: a 64-character name breaks the layout's line, never
@@ -324,18 +344,20 @@ body {
   color: var(--dim);
 }
 
-/* The link is the heading, so it takes the heading's colour and weight rather
-   than restating them — the underline is the affordance and the card's own
-   hover is the feedback. Block, so the name inside it can be truncated by a box
-   the grid track is allowed to make narrower than its content. */
+/* The link is the whole readable half (#60), so it takes the card's own colour
+   rather than restating one, and it lays its rows out the way the card used to:
+   the same gap, so wrapping the block in an anchor moved nothing on screen.
+
+   The underline is on the heading inside it rather than here — see .card-heading
+   — which is why this one is removed rather than inherited. */
 .card-link {
-  display: block;
+  display: grid;
+  gap: var(--s3);
   color: inherit;
-  text-decoration-color: var(--edge-bright);
-  transition: text-decoration-color var(--transition);
+  text-decoration: none;
 }
 
-.card-link:hover {
+.card-link:hover .card-heading {
   text-decoration-color: currentcolor;
 }
 
@@ -361,11 +383,21 @@ body {
 
 /* The row of controls that change something on the host. It renders only for a
    card carrying the token those controls submit, so a card that cannot
-   authorise an action does not offer one. */
+   authorise an action does not offer one.
+
+   Its top edge is the rule between the card's two halves (#60): everything above
+   is what the session is, everything below does something. It is a border here
+   rather than an element of its own because that is what it is — the boundary of
+   the acting half — and --edge is the token the design system already spends on
+   exactly this. The spacing carries it as well: the card's own gap sits above the
+   rule and this padding below it, so a browser that never drew the line would
+   still show two halves. */
 .card-actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--s2);
+  padding-block-start: var(--s3);
+  border-block-start: var(--edge-width) solid var(--edge);
 }
 
 /* Each action is its own form — a plain post, no script (research.md R4) — and
@@ -375,20 +407,43 @@ body {
   margin: 0;
 }
 
-/* The rename, which is the one action carrying a field rather than only a
-   button. It takes the row to itself: the row above wraps, and a text entry
-   sharing a line with the one control on this card that cannot be taken back is
-   a destroy sitting where a Tab from a half-typed name lands.
+/* The rename, revealed rather than resident, and only on the session's own page
+   (#60). It sits in the readable half's second column, beside the name it edits,
+   above the rule and outside the anchor.
 
-   The label spans both columns rather than sitting beside the field, which is
-   the arrangement the create panel's fields already use — a label beside a
-   narrow input in a card-width column leaves neither enough room to read. */
+   Closed, it is one word. Open, the column grows to hold the field — which is
+   why this control is on the page that renders one card across the shell rather
+   than in a grid track that is allowed to be narrower than its content. */
 .card-rename {
   display: grid;
-  grid-template-columns: 1fr auto;
+  gap: var(--s2);
+  justify-items: start;
+}
+
+/* The disclosure's control. It wears the button the design system already has
+   rather than a second one (docs/components.md), and drops the marker the
+   platform draws beside a summary: the word is the affordance, and a triangle
+   next to something already shaped like a button is two of them. The word is
+   also the whole of it — never a glyph, for the reason a state is never a colour
+   alone. */
+.card-rename summary {
+  inline-size: max-content;
+  list-style: none;
+}
+
+.card-rename summary::-webkit-details-marker {
+  display: none;
+}
+
+/* The label above the field rather than beside it, which is the arrangement the
+   create panel's fields already use — a label beside a narrow input leaves
+   neither enough room to read. */
+.card-rename form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--s1) var(--s2);
-  inline-size: 100%;
+  margin: 0;
 }
 
 .card-rename .field-label {

@@ -35,6 +35,22 @@
 <main class="shell">
 {{ template "session-card" .Session }}
 {{ template "pane" .Pane }}
-</main>
+</main>{{/*
+  Where this page's actions answer, and the fleet's own region moved nowhere:
+  it is the same element, the same id and the same class, because there is one
+  place an outcome is said (issue #42, crswd.js).
+
+  It arrives here with the rename (#60). Every control on this page posts to a
+  /dashboard/ route and a form post navigates, so until now a destroy or a
+  compact started here replaced this whole page with the handler's one sentence —
+  correct, and a white page with a line on it. The script writes the answer in
+  here instead, which it could not do on a page carrying nowhere to write.
+
+  aria-live="polite" and role="status", exactly as on the fleet: an outcome is
+  worth announcing at the next pause and never worth interrupting what a screen
+  reader is already reading. It carries no colour of its own — FR-030, an outcome
+  is text — so a refusal is told from a success by what it says.
+*/}}
+<output class="action-toast" id="action-toast" role="status" aria-live="polite" hidden></output>
 </body>
 </html>

@@ -88,6 +88,22 @@ type sessionView struct {
 	// refuse. So there is one value here rather than two, and no arrangement in
 	// which a card offers an action it could not authorise.
 	PageToken string
+
+	// Rename says this render is the session's own page, which is the one
+	// surface that offers the rename (#60).
+	//
+	// It is a parameter rather than a second card because there is one card
+	// (docs/components.md, FR-024): the fleet and the session page render this
+	// projection, and two copies differing by one control is exactly the drift
+	// that document exists to prevent. What differs is a surface's business —
+	// renaming is something an operator does while looking at one session, not
+	// while scanning twenty — so the surface says so and the component decides
+	// nothing.
+	//
+	// It never renders a control on its own. The disclosure is inside the same
+	// `{{ with .PageToken }}` every other control on this card is, so a card that
+	// could not authorise a rename offers none, disclosed or otherwise.
+	Rename bool
 }
 
 // paneView is the pane viewer's parameters (docs/components.md): one session's
