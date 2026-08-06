@@ -2,7 +2,7 @@
 # crswd API client — works from macOS or Linux, called from any shell.
 #
 #   crswd-api GET    /sessions
-#   crswd-api POST   /sessions '{"name":"demo","work_dir":"/home/nctiggy/code/x"}'
+#   crswd-api POST   /sessions '{"name":"demo","work_dir":"$HOME/code/x"}'
 #   crswd-api POST   /sessions/<id>/prompt '{"text":"hi"}' <token>
 #   crswd-api GET    /sessions/<id>/output '' <token>
 #   crswd-api DELETE /sessions/<id>        '' <token>
@@ -44,7 +44,12 @@ method="$1"
 reqpath="${2:?usage: crswd-api METHOD PATH [BODY] [BEARER]}"
 body="${3-}"
 bearer="${4-}"
-host="${CRSWD_HOST:-https://crswd.craigcloud.io}"
+# Loopback by default, because that is where the daemon listens and it is the
+# one address that is correct on every host. A published hostname is one
+# operator's deployment, and shipping one as the default means every other
+# operator's requests go somewhere they did not choose — silently, and with
+# their signature attached.
+host="${CRSWD_HOST:-http://127.0.0.1:8765}"
 vault="${CRSWD_OP_ITEM:-op://Lobster/crswd}"
 
 sec=$(op read "$vault/shared-secret") || { echo "crswd-api: could not read $vault/shared-secret" >&2; exit 1; }
