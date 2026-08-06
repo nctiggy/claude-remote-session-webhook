@@ -5,15 +5,46 @@ name: Claude — issue to PR
 #
 # It never pushes to main. The output is always a PR.
 
+# A worker, not a trigger (#61).
+#
+# This used to fire on `labeled`, with concurrency keyed per issue — so twenty
+# labelled issues were twenty simultaneous runs, each branching from main, each
+# blind to the others, each opening a PR that conflicted with the rest. Labelling
+# was a stampede rather than a queue.
+#
+# The obvious repair does not work either. A global concurrency group queues
+# runs, but GitHub holds only **one** pending run per group: label twenty and you
+# get one running, one queued, and eighteen cancelled silently. Silently is the
+# problem — the backlog looks worked and is not.
+#
+# So the label stopped being a trigger and became a state. This wakes up, takes
+# the oldest issue carrying it that has no branch and no open PR, works that one,
+# and exits. Labelling twenty issues is now twenty turns of the crank.
 on:
-  issues:
-    types: [labeled]
+  # The responsive path: something merged, so the queue is worth checking now
+  # rather than at the next tick.
+  push:
+    branches: [main]
+  # The catch-up path, for issues labelled while nothing was merging. Slower than
+  # a run takes, because a schedule that fires faster than the work finishes
+  # spends its life discovering it is already busy.
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Issue number to work now, jumping the queue. Blank takes the oldest."
+        required: false
 
-# One run per issue. A second label event supersedes an in-flight run rather than
-# racing it and producing two PRs.
+# One at a time, globally. cancel-in-progress is false because a run in flight is
+# doing real work — the whole failure this replaced was runs killing each other.
+#
+# The one-pending-run limit is harmless here in a way it was not for label
+# events: a scheduled poll carries no unique work, so a redundant tick being
+# dropped costs nothing. The next one is twenty minutes away.
 concurrency:
-  group: claude-issue-${{ github.event.issue.number }}
-  cancel-in-progress: true
+  group: claude-fix-worker
+  cancel-in-progress: false
 
 permissions:
   contents: write        # create the branch + commits
@@ -22,8 +53,6 @@ permissions:
 
 jobs:
   claude-fix:
-    # Only the trigger label. Every other label is ignored.
-    if: github.event.label.name == 'claude-fix'
 
     # SELF-HOSTED, as specified. Swap to `ubuntu-latest` to use GitHub-hosted
     # runners instead (free for public repos).
@@ -36,13 +65,79 @@ jobs:
     timeout-minutes: 45
 
     steps:
+      # Which issue, if any. Everything after this is skipped when the queue is
+      # empty, which is the ordinary outcome of a scheduled tick.
+      - name: Pick the next issue
+        id: pick
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED: ${{ inputs.issue }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # The prompt needs the title and body, and github.event.issue does not
+          # exist on a schedule or a push — so the picker fetches them. The body
+          # goes through a random delimiter because it is arbitrary multi-line
+          # text an operator wrote, and a fixed one is a delimiter an issue can
+          # contain.
+          emit() {
+            local n="$1"
+            echo "number=$n" >> "$GITHUB_OUTPUT"
+            gh issue view "$n" --repo "$REPO" --json title --jq '"title=" + .title' >> "$GITHUB_OUTPUT"
+            local eof
+            eof="EOF_$(openssl rand -hex 12)"
+            {
+              echo "body<<$eof"
+              gh issue view "$n" --repo "$REPO" --json body --jq .body
+              echo "$eof"
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          # An explicit request jumps the queue and skips the has-a-branch check:
+          # asking for an issue by number is asking to work it, including one a
+          # previous run left half-finished.
+          if [ -n "${REQUESTED}" ]; then
+            emit "${REQUESTED}"
+            echo "Working #${REQUESTED} on request." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Oldest first, so the queue is a queue rather than a stack.
+          candidates=$(gh issue list --repo "$REPO" --label claude-fix --state open \
+            --json number --jq 'sort_by(.number) | .[].number')
+
+          for n in $candidates; do
+            # An open PR means it is already done and waiting on review.
+            if [ -n "$(gh pr list --repo "$REPO" --search "linked:issue-$n" --state open --json number --jq '.[].number')" ]; then
+              echo "- #$n: skipped, a pull request is already open" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            # A branch means a previous run got partway and someone may be
+            # finishing it. Re-picking would discard that work — runs have hit
+            # their turn cap often enough that this is the common case, not the
+            # rare one.
+            if git ls-remote --exit-code --heads origin "claude/issue-issue-$n-*" >/dev/null 2>&1; then
+              echo "- #$n: skipped, a branch already exists" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            emit "$n"
+            echo "Working #$n." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          done
+
+          echo "The claude-fix queue is empty or every issue in it is already in flight." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Check out repository
+        if: steps.pick.outputs.number != ''
+
         uses: actions/checkout@v7
         with:
           fetch-depth: 0   # full history so the agent can read context
 
       - name: Run Claude Code against the issue
         id: claude
+        if: steps.pick.outputs.number != ''
         # Pinned to a commit SHA for the reason the model below is pinned: a tag
         # can be moved, and this action runs with write access to the repo.
         uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
@@ -103,10 +198,10 @@ jobs:
           prompt: |
             You are fixing a single GitHub issue in this repository.
 
-            Issue #${{ github.event.issue.number }}: ${{ github.event.issue.title }}
+            Issue #${{ steps.pick.outputs.number }}: ${{ steps.pick.outputs.title }}
 
             ---
-            ${{ github.event.issue.body }}
+            ${{ steps.pick.outputs.body }}
             ---
 
             Work in a bounded, Ralph-style way — but you get ONE pass, not a loop:
@@ -122,7 +217,7 @@ jobs:
                They must pass. If you cannot make them pass, stop and explain
                in the PR description rather than forcing a green.
             7. If this qualifies as a quick fix, append one line to
-               docs/fixes-log.md referencing issue #${{ github.event.issue.number }}.
+               docs/fixes-log.md referencing issue #${{ steps.pick.outputs.number }}.
             8. Open a pull request that closes the issue. The description must state:
                what was wrong, what you changed, and how you verified it.
 
@@ -165,22 +260,24 @@ jobs:
       # those as a *draft* so the auto-merge chain cannot carry half-finished
       # work to main on its own.
       - name: Open the pull request
-        if: always()
+        # always(), so a run cut off by the turn budget still surfaces its branch
+        # as a draft — but only when there was an issue to work at all.
+        if: always() && steps.pick.outputs.number != ''
         env:
           BRANCH: ${{ steps.claude.outputs.branch_name }}
-          ISSUE: ${{ github.event.issue.number }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE: ${{ steps.pick.outputs.number }}
+          ISSUE_TITLE: ${{ steps.pick.outputs.title }}
           AGENT_OUTCOME: ${{ steps.claude.outcome }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./.github/scripts/open-pr.sh
 
       - name: Summarize
-        if: always()
+        if: always() && steps.pick.outputs.number != ''
         run: |
           {
             echo "### Claude issue automation"
             echo ""
-            echo "- Issue: #${{ github.event.issue.number }}"
+            echo "- Issue: #${{ steps.pick.outputs.number }}"
             echo "- Branch: ${{ steps.claude.outputs.branch_name || 'none created' }}"
             echo "- Result: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"
