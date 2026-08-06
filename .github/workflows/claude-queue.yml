@@ -1,0 +1,98 @@
+name: Claude — queue
+
+# Lane 3, the queue half. The working half is claude-issue.yml.
+#
+# It exists because the action that does the work refuses to run on anything but
+# an issue or pull-request event — "Unsupported event type: push" is what a
+# push-triggered worker gets. So the scheduling cannot live in the same workflow
+# as the work.
+#
+# This picks the next issue and hands it over by applying `claude-go`, which is
+# an issues event and therefore something the working half can trigger on.
+#
+#   claude-fix   in the queue, applied by a human
+#   claude-go    work this one now, applied only by this workflow
+#
+# The hand-off label is also the interlock. Exactly one issue carries it at a
+# time, and the working half removes it when it finishes — so this refuses to
+# pick while one is outstanding, and one run at a time follows from that rather
+# than from a concurrency setting that could be misread.
+
+on:
+  # The responsive path: something merged, so the queue is worth checking now.
+  push:
+    branches: [main]
+  # The catch-up path, for issues labelled while nothing was merging. Slower than
+  # a run takes on purpose — a schedule firing faster than the work finishes
+  # spends its life discovering it is already busy.
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Issue to work next, jumping the queue. Blank takes the oldest."
+        required: false
+
+concurrency:
+  group: claude-queue
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  pick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Pick the next issue and hand it over
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REQUESTED: ${{ inputs.issue }}
+        run: |
+          set -euo pipefail
+
+          # One at a time. An issue still carrying the hand-off label is a run
+          # still going, or one that died without releasing it — either way,
+          # picking a second would be the stampede this exists to prevent.
+          held=$(gh issue list --repo "$REPO" --label claude-go --state open --json number --jq '.[].number')
+          if [ -n "$held" ]; then
+            echo "Already working #$(echo "$held" | head -1). Nothing to do." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          hand_over() {
+            gh issue edit "$1" --repo "$REPO" --add-label claude-go
+            echo "Handed #$1 to the worker." >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          # An explicit request jumps the queue and skips the branch check:
+          # naming an issue is asking to work it, including one a previous run
+          # left half-finished.
+          if [ -n "${REQUESTED}" ]; then
+            hand_over "${REQUESTED}"
+            exit 0
+          fi
+
+          # Oldest first, so the queue is a queue rather than a stack.
+          for n in $(gh issue list --repo "$REPO" --label claude-fix --state open \
+                       --json number --jq 'sort_by(.number) | .[].number'); do
+            if [ -n "$(gh pr list --repo "$REPO" --search "linked:issue-$n" --state open --json number --jq '.[].number')" ]; then
+              echo "- #$n: skipped, a pull request is already open" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            # A branch means a previous run got partway and someone may be
+            # finishing it. Runs hit their turn cap often enough that re-picking
+            # would discard real work.
+            if [ -n "$(git ls-remote --heads "https://github.com/$REPO" "claude/issue-issue-$n-*" 2>/dev/null)" ]; then
+              echo "- #$n: skipped, a branch already exists" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            hand_over "$n"
+            exit 0
+          done
+
+          echo "The claude-fix queue is empty, or every issue in it is already in flight." >> "$GITHUB_STEP_SUMMARY"
