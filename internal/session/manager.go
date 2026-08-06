@@ -97,6 +97,17 @@ var (
 // construction except the subscriber set, which carries its own lock, and the
 // store and controller are both concurrency-safe.
 type Manager struct {
+	// maxLifetime and maxIdle are the ceilings a per-session override may not
+	// exceed (#37). Zero means the built-in constants, so a manager nobody
+	// configured refuses any override beyond what the daemon always allowed.
+	maxLifetime time.Duration
+	maxIdle     time.Duration
+
+	// defaultLifetime and defaultIdle are what a create that asks for nothing
+	// gets. Zero means the built-in constants.
+	defaultLifetime time.Duration
+	defaultIdle     time.Duration
+
 	// startCommands is the operator's named set (#38). The zero value means
 	// "only the daemon's own default", which is what every caller predating
 	// this feature means.
@@ -129,6 +140,54 @@ type Manager struct {
 // forbids. A manager that was never given a set starts sessions with
 // claudeStartCommand, which is exactly what it did before this existed.
 func (m *Manager) SetStartCommands(cmds config.StartCommands) { m.startCommands = cmds }
+
+// SetLifetimes gives the manager the operator's configured defaults and
+// ceilings (#37). A setter for the reason SetStartCommands is one: every
+// existing caller means "the constants", and threading four arguments through
+// them all to say so is the churn AR-008 forbids.
+func (m *Manager) SetLifetimes(defaultLifetime, maxLifetime, defaultIdle, maxIdle time.Duration) {
+	m.defaultLifetime, m.maxLifetime = defaultLifetime, maxLifetime
+	m.defaultIdle, m.maxIdle = defaultIdle, maxIdle
+}
+
+// resolveLifetimes turns what a create asked for into what the record carries.
+//
+// An override above its ceiling is refused rather than clamped. Silently
+// granting one day to a caller who asked for thirty is worse than refusing:
+// they believe they have thirty, and nothing tells them otherwise until the
+// session is gone.
+func (m *Manager) resolveLifetimes(req CreateRequest) (lifetime, idle time.Duration, err error) {
+	maxLife := orDefault(m.maxLifetime, AbsoluteLifetime)
+	maxIdleAllowed := orDefault(m.maxIdle, IdleTimeout)
+
+	lifetime = req.Lifetime
+	if lifetime == 0 {
+		lifetime = m.defaultLifetime
+	}
+	switch {
+	case lifetime < 0:
+		return 0, 0, fmt.Errorf("%w: a session lifetime may not be negative", ErrInvalidLifetime)
+	case lifetime > maxLife:
+		return 0, 0, fmt.Errorf("%w: %s exceeds the %s ceiling", ErrInvalidLifetime, lifetime, maxLife)
+	}
+
+	idle = req.Idle
+	if idle == 0 {
+		idle = m.defaultIdle
+	}
+	// A negative idle is the disable, not an error, and it is bounded by the
+	// absolute deadline still applying.
+	if idle > maxIdleAllowed {
+		return 0, 0, fmt.Errorf("%w: an idle timeout of %s exceeds the %s ceiling", ErrInvalidLifetime, idle, maxIdleAllowed)
+	}
+	// An idle timeout that can never fire is a setting that does nothing, which
+	// is worth refusing rather than accepting quietly.
+	effectiveLife := orDefault(lifetime, AbsoluteLifetime)
+	if idle > effectiveLife {
+		return 0, 0, fmt.Errorf("%w: an idle timeout of %s can never fire inside a %s lifetime", ErrInvalidLifetime, idle, effectiveLife)
+	}
+	return lifetime, idle, nil
+}
 
 // resolveStartCommand turns the name a create asked for into the command line
 // typed into the session's shell.
@@ -362,6 +421,12 @@ type CreateRequest struct {
 	// Owner is the authenticated identity, derived server-side (FR-012).
 	Owner auth.CallerID
 
+	// Lifetime and Idle are optional per-session overrides (#37). Zero means the
+	// daemon's default; a negative Idle disables idle reaping for this session.
+	// Both are checked against the daemon's ceilings before anything is built.
+	Lifetime time.Duration
+	Idle     time.Duration
+
 	// StartCommand names which configured command to type into the new session's
 	// shell (#38). Empty means the daemon's default. It is a name, never a
 	// command line — a create route that accepted a command line would be a
@@ -414,6 +479,11 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 		return nil, "", err
 	}
 
+	lifetime, idle, err := m.resolveLifetimes(req)
+	if err != nil {
+		return nil, "", err
+	}
+
 	if err := ValidateName(req.Name); err != nil {
 		return nil, "", fmt.Errorf("create session: %w", err)
 	}
@@ -437,6 +507,8 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 		Owner:        req.Owner,
 		Name:         req.Name,
 		StartCommand: req.StartCommand,
+		Lifetime:     lifetime,
+		Idle:         idle,
 		WorkDir:      workDir,
 		TokenHash:    hash,
 		CreatedAt:    now,

@@ -108,6 +108,18 @@ type Session struct {
 	// deliberately not part of any tmux target — see TmuxName.
 	Name string
 
+	// Lifetime is how long this session may live from CreatedAt, and Idle how
+	// long it may go untouched (#37). Zero means the daemon's configured
+	// default for either; a negative Idle disables idle reaping for this
+	// session alone.
+	//
+	// They are durations rather than instants for the reason TokenExpiry is a
+	// method: a stored deadline is a second value that can disagree with the
+	// rule that produced it, and these are read through AbsoluteDeadline and
+	// IdleDeadline exactly so there is one expression of each.
+	Lifetime time.Duration
+	Idle     time.Duration
+
 	// StartCommand is the name — never the command line — of the command typed
 	// into this session's shell (#38). The name is what a card shows, what the
 	// audit trail records, and what a restart resolves again; the line itself is
@@ -179,10 +191,40 @@ func (s Session) SessionTarget() string { return tmuxctl.SessionTarget(s.TmuxNam
 func (s Session) PaneTarget() string { return tmuxctl.PaneTarget(s.TmuxName()) }
 
 // AbsoluteDeadline is when the session dies regardless of use (FR-038).
-func (s Session) AbsoluteDeadline() time.Time { return s.CreatedAt.Add(AbsoluteLifetime) }
+//
+// A zero Lifetime means AbsoluteLifetime, so a record written before this field
+// existed — and every test that does not care — carries the deadline it always
+// did. There is deliberately no way to express "never": the operator may raise
+// the ceiling as far as they like, but a session that can outlive the daemon's
+// own memory of why it exists is what Constitution VI is written against (#37).
+func (s Session) AbsoluteDeadline() time.Time {
+	return s.CreatedAt.Add(orDefault(s.Lifetime, AbsoluteLifetime))
+}
 
 // IdleDeadline is when the session dies for want of a request (FR-038).
-func (s Session) IdleDeadline() time.Time { return s.LastActivity.Add(IdleTimeout) }
+//
+// A zero Idle means IdleTimeout, as above. A *negative* Idle means idle reaping
+// is off for this session, and that is safe in a way disabling the absolute
+// deadline would not be: the absolute one still fires, so the bound is relaxed
+// rather than removed. It is spelled as a negative rather than as zero because
+// zero already means "unset", and one value cannot mean both.
+func (s Session) IdleDeadline() time.Time {
+	if s.Idle < 0 {
+		// Far enough out that no comparison against it can fire before the
+		// absolute deadline does, which is the bound that still applies.
+		return s.LastActivity.Add(AbsoluteLifetime * 400)
+	}
+	return s.LastActivity.Add(orDefault(s.Idle, IdleTimeout))
+}
+
+// orDefault is the zero-means-inherited rule both deadlines share, in one place
+// so they cannot come to disagree about what an unset field means.
+func orDefault(d, fallback time.Duration) time.Duration {
+	if d == 0 {
+		return fallback
+	}
+	return d
+}
 
 // DisplayState is the label the dashboard shows for this session at now
 // (FR-019b).
@@ -247,6 +289,11 @@ var (
 	// caller that asked for remote control and silently got a plain session has
 	// no way to discover that is what happened (#38).
 	ErrUnknownStartCommand = errors.New("no such start command")
+
+	// ErrInvalidLifetime is a per-session lifetime or idle override the daemon
+	// will not grant: negative, past the operator's ceiling, or an idle timeout
+	// that could never fire inside the lifetime it sits in (#37).
+	ErrInvalidLifetime = errors.New("invalid session lifetime")
 
 	// ErrCredentialNotPending marks a claim on a session whose credential has
 	// already been handed out. It is not reachable through the API — ClaimPending

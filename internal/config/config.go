@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -33,12 +34,22 @@ import (
 // variable and is meant to be published — .env.example carries it verbatim. The
 // secret itself only ever exists as the []byte returned by loadSecret.
 const (
-	EnvSharedSecret     = "CRSW_SHARED_SECRET" //nolint:gosec // G101: an env var name, not a credential
-	EnvAllowedRoots     = "CRSW_ALLOWED_ROOTS"
-	EnvListen           = "CRSW_LISTEN"
-	EnvMaxSessions      = "CRSW_MAX_SESSIONS"
-	EnvCreateRatePerMin = "CRSW_CREATE_RATE_PER_MIN"
-	EnvMaxBodyBytes     = "CRSW_MAX_BODY_BYTES"
+	EnvSharedSecret = "CRSW_SHARED_SECRET" //nolint:gosec // G101: an env var name, not a credential
+	EnvAllowedRoots = "CRSW_ALLOWED_ROOTS"
+	EnvListen       = "CRSW_LISTEN"
+	EnvMaxSessions  = "CRSW_MAX_SESSIONS"
+
+	// The four lifetime variables (#37). Defaults reproduce the constants the
+	// daemon shipped with, so an operator who sets none of them sees no change.
+	// The MAX pair are ceilings a per-session override may not exceed; without
+	// them an override would be unbounded, which is the thing that must not be
+	// true of a bound.
+	EnvSessionLifetime    = "CRSW_SESSION_LIFETIME"
+	EnvSessionLifetimeMax = "CRSW_SESSION_LIFETIME_MAX"
+	EnvIdleTimeout        = "CRSW_IDLE_TIMEOUT"
+	EnvIdleTimeoutMax     = "CRSW_IDLE_TIMEOUT_MAX"
+	EnvCreateRatePerMin   = "CRSW_CREATE_RATE_PER_MIN"
+	EnvMaxBodyBytes       = "CRSW_MAX_BODY_BYTES"
 
 	// Layer 1 — the Cloudflare Access assertion the browser door validates.
 	// Required, and fatal when absent, for the same reason the shared secret is:
@@ -216,11 +227,18 @@ type Config struct {
 	// returned in an error, or echoed back — not even its length (FR-043).
 	SharedSecret []byte
 
-	Roots            []ApprovedRoot
-	Listen           string
-	MaxSessions      int
-	CreateRatePerMin int
-	MaxBodyBytes     int64
+	Roots       []ApprovedRoot
+	Listen      string
+	MaxSessions int
+
+	// SessionLifetime and IdleTimeout are what a create that asks for nothing
+	// gets; the Max pair are the ceilings an override is checked against (#37).
+	SessionLifetime    time.Duration
+	SessionLifetimeMax time.Duration
+	IdleTimeout        time.Duration
+	IdleTimeoutMax     time.Duration
+	CreateRatePerMin   int
+	MaxBodyBytes       int64
 
 	// AccessTeamDomain is a normalised origin — scheme and host, no path, host
 	// lower-cased. It is one configured value because two things must agree: the
@@ -330,6 +348,26 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 	if err != nil {
 		return nil, err
 	}
+	lifetime, err := loadDuration(getenv, EnvSessionLifetime, session_AbsoluteLifetime)
+	if err != nil {
+		return nil, err
+	}
+	lifetimeMax, err := loadDuration(getenv, EnvSessionLifetimeMax, lifetime)
+	if err != nil {
+		return nil, err
+	}
+	idle, err := loadDuration(getenv, EnvIdleTimeout, session_IdleTimeout)
+	if err != nil {
+		return nil, err
+	}
+	idleMax, err := loadDuration(getenv, EnvIdleTimeoutMax, idle)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateLifetimes(lifetime, lifetimeMax, idle, idleMax); err != nil {
+		return nil, err
+	}
+
 	maxStreams, err := loadInt(getenv, EnvMaxStreams, DefaultMaxStreams)
 	if err != nil {
 		return nil, err
@@ -362,6 +400,10 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 		AccessAUD:           aud,
 		AccessAllowedEmails: emails,
 		MaxStreams:          maxStreams,
+		SessionLifetime:     lifetime,
+		SessionLifetimeMax:  lifetimeMax,
+		IdleTimeout:         idle,
+		IdleTimeoutMax:      idleMax,
 		StartCommands:       startCommands,
 	}, nil
 }
@@ -752,6 +794,54 @@ func loadInt(getenv func(string) string, name string, def int) (int, error) {
 		return 0, fmt.Errorf("%s must be at least 1, got %d; refusing to start", name, n)
 	}
 	return n, nil
+}
+
+// loadDuration reads a Go duration, defaulting when unset (#37).
+//
+// A negative value is refused rather than clamped everywhere except the idle
+// timeout, where the caller allows it as the disable — so the check belongs to
+// each caller and not here, and this only refuses what cannot be parsed.
+// The daemon's built-in bounds, duplicated here rather than imported: internal
+// /session imports this package, so importing it back would be a cycle. They are
+// the values internal/session declares, and config_test pins them equal so the
+// duplication cannot drift silently.
+const (
+	session_AbsoluteLifetime = 24 * time.Hour
+	session_IdleTimeout      = 60 * time.Minute
+)
+
+// validateLifetimes refuses at startup what cannot be corrected at runtime (#37).
+//
+// A ceiling below its own default would mean every create is refused by a bound
+// the operator set without meaning to, and an idle timeout longer than the
+// session it sits in can never fire — a setting that does nothing is worse than
+// one that refuses, because nothing tells you it did nothing.
+func validateLifetimes(lifetime, lifetimeMax, idle, idleMax time.Duration) error {
+	switch {
+	case lifetime <= 0:
+		return fmt.Errorf("%s must be positive, got %s; there is no such thing as a session that never expires", EnvSessionLifetime, lifetime)
+	case lifetimeMax < lifetime:
+		return fmt.Errorf("%s (%s) is below %s (%s); every create would be refused by a ceiling under its own default", EnvSessionLifetimeMax, lifetimeMax, EnvSessionLifetime, lifetime)
+	case idle < 0:
+		return fmt.Errorf("%s may not be negative, got %s; use 0 to disable idle reaping", EnvIdleTimeout, idle)
+	case idleMax < idle:
+		return fmt.Errorf("%s (%s) is below %s (%s)", EnvIdleTimeoutMax, idleMax, EnvIdleTimeout, idle)
+	case idle > lifetime:
+		return fmt.Errorf("%s (%s) exceeds %s (%s), so it could never fire", EnvIdleTimeout, idle, EnvSessionLifetime, lifetime)
+	}
+	return nil
+}
+
+func loadDuration(getenv func(string) string, name string, def time.Duration) (time.Duration, error) {
+	v := strings.TrimSpace(getenv(name))
+	if v == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q is not a duration such as 90m or 4h; refusing to start", name, v)
+	}
+	return d, nil
 }
 
 func loadInt64(getenv func(string) string, name string, def int64) (int64, error) {
