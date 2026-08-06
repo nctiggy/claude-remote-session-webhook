@@ -731,3 +731,17 @@ body {
   text-align: center;
   pointer-events: none;
 }
+
+/* The card's start-command label (#39). Only rendered when a session was
+   started with something other than the daemon's default, so its absence is
+   the ordinary case and carries no meaning of its own. */
+.card-mode {
+  color: var(--dim);
+  font-size: var(--fs-label);
+  letter-spacing: var(--ls-label);
+}
+
+.card-mode-name {
+  color: var(--text);
+  text-transform: uppercase;
+}
