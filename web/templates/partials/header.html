@@ -9,6 +9,14 @@
   and it is structural rather than remembered: no request-supplied value is in
   scope here, so there is nothing for a future edit to reach for by accident.
 
+  The wordmark is the route home (#48). It is a link on every page including the
+  fleet itself, where it points at the page already open: an affordance that
+  appears and disappears is worse than one that is occasionally redundant, and a
+  session page without it left the browser's back button as the only way back.
+  Text rather than a glyph, for the reason FR-030 gives about state — never by
+  symbol alone. The tagline stays outside the anchor: it names the product, it is
+  not part of the mark, and it is hidden entirely under 780px.
+
   The address is escaped like every other text node anyway. It arrived inside a
   signature the edge wrote rather than from a caller, so escaping it is defence
   in depth — but it is the primary defence for everything else this dashboard
@@ -16,7 +24,7 @@
 */}}<header class="masthead">
 {{ template "rain" }}
 <div class="masthead-bar">
-<h1 class="brand">crswd <span class="brand-tag">session control</span></h1>
+<h1 class="brand"><a class="brand-link" href="/">crswd</a> <span class="brand-tag">session control</span></h1>
 <p class="operator" title="{{ .Email }}">{{ .Email }}</p>
 </div>
 </header>
