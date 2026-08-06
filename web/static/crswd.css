@@ -163,6 +163,20 @@ body {
   text-shadow: var(--glow);
 }
 
+/* The route home (#48). Colour is inherited so the mark keeps its phosphor and
+   its glow rather than gaining a second accent, and the underline the browser
+   already draws is the affordance — the same arrangement .card-link uses, dimmed
+   until hover. No focus rule: the global :focus-visible outline is the ring. */
+.brand-link {
+  color: inherit;
+  text-decoration-color: var(--edge-bright);
+  transition: text-decoration-color var(--transition);
+}
+
+.brand-link:hover {
+  text-decoration-color: currentcolor;
+}
+
 .brand-tag {
   margin-inline-start: var(--s3);
   color: var(--dim);
