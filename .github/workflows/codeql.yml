@@ -59,6 +59,22 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # Go is preinstalled on GitHub-hosted runners and not on the lab's own,
+      # so autobuild failed with `exec: "go": executable file not found` the
+      # first time this ran on self-hosted (#77). ci.yml already installs its
+      # own toolchain for exactly this reason; this had been relying on the
+      # image instead.
+      #
+      # Same version ci.yml pins, and for the same argument: CodeQL analysing a
+      # different Go than the one that builds and tests is analysing a different
+      # program.
+      - name: Set up Go
+        if: steps.src.outputs.present == 'true' && matrix.language == 'go'
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.24'
+          cache: false
+
       - name: Initialize CodeQL
         if: steps.src.outputs.present == 'true'
         uses: github/codeql-action/init@v4
