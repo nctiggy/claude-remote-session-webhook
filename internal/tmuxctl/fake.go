@@ -2,6 +2,7 @@ package tmuxctl
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"sort"
 	"sync"
@@ -91,7 +92,7 @@ func argvHas(name string) []string {
 // One exec yields everything reconciliation needs: name, creation time, and
 // provenance. An empty third field means we did not create the session.
 func argvList() []string {
-	return []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{" + OptionManaged + "}"}
+	return []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{" + OptionManaged + "}|#{" + OptionName + "}|#{" + OptionWorkDir + "}"}
 }
 
 // Fake is an in-memory Controller for every other package's tests, so no unit
@@ -256,10 +257,23 @@ func (f *Fake) List(_ context.Context) ([]SessionInfo, error) {
 	}
 	out := make([]SessionInfo, 0, len(f.sessions))
 	for name, s := range f.sessions {
+		// The recorded label and directory, played back the way the real List
+		// reads them out of the format string (#72). Decoding the base64 here is
+		// what makes this fake model the round trip rather than only its first
+		// half — a fake that stored a value and never returned it would let an
+		// adoption test pass against a daemon that records nothing.
+		workDir := ""
+		if raw := s.options[OptionWorkDir]; raw != "" {
+			if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil {
+				workDir = string(decoded)
+			}
+		}
 		out = append(out, SessionInfo{
 			Name:    name,
 			Created: s.created,
 			Managed: s.options[OptionManaged] != "",
+			Label:   s.options[OptionName],
+			WorkDir: workDir,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"slices"
@@ -1208,12 +1209,17 @@ func (m *Manager) Adopt(ctx context.Context) ([]AdoptedSession, error) {
 		s := Session{
 			ID:    id,
 			Owner: auth.CallerOperator,
-			// Name and WorkDir stay empty on purpose. Neither survives the
-			// process that knew them: nothing on the host carries the caller's
-			// label at all, and while tmux does know the session's directory,
-			// SessionInfo does not carry it and widening that contract is not
-			// this task. A value invented here would describe nothing, and the
-			// id is the only field a tmux target is ever built from anyway.
+			// Restored from the host, which is where they were written when the
+			// session was created (#72). They were empty here for as long as
+			// adoption only ran after a crash; sessions survive a restart now
+			// (#63), so this runs on every redeploy and an operator was left
+			// with a fleet of unnamed cards in unknown directories.
+			//
+			// Still empty for a session created before those options existed,
+			// and that is correct: an invented value would describe nothing.
+			// Neither field is ever used to build a tmux target — the id is.
+			Name:         info.Label,
+			WorkDir:      info.WorkDir,
 			CreatedAt:    info.Created,
 			LastActivity: now,
 			State:        StateRunning,
@@ -1375,6 +1381,20 @@ func (m *Manager) start(ctx context.Context, s Session) error {
 	}
 	if err := m.tmux.SetOption(ctx, name, tmuxctl.OptionOwner, string(s.Owner)); err != nil {
 		return fmt.Errorf("mark tmux session owner: %w", err)
+	}
+	// The two facts the host would otherwise lose (#72). Adoption is the ordinary
+	// path now that sessions survive a restart (#63), and a fleet of unnamed
+	// cards in unknown directories is what an operator saw after every redeploy.
+	//
+	// The label goes on raw — ValidateName restricts it to letters, digits and
+	// hyphens, so it can carry no separator and no shell metacharacter. The
+	// working directory is base64 because a path can contain anything, including
+	// the "|" that list-sessions uses between fields.
+	if err := m.tmux.SetOption(ctx, name, tmuxctl.OptionName, s.Name); err != nil {
+		return fmt.Errorf("record the session label: %w", err)
+	}
+	if err := m.tmux.SetOption(ctx, name, tmuxctl.OptionWorkDir, base64.StdEncoding.EncodeToString([]byte(s.WorkDir))); err != nil {
+		return fmt.Errorf("record the session working directory: %w", err)
 	}
 	// The command is resolved from the name the record carries, not from the
 	// request: by the time a session is being started its name has already been

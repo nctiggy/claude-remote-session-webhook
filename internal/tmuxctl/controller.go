@@ -75,6 +75,19 @@ const (
 	// a restart has an owner to hand the record rather than a guess.
 	OptionOwner = "@crswd-owner"
 
+	// OptionName and OptionWorkDir carry the two facts a record holds that the
+	// host otherwise does not (#72). They exist because adoption stopped being a
+	// crash-recovery path and became the ordinary one: sessions now survive a
+	// restart (#63), so every redeploy runs adoption, and a fleet of unnamed
+	// sessions in unknown directories is what the operator sees afterwards.
+	//
+	// Stored on the tmux session itself rather than derived, because neither can
+	// be recovered any other way: the label was never anywhere but the daemon's
+	// memory, and a pane's current directory is where the shell has wandered to
+	// rather than where the session was started.
+	OptionName    = "@crswd-name"
+	OptionWorkDir = "@crswd-workdir"
+
 	// OptionManagedValue is what OptionManaged is set to. List only tests the
 	// option for emptiness, so this is a marker rather than data — but it is
 	// spelled once so a future reader does not have to check whether the value
@@ -89,4 +102,13 @@ type SessionInfo struct {
 	Name    string
 	Created time.Time
 	Managed bool // did we create it? Anything else is neither adopted nor touched.
+
+	// Label and WorkDir are what the daemon recorded when it created the session
+	// (#72), read back so adoption can restore them. Empty for a session created
+	// before these options existed, which is why every caller must treat absence
+	// as "unknown" rather than as a value.
+	//
+	// Label, not Name: Name above is tmux's own session name, which is the id.
+	Label   string
+	WorkDir string
 }
