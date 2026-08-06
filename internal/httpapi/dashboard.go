@@ -240,7 +240,12 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string) fleetVie
 		Operator: operator,
 		Summary:  summarise(views),
 		Sessions: views,
-		Empty:    emptyView{Title: emptyFleetTitle, Body: emptyFleetBody},
+		// Composed on every render and hidden when there is a grid instead. The
+		// page carries both of its shapes so that the live half can switch
+		// between them when a session appears or vanishes, rather than
+		// composing an empty state of its own — a second one would be free to
+		// disagree with this (issue #51).
+		Empty: emptyView{Title: emptyFleetTitle, Body: emptyFleetBody, Hidden: len(views) > 0},
 		// The render's own token, the same value every card above carries. The
 		// form is one more thing on this page that acts for this identity at this
 		// instant, so it is handed the page's token rather than a second mint —

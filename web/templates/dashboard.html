@@ -60,7 +60,7 @@
   route is added here, and nothing new is exposed to a browser that could already
   open that page by clicking the card.
 */}}
-<main class="shell" data-fleet-stream="/dashboard/fleet/stream" data-fleet-card="/sessions/{id}/view" data-fleet-stalled="fleet-stalled">
+<main class="shell" data-fleet-stream="/dashboard/fleet/stream" data-fleet-card="/sessions/{id}/view" data-fleet-stalled="fleet-stalled" data-fleet-changed="fleet-changed">
 {{/*
   What the page says when it can no longer keep itself current (FR-020).
 
@@ -88,6 +88,38 @@
   sentence here that is not about a session.
 */}}<p class="fleet-note" id="fleet-stalled" role="status" hidden>Live updates stopped. Sessions may have started or ended on this host without this page hearing about it, so reload to see the fleet as it is now.</p>
 {{/*
+  What the page says when the fleet's *shape* changed under it (issue #51).
+
+  The grid used to be rebuilt by a reload, which re-announced the whole page to a
+  screen reader as a side effect of throwing it away. Updating in place keeps
+  everything a reload destroyed — a half-typed working directory, the scroll
+  position, the caret — and owes the announcement the reload was giving by
+  accident: a page that silently rearranges is worse for an operator who cannot
+  see it than one that reloads.
+
+  So this is the one thing on the page that says a session arrived or left, and
+  it says only that. docs/components.md's accessibility floor keeps the card grid
+  itself out of the live region — narrating every card that changed state would be
+  the same noise as narrating every line a pane prints — and this stays on the
+  right side of that line: it speaks for the two events that change what is on the
+  page, never for the third, which replaces a card in place.
+
+  The sentences are here rather than in the script, for the reason every other
+  sentence this interface says is. `{n}` is the substitution the live half already
+  makes on data-fleet-card, and it is the count of the cards below rather than a
+  number this page could go stale about — the same rule the summary follows.
+
+  It renders present and empty rather than hidden. A live region has to be in the
+  accessibility tree before its text arrives for the announcement to happen at
+  all, and a region revealed and written in one go is a region some readers never
+  announce. Empty, it is display:none by the stylesheet's own `:empty` rule, so a
+  page that has seen no change shows nothing.
+
+  aria-live="polite" and role="status", exactly as the action toast below: a
+  session appearing is worth saying at the next pause and never worth interrupting
+  what a screen reader is already reading.
+*/}}<p class="fleet-note" id="fleet-changed" role="status" aria-live="polite" data-fleet-appeared="A session appeared on this host. Sessions in the fleet: {n}." data-fleet-vanished="A session ended. Sessions in the fleet: {n}."></p>
+{{/*
   The summary before any detail — a dashboard is scanned, not read
   (docs/design-system.md's layout). Each count is derived from the cards below
   it, so the row cannot claim a fleet the grid does not show. The live half
@@ -96,20 +128,32 @@
   card and left this row alone would make the page disagree with itself about
   the one number an operator scans it for.
 
-  It renders only alongside the grid. With nothing owned there is no detail for a
+  It shows only alongside the grid. With nothing owned there is no detail for a
   summary to come before, and a row of zeroes above the empty state would be
-  detail where FR-021 asks for an explanation. That is also why the live half
-  reloads rather than composing either shape: choosing between this row with its
-  grid and the empty state is the page's own decision, made here, and a script
-  that made it a second time would be a second fleet page.
-*/}}{{ if .Sessions }}<ul class="summary">
+  detail where FR-021 asks for an explanation.
+
+  Which is why both shapes are rendered and the one that does not apply is
+  `hidden` (issue #51). Choosing between this row with its grid and the empty
+  state is still the page's own decision, made here and made once — the live half
+  reveals what this render already composed rather than composing a second empty
+  state, a second summary row, or a second place for either to be wrong. The
+  alternative was the reload it used to answer a shape change with, which threw
+  away a half-typed working directory, the scroll position and the caret to
+  redraw a page that differs by one card.
+
+  The counts are the same derivation on both sides of that: this render counts
+  the views it is about to draw, and the live half re-counts the cards that are
+  there after it has added or removed one. Neither tracks a number, so there is
+  nothing for the row and the grid to disagree about — and a state with no row
+  here is the one case the live half cannot represent, so it reloads instead.
+*/}}<ul class="summary"{{ if not .Sessions }} hidden{{ end }}>
 {{ range .Summary }}<li class="summary-state">{{ template "status-pill" .State }} <span class="summary-count">{{ .Count }}</span></li>
 {{ end }}</ul>
-<div class="grid">
+<div class="grid"{{ if not .Sessions }} hidden{{ end }}>
 {{ range .Sessions }}{{ template "session-card" . }}
 {{ end }}</div>
-{{ else }}{{ template "empty" .Empty }}
-{{ end }}{{/*
+{{ template "empty" .Empty }}
+{{/*
   The create form, after the fleet and outside both branches above (T010).
 
   After, because a dashboard is scanned for what is running on this host before

@@ -380,6 +380,62 @@ func sectionOf(t *testing.T, page, class string) string {
 	return body
 }
 
+// openingTag is the opening tag of the first element of this kind carrying this
+// class, so a test can assert about the attributes on it rather than about the
+// whole page. `hidden` is the one that matters now: it is what decides which of
+// the fleet page's two shapes an operator is looking at (issue #51), and it is
+// invisible to a Contains check that only asks whether the markup is there.
+func openingTag(t *testing.T, page, element, class string) string {
+	t.Helper()
+
+	tag := regexp.MustCompile(`<` + element + ` class="` + class + `"[^>]*>`).FindString(page)
+	if tag == "" {
+		t.Fatalf("the page renders no <%s class=%q>:\n%s", element, class, page)
+	}
+	return tag
+}
+
+// TestTheFleetPageComposesBothOfItsShapes is what makes updating in place
+// possible without the live half becoming a second fleet page (issue #51).
+//
+// The page used to render one shape or the other, so a session appearing at an
+// empty page and the last one leaving both had to be answered with a reload —
+// the script cannot compose an empty state, a summary row or a count without
+// becoming a second place any of them can be wrong. Both are rendered now and
+// the one that does not apply is hidden, which turns those two events into a
+// `hidden` attribute the script moves between markup the daemon authored.
+//
+// **Must fail when** either shape is left out of a render, because that is the
+// state where the live half has nothing to reveal and the reload comes back.
+func TestTheFleetPageComposesBothOfItsShapes(t *testing.T) {
+	t.Parallel()
+
+	running := newFleet(t)
+	running.fixture.plant(t, session.Session{Name: "busy", WorkDir: running.fixture.repo, LastActivity: runningAt(testTime)})
+
+	page := running.view(t).Body.String()
+	for _, shown := range []struct {
+		element string
+		class   string
+	}{{"ul", "summary"}, {"div", "grid"}} {
+		if tag := openingTag(t, page, shown.element, shown.class); strings.Contains(tag, "hidden") {
+			t.Errorf("a fleet with a session in it hides its %s (%q):\n%s", shown.class, tag, page)
+		}
+	}
+	// The empty state is composed on this render too, and hidden. Without it the
+	// last card leaving has nothing to reveal, and the page that had one session
+	// is a page with a blank space where FR-021 asks for an explanation.
+	if tag := openingTag(t, page, "section", "empty"); !strings.Contains(tag, "hidden") {
+		t.Errorf("a fleet with a session in it shows the empty state as well (%q):\n%s", tag, page)
+	}
+
+	// And the other direction, which is the transition a naive implementation
+	// misses: the first card arriving at a page that owns nothing.
+	if tag := openingTag(t, newFleet(t).view(t).Body.String(), "section", "empty"); strings.Contains(tag, "hidden") {
+		t.Errorf("a fleet with nothing in it hides the empty state (%q); the page explains nothing", tag)
+	}
+}
+
 // TestAnEmptyFleetExplainsItselfInsteadOfRenderingNothing is FR-021, and the
 // second half is FR-024a: docs/components.md documents this component with a
 // "Start a session" action, and it must not be here.
@@ -406,10 +462,17 @@ func TestAnEmptyFleetExplainsItselfInsteadOfRenderingNothing(t *testing.T) {
 	if strings.Contains(page, `<article class="card"`) {
 		t.Errorf("an empty fleet rendered a card:\n%s", page)
 	}
-	// No detail, so nothing for a summary to come before. A row of zeroes here
-	// would be detail where FR-021 asks for an explanation.
-	if strings.Contains(page, `class="summary"`) {
-		t.Errorf("an empty fleet rendered a summary of nothing:\n%s", page)
+	// No detail, so nothing for a summary to come before: a row of zeroes on
+	// screen here would be detail where FR-021 asks for an explanation. It is
+	// composed and hidden rather than left out, which is what lets the first card
+	// to arrive be shown without the page being rebuilt around it (issue #51) —
+	// what FR-021 forbids is showing it, and `hidden` is the browser's own way of
+	// not showing something.
+	if row := openingTag(t, page, "ul", "summary"); !strings.Contains(row, "hidden") {
+		t.Errorf("an empty fleet shows a summary of nothing (%q):\n%s", row, page)
+	}
+	if fleet := openingTag(t, page, "div", "grid"); !strings.Contains(fleet, "hidden") {
+		t.Errorf("an empty fleet shows an empty grid (%q):\n%s", fleet, page)
 	}
 
 	empty := sectionOf(t, page, "empty")

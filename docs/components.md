@@ -314,12 +314,30 @@ Non-negotiable, applies to everything above:
   connection that stopped, a background thing that failed. The severed-fleet note
   carries `role="status"` for exactly that reason — it appears when the operator is
   not acting.
+- **A fleet that changes shape says so, in one sentence, once.** A session
+  appearing or vanishing is announced by the note beside the severed-fleet one;
+  the grid itself is still not a live region. The distinction is the boundary
+  below rather than an exception to it: what is announced is that the page now
+  holds a different set of cards, which is the fact an operator who cannot see it
+  has no other way to learn. The sentences are the page's
+  (`data-fleet-appeared`, `data-fleet-vanished`), and the region is rendered
+  present and empty rather than hidden — a live region has to be in the
+  accessibility tree before its text arrives for the announcement to happen at
+  all.
+
+  This paragraph is new, and what it replaced said the opposite: that a fleet
+  changing was noise and nothing about the grid was announced. That rule was
+  written when a shape change reloaded the whole page, which re-announced it as a
+  side effect of throwing it away. The reload is gone (issue #51), so the
+  announcement that came with it has to be made on purpose or not at all, and a
+  page that silently rearranges is worse for a non-sighted operator than one that
+  reloads.
 - Nothing else is announced, and the boundary is deliberate. The pane itself is
   **not** a live region — announcing every terminal line is unusable — and neither
-  is the card grid: a fleet on a busy host changes without the operator's
-  involvement, and narrating every arrival and departure is the same noise. An
-  outcome the operator just caused needs no live region either; it replaces the
-  control they used, where focus already is.
+  is the card grid: a card that changed state or name is replaced in place, and
+  narrating every one of those on a busy host is the same noise. An outcome the
+  operator just caused needs no live region either; it replaces the control they
+  used, where focus already is.
 
 ## Empty state
 
@@ -327,12 +345,18 @@ The one surface where the rain runs at full strength — there is no data compet
 with it, so it fills the void instead of leaving a shrug.
 
 ```gotemplate
-{{/* Title and Body. The dot is an emptyView; the Action field exists and this
-     dashboard passes none. */}}
+{{/* Title, Body and Hidden. The dot is an emptyView; the Action field exists and
+     this dashboard passes none. */}}
 {{ template "empty" . }}
 ```
 
 Rules:
+- **`Hidden` is a page saying it composed this state without showing it.** The
+  fleet renders both of its shapes — the summary with its grid, and this — and
+  hides whichever does not apply, so a session appearing or vanishing is the live
+  half revealing markup the daemon authored rather than composing an empty state
+  of its own (issue #51). A second composition is a second empty state. Every
+  other call site leaves it false, which is the state showing.
 - **The `Action` parameter stays absent here, and the create form sits beside the
   empty state rather than inside it.** That is this document's own rule applied to
   itself: the empty state is the one surface where the rain runs at full strength,

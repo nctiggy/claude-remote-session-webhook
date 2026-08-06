@@ -136,6 +136,18 @@ type emptyView struct {
 	// reason the card's row is absent (FR-024a). A pointer rather than a slice
 	// because the component documents one.
 	Action *actionView
+
+	// Hidden is a page saying it composed this state without showing it.
+	//
+	// The fleet page renders both of its shapes — the summary with its grid, and
+	// this — and hides whichever does not apply, so that a session appearing or
+	// vanishing is the live half revealing markup the daemon already authored
+	// rather than composing an empty state of its own (issue #51). A second
+	// composition would be a second empty state, free to disagree with this one.
+	//
+	// The zero value shows the state, which is what every other call site wants:
+	// the not-found page renders this and nothing hides it.
+	Hidden bool
 }
 
 // createFormView is the create form's whole parameter list (T010): the token
