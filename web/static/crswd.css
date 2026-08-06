@@ -765,3 +765,16 @@ body {
   color: var(--text);
   text-transform: uppercase;
 }
+
+/* The hidden attribute has to win (#77).
+   `[hidden] { display: none }` is a user-agent rule, so any class that sets
+   `display` outranks it — .empty, .grid, .summary and .empty-action all do, and
+   all four are hidden by attribute rather than by class (issue #51 renders both
+   fleet shapes and hides the inactive one). The empty state was therefore
+   rendering underneath a fleet that had sessions in it.
+   Declared once, at the end, rather than as [hidden] on each rule: the next
+   component that sets display and hides by attribute is covered without anyone
+   remembering this exists. */
+[hidden] {
+  display: none !important;
+}

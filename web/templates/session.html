@@ -36,5 +36,15 @@
 {{ template "session-card" .Session }}
 {{ template "pane" .Pane }}
 </main>
+{{/*
+  The same live region the fleet carries (#77). It is on both pages because the
+  script that writes it bails without it — and this is the page with the rename
+  and destroy controls on it, so a missing region here meant every action on the
+  single-session view navigated to a bare fragment while the fleet behaved.
+
+  A component two pages need, present on one, is the shape of bug that reads as
+  "the fix did not work" rather than "the fix is not on this page".
+*/}}
+<output class="action-toast" id="action-toast" role="status" aria-live="polite" hidden></output>
 </body>
 </html>
