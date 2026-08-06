@@ -577,47 +577,58 @@
     return (parsed.body.textContent || '').trim();
   };
 
-  for (const form of document.querySelectorAll('form[action^="/dashboard/"]')) {
-    form.addEventListener('submit', async (event) => {
-      // Let the browser do the ordinary thing if it cannot do this one.
-      if (typeof window.fetch !== 'function') {
-        return;
-      }
-      event.preventDefault();
+  /*
+   * Delegated from the document, not attached per form.
+   *
+   * The first version bound a listener to every action form at load, and the
+   * fleet's live half replaces cards whenever the stream says one changed. A
+   * replaced card is a new form element, which never had the listener — so the
+   * first rename after any fleet change navigated to a bare fragment, exactly
+   * what this exists to prevent. A listener on the document sees a form that did
+   * not exist when the page loaded, which is the only kind this page has after
+   * its first update.
+   */
+  document.addEventListener('submit', async (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement) || !form.getAttribute('action')?.startsWith('/dashboard/')) {
+      return;
+    }
+    // Let the browser do the ordinary thing if it cannot do this one.
+    if (typeof window.fetch !== 'function') {
+      return;
+    }
+    event.preventDefault();
 
-      try {
-        const answer = await fetch(form.action, {
-          method: 'POST',
-          body: new URLSearchParams(new FormData(form)),
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          // The gate reads Sec-Fetch-Site, which the browser sets and script
-          // cannot. same-origin keeps this a same-origin request so it stays set
-          // to the one value the daemon admits.
-          credentials: 'same-origin',
-        });
-        show(sentence(await answer.text()) || 'The host answered without a message.');
-
-        // Re-enable the control the submit-once guard spent. The guard exists
-        // for the create's double-submit, and with no navigation there is no new
-        // page to bring a fresh one back.
-        for (const control of form.querySelectorAll('button[type="submit"]')) {
-          control.disabled = false;
-        }
-        const note = document.getElementById(form.dataset.submitOnce);
-        if (note) {
-          note.hidden = true;
-        }
-        if (form.matches('.create-form')) {
-          form.reset();
-        }
-      } catch {
-        // A request that never reached the host is the one case where the
-        // operator must not be told anything happened, because nothing did.
-        show('That action could not be sent. The fleet is unchanged.');
-        for (const control of form.querySelectorAll('button[type="submit"]')) {
-          control.disabled = false;
-        }
+    const reenable = () => {
+      for (const control of form.querySelectorAll('button[type="submit"]')) {
+        control.disabled = false;
       }
-    });
-  }
+      const note = document.getElementById(form.dataset.submitOnce);
+      if (note) {
+        note.hidden = true;
+      }
+    };
+
+    try {
+      const answer = await fetch(form.action, {
+        method: 'POST',
+        body: new URLSearchParams(new FormData(form)),
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        // The gate reads Sec-Fetch-Site, which the browser sets and script
+        // cannot. same-origin keeps this a same-origin request so it stays set
+        // to the one value the daemon admits.
+        credentials: 'same-origin',
+      });
+      show(sentence(await answer.text()) || 'The host answered without a message.');
+      reenable();
+      if (form.matches('.create-form')) {
+        form.reset();
+      }
+    } catch {
+      // A request that never reached the host is the one case where the operator
+      // must not be told anything happened, because nothing did.
+      show('That action could not be sent. The fleet is unchanged.');
+      reenable();
+    }
+  });
 })();
