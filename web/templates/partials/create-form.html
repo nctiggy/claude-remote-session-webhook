@@ -58,16 +58,37 @@
   reveals it. Its copy lives here rather than in the script for the reason the
   pane's ended note does: what the interface says to a person belongs to a
   template.
-*/}}{{ with .PageToken }}<section class="create">
+  `if` rather than `with`, so `.` stays the view inside the form: the chooser
+  below needs StartCommands, and `with` would have rebound the dot to the token
+  alone. The token is passed explicitly to its own template instead, which says
+  what it is at the point it is used.
+*/}}{{ if .PageToken }}<section class="create">
 <h2 class="create-heading">Start a session</h2>
-<form class="create-form" method="post" action="/dashboard/sessions" data-submit-once="create-busy">{{ template "page-token" . }}<div class="field">
+<form class="create-form" method="post" action="/dashboard/sessions" data-submit-once="create-busy">{{ template "page-token" .PageToken }}<div class="field">
 <label class="field-label" for="create-name">Name</label>
 <input class="field-input" id="create-name" type="text" name="name" required maxlength="64" pattern="[-a-zA-Z0-9]+" autocomplete="off" spellcheck="false">
 </div>
 <div class="field">
 <label class="field-label" for="create-work-dir">Working directory</label>
 <input class="field-input" id="create-work-dir" type="text" name="work_dir" required autocomplete="off" spellcheck="false">
-</div>
+</div>{{/*
+  The start-command chooser (#38, #39), rendered only when the operator has
+  configured more than one. A select with a single option is a control that
+  cannot change anything, so a daemon configuring nothing shows the form it
+  showed before this existed.
+
+  The options are names, never command lines. What each name runs is the
+  operator's own configuration and belongs on a settings view (#49), not in a
+  select an operator picks from mid-task — and a page that carried the command
+  lines would be a page that could be made to carry any command line.
+
+  No default is marked selected. An absent value means the daemon's default by
+  the same rule the API applies, so the first option being "default" is the
+  browser's ordinary behaviour rather than a second place that decides.
+*/}}{{ if gt (len .StartCommands) 1 }}<div class="field">
+<label class="field-label" for="create-start-command">Start command</label>
+<select class="field-input" id="create-start-command" name="start_command">{{ range .StartCommands }}<option value="{{ . }}">{{ . }}</option>{{ end }}</select>
+</div>{{ end }}
 <button class="button button-primary" type="submit">Start session</button>
 </form>
 <p class="create-note" id="create-busy" hidden>Starting a session. This page is replaced by the new card when the host answers.</p>

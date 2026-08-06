@@ -46,6 +46,17 @@ type sessionView struct {
 	// render, and the one it must not.
 	DisplayState session.DisplayState
 
+	// StartCommand is the name of the command this session was running when the
+	// page rendered (#38, #39). A name, never the command line: the card tells
+	// an operator which of two identically-shaped sessions is the remote-control
+	// one, and the daemon's own arguments are not a thing a page needs.
+	//
+	// Empty for a session started with the default and for an adopted one. The
+	// card renders nothing at all rather than inventing a label — an adopted
+	// session was not started by this daemon, and "default" would be a guess
+	// dressed as a fact.
+	StartCommand string
+
 	// Age is already formatted — coarse, human-readable, computed server-side.
 	// There is no ticking clock in the browser for it to drift from, and no
 	// duration formatting inside a template, so the string is the projection's
@@ -158,6 +169,18 @@ type createFormView struct {
 	// field: a control the gate is certain to refuse is worse than no control,
 	// because an operator cannot tell the two apart until they use it.
 	PageToken string
+
+	// StartCommands is the operator's configured command names, sorted (#38,
+	// #39), and it is what turns the start command from an API-only field into
+	// something the dashboard can offer.
+	//
+	// Fewer than two names renders no chooser at all: a select with one option
+	// is a control that cannot change anything, and a daemon configuring nothing
+	// should see the form it saw before this existed. The names are the
+	// operator's own configuration, so listing them discloses nothing to an
+	// identity that is already allowlisted — and the command lines they map to
+	// are deliberately not here.
+	StartCommands []string
 }
 
 // actionView is one entry in an action row, and it is deliberately empty.

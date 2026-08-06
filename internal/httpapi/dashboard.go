@@ -250,7 +250,7 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string) fleetVie
 		// form is one more thing on this page that acts for this identity at this
 		// instant, so it is handed the page's token rather than a second mint —
 		// the reason cardOf takes one as a parameter instead of issuing one.
-		Create: createFormView{PageToken: token},
+		Create: createFormView{PageToken: token, StartCommands: s.cfg.StartCommands.Names()},
 	}
 }
 
@@ -273,6 +273,7 @@ func cardOf(live session.Session, now time.Time, token string) sessionView {
 		// (FR-019a–c). Nothing here reads live.State: both values it holds in
 		// production display as running, and reading it is what FR-019a forbids.
 		DisplayState: live.DisplayState(now),
+		StartCommand: live.StartCommand,
 		Age:          formatAge(now.Sub(live.CreatedAt)),
 		// The token is also what makes the card render its action row (view.go),
 		// so every card either offers a control it can authorise or offers none.

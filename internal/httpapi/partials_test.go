@@ -957,6 +957,58 @@ func TestTheHeaderShowsTheIdentityLayerOneVerified(t *testing.T) {
 	}
 }
 
+// mastheadElement is the header as a whole page renders it. The assertion below
+// reads the anchor inside it and not the ones on the cards beside it: the card's
+// exactly-one-link rule (FR-027, #16) is about the card, and a test that counted
+// links per page would make the header and that rule contradict each other.
+var mastheadElement = regexp.MustCompile(`(?s)<header class="masthead">(.*?)</header>`)
+
+// TestTheHeaderIsTheRouteBackToTheFleet is issue #48.
+//
+// A session page reached from a card offered no way home: the wordmark was text,
+// nothing else on the page pointed at the fleet, and the browser's back button
+// was the whole of the navigation. Both pages are asserted, and the fleet is not
+// the redundant half of that pair — it is the point. A link that is present on
+// one page and absent on another is an affordance an operator has to learn the
+// shape of; pointing at the page already open costs nothing next to that.
+//
+// The link's text is asserted too. A house glyph alone would satisfy an href and
+// fail the reason FR-030 gives for never signalling by symbol alone.
+func TestTheHeaderIsTheRouteBackToTheFleet(t *testing.T) {
+	t.Parallel()
+
+	card := actionableCard()
+	pages := map[string]string{
+		"the fleet page": renderedFleet(t),
+		"the single-session page": renderComponent(t, "session", sessionPageView{
+			Operator: &access.VerifiedOperator{Email: "operator@example.com"},
+			Session:  card,
+			Pane:     paneView{ID: card.ID, Text: "$ go test ./..."},
+		}),
+	}
+
+	for name, page := range pages {
+		masthead := mastheadElement.FindStringSubmatch(page)
+		if masthead == nil {
+			t.Fatalf("%s renders no masthead, so this asserted nothing about its header:\n%s", name, page)
+		}
+
+		var home []string
+		for _, anchor := range cardAnchor.FindAllStringSubmatch(masthead[1], -1) {
+			if strings.Contains(anchor[1], `href="/"`) {
+				home = anchor
+			}
+		}
+		if home == nil {
+			t.Errorf("%s renders no header link to the fleet; the browser's back button is not a route home:\n%s", name, masthead[0])
+			continue
+		}
+		if !strings.Contains(home[2], "crswd") {
+			t.Errorf("%s renders the route home as %q; a mark with no word is a symbol on its own:\n%s", name, strings.TrimSpace(home[2]), masthead[0])
+		}
+	}
+}
+
 // TestTheRainCarriesNoInformationAndStaysOffReadingContent holds the design
 // system's two rules for the effect: it is hidden from assistive technology
 // because it says nothing, and it appears behind the header and the empty state
@@ -1481,5 +1533,84 @@ func TestEveryCanonicalComponentIsAPartial(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("walk the embedded template tree: %v", err)
+	}
+}
+
+// TestTheCreateFormOffersTheConfiguredStartCommands is #39's half of #38: the
+// operator can only choose a start command if the page offers one.
+//
+// The single-command case is the one worth pinning. A select with one option is
+// a control that cannot change anything, and a daemon that configured nothing
+// must render the form it rendered before this feature existed — otherwise
+// every deployment gains a widget for a choice it does not have.
+func TestTheCreateFormOffersTheConfiguredStartCommands(t *testing.T) {
+	t.Parallel()
+
+	t.Run("several configured", func(t *testing.T) {
+		t.Parallel()
+
+		out := renderComponent(t, "create-form", createFormView{
+			PageToken:     "t",
+			StartCommands: []string{"default", "rc"},
+		})
+		if !strings.Contains(out, `name="start_command"`) {
+			t.Errorf("the form offers no start_command control:\n%s", out)
+		}
+		for _, name := range []string{"default", "rc"} {
+			if !strings.Contains(out, `<option value="`+name+`">`) {
+				t.Errorf("the form omits the %q option:\n%s", name, out)
+			}
+		}
+	})
+
+	t.Run("one configured renders no chooser", func(t *testing.T) {
+		t.Parallel()
+
+		out := renderComponent(t, "create-form", createFormView{
+			PageToken:     "t",
+			StartCommands: []string{"default"},
+		})
+		if strings.Contains(out, `name="start_command"`) {
+			t.Errorf("the form offers a choice of one:\n%s", out)
+		}
+	})
+
+	// A command line must never reach the page. The names are the operator's own
+	// configuration and are safe to render; what they run is not a thing a page
+	// asking "which one?" needs, and a page carrying it is a page that could be
+	// made to carry any of it.
+	t.Run("no command line reaches the markup", func(t *testing.T) {
+		t.Parallel()
+
+		out := renderComponent(t, "create-form", createFormView{
+			PageToken:     "t",
+			StartCommands: []string{"default", "rc"},
+		})
+		for _, leak := range []string{"claude ", "--dangerously", "remote-control", "--permission-mode"} {
+			if strings.Contains(out, leak) {
+				t.Errorf("the form carries %q, which is configuration and not a choice:\n%s", leak, out)
+			}
+		}
+	})
+}
+
+// TestTheCardSaysWhatItIsRunning covers the other half: two sessions are
+// otherwise identical on a fleet, and an operator needs to tell the
+// remote-control one from the plain one.
+//
+// The empty case is not cosmetic. A default session and an adopted one both
+// carry no name, and rendering "default" for either would be printing a guess:
+// the daemon did not start an adopted session and does not know what did.
+func TestTheCardSaysWhatItIsRunning(t *testing.T) {
+	t.Parallel()
+
+	withMode := renderComponent(t, "session-card", sessionView{ID: strings.Repeat("a", 32), Name: "x", StartCommand: "rc"})
+	if !strings.Contains(withMode, "rc") {
+		t.Errorf("a card for an rc session does not say so:\n%s", withMode)
+	}
+
+	without := renderComponent(t, "session-card", sessionView{ID: strings.Repeat("b", 32), Name: "x"})
+	if strings.Contains(without, "card-mode") {
+		t.Errorf("a card with no recorded start command labels one anyway:\n%s", without)
 	}
 }
