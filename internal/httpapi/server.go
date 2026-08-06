@@ -330,6 +330,8 @@ func newWithLayer1(
 	// has now shipped three times, and the reason the setter exists rather than
 	// the manager reading the environment itself.
 	sessions.SetStartCommands(cfg.StartCommands)
+	// The configured lifetimes reach the manager here, and nowhere else (#37).
+	sessions.SetLifetimes(cfg.SessionLifetime, cfg.SessionLifetimeMax, cfg.IdleTimeout, cfg.IdleTimeoutMax)
 	creates, err := newLimiter(cfg.CreateRatePerMin, systemClock{})
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the create rate limiter: %w", err)

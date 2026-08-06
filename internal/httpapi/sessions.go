@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
@@ -62,6 +63,45 @@ type createRequest struct {
 	// the daemon's default, so every client written before this field keeps
 	// working unchanged.
 	StartCommand string `json:"start_command"`
+
+	// Lifetime and IdleTimeout are optional per-session overrides (#37), as Go
+	// duration strings: "72h", "90m", and "0" for IdleTimeout meaning no idle
+	// reaping for this session. Absent means the daemon's default.
+	//
+	// Strings rather than numbers because a bare 3600 is a unit the caller and
+	// the daemon have to agree about silently, and "1h" is one nobody can read
+	// two ways.
+	Lifetime    string `json:"lifetime"`
+	IdleTimeout string `json:"idle_timeout"`
+}
+
+// parseLifetimeOverrides turns the request's duration strings into what the
+// manager takes (#37).
+//
+// "0" for the idle timeout is the disable, and it arrives here as a zero
+// duration — which the manager reads as "unset". It is translated to a negative
+// so the two cannot be confused: one value cannot mean both "the operator said
+// nothing" and "the operator said none".
+func parseLifetimeOverrides(lifetime, idle string) (time.Duration, time.Duration, error) {
+	var out, outIdle time.Duration
+	if v := strings.TrimSpace(lifetime); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return 0, 0, fmt.Errorf("%w: lifetime %q is not a duration such as 72h", session.ErrInvalidLifetime, v)
+		}
+		out = d
+	}
+	if v := strings.TrimSpace(idle); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return 0, 0, fmt.Errorf("%w: idle_timeout %q is not a duration such as 90m", session.ErrInvalidLifetime, v)
+		}
+		if d == 0 {
+			d = -1
+		}
+		outIdle = d
+	}
+	return out, outIdle, nil
 }
 
 // createResponse is the contract's 201 body, in the contract's field order.
@@ -332,11 +372,19 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	lifetime, idleOverride, err := parseLifetimeOverrides(req.Lifetime, req.IdleTimeout)
+	if err != nil {
+		s.refuseCreate(w, r, err)
+		return
+	}
+
 	created, token, err := s.sessions.Create(r.Context(), session.CreateRequest{
 		Owner:        caller.ID,
 		Name:         req.Name,
 		WorkDir:      req.WorkDir,
 		StartCommand: req.StartCommand,
+		Lifetime:     lifetime,
+		Idle:         idleOverride,
 	})
 	if err != nil {
 		s.refuseCreate(w, r, err)
@@ -426,6 +474,7 @@ func createReason(err error) error {
 	// for everything.
 	for _, reason := range []error{
 		session.ErrUnknownStartCommand,
+		session.ErrInvalidLifetime,
 		session.ErrNameIsTmuxTarget,
 		session.ErrWorkDirNotAbsolute,
 		session.ErrWorkDirUnresolvable,

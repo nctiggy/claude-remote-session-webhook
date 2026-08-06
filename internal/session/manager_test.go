@@ -2853,3 +2853,82 @@ func assertTypedIntoTheShell(t *testing.T, fake *tmuxctl.Fake, want string) {
 	}
 	t.Fatalf("nothing was typed into the shell at all; want %q", want)
 }
+
+// TestLifetimeOverrides is #37: the bounds become the operator's to set, without
+// stopping being bounds.
+func TestLifetimeOverrides(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unconfigured is the daemon that shipped", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		s, _, err := f.mgr.Create(context.Background(), f.request())
+		if err != nil {
+			t.Fatalf("Create() = %v", err)
+		}
+		if got, want := s.AbsoluteDeadline(), s.CreatedAt.Add(AbsoluteLifetime); !got.Equal(want) {
+			t.Errorf("absolute deadline = %v; want %v", got, want)
+		}
+		if got, want := s.IdleDeadline(), s.LastActivity.Add(IdleTimeout); !got.Equal(want) {
+			t.Errorf("idle deadline = %v; want %v", got, want)
+		}
+	})
+
+	t.Run("an override beats the default", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		f.mgr.SetLifetimes(AbsoluteLifetime, 72*time.Hour, IdleTimeout, IdleTimeout)
+
+		req := f.request()
+		req.Lifetime = 48 * time.Hour
+		s, _, err := f.mgr.Create(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Create(48h) = %v", err)
+		}
+		if got, want := s.AbsoluteDeadline(), s.CreatedAt.Add(48*time.Hour); !got.Equal(want) {
+			t.Errorf("absolute deadline = %v; want %v", got, want)
+		}
+	})
+
+	// The ceiling is the whole point. An override past it is refused rather than
+	// clamped: a caller who asked for thirty days and silently got one believes
+	// they have thirty until the session is gone.
+	t.Run("past the ceiling creates nothing", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		f.mgr.SetLifetimes(AbsoluteLifetime, 48*time.Hour, IdleTimeout, IdleTimeout)
+
+		req := f.request()
+		req.Lifetime = 100 * time.Hour
+		if _, _, err := f.mgr.Create(context.Background(), req); !errors.Is(err, ErrInvalidLifetime) {
+			t.Fatalf("Create(past the ceiling) = %v; want %v", err, ErrInvalidLifetime)
+		}
+		if got := len(f.store.List(f.request().Owner)); got != 0 {
+			t.Errorf("the store holds %d records; a refused create leaves none", got)
+		}
+	})
+
+	// Disabling idle reaping is safe only because the absolute deadline still
+	// fires. If that ever stops being true this is a hole, not a knob — so the
+	// assertion is on the absolute deadline, not on the idle one.
+	t.Run("idle disabled still expires absolutely", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		req := f.request()
+		req.Idle = -1
+		s, _, err := f.mgr.Create(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Create(idle disabled) = %v", err)
+		}
+		if !s.IdleDeadline().After(s.AbsoluteDeadline()) {
+			t.Error("a session with idle reaping disabled can still be reaped for idleness first")
+		}
+		if got, want := s.AbsoluteDeadline(), s.CreatedAt.Add(AbsoluteLifetime); !got.Equal(want) {
+			t.Errorf("absolute deadline = %v; want %v — disabling idle must not disable this", got, want)
+		}
+	})
+}
