@@ -79,10 +79,21 @@ Environment=CRSW_MAX_STREAMS=10
 Environment="CRSW_START_COMMAND=claude --dangerously-skip-permissions"
 Environment="CRSW_START_COMMANDS="
 
-# There is no unit setting for the idle timeout (60m), the absolute session
-# lifetime (24h) or the signed-request timestamp window (300s). They are
-# constants in the code: they bound the host, and a deployment that could widen
-# them from a unit file could unbound it. Do not add one here expecting it to be
+# Session lifetimes (#37). Empty means the daemon's own defaults: 24h absolute,
+# 60m idle. The MAX pair are ceilings a per-session override may not exceed, and
+# default to the values above — so overrides buy nothing until a ceiling is
+# raised on purpose.
+#
+# There is no value meaning "never expires". The ceiling moves as far as an
+# operator wants; it does not go away.
+Environment=CRSW_SESSION_LIFETIME=
+Environment=CRSW_SESSION_LIFETIME_MAX=
+Environment=CRSW_IDLE_TIMEOUT=
+Environment=CRSW_IDLE_TIMEOUT_MAX=
+
+# There is no unit setting for the signed-request timestamp window (300s). It is
+# a constant in the code: it bounds the host, and a deployment that could widen
+# it from a unit file could unbound it. Do not add one here expecting it to be
 # read — nothing reads it, and nothing tells you so.
 
 Restart=on-failure
