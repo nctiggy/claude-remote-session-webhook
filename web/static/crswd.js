@@ -727,7 +727,36 @@
    */
   const sentence = (html) => {
     const parsed = new DOMParser().parseFromString(html, 'text/html');
-    return (parsed.body.textContent || '').trim();
+
+    /*
+     * The outcome, not the payload.
+     *
+     * Destroy, rename and compact answer with one sentence, so the whole body
+     * was the message. A create answers with the new card — and taking its text
+     * put the entire card in the toast: name, identifier, mode, directory, age,
+     * and the labels of its own buttons (#78).
+     *
+     * So look for the sentence a handler wrote, and treat anything else as
+     * having no message rather than as a message. A toast is a place for one
+     * line; if a route ever answers with something larger, saying nothing is
+     * better than reading it aloud.
+     */
+    const outcome = parsed.querySelector('.card-outcome');
+    if (outcome) {
+      return (outcome.textContent || '').trim();
+    }
+
+    // A card came back, which is what a successful create looks like. The card
+    // itself lands on the fleet through the stream; this only has to say so.
+    if (parsed.querySelector('.card')) {
+      return 'Session started.';
+    }
+
+    const whole = (parsed.body.textContent || '').trim();
+    // A stray long body is not a toast. Anything past a sentence is a page that
+    // lost its wrapper, and the operator is better served by silence than by a
+    // paragraph in a corner.
+    return whole.length <= 200 ? whole : '';
   };
 
   /*
