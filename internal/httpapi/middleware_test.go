@@ -56,10 +56,16 @@ const testRoot = "/nonexistent-crswd-test-root"
 
 func testConfig(listen string) *config.Config {
 	return &config.Config{
-		Listen:       listen,
-		SharedSecret: testSecret(),
-		MaxBodyBytes: testMaxBody,
-		Roots:        []config.ApprovedRoot{{Path: testRoot}},
+		// The shutdown tests drive the teardown path deliberately, and sessions
+		// survive a stop by default now (#63). Asking for the old behaviour here
+		// keeps those tests about teardown rather than about the flag: a suite
+		// that silently stopped tearing anything down would keep passing, which
+		// is the failure mode they exist to catch.
+		DestroyOnShutdown: true,
+		Listen:            listen,
+		SharedSecret:      testSecret(),
+		MaxBodyBytes:      testMaxBody,
+		Roots:             []config.ApprovedRoot{{Path: testRoot}},
 		// The production default. A zero here would be a Config no Load ever
 		// produced, and New refuses one — a session manager that may run no
 		// sessions is not a daemon.

@@ -926,8 +926,28 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		failures = append(failures, fmt.Errorf("httpapi: drain requests in flight: %w", errors.Join(err, s.http.Close())))
 	}
 
-	if _, err := s.sessions.DestroyAll(ctx); err != nil {
-		failures = append(failures, fmt.Errorf("httpapi: tear every session down before exit: %w", err))
+	// Sessions survive a stop by default (#63).
+	//
+	// This used to tear the fleet down unconditionally, and the reasoning was
+	// Principle VI: no unsandboxed shell outliving the daemon that owns it. The
+	// reasoning is right and the conclusion was too broad. A *crash* already
+	// leaves every session running — that is why startup adoption exists — so
+	// destroying here only ever covered the graceful case, which is precisely
+	// the case where the daemon is usually about to start again ten seconds
+	// later. Every redeploy cost an operator their whole fleet.
+	//
+	// What replaces it is adoption, which is not a weaker bound: a reclaimed
+	// session gets its deadlines back from the host's own session_created, so
+	// the absolute ceiling is measured from when the work actually began rather
+	// than from when the daemon noticed it. A session cannot outlive its bound
+	// by being handed between daemons.
+	//
+	// The old behaviour is one variable away for a deployment that wants it —
+	// a host being decommissioned rather than updated, say.
+	if s.cfg.DestroyOnShutdown {
+		if _, err := s.sessions.DestroyAll(ctx); err != nil {
+			failures = append(failures, fmt.Errorf("httpapi: tear every session down before exit: %w", err))
+		}
 	}
 	return errors.Join(failures...)
 }

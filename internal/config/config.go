@@ -33,12 +33,17 @@ import (
 // variable and is meant to be published — .env.example carries it verbatim. The
 // secret itself only ever exists as the []byte returned by loadSecret.
 const (
-	EnvSharedSecret     = "CRSW_SHARED_SECRET" //nolint:gosec // G101: an env var name, not a credential
-	EnvAllowedRoots     = "CRSW_ALLOWED_ROOTS"
-	EnvListen           = "CRSW_LISTEN"
-	EnvMaxSessions      = "CRSW_MAX_SESSIONS"
-	EnvCreateRatePerMin = "CRSW_CREATE_RATE_PER_MIN"
-	EnvMaxBodyBytes     = "CRSW_MAX_BODY_BYTES"
+	EnvSharedSecret = "CRSW_SHARED_SECRET" //nolint:gosec // G101: an env var name, not a credential
+	EnvAllowedRoots = "CRSW_ALLOWED_ROOTS"
+	EnvListen       = "CRSW_LISTEN"
+	EnvMaxSessions  = "CRSW_MAX_SESSIONS"
+
+	// EnvDestroyOnShutdown restores the pre-#63 behaviour: tear every session
+	// down when the daemon stops. Default is off — a restart preserves them and
+	// startup adoption reclaims them.
+	EnvDestroyOnShutdown = "CRSW_DESTROY_ON_SHUTDOWN"
+	EnvCreateRatePerMin  = "CRSW_CREATE_RATE_PER_MIN"
+	EnvMaxBodyBytes      = "CRSW_MAX_BODY_BYTES"
 
 	// Layer 1 — the Cloudflare Access assertion the browser door validates.
 	// Required, and fatal when absent, for the same reason the shared secret is:
@@ -216,11 +221,16 @@ type Config struct {
 	// returned in an error, or echoed back — not even its length (FR-043).
 	SharedSecret []byte
 
-	Roots            []ApprovedRoot
-	Listen           string
-	MaxSessions      int
-	CreateRatePerMin int
-	MaxBodyBytes     int64
+	Roots       []ApprovedRoot
+	Listen      string
+	MaxSessions int
+
+	// DestroyOnShutdown tears every session down on a clean stop. Off by
+	// default: a graceful restart is overwhelmingly the common case, and
+	// destroying a fleet to redeploy a binary is a cost nobody asked for.
+	DestroyOnShutdown bool
+	CreateRatePerMin  int
+	MaxBodyBytes      int64
 
 	// AccessTeamDomain is a normalised origin — scheme and host, no path, host
 	// lower-cased. It is one configured value because two things must agree: the
