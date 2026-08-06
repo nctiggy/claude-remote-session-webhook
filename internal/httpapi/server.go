@@ -292,6 +292,12 @@ func NewWith(cfg *config.Config, tmux tmuxctl.Controller, trail *audit.Logger) (
 // server, always — a Validator that could be accompanied by a Bypass would be
 // the "defaulted off" switch FR-041 forbids, wearing an interface.
 func verifiedLayer1(cfg *config.Config) (layer1, error) {
+	// No identity provider configured means a dashboard that admits nobody,
+	// rather than a daemon that will not start (#70). The API is untouched —
+	// it has never had anything to do with layer 1.
+	if cfg.AccessTeamDomain == "" {
+		return closedDoor{}, nil
+	}
 	v, err := access.New(cfg.AccessTeamDomain, cfg.AccessAUD, cfg.AccessAllowedEmails)
 	if err != nil {
 		// Untyped, so that newServer's nil check below reads a nil interface

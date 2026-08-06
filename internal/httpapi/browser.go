@@ -70,6 +70,33 @@ type layer1 interface {
 	Verify(ctx context.Context, assertion string) (*access.VerifiedOperator, error)
 }
 
+// closedDoor is layer 1 on a daemon with no identity provider configured (#70).
+//
+// The Access variables used to be required, so the daemon refused to start
+// without a Cloudflare account — which meant nobody but its author could run it.
+// They are optional now, and this is what stands in their place: a layer 1 that
+// admits nobody.
+//
+// A door that refuses everyone rather than no door at all, because "there is one
+// layer 1 per server, always" is the property that keeps the browser middleware
+// a single authorisation path. A nil validator and a special case in the
+// middleware would be the second path, and the second path is the one nobody
+// reads.
+//
+// The API is unaffected: it authenticates with a signature over the request, and
+// has never had anything to do with layer 1.
+type closedDoor struct{}
+
+func (closedDoor) Verify(context.Context, string) (*access.VerifiedOperator, error) {
+	return nil, errNoIdentityProvider
+}
+
+// errNoIdentityProvider is server-side only, like every other layer-1 refusal.
+// What a browser gets is the same uniform response an invalid assertion gets —
+// an unconfigured daemon must not be distinguishable from one that simply said
+// no, or the refusal itself becomes a configuration oracle.
+var errNoIdentityProvider = errors.New("no identity provider is configured, so the dashboard admits nobody")
+
 // The refusals this file authors itself, for the trail and never for a caller.
 //
 // Both are unreachable through newServer, which refuses a nil validator, and

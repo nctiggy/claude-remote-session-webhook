@@ -394,6 +394,14 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 	if err != nil {
 		return nil, err
 	}
+	if err := validateAccessGroup(teamDomain, aud, emails, o.accessBypassed); err != nil {
+		return nil, err
+	}
+	if teamDomain == "" && !o.accessBypassed {
+		if err := warnNoIdentityProvider(warn); err != nil {
+			return nil, err
+		}
+	}
 	startCommands, err := loadStartCommands(getenv)
 	if err != nil {
 		return nil, err
@@ -615,6 +623,25 @@ func defaultRoot(getenv func(string) string, warn io.Writer) ([]ApprovedRoot, er
 	return []ApprovedRoot{root}, nil
 }
 
+// warnNoIdentityProvider says the dashboard admits nobody (#70).
+//
+// A write failure is fatal for the reason warnDefaultRoot's is: a daemon
+// serving an API and a closed door, while looking entirely healthy, is exactly
+// the state an operator must not be left to discover. Repeated on every start,
+// not only the first — a weakened posture nobody is reminded of is one nobody
+// remembers.
+func warnNoIdentityProvider(warn io.Writer) error {
+	banner := fmt.Sprintf(
+		"crswd: no identity provider configured (%s, %s, %s) — the API works, the dashboard admits nobody.\n"+
+			"crswd: configure all three to enable the dashboard. See docs/auth-and-sessions.md.\n",
+		EnvAccessTeamDomain, EnvAccessAUD, EnvAccessAllowedEmails)
+
+	if _, err := io.WriteString(warn, banner); err != nil {
+		return fmt.Errorf("emit the absent-identity-provider warning: %w", err)
+	}
+	return nil
+}
+
 // warnDefaultRoot emits FR-004's warning. A write failure is fatal: an
 // allowlist nobody was told about is exactly what the requirement forbids.
 func warnDefaultRoot(warn io.Writer, path string) error {
@@ -706,10 +733,14 @@ func loadListen(getenv func(string) string) (string, error) {
 func loadTeamDomain(getenv func(string) string, bypassed bool) (string, error) {
 	v := strings.TrimSpace(getenv(EnvAccessTeamDomain))
 	if v == "" {
-		if bypassed {
-			return "", nil
-		}
-		return "", fmt.Errorf("%s is required; refusing to start", EnvAccessTeamDomain)
+		// Optional since #70. An absent identity provider means the dashboard
+		// admits nobody, not that the daemon refuses to start — requiring it
+		// meant nobody without a Cloudflare account could run this at all, and
+		// the API has never needed one.
+		//
+		// The startup warning is where an operator learns what they have: silent
+		// is how a daemon ends up serving nothing and looking healthy.
+		return "", nil
 	}
 
 	raw := v
@@ -756,10 +787,10 @@ func loadTeamDomain(getenv func(string) string, bypassed bool) (string, error) {
 func loadAUD(getenv func(string) string, bypassed bool) (string, error) {
 	v := strings.TrimSpace(getenv(EnvAccessAUD))
 	if v == "" {
-		if bypassed {
-			return "", nil
-		}
-		return "", fmt.Errorf("%s is required; refusing to start", EnvAccessAUD)
+		// Absent is allowed here and checked as a group instead (#70): the three
+		// Access variables are all-or-nothing, because a team domain without an
+		// audience is a half-configured door rather than an absent one.
+		return "", nil
 	}
 	return v, nil
 }
@@ -767,10 +798,8 @@ func loadAUD(getenv func(string) string, bypassed bool) (string, error) {
 func loadAllowedEmails(getenv func(string) string, bypassed bool) ([]string, error) {
 	raw := getenv(EnvAccessAllowedEmails)
 	if strings.TrimSpace(raw) == "" {
-		if bypassed {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("%s is required and must name at least one address; refusing to start", EnvAccessAllowedEmails)
+		// Absent is checked as a group instead (#70). See validateAccessGroup.
+		return nil, nil
 	}
 
 	parts := strings.Split(raw, emailListSeparator)
@@ -826,6 +855,30 @@ const (
 // the operator set without meaning to, and an idle timeout longer than the
 // session it sits in can never fire — a setting that does nothing is worse than
 // one that refuses, because nothing tells you it did nothing.
+// validateAccessGroup enforces all-or-nothing on the identity provider (#70).
+//
+// None of the three means the dashboard admits nobody, which is a deployment
+// this daemon supports. Some of them means an operator configured a door and got
+// one detail wrong — and a daemon that started anyway would refuse every login
+// while looking correctly configured, which is the worst of the three outcomes.
+func validateAccessGroup(teamDomain, aud string, emails []string, bypassed bool) error {
+	if bypassed {
+		return nil
+	}
+	set := 0
+	for _, present := range []bool{teamDomain != "", aud != "", len(emails) > 0} {
+		if present {
+			set++
+		}
+	}
+	if set == 0 || set == 3 {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s, %s and %s are all-or-nothing: configure every one to enable the dashboard, or none to run the API alone; refusing to start with %d of 3",
+		EnvAccessTeamDomain, EnvAccessAUD, EnvAccessAllowedEmails, set)
+}
+
 func validateLifetimes(lifetime, lifetimeMax, idle, idleMax time.Duration) error {
 	switch {
 	case lifetime <= 0:

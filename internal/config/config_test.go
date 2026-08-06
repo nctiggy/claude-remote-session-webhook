@@ -1037,3 +1037,79 @@ func assertNoAccessValues(t *testing.T, text string, pairs map[string]string) {
 type brokenWriter struct{}
 
 func (brokenWriter) Write([]byte) (int, error) { return 0, errors.New("sink closed") }
+
+// TestAccessIsOptional is #70: the daemon has to be runnable by someone without
+// a Cloudflare account, which it was not.
+//
+// The all-or-nothing case is the one worth pinning. None of the three is a
+// deployment this supports; some of them is an operator who configured a door
+// and got one detail wrong — and a daemon that started anyway would refuse every
+// login while looking correctly configured, which is worse than either.
+func TestAccessIsOptional(t *testing.T) {
+	t.Parallel()
+
+	base := map[string]string{
+		"CRSW_SHARED_SECRET": strings.Repeat("k", 32),
+		"CRSW_ALLOWED_ROOTS": t.TempDir(),
+		"CRSW_LISTEN":        "127.0.0.1:8765",
+	}
+	env := func(extra map[string]string) func(string) string {
+		return func(k string) string {
+			if v, ok := extra[k]; ok {
+				return v
+			}
+			return base[k]
+		}
+	}
+
+	t.Run("none configured starts, and says so", func(t *testing.T) {
+		t.Parallel()
+
+		var warn strings.Builder
+		cfg, err := config.LoadFrom(env(nil), &warn)
+		if err != nil {
+			t.Fatalf("config.LoadFrom() with no Access configured = %v; want a daemon that starts", err)
+		}
+		if cfg.AccessTeamDomain != "" {
+			t.Errorf("team domain = %q; want empty", cfg.AccessTeamDomain)
+		}
+		if !strings.Contains(warn.String(), "admits nobody") {
+			t.Errorf("nothing warned that the dashboard is closed:\n%s", warn.String())
+		}
+	})
+
+	t.Run("all three configured is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, err := config.LoadFrom(env(map[string]string{
+			"CRSW_ACCESS_TEAM_DOMAIN":    "https://team.cloudflareaccess.com",
+			"CRSW_ACCESS_AUD":            "aud-value",
+			"CRSW_ACCESS_ALLOWED_EMAILS": "op@example.com",
+		}), &strings.Builder{})
+		if err != nil {
+			t.Fatalf("config.LoadFrom() with Access configured = %v", err)
+		}
+		if cfg.AccessTeamDomain == "" {
+			t.Error("the team domain was dropped")
+		}
+	})
+
+	// Each partial combination refuses, because each is a door with a hole in it.
+	for name, extra := range map[string]map[string]string{
+		"domain alone": {"CRSW_ACCESS_TEAM_DOMAIN": "https://team.cloudflareaccess.com"},
+		"aud alone":    {"CRSW_ACCESS_AUD": "aud-value"},
+		"emails alone": {"CRSW_ACCESS_ALLOWED_EMAILS": "op@example.com"},
+		"two of three": {
+			"CRSW_ACCESS_TEAM_DOMAIN": "https://team.cloudflareaccess.com",
+			"CRSW_ACCESS_AUD":         "aud-value",
+		},
+	} {
+		t.Run("refuses "+name, func(t *testing.T) {
+			t.Parallel()
+
+			if _, err := config.LoadFrom(env(extra), &strings.Builder{}); err == nil {
+				t.Fatal("config.LoadFrom() started with a partly-configured identity provider; want a refusal")
+			}
+		})
+	}
+}
