@@ -21,7 +21,20 @@ permissions:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    runs-on: ubuntu-latest
+    # Self-hosted (#77). GitHub-hosted runners stalled for six hours on
+    # 2026-08-06 — checks queued at 16:37Z were still queued at 22:43Z — and
+    # three verified branches could not merge because main requires checks that
+    # were never going to run.
+    #
+    # These are crswd-runner-1/2 on the lab's VLAN 19, sharing hosts with the
+    # nodewright and smart-gate-trigger runners. If they go offline, jobs
+    # targeting them queue forever: the same failure this replaced, with a
+    # different cause. Treat "runner offline" as an outage.
+    #
+    # The claude-fix lane deliberately stays on GitHub-hosted: it carries a
+    # subscription token and runs an agent with write access, and it should not
+    # share a machine with code from pull requests.
+    runs-on: [self-hosted, linux, x64]
     strategy:
       fail-fast: false
       matrix:
