@@ -871,3 +871,36 @@ func blockFor(t *testing.T, source, marker string) string {
 	t.Fatalf("%s's block is never closed", marker)
 	return ""
 }
+
+// TestHiddenAlwaysWins is #77, and it is the rule the stylesheet cannot be
+// trusted to keep on its own.
+//
+// `[hidden] { display: none }` is a user-agent rule, so any class that sets
+// `display` outranks it. Four of this page's components do — .empty, .grid,
+// .summary and .empty-action — and all four are hidden by *attribute*, because
+// the fleet renders both of its shapes and hides the inactive one (#51). The
+// empty state was rendering underneath a fleet that had sessions in it.
+//
+// The failure is invisible in markup review: the template says `hidden`, the
+// element is hidden in the DOM sense, and it is on the screen anyway.
+func TestHiddenAlwaysWins(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+
+	rule := regexp.MustCompile(`\[hidden\]\s*\{[^}]*display:\s*none\s*!important`)
+	if !rule.MatchString(source) {
+		t.Fatal("crswd.css has no [hidden] rule that outranks a class-level display; any component that sets one renders while hidden")
+	}
+
+	// And it has to be last, because specificity ties are broken by order and a
+	// later `display` on a plain class would beat an earlier [hidden] without
+	// !important — belt and braces, since the rule above is what actually does
+	// the work.
+	hiddenAt := rule.FindStringIndex(source)
+	for _, m := range regexp.MustCompile(`\n\.[a-z-]+\s*\{[^}]*display:`).FindAllStringIndex(source, -1) {
+		if m[0] > hiddenAt[0] {
+			t.Errorf("a class sets display after the [hidden] rule (offset %d > %d); move [hidden] to the end", m[0], hiddenAt[0])
+		}
+	}
+}

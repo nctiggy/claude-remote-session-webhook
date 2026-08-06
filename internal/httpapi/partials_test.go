@@ -1614,3 +1614,35 @@ func TestTheCardSaysWhatItIsRunning(t *testing.T) {
 		t.Errorf("a card with no recorded start command labels one anyway:\n%s", without)
 	}
 }
+
+// TestEveryActionablePageCarriesTheLiveRegion is #77's real lesson.
+//
+// The toast script bails when the region is absent — so a page with action
+// controls and no region has no interception at all, and every form on it
+// navigates to a bare fragment. That is exactly what happened: the region was on
+// the fleet, the single-session page had rename and destroy on it, and the fix
+// looked broken rather than absent.
+//
+// Asserting it per page rather than trusting a shared layout, because there is
+// no shared layout — each page template stands alone, which is the property that
+// let one of them fall behind.
+func TestEveryActionablePageCarriesTheLiveRegion(t *testing.T) {
+	t.Parallel()
+
+	for _, page := range []string{"dashboard.html", "session.html"} {
+		source, err := fs.ReadFile(web.Templates, "templates/"+page)
+		if err != nil {
+			t.Fatalf("read %s: %v", page, err)
+		}
+		markup := string(source)
+
+		// Only pages that can act need one — but every page that can act needs
+		// one, and that is the direction the bug went.
+		if !strings.Contains(markup, `method="post"`) && !strings.Contains(markup, "action-row") {
+			continue
+		}
+		if !strings.Contains(markup, `id="action-toast"`) {
+			t.Errorf("%s renders action controls but no live region, so crswd.js will not intercept its forms and every action navigates", page)
+		}
+	}
+}
