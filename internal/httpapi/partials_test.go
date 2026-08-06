@@ -1420,3 +1420,82 @@ func TestEveryCanonicalComponentIsAPartial(t *testing.T) {
 		t.Fatalf("walk the embedded template tree: %v", err)
 	}
 }
+
+// TestTheCreateFormOffersTheConfiguredStartCommands is #39's half of #38: the
+// operator can only choose a start command if the page offers one.
+//
+// The single-command case is the one worth pinning. A select with one option is
+// a control that cannot change anything, and a daemon that configured nothing
+// must render the form it rendered before this feature existed — otherwise
+// every deployment gains a widget for a choice it does not have.
+func TestTheCreateFormOffersTheConfiguredStartCommands(t *testing.T) {
+	t.Parallel()
+
+	t.Run("several configured", func(t *testing.T) {
+		t.Parallel()
+
+		out := renderComponent(t, "create-form", createFormView{
+			PageToken:     "t",
+			StartCommands: []string{"default", "rc"},
+		})
+		if !strings.Contains(out, `name="start_command"`) {
+			t.Errorf("the form offers no start_command control:\n%s", out)
+		}
+		for _, name := range []string{"default", "rc"} {
+			if !strings.Contains(out, `<option value="`+name+`">`) {
+				t.Errorf("the form omits the %q option:\n%s", name, out)
+			}
+		}
+	})
+
+	t.Run("one configured renders no chooser", func(t *testing.T) {
+		t.Parallel()
+
+		out := renderComponent(t, "create-form", createFormView{
+			PageToken:     "t",
+			StartCommands: []string{"default"},
+		})
+		if strings.Contains(out, `name="start_command"`) {
+			t.Errorf("the form offers a choice of one:\n%s", out)
+		}
+	})
+
+	// A command line must never reach the page. The names are the operator's own
+	// configuration and are safe to render; what they run is not a thing a page
+	// asking "which one?" needs, and a page carrying it is a page that could be
+	// made to carry any of it.
+	t.Run("no command line reaches the markup", func(t *testing.T) {
+		t.Parallel()
+
+		out := renderComponent(t, "create-form", createFormView{
+			PageToken:     "t",
+			StartCommands: []string{"default", "rc"},
+		})
+		for _, leak := range []string{"claude ", "--dangerously", "remote-control", "--permission-mode"} {
+			if strings.Contains(out, leak) {
+				t.Errorf("the form carries %q, which is configuration and not a choice:\n%s", leak, out)
+			}
+		}
+	})
+}
+
+// TestTheCardSaysWhatItIsRunning covers the other half: two sessions are
+// otherwise identical on a fleet, and an operator needs to tell the
+// remote-control one from the plain one.
+//
+// The empty case is not cosmetic. A default session and an adopted one both
+// carry no name, and rendering "default" for either would be printing a guess:
+// the daemon did not start an adopted session and does not know what did.
+func TestTheCardSaysWhatItIsRunning(t *testing.T) {
+	t.Parallel()
+
+	withMode := renderComponent(t, "session-card", sessionView{ID: strings.Repeat("a", 32), Name: "x", StartCommand: "rc"})
+	if !strings.Contains(withMode, "rc") {
+		t.Errorf("a card for an rc session does not say so:\n%s", withMode)
+	}
+
+	without := renderComponent(t, "session-card", sessionView{ID: strings.Repeat("b", 32), Name: "x"})
+	if strings.Contains(without, "card-mode") {
+		t.Errorf("a card with no recorded start command labels one anyway:\n%s", without)
+	}
+}

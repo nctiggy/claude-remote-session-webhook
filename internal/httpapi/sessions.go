@@ -108,6 +108,16 @@ type sessionEntry struct {
 	ExpiresAt    string `json:"expires_at"`
 	LastActivity string `json:"last_activity"`
 
+	// StartCommand is the name of the command this session was started with
+	// (#38). A name, never the command line — the line is configuration and a
+	// response carrying it would put the daemon's own arguments on the wire.
+	//
+	// omitempty, so a session started before this existed, and one started with
+	// the daemon's default, are the same bytes they always were. An adopted
+	// session has none either: the daemon did not start it and does not know
+	// what did, and guessing "default" would be inventing a fact.
+	StartCommand string `json:"start_command,omitempty"`
+
 	// Adopted says the session was reconciled from the host at startup rather
 	// than created through this API (FR-023). It changes no rule — an adopted
 	// session is owned, deadlined, and reaped exactly as any other — and is
@@ -150,6 +160,7 @@ func entryFor(s session.Session) sessionEntry {
 		ExpiresAt: s.TokenExpiry().UTC().Format(timestampFormat),
 
 		LastActivity: s.LastActivity.UTC().Format(timestampFormat),
+		StartCommand: s.StartCommand,
 		Adopted:      s.Adopted,
 	}
 }

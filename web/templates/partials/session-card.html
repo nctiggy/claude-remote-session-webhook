@@ -42,7 +42,23 @@
 */}}<article class="card" data-session="{{ .ID }}">
 <h2 class="card-heading"><a class="card-link" href="/sessions/{{ .ID }}/view" aria-describedby="card-id-{{ .ID }}">{{ if .Name }}<span class="card-name" title="{{ .Name }}">{{ .Name }}</span>{{ else }}<span class="card-unknown">no name recorded</span>{{ end }}</a></h2>
 {{ template "status-pill" .DisplayState }}
-<p class="card-id" id="card-id-{{ .ID }}" title="{{ .ID }}">{{ .ID }}</p>
+<p class="card-id" id="card-id-{{ .ID }}" title="{{ .ID }}">{{ .ID }}</p>{{/*
+  What this session is running (#38, #39), when it is not the daemon's default.
+
+  A name, never the command line: two cards are otherwise identical, and an
+  operator needs to know which one is reachable from claude.ai and which is not.
+  What the name maps to is configuration, and a card is not where configuration
+  is read.
+
+  Absent for a default session and for an adopted one, and those are different
+  silences with the same rendering. A default needs no label because it is what
+  every card meant before this existed. An adopted session has none because this
+  daemon did not start it and does not know what did — and "default" printed
+  there would be a guess wearing the clothes of a fact.
+
+  Text, never a colour or a badge shape alone (FR-030), and outside the card's
+  single anchor (FR-027, #16).
+*/}}{{ with .StartCommand }}<p class="card-mode">running <span class="card-mode-name">{{ . }}</span></p>{{ end }}
 <dl class="card-meta">
 <dt>working directory</dt>
 <dd>{{ if .WorkDir }}<span class="card-path" title="{{ .WorkDir }}">{{ .WorkDir }}</span>{{ else }}<span class="card-unknown">no working directory recorded</span>{{ end }}</dd>
