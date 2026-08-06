@@ -192,8 +192,14 @@ jobs:
           claude_args: --max-turns 80 --model claude-opus-5
 
           branch_prefix: claude/issue-
-          track_progress: true
-          use_sticky_comment: true
+          # track_progress and use_sticky_comment are deliberately absent: the
+          # action supports them only on issue and pull_request events, and this
+          # is a worker now (#61) — it wakes on a push, a schedule, or a
+          # dispatch, none of which qualify.
+          #
+          # What they gave was a running commentary on the issue, which is how an
+          # operator could see what a run finished before it hit its turn cap.
+          # The step below puts that back in one comment rather than many.
 
           prompt: |
             You are fixing a single GitHub issue in this repository.
@@ -270,6 +276,35 @@ jobs:
           AGENT_OUTCOME: ${{ steps.claude.outcome }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./.github/scripts/open-pr.sh
+
+      # What the sticky comment used to say, said once at the end. Without this a
+      # run that failed mid-task leaves nothing on the issue at all, and the
+      # branch it pushed is the only evidence it ran — which is exactly the
+      # situation #22, #42, #48 and #51 were each debugged out of by hand.
+      - name: Report back on the issue
+        if: always() && steps.pick.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ steps.pick.outputs.number }}
+          OUTCOME: ${{ steps.claude.outcome }}
+          BRANCH: ${{ steps.claude.outputs.branch_name }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            if [ "$OUTCOME" = "success" ]; then
+              echo "Worked this issue and finished. [Run]($RUN)"
+            else
+              echo "Worked this issue and did **not** finish (\`$OUTCOME\`). [Run]($RUN)"
+              echo
+              echo "Any commits it managed are on the branch below — a run that stops early still pushes what it completed, so this is partial work rather than none."
+            fi
+            if [ -n "${BRANCH}" ]; then
+              echo
+              echo "Branch: \`${BRANCH}\`"
+            fi
+          } | gh issue comment "$ISSUE" --repo "$REPO" --body-file -
 
       - name: Summarize
         if: always() && steps.pick.outputs.number != ''
