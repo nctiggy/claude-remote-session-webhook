@@ -39,6 +39,11 @@ const (
 	EnvListen       = "CRSW_LISTEN"
 	EnvMaxSessions  = "CRSW_MAX_SESSIONS"
 
+	// EnvDestroyOnShutdown restores the pre-#63 behaviour: tear every session
+	// down when the daemon stops. Default is off — a restart preserves them and
+	// startup adoption reclaims them.
+	EnvDestroyOnShutdown = "CRSW_DESTROY_ON_SHUTDOWN"
+
 	// The four lifetime variables (#37). Defaults reproduce the constants the
 	// daemon shipped with, so an operator who sets none of them sees no change.
 	// The MAX pair are ceilings a per-session override may not exceed; without
@@ -230,6 +235,11 @@ type Config struct {
 	Roots       []ApprovedRoot
 	Listen      string
 	MaxSessions int
+
+	// DestroyOnShutdown tears every session down on a clean stop. Off by
+	// default: a graceful restart is overwhelmingly the common case, and
+	// destroying a fleet to redeploy a binary is a cost nobody asked for.
+	DestroyOnShutdown bool
 
 	// SessionLifetime and IdleTimeout are what a create that asks for nothing
 	// gets; the Max pair are the ceilings an override is checked against (#37).

@@ -473,6 +473,12 @@ func leakConfig(root, teamDomain string) *config.Config {
 		Listen:       "127.0.0.1:0",
 		SharedSecret: daemonKey(),
 
+		// This suite drives the teardown path on purpose: it asserts that a
+		// session the host will not confirm gone is reported out of Shutdown,
+		// and that nothing leaks while that happens. Sessions survive a stop by
+		// default now (#63), so the behaviour under test has to be asked for.
+		DestroyOnShutdown: true,
+
 		// Small on purpose: the oversize case has to exceed it, and a 64 KiB
 		// request body would be a slow way to prove the same thing.
 		MaxBodyBytes: 512,

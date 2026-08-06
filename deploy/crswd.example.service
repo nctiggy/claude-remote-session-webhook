@@ -63,6 +63,12 @@ EnvironmentFile=%h/.config/crswd/env
 Environment=CRSW_ALLOWED_ROOTS=%h/code
 Environment=CRSW_LISTEN=127.0.0.1:8765
 Environment=CRSW_MAX_SESSIONS=5
+
+# Whether a clean stop destroys every session. Default: off, so a redeploy does
+# not cost the fleet — startup adoption reclaims them with their deadlines
+# intact. Set true if a stopped daemon should mean nothing left running. A crash
+# leaves sessions either way; this governs the clean stop only.
+Environment=CRSW_DESTROY_ON_SHUTDOWN=
 Environment=CRSW_CREATE_RATE_PER_MIN=6
 Environment=CRSW_MAX_BODY_BYTES=65536
 Environment=CRSW_MAX_STREAMS=10
