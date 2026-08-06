@@ -552,8 +552,23 @@
     return;
   }
 
+  /*
+   * The answer has to outlive a reload.
+   *
+   * The fleet's live half reloads this page whenever the fleet's *shape* changes
+   * — which a destroy and a create always do. So the first version of this toast
+   * appeared and was wiped by the reload a moment later: the operator saw a
+   * flash and could not read it. The message is the one thing on the page that
+   * must survive the very event it is reporting.
+   *
+   * sessionStorage rather than a query parameter: it is per-tab, it never
+   * reaches the daemon, and it cannot be linked to someone. A message is the
+   * browser's own business here — it was already rendered once on this tab.
+   */
+  const pending = 'crswd.outcome';
+
   let hide;
-  const show = (message) => {
+  const paint = (message) => {
     toast.textContent = message;
     toast.hidden = false;
     clearTimeout(hide);
@@ -561,8 +576,36 @@
     // clicks never leave the earlier answer standing under the later one.
     hide = setTimeout(() => {
       toast.hidden = true;
+      try {
+        sessionStorage.removeItem(pending);
+      } catch {
+        // A tab with storage refused still gets the toast, just not across a
+        // reload. Losing the message is better than losing the action.
+      }
     }, 6000);
   };
+
+  const show = (message) => {
+    // Stored before it is painted, because the reload can arrive between the
+    // fetch resolving and the next frame.
+    try {
+      sessionStorage.setItem(pending, message);
+    } catch {
+      // See above: storage is the enhancement, the toast is the feature.
+    }
+    paint(message);
+  };
+
+  // Whatever the reload interrupted, said again on the page it landed on.
+  try {
+    const carried = sessionStorage.getItem(pending);
+    if (carried) {
+      paint(carried);
+    }
+  } catch {
+    // Nothing to restore is the ordinary case; a tab that refuses storage is
+    // indistinguishable from one that had nothing waiting.
+  }
 
   /*
    * A fragment's text, without trusting it to be markup.
