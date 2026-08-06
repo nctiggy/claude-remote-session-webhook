@@ -7,6 +7,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"path/filepath"
 	"slices"
@@ -209,6 +210,10 @@ func TestCreateSendsTheTmuxCommandsInOrder(t *testing.T) {
 		{Op: tmuxctl.OpNew, Argv: []string{"tmux", "new-session", "-d", "-s", name, "-c", f.repo()}},
 		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, "@crswd-managed", "1"}},
 		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, "@crswd-owner", "operator"}},
+		// The two facts adoption restores (#72). Base64 on the directory because
+		// a path may contain the separator list-sessions puts between fields.
+		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, "@crswd-name", f.request().Name}},
+		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, "@crswd-workdir", base64.StdEncoding.EncodeToString([]byte(f.repo()))}},
 		{Op: tmuxctl.OpSendKeys, Argv: []string{
 			"tmux", "send-keys", "-t", pane, "--", "claude --dangerously-skip-permissions", "Enter",
 		}},
@@ -252,8 +257,13 @@ func TestCreateDerivesEveryTargetFromTheIDAlone(t *testing.T) {
 	name := "crswd-" + s.ID
 	for i, c := range f.tmux.Calls() {
 		for j, arg := range c.Argv {
+			// A caller-supplied name may now appear as an *option value* (#72),
+			// which addresses nothing: it is its own argv element and the -t
+			// check below is what FR-034 is actually about. What must never
+			// happen is either string reaching a target.
+			isOptionValue := c.Op == tmuxctl.OpSetOption && j == len(c.Argv)-1
 			switch {
-			case strings.Contains(arg, hostileLabel):
+			case strings.Contains(arg, hostileLabel) && !isOptionValue:
 				t.Errorf("command %d (%s) argv[%d] carries the caller's name", i, c.Op, j)
 			case strings.Contains(arg, insideLinkName):
 				t.Errorf("command %d (%s) argv[%d] carries the caller's spelling of the work dir", i, c.Op, j)
@@ -1940,7 +1950,7 @@ func TestAdoptTakesBackASurvivingSessionWithAFreshCredential(t *testing.T) {
 	// argv is spelled out rather than built from tmuxctl's helpers: this asserts
 	// the command line tmux will receive, not that Adopt called a builder.
 	want := []tmuxctl.Call{
-		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}"}},
+		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}"}},
 		{Op: tmuxctl.OpHas, Argv: []string{"tmux", "has-session", "-t", "=" + name}},
 	}
 	calls := f.tmux.Calls()[before:]
@@ -2931,4 +2941,47 @@ func TestLifetimeOverrides(t *testing.T) {
 			t.Errorf("absolute deadline = %v; want %v — disabling idle must not disable this", got, want)
 		}
 	})
+}
+
+// TestAdoptionRestoresNameAndWorkDir is #72: a session that survives a restart
+// comes back as itself rather than as an anonymous row.
+//
+// This mattered little while adoption only ran after a crash. Sessions survive a
+// restart now (#63), so it runs on every redeploy — and an operator was left
+// with a fleet of unnamed cards in unknown directories, which is what a fleet
+// view is for telling apart.
+func TestAdoptionRestoresNameAndWorkDir(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	req := f.request()
+	created, _, err := f.mgr.Create(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Create() = %v", err)
+	}
+
+	// A second manager on the same host with an empty store is the restart: the
+	// records are gone, the tmux sessions are not.
+	fresh, err := NewManagerWithClock(f.tmux, NewStore(), f.roots(), capNotUnderTest, stoppedClock{now: f.now})
+	if err != nil {
+		t.Fatalf("NewManagerWithClock() = %v", err)
+	}
+	if _, err := fresh.Adopt(context.Background()); err != nil {
+		t.Fatalf("Adopt() = %v", err)
+	}
+
+	owned := fresh.List(req.Owner)
+	if len(owned) != 1 {
+		t.Fatalf("the fresh manager adopted %d sessions; want 1", len(owned))
+	}
+	got := owned[0]
+	if got.Name != created.Name {
+		t.Errorf("adopted name = %q; want %q — the label is written to the host at create for exactly this", got.Name, created.Name)
+	}
+	if got.WorkDir != created.WorkDir {
+		t.Errorf("adopted work dir = %q; want %q", got.WorkDir, created.WorkDir)
+	}
+	if !got.Adopted {
+		t.Error("a reclaimed session is not marked adopted")
+	}
 }

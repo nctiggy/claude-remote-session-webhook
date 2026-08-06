@@ -3,6 +3,7 @@ package tmuxctl
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -207,29 +208,69 @@ func parseSessions(stdout string) ([]SessionInfo, error) {
 	rows := strings.Split(trimmed, "\n")
 	sessions := make([]SessionInfo, 0, len(rows))
 	for _, row := range rows {
-		managedAt := strings.LastIndex(row, "|")
-		if managedAt < 0 {
+		// Five fields, and only the first may contain the separator: a session
+		// name is whatever the operator called it, while the four after it are
+		// digits, a flag, a validated label, and base64. So the last four splits
+		// are found from the right and everything before them is the name.
+		//
+		// The workdir is base64 for exactly this reason (#72). A path may contain
+		// "|", and a raw one here would make the field boundaries ambiguous from
+		// either end — the one thing this parser is careful about.
+		rest, workDirB64, ok := cutLast(row, "|")
+		if !ok {
 			return nil, fmt.Errorf("tmux list-sessions: unreadable row %q", row)
 		}
-		createdAt := strings.LastIndex(row[:managedAt], "|")
-		if createdAt < 0 {
+		rest, label, ok := cutLast(rest, "|")
+		if !ok {
+			return nil, fmt.Errorf("tmux list-sessions: unreadable row %q", row)
+		}
+		rest, managed, ok := cutLast(rest, "|")
+		if !ok {
+			return nil, fmt.Errorf("tmux list-sessions: unreadable row %q", row)
+		}
+		name, createdRaw, ok := cutLast(rest, "|")
+		if !ok {
 			return nil, fmt.Errorf("tmux list-sessions: unreadable row %q", row)
 		}
 
-		created, err := strconv.ParseInt(row[createdAt+1:managedAt], 10, 64)
+		created, err := strconv.ParseInt(createdRaw, 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("tmux list-sessions: session %q has no readable creation time: %w", row[:createdAt], err)
+			return nil, fmt.Errorf("tmux list-sessions: session %q has no readable creation time: %w", name, err)
+		}
+
+		// An unreadable workdir is left empty rather than failing the row. It is
+		// a convenience the operator sees on a card; reconciliation is not worth
+		// abandoning over it, and a session left unadopted is a session nobody
+		// can drive.
+		workDir := ""
+		if workDirB64 != "" {
+			if decoded, err := base64.StdEncoding.DecodeString(workDirB64); err == nil {
+				workDir = string(decoded)
+			}
 		}
 
 		sessions = append(sessions, SessionInfo{
-			Name:    row[:createdAt],
+			Name:    name,
 			Created: time.Unix(created, 0),
 			// An empty field means the option was never set, so we did not
 			// create this session and it is neither adopted nor touched.
-			Managed: row[managedAt+1:] != "",
+			Managed: managed != "",
+			Label:   label,
+			WorkDir: workDir,
 		})
 	}
 	return sessions, nil
+}
+
+// cutLast splits around the final occurrence of sep, which is how every field
+// after the session name is found: the name may contain the separator and
+// nothing after it can.
+func cutLast(s, sep string) (before, after string, found bool) {
+	i := strings.LastIndex(s, sep)
+	if i < 0 {
+		return s, "", false
+	}
+	return s[:i], s[i+len(sep):], true
 }
 
 // run executes one tmux command and hands back stdout, stderr, and the raw
