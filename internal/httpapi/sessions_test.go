@@ -376,11 +376,21 @@ func TestCreateStartsTheSessionItPromised(t *testing.T) {
 	var ops []tmuxctl.Op
 	for _, call := range s.fixture.tmux.Calls() {
 		ops = append(ops, call.Op)
-		if argv := strings.Join(call.Argv, " "); strings.Contains(argv, "refactor-auth") {
-			t.Errorf("the caller's name reached tmux: %q", argv)
+		// FR-034 is about *targets*, and that is what this asserts rather than
+		// mere presence. The name is recorded as an option value now (#72), so
+		// it does reach tmux — as its own argv element, in a position that
+		// addresses nothing. What must never happen is the name appearing in the
+		// -t argument, because that is the one place a string selects a window.
+		for i, arg := range call.Argv {
+			if arg != "-t" || i+1 >= len(call.Argv) {
+				continue
+			}
+			if strings.Contains(call.Argv[i+1], "refactor-auth") {
+				t.Errorf("the caller's name reached a tmux target: %q", strings.Join(call.Argv, " "))
+			}
 		}
 	}
-	wantOps := []tmuxctl.Op{tmuxctl.OpNew, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSendKeys}
+	wantOps := []tmuxctl.Op{tmuxctl.OpNew, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSendKeys}
 	if !slices.Equal(ops, wantOps) {
 		t.Errorf("tmux calls = %v; want %v", ops, wantOps)
 	}

@@ -215,7 +215,7 @@ func TestExecSendsTheContractArgv(t *testing.T) {
 		{Argv: []string{"tmux", "-L", execSocket, "capture-pane", "-p", "-t", "=" + execName + ":"}},
 		{Argv: []string{"tmux", "-L", execSocket, "kill-session", "-t", "=" + execName}},
 		{Argv: []string{"tmux", "-L", execSocket, "has-session", "-t", "=" + execName}},
-		{Argv: []string{"tmux", "-L", execSocket, "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}"}},
+		{Argv: []string{"tmux", "-L", execSocket, "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}"}},
 	}
 
 	got := recorded(t)
@@ -402,7 +402,7 @@ func TestExecListDoesNotSwallowOtherFailures(t *testing.T) {
 		}},
 		{"tmux not installed", noTmux},
 		{"unreadable creation time", func(t *testing.T) {
-			stub{stdout: "crswd-abc123|not-a-timestamp|1\n"}.install(t)
+			stub{stdout: "crswd-abc123|not-a-timestamp|1\n||"}.install(t)
 		}},
 	}
 
@@ -422,7 +422,7 @@ func TestExecListDoesNotSwallowOtherFailures(t *testing.T) {
 }
 
 func TestExecListParsesTmuxOutput(t *testing.T) {
-	stub{stdout: "crswd-abc123|1785706480|1\ncrswd-abc123-decoy|1785706480|\nnotours|1785706480|\n"}.install(t)
+	stub{stdout: "crswd-abc123|1785706480|1||\ncrswd-abc123-decoy|1785706480|||\nnotours|1785706480|||\n"}.install(t)
 
 	got, err := newStubExec(t).List(context.Background())
 	if err != nil {
@@ -455,7 +455,7 @@ func TestParseSessions(t *testing.T) {
 		},
 		{
 			name:   "managed, lookalike, and unrelated",
-			stdout: "crswd-abc123|1785706480|1\ncrswd-abc123-decoy|1785706480|\nnotours|1785706480|\n",
+			stdout: "crswd-abc123|1785706480|1||\ncrswd-abc123-decoy|1785706480|||\nnotours|1785706480|||\n",
 			want: []SessionInfo{
 				{Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true},
 				{Name: "crswd-abc123-decoy", Created: time.Unix(1785706480, 0)},
@@ -469,14 +469,14 @@ func TestParseSessions(t *testing.T) {
 			// failing the whole call — and with it, adoption of every managed
 			// session on the host.
 			name:   "a pipe in someone else's session name",
-			stdout: "weird|name|1785706480|\n",
+			stdout: "weird|name|1785706480|||\n",
 			want: []SessionInfo{
 				{Name: "weird|name", Created: time.Unix(1785706480, 0)},
 			},
 		},
 		{
 			name:   "a pipe in a managed session name",
-			stdout: "a|b|c|1785706480|1\n",
+			stdout: "a|b|c|1785706480|1||\n",
 			want: []SessionInfo{
 				{Name: "a|b|c", Created: time.Unix(1785706480, 0), Managed: true},
 			},
@@ -484,26 +484,26 @@ func TestParseSessions(t *testing.T) {
 		{
 			// Provenance is the marker being set at all, never the name.
 			name:   "any non-empty marker means ours",
-			stdout: "crswd-abc123|1785706480|yes\n",
+			stdout: "crswd-abc123|1785706480|yes||\n",
 			want: []SessionInfo{
 				{Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true},
 			},
 		},
 		{
 			name:   "no trailing newline",
-			stdout: "crswd-abc123|1785706480|1",
+			stdout: "crswd-abc123|1785706480|1||\n",
 			want: []SessionInfo{
 				{Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true},
 			},
 		},
 		{
 			name:    "creation time is not a number",
-			stdout:  "crswd-abc123|whenever|1\n",
+			stdout:  "crswd-abc123|whenever|1\n||",
 			wantErr: true,
 		},
 		{
 			name:    "creation time missing entirely",
-			stdout:  "crswd-abc123||1\n",
+			stdout:  "crswd-abc123||1\n||",
 			wantErr: true,
 		},
 		{
