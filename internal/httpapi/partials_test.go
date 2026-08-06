@@ -1064,6 +1064,69 @@ func TestStreamLossIsVisible(t *testing.T) {
 	}
 }
 
+// TestTheFleetSaysWhenItsShapeChanged is what the reload used to do by accident
+// (issue #51).
+//
+// A page that reloads re-announces itself to a screen reader because it is a new
+// page. A page that rearranges in place announces nothing at all, which is worse
+// for an operator who cannot see it: cards they were told about are gone, cards
+// they were not told about are there, and the interface said neither. So the two
+// events that change what is on the page get one sentence each, in a live region
+// the render composes.
+//
+// The copy is here and not in the script for the reason every other sentence
+// this interface says is: a script that authored its own prose would be a second
+// place to look for it. `{n}` is the substitution the live half already makes on
+// the card's address, filled from the cards themselves rather than from a number
+// this page could go stale about.
+//
+// **Must fail when** the region is missing, hidden, pre-filled, or carries no
+// sentence for one of the two events — each of which is a fleet that rearranges
+// silently for the operator least able to notice.
+func TestTheFleetSaysWhenItsShapeChanged(t *testing.T) {
+	t.Parallel()
+
+	page := renderedFleet(t)
+
+	hook := regexp.MustCompile(`data-fleet-changed="([^"]*)"`).FindStringSubmatch(page)
+	if hook == nil {
+		t.Fatalf("the fleet page names no region for a change to its shape, so a session appearing or vanishing is announced to nobody:\n%s", page)
+	}
+
+	note := regexp.MustCompile(`<p[^>]*id="` + regexp.QuoteMeta(hook[1]) + `"[^>]*>([^<]*)</p>`).FindStringSubmatch(page)
+	if note == nil {
+		t.Fatalf("the fleet page points the live half at %q and renders no such element:\n%s", hook[1], page)
+	}
+	// Present and empty rather than hidden: a live region has to be in the
+	// accessibility tree before its text arrives for the announcement to happen,
+	// and one revealed and written in the same breath is one some readers never
+	// announce. Empty, the stylesheet's `:empty` rule takes it out of the layout.
+	if strings.Contains(note[0], "hidden") {
+		t.Errorf("the region renders hidden (%q); text arriving in a region that was not in the accessibility tree is text a reader may never announce", note[0])
+	}
+	if strings.TrimSpace(note[1]) != "" {
+		t.Errorf("the region renders with %q already in it, so a page that has just loaded announces a change that did not happen", note[1])
+	}
+	if !strings.Contains(note[0], `role="status"`) && !strings.Contains(note[0], `aria-live=`) {
+		t.Errorf("the region is not a live region at all (%q), so writing into it announces nothing", note[0])
+	}
+
+	// One sentence per event that changes what is on the page, and the count in
+	// each. Nothing is announced for the third event: a card replaced in place is
+	// docs/components.md's noise, and narrating it would make the grid a live
+	// region.
+	for _, event := range []string{"appeared", "vanished"} {
+		sentence := regexp.MustCompile(`data-fleet-` + event + `="([^"]*)"`).FindStringSubmatch(note[0])
+		if sentence == nil {
+			t.Errorf("the region carries no sentence for a session that %s, so that event is announced as nothing:\n%s", event, note[0])
+			continue
+		}
+		if !strings.Contains(sentence[1], "{n}") {
+			t.Errorf("the sentence for %s reads %q and names no count; a live region that says the same words twice is a change some readers do not announce a second time", event, sentence[1])
+		}
+	}
+}
+
 // TestTheFleetNamesTheStreamAndTheCardItRefetches is the linkage that loses
 // silently, and it loses three ways at once: the page, the routes and the script
 // have to agree about two addresses and one identifier, and when they do not the

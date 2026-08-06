@@ -212,6 +212,15 @@ body {
   font-size: var(--fs-prose);
 }
 
+/* A note with nothing to say takes no room. The note that says the fleet's shape
+   changed is present and empty from the first render rather than hidden, because
+   a live region has to be in the accessibility tree before its text arrives for
+   the announcement to happen at all — and an empty bordered box above the fleet
+   is not what "nothing has changed yet" should look like. */
+.fleet-note:empty {
+  display: none;
+}
+
 /* The summary comes before any detail — a dashboard is scanned, not read. */
 .summary {
   display: flex;

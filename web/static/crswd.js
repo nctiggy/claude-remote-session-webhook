@@ -325,24 +325,41 @@
    * route; the same reason the pane reads its stream address off the element it
    * updates.
    *
-   * There are two changes it deliberately will not make, and both are the
-   * page's own composition: a card arriving when the page rendered the empty
-   * state, and the last card leaving. The fleet page chooses between the
-   * summary-and-grid and the empty state, and a script that made that choice a
-   * second time would be a second fleet page — with a second empty state, a
-   * second summary row and two places for either to be wrong. It reloads
-   * instead, which is the server composing the page again, and that is the
-   * whole of what a reload costs on a page whose only unsaved state is a create
-   * form the operator has not submitted.
+   * It used to answer the two events that change the fleet's *shape* with a
+   * reload, because a card arriving at an empty page and the last card leaving
+   * are the page's own composition. That reload cost everything on the page
+   * that was not in the markup: a half-typed working directory in the create
+   * form, the scroll position, the caret, and any message the page was showing
+   * — which is why the action toast had to be given sessionStorage to survive
+   * the very reload the action caused (issue #42, issue #51).
+   *
+   * So the page now renders both of its shapes and hides the one that does not
+   * apply (dashboard.html), and what happens here is a reveal rather than a
+   * composition. The distinction is the whole of why this is not a second fleet
+   * page: the empty state, the summary row and every count in it are the
+   * daemon's own markup, composed once per render, and this file chooses which
+   * of two authored shapes is on screen. It never writes a sentence, a row or a
+   * number the server did not.
+   *
+   * The reload is kept for what remains genuinely uncomposable here — a card
+   * this page could not fetch, an answer that did not contain the card it named,
+   * and a state the summary has no row for. It is the fallback rather than the
+   * default, which is the correction issue #51 asks for.
    *
    * Nothing here animates. FR-022 is answered by the stylesheet's universal
    * `transition: none` under a reduced-motion preference rather than by a rule
-   * remembered here, and a card is exchanged for its successor in one operation
-   * with no intermediate state for anything to fade between.
+   * remembered here; a card is exchanged for its successor in one operation with
+   * no intermediate state for anything to fade between, and a card that arrives
+   * or leaves does so in one too. Nothing here moves focus either, which is the
+   * point of not reloading: an operator typing a working directory when another
+   * session ends keeps their caret.
    */
   const watchFleet = (shell) => {
     const stalled = document.getElementById(shell.dataset.fleetStalled);
+    const announcement = document.getElementById(shell.dataset.fleetChanged);
     const grid = () => shell.querySelector('.grid');
+    const summary = () => shell.querySelector('.summary');
+    const blank = () => shell.querySelector('.empty');
     const cardFor = (id) => shell.querySelector(`article.card[data-session="${CSS.escape(id)}"]`);
 
     /*
@@ -375,12 +392,23 @@
      * pill for the state it counts, so no state is named in this file: the two
      * the daemon derives today and any the status component renders later are
      * the same code path.
+     *
+     * It answers whether it could account for every card, and the caller reloads
+     * when it could not. A card in a state this render composed no row for is
+     * the one thing that would make the summary a second source of truth — a row
+     * that under-reports says the fleet is smaller than the grid beneath it
+     * already shows. Nothing produces that today, which is exactly when to
+     * decide what happens: needs-auth arrives with the device-code relay, and
+     * the honest answer to a state this page has no row for is the render that
+     * has one.
      */
     const recount = () => {
       const fleet = grid();
       if (!fleet) {
-        return;
+        return true;
       }
+
+      const rows = new Map();
       for (const row of shell.querySelectorAll('.summary-state')) {
         const pill = row.querySelector('.pill');
         const count = row.querySelector('.summary-count');
@@ -389,8 +417,69 @@
         }
         const state = Array.from(pill.classList).find((name) => name.startsWith('pill-'));
         if (state) {
-          count.textContent = fleet.getElementsByClassName(state).length;
+          rows.set(state, count);
         }
+      }
+
+      for (const pill of fleet.querySelectorAll('.pill')) {
+        const state = Array.from(pill.classList).find((name) => name.startsWith('pill-'));
+        if (state && !rows.has(state)) {
+          return false;
+        }
+      }
+
+      for (const [state, count] of rows) {
+        count.textContent = fleet.getElementsByClassName(state).length;
+      }
+      return true;
+    };
+
+    /*
+     * Which of the two shapes the daemon rendered is on screen (FR-021).
+     *
+     * Both are in the document from the first render, so this is three `hidden`
+     * attributes and no markup: the grid and its summary while there is
+     * something to show, the empty state while there is not. The case a naive
+     * version misses is the second transition — the first card returning — and
+     * it is the same line here, which is why it is one function called from both
+     * paths rather than a branch in each.
+     */
+    const compose = () => {
+      const fleet = grid();
+      const nothing = !fleet || fleet.childElementCount === 0;
+      for (const shape of [fleet, summary()]) {
+        if (shape) {
+          shape.hidden = nothing;
+        }
+      }
+      const explanation = blank();
+      if (explanation) {
+        explanation.hidden = !nothing;
+      }
+    };
+
+    /*
+     * What changed, for an operator who cannot see it change (issue #51).
+     *
+     * A reload re-announced the whole page as a side effect of throwing it away.
+     * Updating in place keeps everything that reload destroyed and owes that
+     * announcement deliberately, or a page that silently rearranges is worse for
+     * a non-sighted operator than one that reloads.
+     *
+     * The sentence is the page's, read off the region it is written into with
+     * the count substituted the way the card's address takes an identifier. Only
+     * the two events that change what is on the page are announced: a card
+     * replaced in place is docs/components.md's noise, and narrating it would be
+     * the whole grid turned into a live region.
+     */
+    const say = (what) => {
+      const fleet = grid();
+      if (!announcement || !fleet) {
+        return;
+      }
+      const sentence = announcement.dataset[what];
+      if (sentence) {
+        announcement.textContent = sentence.replace('{n}', fleet.childElementCount);
       }
     };
 
@@ -400,12 +489,12 @@
         return;
       }
       here.remove();
-      const fleet = grid();
-      if (!fleet || fleet.childElementCount === 0) {
+      if (!recount()) {
         recompose();
         return;
       }
-      recount();
+      compose();
+      say('fleetVanished');
     };
 
     /*
@@ -439,6 +528,9 @@
     let issued = 0;
 
     const refresh = (id) => {
+      // The grid is on every render of this page now, hidden while the fleet is
+      // empty rather than absent, so this is the fallback and no longer the
+      // ordinary answer to a session appearing.
       if (!grid()) {
         recompose();
         return;
@@ -486,16 +578,34 @@
           const here = cardFor(id);
           const fleet = grid();
           if (here) {
+            // A card exchanged for its successor: the fleet holds what it held,
+            // so there is no shape to compose and nothing to announce.
             here.replaceWith(card);
-          } else if (fleet) {
-            fleet.append(card);
-          } else {
-            // The fleet emptied while this request was in flight, so the page is
-            // the empty state now and composing one is not this file's to do.
+            if (!recount()) {
+              recompose();
+            }
+            return;
+          }
+          if (!fleet) {
+            // A page with no grid at all is not one this file composed, so the
+            // render that would have it is the honest answer.
             recompose();
             return;
           }
-          recount();
+
+          // Appended, because the fleet is oldest first — the order Store.List
+          // imposes and the page keeps (dashboard.go) — and a session that has
+          // just appeared is the newest thing in it. The card carries no
+          // sortable age to insert by: what it renders is coarse prose for a
+          // person to read, so the position is derived from what the event
+          // means rather than from a string parsed back out of the markup.
+          fleet.append(card);
+          if (!recount()) {
+            recompose();
+            return;
+          }
+          compose();
+          say('fleetAppeared');
         })
         .catch(lostTheFleet);
     };

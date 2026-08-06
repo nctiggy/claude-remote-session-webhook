@@ -782,6 +782,67 @@ func TestTheFleetClientSubscribesAndSaysWhenItStops(t *testing.T) {
 	}
 }
 
+// TestTheFleetUpdatesInPlaceRatherThanReloading is issue #51, and it is the
+// script half of TestTheFleetPageComposesBothOfItsShapes.
+//
+// The page carries both of its shapes now, so a session appearing or vanishing
+// is a `hidden` attribute moved between markup the daemon authored. What this
+// holds is that the script actually does that instead of what it used to do:
+// throw the page away and ask for it again. A reload loses everything that is
+// not in the markup — a half-typed working directory, the scroll position, the
+// caret, and any message the page was showing — which is why the action toast
+// had to be given sessionStorage to survive the very reload the action caused
+// (issue #42).
+//
+// One reload survives on purpose, and the count is the assertion. It is the
+// fallback for what genuinely cannot be composed here: a card that could not be
+// fetched, an answer that did not carry the card it named, and a state the
+// summary has no row for. A second one is this file drifting back to reloading
+// by default.
+//
+// **Must fail when** a shape change reaches for the page again rather than for
+// the markup already on it, or when the announcement that replaces the reload's
+// accidental re-reading of the page goes missing.
+func TestTheFleetUpdatesInPlaceRatherThanReloading(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	if n := len(regexp.MustCompile(`location\.reload\(`).FindAllString(source, -1)); n != 1 {
+		t.Errorf("crswd.js reloads the page in %d places; want exactly 1 — the fallback, never the answer to a session appearing or vanishing (issue #51)", n)
+	}
+
+	// The two shapes it switches between, both of them the daemon's own markup.
+	// A script that reached for neither is one that still has to ask the server
+	// which shape the page should be in.
+	for shape, why := range map[string]string{
+		".empty":   "the grid becomes the empty state when the last card goes, and back when the first returns",
+		".summary": "the row of counts shows and hides with the grid it describes",
+	} {
+		if !strings.Contains(source, `'`+shape+`'`) {
+			t.Errorf("crswd.js never selects %q: %s", shape, why)
+		}
+	}
+	// The `hidden` property is how it switches. An attribute the browser owns
+	// needs no rule in the stylesheet and cannot be defeated by one, which is the
+	// same reason the page's own notes hide with it.
+	if !regexp.MustCompile(`\.hidden\s*=`).MatchString(source) {
+		t.Error("crswd.js never sets hidden on anything, so the shape the page renders is the shape it keeps until it is reloaded")
+	}
+
+	// FR-020's neighbour: the hook is read here and the copy is over in the
+	// template, exactly as the stalled note's is.
+	if !strings.Contains(source, "dataset.fleetChanged") {
+		t.Error("crswd.js never reads the hook naming the region that says the fleet's shape changed, so a page that rearranges itself announces nothing to an operator who cannot see it (issue #51)")
+	}
+	// The count in that sentence comes from the cards, not from a tally this file
+	// keeps — the rule the summary row already follows. A number this script
+	// carried would be the second source of truth issue #51 forbids.
+	if !regexp.MustCompile(`replace\(\s*['"]\{n\}['"]`).MatchString(source) {
+		t.Error("crswd.js never fills the {n} the page's sentence leaves for it, so the announcement is a fixed string a reader may not announce twice")
+	}
+}
+
 // blockFor returns the body of the first block whose prelude contains marker,
 // so a test can assert about one rule rather than about the whole file. Braces
 // are counted, because a media query holds rules of its own.

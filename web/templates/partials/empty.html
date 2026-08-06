@@ -12,7 +12,12 @@
   The action docs/components.md documents here — "start a session" — is a
   parameter this milestone passes none of, guarded for the reason the session
   card gives at the same place.
-*/}}<section class="empty">
+
+  Hidden is the fleet page saying it composed this state without showing it: the
+  page renders both of its shapes and hides the one that does not apply, so the
+  live half can switch between them without composing either (issue #51). Every
+  other call site leaves it false, which is the state showing.
+*/}}<section class="empty"{{ if .Hidden }} hidden{{ end }}>
 {{ template "rain" }}
 <div class="empty-message">
 <h2 class="empty-title">{{ .Title }}</h2>
