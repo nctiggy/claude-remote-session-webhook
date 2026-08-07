@@ -131,9 +131,25 @@ func (c Config) startCommandVariable(name string) string {
 	return EnvStartCommands
 }
 
-// warnStartCommandNotOnPath says which command is missing, where the operator
-// wrote it, and what it costs them — the three things the sentence "claude: not
-// found" in a pane an hour later does not say.
+// warnStartCommandNotOnPath says which command did not resolve, **where it did
+// not resolve**, where the operator wrote it, and what would follow if the
+// answer here turned out to be the answer that matters.
+//
+// The second clause is the whole of issue #96. This check reads the daemon's own
+// PATH, and the command never runs in the daemon: it is typed into a shell in a
+// tmux pane, which loads the operator's profile and routinely has a PATH the
+// daemon's process does not — a systemd user unit that never sourced
+// ~/.profile against a login shell that did. A binary in ~/.local/bin is
+// invisible here and present there. So this warning may not say "sessions will
+// fail": it does not know that, it was wrong about it on a healthy deployment
+// for the whole of milestone 4, and a warning that is confidently wrong about a
+// working host is one the operator learns to scroll past — which costs them the
+// one that is right.
+//
+// What it can say is what it looked at. A message naming its own scope is
+// legible when it is wrong and no less useful when it is right, and it leaves
+// the operator holding the fact rather than a prediction made from the wrong
+// environment.
 //
 // It names the configuration file when there was one and the environment
 // variable when there was not, because those are the two places the value can
@@ -152,10 +168,10 @@ func warnStartCommandNotOnPath(warn io.Writer, name, binary, variable, path stri
 	}
 
 	banner := fmt.Sprintf(
-		"crswd: warning: the start command %q runs %q, which is not on PATH.\n"+
-			"crswd: install it, or correct %s.\n"+
-			"crswd: starting anyway; sessions using %q will fail until it is present.\n",
-		name, binary, where, name)
+		"crswd: warning: the start command %q runs %q, which is not on this daemon's PATH.\n"+
+			"crswd: sessions type that command into a shell in a tmux pane, and that shell's PATH is the one that decides, so this may be a difference between the two environments rather than a missing binary.\n"+
+			"crswd: starting anyway; if %q reports \"command not found\" in its pane, install %q or correct %s.\n",
+		name, binary, name, binary, where)
 
 	if _, err := io.WriteString(warn, banner); err != nil {
 		return fmt.Errorf("emit the warning that the %q start command is not installed: %w", name, err)

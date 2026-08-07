@@ -126,9 +126,59 @@ func TestMissingStartCommandWarnsOnly(t *testing.T) {
 	}
 
 	got := warn.String()
-	for _, want := range []string{`"default"`, `"rc"`, `"claude"`, "not on PATH", "starting anyway"} {
+	for _, want := range []string{`"default"`, `"rc"`, `"claude"`, "not on", "PATH", "starting anyway"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the warning does not mention %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestWarningNamesThePathItProbed is issue #96, and it is the difference between
+// a warning and a wrong warning.
+//
+// The probe runs in the daemon's process. The command does not: it is typed into
+// a shell in a tmux pane, which loads the operator's profile and on the live
+// deployment carried a ~/.local/bin the systemd user manager never had. So the
+// daemon answered "not on PATH" about a claude that was on the session's PATH
+// the whole time, and then predicted a failure that never happened on every
+// single start.
+//
+// The daemon cannot resolve the pane's PATH from here without executing the
+// operator's profile at startup, which this package may not do
+// (TestNeverExecutesInstall). What it can do is stop claiming an outcome it has
+// no way to know and say which PATH it actually read — so that the operator of a
+// healthy host reads a difference between two environments rather than a
+// prediction that their working sessions are about to break.
+func TestWarningNamesThePathItProbed(t *testing.T) {
+	t.Parallel()
+
+	host := newHostTools("tmux")
+	var warn warnBuffer
+
+	if err := config.CheckDependenciesWith(
+		configWith(map[string]string{"rc": "claude remote-control"}, ""),
+		host.lookPath, host.osRelease, &warn); err != nil {
+		t.Fatalf("refused the start: %v", err)
+	}
+
+	got := warn.String()
+
+	// Which PATH was read, and whose PATH decides. Either half alone still reads
+	// as a verdict on the session: the first without the second is a scope the
+	// operator has no reason to think matters, and the second without the first
+	// does not say what was measured.
+	for _, want := range []string{"this daemon's PATH", "tmux pane"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the warning does not say %q, so it does not say what it checked:\n%s", want, got)
+		}
+	}
+
+	// And the claim it may not make. The daemon does not know this, was wrong
+	// about it on a working deployment, and an operator who learns to scroll past
+	// a false alarm has been taught to scroll past a true one.
+	for _, forbidden := range []string{"will fail", "until it is present"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("the warning predicts %q about a command it never resolved in the environment that runs it:\n%s", forbidden, got)
 		}
 	}
 }
