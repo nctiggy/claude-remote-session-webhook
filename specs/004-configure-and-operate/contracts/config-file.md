@@ -62,9 +62,13 @@ idle_timeout = -1
 shared_secret = hunter2#not-a-comment
 ```
 
-Parsing that file yields exactly eight keys. `shared_secret` is
-`hunter2#not-a-comment`, and `start_commands` retains both `=` signs in its
-value.
+Parsing that file yields exactly seven keys, of which **six are settings**:
+`version` is the schema the file was written against, not something the daemon
+reads, so it maps to no environment variable and the settings page must not
+render a row for it.
+
+`shared_secret` is `hunter2#not-a-comment`, and `start_commands` retains both `=`
+signs in its value.
 
 ## Refusals
 
