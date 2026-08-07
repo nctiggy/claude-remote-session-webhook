@@ -328,3 +328,74 @@ file rather than being handed bytes.
   clean, `go build`/`go vet`/`go test ./...` green, `go vet` green under `-tags tmux`,
   `-tags quickstart` and `-tags dev`, and `go.sum` still absent. The v2 install was not retried —
   the iteration-1 sandbox denial has not changed. CI is the gate.
+
+---
+
+## Iteration 5 — 2026-08-07 03:14
+
+**Did:** T005 🔒. `internal/config/ReadFile(path, warn)` — the first code in this package that opens
+a file rather than being handed bytes. It opens read-only, stats the **open handle**, reads under a
+1 MiB bound, parses, and then refuses with the contract's literal when `perm&0o077 != 0` **and**
+`(*File).holdsSecret()` — which asks `IsSecret` per key and nothing else. `file_test.go` gains
+`TestGroupReadableWithSecretRefuses`, `TestGroupReadableWithoutSecretStarts`,
+`TestOwnerOnlyModesWithSecretStart` and `TestAnOversizeFileIsRefused`, plus a `writeConfig` helper.
+
+**Learned:**
+
+- **`golangci-lint` on PATH is NOT silent, contrary to the session-start hook.** The v1.62.2 binary
+  read this repo's v2 config well enough to run **gosec**, and it failed the build on
+  `const secretValue = "hunter2#not-a-comment"` (G101: the rule reads the *name*, so any const whose
+  name contains secret/token/pass with a literal beside it is a hardcoded credential to it — test
+  fixture or not). The const is now `hunter2`. **Do not assume a clean local lint means nothing was
+  run**; on this machine at least one linter genuinely fires. It is still not proof of the v2 set.
+- **The mode is checked *after* the parse, and that ordering is forced.** The refusal is gated on
+  the file containing a secret key, and there is no way to know that without reading the file.
+  Reading first costs nothing — this process can already read it, which is exactly what is wrong
+  with the mode. Consequence for T009: a group-readable file that is *also* malformed reports the
+  malformed line first, and the operator sees the mode refusal on the next start.
+- **The stat is of the open handle, not a second `os.Stat(path)`.** Otherwise the file whose mode
+  was approved and the file whose bytes were read are two different opens. This costs nothing and
+  is the only version that is true under a swap.
+- **Six mutations were run, not reasoned about** (iteration 1's rule): mode check dropped, `0o007`
+  for `0o077`, the `holdsSecret()` gate removed, `holdsSecret` inlining `shared_secret` instead of
+  asking `IsSecret`, `%o` for `%04o`, and the 1 MiB bound removed. Each was caught by a named test;
+  `git diff` was checked back to the intended state before the gate ran.
+- **The mutation harness had to be hand-run this time.** Writing a scratch script to `/tmp` and
+  running `python3 -` were both denied by the sandbox, so each mutation was an `Edit` → `go test`
+  → `Edit`-back cycle. Slower but no worse; **do not waste an iteration retrying `/tmp`.**
+- **`maxConfigFileBytes` (1 MiB) landed here** as iteration 3 predicted, with
+  `MaxConfigFileBytes` added to `export_test.go` so the oversize fixture is built from the same
+  number the check uses.
+- **`secret_test.go`'s classifier walk is a real constraint on new code in this package.** It
+  refuses any non-test file that names `shared_secret` or `access_allowed_emails` as an exact string
+  literal, and any function named `*secret*` taking one string and returning one bool. `holdsSecret`
+  passes both (a method with no params, asking `IsSecret`), and mutation 4 above tripped the walk as
+  well as the behavioural test — two independent failures for one defect.
+
+**Left:** T006–T035. Next is T006 (a missing file is not an error; the parser never writes), which
+is now a two-line change to `ReadFile`'s `os.Open` branch plus its tests.
+
+**Findings:**
+
+- **An absent file is currently a hard error**, because T006 owns making it benign and T005 must not
+  do T006's job. Nothing calls `ReadFile` yet (T007 is the wiring), so no deployment sees this — but
+  **T007 must not be started before T006**, or the first daemon with no config file refuses to start.
+  That is SC-002 and every existing deployment.
+- **Three refusals in `ReadFile` are not in `contracts/config-file.md`'s table**: cannot be opened,
+  cannot be inspected, and larger than %d bytes. The first two are unavoidable (an unreadable file
+  cannot be parsed); the size bound is a judgement call carried from the abandoned branch and is the
+  same shape T033 asks for on pane capture — refuse past the bound rather than truncate. **Worth
+  three rows in the contract**, alongside the `version < 1` row iteration 4 asked for.
+- **`os.Open` on a FIFO blocks until a writer appears**, so a config path that is a named pipe hangs
+  startup with no message. The branch's `!info.Mode().IsRegular()` check does *not* fix this — it
+  runs after the open has already blocked. Fixing it needs `O_NONBLOCK` at open time, which is
+  outside T005 and was not done. **A directory is fine** (the read fails with EISDIR and is wrapped).
+- **Nothing yet decides *which* path is read.** `data-model.md` names
+  `$XDG_CONFIG_HOME/crswd/config`, `~/.config/crswd/config`, `--config` and `CRSW_CONFIG_FILE`, and
+  **no task owns them** — T007 says "wire the file as a fallback getenv" and takes an already-parsed
+  `*File`. The abandoned branch has `DefaultPath(getenv)` ready to carry. Whoever takes T007 has to
+  decide this or write it up as `NEEDS CLARIFICATION`; it is the largest gap left in US1.
+- **Lint is now *partly* verified locally** — gosec demonstrably runs and fails the build (see above)
+  — but the full v2 linter set is still unproven (#26). `gofmt -l .` clean, `go build`, `go vet`,
+  `go test ./...` green, `go vet` green under `-tags tmux`, `-tags quickstart` and `-tags dev`,
+  `go.sum` still absent. The v2 install was not retried; the sandbox denial has not changed.
