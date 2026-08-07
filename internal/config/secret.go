@@ -12,7 +12,7 @@ package config
 // predicate is what makes that disagreement unrepresentable rather than merely
 // unlikely. secret_test.go pins the singleness with a walk of this package.
 //
-// allowed_identities is here despite not being a credential. It authenticates
+// access_allowed_emails is here despite not being a credential. It authenticates
 // nobody; it names *who* may reach a daemon that runs unsandboxed code on this
 // host, which is worth exactly as little publication as the secret that
 // authenticates them.
@@ -21,5 +21,5 @@ package config
 // lower-cased — because that is the spelling both callers hold: one reads it off
 // a line of the operator's file, the other renders it in a column.
 func IsSecret(key string) bool {
-	return key == "shared_secret" || key == "allowed_identities"
+	return key == "shared_secret" || key == "access_allowed_emails"
 }

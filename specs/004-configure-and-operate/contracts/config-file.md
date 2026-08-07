@@ -54,7 +54,7 @@ allowed_roots = /home/nctiggy/code,/home/nctiggy/work
 start_commands = default=claude --dangerously-skip-permissions,rc=claude remote-control --permission-mode bypassPermissions
 
 # Sessions live a day unless told otherwise; -1 disables idle reaping.
-default_lifetime = 24h
+session_lifetime = 24h
 idle_timeout = -1
 
 # This value contains a "#". It is not a comment, because a comment
@@ -83,7 +83,7 @@ error is written to stderr and kept in a journal.
 | Bad version | `config file %s:%d has a version that is not a whole number; refusing to start` | FR-009 |
 
 The permission refusal fires only when the file **contains a secret key**
-(`shared_secret` or `allowed_identities` — see `config.IsSecret`). A file holding
+(`shared_secret` or `access_allowed_emails` — see `config.IsSecret`). A file holding
 only `allowed_roots` is not a secret file, and refusing to start over its mode
 would be a refusal the operator cannot act on sensibly.
 

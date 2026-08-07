@@ -41,7 +41,7 @@ that none was (FR-018):
 in `file.go`. The page never renders a secret's value, its length, a prefix, a
 suffix, or a hash — `present` or `absent`, and nothing else.
 
-Two keys are secret: `shared_secret` and `allowed_identities`.
+Two keys are secret: `shared_secret` and `access_allowed_emails`.
 
 ## Worked example
 
@@ -50,12 +50,12 @@ Configuration as in [config-precedence.md](./config-precedence.md):
 ```
 Read from /home/nctiggy/.config/crswd/config
 
-  listen              0.0.0.0:9000                              environment
-  allowed_roots       /home/nctiggy/code, /home/nctiggy/work    file
-  allowed_identities  present                                   file
-  shared_secret       present                                   file
-  idle_timeout        -1                                        file
-  pane_bound          200                                       default
+  listen                 0.0.0.0:9000                             environment
+  allowed_roots          /home/nctiggy/code, /home/nctiggy/work    file
+  access_allowed_emails  present                                  file
+  shared_secret          present                                  file
+  idle_timeout           -1                                       file
+  pane_bound             200                                      default
 ```
 
 Row 2 is what makes SC-004 answerable: an operator whose working directory was

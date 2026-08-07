@@ -39,7 +39,7 @@ format is what it is.
 
 ## Phase 1: Foundational (blocks every story)
 
-- [ ] T001 🔒 **[SECURITY]** Add `IsSecret(key string) bool` to new file `internal/config/secret.go`, returning true for exactly `shared_secret` and `allowed_identities` and false for every other key. Test in `internal/config/secret_test.go`: `TestIsSecretNamesBothSecretKeys` asserts both return true and `allowed_roots` returns false; `TestIsSecretIsTheOnlyClassifier` walks `internal/config/` with `go/ast` and asserts no other function decides secrecy. **Must fail when** a second list of secret keys is introduced anywhere, or when only `shared_secret` is classified.
+- [ ] T001 🔒 **[SECURITY]** Add `IsSecret(key string) bool` to new file `internal/config/secret.go`, returning true for exactly `shared_secret` and `access_allowed_emails` and false for every other key. Test in `internal/config/secret_test.go`: `TestIsSecretNamesBothSecretKeys` asserts both return true and `allowed_roots` returns false; `TestIsSecretIsTheOnlyClassifier` walks `internal/config/` with `go/ast` and asserts no other function decides secrecy. **Must fail when** a second list of secret keys is introduced anywhere, or when only `shared_secret` is classified.
 
 - [ ] T002 [P] Add the `Source` type to new file `internal/config/source.go` with constants `SourceDefault`, `SourceFile`, `SourceEnv`, `SourceFlag` (in that iota order) and a `String()` returning `"default"`, `"file"`, `"environment"`, `"flag"`. Test in `internal/config/source_test.go`: `TestSourceStringsAreTheSettingsPageVocabulary` asserts the four exact strings. **Must fail when** a fifth source is added without the settings page learning about it.
 
