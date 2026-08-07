@@ -9,6 +9,8 @@ package config_test
 // Source constant it does not account for.
 
 import (
+	"bytes"
+	"fmt"
 	"go/ast"
 	"go/token"
 	"io"
@@ -602,3 +604,170 @@ func TestTheFileIsReadFromTheOperatorsConfigDirectory(t *testing.T) {
 // tests are what pin the two variables the daemon looks at, and a name read out
 // of the answer agrees with the answer by construction.
 const xdgConfigHomeVar = "XDG_CONFIG_HOME"
+
+// Provenance (T008). The shim records which layer answered *as it answers*,
+// which is the only moment the answer is known. Everything below is an assertion
+// about that timing rather than about the four words: a source worked out after
+// the load — by comparing the environment against the file — is right about
+// every case except the one an operator is asking about.
+
+// varWithNoLoader is the one CRSW_ constant LoadFrom never asks the shim for.
+//
+// CRSW_DESTROY_ON_SHUTDOWN has a constant, a Config.DestroyOnShutdown field, and
+// a consumer in internal/httpapi. It has no loader: nothing in LoadFrom reads
+// it, so the field is false in every daemon that has ever run and an operator
+// who sets the variable changes nothing. That is a milestone-3 defect and not
+// T008's to fix, but it is precisely the shape this test exists to catch — so it
+// is named here rather than quietly skipped, and it is pinned in both
+// directions. The day it gets a loader this line fails, and deleting it is the
+// whole of the fix.
+const varWithNoLoader = config.EnvDestroyOnShutdown
+
+// Every setting the daemon reads has a recorded source, because every setting is
+// read through the shim. A variable that reaches config.go without reaching the
+// shim is a row the settings page renders as "default" whatever the operator
+// wrote — the page lying about provenance is worse than a page without one.
+func TestSourceRecordedForEveryKey(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	pairs, _ := baseEnv(t)
+	// Both layers in play, so a key is recorded whichever one answers for it.
+	pairs["HOME"] = homeWith(t, fileLines(root,
+		"listen = 127.0.0.1:9999",
+		"max_sessions = 3",
+		"start_command = claude --dangerously-skip-permissions",
+	))
+
+	cfg, err := config.LoadFrom(env(pairs), io.Discard)
+	if err != nil {
+		t.Fatalf("LoadFrom(): %v", err)
+	}
+
+	for name := range declaredVars(t) {
+		_, recorded := cfg.Sources[name]
+		if name == varWithNoLoader {
+			if recorded {
+				t.Errorf("%s now has a recorded source, so it has a loader: delete varWithNoLoader and its exemption below, which exists only to name a variable nothing reads", name)
+			}
+			continue
+		}
+		if !recorded {
+			t.Errorf("config.go declares %s and no lookup for it reached the precedence shim, so the settings page reports it as %q however it was configured",
+				name, config.SourceDefault)
+		}
+	}
+}
+
+// A value written identically in the environment and the file still reports the
+// environment. This is the case inference cannot get right: the two layers hold
+// the same bytes, so nothing about the values says which one was used — and it
+// is the case an operator hits, because they edited the file, saw no change, and
+// came to the page to ask why.
+func TestSourceIsNotInferred(t *testing.T) {
+	t.Parallel()
+
+	// One address, written in both layers. Identical on purpose.
+	const inBothLayers = "127.0.0.1:9999"
+
+	root := t.TempDir()
+	home := homeWith(t, fileLines(root, "listen = "+inBothLayers, "max_sessions = 3"))
+
+	cfg, err := config.LoadFrom(env(map[string]string{
+		"HOME":           home,
+		config.EnvListen: inBothLayers,
+	}), io.Discard)
+	if err != nil {
+		t.Fatalf("LoadFrom(): %v", err)
+	}
+	if cfg.Listen != inBothLayers {
+		t.Fatalf("Listen = %q, want %q from either layer", cfg.Listen, inBothLayers)
+	}
+
+	for _, tc := range []struct {
+		what string
+		name string
+		want config.Source
+		why  string
+	}{
+		{
+			what: "a value the environment and the file spell identically",
+			name: config.EnvListen,
+			want: config.SourceEnv,
+			why:  "the two layers hold the same bytes, so a source computed by comparing them cannot say which was used — and this is the only case where the answer matters",
+		},
+		{
+			what: "a value only the file sets",
+			name: config.EnvMaxSessions,
+			want: config.SourceFile,
+			why:  "the file answered this lookup",
+		},
+		{
+			what: "a value neither layer sets",
+			name: config.EnvMaxStreams,
+			want: config.SourceDefault,
+			why:  "nothing supplied it and the built-in default stands",
+		},
+	} {
+		got, recorded := cfg.Sources[tc.name]
+		if !recorded {
+			t.Errorf("%s (%s) has no recorded source at all", tc.what, tc.name)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s (%s) reports %q, want %q: %s", tc.what, tc.name, got, tc.want, tc.why)
+		}
+	}
+}
+
+// The record is names and layers, and never a value. Recording provenance means
+// the shim now sees every secret this daemon has at the moment it decides, so
+// the one thing it must not grow is a line saying what it resolved: a startup
+// warning is written to stderr and kept in the journal forever (FR-043).
+func TestSecretNeverInProvenanceLog(t *testing.T) {
+	t.Parallel()
+
+	// A load that actually warns, so the assertion below is made about a sink
+	// with something in it: no allowed_roots anywhere means FR-004's default-root
+	// banner, which needs $HOME/code to exist.
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, config.DefaultRootName), 0o700); err != nil {
+		t.Fatalf("create the default root: %v", err)
+	}
+	plantConfig(t, filepath.Join(home, defaultConfigHomeName), strings.Join([]string{
+		"shared_secret = " + goodSecret,
+		"access_team_domain = " + goodTeamDomain,
+		"access_aud = " + goodAUD,
+		"access_allowed_emails = " + goodEmail,
+		"",
+	}, "\n"))
+
+	var warn bytes.Buffer
+	cfg, err := config.LoadFrom(env(map[string]string{"HOME": home}), &warn)
+	if err != nil {
+		t.Fatalf("LoadFrom(): %v", err)
+	}
+	if warn.Len() == 0 {
+		t.Fatal("nothing was written to the warning sink, so this test is searching an empty buffer for a secret it could never have found")
+	}
+
+	// The two the file holds and IsSecret classifies: the credential, and the
+	// list naming who may reach this daemon.
+	for _, value := range []struct{ what, value string }{
+		{"the shared secret", goodSecret},
+		{"an allowed address", goodEmail},
+	} {
+		if strings.Contains(warn.String(), value.value) {
+			t.Errorf("startup wrote %s to the warning sink; a startup line is kept in the journal forever", value.what)
+		}
+		if rendered := fmt.Sprint(cfg.Sources); strings.Contains(rendered, value.value) {
+			t.Errorf("the provenance record carries %s; it is keyed by variable name and holds a layer, so a value in it is a second copy of the secret", value.what)
+		}
+	}
+
+	// And it does record where the secret came from, which is the point: the page
+	// can say "file" without ever holding the value.
+	if got := cfg.Sources[config.EnvSharedSecret]; got != config.SourceFile {
+		t.Errorf("the shared secret's source is %q, want %q: the file set it", got, config.SourceFile)
+	}
+}

@@ -339,6 +339,21 @@ type Config struct {
 	// remote-control command, and the dashboard renders no switch — an operator
 	// is never offered a control whose only outcome is a refusal.
 	RemoteControlCommand string
+
+	// Sources is which layer supplied each value, keyed by environment-variable
+	// name — the record that answers "why did my edit do nothing?" (FR-018).
+	//
+	// It is written by withFile as it decides and never computed afterwards. A
+	// value present and equal in the environment and the file is indistinguishable
+	// by comparison, and that is precisely the case where an operator is asking
+	// the question; so provenance is a byproduct of having one place decide
+	// (research R4).
+	//
+	// Populated once, during LoadFrom, and not written again: nothing calls the
+	// shim after the Config is built. A key absent from it was never looked up,
+	// and reads SourceDefault — the zero value, which is why that constant is
+	// zero. The settings page reads this, and nothing else does.
+	Sources map[string]Source
 }
 
 // String redacts the shared secret so that formatting a Config — in a log line,
@@ -414,7 +429,13 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 		}
 		file = f
 	}
-	getenv = withFile(getenv, file)
+	// Provenance is recorded by the shim as it answers, because the shim is the
+	// only code that knows which layer won. The map is handed in rather than
+	// returned so that the recording is the same statement as the decision — a
+	// second traversal that worked it out afterwards could only compare values,
+	// and two equal values do not say which one was used.
+	sources := make(map[string]Source, len(Vars()))
+	getenv = withFile(getenv, file, sources)
 
 	secret, err := loadSecret(getenv)
 	if err != nil {
@@ -511,13 +532,16 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 		StartCommands:       startCommands,
 
 		RemoteControlCommand: remoteControl,
+		Sources:              sources,
 	}, nil
 }
 
-// withFile answers from the environment first and the file second. That is the
-// whole of the precedence chain (contracts/config-precedence.md), and its size
-// is the design: precedence has one implementation, and no bound, default or
-// refusal is written a second time behind it.
+// withFile answers from the environment first and the file second, and records
+// which one answered. That is the whole of the precedence chain
+// (contracts/config-precedence.md), and its size is the design: precedence has
+// one implementation, and no bound, default or refusal is written a second time
+// behind it. It is the only code that knows where a value came from, which is
+// why it is also the only code that records it.
 //
 //	flag > environment > file > default
 //
@@ -540,14 +564,27 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 // A nil *File is the deployment with no file at all: every lookup misses and
 // every value falls through, and this shim still runs for every key rather than
 // being skipped, so there is one code path and not two.
-func withFile(getenv func(string) string, f *File) func(string) string {
+//
+// src is written for every name asked of it and never read here, so a name that
+// is not a setting — HOME, which defaultRoot reads through this seam — is
+// recorded as truthfully as the rest. That costs nothing: the settings page
+// walks Vars() and asks this map about each, so it renders the settings and only
+// the settings. A filter here would be a second rule about what a setting is,
+// which is the thing this package keeps to one place.
+//
+// What is never recorded is a value. This map is names and layers, so the record
+// of where the shared secret came from cannot become a copy of it.
+func withFile(getenv func(string) string, f *File, src map[string]Source) func(string) string {
 	return func(name string) string {
 		if v := getenv(name); v != "" {
+			src[name] = SourceEnv
 			return v
 		}
 		if v, ok := f.Lookup(name); ok {
+			src[name] = SourceFile
 			return v
 		}
+		src[name] = SourceDefault
 		return ""
 	}
 }
