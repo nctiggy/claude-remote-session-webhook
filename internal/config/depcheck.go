@@ -140,6 +140,13 @@ func (c Config) startCommandVariable(name string) string {
 // have come from and an operator who edited the other one is the person this
 // warning exists for.
 //
+// It names the *binary* and never the command line it was cut from. That is a
+// disclosure rule and not a tidiness one: a command line is configuration an
+// operator wrote, its arguments are theirs to fill with whatever the program
+// takes — an API key among them — and this sentence is written into a journal
+// that outlives the process (FR-043). The first word is the only part PATH
+// could answer for anyway, so nothing is lost by quoting nothing else.
+//
 // A write failure is fatal, as it is for every other warning in this package: a
 // weakened posture nobody could be told about is the state an operator must not
 // be left to discover. That is a refusal about the sink and not about the

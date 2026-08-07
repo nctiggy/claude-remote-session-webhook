@@ -9,12 +9,15 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -542,6 +545,110 @@ func TestNewAcceptsEveryLoopbackSpelling(t *testing.T) {
 		if _, err := New(testConfig(listen)); err != nil {
 			t.Errorf("New(%q) = _, %v; want a server", listen, err)
 		}
+	}
+}
+
+// TestAuditRecordsGoToStdout is FR-023a where the daemon actually stands: a
+// server built the way cmd/crswd builds one writes its records to the process's
+// own standard output, and the diagnostic that runs beside them does not go
+// there.
+//
+// internal/audit's TestNewWritesToStdout makes the first claim about the
+// *constructor*. This makes it about the daemon's use of it, which is the other
+// failure and the one this repository has shipped four times — code that is
+// right and a caller that never reaches it. It is also the only test in this
+// package that goes through New rather than newServer, deliberately: every
+// other one avoids exactly this, so that its records do not land on the test
+// binary's stdout (see newTestServer).
+//
+// The second claim is the invariant #88 is really about. `grep '^{' | jq .` is
+// a correct reader of the journal only while every line on stdout is a record;
+// one warning printed there is either a dropped record or a parse failure, and
+// which of the two it is depends on the first character of a sentence nobody
+// wrote with that in mind.
+//
+// Not parallel: it swaps the process's standard output and redirects the
+// standard logger, both of which every other test in this binary shares.
+// internal/audit's stdout test settles the same problem the same way.
+func TestAuditRecordsGoToStdout(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() = %v", err)
+	}
+
+	realStdout := os.Stdout
+	os.Stdout = w
+	// Through Cleanup rather than at the end of the body: a t.Fatalf below must
+	// print where the operator running the suite can read it, not into the pipe.
+	t.Cleanup(func() { os.Stdout = realStdout })
+
+	// The last-resort channel is the standard logger, which holds the *os.File
+	// it was given when package log initialised — swapping os.Stderr would not
+	// move it. So it is redirected the way internal/audit's leak suite redirects
+	// it, and what this test proves about it is negative anyway: wherever it
+	// goes, it is not the trail.
+	diagnostics := &bytes.Buffer{}
+	previous := log.Writer()
+	log.SetOutput(diagnostics)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	// After the swap and not before. New calls audit.New, which reads os.Stdout
+	// at the moment it is called; a server built first would hold the real one,
+	// and this test would read an empty pipe while the records it is about went
+	// to the terminal.
+	s, err := New(testConfig(loopbackListen))
+	if err != nil {
+		t.Fatalf("New = _, %v; want a server", err)
+	}
+
+	// Two unsigned requests, so both records are auth.reject and neither needs a
+	// session fixture. The second is answered into a writer that fails, which is
+	// the one way to make the daemon reach its report channel without breaking
+	// the audit sink this test is reading.
+	lost := errors.New("the connection went away")
+	s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/sessions", nil))
+	s.ServeHTTP(&failingWriter{err: lost}, httptest.NewRequest(http.MethodGet, "/sessions", nil))
+
+	os.Stdout = realStdout
+	if err := w.Close(); err != nil {
+		t.Fatalf("close the pipe: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read the pipe: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close the pipe reader: %v", err)
+	}
+
+	// The diagnostic has to have happened, or the negative claim below is about
+	// a run in which nothing was written anywhere.
+	if !strings.Contains(diagnostics.String(), lost.Error()) {
+		t.Fatalf("the failed write was never reported, so this run proves nothing about where a report goes:\n%s", diagnostics)
+	}
+
+	// Named apart from the count below, which would otherwise report the one
+	// line strings.Split makes out of nothing at all.
+	if len(out) == 0 {
+		t.Fatal("nothing reached stdout; the trail this daemon was built with is not writing where the journal reads")
+	}
+
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("two requests wrote %d lines to stdout; want one record each:\n%s", len(lines), out)
+	}
+	for i, line := range lines {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Errorf("stdout line %d is not a record — `grep '^{' | jq .` reads this stream: %v (%q)", i+1, err, line)
+			continue
+		}
+		if rec["action"] != string(audit.ActionAuthReject) {
+			t.Errorf("stdout line %d recorded %v; want %q", i+1, rec["action"], audit.ActionAuthReject)
+		}
+	}
+	if strings.Contains(string(out), lost.Error()) {
+		t.Errorf("the report of a failed write reached stdout, where the trail is:\n%s", out)
 	}
 }
 

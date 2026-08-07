@@ -260,6 +260,95 @@ func TestMessageNamesConfigFile(t *testing.T) {
 	}
 }
 
+// TestNoSecretInAnyDiagnostic is FR-043 at the one message this daemon writes
+// before it has a trail to write to, and it is the reason the warning quotes the
+// binary rather than the command line it was cut from.
+//
+// A start command is a whole command line an operator wrote, and its arguments
+// take whatever the program takes — an API key or a token among them. This
+// sentence goes to stderr, systemd puts it in the journal, and the journal
+// outlives the process; a diagnostic that quoted the configuration it is
+// complaining about would publish a credential to fix a PATH problem. The
+// shared secret is here too because Config carries it and formatting a Config
+// is one `%v` away from any message in this package.
+//
+// Must fail when a warning quotes configuration verbatim — print the command
+// instead of its first word, or the Config instead of the two fields, and the
+// marks below turn up in the journal.
+func TestNoSecretInAnyDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	// Spelled in words, like testSecret in internal/httpapi: a run of hex digits
+	// this long is what a real credential looks like, and gitleaks — correctly —
+	// refuses to let one into the repository.
+	const (
+		sharedSecret = "marked-shared-secret-never-printed"
+		inAnArgument = "marked-credential-inside-an-argument"
+	)
+
+	// The binary is missing and the credential is one of its arguments, which is
+	// the shape this is really about: the check has to say the first word and
+	// nothing after it.
+	marked := config.Config{
+		SharedSecret: []byte(sharedSecret),
+		StartCommands: config.NewStartCommands(map[string]string{
+			"default": "frobnicate --api-key " + inAnArgument,
+		}),
+		FilePath: "/home/operator/.config/crswd/config",
+	}
+
+	cases := map[string]struct {
+		host *hostTools
+		// fatal is the tmux refusal, whose sentence is an error rather than a
+		// line on the warning stream. Both are diagnostics and the rule is the
+		// same for each.
+		fatal bool
+	}{
+		"the warning about a missing start command": {host: newHostTools("tmux")},
+		"the refusal to start without tmux":         {host: newHostTools(), fatal: true},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var warn warnBuffer
+			err := config.CheckDependenciesWith(marked, tc.host.lookPath, tc.host.osRelease, &warn)
+
+			said := warn.String()
+			if tc.fatal {
+				if err == nil {
+					t.Fatal("a host with no tmux started, so there is no refusal here to read")
+				}
+				said = err.Error()
+			} else {
+				if err != nil {
+					t.Fatalf("refused the start: %v", err)
+				}
+				// Without this the sweep below is over an empty string, which
+				// passes for the wrong reason. Unquoted on purpose: a message
+				// that names the whole command line still satisfies "it
+				// reported something", and it is the sweep below that must be
+				// the one to fail on it.
+				if !strings.Contains(said, "frobnicate") {
+					t.Fatalf("the missing command was not reported at all:\n%s", said)
+				}
+			}
+
+			for what, mark := range map[string]string{
+				"the shared secret":                     sharedSecret,
+				"an argument of the configured command": inAnArgument,
+			} {
+				if strings.Contains(said, mark) {
+					// Printed because an operator would need to see it; by this
+					// point the value is already in the journal.
+					t.Errorf("%s appears in a diagnostic, which systemd keeps after the process is gone:\n%s", what, said)
+				}
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The install command (T030, FR-013, FR-014)
 // ---------------------------------------------------------------------------

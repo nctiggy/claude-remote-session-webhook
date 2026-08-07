@@ -214,6 +214,10 @@ type Server struct {
 	// report is where a failure with nowhere else to go is written — the audit
 	// sink itself failing, or a response that could not be written. A field so
 	// a test can read what was reported rather than watch stderr.
+	//
+	// It writes to stderr and never to stdout, which is the trail's alone: a
+	// diagnostic on stdout is a line the documented `grep '^{'` reader either
+	// drops or chokes on, depending on what it happens to start with (FR-023a).
 	report func(error)
 
 	// registered records what was actually handed to the mux, which is not the
