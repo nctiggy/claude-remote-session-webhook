@@ -159,7 +159,14 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
 
 ### US4 — Controls that belong to this interface
 
-- [ ] T008 Markup: the `.combo` wrapper, the listbox, the status region — **behaviour unchanged**
+- [x] T008 Markup: the `.combo` wrapper, the listbox, the status region — **behaviour unchanged**
+  - Three minimum CSS rules shipped with it, because `TestTheStylesheetAndTheMarkupNameTheSameThings`
+    sweeps both directions and a rendered class with no rule is red — the same reason T003
+    carried `.switch-input`. **`.combo { display: grid }` is load-bearing** and nothing pins it:
+    an `<input>` is inline-block, so a block wrapper would shrink the field. **T010 must rewrite
+    `TestSubsetAnnounced`'s addition sweep** — it forbids the exact operations T010 mandates —
+    **and delete `#create-workdir-subset`** when it moves the sentence into `.combo-status`, or
+    the field keeps two live regions with one dead. See `PROGRESS.md` iteration 8.
 - [ ] T009 Styling: tokens, focus rings, and the reduced-motion rule
 - [ ] T010 Enhancement: suppress the native popup, add the ARIA, filter, announce the subset
 - [ ] T011 Keyboard: arrows, Enter, Escape, Tab, `aria-activedescendant`

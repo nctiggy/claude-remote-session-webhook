@@ -564,3 +564,85 @@ what to pick up if the chain ever blocks.
    `CRSW_DESTROY_ON_SHUTDOWN` row, `settings.go:114-118`, and
    `contracts/directory-suggestions.md:62`'s comma-spelled `allowed_roots`. Iteration 6's
    uncapped-union note is also still open and still unowned.
+
+---
+
+## Iteration 8 — 2026-08-07 17:15
+
+**Did:** T008, in commit `0d0530d`. `create-form.html` wraps the working-directory field in
+`<div class="combo" data-combo>` holding the existing `<input>` and `<datalist>`, plus an empty
+hidden `<ul class="combo-list" id="workdir-listbox">` and an empty
+`<p class="combo-status" role="status" aria-live="polite">`. **No ARIA on the input.** Four
+tests in `partials_test.go` (`TestComboRendersWithoutAriaRoles`, `TestComboRendersListAndDatalist`,
+`TestComboRendersPlainFieldWithNoSuggestions`, `TestComboStatusRegionIsInTheTemplate`) and three
+minimum rules in `crswd.css`. **The create-form chain `T001 → T003 → T006 → T008` is now
+complete**, and behaviour is unchanged: every existing picker test passes untouched and the
+quickstart acceptance suite ran a real daemon green.
+
+**Learned:**
+
+- **The CSS was not optional, exactly as it was not for T003's switch.**
+  `TestTheStylesheetAndTheMarkupNameTheSameThings` sweeps *both* directions off the template
+  *source*, so the moment `.combo` appears in the markup the tree is red until a rule exists.
+  What shipped is the minimum that sweep demands; T009 owns the presentation. Verified by
+  renaming `.combo` to `.combo-unused` in the stylesheet — both directions fail at once.
+- **`.combo { display: grid }` is load-bearing and no test can see it.** An `<input>` is
+  inline-block: inside a plain block wrapper it falls back to its default character width
+  instead of stretching, which is what it does today as a grid item of `.field`. Dropping the
+  `display` is a silent visual regression — the one part of this task nothing pins. Do not
+  "simplify" it in T009 without replacing it with something that also makes the input a
+  stretched item.
+- **T010 cannot be written without rewriting `TestSubsetAnnounced`** (`stylesheet_test.go:916`).
+  Its addition sweep currently *forbids* `crswd.js` from containing `removeAttribute(`,
+  `setAttribute(`, `createElement(`, or the string `datalist` — and T010's task text mandates
+  all four (`input.removeAttribute("list")` first, the ARIA attributes, `<li role="option">`
+  children, and the `<datalist>` read as the data source). The sweep is not wrong, it is
+  scoped to a control that was markup-only; T010 has to re-aim it at the property that still
+  holds — *the picker works with the file absent* — rather than at the operations. Budget for
+  that; it is most of T010.
+- **The old subset region stays, and an existing test requires it.** `TestSubsetAnnounced`
+  asserts `<div ... id="create-workdir-subset"></div>` verbatim in the template plus
+  `data-workdir-note="create-workdir-subset"` on the field, so `#create-workdir-subset` could
+  not have been folded into `.combo-status` here even if T008 had wanted to. The consequence is
+  that the field now carries **two `role="status"` regions**: the live one the script writes,
+  and the empty one T010 will move the sentence into. Only one ever speaks, so nothing is
+  announced twice — but **T010 must delete `#create-workdir-subset` when it moves the sentence**,
+  or the form ships with a dead live region for good.
+- `.combo-status` and `.combo-list` are unconditional where `list=` and the `<datalist>` are
+  conditional on `.Suggestions`. That is the contract's literal block and the distinction is
+  real: an attribute pointing at nothing is an offer with nothing behind it (FR-018a), while an
+  empty box an enhancement writes into makes no claim either way.
+- **Mutation-verified five ways, each reverted:** (a) `role="listbox"`/`aria-expanded` moved
+  into the template — `TestComboRendersWithoutAriaRoles` fails on both views; (b) the listbox id
+  drifted to `workdir-list` — `TestComboRendersListAndDatalist` fails naming both spellings;
+  (c) `.combo-status` left to the script — `TestComboStatusRegionIsInTheTemplate`,
+  `TestComboRendersPlainFieldWithNoSuggestions` **and** the stylesheet sweep fail;
+  (d) the `<datalist>` emitted unconditionally so an empty one renders —
+  `TestComboRendersPlainFieldWithNoSuggestions` fails; (e) the `.combo` rule renamed — see above.
+- Linter confirmed v2 before trusting the green: `golangci-lint 2.12.2`, 0 issues. `go vet`
+  compiles all three tagged suites; `go test ./...` green; `-tags quickstart` ran uncached (28s)
+  and passed with `127.0.0.1:8765` free. No `go.sum`.
+
+**Left:** T009–T016. **T009 is next**: style `.combo`, `.combo-list`, `.combo-list li`,
+`.combo-status`, `.switch-input` and `.switch-label` from the token block, with a visible focus
+ring on the input, an option and the switch, and a `prefers-reduced-motion` rule. Note two of
+its six selectors (`.switch-input`, `.switch-label`) already carry T003's minimum rules and
+three carry T008's — T009 is replacing placeholders, not writing on a blank file. It also adds
+`TestComboClassesAppearInRenderedMarkup`, which T008 has already made true.
+
+**Findings:**
+
+1. **`.combo` and `.combo-list` are a new component and `docs/components.md` does not document
+   them.** That file is the canonical vocabulary and its whole premise is that a class nobody
+   documented is how a second card starts; the picker now has a wrapper, a listbox and a status
+   region with no entry there. Not fixed: `docs/` is T016's named scope and AR-008 is
+   load-bearing this milestone. **T016 owns it**, and it should be an entry rather than a line —
+   the ARIA-by-script rule in particular belongs somewhere a future component can find it.
+2. **`.switch-label` still duplicates `.field-label` exactly** (flagged in iteration 3, still
+   open). T009 is the task that either gives the switch its own presentation or collapses the
+   two, and it is the last one that will have a reason to look.
+3. The stale-prose findings from iterations 4–7 are all still open and all still **T016's**:
+   `outcome.go`'s `outcomeBadStartCommand` comment, `config.example:157`, `README.md`'s
+   `CRSW_DESTROY_ON_SHUTDOWN` row, `settings.go:114-118`, and
+   `contracts/directory-suggestions.md:62`'s comma-spelled `allowed_roots`. Iteration 6's
+   uncapped-union note and iteration 7's missing wiring test are also still open and unowned.
