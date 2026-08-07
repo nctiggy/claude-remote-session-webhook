@@ -1402,3 +1402,100 @@ in milestone 5 is checked.
    stale-prose list from iterations 4–7; and **#95 still has not received T002's SHA
    `ef18756`** — `gh` is not an approved command in the loop's session, unchanged since
    iteration 2, still needs a human.
+
+---
+
+## Iteration 17 — 2026-08-07 19:20
+
+**Did:** T016, in commit `07c737d`. The milestone's docs pass, plus two tests so it does not
+have to be repeated. `docs/security.md`'s claim that the probe's "only contact with the host is
+`exec.LookPath`" is corrected — it runs `$SHELL -l` since T014 — and the bounds on that are
+written where a binding document can be checked against. Both READMEs now document the
+`grep`-then-parse form of the audit command, `docs/components.md` gains Header,
+Working-directory picker and Switch sections, and the README covers the union of the three
+suggestion sources, remote control as a mode, the settings link, the probe's three outcomes,
+and a `CRSW_DESTROY_ON_SHUTDOWN` row that has been wrong since #63.
+
+**Learned:**
+
+- **`docs/security.md:157` was the real find, and it was not on anyone's list.** Every finding
+  assigned to T016 named a README, a contract or a code comment. The stale sentence that
+  mattered was in the one document the constitution calls binding, and it described *what the
+  daemon executes at startup* — T014 changed that and updated no prose. A docs task working
+  only from the notebook's list would have shipped it. **Read the binding docs against the
+  code, not against the findings.**
+- **Two tests, and each is a different shape of "held".** The trail sweep is *derived*: it
+  reads every `journalctl` line the repository commits and runs it, so a README is checked by
+  being executed rather than by being compared to a copy. The components sweep is
+  *bidirectional*: a `.combo*`/`.switch*`/`.masthead*` rule the document never names fails, and
+  so does a spelling the document invents. Neither test knows what the prose says, which is why
+  neither goes stale with it.
+- **Clean has to mean exit 0 *and* empty stderr.** `deploy/README.md`'s third command ends
+  `| sort | uniq -c`, and a pipeline's status is its last stage's — with `jq` failing in the
+  middle it exits 0 and prints a shorter list of actions. Judged on exit status alone the new
+  test would have called that command correct in both directions: clean on a good stream, and a
+  false negative on the corrupt one. The existing `assertRejectsAMalformedRecord` judges on
+  status alone and is right to, because the unit's one command ends in `jq`; it was left alone
+  (AR-008).
+- **`documentedFilter` split into `trailCommands` + `filterOf` and kept its exactly-one rule.**
+  The unit still may document exactly one command — that rule is the two-documents failure one
+  document down — while a README may document several. `TestDocumentedCommandParses` is
+  unchanged.
+- **The components sweep strips CSS comments before reading selectors, unlike `cssRules`'
+  other callers.** A class named in a rule's commentary is prose about the stylesheet; sweeping
+  it would hold `docs/components.md` to spellings no rule uses. `comboSelector` was deliberately
+  *not* widened to carry `masthead` — four assertions about colour and focus rings are keyed on
+  it, and widening it would have quietly widened them to a component they were not written
+  about.
+- **Mutation-verified four ways, each reverted:** (a) `.masthead-link` misspelled in
+  `components.md` — fails in **both** directions at once, naming the class the stylesheet has
+  and the one it does not; (b) `README.md`'s first command with the filter stage removed —
+  fails with `exit status 5` and jq's parse error, which is #88 reproduced inside the failure
+  message; (c) `deploy/README.md`'s counting command with `jq -r '.action'` removed — fails the
+  truncated-record claim, which is the case an exit-status-only judgement would have missed;
+  (d) the components doc naming a class no rule styles — the reverse direction, from (a).
+- **SC-010 needed no new assertion.** `internal/config/docs_test.go`'s `TestNoDependencies`
+  already checks `go.sum`'s absence *and* that `go.mod` carries no `require` block, in the
+  default build. Its comment named SC-012 (milestone 4's number for the same claim) and now
+  names both. The quickstart suite's `TestQuickstartNoDependencies` is the second copy and was
+  left alone.
+- Full gate green: `go build`, `go vet`, `go test ./...`, `golangci-lint run` (confirmed
+  **2.12.2**, 0 issues), `gofmt -l` clean, no `go.sum`, `go test -tags tmux ./...` green, and
+  `go test -tags quickstart ./cmd/crswd` green in ~29s (run three times; see finding 1).
+
+**Left:** **Nothing.** Every task in `ralph/IMPLEMENTATION_PLAN.md` is checked and the tree is
+green. Milestone 5 is complete. What follows is for milestone 6 or a human.
+
+**Findings:**
+
+1. **`TestDashboardQuickstartStory1Fleet` failed once on teardown, then passed four times.**
+   `TempDir RemoveAll cleanup: unlinkat …/001/home: directory not empty` — the test body passed
+   and only `t.TempDir()`'s removal failed, racing a session process that had not finished
+   exiting. Quickstart tests declare no `t.Parallel()`, and nothing in this iteration creates a
+   session, so it is that test's own teardown rather than anything T016 added. It reproduced
+   once in five full runs. **Worth a milestone-6 task**: a flake in the suite CI runs is a red
+   build somebody learns to re-run rather than read.
+2. **The two contracts were edited, which is a thing this milestone otherwise did not do.**
+   `contracts/directory-suggestions.md`'s worked example spelled `allowed_roots` with a comma
+   (the separator is `:`) and would have refused to start if copied;
+   `contracts/diagnostics-and-probe.md` now says its `jq .` command is what the unit documented
+   *before* T015. Both record history rather than change a contract, and both say so in the
+   file. If a future reader wants contracts frozen as-written, these two edits are the
+   precedent to object to.
+3. **Still open and now definitively milestone 6's, because they are code and not prose:**
+   `.golangci.yml` never lints the `quickstart` tag (27 pre-existing issues sit behind adding
+   it, measured in iteration 15); `Config.String()` prints `start_commands` unredacted — a
+   behaviour change with its own test, not a docs fix; `crswd.css`'s reduced-motion block
+   resets `transition` and not `animation`; the union of suggestion sources has no cap while
+   `maxDiscoveredWorkDirs = 200` still describes only the walk (iteration 6 — needs a number
+   nothing in the spec names, so Principle II applies); iteration 7's missing wiring test, where
+   a `server.go:332` feeding `SuggestedWorkDirs()` into the manager's roots would go unnoticed
+   by every `internal/httpapi` fixture *and* by quickstart; and iteration 16's finding 2, that
+   a pointer selection cannot reopen the picker's list.
+4. **#95 still has not received T002's SHA `ef18756`.** `gh` is not an approved command in the
+   loop's session — unchanged since iteration 2, across sixteen iterations, and it is the one
+   item on this list that **needs a human**. The comment text is in iteration 2.
+
+---
+
+RALPH_COMPLETE

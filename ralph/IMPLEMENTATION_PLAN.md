@@ -269,7 +269,20 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
 
 ### Ship it
 
-- [ ] T016 Docs, and assert `go.sum` is still absent
+- [x] T016 Docs, and assert `go.sum` is still absent
+  - **`docs/security.md` was the find, and it was on no list**: it claimed the probe's "only
+    contact with the host is `exec.LookPath`", which T014 falsified without touching prose —
+    a binding document wrong about what the daemon executes at startup. Corrected there,
+    in both READMEs (the audit command), `docs/components.md` (Header, picker, switch),
+    `README.md` (suggestion union, mode not name, settings link, the probe's three outcomes,
+    `CRSW_DESTROY_ON_SHUTDOWN`), `config.example`, two stale code comments, and two contracts.
+    **SC-010 needed no new assertion** — `internal/config/docs_test.go`'s `TestNoDependencies`
+    already holds it in the default build. Two new tests instead:
+    `TestEveryDocumentedTrailCommandSurvivesTheStream` runs every `journalctl` line this repo
+    commits over a real stream (clean = exit 0 **and** empty stderr, because a pipeline
+    reports its last stage), and `TestTheComponentsDocumentNamesThePickerTheSwitchAndTheHeader`
+    sweeps `.combo*`/`.switch*`/`.masthead*` both ways between the stylesheet and the document.
+    See `PROGRESS.md` iteration 17 — findings 1 and 3 are milestone 6's, finding 4 needs a human.
 
 ---
 
