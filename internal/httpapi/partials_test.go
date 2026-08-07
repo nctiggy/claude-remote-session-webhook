@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
@@ -1679,6 +1680,73 @@ func TestTheCardSaysWhatItIsRunning(t *testing.T) {
 	without := renderComponent(t, "session-card", sessionView{ID: strings.Repeat("b", 32), Name: "x"})
 	if strings.Contains(without, "card-mode") {
 		t.Errorf("a card with no recorded start command labels one anyway:\n%s", without)
+	}
+}
+
+// cardModeValue is the meta list's mode row as a reader receives it: the label,
+// and whatever the value cell holds.
+//
+// It captures markup and strips it rather than matching text directly, so a
+// value wrapped for styling still passes and a value that is *only* markup — the
+// coloured dot FR-059 forbids — leaves nothing behind and fails. A test that
+// demanded a bare text node would refuse a legitimate span; one that searched
+// the whole card for the word would pass on a title attribute nobody can read.
+var (
+	cardModeRow = regexp.MustCompile(`(?s)<dt>mode</dt>\s*<dd>(.*?)</dd>`)
+	markupTags  = regexp.MustCompile(`<[^>]*>`)
+)
+
+// TestCardShowsMode is FR-031 and FR-059 on the card: a session's mode is shown,
+// and it is shown in words.
+//
+// It renders through cardOf rather than a hand-built view, because the claim is
+// about what a page shows and the projection is half of that — a template that
+// renders a field nothing fills is the shape of bug this plan warns about twice.
+// The name that means remote is passed in the same way the daemon passes it, so
+// this test also fails if the card ever starts deciding that for itself.
+//
+// The local case is not the trivial half. It is what every session on a daemon
+// configuring no remote control is, and what an adopted session is, so a card
+// that shows a mode only when it is the interesting one would leave the ordinary
+// operator reading a card that says nothing about the thing the toggle changes.
+func TestCardShowsMode(t *testing.T) {
+	t.Parallel()
+
+	const remoteCommand = "rc"
+	now := time.Date(2026, time.August, 7, 12, 0, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		start string
+		want  session.Mode
+	}{
+		{start: remoteCommand, want: session.ModeRemote},
+		{start: "review", want: session.ModeLocal},
+	} {
+		t.Run(string(tc.want), func(t *testing.T) {
+			t.Parallel()
+
+			card := cardOf(session.Session{
+				ID:           strings.Repeat("c", 32),
+				Name:         "a session",
+				WorkDir:      "/home/operator/code/crswd",
+				StartCommand: tc.start,
+				CreatedAt:    now.Add(-time.Hour),
+				LastActivity: now,
+			}, now, testCardToken, remoteCommand)
+
+			if card.Mode != tc.want {
+				t.Fatalf("cardOf projected mode %q for a session running %q, want %q", card.Mode, tc.start, tc.want)
+			}
+
+			out := renderComponent(t, "session-card", card)
+			row := cardModeRow.FindStringSubmatch(out)
+			if row == nil {
+				t.Fatalf("the card carries no labelled mode, so the fact the toggle changes is not on it:\n%s", out)
+			}
+			if got := strings.TrimSpace(markupTags.ReplaceAllString(row[1], "")); got != string(tc.want) {
+				t.Errorf("the card's mode reads %q, want %q — state is never carried by markup or colour alone (FR-059):\n%s", got, tc.want, out)
+			}
+		})
 	}
 }
 

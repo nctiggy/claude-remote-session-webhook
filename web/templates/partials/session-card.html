@@ -59,7 +59,35 @@
   Text, never a colour or a badge shape alone (FR-030), and outside the card's
   single anchor (FR-027, #16).
 */}}{{ with .StartCommand }}<p class="card-mode">running <span class="card-mode-name">{{ . }}</span></p>{{ end }}
-<dl class="card-meta">
+<dl class="card-meta">{{/*
+  Where this session is driven from (US4, FR-031): the operator's own dashboard,
+  or claude.ai through the configured remote-control command.
+
+  Two words and nothing else — never a dot, never a badge, never a colour
+  (FR-059, and the design system's fifth non-negotiable). A mode carried by a
+  shade would be invisible to a reader who cannot see it and ambiguous to one who
+  can, on the one fact that says whether something outside this host can type
+  into an unsandboxed shell.
+
+  It is a row of the meta list rather than a component of its own, so it needs no
+  class, no token and no stylesheet rule: the list already renders a label and a
+  value, and a second vocabulary for one word is the drift docs/components.md
+  exists to prevent. It sits first because contracts/card-layout.md reads the
+  card in that order — name, state, mode, working directory, age.
+
+  Rendered unconditionally, unlike the name and the working directory above and
+  below it. Those may genuinely be unknown; this cannot be. Mode() answers for
+  every record this daemon holds, including one adopted after a restart with no
+  @crswd-start at all — that session is local, which is a fact about it and not a
+  gap in what the daemon knows.
+
+  It is not the start command spelled twice. That paragraph names *what* is
+  running; this says whether it is reachable from claude.ai, which is the
+  question the toggle answers and the one an operator cannot work out from a name
+  without reading the settings page.
+*/}}
+<dt>mode</dt>
+<dd>{{ .Mode }}</dd>
 <dt>working directory</dt>
 <dd>{{ if .WorkDir }}<span class="card-path" title="{{ .WorkDir }}">{{ .WorkDir }}</span>{{ else }}<span class="card-unknown">no working directory recorded</span>{{ end }}</dd>
 <dt>age</dt>

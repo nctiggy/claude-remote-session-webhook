@@ -250,7 +250,7 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string, outcome 
 	owned := s.sessions.List(operator.Owner)
 	views := make([]sessionView, 0, len(owned))
 	for _, live := range owned {
-		views = append(views, cardOf(live, now, token))
+		views = append(views, cardOf(live, now, token, s.cfg.RemoteControlCommand))
 	}
 
 	return fleetView{
@@ -309,7 +309,14 @@ func (s *Server) rootPaths() []string {
 //
 // The token is the render's, passed through rather than minted here, so the one
 // function that projects a card cannot become a second place a token is issued.
-func cardOf(live session.Session, now time.Time, token string) sessionView {
+//
+// remoteCommand is config.Config.RemoteControlCommand, and it arrives the same
+// way for the same reason: which configured name means remote is startup
+// configuration rather than a property of a record, so it is passed in to the
+// one place that answers it (session.Session.Mode). A card that derived it from
+// anything else would be a second answer, free to disagree with the one the
+// toggle route checks before it acts.
+func cardOf(live session.Session, now time.Time, token, remoteCommand string) sessionView {
 	return sessionView{
 		ID:      live.ID,
 		Name:    live.Name,
@@ -319,7 +326,11 @@ func cardOf(live session.Session, now time.Time, token string) sessionView {
 		// production display as running, and reading it is what FR-019a forbids.
 		DisplayState: live.DisplayState(now),
 		StartCommand: live.StartCommand,
-		Age:          formatAge(now.Sub(live.CreatedAt)),
+		// The record's own method again, for the reason DisplayState is one: a
+		// derived value is computed where it is defined, and the card renders
+		// what it was handed.
+		Mode: live.Mode(remoteCommand),
+		Age:  formatAge(now.Sub(live.CreatedAt)),
 		// The token is also what makes the card render its action row (view.go),
 		// so every card either offers a control it can authorise or offers none.
 		PageToken: token,
@@ -396,7 +407,7 @@ func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
 
 	s.renderPage(w, r, http.StatusOK, "session", sessionPageView{
 		Operator: operator,
-		Session:  cardOf(live, s.clock.Now(), token),
+		Session:  cardOf(live, s.clock.Now(), token, s.cfg.RemoteControlCommand),
 		Pane:     pane,
 	})
 }

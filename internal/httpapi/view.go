@@ -57,6 +57,23 @@ type sessionView struct {
 	// dressed as a fact.
 	StartCommand string
 
+	// Mode is where this session is driven from, in the two words
+	// session.Mode spells: local, or remote (FR-031, T021).
+	//
+	// It is not the same fact as StartCommand above, which is why both are here.
+	// The name says what is running; the mode says whether claude.ai can reach
+	// it. Reading the name and knowing which one means remote is configuration —
+	// the settings page, not a card — so a card that showed only the name would
+	// be asking an operator to hold this daemon's configuration in their head to
+	// answer the one question the toggle exists for.
+	//
+	// Derived by the record's own method rather than carried on it, so this
+	// field is the projection's copy of an answer computed at render (research
+	// R5). There is no case in which it is empty: Mode returns one of its two
+	// constants for every record, including an adopted one, which is why the
+	// card renders it unconditionally where it states the absence of a name.
+	Mode session.Mode
+
 	// Age is already formatted — coarse, human-readable, computed server-side.
 	// There is no ticking clock in the browser for it to drift from, and no
 	// duration formatting inside a template, so the string is the projection's
