@@ -24,13 +24,17 @@ package config
 // file does not open one either: it is handed bytes, so there is no path here
 // for a write to be added to later.
 //
-// It carries the grammar and nothing else. Which keys exist, which have been
-// renamed, what mode the file must be, and what happens when it is absent are
-// decisions about a *configuration* rather than about a line of text, and they
-// arrive with T004 to T006.
+// It carries the grammar and the refusals a *configuration* makes — which keys
+// exist, which have been renamed, and which schema the file was written against.
+// What mode the file must be and what happens when it is absent are decisions
+// about the file on disk rather than about its contents, and they arrive with
+// T005 and T006.
 
 import (
 	"fmt"
+	"io"
+	"os"
+	"strconv"
 	"strings"
 )
 
@@ -40,7 +44,73 @@ const (
 
 	commentPrefix     = "#"
 	keyValueSeparator = "="
+
+	// maxKeyLen bounds what an error message is willing to quote back.
+	//
+	// The longest key this daemon has is 22 characters, so no legitimate key is
+	// anywhere near this. The bound exists for the illegitimate case: `openssl
+	// rand -hex 32` produces 64 characters that are all inside [a-z0-9_], so a
+	// secret pasted onto a line without its key parses as a perfectly valid key
+	// and would otherwise become an `unknown key %q` message with the secret in
+	// it, written to stderr and kept in the journal forever. Over the bound, the
+	// message says the line number and nothing else.
+	maxKeyLen = 32
+
+	// versionKey records which schema the file was written against. It is not a
+	// setting and maps to no environment variable; absent means SchemaVersion 1,
+	// which is what every hand-written file is.
+	versionKey = "version"
 )
+
+// SchemaVersion is the newest config-file schema this daemon understands. A file
+// declaring a higher one is refused rather than read optimistically: the reason
+// to bump this is that a key changed meaning, and guessing at the new meaning is
+// how a containment boundary ends up set to something the operator did not write.
+const SchemaVersion = 1
+
+// renamedKeys maps a former spelling to its current one.
+//
+// It is empty today because nothing has been renamed yet, and it exists anyway
+// because the alternative is discovering the need for it during the release that
+// renames something. A key in here is *not* unknown: it loads, and startup says
+// loudly that both spellings name one setting and which one to move to. That
+// distinction is the whole point — it is what tells a typo apart from an
+// operator whose file predates a rename.
+//
+// It stays empty until a rename actually ships. Entering a spelling that never
+// shipped would invent version skew: an operator would be warned to migrate off
+// a key no released daemon ever read.
+var renamedKeys = map[string]string{}
+
+// Vars is every environment variable the daemon reads, and therefore every key a
+// configuration file may set. Order is the order config.go declares them.
+//
+// It is a function rather than a slice so a caller cannot append to the list the
+// unknown-key check is made of. TestVarsNamesEveryDeclaredVariable pins it to the
+// constants in config.go, so a variable added there and forgotten here fails the
+// suite rather than becoming a key an operator is told does not exist.
+func Vars() []string {
+	return []string{
+		EnvSharedSecret,
+		EnvAllowedRoots,
+		EnvListen,
+		EnvMaxSessions,
+		EnvDestroyOnShutdown,
+		EnvSessionLifetime,
+		EnvSessionLifetimeMax,
+		EnvIdleTimeout,
+		EnvIdleTimeoutMax,
+		EnvCreateRatePerMin,
+		EnvMaxBodyBytes,
+		EnvAccessTeamDomain,
+		EnvAccessAUD,
+		EnvAccessAllowedEmails,
+		EnvMaxStreams,
+		EnvStartCommand,
+		EnvStartCommands,
+		EnvRemoteControlCommand,
+	}
+}
 
 // File is a parsed configuration file: the operator's own statement of how this
 // daemon behaves.
@@ -95,14 +165,34 @@ func KeyForVar(name string) string {
 // VarForKey maps a file key back to its environment variable name.
 func VarForKey(key string) string { return envPrefix + strings.ToUpper(key) }
 
-// ParseFile turns the bytes of a configuration file into the settings it makes.
+// ParseFile turns the bytes of a configuration file into the settings it makes,
+// writing the renamed-key warning to warn.
 //
 // path is used to say *where* a defect is and for nothing else — no error in
 // here carries the content of a line. A malformed line may be the shared secret
 // with a typo in it, and a startup error is written to stderr and kept in the
 // journal forever; a line number is everything the operator needs and nothing an
-// attacker does.
-func ParseFile(path string, data []byte) (*File, error) {
+// attacker does. The one exception is a key short enough to be a key (see
+// maxKeyLen), because naming the misspelling is the difference between a
+// five-second fix and an afternoon.
+func ParseFile(path string, data []byte, warn io.Writer) (*File, error) {
+	return parseFile(path, data, renamedKeys, warn)
+}
+
+// parseFile takes the rename table as a parameter rather than reading the
+// package global, so the mechanism can be exercised with a fixture table instead
+// of requiring a real rename to exist before it is known to work. A rename that
+// is first proven by the release that needs it is a rename proven in production.
+func parseFile(path string, data []byte, renames map[string]string, warn io.Writer) (*File, error) {
+	if warn == nil {
+		// Discarding here would make the renamed-key warning silent, and a file
+		// that still works is the one thing that will never prompt an operator
+		// to update it. LoadFrom makes the same substitution for the same reason.
+		warn = os.Stderr
+	}
+
+	known := knownKeys()
+	seen := make(map[string]int)
 	f := &File{path: path, values: make(map[string]string)}
 
 	for i, raw := range strings.Split(string(data), "\n") {
@@ -132,18 +222,62 @@ func ParseFile(path string, data []byte) (*File, error) {
 			return nil, err
 		}
 
+		// The rename resolves before the repeated-key check rather than after,
+		// so a file setting both spellings of one setting is the repetition it
+		// is. Checked the other way round the two spellings look like two keys
+		// and one silently overwrites the other — which is the exact outcome
+		// refusing a repeat exists to prevent.
+		if current, renamed := renames[key]; renamed {
+			if err := warnRenamedKey(warn, path, line, key, current); err != nil {
+				return nil, err
+			}
+			key = current
+		}
+
+		if first, dup := seen[key]; dup {
+			return nil, fmt.Errorf("config file %s:%d repeats key %q, first set on line %d; refusing to start", path, line, key, first)
+		}
+		seen[key] = line
+
 		// Only the ends are trimmed. Whitespace *inside* a value belongs to the
 		// operator: start_commands holds whole command lines, and collapsing
 		// their spaces would change what runs.
-		//
-		// A repeated key overwrites here, which is not the answer — refusing it
-		// is, and that arrives with the rest of the file-level refusals in T004.
-		// The grammar's job is to say what a line means, not which of two lines
-		// meaning different things should win.
-		f.values[key] = strings.TrimSpace(rawValue)
+		value := strings.TrimSpace(rawValue)
+
+		// version is the one key that is not a setting, so it is consumed here
+		// rather than stored. Left in, the settings page would render a row for
+		// something no environment variable sets and no operator can change the
+		// meaning of.
+		if key == versionKey {
+			if err := checkSchemaVersion(path, line, value); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		// A key that maps to no variable is refused, never skipped. A misspelled
+		// `alowed_roots` that quietly did nothing is how a containment boundary
+		// ends up unset on a daemon whose operator believes they set it.
+		if !known[key] {
+			return nil, fmt.Errorf("config file %s:%d has unknown key %q; refusing to start", path, line, key)
+		}
+
+		f.values[key] = value
 	}
 
 	return f, nil
+}
+
+// knownKeys is the file spelling of every variable the daemon reads. It is built
+// per parse rather than kept as a package map so there is no shared table for a
+// caller to add a key to.
+func knownKeys() map[string]bool {
+	names := Vars()
+	keys := make(map[string]bool, len(names))
+	for _, name := range names {
+		keys[KeyForVar(name)] = true
+	}
+	return keys
 }
 
 // validateKey holds a key to the alphabet an environment variable name maps onto.
@@ -160,11 +294,61 @@ func validateKey(path string, line int, key string) error {
 	if key == "" {
 		return fmt.Errorf("config file %s:%d has no key before the %q; refusing to start", path, line, keyValueSeparator)
 	}
+	// Refused before anything quotes it. Everything past this point names the
+	// key in its message, and a 64-character run of hex inside [a-z0-9_] is a
+	// secret pasted where a key belongs far more often than it is a key.
+	if len(key) > maxKeyLen {
+		return fmt.Errorf("config file %s:%d has a key longer than %d characters, so no key this daemon has could be meant; refusing to start",
+			path, line, maxKeyLen)
+	}
 	for _, c := range key {
 		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
 			return fmt.Errorf("config file %s:%d has a key outside [a-z0-9_]; keys are lower-case, and are the environment variable without its %s prefix; refusing to start",
 				path, line, envPrefix)
 		}
+	}
+	return nil
+}
+
+// checkSchemaVersion reads the one key that is not a setting.
+//
+// A file outlives the binary that reads it, and an operator who updates the
+// daemon must not find it refusing to start because their file predates a
+// rename. This is half of that: the version says which schema the file was
+// written against, and renamedKeys is the other half. The daemon never writes
+// this key — reading one it did not write is the point.
+//
+// The value is never quoted back. `version = <secret>` is a plausible typo, and
+// the number the operator wrote is not information the message needs.
+func checkSchemaVersion(path string, line int, value string) error {
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return fmt.Errorf("config file %s:%d has a version that is not a whole number; refusing to start", path, line)
+	}
+	if n < 1 {
+		return fmt.Errorf("config file %s:%d has version %d; the first schema is 1; refusing to start", path, line, n)
+	}
+	if n > SchemaVersion {
+		return fmt.Errorf("config file %s:%d has version %d; this daemon understands %d; refusing to start", path, line, n, SchemaVersion)
+	}
+	return nil
+}
+
+// warnRenamedKey says loudly that a key loaded under its former spelling.
+//
+// A warning and not a refusal, because the operator's file is not wrong — it is
+// old, and refusing to start over a spelling this daemon still understands would
+// make every rename a breaking change. Loud, and on every start rather than
+// once: the file still works, so nothing else will ever prompt anyone to change
+// it. A write failure is fatal for the reason warnDefaultRoot's is — a warning
+// nobody receives is a warning that was not emitted.
+func warnRenamedKey(warn io.Writer, path string, line int, former, current string) error {
+	banner := fmt.Sprintf(
+		"crswd: config file %s:%d: %q was renamed to %q; accepting it for now — both spellings set the same thing, so update the file when convenient.\n",
+		path, line, former, current)
+
+	if _, err := io.WriteString(warn, banner); err != nil {
+		return fmt.Errorf("emit the renamed-key warning for the config file at line %d: %w", line, err)
 	}
 	return nil
 }
