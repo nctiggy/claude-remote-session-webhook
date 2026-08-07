@@ -60,7 +60,7 @@ environment where they cannot fail.
 
 - [x] T005 [US2] Attach the deployment assets to the release in `.github/workflows/release.yml`: `crswd.service` from `deploy/crswd.example.service`, `cloudflared.example.yml`, and `crswd-api`. Test `TestReleaseCarriesEveryAsset`. **Must fail when** the deployment files are dropped as "not the real artifact" — an operator with only a binary still has to write a unit by hand, which is the state this milestone exists to end.
 
-- [ ] T006 [US2] Generate `SHA256SUMS` covering **every** asset in `.github/workflows/release.yml`. Test `TestEveryAssetHasAChecksum`. **Must fail when** only the binaries are summed.
+- [x] T006 [US2] Generate `SHA256SUMS` covering **every** asset in `.github/workflows/release.yml`. Test `TestEveryAssetHasAChecksum`. **Must fail when** only the binaries are summed.
 
 - [ ] T007 [US2] Add retention to `.github/workflows/release.yml`: keep the last **20**, never delete the two most recent, never delete one a pointer still resolves to. Test `TestRetentionKeepsTwentyAndNeverTheNewestTwo`. **Must fail when** it prunes by age alone and deletes what `latest` points at — a `latest` that 404s is worse than an unbounded list.
 

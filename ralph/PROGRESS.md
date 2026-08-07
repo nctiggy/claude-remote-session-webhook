@@ -325,3 +325,74 @@ BLOCKED-ON-HUMAN; T014 and after wait on it.
 3. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
 4. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
 5. **No ad-hoc defects observed** in the code touched.
+
+---
+
+## Iteration 6 — 2026-08-07 23:19
+
+**Did:** T006. A `Checksum every asset` step between `Stage` and `Publish` in `release.yml`
+writes `dist/SHA256SUMS` over every regular file in `dist/`, and `gh release create` uploads it
+as the sixth asset. `TestEveryAssetHasAChecksum` in `internal/release/assets_test.go`, plus
+`SHA256SUMS` added to `TestReleaseCarriesEveryAsset`'s `want` via a new `generated` list. Gate
+green: build, vet, `go test ./...`, `golangci-lint run` (2.12.2, 0 issues), `gofmt -l` empty.
+
+**Learned:**
+
+- **The step is *replayed*, not pattern-matched, and `stepScript` is the reusable part.** It
+  pulls a named step's `run:` block out of the YAML and dedents it, so the test builds a fake
+  `dist/`, runs the real shell under `bash -e` (GitHub's own flags for a step naming no shell),
+  and reads the file that comes out. A regex over `sha256sum …` would have agreed with anything
+  that looked about right. **T007's retention and T012's install job can both use `stepScript`.**
+- **`sha256sum -c SHA256SUMS` is run at the end, in the fake `dist/`** — the exact command
+  `quickstart.md` promises an operator. It is what caught the self-referential-file mutation
+  with `SHA256SUMS: FAILED`, and it pins the two-space `<64 hex>  <name>` format for free, which
+  **T015's Go verifier must parse**.
+- **The list is derived from `dist/`, never typed.** `find . -maxdepth 1 -type f -printf '%P\n'`
+  after `cd dist`. Three consequences worth not rediscovering: `-maxdepth 1 -type f` is what
+  excludes `dist/amd64/` and `dist/arm64/`, the tarballs' *input*; `%P` after `cd` is what makes
+  the names bare, which `sha256sum -c` needs because it runs where `dist/` does not exist; and
+  the sums go into a variable **before** the redirect creates the file, or `SHA256SUMS` appears
+  in its own list holding the checksum of the empty file it was a moment earlier.
+- **Step order is asserted separately, because the replay cannot see it.** A checksum step above
+  `Stage the deployment files` sums exactly the two tarballs and every other assertion still
+  passes — the contract's named failure, reached without anything going red.
+- **All six mutations were run and each fails with the right message**: `sha256sum crswd_*.tar.gz`
+  (names the three missing deployment files); `-maxdepth 2` (names `amd64/crswd` as a path);
+  redirect instead of deferred write (fires twice — an unpublished name, and `sha256sum -c`
+  reporting `SHA256SUMS: FAILED`); no `cd dist`, so every name carries `dist/`; the step moved
+  above `Stage`; and `dist/SHA256SUMS` computed but left out of the upload.
+- **`SHA256SUMS.sig` is skipped by prefix, not by name** (`strings.HasPrefix(name, "SHA256SUMS")`),
+  so **T014 needs no change to `TestEveryAssetHasAChecksum`** — a signature over the sums file
+  cannot be inside it. T014 does need `"SHA256SUMS.sig"` appended to the new `generated` list, or
+  `TestReleaseCarriesEveryAsset` goes red on the unexpected upload.
+- **gosec fires on ordinary test scaffolding.** `os.MkdirAll(…, 0o755)` is G301 and
+  `os.WriteFile(…, 0o644)` is G306 even inside `t.TempDir()`; `0o750`/`0o600` satisfy both with
+  no `//nolint`. Only the `os.ReadFile` of a computed path (G304) needed one.
+- **actionlint still cannot be run here** (not installed; the sandbox refused to fetch it, and
+  approval for `shellcheck` on a heredoc was refused too). The step's shell follows the pattern
+  the rest of the file already uses. **`ci.yml`'s guardrails job runs actionlint 1.7.7 over every
+  workflow (`ci.yml:88`), which shellchecks `run:` bodies — that is the first real check of it.**
+- **No tagged suite was needed.** Nothing here is behind a build tag, and neither
+  `deploy/crswd.example.service` nor `cmd/crswd` was touched. **T008 still must run
+  `-tags quickstart ./cmd/crswd`** — it edits the unit file that `quickstart_test.go:1687` reads.
+
+**Left:** T007–T021. T007 (retention) is next and unblocked; it edits the same workflow, so run
+`go test ./internal/release` after any edit to `release.yml`, and `stepScript` is already there
+to replay whatever step it adds. T013 remains BLOCKED-ON-HUMAN; T014 and after wait on it.
+
+**Findings:**
+
+1. **`data-model.md` says `SHA256SUMS` "covers every asset above", and the list above it includes
+   `SHA256SUMS.sig`.** Taken literally that is impossible — the signature is made *from* the sums
+   file, so it cannot be inside it. Built to the only consistent reading: the two tarballs and the
+   three deployment files, five of the seven names. Not fixed, because it is one line in a
+   superseded artifact and outside this task (AR-008), but **T015's verifier must expect exactly
+   this**, and `contracts/release.md`'s wording ("`SHA256SUMS` covers every asset") has the same
+   ambiguity. Worth a fix-lane line if anyone touches either.
+2. **Iteration 5's finding about `crswd-api` arriving non-executable still stands** — and T006
+   does not change it: a checksum records bytes, not a file mode, so `sha256sum -c` will pass on
+   a `crswd-api` the operator still has to `chmod`. Still T021's README.
+3. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
+4. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
+5. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
+6. **No ad-hoc defects observed** in the code touched.
