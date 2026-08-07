@@ -168,3 +168,18 @@ being run.
 
 **Check the linter prints 2.12.2.** A pre-v2 binary reads this repository's v2
 config, runs zero linters, and exits 0 — a green that means nothing.
+
+---
+
+## Phase 8: The pointer (added mid-milestone, from T011's findings)
+
+T008–T011 built the picker's markup, styling, enhancement and keyboard. **Nothing
+selects an option with a pointer.** `.combo-list li` carries `cursor: pointer` from
+T009, so the affordance is drawn and does nothing — the first thing an operator
+using a mouse will try.
+
+T011 found it and correctly did not fix it: its task text named four keys, a click
+handler is outside that, and AR-008 is load-bearing with four stories queued on one
+file. Flagging beat scope-creeping.
+
+- [ ] T017 [US4] Add pointer selection **and** blur-close together in `web/static/crswd.js`. Bind **`mousedown`** on an option, not `click` — a blur-close fires first and would eat the click, which is why these two cannot be written separately. Pointer selection runs the same `activate` and accept path `Enter` already uses, so this adds a trigger and not a second behaviour. Blur-close hides the listbox and sets `aria-expanded="false"` when focus leaves the combo, without disturbing the typed text. Tests in `internal/httpapi/stylesheet_test.go`: `TestComboOptionIsPointerSelectable` and `TestComboClosesOnBlur`. **Must fail when** `click` is used instead of `mousedown`, which makes selection work only when the blur handler happens to lose the race — a bug that reproduces intermittently and reads as flakiness. Also **must fail when** the affordance is removed instead of implemented: deleting `cursor: pointer` would make the picker consistent and worse.

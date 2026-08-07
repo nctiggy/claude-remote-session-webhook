@@ -207,6 +207,10 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
 - [ ] T014 🔒 Resolve the start command the way the session will, or say what was checked
 - [ ] T015 Correct the documented audit-trail command
 
+### US4 — the pointer, which the keyboard task could not reach
+
+- [ ] T017 Pointer selection **and** blur close, written together in `web/static/crswd.js`
+
 ### Ship it
 
 - [ ] T016 Docs, and assert `go.sum` is still absent
