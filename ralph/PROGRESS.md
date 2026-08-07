@@ -194,3 +194,74 @@ T013 remains BLOCKED-ON-HUMAN; T014 and after wait on it.
 2. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands** — the `127.0.0.1:8765`
    warning is stale. The suite passed again here with the deployed daemon holding that port.
 3. **No ad-hoc defects observed** in the code touched.
+
+---
+
+## Iteration 4 — 2026-08-07 23:05
+
+**Did:** T004. `.github/workflows/release.yml` — push to `main` builds `linux/amd64` and
+`linux/arm64` with `CGO_ENABLED=0`, stamps `buildinfo.Version` with `v0.$(git rev-list --count
+HEAD)`, and publishes `crswd_<version>_linux_<arch>.tar.gz` with `gh release create`. Four tests
+in `internal/release/assets_test.go`. Gate green: build, vet, `go test ./...`, `golangci-lint run`
+(2.12.2, 0 issues), `gofmt -l` empty.
+
+**Learned:**
+
+- **`internal/release` has no non-test file and does not need one.** `go build ./...`,
+  `go vet ./...` and `golangci-lint run` are all happy with a directory holding only
+  `package release_test`. Confirmed rather than assumed, because it decides whether T009's
+  `install_test.go` needs a production file invented for it to sit beside. **It does not** — and
+  a Go constant for the asset name should wait for T018, the first thing with a real reason to
+  build that string in Go, rather than being created here for a test to call. (`internal/release`
+  is a *test* package: nothing ships from it.)
+- **The linter does read that package.** Verified by removing the `//nolint:errcheck` on
+  `f.Close()` and watching errcheck fire. A test-only package silently skipped by the gate would
+  have been worth knowing about.
+- **`debug/elf` rather than `ldd`, and the reason generalises to T017's smoke test.** `ldd` cannot
+  read the cross-compiled arm64 artifact on an amd64 host — the artifact most likely to be wrong —
+  while `PT_INTERP` plus `ImportedLibraries()` is exactly what `ldd` reports on and is stdlib.
+  **Both were mutated and both fire**: with `CGO_ENABLED=1` the amd64 build gains a dynamic loader
+  and `libc.so.6`, and the arm64 build fails outright in the assembler (`gcc_arm64.S: no such
+  instruction`), which is the same fact from the other end — the cross-compile only works because
+  cgo is off.
+- **All five workflow mutations were run and each fails with the right message**: tag-only trigger,
+  `fetch-depth: 1`, `buildinfo.version` (lower-case v), `for arch in amd64` alone, and
+  `crswd-${VERSION}-linux-` renaming. The wrong-symbol one is Iteration 2's silent failure, now
+  caught in the file where it would actually be typed: `TestWorkflowStampsTheSymbolTheBinaryReads`
+  reads `theStampedSymbol` out of `cmd/crswd/version_test.go` **as text**, because it is an
+  unexported constant in another package's test binary and copying it would be the drift itself.
+  **T014 adds `-ldflags` nothing, but T005–T007 all edit this file: run `go test ./internal/release`
+  after any edit to it.**
+- **`go build -o dist/$arch/crswd` creates the missing parent directories**, so the workflow's
+  `mkdir -p dist` is enough. Checked, because a `no such file or directory` here would only ever
+  appear in CI.
+- **`go test ./...` now cross-compiles the daemon twice** (≈6s amd64, ≈9s arm64, in parallel).
+  That is new cost on every untagged run, including CI's.
+- **actionlint could not be run here** — it is not installed and the sandbox refused to fetch it.
+  The workflow's shell was written to the pattern `claude-issue.yml` already proves passes
+  actionlint's shellcheck pass (step-level `env:`, every expansion quoted). **CI's guardrails job
+  is the first real check of it.**
+- Runner choice is deliberate and documented in the file: GitHub-hosted, *unlike* `ci.yml`. The
+  self-hosted runners are the operator's own machines, which also run unsandboxed sessions
+  (`docs/github-automation.md` §2), and these bytes are what other people execute. #77's reason for
+  leaving GitHub-hosted runners was blocked merges; a slow release blocks nothing.
+
+**Left:** T005–T021. T005 (attach the deployment assets) is next and unblocked; it edits
+`release.yml`'s publish step and wants `TestReleaseCarriesEveryAsset` beside the four tests already
+in `internal/release/assets_test.go`. T013 remains BLOCKED-ON-HUMAN; T014 and after wait on it.
+
+**Findings:**
+
+1. **`plan.md` says `release.yml` is "tag-triggered"; `tasks.md` and `contracts/release.md` say
+   merge-to-main, and the contract has a test whose whole point is that tag-only is wrong.**
+   Built to `tasks.md`, which `IMPLEMENTATION_PLAN.md` names the single source of truth. Not
+   fixed: it is one line in a superseded artifact, outside this task (AR-008). Worth a fix-lane
+   line if anyone touches `plan.md`.
+2. **`tasks.md` still had T003 unticked** while `IMPLEMENTATION_PLAN.md` had it ticked — Iteration
+   3's `docs(ralph)` commit touched only the plan. Ticked here along with T004, because a
+   completed task left open in the file the plan calls authoritative is what makes a fresh context
+   redo it.
+3. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands** —
+   `audit.ActionSessionMode` is still absent from the list its comment calls exhaustive.
+4. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
+5. **No ad-hoc defects observed** in the code touched.

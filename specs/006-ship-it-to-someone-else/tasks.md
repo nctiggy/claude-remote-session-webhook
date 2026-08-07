@@ -50,13 +50,13 @@ environment where they cannot fail.
 
 - [x] T002 [US1] Add `--version` to `cmd/crswd/main.go`, beside the existing `flag.Parse()`. It prints `crswd v0.42` when stamped and `crswd dev (not a release)` when not, then exits 0 without starting the daemon. Tests in `cmd/crswd/version_test.go` (`-tags quickstart`): `TestUnreleasedBuildSaysSo`, `TestStampedVersionIsReported` (build with `-ldflags "-X github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo.Version=v0.42"` and assert the output). **Must fail when** the ldflags path is wrong — that fails silently, because the default is itself a valid string.
 
-- [ ] T003 [US1] Add `GET /dashboard/version` in new file `internal/httpapi/version.go`, reading `buildinfo.Version` and registered through the same middleware every other page uses, audit action `dashboard.version`. Tests in `internal/httpapi/version_test.go`: `TestFlagAndRouteAgree` (both read the same variable), `TestVersionRouteEmitsOneAuditRecord`. **Must fail when** the route is given its own copy of the version and the two drift.
+- [x] T003 [US1] Add `GET /dashboard/version` in new file `internal/httpapi/version.go`, reading `buildinfo.Version` and registered through the same middleware every other page uses, audit action `dashboard.version`. Tests in `internal/httpapi/version_test.go`: `TestFlagAndRouteAgree` (both read the same variable), `TestVersionRouteEmitsOneAuditRecord`. **Must fail when** the route is given its own copy of the version and the two drift.
 
 ---
 
 ## Phase 2: US2 — Releases exist (P2)
 
-- [ ] T004 [US2] Create `.github/workflows/release.yml` triggered on merge to `main`, computing the version as `v0.$(git rev-list --count HEAD)` and building `linux/amd64` and `linux/arm64` with `CGO_ENABLED=0`, arm64 **cross-compiled on the same runner** via `GOARCH=arm64`. Assets named exactly `crswd_<version>_linux_amd64.tar.gz` and `crswd_<version>_linux_arm64.tar.gz`. Test `TestBinaryIsStaticallyLinked` in `internal/release/assets_test.go`. **Must fail when** `CGO_ENABLED=0` is dropped — it still works on the builder, and fails only on someone else's host.
+- [x] T004 [US2] Create `.github/workflows/release.yml` triggered on merge to `main`, computing the version as `v0.$(git rev-list --count HEAD)` and building `linux/amd64` and `linux/arm64` with `CGO_ENABLED=0`, arm64 **cross-compiled on the same runner** via `GOARCH=arm64`. Assets named exactly `crswd_<version>_linux_amd64.tar.gz` and `crswd_<version>_linux_arm64.tar.gz`. Test `TestBinaryIsStaticallyLinked` in `internal/release/assets_test.go`. **Must fail when** `CGO_ENABLED=0` is dropped — it still works on the builder, and fails only on someone else's host.
 
 - [ ] T005 [US2] Attach the deployment assets to the release in `.github/workflows/release.yml`: `crswd.service` from `deploy/crswd.example.service`, `cloudflared.example.yml`, and `crswd-api`. Test `TestReleaseCarriesEveryAsset`. **Must fail when** the deployment files are dropped as "not the real artifact" — an operator with only a binary still has to write a unit by hand, which is the state this milestone exists to end.
 
