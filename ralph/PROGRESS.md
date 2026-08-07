@@ -1003,3 +1003,118 @@ are the ones that can run.
    uncapped-union note and iteration 7's missing wiring test are also still open and unowned.
 6. **#95 still has not received T002's SHA** (`ef18756`), because `gh` is not an approved
    command in the loop's session. Unchanged since iteration 2 and still needs a human.
+
+---
+
+## Iteration 13 — 2026-08-07 18:22
+
+**Did:** T013, in commit `0c80428`. The invariant "every line on stdout is an audit record"
+is now stated in `cmd/crswd/main.go` where both streams are chosen, and held by three tests:
+`TestAuditRecordsGoToStdout` (`internal/httpapi/server_test.go`), `TestDiagnosticsGoToStderr`
+and `TestStartupDiagnosticsGoToStderr` (new `cmd/crswd/main_test.go`), and
+`TestNoSecretInAnyDiagnostic` (`internal/config/depcheck_test.go`). No stream was re-routed,
+because none needed to be — see below.
+
+**Learned:**
+
+- **The shipped daemon was already writing to the right two streams.** Read every sink before
+  changing anything: `audit.New()` takes `os.Stdout` (audit.go:216); `main.go` hands
+  `os.Stderr` to `CheckDependencies`; `config.Load` hands `os.Stderr` to `LoadFrom`;
+  `reportToStderr` (httpapi) and `reportToLog` (session) both go through the standard logger,
+  whose default is `os.Stderr` and which nothing in this repo moves. **Nothing in the module
+  writes a diagnostic to stdout.** The plan's resolved decision — "the daemon's own
+  diagnostics share stdout with its records" — is imprecise about the mechanism, but its
+  *conclusion* is untouched and `contracts/diagnostics-and-probe.md` already states the real
+  one: **systemd merges both fds into one journal**, which is why the contract says "document
+  the filter anyway". So this was not a `NEEDS CLARIFICATION`: the contract and the fix both
+  survive the correction, only the one-line summary in the plan's table does not.
+- **Therefore the defect T013 actually closes is the absence of the rule, not a misroute.**
+  Every sink was right by accident and nothing anywhere said which stream it belonged on. One
+  `fmt.Println` added later costs an audit record from the documented reader, silently, and
+  the daemon that shipped it looks identical to the one that did not. That is the shape this
+  milestone exists for, arriving from the other direction: not "the test read the wrong
+  layer", but "there was no test at all and the code happened to be right".
+- **`New` vs `newServer` is the whole point of the httpapi test.** `newTestServer`'s own
+  comment (server_test.go:35) says every fixture goes through `newServer` *specifically so
+  that records do not land on the test binary's stdout* — so the production constructor's
+  choice of sink had no caller-side test anywhere. `TestAuditRecordsGoToStdout` is the only
+  test in that package that goes through `New` and drives a request. **Order is load-bearing
+  and asserted by construction**: `audit.New()` reads `os.Stdout` at the moment it is called,
+  so the pipe swap must happen *before* `New`, or the test reads an empty pipe while the
+  records go to the terminal.
+- **Swapping `os.Stderr` does not redirect `log.Printf`.** Package `log`'s default logger
+  captured the `*os.File` at its own init, so it holds the original no matter what
+  `os.Stderr` is later set to. `log.SetOutput` is the only seam — which is what
+  `internal/audit/leak_test.go:593` already uses, and why `reportToStderr` must keep going
+  through `log` rather than writing to `os.Stderr` directly: that leak suite depends on it.
+- **Restore the swapped stdout in `t.Cleanup`, not at the end of the body.** A `t.Fatalf`
+  while the pipe is installed would otherwise print into the pipe. Also: `strings.Split("")`
+  is one line, not zero, so "nothing reached stdout" needs its own check ahead of the count
+  or the failure message says "wrote 1 lines" and shows nothing.
+- **The module-wide sweep is an AST walk, following `TestNeverExecutesInstall`** (depcheck_test.go:473)
+  and `bypass_build_test.go` — both already assert structure rather than behaviour for
+  exactly this reason: the thing forbidden is one nobody writes a test for. Two exemptions,
+  and they are different in kind: `internal/audit/audit.go` by **file** (writing the trail is
+  all it does), and `runConfigCommand`'s arguments by **call** — naming the call rather than
+  `main.go` stops an ordinary print added to `main.go` later from inheriting the exemption.
+  The walk fails loudly if it does not find both, so a wrong root or a renamed file cannot
+  read as "no violations".
+- **Mutation-verified five ways, each reverted:** (a) `reportToStderr` also printing to
+  stdout — `TestAuditRecordsGoToStdout` fails, naming the interleaved line, which is this
+  task's named must-fail; (b) `New` building `audit.NewTo(os.Stderr, …)` — same test fails
+  on the empty stream; (c) `reportToLog` in `internal/session` printing to stdout —
+  `TestDiagnosticsGoToStderr` fails with `reaper.go:305`; (d) `CheckDependencies(os.Stdout)`
+  in main.go — both `cmd/crswd` tests fail; (e) `warnStartCommandNotOnPath` handed `command`
+  instead of `binary` — `TestNoSecretInAnyDiagnostic` fails with the credential in the
+  banner. **(e) caught a flaw in my own test first**: the "the warning happened at all"
+  guard was `"frobnicate"` *with quotes*, so the verbatim mutation tripped that `t.Fatalf`
+  instead of the leak assertion. The guard is now unquoted on purpose, so the sweep is what
+  reports the leak.
+- Linter confirmed v2 before trusting the green: `golangci-lint 2.12.2`, 0 issues.
+  `go build`, `go vet`, `go test ./...` green; `gofmt -l` clean; `go vet` compiles all three
+  tagged suites. No `go.sum`.
+
+**Left:** T014, T015, T016. **T014 is next** and is the security one: resolve the start
+command through a login shell in `internal/config/depcheck.go`, four tests in
+`depcheck_test.go`, and the tmux probe stays fatal and untouched.
+
+**Findings:**
+
+1. **`-tags quickstart` is no longer blocked by the port, and iterations 9–12's stated reason
+   is now stale.** Verified this iteration: `127.0.0.1:8765` *is* held by the deployed daemon
+   (`ss -ltn`), **but the suite stopped binding it** — `freeAddrOn` (quickstart_test.go:437)
+   was written for exactly that, and no test in `cmd/crswd` names 8765 outside a comment. The
+   remaining reason not to run it here is that it starts real tmux servers and real sessions
+   on the host running the live deployment, and this iteration's `cmd/crswd` change is
+   comments plus one untagged test that only parses source. **T015 needs quickstart and should
+   run it**; `go vet -tags quickstart ./...` is AGENTS.md's named fallback and was run.
+2. **`journalctl -p` may be a second way to separate the two streams, and T015 should not
+   adopt it.** systemd assigns priority `info` to a unit's stdout and `err` to its stderr,
+   so `journalctl --user -u crswd -p 6..6 -o cat` would in principle filter to records
+   alone. It is not the contract's answer, it depends on a systemd behaviour the daemon does
+   not control, and it silently returns nothing if `StandardOutput=` is ever changed. Noting
+   it so the next iteration does not rediscover it and think it is an improvement — the
+   contract's grep filter is the one T015 must document.
+3. **`Config.String()` redacts the shared secret and nothing else** (config.go:461). It
+   prints `start_commands:%v`, and a start command line is configuration whose arguments an
+   operator may fill with a credential. Nothing formats a whole Config into a diagnostic
+   today — `TestNoSecretInAnyDiagnostic` now pins that for this package's two messages — but
+   the redaction is narrower than its doc comment's "cannot leak it" suggests. **T016 or
+   milestone 6**, and it is a docs-or-redaction decision rather than a bug.
+4. **Nothing selects a picker option with the pointer** (iterations 10–12, still open), and
+   **the list has no blur close**. **T017 now owns both** and the plan lists it after T015 —
+   the two must be written together, `mousedown` not `click`, or the blur eats the selection.
+5. Iteration 9's reduced-motion hole is still open and still **T016's or milestone 6's**:
+   nothing in `crswd.css` stops an `animation` under `prefers-reduced-motion`, only a
+   `transition`.
+6. `docs/components.md` still documents no `.combo`, `.combo-list`, `.combo-status` or
+   `.switch-*` entry (iterations 8–12, still open, still **T016's**).
+7. The stale-prose findings from iterations 4–7 are all still open and all still **T016's**:
+   `outcome.go`'s `outcomeBadStartCommand` comment, `config.example:157`, `README.md`'s
+   `CRSW_DESTROY_ON_SHUTDOWN` row, `settings.go:114-118`, and
+   `contracts/directory-suggestions.md:62`'s comma-spelled `allowed_roots`. **T016 has one
+   more now**: the plan's resolved-decisions table says the daemon's diagnostics share stdout
+   with its records, and they do not — see this iteration's second bullet. Iteration 6's
+   uncapped-union note and iteration 7's missing wiring test are also still open and unowned.
+8. **#95 still has not received T002's SHA** (`ef18756`), because `gh` is not an approved
+   command in the loop's session. Unchanged since iteration 2 and still needs a human.

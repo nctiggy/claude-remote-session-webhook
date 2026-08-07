@@ -213,7 +213,19 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
 
 ### Two defects in shipped code (independent)
 
-- [ ] T013 Diagnostics to stderr, audit records to stdout
+- [x] T013 Diagnostics to stderr, audit records to stdout
+  - **The shipped daemon already routed both streams correctly** — measured, not read:
+    the probe's banners, the loader's and both `log` channels are on stderr, only the
+    trail is on stdout. #88's cause is journald merging the two fds, which
+    `contracts/diagnostics-and-probe.md` already anticipates ("document the filter
+    anyway, because systemd merges both into the journal"). So T013 is the invariant
+    written down and enforced, not a re-routing. Three tests: `TestAuditRecordsGoToStdout`
+    (`internal/httpapi`, the production `New` on the process's real stdout),
+    `TestDiagnosticsGoToStderr` + `TestStartupDiagnosticsGoToStderr` (`cmd/crswd`, an AST
+    sweep of the whole module), `TestNoSecretInAnyDiagnostic` (`internal/config`).
+    **T015 is unblocked and the port is not its problem**: `127.0.0.1:8765` is still held
+    by the deployed daemon, but quickstart stopped binding it — `freeAddrOn` covers the two
+    startup cases. See `PROGRESS.md` iteration 13.
 - [ ] T014 🔒 Resolve the start command the way the session will, or say what was checked
 - [ ] T015 Correct the documented audit-trail command
 
