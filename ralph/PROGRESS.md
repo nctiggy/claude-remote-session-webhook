@@ -396,3 +396,76 @@ to replay whatever step it adds. T013 remains BLOCKED-ON-HUMAN; T014 and after w
 4. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
 5. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
 6. **No ad-hoc defects observed** in the code touched.
+
+---
+
+## Iteration 7 — 2026-08-07 23:30
+
+**Did:** T007. A `Prune old releases` step after `Publish` in `release.yml`: keep `KEEP: "20"`,
+ranked by the number in the tag, never the two most recent whatever `KEEP` says, never what the
+`latest` pointer resolves to, never a tag this workflow did not publish.
+`TestRetentionKeepsTwentyAndNeverTheNewestTwo` in `internal/release/assets_test.go` — six
+scenarios, table-driven. Gate green: build, vet, `go test ./...`, `golangci-lint run` (2.12.2,
+0 issues), `gofmt -l` empty.
+
+**Learned:**
+
+- **`gh` is stubbed as a bash *function* prepended to the replayed script, not as a file on
+  `PATH`.** The step calls `gh` as a plain command, so a function of that name shadows it — no
+  temp bin directory, and no executable to create, which matters because `os.WriteFile` at
+  `0o700` is gosec G306 and `os.Chmod` to `0700` is G302. **T012's install job can use the same
+  trick** if it needs to stand in for a command.
+- **The stub answers and decides nothing, deliberately.** It emulates two reads —
+  `gh release view --json tagName --jq '.tagName'` (one tag, the pointer target; an error and
+  nothing on stdout when there is no release) and `gh release list --json tagName --jq
+  '.[].tagName'` (one tag per line) — and records `gh release delete <tag>` to a file. Filtering
+  inside the stub, e.g. by putting the latest-exclusion in the `--jq` filter, would move the rule
+  under test into the stub, and a step that had stopped applying it would still pass. **Anything
+  the step must decide has to be in the step's own shell for the replay to be worth running.**
+- **`KEEP` is step-level `env:` so the floor is testable at all.** With the limit at 20, "never
+  the two most recent" is unreachable — the test lowers `KEEP` to 0 and asserts the newest two
+  survive. `stepScript` returns only the `run:` body, so **the replay has to supply any
+  step-level env itself** (`replay.Env = append(os.Environ(), "KEEP="+…)`); the test separately
+  reads `KEEP: "20"` out of the YAML so the declared limit is still pinned.
+- **Ranking is by `sort -t. -k2,2nr`, not by date and not as text.** Fixtures are handed to the
+  stub *ascending*, the order `gh release list` is least likely to answer in, so a step that
+  keeps the first twenty it is given fails. Text sorting puts `v0.9` above `v0.30`; the 30-tag
+  scenario is sized to expose exactly that.
+- **All seven mutations were run and each fails with the right message**: the pointer guard
+  removed (`the step deleted v0.4`); `sort -r` instead of numeric; no sort at all; the `-le 2`
+  floor removed; `KEEP: "5"`; the `grep -E '^v0\.[0-9]+$'` filter removed (deletes `nightly` and
+  `v1.0.0`); and the step moved above `Publish`.
+- **Order is asserted separately, because a replay cannot see it.** Pruning before publishing
+  prunes to twenty and then makes it twenty-one, and a publish that fails afterwards has already
+  cost a release. Every behavioural assertion still passes in that arrangement.
+- **`gh release delete` is called without `--cleanup-tag`** — the tag is the only remaining
+  record of which commit a pruned version named.
+- **Scripted mutation testing was not possible here**: `python3 <file>` needed approval and was
+  refused, so each mutation was applied with the Edit tool and reverted the same way. `git diff
+  --stat` showing additions only is the check that the tree came back.
+- **`shellcheck` is installed at `~/.local/bin/shellcheck` but running it was refused too**, and
+  actionlint is still absent. `KEEP` is referenced the same way the build step already references
+  `VERSION` — step-level `env:`, uppercase, every expansion quoted — and that step passes CI's
+  actionlint job today. **`ci.yml`'s guardrails job (`ci.yml:88`) is still the first real check.**
+- **No tagged suite was needed.** `internal/release` is test-only in the default build, and
+  neither `cmd/crswd` nor `deploy/crswd.example.service` was touched. **T008 does touch the unit
+  file and must run `-tags quickstart ./cmd/crswd`** (`quickstart_test.go:1687` reads it).
+
+**Left:** T008–T021. T008 (`Restart=always` in `deploy/crswd.example.service`) is next and
+unblocked; it is the last of US2 and the milestone is shippable after it. T013 remains
+BLOCKED-ON-HUMAN; T014 and after wait on it.
+
+**Findings:**
+
+1. **Retention is bounded by what `gh release list --limit 1000` returns.** With one release per
+   merge and a prune every run the list stays near 20, so the limit is unreachable in practice;
+   a backlog beyond 1000 would silently prune only the newest 1000's tail. Not worth code today,
+   but it is the kind of cap that is invisible when it bites — **worth a line if anyone changes
+   the release cadence.**
+2. **Iteration 6's finding about `data-model.md`/`contracts/release.md` and `SHA256SUMS.sig`
+   still stands** — T015's verifier must expect the sums file to cover five names, not seven.
+3. **Iteration 5's finding about `crswd-api` arriving non-executable still stands** (T021's README).
+4. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
+5. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
+6. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
+7. **No ad-hoc defects observed** in the code touched.

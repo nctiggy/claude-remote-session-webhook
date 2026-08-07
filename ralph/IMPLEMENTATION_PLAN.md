@@ -119,7 +119,7 @@ re-litigate these** — if one looks wrong, write it in `PROGRESS.md` under
 - [x] T004 The release workflow: `v0.<count>`, both architectures, `CGO_ENABLED=0`
 - [x] T005 Attach the deployment files, not just the binary
 - [x] T006 `SHA256SUMS` covering every asset
-- [ ] T007 Retention: keep 20, never the newest two, never what `latest` resolves to
+- [x] T007 Retention: keep 20, never the newest two, never what `latest` resolves to
 - [ ] T008 `Restart=always` in the unit — self-update depends on it
 
 ### US3 — Install in one line (all of it about another machine)
