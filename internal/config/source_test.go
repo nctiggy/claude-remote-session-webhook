@@ -611,18 +611,6 @@ const xdgConfigHomeVar = "XDG_CONFIG_HOME"
 // the load — by comparing the environment against the file — is right about
 // every case except the one an operator is asking about.
 
-// varWithNoLoader is the one CRSW_ constant LoadFrom never asks the shim for.
-//
-// CRSW_DESTROY_ON_SHUTDOWN has a constant, a Config.DestroyOnShutdown field, and
-// a consumer in internal/httpapi. It has no loader: nothing in LoadFrom reads
-// it, so the field is false in every daemon that has ever run and an operator
-// who sets the variable changes nothing. That is a milestone-3 defect and not
-// T008's to fix, but it is precisely the shape this test exists to catch — so it
-// is named here rather than quietly skipped, and it is pinned in both
-// directions. The day it gets a loader this line fails, and deleting it is the
-// whole of the fix.
-const varWithNoLoader = config.EnvDestroyOnShutdown
-
 // Every setting the daemon reads has a recorded source, because every setting is
 // read through the shim. A variable that reaches config.go without reaching the
 // shim is a row the settings page renders as "default" whatever the operator
@@ -646,12 +634,6 @@ func TestSourceRecordedForEveryKey(t *testing.T) {
 
 	for name := range declaredVars(t) {
 		_, recorded := cfg.Sources[name]
-		if name == varWithNoLoader {
-			if recorded {
-				t.Errorf("%s now has a recorded source, so it has a loader: delete varWithNoLoader and its exemption below, which exists only to name a variable nothing reads", name)
-			}
-			continue
-		}
 		if !recorded {
 			t.Errorf("config.go declares %s and no lookup for it reached the precedence shim, so the settings page reports it as %q however it was configured",
 				name, config.SourceDefault)

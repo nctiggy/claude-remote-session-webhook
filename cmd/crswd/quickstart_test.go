@@ -1356,12 +1356,19 @@ func TestQuickstartStory4Restart(t *testing.T) {
 		t.Error("the adopted session's credential is in the audit trail")
 	}
 
-	// Shutdown still reaps it, which is the half that does work without a token.
+	// And shutdown leaves it standing, which is what makes a restart cheap
+	// enough to do (#63). This daemon sets no CRSW_DESTROY_ON_SHUTDOWN, so it
+	// gets the default, and the default changed: the session this test adopted
+	// once is available to be adopted again.
+	//
+	// That the teardown path still works when an operator asks for it is
+	// TestQuickstartStory5Cap's subject, which opts in — asserted there rather
+	// than here so that neither case is quietly proving both.
 	if err := restarted.stop(syscall.SIGTERM); err != nil {
 		t.Errorf("SIGTERM: %v\n%s", err, restarted.readTrail())
 	}
-	if h.hasSession("crswd-" + c.ID) {
-		t.Errorf("the adopted session outlived the daemon's shutdown")
+	if !h.hasSession("crswd-" + c.ID) {
+		t.Errorf("the adopted session was destroyed by a shutdown that no longer reaps by default")
 	}
 	if !h.hasSession(lookalike) {
 		t.Errorf("shutdown destroyed %s, which the daemon never owned", lookalike)
@@ -1448,6 +1455,13 @@ func TestQuickstartStory5Cap(t *testing.T) {
 	d := h.start(map[string]string{
 		"CRSW_MAX_SESSIONS":        "5",
 		"CRSW_CREATE_RATE_PER_MIN": "120",
+		// Opted into, because since #63 it is no longer the default: a daemon
+		// that stops now leaves its fleet standing and reclaims it on the way
+		// back up. This case is the one that still proves verified teardown
+		// works when it is asked for — the tear-down code has no other caller
+		// in the suite, and a reaper nothing exercises is how this repo has
+		// shipped a reaper with no caller before.
+		"CRSW_DESTROY_ON_SHUTDOWN": "1",
 	})
 
 	for i := 1; i <= 5; i++ {

@@ -556,6 +556,21 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 	if err != nil {
 		return nil, err
 	}
+	// Read here for the first time since #63 shipped the variable. The constant
+	// existed, server.go branched on the field, and the settings page rendered
+	// it — but nothing ever assigned it, so it was false on every daemon that
+	// has ever run and the operator's opt-out did nothing. Nothing failed
+	// loudly: a flag that silently means its default looks exactly like a flag
+	// working, right up until somebody needs the other behaviour.
+	//
+	// It is the fourth time this repository has shipped code with no caller, and
+	// the first one a page caught: the settings page renders every variable's
+	// value and its source, so this one read "false / default" no matter what
+	// the operator set. That is the whole argument for the page.
+	destroyOnShutdown, err := loadBool(getenv, EnvDestroyOnShutdown)
+	if err != nil {
+		return nil, err
+	}
 	listen, err := loadListen(getenv)
 	if err != nil {
 		return nil, err
@@ -633,6 +648,7 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 		SharedSecret:        secret,
 		Roots:               roots,
 		DiscoverRoots:       discoverRoots,
+		DestroyOnShutdown:   destroyOnShutdown,
 		Listen:              listen,
 		MaxSessions:         maxSessions,
 		CreateRatePerMin:    createRate,
