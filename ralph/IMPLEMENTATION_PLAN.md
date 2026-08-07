@@ -61,7 +61,7 @@ Milestones 1 through 4 are **live**. Changes here land on a deployed daemon:
 | tmux | **Its own server**, `-L crswd-<listen>` — never the operator's default server (#22) |
 | Public | `https://crswd.craigcloud.io` via the `crswd` Cloudflare Tunnel |
 | Daemon | Config file, settings page, mode toggle, post-redirect-get, directory picker |
-| Audit | `journalctl --user -u crswd -o cat \| jq .` — **which does not work; that is T015** |
+| Audit | `journalctl --user -u crswd -o cat \| grep '^{' \| jq .` — the grep is not optional (T015) |
 | CI | `go test`, `-tags tmux` and `-tags quickstart` all run on the self-hosted runners (#87) |
 
 **Two tasks fix defects in code milestone 4 shipped**, both found by *running* the daemon
@@ -240,7 +240,17 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
     startup, bounded by a 5s timeout and only when a command is already missing from its own
     PATH; nothing in `deploy/` or `README.md` says so — **T016**. See `PROGRESS.md`
     iteration 14.
-- [ ] T015 Correct the documented audit-trail command
+- [x] T015 Correct the documented audit-trail command
+  - `TestDocumentedCommandParses` reads the command **out of the unit file** and substitutes
+    only the `journalctl` producer, because a restated command is the two-documents drift #88
+    already was. It makes two claims: the whole trail comes back as JSON, **and** a truncated
+    record is rejected — the second is what a `grep '^{'` with no parse would fail, and is why
+    the test does not name `jq`. **`jq` is now a prerequisite of `-tags quickstart`**, in
+    `TestQuickstartPrerequisites` and in `AGENTS.md`'s tag table. **The two READMEs still
+    carry the broken command** (`deploy/README.md:182-184`, `README.md:326-327`) and so does
+    `contracts/diagnostics-and-probe.md:19-36` — outside T015's named file, **T016**. Also
+    found: `.golangci.yml` never lints the `quickstart` tag and 27 pre-existing issues sit
+    behind adding it. See `PROGRESS.md` iteration 15.
 
 ### US4 — the pointer, which the keyboard task could not reach
 

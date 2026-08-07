@@ -1211,3 +1211,93 @@ selection and blur close), T016 (docs).
    no `.combo*` or `.switch-*` entry (**T016**); the stale-prose list from iterations 4–7
    (**T016**); and **#95 still has not received T002's SHA `ef18756`**, because `gh` is not an
    approved command in the loop's session — unchanged since iteration 2, still needs a human.
+
+---
+
+## Iteration 15 — 2026-08-07 18:48
+
+**Did:** T015, in commit `ddfa9b9`. `deploy/crswd.example.service` now documents
+`journalctl --user -u crswd -o cat | grep '^{' | jq .`, with the comment saying why
+`_COMM=crswd` is not a substitute — the non-JSON lines are the daemon's own. One new test,
+`TestDocumentedCommandParses` in `cmd/crswd/quickstart_test.go` (`-tags quickstart`), plus a
+`jq` row in `TestQuickstartPrerequisites` and the matching cell in `AGENTS.md`'s tag table.
+Closes the other half of #88.
+
+**Learned:**
+
+- **The test takes the command out of the unit file and never restates it.** A restated
+  command is two documents drifting independently, which is exactly what #88 was. It requires
+  **exactly one** comment line beginning `journalctl` — a second copy in the same file is a
+  `t.Fatalf`, one document down from the failure mode.
+- **Only the producer is substituted, and the substitution is checked before it is made.**
+  `journalctl --user -u crswd -o cat` prints a unit's stdout and stderr merged, and the
+  harness's `daemon.trail` is already exactly that (quickstart_test.go:476 says so). So the
+  stages after the first `|` run **verbatim** through `sh -c` with the capture on stdin. The
+  producer must still contain `journalctl`, `--user`, `-u crswd` and `-o cat`, or the test
+  would be replacing a stage it does not recognise and silently checking a different command.
+- **Two claims, and the second is why the first is not enough.** "Yields the whole trail as
+  JSON" is satisfied by `grep '^{'` alone. So the same command is also run over the stream
+  with a truncated record appended, and **must fail** — a filter that selects without parsing
+  hands a corrupt trail on as a shorter one, and `main.go`'s "every line on stdout is a
+  record" is what an operator is being asked to rely on. That is also what keeps the test
+  independent of `jq` *by name*: any last stage that really parses passes it, and a
+  documented command that drops the parse fails.
+- **The daemon under test is configured to warn.** `CRSW_START_COMMAND` is set to
+  `crswd-quickstart-no-such-binary …`, so T014's probe writes its four-line banner and the
+  stream genuinely carries both kinds of line. A `t.Fatalf` guards it: no `crswd: ` in the
+  capture means the filter is not being asked anything and every assertion below it is
+  vacuous. No session is created — a signed `GET /sessions` and an unsigned one give an allow
+  and an `auth.reject`, which is both record shapes in under half a second.
+- **Mutation-verified three ways, each reverted:** (a) the shipped
+  `journalctl … -o cat | jq .` — fails with `exit status 5`, `jq: parse error`, and prints the
+  probe's banner interleaved with the two records, which is #88 reproduced inside the failure
+  message; (b) `… | grep '^{'` with no parse — fails on the truncated-record claim alone;
+  (c) `… -o cat` with no pipe at all — fails in `documentedFilter`, naming #88. That is the
+  task's named must-fail, "the documentation drifts from what works", from three directions.
+- **`jq` is now a prerequisite of `-tags quickstart`, stated in both places** the suite states
+  prerequisites: the table in `TestQuickstartPrerequisites` (required, so its absence is a
+  failure and never a quiet skip) and `AGENTS.md`'s tagged-suite `Needs` column. This host has
+  `jq-1.7`. `documentedFilter` also `LookPath`s the first word of **every** stage the
+  documentation names, so a future doc piping through something else fails saying which tool
+  is missing rather than reporting exit 127 as "the documentation is wrong".
+- Full `-tags quickstart ./cmd/crswd` green in 28s on this host — iteration 13's finding 1
+  holds, the port is not a problem, and the run does not disturb the deployed daemon.
+  `golangci-lint` confirmed 2.12.2 before trusting it; `go build`, `go vet`, `go test ./...`
+  and `golangci-lint run` all green, `gofmt -l` clean, no `go.sum`.
+
+**Left:** T017 (pointer selection **and** blur close, together, `mousedown` not `click`) and
+T016 (docs, and assert `go.sum` is still absent). T016 is now carrying a long list — the
+findings below and in iterations 4–14.
+
+**Findings:**
+
+1. **`.golangci.yml` does not lint the `quickstart` tag, and its own comment says it should.**
+   The `run.build-tags` list carries `tmux` and `dev` and says "Any future build tag needs
+   adding here for the same reason" (`.golangci.yml:18`) — `quickstart` is not in it, so
+   `cmd/crswd/quickstart_test.go` and `quickstart_dashboard_test.go` have never been linted.
+   Measured this iteration: `golangci-lint run --build-tags quickstart` reports **27 issues**
+   (18 errcheck, 7 gosec, 1 bodyclose, 1 staticcheck), all pre-existing. Adding the tag is
+   therefore a task with 27 fixes behind it, not a one-line config change, and AR-008 put it
+   outside T015. **My own line is already paid for**: `runFilter`'s `os.Open` carries a
+   `//nolint:gosec` even though nothing reads it today. **T016 or milestone 6.**
+2. **`deploy/README.md:182-184` and `README.md:326-327` still document the broken command.**
+   Five `journalctl … | jq` lines with no `grep '^{'`, including a
+   `--since … | jq -r '.action' | sort | uniq -c` pipeline that would silently under-count.
+   T015's named file was the unit alone and `TestDocumentedCommandParses` reads the unit
+   alone, so these are untouched and unasserted. **T016 owns them**, and the cheapest fix is
+   to point the test's one-command sweep at the two READMEs as well rather than to correct
+   the prose and leave it unheld.
+3. **`specs/005-finish-the-dashboard/contracts/diagnostics-and-probe.md:19-36` still describes
+   the unit file as documenting the broken command** — correct when written, stale as of this
+   commit. Contracts supersede plans, so a future reader has no way to tell that row is
+   history. Same class as the stale-prose list of iterations 4–7. **T016.**
+4. Findings 2–8 of iteration 13 and 1–3 of iteration 14 are unchanged and still open:
+   `journalctl -p` is not the answer and was not used; `Config.String()` prints
+   `start_commands` unredacted (**T016**); the picker has no pointer selection and no blur
+   close (**T017**); the reduced-motion rule resets `transition` and not `animation`
+   (**T016**); `docs/components.md` documents no `.combo*` or `.switch-*` entry (**T016**);
+   the stale-prose list from iterations 4–7 (**T016**); the startup dependency on the
+   operator's `~/.profile` appears in no deployment doc (**T016**); T014's *note* sentence is
+   undocumented (**T016**); and **#95 still has not received T002's SHA `ef18756`**, because
+   `gh` is not an approved command in the loop's session — unchanged since iteration 2, still
+   needs a human.
