@@ -91,3 +91,77 @@ in issue #95 before the file is gone.**
 template now has two adjacent comment blocks (`*/}}{{/*`) where the conversation comment sits
 against the start-command one. T003 deletes the second of them, so tidying it now would only
 make that story's diff harder to read.
+
+---
+
+## Iteration 2 — 2026-08-07 16:16
+
+**Did:** T002, in commit `ef18756aa39aee9c7219e1f32c4a26f5dfdacb0e`. Deleted
+`internal/session/conversation.go` and `conversation_test.go`, everything that fed them, and
+everything that existed to refuse their input. Added `TestStrayResumeValueIsNotExecuted` to
+`internal/httpapi/actions_test.go`. 1,239 lines deleted, 66 added.
+
+**⚠️ OUTSTANDING — the SHA is not on #95.** `gh` is not an approved command in this loop's
+session and the session is non-interactive, so the comment could not be posted. The task
+requires it, so it is written out here to be pasted verbatim onto issue #95:
+
+> Deleted `internal/session/conversation.go` and its test in
+> ef18756aa39aee9c7219e1f32c4a26f5dfdacb0e (branch `feat/m5-loop-1`, milestone 5 T002),
+> recorded here so the code is recoverable: `git show ef18756^:internal/session/conversation.go`.
+>
+> Worth reading back before any auto-recovery work: the root check that runs *before* any
+> store lookup (so the listing cannot be an oracle for what exists elsewhere on the host), the
+> listing that opens no file, the symlink exclusion, and `storeDirName`'s separator-flattening,
+> which removes the means of traversal rather than checking for it.
+>
+> Note the ambiguity this file could not resolve, and which is why it went rather than waiting:
+> `listConversations` answers about *this directory's* conversations, while #95 needs *this
+> session's* — and a directory two sessions share has a most-recent conversation belonging to
+> whichever wrote last. FR-032 refuses to guess between them.
+
+**Learned:**
+
+- **The deletion is not two files, it is a whole path — and the path is longer than the plan's
+  one line suggests.** `conversation.go` was called from `Manager.Create`, so removing it
+  forced out `CreateRequest.Resume`, `Manager.conversationStore` (and with it the
+  `os.UserHomeDir` lookup and the `os` import), `resumeFlag`, and `start`'s third parameter;
+  `ErrUnknownConversation` forced out its `case` in `refuseBrowserCreate`, its entry in
+  `createReason`'s sentinel list in `sessions.go`, and `outcomeBadConversation` with its
+  banner. Eight files. **T003 will be the same shape** — the note from iteration 1 stands and
+  is now measured: budget for the cascade, not for the edit.
+- **Deleting a field deletes its guard, which is the whole reason the new test is about argv.**
+  `resume` was safe because `resumableID` refused anything that was not letters, digits, `-`
+  and `_` before it was appended to a command line. That alphabet is gone with the file. So
+  the assertion that matters is not "the field is refused" — nothing refuses it now, and the
+  create answers `created` — it is "no byte of it reaches what the host runs".
+  `TestStrayResumeValueIsNotExecuted` posts `resume=$(whoami)` and sweeps every `Call.Argv`
+  and `Call.Stdin` the fake tmux recorded. **It is the tripwire for any later task that puts
+  request text on a command line**, whichever field name it uses.
+- **Verified against its own mutation, as iteration 1 did.** Restoring the three lines — the
+  `Resume` field, `req.Resume` into `start`, and the append — failed it precisely:
+  `"claude --dangerously-skip-permissions --resume $(whoami)"` on the send-keys argv. Reverted
+  by copying the two files back from a scratch dir inside the repo, because `git checkout`
+  was not available with the rest of the change uncommitted and the sandbox refuses `/tmp`.
+- **`c.fixture.tmux.Calls()` is the right lens for "did this reach the host".** `Call.Argv`
+  carries the command line (`argvSendKeys`), `Call.Stdin` carries paste payloads, and nothing
+  else reaches a pane. `c.started()` counts `OpNew` only, so it says a session began and
+  nothing about what it was told to run.
+- **The quickstart suite is worth the 13s here.** It drives a real create against a real
+  daemon, which is the path this change rewired. It passed, as did `-tags tmux` and `-tags dev`
+  under `go vet`.
+
+**Left:** T003–T016. T003 is next and it is the create-form chain's second link: replace the
+start-command `<select>` with the `remote_control` switch, and remove `StartCommands` from the
+view and from `dashboard.go:297`. Expect `s.cfg.StartCommands.Names()` and whatever becomes
+caller-less with it to have to go in the same commit — that is the cascade above, again.
+
+**Findings:**
+
+1. **`refuseBrowserCreate`'s doc comment claims "the same four branches" and there are five.**
+   It was already wrong before this iteration (there were six), and this change moved the count
+   without fixing the prose. **T004 rewrites what that function accepts**, so it owns the
+   correction; doing it here would put an unrelated hunk in a deletion commit. Same for the
+   const block above `createFromBrowser`, which says "The two fields a create carries" over
+   three constants — T003 and T004 both edit that block.
+2. Nothing else. `web/templates/partials/create-form.html` was not touched this iteration, so
+   the create-form chain's ordering is intact for T003.

@@ -114,7 +114,12 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
 ### US5 — Stop asking a question nobody can answer (first, because it deletes)
 
 - [x] T001 Remove the resume field and the `Conversations` view data
-- [ ] T002 Delete `internal/session/conversation.go`; record the SHA in #95
+- [x] T002 Delete `internal/session/conversation.go`; record the SHA in #95
+  - ⚠️ **The SHA is `ef18756` and it is NOT yet on #95.** `gh` is not an approved
+    command in the loop's session, so the comment could not be posted. The text to
+    post is in `PROGRESS.md` iteration 2 — a human or an iteration with `gh` should
+    paste it. The code is recoverable from git either way; #95 is where someone
+    will look for it.
 
 ### US1 — Remote control at create time (the milestone-4 miss)
 
