@@ -901,3 +901,95 @@ read). Read iteration 10's findings first: it needs two things that still do not
   clean, `go build`, `go vet`, `go test -count=1 ./...` green, `go vet` green under `-tags tmux`,
   `-tags quickstart` and `-tags dev`, `go test -tags dev ./internal/access ./internal/config
   ./internal/httpapi` green, `go.sum` still absent. CI is the gate.
+
+## Iteration 12 — 2026-08-07 04:49
+
+**Did:** T012. The settings table is now one row per key `config.Vars()` names, in declaration
+order, with a **source** column read from T008's map and a line above the table naming the file
+that was read (`Read from %s` / `No configuration file was read.`). `internal/config` grew
+`Config.FilePath`, set in `loadWith` from the `*File` that was layered in. Six tests: the three
+the contract names plus `TestSettingsRendersOneRowPerKey`, `TestEverySettingRendersAValue`,
+`TestSettingsStatesTheValueOfEveryNonSecretKey`, and `TestConfigNamesTheFileThatWasRead` on the
+loader side.
+
+**Learned:**
+
+- **Both of iteration 10's "prerequisites" turned out to be one prerequisite and one
+  non-problem.** `Config.FilePath` genuinely did not exist and had to be built — `File.Path()`
+  was already there, with a doc comment saying the settings page names it, so the wiring was the
+  missing half. `destroy_on_shutdown` is *not* a blocker: the page reporting it as `false` from
+  `default` is a true statement about what that daemon does, and `internal/config`'s own
+  `varWithNoLoader` already pins the gap in both directions. Dropping the row would have hidden
+  the defect from the one page an operator would find it on. **T012 was never blocked.**
+- **The `FilePath` test had to be in `internal/config`, not `internal/httpapi`.** The page tests
+  set `cfg.FilePath` on a hand-built fixture, so *every one of them passes* with the loader never
+  setting it — the exact "the code exists and nothing calls it" shape the plan warns about.
+  Deleting `FilePath: file.Path()` fails only `TestConfigNamesTheFileThatWasRead`. If you add a
+  Config field for a page, the test that it is *populated* belongs beside the loader.
+- **A source test that is worth anything cannot use a value that agrees with its source.** The
+  fixture sets `listen` to the built-in default under `SourceFile` and `max_streams` to a
+  non-default under `SourceDefault`. An inference-shaped mutation (non-empty value → environment)
+  gets both backwards and fails; a fixture where the file's value merely differed from the default
+  would have passed it.
+- **Seven mutations run, all caught.** (1) source inferred from the value; (2) `FilePath: ""` in
+  `loadWith`; (3) the `Read from` line emptied in both branches; (4) a key `continue`d out of the
+  walk; (5) a variable with no `settingValue` case; (6) the `IsSecret` gate removed *and* the two
+  secrets wired into the value switch — caught by four tests including the prefix/suffix sweep;
+  (7) rows rendered in reverse declaration order.
+- **The page needed no new CSS class.** `.settings p` and the existing `.settings th/td` rules
+  cover it, which keeps `TestTheStylesheetAndTheMarkupNameTheSameThings` quiet in both directions
+  — the file follows its own comment about element selectors under one class.
+- **`html.EscapeString` in the assertion, not a raw literal.** The value column now renders
+  `claude remote-control --name {name}`; `html/template` escapes nothing in it today, but a
+  fixture with an `&` or a quote in a path would make a raw-literal assertion fail for a reason
+  that has nothing to do with the page.
+
+**Left:** T013–T035. Next is **T013** (`TestFullRouteSweepLeaksNoSecret`, SC-005). Iteration 11
+already solved its fixture problem: use `settingsOn(t, adjust)` with the `test-only-` canaries,
+never the default fixture, whose allowlist is the operator's own address and is rendered by the
+header on every page.
+
+**Findings:**
+
+- **T012 made the start-command decision and it is the one to look at in review.** The value
+  column spells out `start_command` and `start_commands` in full, command lines included. The
+  reasoning is in `settingValue`'s comment: they are not secret by `IsSecret`, they are the
+  operator's own configuration, the reader is the identity that may start a session running them,
+  and a second redaction rule outside `IsSecret` is what T001 exists to prevent. `Config.String()`
+  names them without spelling them, but that is a rule about *log lines*. **If a reviewer disagrees,
+  the change is one case in `settingValue` and one row in
+  `TestSettingsStatesTheValueOfEveryNonSecretKey` — not a redesign.**
+- **`allowed_roots` renders comma-separated (`, `) and `start_commands` renders with the
+  variable's own `,`.** Deliberate and inconsistent-looking: the roots are the *resolved* paths, so
+  that cell can never be pasted back into a file whatever separates it, and legibility is what
+  SC-004 needs; the start-command cell *is* what the operator wrote, so it keeps the grammar
+  exactly. Both are commented at `rootsSeparator`.
+- **`destroy_on_shutdown` still has no loader**, so its row reads `false` / `default` on every
+  daemon. That is now visible in the product rather than only in a test, which is an argument for
+  fixing it rather than against: it is the same defect behind the three red quickstart tests, and
+  it is the oldest unfixed finding in this notebook. **It wants an issue and a fix-lane commit.**
+- **`go test -tags quickstart ./cmd/crswd` is still red on the same three tests** —
+  `TestDashboardQuickstartStory1Adopted`, `TestQuickstartStory4Restart`, `TestQuickstartStory5Cap`
+  — for iteration 7's `CRSW_DESTROY_ON_SHUTDOWN`-has-no-loader reason. Not run this iteration
+  (T012 touches no `cmd/crswd` file and the port is held by the live daemon); `go vet -tags
+  quickstart ./...` is green.
+- **`contracts/settings-page.md`'s `TestNoMutatingVerbRegistered` row still says 405** and should
+  say "answered as a path nothing claims, with no `Allow` header" (iteration 10). Unchanged. Its
+  worked example also shows values no loader would produce (iteration 11) — nothing here copied
+  them.
+- **`specs/004-configure-and-operate/tasks.md` has drifted out of sync with the plan's ticks.**
+  It is named as the single source of truth, and only **T008** is checked in it — T001–T007 and
+  T009–T012 are all done and all still show `- [ ]` there. Iteration 8 ticked both files;
+  iterations 9, 10 and 11 ticked only `IMPLEMENTATION_PLAN.md`, and this one followed them rather
+  than leaving one file half-corrected. **A fresh context reading `tasks.md` first would conclude
+  almost nothing has been built.** One pass over the file, ticking every finished task, is the fix.
+- **Still open from iterations 5–11:** three `ReadFile` refusals missing from
+  `contracts/config-file.md`'s table; the `version < 1` row; the contract's "yields exactly eight
+  keys" against seven; a dangling symlink reading as absent; `f.values` having no enumerator;
+  `os.Open` on a FIFO blocking startup with no message; `--config <path>` still unbuilt;
+  `README.md` and `deploy/README.md` silent on the config file (T034/T035).
+- **Lint:** `golangci-lint run` clean (v1.62.2 on a v2 config — it does run *some* linters, see
+  iteration 11, but CI's pinned v2.12.2 is the gate). `gofmt -l .` clean, `go build`, `go vet`,
+  `go test -count=1 ./...` green, `go vet` green under `-tags tmux`, `-tags quickstart` and
+  `-tags dev`, `go test -tags dev ./internal/access ./internal/config ./internal/httpapi` green,
+  `go.sum` still absent.
