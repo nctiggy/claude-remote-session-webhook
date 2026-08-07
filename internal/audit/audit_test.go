@@ -257,6 +257,9 @@ func TestEmitAcceptsEveryDocumentedAction(t *testing.T) {
 
 		// Milestone 4's one addition: the read-only settings page.
 		audit.ActionSettingsView: "settings.view",
+
+		// Milestone 6's: the running daemon asked what version it is.
+		audit.ActionDashboardVersion: "dashboard.version",
 	}
 	for action, want := range cases {
 		t.Run(want, func(t *testing.T) {

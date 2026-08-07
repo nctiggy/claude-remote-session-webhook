@@ -156,6 +156,18 @@ const (
 	// request and every response — a trail that printed it would be the one copy
 	// of it that left the daemon.
 	ActionSessionMode Action = "session.mode"
+
+	// ActionDashboardVersion is the running daemon asked what version it is
+	// (milestone 6, contracts/version.md). It is its own action for the reason
+	// settings.view is: this is the question an operator asks before deciding
+	// whether to update, and one asked repeatedly by anything watching the fleet
+	// — counting it as a page view would bury both in the dashboard's own traffic.
+	//
+	// It is dashboard.version rather than version.view because the route is on the
+	// dashboard's door and the command-line reader emits nothing at all: there is
+	// no second way to ask a *running* daemon this, so the name says which door
+	// answered rather than which subject was read.
+	ActionDashboardVersion Action = "dashboard.version"
 )
 
 // Decision is the allow/deny outcome, and unlike Action it is closed: two

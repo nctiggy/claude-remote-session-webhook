@@ -531,6 +531,16 @@ func newServer(
 	// is out of scope this milestone, and the absence of a POST is the safeguard
 	// rather than a POST that refuses (contracts/settings-page.md).
 	s.handleBrowser(patternSettings, audit.ActionSettingsView, s.settings)
+	// What this daemon calls itself, on the same door as the pages above and under
+	// an action of its own (T003). It goes through handleBrowser like every other
+	// read here, rather than being answered ahead of the door as a health endpoint
+	// usually is: FR-006's closed set admits no unauthenticated route, and a
+	// version is exactly the fact a scanner would like for free.
+	//
+	// It is not on `routes` for the reason none of the browser door's routes are —
+	// that table is contracts/http-api.md's six operations, each authorised by a
+	// signature, and this is authorised by an identity.
+	s.handleBrowser(patternVersion, audit.ActionDashboardVersion, s.version)
 	// The first route on this door that changes something, and the reason
 	// handleAction exists one line below handleBrowser rather than instead of it:
 	// everything above only reads, and a read is authorised by layer 1 alone.
