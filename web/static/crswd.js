@@ -1098,8 +1098,7 @@
           if (!option) {
             return;
           }
-          field.value = option.textContent;
-          close();
+          accept(option);
           event.preventDefault();
           break;
         }
@@ -1128,6 +1127,81 @@
           // Typing, which is never intercepted.
           break;
       }
+    });
+
+    /*
+     * The accept, which two things now ask for and which is written once (T017).
+     *
+     * It sits between its callers because it belongs to neither: the key above
+     * and the pointer below take the same option and put the same text in the
+     * field, and a second assignment would be a second answer to what the
+     * operator chose — on the one field where any path has to stay typeable in
+     * full (FR-008), which is a property held by there being exactly one write
+     * in this file and by that write reading an option the daemon offered.
+     */
+    const accept = (option) => {
+      field.value = option.textContent;
+      close();
+    };
+
+    /*
+     * The pointer (T017), which is the one thing this enhancement took away
+     * rather than added: the popup it replaces was clickable, the themed list
+     * was not, and .combo-list li has drawn `cursor: pointer` since T009 over a
+     * control that did nothing.
+     *
+     * Bound on mousedown and never on click. The blur below shuts the list, and
+     * a blur lands between the press and the click that would have followed it,
+     * so a click handler here would only ever select an option when it won a
+     * race — a selection that works most of the time on a fast machine and
+     * reads as flakiness rather than as a bug. That is why the two are one
+     * change.
+     *
+     * The press is refused for every position inside the list rather than only
+     * one that lands on an option, because the default action of a press on
+     * something that cannot hold focus is to take focus off the field: dragging
+     * this box's scroll bar would otherwise blur the field and shut the list
+     * under the pointer. Refusing it leaves focus where the operator left it,
+     * which is also where aria-activedescendant has been telling a reader it is.
+     *
+     * Delegated from the list for the reason the toast is delegated from the
+     * document: every option is new markup on every keystroke, so a handler
+     * bound to one when this ran is a handler on an element that is gone.
+     *
+     * The option is a <li> with a listener and not a <button>, which is not the
+     * thing docs/components.md's floor forbids. Focus stays on the input for as
+     * long as this control is open — a focusable option would take it out of
+     * the field being typed in — and what makes the option operable without a
+     * pointer is the keyboard above, which is what that rule is about.
+     */
+    listbox.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+
+      const option = event.target instanceof Element ? event.target.closest('li') : null;
+      if (!option) {
+        return;
+      }
+      // The same two steps in the same order Enter runs them: what was pointed
+      // at becomes the active option first, so the ring, the reader and the
+      // value all name the one that was taken.
+      activate([...listbox.children].indexOf(option));
+      accept(option);
+    });
+
+    /*
+     * And the close that has to be written with it (T017). Escape, Tab and
+     * Enter all shut the list; a pointer put anywhere else on the page shut
+     * nothing, so the one way out of this control that an operator using a
+     * mouse actually takes was the one that left a list hanging over the rest
+     * of the form.
+     *
+     * The same `close` the keyboard runs, and nothing here touches what was
+     * typed. A blur that normalised the field to the nearest option is the
+     * shape FR-008 refuses — the list would have become the allowlist, quietly,
+     * on the path an operator never watches.
+     */
+    field.addEventListener('blur', () => {
+      close();
     });
   };
 

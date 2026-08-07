@@ -1210,7 +1210,20 @@ func TestComboKeyboardOperable(t *testing.T) {
 	// branch order below, so what follows it is the default that does nothing —
 	// and a Tab this file swallowed is focus trapped in a text field, which trades
 	// the accessibility floor for a tidy-looking close.
-	leaving := picker[strings.Index(picker, "'Tab'"):]
+	//
+	// The tail stops where the pointer starts (T017). What is below that refuses
+	// something too, but it is the browser's own focus move on a press inside the
+	// list and not a key at all, so a slice running to the end of the block would
+	// answer this claim with the wrong branch. What is held is unchanged: nothing
+	// between the Tab literal and the end of this handler refuses the key.
+	tab := strings.Index(picker, "'Tab'")
+	if tab < 0 {
+		t.Fatal("the picker answers no Tab at all, so there is no branch to hold to leaving the key alone")
+	}
+	leaving := picker[tab:]
+	if pointer := strings.Index(picker, "'mousedown'"); pointer > tab {
+		leaving = picker[tab:pointer]
+	}
 	if strings.Contains(leaving, "preventDefault") {
 		t.Error("the picker refuses the Tab that leaves the field; closing the list is all that is owed here, and swallowing the key traps a keyboard operator in the one control this milestone exists to make operable")
 	}
@@ -1239,6 +1252,211 @@ func TestComboKeyboardOperable(t *testing.T) {
 	// it and this one says the rule is still there to be worn.
 	if !strings.Contains(stylesheet(t), `[aria-selected="true"]`) {
 		t.Error("crswd.css draws nothing for the active option; the attribute the arrows move is invisible without it, and a keyboard operator moves a cursor the page never shows")
+	}
+}
+
+// pickerBlock is the enhancement's own source, sliced the way
+// TestComboKeyboardOperable slices it: from the picker's one constant to the
+// query that applies it, which is all of the control and none of anything else.
+//
+// T017's claims need it for the reason T011's did. The words they turn on are
+// ordinary: the card's selection fix listens for a click and calls
+// preventDefault, and the toast hides itself — so a claim about the pointer read
+// against the whole file would be answered by a block that has nothing to do
+// with this control. T011's own inline slicing is left exactly where it is: it
+// asserts about the same bytes and it is green, and rewriting a passing test to
+// route through something new is the churn AR-008 keeps out of a task's diff.
+func pickerBlock(t *testing.T, source string) string {
+	t.Helper()
+
+	from := strings.Index(source, "SETTLE_MS")
+	to := strings.Index(source, "data-combo")
+	if from < 0 || to <= from {
+		t.Fatalf("crswd.js has no picker block between its settle constant (%d) and the wrapper query (%d); the enhancement is where the pointer lives", from, to)
+	}
+	return source[from:to]
+}
+
+// TestComboOptionIsPointerSelectable is T017's first half, and it is the one
+// place this enhancement cost an operator something rather than adding to it.
+//
+// The popup it replaced was selectable with a mouse. The themed list was not:
+// T010 drew it, T011 made it operable from the keyboard, and neither task's text
+// named a click — so from T008 onward `.combo-list li` has carried
+// `cursor: pointer` over a control that did nothing, which is the first thing a
+// pointer reaches for and the last thing it gets.
+//
+// **Must fail when** `click` is bound instead of `mousedown`. That is not a
+// stylistic difference here: the blur close in the other half of this task shuts
+// the list, and a blur lands between the press and the click that would have
+// followed it, so a click handler fires on an option that has already been
+// hidden. It works when it wins the race and does nothing when it does not,
+// which reproduces intermittently and reads as flakiness rather than as a bug —
+// the whole reason the pointer and the close are one change and not two.
+//
+// **Must also fail when** the affordance is removed rather than implemented.
+// Deleting `cursor: pointer` would make the picker self-consistent and worse, so
+// the rule is asserted here beside the handler that finally earns it — the same
+// joint T011 closed between `[aria-selected="true"]` and the ring, on the half of
+// the control a mouse reaches.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed
+// — the same footing every other script assertion in this file stands on.
+func TestComboOptionIsPointerSelectable(t *testing.T) {
+	t.Parallel()
+
+	picker := pickerBlock(t, script(t))
+
+	press := regexp.MustCompile(`addEventListener\(\s*['"]mousedown['"]`).FindStringIndex(picker)
+	if press == nil {
+		t.Fatal("the picker listens for no mousedown, so the themed list is display-only: an operator points at a path, presses it, and the field is unchanged — the control this replaced took that press and this one draws a cursor promising it does too")
+	}
+
+	// Every event below arrives after focus has already left the field, which is
+	// after the close that leaving it runs. Each one makes the selection depend on
+	// winning a race against a handler written to lose it.
+	for _, forbidden := range []struct {
+		pattern *regexp.Regexp
+		what    string
+		why     string
+	}{
+		{regexp.MustCompile(`['"]click['"]`), "selects on click", "a click is dispatched after the press, after the blur, and after the close the blur runs — so the option it lands on is one the list has already hidden"},
+		{regexp.MustCompile(`['"]mouseup['"]`), "selects on mouseup", "same ordering, same lost race: the press is the last event that happens while the list is still open"},
+		{regexp.MustCompile(`['"]pointerup['"]`), "selects on pointerup", "same ordering again, and naming the newer event does not change which side of the blur it falls on"},
+	} {
+		if match := forbidden.pattern.FindString(picker); match != "" {
+			t.Errorf("the picker %s (%q): %s", forbidden.what, match, forbidden.why)
+		}
+	}
+
+	// Found from the event rather than bound to each option, for the reason the
+	// toast is delegated from the document: draw() replaces every option on every
+	// keystroke, so a listener attached to one when this file ran is a listener on
+	// an element that is no longer in the page.
+	if !strings.Contains(picker[press[0]:], "closest(") {
+		t.Error("the picker's pointer handler never finds the option from the event; the options are rebuilt on every keystroke, so anything bound to one of them individually is bound to markup the next filter threw away")
+	}
+
+	// The press itself is refused, which is the other half of what makes this pair
+	// work. The default action of a press on something that cannot hold focus is to
+	// take focus off the field — so without this the list shuts mid-drag when what
+	// was pressed is the scroll bar of a bounded box, and an operator who picks a
+	// path is left holding it with focus on the document body. It is also why
+	// TestComboKeyboardOperable's "Tab is never refused" tail stops here: what is
+	// refused below is a focus move and not a key.
+	if !strings.Contains(picker[press[0]:], "preventDefault") {
+		t.Error("the picker does not refuse the press inside its list; the browser then takes focus off the field, which closes the list under a pointer that was only scrolling it, and leaves an operator who has just picked a path focused on the document body")
+	}
+
+	// The two calls this trigger is made of, each found from the state it owns
+	// rather than spelled here — so a pointer path that reached the field some
+	// other way cannot answer either of them. This is what makes the pointer a
+	// second trigger rather than a second behaviour: it takes the option the same
+	// way the keyboard does, and the file still writes the field's value once.
+	enter := strings.Index(picker, "'Enter'")
+	if enter < 0 || enter > press[0] {
+		t.Fatalf("the picker answers Enter at %d and the press at %d; the accept the keyboard runs has to exist, and to be above the pointer that shares it", enter, press[0])
+	}
+	for _, shared := range []struct {
+		owns    *regexp.Regexp
+		what    string
+		regions map[string]string
+		why     string
+	}{
+		{
+			regexp.MustCompile(`\.value\s*=[^=]`),
+			"the accept",
+			map[string]string{"Enter": picker[enter:press[0]], "the pointer": picker[press[0]:]},
+			"the field's value is written in exactly one place (T011 holds that), and both triggers reach it through the same helper — a pointer with an accept of its own is a second answer to what the operator chose, on the field FR-008 says any path stays typeable in",
+		},
+		{
+			regexp.MustCompile(`setAttribute\(\s*['"]aria-selected['"]`),
+			"the activation",
+			map[string]string{"the pointer": picker[press[0]:]},
+			"what was pointed at becomes the active option before it is accepted, so the ring, the reader and the value all name the one that was taken — a pointer that skipped it would accept an option the page never showed as chosen",
+		},
+	} {
+		at := shared.owns.FindStringIndex(picker)
+		if at == nil {
+			t.Errorf("the picker never carries %s at all (%s)", shared.what, shared.owns)
+			continue
+		}
+		// The helper that owns it: the nearest arrow declared above the line that
+		// does the work. Naming it here instead would be this file keeping a
+		// spelling of the script's, which is the joint every other assertion in
+		// these two tests is arranged to avoid.
+		declared := regexp.MustCompile(`const\s+([A-Za-z_$][\w$]*)\s*=\s*\(`).FindAllStringSubmatch(picker[:at[0]], -1)
+		if len(declared) == 0 {
+			t.Errorf("%s sits in no helper of its own, so the key and the pointer cannot be running the same one", shared.what)
+			continue
+		}
+		call := declared[len(declared)-1][1] + "("
+		for where, body := range shared.regions {
+			if !strings.Contains(body, call) {
+				t.Errorf("%s does not run %s (%s): %s", where, shared.what, call, shared.why)
+			}
+		}
+	}
+
+	// And the stylesheet half. The rule is the promise the page has been making
+	// since T008, and this is the task that makes it true rather than the one that
+	// withdraws it.
+	if rule := blockFor(t, stylesheet(t), ".combo-list li"); !regexp.MustCompile(`cursor\s*:\s*pointer`).MatchString(rule) {
+		t.Errorf("an option draws no pointer cursor (%q); taking the affordance away is the other way to make this control consistent, and it is the one that leaves an operator with a mouse nothing to aim at", rule)
+	}
+}
+
+// TestComboClosesOnBlur is T017's other half, and it cannot be written apart from
+// the first: the close is what makes a click handler lose its race, and the
+// mousedown is what makes the close safe to add.
+//
+// Every way out of this control that the keyboard has shuts the list — Enter
+// accepts and closes, Escape dismisses, Tab leaves. A pointer put anywhere else
+// on the page shut nothing, so the list stayed drawn over the rest of the form
+// for an operator who had moved on from the field, which on this page means it
+// stayed over the roots hint and the submit button below it.
+//
+// **Must fail when** the close normalises what was typed. A blur is where a
+// picker is most often improved into a chooser: writing the nearest option into
+// the field on the way out looks tidy, and it makes every path that is not on the
+// list unreachable (FR-008) on the one control whose entire arrangement says the
+// list offers and the daemon's roots decide.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed
+// — the same footing every other script assertion in this file stands on.
+func TestComboClosesOnBlur(t *testing.T) {
+	t.Parallel()
+
+	picker := pickerBlock(t, script(t))
+
+	leave := regexp.MustCompile(`addEventListener\(\s*['"](blur|focusout)['"]`).FindStringIndex(picker)
+	if leave == nil {
+		t.Fatal("the picker never notices focus leaving the field, so a list opened by typing and abandoned with the pointer stays open over the rest of the form — the three keys that leave this control all close it, and the way an operator with a mouse leaves it did not")
+	}
+
+	// The same close the keyboard runs, found from the Tab branch rather than
+	// spelled here. A second close is a second definition of what shutting this
+	// list means, and the one this file has does three things beyond hiding a box:
+	// it clears the active option, it cancels the settling timer, and it empties
+	// the count — a sentence left standing under a closed list describes something
+	// that is no longer on the screen.
+	tab := strings.Index(picker, "'Tab'")
+	if tab < 0 || tab > leave[0] {
+		t.Fatalf("the picker answers Tab at %d and blur at %d; the close the keyboard already had is what leaving the field runs", tab, leave[0])
+	}
+	shut := regexp.MustCompile(`([A-Za-z_$][\w$]*)\(\s*\)\s*;`).FindStringSubmatch(picker[tab:leave[0]])
+	if shut == nil {
+		t.Fatal("the picker's Tab branch calls nothing, so there is no close for the blur to share")
+	}
+	if !strings.Contains(picker[leave[0]:], shut[1]+"(") {
+		t.Errorf("leaving the field does not run %s(), the close Tab runs; a close written twice is one that forgets the settling timer or the count, and it forgets them on the path nobody is watching", shut[1])
+	}
+
+	// And it leaves the answer alone. The offer is what a blur withdraws; what was
+	// typed is the operator's, and this file writes it in exactly one place, which
+	// is the accept they asked for.
+	if strings.Contains(picker[leave[0]:], ".value") {
+		t.Error("the picker touches the field's value on its way out; a blur that normalised what was typed to something on the list is the list becoming the allowlist, decided in a browser rather than by the daemon that owns the roots")
 	}
 }
 
