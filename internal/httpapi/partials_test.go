@@ -11,6 +11,7 @@ package httpapi
 
 import (
 	"io/fs"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -2596,6 +2597,312 @@ func TestEveryActionablePageCarriesTheLiveRegion(t *testing.T) {
 		}
 		if !strings.Contains(markup, `id="action-toast"`) {
 			t.Errorf("%s renders action controls but no live region, so crswd.js will not intercept its forms and every action navigates", page)
+		}
+	}
+}
+
+// The two shapes T012's assertions read out of a header: the anchor, which
+// cardAnchor already gives, and the page's one first-level heading, which the
+// settings link must not be inside.
+var brandHeading = regexp.MustCompile(`(?s)<h1[^>]*\bclass="brand"[^>]*>(.*?)</h1>`)
+
+// renderedHeader is the header component on its own, which is where every claim
+// about what the header contains belongs: the pages below assert that they carry
+// it, and this is the one place its contents are counted.
+func renderedHeader(t *testing.T) string {
+	t.Helper()
+
+	return renderComponent(t, "header", &access.VerifiedOperator{Email: "operator@example.com"})
+}
+
+// mastheadOf is the header out of some rendered markup, and it fails rather than
+// handing back an empty string: a page that rendered no header at all would
+// otherwise satisfy every "the heading holds no settings link" assertion here by
+// having no heading either.
+func mastheadOf(t *testing.T, name, markup string) string {
+	t.Helper()
+
+	match := mastheadElement.FindStringSubmatch(markup)
+	if match == nil {
+		t.Fatalf("%s renders no masthead, so nothing below asserted anything about its header:\n%s", name, markup)
+	}
+	return match[1]
+}
+
+// anchorTo is the link in some markup that points at a target, with its
+// attributes and the text it reads. The target is matched with its closing quote
+// so that href="/" is not also every path that begins with a slash.
+func anchorTo(markup, target string) (anchor []string, ok bool) {
+	for _, candidate := range cardAnchor.FindAllStringSubmatch(markup, -1) {
+		if strings.Contains(candidate[1], `href="`+target+`"`) {
+			return candidate, true
+		}
+	}
+	return nil, false
+}
+
+// TestHeaderLinksToSettings is FR-011 and the whole of US3. The page shipped in
+// milestone 4 and every daemon since has been able to reach it only by typing
+// the address — which is the shape of defect this milestone exists for: three
+// tasks were green about a route, and nothing read the markup leading to it.
+//
+// The address is settingsPath, derived from the pattern the router registers, so
+// a renamed route fails here rather than leaving a link to nothing that reads
+// perfectly. The text is asserted for the reason the wordmark's is: FR-030
+// forbids signalling by symbol alone, and a gear glyph satisfies an href.
+//
+// **Must fail when** the page ships unreachable again.
+func TestHeaderLinksToSettings(t *testing.T) {
+	t.Parallel()
+
+	masthead := mastheadOf(t, "the header component", renderedHeader(t))
+
+	link, ok := anchorTo(masthead, settingsPath)
+	if !ok {
+		t.Fatalf("the header links nowhere at %s, so the settings page is reachable only by typing its address:\n%s", settingsPath, masthead)
+	}
+	if text := strings.TrimSpace(markupTags.ReplaceAllString(link[2], "")); !strings.Contains(strings.ToLower(text), "settings") {
+		t.Errorf("the settings link reads %q and does not name the page it leads to; a glyph alone satisfies an href and says nothing (FR-030):\n%s", text, masthead)
+	}
+	if !strings.Contains(link[1], `class="masthead-link"`) {
+		t.Errorf("the settings link's attributes are %q and name no class crswd.css has a rule for; the browser gets an unstyled link in the bar:\n%s", strings.TrimSpace(link[1]), masthead)
+	}
+}
+
+// TestSettingsLinkIsOutsideTheBrandHeading is FR-012.
+//
+// #46 made the wordmark the route home and it lives inside the page's one
+// first-level heading. A second anchor in there would compete for that role, and
+// a heading holding two links is a heading that has become a menu — a change to
+// what the page says about its own structure, not a layout preference.
+//
+// Both directions are held: the settings link is not in the heading, and the
+// heading still holds exactly the one link it is supposed to. The count is what
+// catches a third arriving later by a route this assertion did not predict.
+//
+// **Must fail when** the anchor lands inside the <h1>.
+func TestSettingsLinkIsOutsideTheBrandHeading(t *testing.T) {
+	t.Parallel()
+
+	masthead := mastheadOf(t, "the header component", renderedHeader(t))
+
+	heading := brandHeading.FindStringSubmatch(masthead)
+	if heading == nil {
+		t.Fatalf("the header renders no brand heading, so this asserted nothing about what is inside it:\n%s", masthead)
+	}
+	if strings.Contains(heading[1], `href="`+settingsPath+`"`) {
+		t.Errorf("the settings link is inside the page's one first-level heading, which makes that heading a menu:\n%s", heading[0])
+	}
+	if anchors := cardAnchor.FindAllStringSubmatch(heading[1], -1); len(anchors) != 1 {
+		t.Errorf("the brand heading holds %d links; it holds the wordmark and nothing else:\n%s", len(anchors), heading[0])
+	}
+}
+
+// TestWordmarkIsStillTheFirstAnchor is the other half of FR-012: the new link
+// must not displace the one that was already there.
+//
+// Order is the assertion and not presence, because presence is what
+// TestTheHeaderIsTheRouteBackToTheFleet already holds. A settings link placed
+// first is the first thing a keyboard operator reaches on every page of this
+// dashboard and the first thing a screen reader lists — which is the primary
+// anchor, whatever the markup calls it.
+//
+// **Must fail when** the settings link is placed before the wordmark.
+func TestWordmarkIsStillTheFirstAnchor(t *testing.T) {
+	t.Parallel()
+
+	masthead := mastheadOf(t, "the header component", renderedHeader(t))
+
+	anchors := cardAnchor.FindAllStringSubmatch(masthead, -1)
+	if len(anchors) == 0 {
+		t.Fatalf("the header renders no link at all, so this asserted nothing about which comes first:\n%s", masthead)
+	}
+	first := anchors[0][1]
+	for _, want := range []string{`class="brand-link"`, `href="/"`} {
+		if !strings.Contains(first, want) {
+			t.Errorf("the header's first link is %q and carries no %s; the wordmark is the route home and it is reached first (#46):\n%s", strings.TrimSpace(first), want, masthead)
+		}
+	}
+}
+
+// TestHeaderHasExactlyTwoAnchors is the shape decision, written down where it
+// can be broken: one link is not a navigation bar, and two is the whole of what
+// this header is allowed to be.
+//
+// A third would arrive one obvious convenience at a time — a link to the logs, a
+// link to a session — and each would be reasonable on its own. This count is
+// what makes adding it a decision somebody takes deliberately rather than a diff
+// nobody notices.
+//
+// **Must fail when** a third link is added without the shape being reconsidered.
+func TestHeaderHasExactlyTwoAnchors(t *testing.T) {
+	t.Parallel()
+
+	masthead := mastheadOf(t, "the header component", renderedHeader(t))
+
+	if anchors := cardAnchor.FindAllStringSubmatch(masthead, -1); len(anchors) != 2 {
+		t.Errorf("the header renders %d links; it carries the wordmark and the settings link, and a third is a navigation bar this dashboard has not decided to have:\n%s", len(anchors), masthead)
+	}
+}
+
+// renderedPages is every page this daemon serves, keyed by the template that
+// renders it, each executed against the view its handler really builds.
+//
+// The map is checked against the template tree rather than trusted, because what
+// the caller asserts is a universal claim and there is no shared layout here for
+// a new page to inherit a header from — each page template stands alone, which
+// is exactly how one of them falls behind.
+func renderedPages(t *testing.T) map[string]string {
+	t.Helper()
+
+	operator := &access.VerifiedOperator{Email: "operator@example.com"}
+	pages := map[string]string{
+		"dashboard": renderedFleet(t),
+		"session":   renderedSessionPage(t, actionableCard()),
+		"settings": renderComponent(t, "settings", settingsView{
+			Operator:   operator,
+			Settings:   []settingRow{{Key: "listen", Value: loopbackListen, Source: "default"}},
+			ConfigFile: "/home/operator/.config/crswd/crswd.conf",
+		}),
+		"not-found": renderComponent(t, "not-found", notFoundView{
+			Operator: operator,
+			Message:  emptyView{Title: notFoundTitle, Body: notFoundBody},
+		}),
+	}
+
+	unrendered := make(map[string]bool, len(pages))
+	for name := range pages {
+		unrendered[name] = true
+	}
+	err := fs.WalkDir(web.Templates, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || path.Dir(p) != "templates" {
+			return err
+		}
+		name := strings.TrimSuffix(path.Base(p), templateExt)
+		if !unrendered[name] {
+			t.Errorf("web/%s is a page and nothing here renders it, so whatever its header carries is asserted by no test", p)
+		}
+		delete(unrendered, name)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the embedded template tree: %v", err)
+	}
+	for name := range unrendered {
+		t.Errorf("this file renders a page called %q and the template tree holds no such file", name)
+	}
+	return pages
+}
+
+// TestEveryPageCarriesTheHeader is FR-011's word "every", and SC-003.
+//
+// A link on the fleet and nowhere else is an affordance an operator has to learn
+// the shape of, which is the argument #48 already settled for the route home. It
+// is asserted per page rather than on the partial, because carrying the partial
+// is the thing a page can stop doing: there is no layout in this tree, so a page
+// composing its own header is one edit away at all times.
+//
+// The not-found page is in here too and it is not padding. It is the page most
+// likely to be written in a hurry and the one an operator meets after a mistyped
+// address, which is precisely when a route to somewhere real is worth having.
+//
+// **Must fail when** a page composes its own header and loses the link.
+func TestEveryPageCarriesTheHeader(t *testing.T) {
+	t.Parallel()
+
+	for name, page := range renderedPages(t) {
+		masthead := mastheadOf(t, "the "+name+" page", page)
+		if _, ok := anchorTo(masthead, settingsPath); !ok {
+			t.Errorf("the %s page carries a header with no link to %s:\n%s", name, settingsPath, masthead)
+		}
+	}
+}
+
+// TestSettingsLinkHasVisibleFocusRing is docs/components.md's accessibility
+// floor at the control this task adds.
+//
+// An anchor is focusable by the platform, so what has to hold is that the page's
+// one :focus-visible rule still reaches it — that the rule is unqualified, and
+// that nothing written for this link takes the outline away again. Both halves
+// are lost by improvement rather than by mistake: a ring somebody thought was
+// heavy on a small link in a bar.
+//
+// **Must fail when** `outline: none` appears on this control with no
+// replacement, or when the ring is narrowed to selectors it does not match.
+func TestSettingsLinkHasVisibleFocusRing(t *testing.T) {
+	t.Parallel()
+
+	var styled, unqualified bool
+	for _, rule := range cssRules(stylesheet(t)) {
+		unqualified = unqualified || rule.selector == ":focus-visible"
+		if !strings.Contains(rule.selector, ".masthead-link") {
+			continue
+		}
+		styled = true
+		if match := outlineRemoved.FindString(rule.body); match != "" {
+			t.Errorf("%s carries %q; the design system permits removing the outline only by replacing it", rule.selector, match)
+		}
+	}
+	if !styled {
+		t.Error("crswd.css has no .masthead-link rule at all, so this swept nothing and the link in the bar is unstyled")
+	}
+	if !unqualified {
+		t.Error("crswd.css has no unqualified :focus-visible rule, so the ring on the settings link is whatever its own rules happen to draw")
+	}
+}
+
+// TestSettingsStillHasNoMutatingVerb is FR-013, asked from the markup rather
+// than from the route table.
+//
+// settings_test.go already holds that no mutating verb is registered on
+// settingsPath, and this is not that assertion a second time. It starts at the
+// link this task put on every page and follows where that link actually points:
+// reachability is what changed today, and the failure worth catching is the one
+// that reads as a natural next step — the page is one click away now, so a form
+// on it begins to look like a convenience rather than the highest-consequence
+// surface in the product. A route that does not exist cannot be exploited or
+// mis-gated.
+//
+// The answer is compared against what a path nothing claims gives, rather than
+// asserted a 404: a 405 is a route table handed to whoever asks for it, and the
+// existing test settles that distinction the same way for the same reason.
+//
+// **Must fail when** reachability is mistaken for permission to add editing.
+func TestSettingsStillHasNoMutatingVerb(t *testing.T) {
+	t.Parallel()
+
+	masthead := mastheadOf(t, "the header component", renderedHeader(t))
+
+	var target string
+	for _, anchor := range cardAnchor.FindAllStringSubmatch(masthead, -1) {
+		if !strings.Contains(anchor[1], `class="masthead-link"`) {
+			continue
+		}
+		href, ok := attributeValue(t, anchor[1], "href")
+		if !ok {
+			t.Fatalf("the header's settings link carries no href (%q), so there was nowhere to follow it to", strings.TrimSpace(anchor[1]))
+		}
+		target = href
+	}
+	if target == "" {
+		t.Fatalf("the header renders no settings link, so this followed nothing:\n%s", masthead)
+	}
+
+	f := newFleet(t)
+	for _, method := range []string{
+		http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete,
+	} {
+		w := f.ask(t, method, target)
+		nowhere := f.ask(t, method, target+"-nonesuch")
+
+		if w.Code == http.StatusMethodNotAllowed {
+			t.Errorf("%s %s — the page the header links to — was answered %d with %s: %q; which method a path serves is not a caller's to learn",
+				method, target, w.Code, headerAllow, w.Header().Get(headerAllow))
+			continue
+		}
+		if w.Code != nowhere.Code || w.Body.String() != nowhere.Body.String() {
+			t.Errorf("%s %s answered %d (%s); at a path nothing claims it answered %d (%s) — something is registered there now, and this page is read-only (FR-013)",
+				method, target, w.Code, w.Body.String(), nowhere.Code, nowhere.Body.String())
 		}
 	}
 }

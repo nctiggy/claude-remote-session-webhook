@@ -203,13 +203,49 @@ body {
 }
 
 /* Whose credentials are driving sessions on this host. Long addresses truncate
-   rather than push the brand off the bar; the title attribute carries the rest. */
+   rather than push the brand off the bar; the title attribute carries the rest.
+
+   The auto margin arrived with the settings link and is what keeps the bar the
+   shape docs/components.md describes: identity right. space-between was written
+   for two children and puts a third's middle item in the centre, so without this
+   the address would drift away from the mark it belongs opposite. It pushes the
+   free space in front of the pair instead, and the two stay together at the end
+   — which is also what makes the link read as being about this operator. */
 .operator {
   margin: 0;
+  margin-inline-start: auto;
   overflow: hidden;
   color: var(--dim);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The route to the settings page (FR-011). It is the second and last anchor in
+   this bar, and it is outside the wordmark's heading for the reason the template
+   gives.
+
+   Dim like the address beside it: this bar spends --phosphor on the brand, and a
+   link that took the accent would read as the more important of the two things
+   at that end. The underline is what says it is a link at all — the wordmark can
+   go without one because a mark returning you home is an old enough convention
+   to be the affordance itself, and a word reading "Settings" is not.
+
+   The treatment is the card heading's rather than a second one, hover included:
+   the underline warms to the text's own colour instead of a new accent being
+   introduced for one link. Nothing here removes the outline, so the page's one
+   :focus-visible ring is this control's indicator. */
+.masthead-link {
+  color: var(--dim);
+  text-decoration: underline;
+  text-decoration-color: var(--edge-bright);
+  transition:
+    color var(--transition),
+    text-decoration-color var(--transition);
+}
+
+.masthead-link:hover {
+  color: var(--text);
+  text-decoration-color: currentcolor;
 }
 
 .shell {
