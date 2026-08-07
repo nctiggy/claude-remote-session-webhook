@@ -70,6 +70,8 @@ this milestone exists to escape.
 
 - [ ] T009 [US1] Add `crswd config check` and `crswd config migrate` to `cmd/crswd/`. `check` parses and reports without starting; `migrate` is the **only** code in the repository that writes a config file, and keeps a backup at `config.bak`. Add `config.bak` fallback on load failure, announced loudly. Tests in `cmd/crswd/config_cmd_test.go` (`-tags quickstart`): `TestConfigCheckDoesNotStart`, `TestMigrateKeepsBackup`, `TestFallsBackToBackupLoudly`. **Must fail when** any code path outside `migrate` writes the operator's file (FR-008).
 
+  **Also implement the path override, which nothing has built yet.** `DefaultPath` currently resolves `$XDG_CONFIG_HOME/crswd/config` and nothing else, so there is no way to point the daemon at a specific file — and `config check <path>` is meaningless without one. Add `CRSW_CONFIG_FILE`, honoured by `DefaultPath` above `XDG_CONFIG_HOME`, and accept an optional path argument to both subcommands. Test `TestConfigFileEnvOverridesDefaultPath` in `internal/config/file_test.go` asserting a file at neither default location is read when named. **Must fail when** the override is read through the same `withFile` shim as ordinary keys — it selects *which file to parse* and so must be resolved before parsing, or it becomes a key that configures where it is read from.
+
 ---
 
 ## Phase 3: US2 — See what it is configured to do (P2)

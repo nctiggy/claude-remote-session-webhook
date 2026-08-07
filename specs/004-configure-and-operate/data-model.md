@@ -14,7 +14,7 @@ and never writes it** (FR-008).
 | Property | Value |
 |---|---|
 | Default location | `$XDG_CONFIG_HOME/crswd/config`, falling back to `~/.config/crswd/config` |
-| Override | `--config <path>` flag, or `CRSW_CONFIG_FILE` |
+| Override | `CRSW_CONFIG_FILE`, and a path argument to the `config` subcommands. **Built in T009** — `DefaultPath` honours nothing but `XDG_CONFIG_HOME` before then. Resolved *before* parsing, never through the `withFile` shim: it selects which file to read, so routing it through the file's own lookup would make it a key that configures where it is read from. |
 | Backup consulted on failure | `config.bak` in the same directory (FR-010) |
 | Encoding | UTF-8, LF or CRLF line endings |
 | Absent | Not an error (FR-003) |
