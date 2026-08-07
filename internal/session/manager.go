@@ -476,7 +476,8 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 	// daemon does not have must produce no record, no tmux session and no token,
 	// exactly as an unusable name or a forbidden directory does. Resolving it at
 	// start would mean tearing down something already built.
-	if _, err := m.resolveStartCommand(req.StartCommand); err != nil {
+	command, err := m.resolveStartCommand(req.StartCommand)
+	if err != nil {
 		return nil, "", err
 	}
 
@@ -487,6 +488,15 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 
 	if err := ValidateName(req.Name); err != nil {
 		return nil, "", fmt.Errorf("create session: %w", err)
+	}
+	// A command that asks for {name} and a session that has none is refused
+	// before anything is built (#58), rather than started with an empty --name
+	// that would send the operator looking for a session by the wrong label. It
+	// is an invalid name, and answered as one: ValidateName has already passed,
+	// so in practice this only fires if these two ever disagree about the
+	// alphabet — which is exactly when a substitution must not proceed.
+	if _, err := config.RenderStartCommand(command, req.Name); err != nil {
+		return nil, "", fmt.Errorf("create session: %w: %w", ErrInvalidName, err)
 	}
 	workDir, err := ResolveWorkDir(req.WorkDir, m.roots)
 	if err != nil {
@@ -1400,9 +1410,17 @@ func (m *Manager) start(ctx context.Context, s Session) error {
 	// request: by the time a session is being started its name has already been
 	// checked against the configured set, and re-reading caller input here would
 	// be a second place for that check to be missing.
-	command, err := m.resolveStartCommand(s.StartCommand)
+	template, err := m.resolveStartCommand(s.StartCommand)
 	if err != nil {
 		return fmt.Errorf("resolve the start command for session %s: %w", s.ID, err)
+	}
+	// The session's own name goes into the command line here and nowhere else
+	// (#58). Create has already refused anything RenderStartCommand would, so a
+	// failure at this point is a record that reached start without passing
+	// ValidateName — fail closed rather than type a line with a hole in it.
+	command, err := config.RenderStartCommand(template, s.Name)
+	if err != nil {
+		return fmt.Errorf("render the start command for session %s: %w", s.ID, err)
 	}
 	if err := m.tmux.SendKeys(ctx, name, command, enterKey); err != nil {
 		return fmt.Errorf("send the claude start command: %w", err)
