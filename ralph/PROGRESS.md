@@ -616,3 +616,117 @@ is still unanswered and lands squarely in T009.
   config (#26), so it proves nothing. `gofmt -l .` clean, `go build`, `go vet`, `go test ./...`
   green, `go vet` green under `-tags tmux`, `-tags quickstart` and `-tags dev`, `go test -tags dev
   ./internal/access ./internal/config` green, `go.sum` still absent. CI is the gate.
+
+## Iteration 9 — 2026-08-07 04:09
+
+**Did:** T009, which is US1's last task and the end of the shippable MVP. `crswd config check`
+and `crswd config migrate` in new `cmd/crswd/config_cmd.go`, dispatched from `main.go` before
+the daemon starts; `internal/config/migrate.go` produces the migrated *bytes* and cmd/crswd is
+the only thing that writes them (FR-008); `LoadFrom` falls back to `config.bak` when the live
+file will not load and announces it loudly (FR-010); `CRSW_CONFIG_FILE` names the file outright
+in `DefaultPath`, above `XDG_CONFIG_HOME` — the override iterations 5, 6 and 7 all logged as
+unowned. `ErrConfigFile` landed here with the caller T004 said to wait for.
+
+**Learned:**
+
+- **Twelve mutations run, not reasoned about — and two of them found a *test* defect, not a code
+  one.** Mutation 1 (drop the "no file was read means no fallback" guard) and mutation 2 (accept
+  the backup without running it through `loadWith`) **both passed**, because the fixtures could
+  not distinguish the mutant: in 1 the environment was broken in a way the backup did not fix, so
+  the second attempt failed identically; in 2 the broken backup failed at `ReadFile` and never
+  reached `loadWith` at all. Both subtests were rewritten until they failed, then the mutation was
+  reverted. **A mutation that passes is evidence about the test, and this is the second kind of
+  finding this loop's mutation rule produces.** The other ten (precedence reversed, migrate
+  writing no backup, migrate rewriting a file it had no change to make, the subcommand dispatch
+  dropped from `main.go`, the announcement dropped, `configFileVar` added to `Vars()`, migrate
+  accepting a file that will not parse, comments dropped by the rewrite, `check` printing values,
+  the mode left to the umask) were each caught by a named test first time.
+- **The compiler catches one mutation for free.** Removing `if !changed { return nil, false, nil }`
+  from `migrate` does not compile (`declared and not used`), so the real mutation had to be made
+  in the *caller* — `next = data` instead of `return nil` — which is the defect's realistic shape
+  anyway.
+- **`os.CreateTemp` makes 0600, which hides a missing `Chmod`.** The mode-preservation mutation
+  was invisible until a fixture at **0644** existed: every other fixture in this repo is 0600, and
+  a temp file that is already 0600 makes "the mode was never set" indistinguishable from "the mode
+  was set correctly". `TestMigrateKeepsBackup/the_operator's_mode_survives_the_rewrite` is that
+  fixture. The same blind spot will exist for anything else that writes a file.
+- **`LoadFrom` had to be split, and that is what makes the fallback honest.** Everything from the
+  shim to the `&Config{}` moved into `loadWith(getenv, file, warn, o)`, which FR-010 then runs
+  **twice** — once on the operator's file, once on the backup. Both attempts are the same code, so
+  a value recovered from a backup is bounded and refused identically to a live one. Consequence to
+  know about: **a warning the first attempt emitted is emitted a second time by the second**, with
+  the fallback announcement in between explaining why.
+- **The fallback covers both halves of "will not load", deliberately.** A file that will not
+  *parse* (`ErrConfigFile`) and a file that parses and whose *value* is refused both fall back.
+  The second needs no extra code — it is just `loadWith` failing — and it is the case FR-010 is
+  really about, since `listen = 0.0.0.0:8080` is the edit an operator makes remotely and cannot
+  undo without the daemon.
+- **A backup is not consulted when no file was read**, and that guard is load-bearing rather than
+  tidy: without it, deleting a configuration leaves the daemon running on the copy it kept.
+- **`ErrConfigFile.Error()` is `"config file"`, i.e. the first two words of every message that
+  wraps it**, so `fmt.Errorf("%w %s:%d …", ErrConfigFile, …)` reproduces the contract's message
+  shapes byte for byte and nothing in `file_test.go` had to change. `errors.New("configuration
+  file")` — the abandoned branch's spelling — would have changed all fourteen.
+- **`sed`, `perl` and `cd` are denied by this sandbox** on top of iteration 3's `/tmp`/`cp`,
+  iteration 5's `python3` and iteration 7's `git stash`/`worktree`/`VAR=x go test`. Fourteen
+  identical one-line rewrites had to be Edit calls; batching them into three multi-line Edits was
+  what made it affordable. **Budget for that**, and prefer a helper that cannot be forgotten over
+  fourteen call sites when the choice is still open.
+- **`exec.CommandContext` with `waitBudget` is what makes "does not start" a test rather than a
+  hang.** With the dispatch removed from `main.go`, `crswd config check` *serves* — without the
+  deadline that is a ten-minute package timeout with no reason attached; with it, the test fails
+  in 20s saying exactly what happened.
+
+**Left:** T010–T035. Next is **T010** (the read-only `/settings` route), the first task in
+`internal/httpapi` this milestone and the first that is not about the file.
+
+**Findings:**
+
+- **`crswd config migrate` stamps the schema version, and that is a decision T009's text did not
+  make.** `renamedKeys` is empty and `SchemaVersion` is 1, so a migration that only rewrote
+  renamed keys would be a permanent no-op today — untestable end to end, and first exercised by
+  the release that needs it. Stamping `version = <SchemaVersion>` (inserted below the file's
+  opening comment, above the first setting) is the one migration schema 1 has, it is what the
+  version key exists for, and it gives the next rename something to be measured against. **If that
+  is the wrong call it is a small deletion**, and `TestMigrateStampsTheSchemaVersion` is where.
+- **`config check` checks the file and not the values, and says so in its last line.** Running the
+  whole loader would catch `listen = 0.0.0.0:80` in a file, but it would also fail on an
+  operator's own shell for want of `CRSW_SHARED_SECRET` — a refusal that is not about the file and
+  that teaches them to stop running the command. If a stronger check is wanted, it wants an
+  explicit `--as-daemon` sort of flag, not a change of default.
+- **`CRSW_CONFIG_FILE` is taken exactly as written, relative paths included.** The two directory
+  variables are ignored when relative, with a comment about not letting a containment boundary
+  depend on somebody's shell; this one is not, because `crswd config check ./config` must mean the
+  file the daemon would read, and silently reading the XDG file instead is the wrong-file failure
+  this package refuses everywhere else. **A relative path in a systemd unit resolves against
+  `WorkingDirectory`** — worth a line in `config.example` (T034).
+- **A file named explicitly but absent is still not an error**, at startup or under `config check`,
+  because FR-003 says absence is never one. The abandoned branch made `--config <path>` *required*
+  ("the operator said which bounds they meant") and that reasoning is good — but it belongs to a
+  flag T009 does not add, and making the variable required would be a refusal SC-002 never asked
+  for. **Worth deciding explicitly if `--config` is ever built.**
+- **`--config` is still unbuilt and is now the only unowned half of the override.** The branch has
+  it ready (`configOptions()`, `config.WithFile`, `cmd/crswd/config_flag_test.go`); `data-model.md`
+  names only `CRSW_CONFIG_FILE` and the subcommand argument, both of which now exist, so nothing
+  is blocked.
+- **`crswd <anything>` is now refused rather than ignored** (exit 2, with usage). It had to be:
+  ignored, `crswd cofnig check` on a live host starts a second daemon that binds the port and
+  reconciles the first's sessions onto itself. No unit or workflow passes a positional argument —
+  checked `deploy/` and the quickstart harness — but it is a behaviour change worth knowing about.
+- **`go test -tags quickstart ./cmd/crswd` is still red on the same three tests** —
+  `TestDashboardQuickstartStory1Adopted`, `TestQuickstartStory4Restart`, `TestQuickstartStory5Cap`
+  — for iteration 7's `CRSW_DESTROY_ON_SHUTDOWN`-has-no-loader reason. Unchanged by this work and
+  unrelated to it (they fail on sessions outliving shutdown, in tests that read no config file).
+  It is now blocking T009's *own* stated gate, and T012 depends on it too. **It is the oldest
+  unfixed finding in this notebook and it wants an issue and a fix-lane commit.**
+- **Still open from iterations 5, 6, 7 and 8:** three `ReadFile` refusals missing from
+  `contracts/config-file.md`'s table; the `version < 1` row; the contract's "yields exactly eight
+  keys" against seven; a dangling symlink reading as absent; `f.values` having no enumerator (T012
+  needs one — `config check` walks `Vars()` and asks `Lookup`, which is complete because an unknown
+  key cannot parse, so it needed none); `os.Open` on a FIFO blocking startup with no message.
+  **New to the list:** `README.md` and `deploy/README.md` say nothing about the config file, the
+  two subcommands, or `CRSW_CONFIG_FILE` — that is T034/T035's, noted so it is not rediscovered.
+- **Lint unchanged:** `golangci-lint run` clean, but the binary on PATH is v1.62.2 against a v2
+  config (#26). `gofmt -l .` clean, `go build`, `go vet`, `go test ./...` green, `go vet` green
+  under `-tags tmux`, `-tags quickstart` and `-tags dev`, `go test -tags dev ./internal/access
+  ./internal/config` green, `go.sum` still absent. CI is the gate.

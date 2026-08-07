@@ -131,7 +131,7 @@ under `NEEDS CLARIFICATION` and stop.
 - [x] T006 A missing file is not an error; the parser never writes
 - [x] T007 🔒 Wire the file as a fallback `getenv` — **the keystone**
 - [x] T008 Record provenance in the same shim
-- [ ] T009 `crswd config check` and `crswd config migrate`, plus `config.bak` fallback
+- [x] T009 `crswd config check` and `crswd config migrate`, plus `config.bak` fallback
 
 ### US2 — See what it is configured to do (P2)
 
