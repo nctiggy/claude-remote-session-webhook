@@ -64,6 +64,25 @@ const (
 	// Config.DiscoveredWorkDirs for what the walk may and may not name.
 	EnvDiscoverRoots = "CRSW_DISCOVER_ROOTS"
 
+	// EnvWorkdirSuggestions is the operator's own list of working directories the
+	// create form offers, comma-separated (FR-006). It is the second of the three
+	// sources the picker unions and the only one written by hand: the approved
+	// roots are always offered, and their children only when EnvDiscoverRoots is
+	// on.
+	//
+	// It reads no filesystem, which is what keeps it clear of the disclosure
+	// EnvDiscoverRoots exists to gate. These paths were typed by an operator
+	// rather than found on the host, so offering one says nothing about what is
+	// there — not even that it exists.
+	//
+	// A path outside the approved roots is accepted here and refused on the create
+	// it is submitted with, with the same response and the same audit record as a
+	// typed one (contracts/directory-suggestions.md). That is the contract working
+	// rather than a hole: this list is presentation and EnvAllowedRoots is the
+	// control. What is refused at startup is only an entry that no configuration
+	// could ever accept — see loadWorkdirSuggestions.
+	EnvWorkdirSuggestions = "CRSW_WORKDIR_SUGGESTIONS"
+
 	// EnvDestroyOnShutdown restores the pre-#63 behaviour: tear every session
 	// down when the daemon stops. Default is off — a restart preserves them and
 	// startup adoption reclaims them.
@@ -137,6 +156,14 @@ const (
 	// an address cannot carry one outside a quoted local part, which no Google
 	// identity has.
 	emailListSeparator = ","
+
+	// workdirSuggestionListSeparator is "," rather than the ":" a root list
+	// takes, because the spec fixes it and because these two variables are not
+	// the same kind of thing: an allowlist entry is a boundary and a suggestion
+	// is a convenience. A directory whose name contains a comma cannot be
+	// suggested, which costs the operator a path they type instead of pick —
+	// the field is free text either way (FR-008).
+	workdirSuggestionListSeparator = ","
 
 	// The two separators EnvStartCommands is spelled with. A command line may
 	// therefore not contain a comma, which is a limit worth stating rather than
@@ -339,6 +366,12 @@ type Config struct {
 	// asked for it; DiscoveredWorkDirs in discover.go is the walk it gates, and
 	// is the only thing that reads this.
 	DiscoverRoots bool
+
+	// WorkdirSuggestions is the operator's explicit list of directories the create
+	// form offers, in the order they wrote them. It is one of the three sources
+	// the picker unions and it authorises nothing on its own: a path taken from it
+	// meets Roots on the create it is submitted with, exactly as a typed one does.
+	WorkdirSuggestions []string
 
 	// DestroyOnShutdown tears every session down on a clean stop. Off by
 	// default: a graceful restart is overwhelmingly the common case, and
@@ -556,6 +589,10 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 	if err != nil {
 		return nil, err
 	}
+	workdirSuggestions, err := loadWorkdirSuggestions(getenv)
+	if err != nil {
+		return nil, err
+	}
 	// Read here for the first time since #63 shipped the variable. The constant
 	// existed, server.go branched on the field, and the settings page rendered
 	// it — but nothing ever assigned it, so it was false on every daemon that
@@ -648,6 +685,7 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 		SharedSecret:        secret,
 		Roots:               roots,
 		DiscoverRoots:       discoverRoots,
+		WorkdirSuggestions:  workdirSuggestions,
 		DestroyOnShutdown:   destroyOnShutdown,
 		Listen:              listen,
 		MaxSessions:         maxSessions,
@@ -816,6 +854,54 @@ func loadRemoteControlCommand(getenv func(string) string, cmds StartCommands) (s
 			EnvRemoteControlCommand, name, EnvStartCommands)
 	}
 	return name, nil
+}
+
+// loadWorkdirSuggestions reads the operator's own list of directories the create
+// form offers (FR-006).
+//
+// Nothing here touches the filesystem, and that is the point rather than an
+// omission: a suggestion is a string in a <datalist>, and session.ResolveWorkDir
+// decides on the create whether the path submitted may be run in. Existence,
+// symlinks and containment are settled there, against the value that actually
+// arrived. Settling them here would put a read of the host behind a key that is
+// live by default, which is the disclosure EnvDiscoverRoots exists to keep
+// opt-in.
+//
+// The two refusals are the entries no configuration could ever make usable.
+// ResolveWorkDir demands an absolute path before it considers anything else, so
+// a relative entry is a suggestion whose only possible outcome is a refusal —
+// unlike one outside the roots, which the operator can make good by widening the
+// allowlist. An empty entry is a stray separator, and it would render a blank
+// option in the picker. Both refuse to start rather than being skipped, for the
+// reason every list in this file refuses: an entry dropped in silence leaves an
+// operator hunting for a directory they configured and were never told about.
+//
+// Surrounding whitespace goes so that `a, b` means what it looks like. Interior
+// whitespace stays — a directory name may legitimately contain a space, and this
+// is the operator's own path rather than caller text.
+func loadWorkdirSuggestions(getenv func(string) string) ([]string, error) {
+	raw := strings.TrimSpace(getenv(EnvWorkdirSuggestions))
+	if raw == "" {
+		return nil, nil
+	}
+
+	parts := strings.Split(raw, workdirSuggestionListSeparator)
+	// Duplicates are kept. The union in suggestions.go dedupes across all three
+	// sources, and a second rule here would be a list that disagrees with itself
+	// about how many suggestions the operator configured.
+	suggestions := make([]string, 0, len(parts))
+	for _, part := range parts {
+		path := strings.TrimSpace(part)
+		if path == "" {
+			return nil, fmt.Errorf("%s contains an empty entry; refusing to start", EnvWorkdirSuggestions)
+		}
+		if !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("%s entry %q is not an absolute path, so no create could ever accept it; refusing to start",
+				EnvWorkdirSuggestions, path)
+		}
+		suggestions = append(suggestions, path)
+	}
+	return suggestions, nil
 }
 
 // RenderStartCommand substitutes a session's own name into a configured start

@@ -77,15 +77,8 @@ const (
 	outcomeBadStartCommand outcome = "bad-start-command"
 	outcomeBadMode         outcome = "bad-mode"
 
-	// outcomeBadConversation is a create naming a conversation this daemon will
-	// not resume in the directory it was asked for (T032, FR-032). Its own code
-	// rather than outcomeCreateFailed's, because what an operator has to do about
-	// it is pick a different conversation — and because a create that asked to
-	// carry on and quietly started fresh is the failure this refusal exists to
-	// make visible.
-	outcomeBadConversation outcome = "bad-conversation"
-	outcomeLimited         outcome = "limited"
-	outcomeUnconfirmed     outcome = "unconfirmed"
+	outcomeLimited     outcome = "limited"
+	outcomeUnconfirmed outcome = "unconfirmed"
 
 	// outcomeModeUnconfirmed is the toggle's own unconfirmed, and not
 	// outcomeUnconfirmed (T019). That code's sentence says nothing was torn
@@ -187,22 +180,16 @@ var banners = map[outcome]outcomeView{
 		Message: "This daemon may not start a session in that working directory.",
 	},
 	outcomeBadStartCommand: {
-		// Names the field rather than the value: the operator picked from a list
-		// this page rendered, so a mismatch means the list and the daemon disagree,
-		// which is worth saying plainly rather than blaming the choice. It arrived
-		// on main after #42's branch was abandoned (#38, #39) and joins the
-		// vocabulary rather than falling back to the generic failure — a create
-		// refused for a nameable reason must keep saying which.
+		// Names the field rather than the value, and since T003 deleted the list of
+		// command names no browser can reach this at all: the name that door submits
+		// is resolved from the configuration the manager was built with, so a
+		// mismatch is two objects disagreeing rather than an operator choosing
+		// badly. That is what the sentence still says, and it is why it does not
+		// blame the choice. It arrived on main after #42's branch was abandoned
+		// (#38, #39) and joins the vocabulary rather than falling back to the
+		// generic failure — a create refused for a nameable reason must keep saying
+		// which, and the API door still submits names.
 		Message: "That start command is not one this daemon is configured with.",
-	},
-	outcomeBadConversation: {
-		// Names neither the identifier nor the directory, for outcomeBadWorkDir's
-		// reason: "no such conversation", "not in that directory" and "this host
-		// keeps no transcripts" are one sentence, so a caller cannot ask this form
-		// which conversations exist where. What it does say is the two things the
-		// operator can act on — nothing was started, and starting fresh is always
-		// available.
-		Message: "This daemon has no such conversation to resume in that working directory. No session was started; leave the conversation empty to start fresh.",
 	},
 	outcomeBadMode: {
 		// Says the mode is not on offer and never what was asked for. The values

@@ -134,6 +134,24 @@ version = 1
 # without the thing you asked for and say nothing.
 # discover_roots = false
 
+# Directories to offer on the create form on top of the approved roots, which
+# are always offered, and any discovered children. Comma-separated (`,`), so a
+# directory whose name contains a comma is one you type instead of pick.
+#
+# Every entry must be absolute. A relative one is a startup failure because no
+# create could ever accept it, and an empty one — a stray comma — is a startup
+# failure rather than a blank line in the picker. Nothing here is checked
+# against the filesystem: these are paths you typed, and offering one says
+# nothing about what is there, not even that it exists.
+#
+# A path outside allowed_roots may be listed, and it is refused on create
+# exactly as a typed one is — same response, same audit record. That is the
+# contract working rather than a hole: this list is a convenience and
+# allowed_roots is the control.
+#
+# Default: empty.
+# workdir_suggestions = /srv/scratch,/srv/second
+
 # host:port for the daemon's own listener. Loopback only, and the host must be
 # an IP literal: a name can be pointed anywhere by /etc/hosts or a resolver,
 # which would move the bind off loopback without changing this value.
@@ -154,9 +172,11 @@ version = 1
 # overwhelmingly the common case, destroying a fleet to redeploy a binary is a
 # cost nobody asked for, and startup adoption reclaims what a restart left.
 #
-# This build does not read the key. It parses, and /settings renders it, but
-# the loader has no case for it yet — so sessions survive a clean stop whatever
-# is written here.
+# Set it true for a host being decommissioned rather than updated. A crash
+# leaves every session running whatever this says — that is what startup
+# adoption exists to reclaim — so this only ever covers the graceful stop.
+#
+# Default: false.
 # destroy_on_shutdown = false
 
 # How long a session may live from creation, whatever it is doing. Go duration

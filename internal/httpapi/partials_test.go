@@ -11,7 +11,11 @@ package httpapi
 
 import (
 	"io/fs"
+	"net/http"
+	"os"
 	"path"
+	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -20,6 +24,8 @@ import (
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 	"github.com/nctiggy/claude-remote-session-webhook/web"
 )
@@ -1757,62 +1763,193 @@ func TestEveryCanonicalComponentIsAPartial(t *testing.T) {
 	}
 }
 
-// TestTheCreateFormOffersTheConfiguredStartCommands is #39's half of #38: the
-// operator can only choose a start command if the page offers one.
+// TestCreateFormHasNoStartCommandSelect is the milestone-4 miss read at the one
+// layer that could have caught it. FR-026 said an operator chooses remote control
+// as a *mode* rather than selecting a command by name; three tasks shipped green
+// for it and this form kept its dropdown of names, because every assertion made
+// was about a route or a record.
 //
-// The single-command case is the one worth pinning. A select with one option is
-// a control that cannot change anything, and a daemon that configured nothing
-// must render the form it rendered before this feature existed — otherwise
-// every deployment gains a widget for a choice it does not have.
-func TestTheCreateFormOffersTheConfiguredStartCommands(t *testing.T) {
+// So this reads markup, and it asserts an absence rather than a presence: a
+// switch being there says nothing about the chooser still being there beside it.
+//
+// **Must fail when** the route accepts the right value but the form still renders
+// the old control. That is the exact shape of what shipped.
+//
+// It is asserted twice, and the second time is the one with teeth. The chooser
+// was conditional on the operator having configured more than one command, so a
+// component rendered from a bare view never drew it and a test reading only that
+// would pass with the `<select>` still in the template — the same near miss one
+// layer down. The page case configures two commands, which is the state the
+// control existed for.
+//
+// The field name is spelled here rather than taken from actions.go's constant on
+// purpose. What must be gone is the control an operator sees, and that stays true
+// whatever the handler goes on to read — a test bound to the constant would start
+// passing for the wrong reason the moment the route stopped reading it.
+func TestCreateFormHasNoStartCommandSelect(t *testing.T) {
 	t.Parallel()
 
-	t.Run("several configured", func(t *testing.T) {
+	// Not `<option`. The datalist beside the working-directory field renders
+	// those legitimately, and it is about to render more of them (T006) — the
+	// element the chooser is recognised by is the `<select>` around them.
+	gone := []string{"<select", `name="start_command"`, `id="create-start-command"`}
+
+	t.Run("the component", func(t *testing.T) {
 		t.Parallel()
 
-		out := renderComponent(t, "create-form", createFormView{
-			PageToken:     "t",
-			StartCommands: []string{"default", "rc"},
-		})
-		if !strings.Contains(out, `name="start_command"`) {
-			t.Errorf("the form offers no start_command control:\n%s", out)
-		}
-		for _, name := range []string{"default", "rc"} {
-			if !strings.Contains(out, `<option value="`+name+`">`) {
-				t.Errorf("the form omits the %q option:\n%s", name, out)
+		out := renderComponent(t, "create-form", createForm())
+		for _, chooser := range gone {
+			if strings.Contains(out, chooser) {
+				t.Errorf("the create form still renders %s, so it still asks an operator to pick a command by name:\n%s", chooser, out)
 			}
 		}
 	})
 
-	t.Run("one configured renders no chooser", func(t *testing.T) {
+	t.Run("a daemon with commands configured", func(t *testing.T) {
 		t.Parallel()
 
-		out := renderComponent(t, "create-form", createFormView{
-			PageToken:     "t",
-			StartCommands: []string{"default"},
+		f := newFleet(t)
+		f.cfg.StartCommands = config.NewStartCommands(map[string]string{
+			"default": "claude --dangerously-skip-permissions",
+			"rc":      "claude remote-control",
 		})
-		if strings.Contains(out, `name="start_command"`) {
-			t.Errorf("the form offers a choice of one:\n%s", out)
-		}
-	})
 
-	// A command line must never reach the page. The names are the operator's own
-	// configuration and are safe to render; what they run is not a thing a page
-	// asking "which one?" needs, and a page carrying it is a page that could be
-	// made to carry any of it.
-	t.Run("no command line reaches the markup", func(t *testing.T) {
-		t.Parallel()
-
-		out := renderComponent(t, "create-form", createFormView{
-			PageToken:     "t",
-			StartCommands: []string{"default", "rc"},
-		})
-		for _, leak := range []string{"claude ", "--dangerously", "remote-control", "--permission-mode"} {
-			if strings.Contains(out, leak) {
-				t.Errorf("the form carries %q, which is configuration and not a choice:\n%s", leak, out)
+		create := sectionOf(t, f.view(t).Body.String(), "create")
+		for _, chooser := range gone {
+			if strings.Contains(create, chooser) {
+				t.Errorf("a daemon configuring two commands still renders %s on its create form, which is choosing a command by name:\n%s", chooser, create)
 			}
 		}
 	})
+}
+
+// TestCreateFormRendersRemoteSwitch is the other half: what stands where the
+// chooser stood is the two-state control research.md settled on, and it is the
+// platform's own.
+//
+// Exactly one, and bound to a label. A second checkbox by the same name would
+// post two values for one mode, and an unlabelled one is a control a screen
+// reader announces as nothing — docs/components.md's Form rule, which is why the
+// label is asserted through `for` rather than by proximity in the markup.
+//
+// **Must fail when** the control is a button, a link, an unlabelled input, or a
+// checkbox posting anything but the one value the route will accept.
+func TestCreateFormRendersRemoteSwitch(t *testing.T) {
+	t.Parallel()
+
+	out := renderComponent(t, "create-form", createForm())
+
+	var boxes []string
+	for _, input := range formInput.FindAllStringSubmatch(out, -1) {
+		if kind, _ := attributeValue(t, input[1], "type"); kind == "checkbox" {
+			boxes = append(boxes, input[1])
+		}
+	}
+	if len(boxes) != 1 {
+		t.Fatalf("the create form renders %d checkboxes; the mode is one two-state control:\n%s", len(boxes), out)
+	}
+	box := boxes[0]
+
+	if name, _ := attributeValue(t, box, "name"); name != "remote_control" {
+		t.Errorf("the switch posts as %q and the route reads remote_control (<input%s>)", name, box)
+	}
+	// An unticked checkbox posts nothing, so this one value is the whole of what
+	// the ticked state says. A box with no value posts "on" by every browser's
+	// convention, which is the same string — but by their convention rather than
+	// by this daemon's, and the route spells what it accepts.
+	if value, ok := attributeValue(t, box, "value"); !ok || value != "on" {
+		t.Errorf("the switch submits %q and the route accepts on (<input%s>)", value, box)
+	}
+	if strings.Contains(box, "checked") {
+		t.Errorf("the switch renders already on (<input%s>); absence means local, and a control defaulting to the more privileged mode makes the safe direction the deliberate one", box)
+	}
+
+	id, ok := attributeValue(t, box, "id")
+	if !ok {
+		t.Fatalf("the switch carries no id (<input%s>), so no label can name it", box)
+	}
+	var labelled bool
+	for _, label := range formLabel.FindAllStringSubmatch(out, -1) {
+		if label[1] != id {
+			continue
+		}
+		labelled = true
+		if strings.TrimSpace(label[2]) == "" {
+			t.Errorf("the switch's label is empty; a control announced as nothing is an unlabelled control:\n%s", out)
+		}
+	}
+	if !labelled {
+		t.Errorf("no <label for=%q> names the switch; a placeholder is not a label and neither is proximity (docs/components.md):\n%s", id, out)
+	}
+}
+
+// TestCreateFormRendersNoCommandName is FR-002 at the only place it can be
+// checked: against a daemon that really has commands configured.
+//
+// It is a page test rather than a component test, and it has to be. The view no
+// longer carries the names at all, so a component rendered from one could not
+// leak what it was never given — what can still go wrong is the projection
+// putting them back, in a label, a value, a title or a data attribute, which is a
+// fact about `fleet` and not about the template.
+//
+// The create section alone, deliberately. A card names the command its session is
+// running (#38), which is a different disclosure with a different argument behind
+// it: it describes a session that already exists rather than offering a choice of
+// what to start.
+//
+// **Must fail when** a name or a command line reaches the markup by any route.
+func TestCreateFormRendersNoCommandName(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	// Two names, because one would let a form that rendered "the default" pass
+	// while still being a chooser, and the second is the worked example's `rc` —
+	// the real configured name T004 must go on refusing as a submitted value.
+	commands := map[string]string{"default": "claude --dangerously-skip-permissions", "rc": "claude remote-control"}
+	f.cfg.StartCommands = config.NewStartCommands(commands)
+
+	create := sectionOf(t, f.view(t).Body.String(), "create")
+
+	for name, command := range commands {
+		if n := strings.Count(create, name); n != 0 {
+			t.Errorf("the rendered create form names the configured command %q %d times; a mode is asked for without the daemon's vocabulary for it:\n%s", name, n, create)
+		}
+		// The command line was never offered even when the names were, and it
+		// stays out for the stronger reason: a page that carried one is a page
+		// that could be made to carry any of it.
+		if strings.Contains(create, command) {
+			t.Errorf("the rendered create form carries the command line %q, which is configuration and not a choice:\n%s", command, create)
+		}
+	}
+	// Non-vacuity: the section really did render, and it really does hold the
+	// control that replaced the chooser.
+	if !strings.Contains(create, `name="remote_control"`) {
+		t.Errorf("the rendered create form carries no remote_control switch, so the sweep above passed on markup that offers nothing:\n%s", create)
+	}
+}
+
+// TestViewCarriesNoStartCommands is the same removal one layer down, and it is
+// the half that keeps the chooser from coming back: a view still carrying the
+// names is a template edit away from listing them again.
+//
+// Written against the struct's own fields rather than against a call site, for
+// the reason TestViewCarriesNoConversations is — "left in place for later" is
+// exactly the state a call site cannot show, since an unpopulated field looks
+// like a daemon that configured nothing.
+//
+// **Must fail when** any command-shaped field is kept on the create form's
+// parameter list, whatever it is named or typed.
+func TestViewCarriesNoStartCommands(t *testing.T) {
+	t.Parallel()
+
+	form := reflect.TypeOf(createFormView{})
+	for i := range form.NumField() {
+		field := form.Field(i)
+		if strings.Contains(strings.ToLower(field.Name), "command") ||
+			strings.Contains(strings.ToLower(field.Type.String()), "startcommand") {
+			t.Errorf("the create form's parameters still expose the daemon's command names: %s %s", field.Name, field.Type)
+		}
+	}
 }
 
 // TestTheCreateFormNamesTheConfiguredRoots is the other half of T014: the
@@ -2019,154 +2156,329 @@ func TestNoSuggestionsRendersPlainField(t *testing.T) {
 	}
 }
 
-// The conversation offer's fixture and the element it hangs off. Two entries
-// under different working directories, because the directory is what makes an
-// identifier legible and a list of one could not show that it renders.
-var (
-	conversationOffers = []conversationOffer{
-		{ID: "8f14e45f-ceea-467a-9b3d-0f2fc9de5b21", WorkDir: "/home/operator/code/crswd", Age: "2 hours"},
-		{ID: "c9f0f895-fb98-4b9d-8c1e-a34dbb8bb7a1", WorkDir: "/home/operator/code/notes", Age: "3 days"},
+// TestDefaultInstallRendersOptions is T006 read at the layer this milestone
+// exists for. Every assertion behind the picker was about a walk or a view, and
+// the operator met a plain text field: discovery was the only source and it is
+// off unless asked for, so a default install rendered a control with nothing in
+// it. A union with three passing unit tests is the same shipped defect one layer
+// down if the page never passes it on.
+//
+// It drives the server's own projection rather than handing the component a
+// literal — a form fed a fixture list would render options on a daemon that
+// offers none. The configuration is the plainest one that exists: one approved
+// root, no explicit list, no discovery.
+//
+// **Must fail when** discovery is the only source again, and when the fix for
+// emptiness is to turn discovery on — the child below is on the real filesystem
+// so that a walk reaching past the gate would put it in the markup.
+func TestDefaultInstallRendersOptions(t *testing.T) {
+	t.Parallel()
+
+	// Resolved, because that is what config.Load hands the daemon and what the
+	// walk compares against. On a host whose temp directory is itself a symlink,
+	// an unresolved root would leave the child assertion below passing for a
+	// reason that has nothing to do with the gate it is about.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve the temp dir: %v", err)
 	}
-	resumeInput = regexp.MustCompile(`<input\b[^>]*\bname="resume"[^>]*>`)
+	child := filepath.Join(root, "repo")
+	if err := os.Mkdir(child, 0o750); err != nil {
+		t.Fatalf("create a discoverable directory: %v", err)
+	}
+
+	s := newTestServer(t, loopbackListen)
+	s.cfg.Roots = []config.ApprovedRoot{{Path: root}}
+
+	view := s.fleet(&access.VerifiedOperator{Email: testOperatorEmail, Owner: auth.CallerOperator}, testCardToken, nil)
+	out := renderComponent(t, "create-form", view.Create)
+
+	if !strings.Contains(out, `<option value="`) {
+		t.Fatalf("a daemon configured with an approved root and nothing else rendered a picker with no options in it, which is the field an operator reported as missing:\n%s", out)
+	}
+	if !strings.Contains(out, `<option value="`+root+`">`) {
+		t.Errorf("the create form offers no %q, and it is this daemon's one approved root:\n%s", root, out)
+	}
+	// The field has to point at the list for a browser or a screen reader to
+	// reach it: options nothing points at are markup neither one reads.
+	input := workdirInput.FindString(out)
+	if input == "" {
+		t.Fatalf("the create form renders no work_dir field at all:\n%s", out)
+	}
+	list, ok := attributeValue(t, input, "list")
+	if !ok {
+		t.Fatalf("the working-directory field points at no list (%s), so the options above are markup the browser never reads:\n%s", input, out)
+	}
+	if !strings.Contains(out, `<datalist id="`+list+`">`) {
+		t.Errorf("the field points at the datalist %q and no such element is rendered:\n%s", list, out)
+	}
+
+	// The half that keeps the fix from becoming a disclosure. What is *inside* a
+	// root is read from the host, and this operator did not ask for that.
+	if strings.Contains(out, `<option value="`+child+`">`) {
+		t.Errorf("the create form names %q with %s unset; the roots are offered because the operator configured them, and their children are the thing they have to ask for:\n%s",
+			child, config.EnvDiscoverRoots, out)
+	}
+}
+
+// The themed picker's three additions, and the shape each one has to keep
+// (T008, contracts/themed-combobox.md). The wrapper is matched non-greedily to
+// the first close: it holds an input, a datalist, a list and a status region and
+// no nested div, so the first `</div>` after it is its own — and a wrapper that
+// grew one would be a structure this task did not build.
+var (
+	comboWrapper = regexp.MustCompile(`(?s)<div\b[^>]*\bclass="combo"[^>]*>(.*?)</div>`)
+	comboListbox = regexp.MustCompile(`<ul\b[^>]*\bclass="combo-list"[^>]*>\s*</ul>`)
+	comboStatus  = regexp.MustCompile(`<p\b[^>]*\bclass="combo-status"[^>]*>\s*</p>`)
 )
 
-// TestFreshIsDefault is FR-037 in the markup, and the whole of what makes a
-// resume something the operator chose: this form asks for a conversation without
-// ever proposing one.
+// comboViews is the two states the wrapper has to render in. The second is the
+// one the enhancement can never help: a form with nothing to suggest still has
+// to be the plain field that shipped before any of this existed.
+func comboViews() map[string]createFormView {
+	return map[string]createFormView{
+		"offering suggestions": {PageToken: testCardToken, Suggestions: workdirSuggestions},
+		"offering none":        {PageToken: testCardToken},
+	}
+}
+
+// combo returns what the wrapper holds, failing if the form renders no wrapper
+// at all.
+func combo(t *testing.T, out string) string {
+	t.Helper()
+
+	match := comboWrapper.FindStringSubmatch(out)
+	if match == nil {
+		t.Fatalf("the create form renders no .combo wrapper around the working-directory field:\n%s", out)
+	}
+	return match[1]
+}
+
+// TestComboRendersWithoutAriaRoles is the rule the whole themed-combobox
+// contract turns on, read at the only layer that can hold it. The native
+// control works first and the theme is an enhancement over something that
+// already functions, so the roles that describe the enhancement are added by
+// the script that makes them true.
 //
-// **Must fail when** the field arrives pre-filled — a `value`, a `selected`
-// option, a `checked` box — or when it becomes a control that cannot express
-// "fresh" at all. A default of "carry on from the last conversation" is the one
-// setting here an operator would not notice until a session came back knowing
-// things they never told it.
+// **Must fail when** the roles are moved into the template. That is the shape
+// this task is likeliest to be lost in by improvement rather than by mistake:
+// markup carrying role="combobox" and aria-expanded="false" looks finished, and
+// in a browser running no script it announces a control that does not exist and
+// a popup that can never open. Markup that lies to a screen reader is worse
+// than markup describing the plain field that is really there.
 //
-// It is asserted with an offer present, which is the state the mistake would be
-// made in: a form with nothing to offer is trivially fresh, and a list of
-// conversations beside an empty field is exactly the arrangement that invites
-// preselecting the first one.
-func TestFreshIsDefault(t *testing.T) {
+// role="status" and aria-live on the status region are not in the sweep and are
+// required by the test below: a live region has to be in the accessibility tree
+// before its text arrives, which is a fact about the region rather than a claim
+// about a control.
+func TestComboRendersWithoutAriaRoles(t *testing.T) {
+	t.Parallel()
+
+	for name, view := range comboViews() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			out := renderComponent(t, "create-form", view)
+			held := combo(t, out)
+			if !strings.Contains(held, `name="work_dir"`) {
+				t.Errorf("the .combo wrapper does not hold the working-directory field (%s):\n%s", held, out)
+			}
+
+			for _, aria := range []string{
+				`role="combobox"`,
+				`role="listbox"`,
+				`role="option"`,
+				"aria-expanded",
+				"aria-controls",
+				"aria-autocomplete",
+				"aria-activedescendant",
+			} {
+				if strings.Contains(out, aria) {
+					t.Errorf("the create form carries %s with no script to make it true; without one there is no combobox to expand and nothing to control, and a reader is told about a control that is not there:\n%s", aria, out)
+				}
+			}
+		})
+	}
+}
+
+// TestComboRendersListAndDatalist holds the two joints this structure adds, and
+// both of them lose silently. The field is joined to its options by a `list`
+// attribute naming a `<datalist>` id, and the enhancement will be joined to its
+// listbox by an aria-controls naming a `<ul>` id — three spellings in two trees,
+// none of which any compiler checks.
+//
+// **Must fail when** the ids drift apart. The symptom is the one that survives
+// review: a picker that renders perfectly, in the right place, with the right
+// styling, and offers nothing at all.
+func TestComboRendersListAndDatalist(t *testing.T) {
+	t.Parallel()
+
+	out := renderComponent(t, "create-form", createFormView{PageToken: testCardToken, Suggestions: workdirSuggestions})
+	held := combo(t, out)
+
+	input := workdirInput.FindString(held)
+	if input == "" {
+		t.Fatalf("the .combo wrapper holds no work_dir field:\n%s", out)
+	}
+	list, ok := attributeValue(t, input, "list")
+	if !ok {
+		t.Fatalf("the working-directory field points at no list (%s):\n%s", input, out)
+	}
+	if !strings.Contains(held, `<datalist id="`+list+`">`) {
+		t.Errorf("the field points at the datalist %q and the wrapper holds no such element; the options are markup the browser never reads:\n%s", list, out)
+	}
+	for _, path := range workdirSuggestions {
+		if !strings.Contains(held, `<option value="`+path+`">`) {
+			t.Errorf("the wrapper's datalist omits the suggestion %q, so the enhancement's one data source is missing it too:\n%s", path, out)
+		}
+	}
+
+	// The listbox the script will name. It is empty markup today and its id is
+	// the whole of what T010 has to point aria-controls at.
+	listbox := comboListbox.FindString(held)
+	if listbox == "" {
+		t.Fatalf("the wrapper holds no empty .combo-list; a listbox composed at enhancement time is a class the stylesheet sweep reads as a dead rule:\n%s", out)
+	}
+	if id, ok := attributeValue(t, listbox, "id"); !ok || id != "workdir-listbox" {
+		t.Errorf("the listbox is id=%q and the enhancement controls %q; the two spellings are a joint between two trees and nothing else holds them", id, "workdir-listbox")
+	}
+	if !strings.Contains(listbox, " hidden") {
+		t.Errorf("the listbox renders visible (%s); with no script it can never be filled, and an empty box below the field is a control that reads as broken", listbox)
+	}
+}
+
+// TestComboRendersPlainFieldWithNoSuggestions is FR-043 and FR-018a applied to
+// the wrapper: a daemon with nothing to suggest renders the field exactly as it
+// shipped before any picker existed, now inside a box that changes none of it.
+//
+// **Must fail when** an empty `<datalist>` is emitted, or the `list` attribute
+// survives the element it names, or the listbox is filled with something. All
+// three are markup that reads like an offer and makes none.
+func TestComboRendersPlainFieldWithNoSuggestions(t *testing.T) {
+	t.Parallel()
+
+	out := renderComponent(t, "create-form", createForm())
+	held := combo(t, out)
+
+	if strings.Contains(held, "<datalist") {
+		t.Errorf("a form with nothing to suggest renders a datalist anyway:\n%s", out)
+	}
+	input := workdirInput.FindString(held)
+	if input == "" {
+		t.Fatalf("the .combo wrapper holds no work_dir field:\n%s", out)
+	}
+	if list, ok := attributeValue(t, input, "list"); ok {
+		t.Errorf("the field points at the datalist %q and none is rendered (%s)", list, input)
+	}
+	if comboListbox.FindString(held) == "" {
+		t.Errorf("the listbox is missing or is not empty; with nothing to suggest there is nothing it could ever hold:\n%s", held)
+	}
+	if comboStatus.FindString(held) == "" {
+		t.Errorf("the status region is missing or is not empty:\n%s", held)
+	}
+}
+
+// TestComboStatusRegionIsInTheTemplate is docs/components.md's accessibility
+// floor applied to the region the enhancement announces through: a live region
+// has to be in the accessibility tree before its text arrives for the
+// announcement to happen at all, which is the same rule the fleet's own notes
+// and the subset note beside this field already follow.
+//
+// **Must fail when** it is created by script — the first announcement is then
+// made into a region a reader has never seen, and the stylesheet sweep reads
+// .combo-status as a rule no template renders, which is how a second component
+// starts.
+//
+// Empty rather than hidden, for the same reason: a region revealed and written
+// in one go is one some readers never announce.
+func TestComboStatusRegionIsInTheTemplate(t *testing.T) {
+	t.Parallel()
+
+	for name, view := range comboViews() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			held := combo(t, renderComponent(t, "create-form", view))
+			region := comboStatus.FindString(held)
+			if region == "" {
+				t.Fatalf("the wrapper holds no empty .combo-status:\n%s", held)
+			}
+			if strings.Contains(region, " hidden") {
+				t.Errorf("the status region is rendered hidden (%s); it is empty markup that costs the field nothing, and hiding it keeps it out of the accessibility tree until the moment it has something to say", region)
+			}
+			if !strings.Contains(region, `role="status"`) || !strings.Contains(region, `aria-live="polite"`) {
+				t.Errorf("the status region is not a polite live region (%s), so what the enhancement says about a narrowed list is said to nobody who cannot see it", region)
+			}
+		})
+	}
+}
+
+// TestCreateFormHasNoResumeField is US5 in the markup: the form no longer asks
+// for a conversation identifier, and asking is the whole of what was wrong with
+// it. The offer beside the field could only ever list the conversations of a
+// *directory*, while what an operator wants back is the one *this session* was
+// having — the ambiguity FR-032 refuses to resolve by guessing.
+//
+// It reads the rendered markup rather than the view, which is this milestone's
+// standing obligation: milestone 4 shipped three green tasks for a requirement
+// about what an operator sees while the form kept the control it was meant to
+// lose.
+//
+// **Must fail when** the field survives as a hidden input — the shape a deletion
+// takes when someone means to keep the plumbing working — or when the datalist
+// outlives the field that pointed at it. Both are the question still being asked,
+// one of them without even the label that said what it was for.
+//
+// Both states are asserted, because a form with nothing to suggest is trivially
+// free of a datalist and would pass this on its own.
+func TestCreateFormHasNoResumeField(t *testing.T) {
 	t.Parallel()
 
 	for name, view := range map[string]createFormView{
-		"offering conversations": {PageToken: "t", Conversations: conversationOffers},
-		"offering none":          {PageToken: "t"},
+		"a form with something to suggest": {PageToken: testCardToken, Suggestions: []string{"/home/operator/code/crswd"}},
+		"a form with nothing to suggest":   createForm(),
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
 			out := renderComponent(t, "create-form", view)
 
-			field := resumeInput.FindString(out)
-			if field == "" {
-				t.Fatalf("the create form asks for no conversation at all:\n%s", out)
+			for _, gone := range []string{`name="resume"`, "conversation-suggestions", `id="create-resume"`, `id="create-resume-hint"`} {
+				if strings.Contains(out, gone) {
+					t.Errorf("the create form still carries %s, so it still asks for a conversation:\n%s", gone, out)
+				}
 			}
-			if value, ok := attributeValue(t, field, "value"); ok {
-				t.Errorf("the conversation field arrives holding %q; fresh is the default and a default is what an empty field means (%s)", value, field)
-			}
-			if _, ok := attributeValue(t, field, "checked"); ok {
-				t.Errorf("the conversation field arrives ticked (%s)", field)
-			}
-			if _, ok := attributeValue(t, field, "required"); ok {
-				t.Errorf("the conversation field is required, so no submission can start fresh (%s)", field)
-			}
-			if strings.Contains(out, "selected") {
-				t.Errorf("the create form preselects an option:\n%s", out)
-			}
-			// A chooser could not express "fresh" without an option meaning it,
-			// which is a second spelling of the default the handler already reads
-			// as an empty field.
-			if chooser := regexp.MustCompile(`<select\b[^>]*\bname="resume"`).FindString(out); chooser != "" {
-				t.Errorf("the conversation became a chooser (%s):\n%s", chooser, out)
-			}
-			// The operator has to be told what an empty field does. A default
-			// nothing says out loud is one an operator discovers by losing work.
-			if !strings.Contains(out, `id="create-resume-hint"`) || !strings.Contains(out, "empty") {
-				t.Errorf("nothing on the form says what leaving the conversation empty does:\n%s", out)
+			// A hidden field is the deletion's near miss: nothing on the page
+			// asks the question and every submission answers it anyway.
+			if hidden := regexp.MustCompile(`<input\b[^>]*\btype="hidden"[^>]*\bname="resume"`).FindString(out); hidden != "" {
+				t.Errorf("the conversation field went hidden rather than away (%s):\n%s", hidden, out)
 			}
 		})
 	}
 }
 
-// TestTheCreateFormOffersPriorConversations is FR-033's half of the offer: an
-// operator can only choose a conversation the page shows them.
+// TestViewCarriesNoConversations is the same removal one layer down, and it is
+// the half that keeps the field from coming back: a view that still carried the
+// data would be a template edit away from asking again, and the projection
+// behind it reads the filesystem on the render path.
 //
-// **Must fail when** the offer stops carrying the directory each conversation
-// belongs to. Two fields are submitted together and the route checks the pairing,
-// so a list of bare identifiers is one an operator cannot use — every entry looks
-// equally plausible beside whichever directory they typed.
+// It is written against the struct's own fields rather than against a call site,
+// because "left in place for later" is exactly the state a call site cannot see —
+// an unpopulated field looks like an empty offer.
 //
-// The absent case is the picker's rule applied here: no datalist and no `list`
-// attribute, leaving a field an identifier can still be pasted into. That is what
-// keeps this usable on the shipped default, where the directory walk is off and
-// there is nothing to offer.
-func TestTheCreateFormOffersPriorConversations(t *testing.T) {
+// **Must fail when** any conversation-shaped field is kept on the create form's
+// parameter list, whatever it is named or typed.
+func TestViewCarriesNoConversations(t *testing.T) {
 	t.Parallel()
 
-	t.Run("what the daemon found", func(t *testing.T) {
-		t.Parallel()
-
-		out := renderComponent(t, "create-form", createFormView{PageToken: "t", Conversations: conversationOffers})
-
-		field := resumeInput.FindString(out)
-		list, ok := attributeValue(t, field, "list")
-		if !ok {
-			t.Fatalf("the conversation field points at no list (%s), so the offer below it is markup the browser never reads:\n%s", field, out)
+	form := reflect.TypeOf(createFormView{})
+	for i := range form.NumField() {
+		field := form.Field(i)
+		if strings.Contains(strings.ToLower(field.Name), "conversation") ||
+			strings.Contains(strings.ToLower(field.Type.String()), "conversation") {
+			t.Errorf("the create form's parameters still expose conversation data: %s %s", field.Name, field.Type)
 		}
-		if !strings.Contains(out, `<datalist id="`+list+`">`) {
-			t.Errorf("the field points at the datalist %q and no such element is rendered:\n%s", list, out)
-		}
-		for _, offer := range conversationOffers {
-			if !strings.Contains(out, `<option value="`+offer.ID+`">`) {
-				t.Errorf("the offer omits the conversation %q:\n%s", offer.ID, out)
-			}
-			if !strings.Contains(out, offer.WorkDir) {
-				t.Errorf("the offer does not say which directory %q belongs to:\n%s", offer.ID, out)
-			}
-			if !strings.Contains(out, offer.Age) {
-				t.Errorf("the offer does not say how old %q is:\n%s", offer.ID, out)
-			}
-		}
-
-		// Nothing runs for any of that to be true, and nothing may: this control
-		// is the platform's own for the reason the directory picker is.
-		for _, scripted := range scriptedMarkup {
-			if strings.Contains(out, scripted) {
-				t.Errorf("the conversation offer carries %q:\n%s", scripted, out)
-			}
-		}
-	})
-
-	t.Run("nothing to offer", func(t *testing.T) {
-		t.Parallel()
-
-		out := renderComponent(t, "create-form", createForm())
-
-		field := resumeInput.FindString(out)
-		if field == "" {
-			t.Fatalf("a form with nothing to offer asks for no conversation at all:\n%s", out)
-		}
-		if list, ok := attributeValue(t, field, "list"); ok {
-			t.Errorf("the field points at the datalist %q and none is rendered (%s)", list, field)
-		}
-		if kind, _ := attributeValue(t, field, "type"); kind != "text" {
-			t.Errorf("the conversation field is type %q; free text is what lets an operator paste an identifier this daemon never offered (%s)", kind, field)
-		}
-	})
-
-	// An identifier is a directory entry's name off the host, and the directory
-	// beside it is a path. Neither may close the attribute it is rendered into.
-	t.Run("a hostile offer escapes nothing", func(t *testing.T) {
-		t.Parallel()
-
-		out := renderComponent(t, "create-form", createFormView{PageToken: "t", Conversations: []conversationOffer{
-			{ID: `" onfocus="stealFocus`, WorkDir: `/srv/work/"><script>`, Age: "1 hour"},
-		}})
-		for _, leak := range []string{`" onfocus="stealFocus`, `"><script>`} {
-			if strings.Contains(out, leak) {
-				t.Errorf("an offer escaped its attribute:\n%s", out)
-			}
-		}
-	})
+	}
 }
 
 // TestTheCardSaysWhatItIsRunning covers the other half: two sessions are
@@ -2285,6 +2597,312 @@ func TestEveryActionablePageCarriesTheLiveRegion(t *testing.T) {
 		}
 		if !strings.Contains(markup, `id="action-toast"`) {
 			t.Errorf("%s renders action controls but no live region, so crswd.js will not intercept its forms and every action navigates", page)
+		}
+	}
+}
+
+// The two shapes T012's assertions read out of a header: the anchor, which
+// cardAnchor already gives, and the page's one first-level heading, which the
+// settings link must not be inside.
+var brandHeading = regexp.MustCompile(`(?s)<h1[^>]*\bclass="brand"[^>]*>(.*?)</h1>`)
+
+// renderedHeader is the header component on its own, which is where every claim
+// about what the header contains belongs: the pages below assert that they carry
+// it, and this is the one place its contents are counted.
+func renderedHeader(t *testing.T) string {
+	t.Helper()
+
+	return renderComponent(t, "header", &access.VerifiedOperator{Email: "operator@example.com"})
+}
+
+// mastheadOf is the header out of some rendered markup, and it fails rather than
+// handing back an empty string: a page that rendered no header at all would
+// otherwise satisfy every "the heading holds no settings link" assertion here by
+// having no heading either.
+func mastheadOf(t *testing.T, name, markup string) string {
+	t.Helper()
+
+	match := mastheadElement.FindStringSubmatch(markup)
+	if match == nil {
+		t.Fatalf("%s renders no masthead, so nothing below asserted anything about its header:\n%s", name, markup)
+	}
+	return match[1]
+}
+
+// anchorTo is the link in some markup that points at a target, with its
+// attributes and the text it reads. The target is matched with its closing quote
+// so that href="/" is not also every path that begins with a slash.
+func anchorTo(markup, target string) (anchor []string, ok bool) {
+	for _, candidate := range cardAnchor.FindAllStringSubmatch(markup, -1) {
+		if strings.Contains(candidate[1], `href="`+target+`"`) {
+			return candidate, true
+		}
+	}
+	return nil, false
+}
+
+// TestHeaderLinksToSettings is FR-011 and the whole of US3. The page shipped in
+// milestone 4 and every daemon since has been able to reach it only by typing
+// the address — which is the shape of defect this milestone exists for: three
+// tasks were green about a route, and nothing read the markup leading to it.
+//
+// The address is settingsPath, derived from the pattern the router registers, so
+// a renamed route fails here rather than leaving a link to nothing that reads
+// perfectly. The text is asserted for the reason the wordmark's is: FR-030
+// forbids signalling by symbol alone, and a gear glyph satisfies an href.
+//
+// **Must fail when** the page ships unreachable again.
+func TestHeaderLinksToSettings(t *testing.T) {
+	t.Parallel()
+
+	masthead := mastheadOf(t, "the header component", renderedHeader(t))
+
+	link, ok := anchorTo(masthead, settingsPath)
+	if !ok {
+		t.Fatalf("the header links nowhere at %s, so the settings page is reachable only by typing its address:\n%s", settingsPath, masthead)
+	}
+	if text := strings.TrimSpace(markupTags.ReplaceAllString(link[2], "")); !strings.Contains(strings.ToLower(text), "settings") {
+		t.Errorf("the settings link reads %q and does not name the page it leads to; a glyph alone satisfies an href and says nothing (FR-030):\n%s", text, masthead)
+	}
+	if !strings.Contains(link[1], `class="masthead-link"`) {
+		t.Errorf("the settings link's attributes are %q and name no class crswd.css has a rule for; the browser gets an unstyled link in the bar:\n%s", strings.TrimSpace(link[1]), masthead)
+	}
+}
+
+// TestSettingsLinkIsOutsideTheBrandHeading is FR-012.
+//
+// #46 made the wordmark the route home and it lives inside the page's one
+// first-level heading. A second anchor in there would compete for that role, and
+// a heading holding two links is a heading that has become a menu — a change to
+// what the page says about its own structure, not a layout preference.
+//
+// Both directions are held: the settings link is not in the heading, and the
+// heading still holds exactly the one link it is supposed to. The count is what
+// catches a third arriving later by a route this assertion did not predict.
+//
+// **Must fail when** the anchor lands inside the <h1>.
+func TestSettingsLinkIsOutsideTheBrandHeading(t *testing.T) {
+	t.Parallel()
+
+	masthead := mastheadOf(t, "the header component", renderedHeader(t))
+
+	heading := brandHeading.FindStringSubmatch(masthead)
+	if heading == nil {
+		t.Fatalf("the header renders no brand heading, so this asserted nothing about what is inside it:\n%s", masthead)
+	}
+	if strings.Contains(heading[1], `href="`+settingsPath+`"`) {
+		t.Errorf("the settings link is inside the page's one first-level heading, which makes that heading a menu:\n%s", heading[0])
+	}
+	if anchors := cardAnchor.FindAllStringSubmatch(heading[1], -1); len(anchors) != 1 {
+		t.Errorf("the brand heading holds %d links; it holds the wordmark and nothing else:\n%s", len(anchors), heading[0])
+	}
+}
+
+// TestWordmarkIsStillTheFirstAnchor is the other half of FR-012: the new link
+// must not displace the one that was already there.
+//
+// Order is the assertion and not presence, because presence is what
+// TestTheHeaderIsTheRouteBackToTheFleet already holds. A settings link placed
+// first is the first thing a keyboard operator reaches on every page of this
+// dashboard and the first thing a screen reader lists — which is the primary
+// anchor, whatever the markup calls it.
+//
+// **Must fail when** the settings link is placed before the wordmark.
+func TestWordmarkIsStillTheFirstAnchor(t *testing.T) {
+	t.Parallel()
+
+	masthead := mastheadOf(t, "the header component", renderedHeader(t))
+
+	anchors := cardAnchor.FindAllStringSubmatch(masthead, -1)
+	if len(anchors) == 0 {
+		t.Fatalf("the header renders no link at all, so this asserted nothing about which comes first:\n%s", masthead)
+	}
+	first := anchors[0][1]
+	for _, want := range []string{`class="brand-link"`, `href="/"`} {
+		if !strings.Contains(first, want) {
+			t.Errorf("the header's first link is %q and carries no %s; the wordmark is the route home and it is reached first (#46):\n%s", strings.TrimSpace(first), want, masthead)
+		}
+	}
+}
+
+// TestHeaderHasExactlyTwoAnchors is the shape decision, written down where it
+// can be broken: one link is not a navigation bar, and two is the whole of what
+// this header is allowed to be.
+//
+// A third would arrive one obvious convenience at a time — a link to the logs, a
+// link to a session — and each would be reasonable on its own. This count is
+// what makes adding it a decision somebody takes deliberately rather than a diff
+// nobody notices.
+//
+// **Must fail when** a third link is added without the shape being reconsidered.
+func TestHeaderHasExactlyTwoAnchors(t *testing.T) {
+	t.Parallel()
+
+	masthead := mastheadOf(t, "the header component", renderedHeader(t))
+
+	if anchors := cardAnchor.FindAllStringSubmatch(masthead, -1); len(anchors) != 2 {
+		t.Errorf("the header renders %d links; it carries the wordmark and the settings link, and a third is a navigation bar this dashboard has not decided to have:\n%s", len(anchors), masthead)
+	}
+}
+
+// renderedPages is every page this daemon serves, keyed by the template that
+// renders it, each executed against the view its handler really builds.
+//
+// The map is checked against the template tree rather than trusted, because what
+// the caller asserts is a universal claim and there is no shared layout here for
+// a new page to inherit a header from — each page template stands alone, which
+// is exactly how one of them falls behind.
+func renderedPages(t *testing.T) map[string]string {
+	t.Helper()
+
+	operator := &access.VerifiedOperator{Email: "operator@example.com"}
+	pages := map[string]string{
+		"dashboard": renderedFleet(t),
+		"session":   renderedSessionPage(t, actionableCard()),
+		"settings": renderComponent(t, "settings", settingsView{
+			Operator:   operator,
+			Settings:   []settingRow{{Key: "listen", Value: loopbackListen, Source: "default"}},
+			ConfigFile: "/home/operator/.config/crswd/crswd.conf",
+		}),
+		"not-found": renderComponent(t, "not-found", notFoundView{
+			Operator: operator,
+			Message:  emptyView{Title: notFoundTitle, Body: notFoundBody},
+		}),
+	}
+
+	unrendered := make(map[string]bool, len(pages))
+	for name := range pages {
+		unrendered[name] = true
+	}
+	err := fs.WalkDir(web.Templates, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || path.Dir(p) != "templates" {
+			return err
+		}
+		name := strings.TrimSuffix(path.Base(p), templateExt)
+		if !unrendered[name] {
+			t.Errorf("web/%s is a page and nothing here renders it, so whatever its header carries is asserted by no test", p)
+		}
+		delete(unrendered, name)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the embedded template tree: %v", err)
+	}
+	for name := range unrendered {
+		t.Errorf("this file renders a page called %q and the template tree holds no such file", name)
+	}
+	return pages
+}
+
+// TestEveryPageCarriesTheHeader is FR-011's word "every", and SC-003.
+//
+// A link on the fleet and nowhere else is an affordance an operator has to learn
+// the shape of, which is the argument #48 already settled for the route home. It
+// is asserted per page rather than on the partial, because carrying the partial
+// is the thing a page can stop doing: there is no layout in this tree, so a page
+// composing its own header is one edit away at all times.
+//
+// The not-found page is in here too and it is not padding. It is the page most
+// likely to be written in a hurry and the one an operator meets after a mistyped
+// address, which is precisely when a route to somewhere real is worth having.
+//
+// **Must fail when** a page composes its own header and loses the link.
+func TestEveryPageCarriesTheHeader(t *testing.T) {
+	t.Parallel()
+
+	for name, page := range renderedPages(t) {
+		masthead := mastheadOf(t, "the "+name+" page", page)
+		if _, ok := anchorTo(masthead, settingsPath); !ok {
+			t.Errorf("the %s page carries a header with no link to %s:\n%s", name, settingsPath, masthead)
+		}
+	}
+}
+
+// TestSettingsLinkHasVisibleFocusRing is docs/components.md's accessibility
+// floor at the control this task adds.
+//
+// An anchor is focusable by the platform, so what has to hold is that the page's
+// one :focus-visible rule still reaches it — that the rule is unqualified, and
+// that nothing written for this link takes the outline away again. Both halves
+// are lost by improvement rather than by mistake: a ring somebody thought was
+// heavy on a small link in a bar.
+//
+// **Must fail when** `outline: none` appears on this control with no
+// replacement, or when the ring is narrowed to selectors it does not match.
+func TestSettingsLinkHasVisibleFocusRing(t *testing.T) {
+	t.Parallel()
+
+	var styled, unqualified bool
+	for _, rule := range cssRules(stylesheet(t)) {
+		unqualified = unqualified || rule.selector == ":focus-visible"
+		if !strings.Contains(rule.selector, ".masthead-link") {
+			continue
+		}
+		styled = true
+		if match := outlineRemoved.FindString(rule.body); match != "" {
+			t.Errorf("%s carries %q; the design system permits removing the outline only by replacing it", rule.selector, match)
+		}
+	}
+	if !styled {
+		t.Error("crswd.css has no .masthead-link rule at all, so this swept nothing and the link in the bar is unstyled")
+	}
+	if !unqualified {
+		t.Error("crswd.css has no unqualified :focus-visible rule, so the ring on the settings link is whatever its own rules happen to draw")
+	}
+}
+
+// TestSettingsStillHasNoMutatingVerb is FR-013, asked from the markup rather
+// than from the route table.
+//
+// settings_test.go already holds that no mutating verb is registered on
+// settingsPath, and this is not that assertion a second time. It starts at the
+// link this task put on every page and follows where that link actually points:
+// reachability is what changed today, and the failure worth catching is the one
+// that reads as a natural next step — the page is one click away now, so a form
+// on it begins to look like a convenience rather than the highest-consequence
+// surface in the product. A route that does not exist cannot be exploited or
+// mis-gated.
+//
+// The answer is compared against what a path nothing claims gives, rather than
+// asserted a 404: a 405 is a route table handed to whoever asks for it, and the
+// existing test settles that distinction the same way for the same reason.
+//
+// **Must fail when** reachability is mistaken for permission to add editing.
+func TestSettingsStillHasNoMutatingVerb(t *testing.T) {
+	t.Parallel()
+
+	masthead := mastheadOf(t, "the header component", renderedHeader(t))
+
+	var target string
+	for _, anchor := range cardAnchor.FindAllStringSubmatch(masthead, -1) {
+		if !strings.Contains(anchor[1], `class="masthead-link"`) {
+			continue
+		}
+		href, ok := attributeValue(t, anchor[1], "href")
+		if !ok {
+			t.Fatalf("the header's settings link carries no href (%q), so there was nowhere to follow it to", strings.TrimSpace(anchor[1]))
+		}
+		target = href
+	}
+	if target == "" {
+		t.Fatalf("the header renders no settings link, so this followed nothing:\n%s", masthead)
+	}
+
+	f := newFleet(t)
+	for _, method := range []string{
+		http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete,
+	} {
+		w := f.ask(t, method, target)
+		nowhere := f.ask(t, method, target+"-nonesuch")
+
+		if w.Code == http.StatusMethodNotAllowed {
+			t.Errorf("%s %s — the page the header links to — was answered %d with %s: %q; which method a path serves is not a caller's to learn",
+				method, target, w.Code, headerAllow, w.Header().Get(headerAllow))
+			continue
+		}
+		if w.Code != nowhere.Code || w.Body.String() != nowhere.Body.String() {
+			t.Errorf("%s %s answered %d (%s); at a path nothing claims it answered %d (%s) — something is registered there now, and this page is read-only (FR-013)",
+				method, target, w.Code, w.Body.String(), nowhere.Code, nowhere.Body.String())
 		}
 	}
 }

@@ -277,7 +277,7 @@ func TestOneRecordPerOpen(t *testing.T) {
 	}
 	body := bufio.NewReader(resp.Body)
 
-	rec := f.only(t)
+	rec := f.onlyOpened(t, 2*time.Second)
 	if got, want := rec["action"], string(audit.ActionFleetOpen); got != want {
 		t.Errorf("the open was recorded as %v; want %v — an operator counting who watched the fleet must not be counting page loads with it", got, want)
 	}

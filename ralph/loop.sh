@@ -34,6 +34,23 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
+# The sentinel must not already be present, or the first iteration's check finds
+# the *previous* milestone's completion and exits reporting this plan complete
+# with every task still open.
+#
+# This has been live at the start of two milestones running. Both times it was
+# caught by hand, and the second time it happened despite Iteration 0 of the
+# first having written the warning down — because that note lives in the file
+# that gets archived, so the reminder is archived along with the trap. A guard
+# here cannot be archived.
+if grep -qxF "$DONE_SIGNAL" "$PROGRESS_FILE" 2>/dev/null; then
+  echo "FATAL: ${PROGRESS_FILE} already contains ${DONE_SIGNAL}." >&2
+  echo "       That is this loop's exit sentinel, so iteration 1 would find it and" >&2
+  echo "       stop, reporting the plan complete with every task still open." >&2
+  echo "       Archive the finished milestone's notebook and start a fresh one." >&2
+  exit 1
+fi
+
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
   echo "FATAL: refusing to run on '$BRANCH'. Branch first:" >&2

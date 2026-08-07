@@ -2,95 +2,89 @@
 
 > Worked top-to-bottom by `ralph/loop.sh` — one task per iteration.
 >
-> **This is milestone 4.** Milestones 1, 2 and 3 are complete, reviewed, and deployed;
-> their task lists are archived at [`archive/milestone-1-tasks.md`](archive/milestone-1-tasks.md),
-> [`archive/milestone-2-tasks.md`](archive/milestone-2-tasks.md) and
-> [`archive/milestone-3-tasks.md`](archive/milestone-3-tasks.md) because `PROGRESS.md`
-> references their T-numbers.
+> **This is milestone 5.** Milestones 1 through 4 are complete, reviewed, and deployed;
+> their task lists are archived under [`archive/`](archive/) because `PROGRESS.md`
+> references their T-numbers, and the notebook itself is at
+> [`archive/progress-milestones-1-4.md`](archive/progress-milestones-1-4.md).
 
 ## Status: generated from the spec
 
-Generated from [`specs/004-configure-and-operate/tasks.md`](../specs/004-configure-and-operate/tasks.md),
+Generated from [`specs/005-finish-the-dashboard/tasks.md`](../specs/005-finish-the-dashboard/tasks.md),
 which is the single source of truth. `spec.md`, `plan.md`, `research.md`, `data-model.md`
-and the seven files in `contracts/` supersede anything this file summarises.
+and the six files in `contracts/` supersede anything this file summarises.
 
 **Before starting a task, read its matching `T0NN` entry in `tasks.md`.** The entries below
 are the ordered checklist; the task file carries the exact literals, the test each task must
 include, and — for every task that adds behaviour — **the condition under which that test
-must fail**. That last part is the load-bearing half. Several tasks look wrong until you read
-the reason: whole-line-only comments, a split on the *first* `=` rather than the only one, a
-mode that is derived rather than stored, and a permission check that deliberately does not
-fire on a file holding no secret.
+must fail**.
 
-## 🔒 Four tasks are security-critical
+## ⚠️ The obligation this milestone exists for
 
-**T001, T007, T011 and T019.** A mistake in any of them is invisible: every other test still
-passes. If an iteration is running on a smaller model, stop after each and get it reviewed
-rather than proceeding on green alone.
+**A requirement about what an operator SEES needs a test that reads the RENDERED MARKUP.**
 
-| Task | Why it is the dangerous one |
+Milestone 4 wrote FR-026: *"choose remote control as a mode, rather than selecting a command
+by name."* Three tasks shipped for it — derive the mode, add the route, show it on the card —
+all green. **The create form still renders a dropdown of command names**, because every
+assertion was about a route or a record and none read the form.
+
+That is not a testing-volume problem. It is testing the wrong layer. Where a task below
+carries the failing condition *"the route accepts the right value but the form still renders
+the old control"*, that phrasing is the point and must not be softened.
+
+## ⚠️ The create-form ordering is strict
+
+**Four stories touch `web/templates/partials/create-form.html`.** They run in this order and
+are never interleaved — each leaves the file green, so a failure names one story:
+
+```
+T001 delete  →  T003 replace  →  T006 feed  →  T008 wrap
+```
+
+A task that tidies that file while it is there makes the next story's diff unreadable. AR-008
+is load-bearing this milestone.
+
+## 🔒 Three tasks are security-relevant
+
+| Task | Why |
 |---|---|
-| **T001** `IsSecret` | Shared by the permission refusal *and* the settings page. A disagreement between them is invisible until it matters. |
-| **T007** the precedence shim | Ordering *is* the security property. Reversed, a stale file silently overrides the environment a container was configured with. |
-| **T011** secret rendering | The one page holding every secret at render time. A "helpful" masked prefix is still a disclosure. |
-| **T019** the mode toggle | The only new route taking a value that names something to run. If a command line can arrive from a browser, FR-030 is gone in both directions. |
-
-## This milestone is mostly finishing, not building
-
-Four abandoned lane branches hold **~3,800 lines** between them. Verified at planning time:
-each **builds standing alone**, and each broke only against a `main` that has since moved.
-Where a task says carry forward, the work is a **rebase-and-reconcile, not a rewrite** — read
-the branch first, and preserve its comments, which are the best documentation of why the
-format is what it is.
-
-| Branch | Carries | Task |
-|---|---|---|
-| `claude/issue-issue-65-20260807-0112` | `internal/config/file.go`, `file_test.go` | T003 |
-| `claude/issue-issue-42-20260805-1832` | four 303 handlers, `outcome.go`, banner partial | T014 |
-| `claude/issue-issue-60-20260806-0406` | card split, rename disclosure | T026 |
-| `claude/issue-issue-59-20260807-0055` | **the discovery walk only** | T023 |
-
-The last row is a deliberate exclusion: that branch's hand-rolled combobox is **replaced by
-markup**, not carried. See the resolved decision below.
+| **T004** `remote_control` validation | The field carries a **mode**, not a name. A real configured name like `rc` must still be refused, or the browser regains the ability to name what runs. |
+| **T007** suggestion validation | A path in the datalist but outside `allowed_roots` must be refused identically to a typed one. A suggestion is never an authorisation. |
+| **T014** probe honesty | A check that says "missing" about a command that works trains an operator to ignore it, which is worse than not checking at all. |
 
 ## What is already running
 
-Milestones 1 through 3 are **live**, not merely built. Changes here land on a deployed daemon:
+Milestones 1 through 4 are **live**. Changes here land on a deployed daemon:
 
 | | |
 |---|---|
 | Service | `crswd.service`, systemd user unit, loopback `127.0.0.1:8765` |
 | tmux | **Its own server**, `-L crswd-<listen>` — never the operator's default server (#22) |
 | Public | `https://crswd.craigcloud.io` via the `crswd` Cloudflare Tunnel |
-| Edge | Access app `CRSWD Session Control`, two policies — Google identity, and Service Auth for the API client |
-| Daemon | Validates the Access assertion itself; the dashboard reads, streams, and **acts** |
-| Audit | `journalctl --user -u crswd -o cat \| jq .` |
-| Secrets | `op://Lobster/crswd/{shared-secret,access-client-id,access-client-secret}` |
+| Daemon | Config file, settings page, mode toggle, post-redirect-get, directory picker |
+| Audit | `journalctl --user -u crswd -o cat \| grep '^{' \| jq .` — the grep is not optional (T015) |
+| CI | `go test`, `-tags tmux` and `-tags quickstart` all run on the self-hosted runners (#87) |
 
-**Sessions now survive a daemon restart with their metadata**, which is what makes a
-configuration change tolerable at all: a restart no longer costs the fleet. T017 extends that
-mechanism by one option rather than inventing a second one.
+**Two tasks fix defects in code milestone 4 shipped**, both found by *running* the daemon
+during planning rather than reading it. T014 fixes a probe that has warned on every start that
+`claude` is missing while sessions using it work. T013/T015 fix an audit trail that cannot be
+read because diagnostics share a stream with records.
 
 ## Resolved decisions
 
-Answered by the operator or settled in [`research.md`](../specs/004-configure-and-operate/research.md).
-**Do not re-litigate these in an iteration** — if one looks wrong, write it in `PROGRESS.md`
-under `NEEDS CLARIFICATION` and stop.
+Settled in [`research.md`](../specs/005-finish-the-dashboard/research.md). **Do not
+re-litigate these in an iteration** — if one looks wrong, write it in `PROGRESS.md` under
+`NEEDS CLARIFICATION` and stop.
 
 | Question | Decision | Consequence |
 |---|---|---|
-| YAML, TOML, JSON, or something hand-parsed? | **`key = value` with `#` comments**, hand-parsed | YAML and TOML have no standard-library parser and neither is safe to hand-roll; both would create `go.sum`, which `docs/security.md` §5 forbids. JSON was the real candidate and was rejected because it deletes the commentary in `config.example` — the most useful documentation this repo has about what each bound is for |
-| Are trailing comments allowed? | **No. `#` is a comment marker only at the start of a line** | This is a security decision wearing style clothes: `shared_secret` may legitimately contain `#`, and stripping from the first one would silently truncate a secret into a daemon that starts, looks healthy, and rejects every request |
-| Which `=` separates key from value? | **The first one** — `strings.Cut`, never `strings.Split` | `start_commands` always contains `=` inside its value. A parser that refused an ambiguous line would refuse valid configuration |
-| How is a list spelled? | **Comma-separated on one line**, exactly as the environment variable spells it today | The file is a second *source*, not a second set of rules. The value string is handed to the same parser the variable goes through |
-| Where is precedence decided? | **One `getenv` shim**, four lines, behind the existing `config.LoadFrom` seam | Flag → environment → file → default. No bound, default or refusal is written twice, so a value cannot mean one thing in a unit and another in a file. It is also why a daemon with no file behaves exactly as today, which is what lets SC-002 be verified against the **existing** acceptance suites unchanged |
-| How does the settings page know where each value came from? | **The shim records it as it decides** | Provenance is a byproduct of having one place decide, never an inference. A value present and equal in both sources is indistinguishable by comparison — and that is exactly when an operator is asking why their edit did nothing |
-| Which keys are secret? | **`shared_secret` and `access_allowed_emails`**, behind one exported `IsSecret` | The allowlist is not a credential but it names *who* can reach this daemon. One predicate means the permission check and the page render cannot disagree about what a secret is |
-| Does the 0600 refusal fire on any config file? | **Only one containing a secret key** | A file holding only `allowed_roots` is not a secret file, and refusing to start over its mode would be a refusal the operator cannot act on sensibly |
-| Is session mode stored or derived? | **Derived** from the start-command name | Two fields that must agree are two fields that can disagree. FR-031 is satisfied by carrying the name that determines the mode; the one real gap — the name not surviving a restart — is closed by a fifth tmux option, which is smaller than a second source of truth |
-| How does the directory picker work without JavaScript? | **`<input list>` + `<datalist>`** — the platform's own control | It satisfies five of the six picker requirements with **no script running**: filtering, keyboard operation, screen-reader announcement, free-text entry, and today's field unchanged. The abandoned branch's 225 lines of hand-rolled combobox degrade to nothing and own accessibility bugs the browser would otherwise own |
-| Does the settings page get an edit route? | **No route at all**, not a route that refuses | Editing is out of scope this milestone. A route that does not exist cannot be exploited, and writing the operator's file from a browser is the highest-consequence surface in the product |
-| Is a missing dependency fatal? | **tmux yes, the start command no** | Without tmux this daemon can do nothing, so starting only defers the failure to the first request. Without a start command it can still serve the dashboard and say what is wrong |
+| What is the remote-control control? | A single **checkbox**, `name="remote_control"`, `value="on"`, styled as a switch | The platform's own two-state control: keyboard-operable and announced correctly with no script. An unticked box posts nothing, so a lost field yields the *less* privileged mode |
+| What does a default install offer as directories? | **The approved roots themselves**, always; union with the explicit list and, when enabled, discovered children | The roots are the one source guaranteed non-empty whenever a session can be created, and they disclose nothing the operator did not already configure. Their *children* read the filesystem, which is what `discover_roots` exists to keep opt-in |
+| Where does the settings link go? | In `.masthead-bar` **after** the operator and **outside** the `<h1 class="brand">` | #46 made the wordmark the link home and it lives in the page's one first-level heading. A second anchor there would make the heading a menu. One link is not a nav bar |
+| Native control or scripted one? | **Enhance the native one** — script layers a themed listbox over `<input list>` + `<datalist>` | Milestone 4's R6 chose native and was right on what it weighed; it missed that a datalist popup cannot be styled by any CSS. Enhancing rather than replacing means script failure costs the theme and never the ability to pick or type a directory |
+| Where do the ARIA roles live? | **Added by script, never in the template** | Without script `aria-expanded` would describe a control that is not there. Markup that lies to a screen reader is worse than markup describing the plain field that exists |
+| Does `conversation.go` survive the field it fed? | **Deleted**, with its SHA recorded in #95 | Keeping it would be the fifth caller-less thing this repo has shipped. It also likely does not fit #95, which needs *this session's* conversation while `listConversations` answers about *this directory's* — the ambiguity FR-032 already refuses to resolve by guessing |
+| Why does the documented audit command fail? | **systemd merges both file descriptors into one journal.** The daemon's streams were already right — audit to stdout, diagnostics to stderr — and `journalctl` sees them interleaved regardless (corrected by T013; this row previously said the streams were shared, which was wrong about the mechanism) | Measured: `_COMM=crswd` still fails, which is how the cause was identified — #88 assumed the noise was systemd's. Fix is diagnostics to stderr, and the filter works only because of that |
+| Why does the dependency probe warn falsely? | It asks the **service manager's** PATH; the command runs in a **login shell** inside tmux | `claude` is at `~/.local/bin/claude`, which the login shell has and the service manager does not. Both answers are right about their own environment; the check asks the wrong one |
 
 ## Conventions
 
@@ -105,118 +99,223 @@ under `NEEDS CLARIFICATION` and stop.
   runs zero linters, and exits 0 — a green that means nothing. The session-start hook warns
   when this is the case; believe it (#26).
 - `go.sum` must never appear. An import needs justification under `docs/security.md` §5 first.
-- **AR-005: a test satisfies the cross-site checks, it never disables them.** Setting
-  `Sec-Fetch-Site: same-origin` and minting a valid token is correct. A build tag or flag that
-  turns a check off is the exact defect the gate exists to prevent.
+- **AR-005: a test satisfies the cross-site checks, it never disables them.**
 - **AR-008: no refactoring outside the task**, however obvious the improvement.
 - **A task is not done when the code exists. It is done when something calls it.** This repo
-  has shipped that failure three times — a reaper with no caller, `Store.Touch` with no caller,
-  and a PR-opener script no workflow invoked. **T007 is the one to watch**: a config parser
-  that is never consulted is the exact bug left on the abandoned branch.
+  has shipped that failure four times — a reaper with no caller, `Store.Touch` with no caller,
+  a PR-opener no workflow invoked, and `CRSW_DESTROY_ON_SHUTDOWN`, which was false on every
+  daemon that ever ran. **T005 is where that bites**: a config key with no reader is exactly
+  that fourth one again.
 
 ---
 
 ## Tasks
 
-### Foundation (blocks every story)
+### US5 — Stop asking a question nobody can answer (first, because it deletes)
 
-- [x] T001 🔒 `IsSecret` in `internal/config/secret.go` — the single classifier
-- [x] T002 `Source` type and its four strings in `internal/config/source.go`
+- [x] T001 Remove the resume field and the `Conversations` view data
+- [x] T002 Delete `internal/session/conversation.go`; record the SHA in #95
+  - ⚠️ **The SHA is `ef18756` and it is NOT yet on #95.** `gh` is not an approved
+    command in the loop's session, so the comment could not be posted. The text to
+    post is in `PROGRESS.md` iteration 2 — a human or an iteration with `gh` should
+    paste it. The code is recoverable from git either way; #95 is where someone
+    will look for it.
 
-### US1 — Configure the daemon in a file (P1, MVP)
+### US1 — Remote control at create time (the milestone-4 miss)
 
-- [x] T003 Carry forward the parser from `claude/issue-issue-65-...0112`; grammar only
-- [x] T004 The file-level refusals, none of which ever names the value
-- [x] T005 🔒 The mode refusal, gated on the file containing a secret
-- [x] T006 A missing file is not an error; the parser never writes
-- [x] T007 🔒 Wire the file as a fallback `getenv` — **the keystone**
-- [x] T008 Record provenance in the same shim
-- [x] T009 `crswd config check` and `crswd config migrate`, plus `config.bak` fallback
+- [x] T003 Replace the start-command `<select>` with the `remote_control` switch
+- [x] T004 🔒 Accept `on` or absent; refuse everything else, including a real command name
+  - Both of T003's open questions are answered in `PROGRESS.md` iteration 4. **`on` with no
+    remote command configured is refused**, which is the rule `config.go:124`,
+    `Manager.commandForMode` and `refuseBrowserCreate` already state — not a new decision.
+    **The switch still renders unconditionally**: that conditional needs a view field nothing
+    specifies, and it is now a UX wart rather than a hole, because the route refuses honestly.
+    `data-model.md`'s `RemoteDefault bool` is still unowned and is a no-op (`false` is what an
+    unchecked box already is). Neither blocks a remaining task; **T016 or milestone 6**.
 
-### US2 — See what it is configured to do (P2)
+### US2 — Suggestions that exist on a default install
 
-- [x] T010 The read-only `/settings` route, `GET` only, `settings.view`
-- [x] T011 🔒 Secrets render `present` / `absent`, never a value
-- [x] T012 One row per key with its source; name the file that was read
-- [x] T013 Sweep every route and assert no secret appears anywhere (SC-005)
+- [x] T005 Add the `workdir_suggestions` configuration key
+  - The key is read and reaches `Config.WorkdirSuggestions`; **nothing consumes it until
+    T006's union**. Refusals are only what no configuration could accept — a relative
+    entry and an empty one. A path outside the roots loads and is offered, exactly as
+    `contracts/directory-suggestions.md` requires; the create refuses it. Duplicates
+    *within* the list survive on purpose: dedup belongs to T006 and is stated once.
+- [x] T006 Union the three sources in `internal/config/suggestions.go`
+  - `Config.SuggestedWorkDirs()`, read by `dashboard.go:254`. **A `<datalist>` now renders
+    on every real page**, so `TestTheRenderedFleetOffersWhatDiscoveryFound`'s "discovery off
+    means no list at all" half was rewritten to "offers the root, not the root's child" —
+    that was the task, not collateral. The walk's silent `maxDiscoveredWorkDirs = 200` no
+    longer bounds what a page can carry, since the roots and the explicit list are added on
+    top of it; see `PROGRESS.md` iteration 6, **T016** or a `NEEDS CLARIFICATION`.
+- [x] T007 🔒 A suggested path outside the roots is refused identically to a typed one
+  - `TestSuggestedPathOutsideRootsRefused` in `actions_test.go`, on **one coherent
+    configuration** rather than milestone 4's page/allowlist divergence: `workdir_suggestions`
+    is unconstrained by the roots by contract, so a real daemon offers the path. Test-only —
+    the refusal already existed. **What it pins is the handler, not the wiring**: every
+    `internal/httpapi` fixture injects `fixture.mgr`, so a `server.go:332` that fed
+    `SuggestedWorkDirs()` into the manager's roots would go unnoticed here *and* in quickstart.
+    See `PROGRESS.md` iteration 7 — **T016** or milestone 6.
 
-### US3 — The dashboard behaves without script (P3)
+### US4 — Controls that belong to this interface
 
-- [x] T014 Carry forward post-redirect-get from `claude/issue-issue-42-...1832`
-- [x] T015 Finish the ~19 tests still asserting fragment responses
-- [x] T016 All four actions usable with scripting disabled
+- [x] T008 Markup: the `.combo` wrapper, the listbox, the status region — **behaviour unchanged**
+  - Three minimum CSS rules shipped with it, because `TestTheStylesheetAndTheMarkupNameTheSameThings`
+    sweeps both directions and a rendered class with no rule is red — the same reason T003
+    carried `.switch-input`. **`.combo { display: grid }` is load-bearing** and nothing pins it:
+    an `<input>` is inline-block, so a block wrapper would shrink the field. **T010 must rewrite
+    `TestSubsetAnnounced`'s addition sweep** — it forbids the exact operations T010 mandates —
+    **and delete `#create-workdir-subset`** when it moves the sentence into `.combo-status`, or
+    the field keeps two live regions with one dead. See `PROGRESS.md` iteration 8.
+- [x] T009 Styling: tokens, focus rings, and the reduced-motion rule
+  - The active option's ring is keyed on **`[aria-selected="true"]`** — `:focus-visible`
+    can never reach an option, so **T011 must set that attribute** or the ring is worn by
+    nothing. `position: relative` on `.combo` is now load-bearing exactly as `display: grid`
+    is, and no test can see either. **The reduced-motion block resets `transition` and not
+    `animation`**: verified green with an `animation` on the listbox, so the picker's own
+    test forbids the property outright and every other component in the file is still
+    uncovered — **T016** or milestone 6. See `PROGRESS.md` iteration 9.
+- [x] T010 Enhancement: suppress the native popup, add the ARIA, filter, announce the subset
+  - `field.list` is read **before** `removeAttribute("list")` cuts it, and the order is
+    asserted positionally: reversed, the picker offers nothing and every other assertion
+    stays green. `#create-workdir-subset` is **deleted** and FR-045's sentence now sits on
+    `.combo-status`, so the field has one live region. `aria-controls` is read off
+    `listbox.id`; the script carries no id the template owns. **T011 must set
+    `aria-selected="true"`** (T009's ring is keyed on it), **give each `<li>` an id** for
+    `aria-activedescendant`, and add the close path — T010 closes the list only when nothing
+    matches. **Nothing selects an option with the pointer and no task owns that**; see
+    `PROGRESS.md` iteration 10, finding 1.
+- [x] T011 Keyboard: arrows, Enter, Escape, Tab, `aria-activedescendant`
+  - FR-008 is held by **counting `.value =` across the whole file**: exactly one, reading an
+    option's own `textContent`, after the `'Enter'` literal. Every way of intercepting typing
+    writes that property, and the count is what caught the must-fail. The other claims are
+    scoped to the picker's block, because `hidden = true` and `preventDefault` are words the
+    toast and the card's selection fix also use. **A whole-block "the descendant is cleared"
+    assertion is green with the clear deleted from `draw()`** — `activate(-1)` satisfies it —
+    so that one is positional; the ids are positional too, and a stale one names a *different*
+    path rather than nothing. **Nothing still selects an option with the pointer** and the list
+    has no blur close: both are outside T011's four keys, both are now small, see
+    `PROGRESS.md` iteration 11, findings 1 and 2.
 
-### US4 — Turn remote control on and off (P4)
+### US3 — Reaching the settings page (independent)
 
-- [x] T017 Persist the start-command name as `@crswd-start`, the fifth tmux option
-- [x] T018 `Session.Mode()`, derived; refuse a mode naming an unconfigured command
-- [x] T019 🔒 `POST /dashboard/sessions/{id}/mode`, fields `mode` and `confirm`
-- [x] T020 Restart the process in place, with `--continue`, preserving scrollback
-- [x] T021 Show the mode on the card, textually
+- [x] T012 Add the settings link to the header, outside the brand heading
+  - Seven tests, not six: `TestSettingsLinkHasVisibleFocusRing` is in
+    `contracts/settings-link.md` and absent from `tasks.md`, and the contract supersedes.
+    **`TestSettingsStillHasNoMutatingVerb` reads the `href` out of the rendered header**
+    and asks the four verbs at *that* path — `settings_test.go`'s `TestNoMutatingVerbRegistered`
+    already holds the same claim against the constant, so a copy would have been the assertion
+    twice. `renderedPages` is checked against the template tree, so a page added later cannot
+    ship with an unasserted header. **`.operator` gained `margin-inline-start: auto`**: a third
+    child under `space-between` puts the identity in the centre, which breaks what
+    `docs/components.md` says the header is and which no test can see — see `PROGRESS.md`
+    iteration 12.
 
-### US5 — Pick a working directory (P5)
+### Two defects in shipped code (independent)
 
-- [x] T022 Replace the field with `<input list>` + `<datalist>`
-- [x] T023 Carry the discovery walk forward; one level, off by default
-- [x] T024 🔒 A suggested path outside the allowlist is refused identically
-- [x] T025 Announce a filtered subset
+- [x] T013 Diagnostics to stderr, audit records to stdout
+  - **The shipped daemon already routed both streams correctly** — measured, not read:
+    the probe's banners, the loader's and both `log` channels are on stderr, only the
+    trail is on stdout. #88's cause is journald merging the two fds, which
+    `contracts/diagnostics-and-probe.md` already anticipates ("document the filter
+    anyway, because systemd merges both into the journal"). So T013 is the invariant
+    written down and enforced, not a re-routing. Three tests: `TestAuditRecordsGoToStdout`
+    (`internal/httpapi`, the production `New` on the process's real stdout),
+    `TestDiagnosticsGoToStderr` + `TestStartupDiagnosticsGoToStderr` (`cmd/crswd`, an AST
+    sweep of the whole module), `TestNoSecretInAnyDiagnostic` (`internal/config`).
+    **T015 is unblocked and the port is not its problem**: `127.0.0.1:8765` is still held
+    by the deployed daemon, but quickstart stopped binding it — `freeAddrOn` covers the two
+    startup cases. See `PROGRESS.md` iteration 13.
+- [x] T014 🔒 Resolve the start command the way the session will, or say what was checked
+  - The probe asks `$SHELL -l` **what PATH it has** — a constant script on stdin — and
+    resolves the binary against that list in Go. It never names the command to the shell:
+    `sh -lc "command -v $binary"` resolves identically and is the shell string
+    `docs/security.md` §2 forbids, and the plan's complexity table authorised *executing the
+    profile*, not *building a command line*. **`TestNeverExecutesInstall` had to change** —
+    it forbade every member of `os/exec` but `LookPath` — and now pays for `CommandContext`
+    with two stronger claims: every argv element past the program is a source literal, and
+    this package starts exactly one subprocess. **Three outcomes, not two**: found on either
+    PATH is silent, neither is the old warning plus what was checked, and a shell that could
+    not be asked is a *note* (FR-023c). The daemon now runs the operator's profile at
+    startup, bounded by a 5s timeout and only when a command is already missing from its own
+    PATH; nothing in `deploy/` or `README.md` says so — **T016**. See `PROGRESS.md`
+    iteration 14.
+- [x] T015 Correct the documented audit-trail command
+  - `TestDocumentedCommandParses` reads the command **out of the unit file** and substitutes
+    only the `journalctl` producer, because a restated command is the two-documents drift #88
+    already was. It makes two claims: the whole trail comes back as JSON, **and** a truncated
+    record is rejected — the second is what a `grep '^{'` with no parse would fail, and is why
+    the test does not name `jq`. **`jq` is now a prerequisite of `-tags quickstart`**, in
+    `TestQuickstartPrerequisites` and in `AGENTS.md`'s tag table. **The two READMEs still
+    carry the broken command** (`deploy/README.md:182-184`, `README.md:326-327`) and so does
+    `contracts/diagnostics-and-probe.md:19-36` — outside T015's named file, **T016**. Also
+    found: `.golangci.yml` never lints the `quickstart` tag and 27 pre-existing issues sit
+    behind adding it. See `PROGRESS.md` iteration 15.
 
-### US6 — The card's two halves (P6)
+### US4 — the pointer, which the keyboard task could not reach
 
-- [x] T026 Carry forward the card split from `claude/issue-issue-60-...0406`
-- [x] T027 Rename moves to the session page as a disclosure
-- [x] T028 A text selection inside the anchor does not navigate
-
-### Independent of the stories
-
-- [x] T029 Startup dependency probes — tmux fatal, start command warning
-- [x] T030 Install command from `/etc/os-release`, never guessed
-- [x] T031 List prior conversations — identifier and time only, never contents
-- [x] T032 Offer them at create time, fresh by default; refuse when ambiguous
-- [x] T033 Bound the captured pane explicitly; refuse past it rather than truncate
+- [x] T017 Pointer selection **and** blur close, written together in `web/static/crswd.js`
+  - `mousedown` on an option activates it and runs a shared `accept(option)`; `blur` on the
+    field runs the same `close` `Tab` runs. **The accept is declared between its two callers**
+    — below the key that needed it first, above the pointer that shares it — because T011 holds
+    the file's one `.value =` *after* the first `'Enter'` literal, and the obvious placement
+    above the handler fails that while satisfying the count. The press is `preventDefault`ed
+    for every position inside the list, which keeps focus in the field and stops a drag on the
+    scroll bar from shutting the list. **One existing assertion moved**: T011's "Tab is never
+    refused" tail now ends at the `'mousedown'` marker, because what is below it refuses a
+    focus move rather than a key. **A pointer selection cannot reopen the list** and nothing
+    pins the two orderings as a pair — `PROGRESS.md` iteration 16, findings 2 and 3,
+    milestone 6.
 
 ### Ship it
 
-- [x] T034 `config.example`, carrying the commentary that justified the format
-- [x] T035 Docs, and assert `go.sum` is still absent
+- [x] T016 Docs, and assert `go.sum` is still absent
+  - **`docs/security.md` was the find, and it was on no list**: it claimed the probe's "only
+    contact with the host is `exec.LookPath`", which T014 falsified without touching prose —
+    a binding document wrong about what the daemon executes at startup. Corrected there,
+    in both READMEs (the audit command), `docs/components.md` (Header, picker, switch),
+    `README.md` (suggestion union, mode not name, settings link, the probe's three outcomes,
+    `CRSW_DESTROY_ON_SHUTDOWN`), `config.example`, two stale code comments, and two contracts.
+    **SC-010 needed no new assertion** — `internal/config/docs_test.go`'s `TestNoDependencies`
+    already holds it in the default build. Two new tests instead:
+    `TestEveryDocumentedTrailCommandSurvivesTheStream` runs every `journalctl` line this repo
+    commits over a real stream (clean = exit 0 **and** empty stderr, because a pipeline
+    reports its last stage), and `TestTheComponentsDocumentNamesThePickerTheSwitchAndTheHeader`
+    sweeps `.combo*`/`.switch*`/`.masthead*` both ways between the stylesheet and the document.
+    See `PROGRESS.md` iteration 17 — findings 1 and 3 are milestone 6's, finding 4 needs a human.
 
 ---
 
-## Shippable at T009
+## Shippable at T004
 
-**T001–T009 are the demonstrable MVP and are deployable on their own**: an operator changes
-any setting by editing one file and restarting, and a daemon with no file behaves exactly as
-it does today. Everything after is additive, and US2 is the first thing that makes US1
-legible.
+**T001–T004 are the demonstrable MVP.** They deliver what milestone 4 claimed and did not: an
+operator chooses remote control as a mode, and no command name reaches the browser. Everything
+after is real but additive.
 
-T029–T033 are independent of every story and can run whenever an iteration is blocked
-elsewhere.
+T012–T015 are independent of every story and can run whenever an iteration is blocked on the
+create-form chain.
 
 ---
 
 ## Out of scope
 
-Deliberately NOT in milestone 4, so no iteration wanders into them:
+Deliberately NOT in milestone 5, so no iteration wanders into them:
 
-- **Releases, versioning, an installer, and self-update** (#57, #68, #69, #66). They are
-  distribution rather than operation, and they depend on this milestone's config file
-  existing first — they are the next milestone, not this one
-- **Editing settings from the browser.** The read-only view ships here; writing the operator's
-  file from a page carries a list of safeguards long enough to be its own piece of work, and
-  it is the highest-consequence surface in the product. **No mutating verb is registered on
-  `/settings` at all** — a route that does not exist cannot be exploited
-- **The rain's Easter eggs** (#54), and **the browser accessibility verification** (#17) —
+- **Releases, versioning, the installer, and self-update** (#57, #68, #69, #66) — milestone 6.
+  Scope recorded on #69: the installer should also write the systemd unit, Ubuntu and systemd
+  first, and it must not overwrite a unit the operator has edited
+- **Auto-recovery of a crashed session** (#95's second half). Removing the incomprehensible
+  field is in scope; designing what replaces it is not. It collides with FR-032, which already
+  refuses to resume where "the last conversation in this directory" could be another
+  session's — and the operator asked to think about it further
+- **Editing settings from the browser.** The read-only view is correct, and **no mutating verb
+  is registered on `/settings` at all** — a route that does not exist cannot be exploited
+- **The rain's Easter eggs** (#54) and the **browser accessibility verification** (#17) —
   polish, and a task only a human with a browser can do
 - The Claude device-code login relay, and the `needs-auth` state
 - The companion Claude skill
-- **Sending arbitrary prompt text from the browser.** The mode toggle selects between
-  *configured names*; a general "type into the session" control is a much larger surface
-- Editing a session's working directory after creation
+- **Sending arbitrary prompt text from the browser**
 - Bulk actions across multiple sessions at once
 - Persisting session records, dashboard state, or output history to disk
-- Multi-user support beyond one allowlisted identity and the ownership check that already
-  exists. The check still runs on every action, and is still tested against a synthetic second
-  owner — a check removed because it always passes is a check that will be missing when it
-  stops always passing
-- Any change to milestone 1's signing procedure, its six operations, or the audit record
-  shape. The API path must keep working **unchanged**
+- Multi-user support beyond one allowlisted identity and the ownership check that exists
+- Any change to milestone 1's signing procedure, its six operations, or the audit record shape

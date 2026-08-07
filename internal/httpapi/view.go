@@ -187,18 +187,6 @@ type createFormView struct {
 	// because an operator cannot tell the two apart until they use it.
 	PageToken string
 
-	// StartCommands is the operator's configured command names, sorted (#38,
-	// #39), and it is what turns the start command from an API-only field into
-	// something the dashboard can offer.
-	//
-	// Fewer than two names renders no chooser at all: a select with one option
-	// is a control that cannot change anything, and a daemon configuring nothing
-	// should see the form it saw before this existed. The names are the
-	// operator's own configuration, so listing them discloses nothing to an
-	// identity that is already allowlisted — and the command lines they map to
-	// are deliberately not here.
-	StartCommands []string
-
 	// Roots is every directory this daemon will start a session under —
 	// CRSW_ALLOWED_ROOTS as config.Load resolved it, absolute and with the
 	// symlinks already followed.
@@ -236,66 +224,35 @@ type createFormView struct {
 	// reaching no decision at all.
 	//
 	// Empty renders no datalist and no `list` attribute — the field as it
-	// shipped before the picker existed (FR-043), and what a daemon whose
-	// operator did not ask for discovery renders. It is filled by
-	// config.Config.DiscoveredWorkDirs (T023), which is off unless
-	// CRSW_DISCOVER_ROOTS says otherwise. The contract names a second source, an
-	// explicit list, and no task in this milestone builds one.
+	// shipped before the picker existed (FR-043). That is a state a running
+	// daemon no longer reaches: it is filled by config.Config.SuggestedWorkDirs
+	// (T006), which unions the approved roots in on every render, and a daemon
+	// with no root refuses to start. The component keeps the branch all the same,
+	// because FR-018a's rule is that a component states an absence rather than
+	// rendering something shaped like a value.
 	Suggestions []string
 
-	// Conversations is what the form offers for resume (T032, FR-033): the prior
-	// conversations of the directories above, each with the directory it belongs
-	// to and how long ago it was last written.
+	// There is no StartCommands field either, and its absence is the requirement
+	// rather than an omission (US1, FR-002). It carried the operator's configured
+	// command *names* so the form could render a chooser of them, which is
+	// choosing a command by name — the thing FR-026 said not to do, shipped
+	// anyway because every assertion made for it was about a route or a record.
+	// What replaces it is a two-state switch, and a mode needs no vocabulary from
+	// the daemon's configuration to be asked for: which command each mode runs is
+	// read from configuration at the point a session starts, and crosses to the
+	// browser in neither direction.
 	//
-	// It is the Suggestions list's companion and not a second picker. This form
-	// asks for a working directory and a conversation in one submission, so the
-	// page cannot know which directory an operator is about to name — the offer
-	// therefore carries the directory with each entry, and the create route
-	// checks the identifier against the directory that was actually submitted.
-	// A conversation offered here for some other directory is refused exactly as
-	// an invented one is.
+	// There is no Conversations field, and there is no projection behind one
+	// (US5). The form asked an operator for an opaque conversation identifier and
+	// offered the conversations of every *suggested directory* to fill it with,
+	// which is not the thing an operator wants back: what they want is the
+	// conversation *this session* was having, and FR-032 already refuses to
+	// resolve that ambiguity by guessing.
 	//
-	// **Nothing in this list is validated, and nothing in it needs to be**, for
-	// the reason Suggestions needs none: it reaches no decision. What makes a
-	// resume legal is Manager.Create finding the identifier in the resolved
-	// working directory's own listing, so an entry here grants nothing and an
-	// identifier absent from here is still resumable typed.
-	//
-	// Empty renders no datalist and no `list` attribute, leaving a plain field an
-	// operator can still paste an identifier into — FR-018a's discipline about
-	// absent values, and the reason a daemon that discovers no directory is not
-	// a daemon that cannot resume.
-	Conversations []conversationOffer
-}
-
-// conversationOffer is one prior conversation as the create form renders it: the
-// identifier the operator would submit, and enough context to tell one from
-// another (T032).
-//
-// Everything here is either the identifier itself or derived from a modification
-// time, which is the whole of what session.Conversation carries — no title, no
-// first prompt, no summary, because every one of them would have to be read out
-// of a transcript (FR-034). A projection that grew such a field would put the
-// listing's narrowness — its entire security property — behind a template.
-type conversationOffer struct {
-	// ID is the identifier Claude Code named the conversation with, and the value
-	// the field submits. It is rendered as an attribute value and escaped like
-	// every other, but it is also the one string on this page that reaches a
-	// command line if it comes back, which is why session.resumableID has already
-	// refused anything but letters, digits, "-" and "_".
-	ID string
-
-	// WorkDir is the directory the conversation belongs to, so an operator can
-	// tell two identifiers apart — a UUID says nothing on its own, and the
-	// directory is the one fact that makes the offer legible. It is already on
-	// every card in the fleet and in the field above.
-	WorkDir string
-
-	// Age is how long ago the conversation was last written, formatted by
-	// formatAge for the reason a card's is: coarse, computed server-side, and
-	// spelled by the one function that pluralises, so a conversation and a
-	// session cannot describe the same duration two ways.
-	Age string
+	// The offer was also the only thing in this struct that read the filesystem
+	// on the render path for a fact no other component needed. What replaces the
+	// question is not designed yet and is deliberately not invented here
+	// (Principle II) — removing it is this milestone's, answering it is not.
 }
 
 // outcomeView is the banner the fleet renders for what an action just did (T014).

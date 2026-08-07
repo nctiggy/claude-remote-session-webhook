@@ -826,90 +826,387 @@
 })();
 
 /*
- * The working-directory picker's one addition (T025, FR-045).
+ * The working-directory picker's theme (T010, contracts/themed-combobox.md),
+ * and FR-045's sentence, which now lives inside it.
  *
- * The control itself is markup and stays markup: `<input list>` and a
- * `<datalist>` filter as the operator types, take a keyboard, announce their
- * options to a screen reader and leave any path typeable in full, with nothing
- * running at all (contracts/directory-picker.md). Five of the six picker
- * requirements are the browser's own. The sixth is the one a browser does not
- * say out loud — that the list is showing a subset — and it is the whole of
- * what this block does.
+ * The control is markup and stays markup. `<input list>` and a `<datalist>`
+ * filter as the operator types, take a keyboard, announce their options and
+ * leave any path typeable in full with nothing running at all — five of the six
+ * picker requirements are the platform's own, and this file is not what makes
+ * any of them true (FR-015, FR-043). What it adds is the one thing no
+ * stylesheet can reach: a datalist popup is drawn by the browser and no CSS in
+ * any engine styles it, so the picker was the single control on this dashboard
+ * wearing the browser's appearance rather than this interface's. Milestone 4's
+ * R6 chose the native control and was right about everything it weighed; this
+ * is the part it missed, and the answer is to enhance that control rather than
+ * to replace it.
  *
- * So it is additive by construction, and that is the property to keep rather
- * than the sentence. Nothing here sets the field's value, builds or removes an
- * option, or touches the `list` attribute that joins the two: with this file
- * absent the picker is exactly the control the template rendered, minus one
- * sentence. The abandoned branch got this backwards — 225 lines reimplementing
- * filtering, focus and ARIA roles the platform already has, degrading to nothing
- * with scripting off.
+ * So the property to keep is the one the abandoned branch lost — 225 lines
+ * reimplementing filtering, focus and ARIA the platform already had, which
+ * degraded to nothing with scripting off. Everything below runs over a field
+ * that already works: with this file absent the operator meets exactly the
+ * control the daemon rendered, and nothing here narrows what may be typed or
+ * what may be submitted (FR-008).
  *
- * The count is this file's own arithmetic, and has to be: the filtered popup is
- * not in the document and no event reports it, so the only alternative to
- * counting is owning the list, which is the thing being avoided. What is counted
- * is the rule the engines filter by — a case-insensitive substring of the
- * option's value — so the number approximates what is on screen rather than
- * reading it. That is an acceptable cost for a sentence nothing depends on, and
- * would not be for anything the operator had to act on; the list, the field and
- * the allowlist behind it are all untouched by it either way.
+ * The first two statements are an order, and it is load-bearing twice over.
+ * `field.list` *is* the element the `list` attribute names — the daemon's own
+ * options, read rather than copied, so there is no second list here to disagree
+ * with the markup — and `removeAttribute` is precisely what makes it null. Read
+ * first, then cut: the other order leaves the enhancement with nothing to offer
+ * and the operator with a themed box that is permanently empty. Cutting at all
+ * is what stops the browser opening its own popup over this one, which is two
+ * lists saying the same thing in two appearances.
  *
- * The sentence is the template's, filled here, for the reason every other
- * sentence this interface says is.
+ * The ARIA is added here and never in the template, for the reason the template
+ * says at the point it declines to carry it: with no script there is no
+ * combobox to expand and no listbox to control, and markup that describes a
+ * control which is not there is worse for a screen reader than markup
+ * describing the plain field that is. Every attribute below is added by the
+ * code that makes it true, and `aria-controls` is read off the listbox rather
+ * than spelled here, so the id stays the template's to rename.
+ *
+ * The sentence is the template's too, filled here, exactly as it was when it
+ * had a region of its own. It has moved into `.combo-status` — the picker's own
+ * aside, beside the control it is about — so the field carries one live region
+ * rather than two with one of them dead.
  */
 (() => {
   'use strict';
 
   /*
-   * How long the typing has to stop before the note is rewritten. A polite live
-   * region queues rather than interrupts, so a note written on every keystroke
-   * hands a screen reader a backlog of counts to read out after the operator has
-   * finished — each one already wrong by the time it is spoken.
+   * How long the typing has to stop before the sentence is rewritten. A polite
+   * live region queues rather than interrupts, so a note written on every
+   * keystroke hands a screen reader a backlog of counts to read out after the
+   * operator has finished — each one already wrong by the time it is spoken.
+   *
+   * The list itself is not delayed by it. What is drawn is looked at rather
+   * than listened to, and a list that lagged the typing by four hundred
+   * milliseconds would be a control that felt broken to the operator it is
+   * fastest for.
    */
   const SETTLE_MS = 400;
 
-  const announceSubset = (field) => {
-    const note = document.getElementById(field.dataset.workdirNote);
-    const suggestions = field.list;
-    if (!note || !suggestions || !note.dataset.workdirSubset) {
+  const enhance = (combo) => {
+    const field = combo.querySelector('input');
+    const listbox = combo.querySelector('.combo-list');
+    const status = combo.querySelector('.combo-status');
+    if (!field || !listbox || !status) {
       return;
     }
 
+    // Read before the join is cut, and the guard is FR-018a rather than
+    // defensiveness: a daemon with nothing to suggest renders no list at all,
+    // and a combobox over no options would be this file announcing a control
+    // with nothing behind it.
+    const offered = field.list;
+    if (!offered) {
+      return;
+    }
+
+    field.removeAttribute('list');
+
+    field.setAttribute('role', 'combobox');
+    field.setAttribute('aria-expanded', 'false');
+    field.setAttribute('aria-autocomplete', 'list');
+    field.setAttribute('aria-controls', listbox.id);
+    listbox.setAttribute('role', 'listbox');
+
     /*
-     * Counted off the options the daemon rendered, never off a tally kept here —
-     * the rule the summary row already follows. A number this file carried would
-     * be a second source of truth about a list it does not own.
+     * The rule the engines filter by — a case-insensitive substring of the
+     * option's own value — so what is drawn here is what the popup this
+     * replaces would have shown. Read off the options the daemon rendered every
+     * time rather than out of an array built once, which is the same reason the
+     * summary row re-derives its counts from the cards below it.
      */
-    const say = () => {
+    const matching = () => {
       const typed = field.value.trim().toLowerCase();
-      const offered = suggestions.options.length;
-      let showing = offered;
-      if (typed !== '') {
-        showing = 0;
-        for (const option of suggestions.options) {
-          if (option.value.toLowerCase().includes(typed)) {
-            showing += 1;
-          }
+      const paths = [];
+      for (const option of offered.options) {
+        if (typed === '' || option.value.toLowerCase().includes(typed)) {
+          paths.push(option.value);
         }
       }
+      return paths;
+    };
 
-      // Silent while nothing is filtered. FR-045 is about a list showing a
-      // subset; a region that also said "showing all of them" would be narrating
-      // the operator's own typing back at them, which is the noise
-      // docs/components.md keeps off the grid and the pane.
-      note.textContent = showing === offered
+    // Which option the keyboard is on, as a position in the list that is drawn
+    // right now: -1 is none, which is what every filter starts at.
+    let active = -1;
+
+    /*
+     * The listbox, rebuilt from what matches. textContent and never innerHTML:
+     * a suggestion is a directory name off a filesystem walk, so it is a string
+     * this file has no business turning into markup — the rule docs/security.md
+     * sets for the pane, applied to the one other place this file writes what
+     * the host said.
+     *
+     * `hidden` carries whether it is open, and `aria-expanded` says the same
+     * thing to a reader who cannot see it. Nothing to show closes it: a bordered
+     * empty box under the field reads as a control that has broken, and a
+     * combobox claiming to be expanded over no options is that same lie told
+     * twice.
+     *
+     * Each option is given an id (T011) because `aria-activedescendant` names
+     * one element by id and can point at nothing else. It is built from the
+     * listbox's own id rather than spelled here, for the reason `aria-controls`
+     * is read off the same property: the id belongs to the template, and this
+     * file holds no copy of it to drift.
+     */
+    const draw = (paths) => {
+      listbox.replaceChildren(
+        ...paths.map((path, index) => {
+          const option = document.createElement('li');
+          option.id = `${listbox.id}-option-${index}`;
+          option.setAttribute('role', 'option');
+          option.textContent = path;
+          return option;
+        }),
+      );
+
+      // Every option here is new markup, so whatever the keyboard was on went
+      // with the previous filter. Cleared rather than kept by position: an index
+      // that survived a keystroke would point at a different path, which is a
+      // control moving the answer while the operator types it.
+      active = -1;
+      field.removeAttribute('aria-activedescendant');
+
+      const open = paths.length > 0;
+      listbox.hidden = !open;
+      field.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+
+    /*
+     * Silent while nothing is filtered. FR-045 is about a list showing a
+     * subset; a region that also said "showing all of them" would be narrating
+     * the operator's own typing back at them, which is the noise
+     * docs/components.md keeps off the grid and the pane.
+     */
+    const say = (showing) => {
+      const sentence = status.dataset.workdirSubset;
+      if (!sentence) {
+        return;
+      }
+      const offering = offered.options.length;
+      status.textContent = showing === offering
         ? ''
-        : note.dataset.workdirSubset.replace('{n}', showing).replace('{all}', offered);
+        : sentence.replace('{n}', showing).replace('{all}', offering);
     };
 
     let settling;
+
     field.addEventListener('input', () => {
+      const paths = matching();
+      draw(paths);
       clearTimeout(settling);
-      settling = setTimeout(say, SETTLE_MS);
+      settling = setTimeout(() => say(paths.length), SETTLE_MS);
+    });
+
+    /*
+     * The keyboard (T011, and the table in contracts/themed-combobox.md).
+     *
+     * The rule the whole picker turns on bites hardest here. This is a text
+     * field and it stays one: nothing below reads a character that was typed,
+     * nothing below rewrites what is in the field except the one accept the
+     * operator asked for, and the four keys that are answered are answered
+     * because each of them means something to a list that is open. Everything
+     * else reaches the field untouched, which is what keeps any path typeable in
+     * full (FR-008) — the list offers, it does not narrow what may be sent.
+     */
+    const optionAt = (index) => listbox.children[index] || null;
+
+    /*
+     * Where the keyboard is, said three ways because three different things read
+     * it. `aria-activedescendant` is what tells a reader where the focus that
+     * never left the input is now pointing; `aria-selected` is the selector the
+     * ring in crswd.css is keyed on, because `:focus-visible` can never reach an
+     * option and without the attribute a keyboard operator moves an invisible
+     * cursor; and the scroll is for the operator who can see one — the list is a
+     * bounded scroll box, so an option moved past its edge is one they have no
+     * way to know they are on.
+     */
+    const activate = (index) => {
+      const leaving = optionAt(active);
+      if (leaving) {
+        leaving.removeAttribute('aria-selected');
+      }
+      active = index;
+
+      const option = optionAt(active);
+      if (!option) {
+        field.removeAttribute('aria-activedescendant');
+        return;
+      }
+      option.setAttribute('aria-selected', 'true');
+      field.setAttribute('aria-activedescendant', option.id);
+      option.scrollIntoView({ block: 'nearest' });
+    };
+
+    /*
+     * Closing, which is the path the keyboard adds: until these keys existed the
+     * list shut only when nothing matched what was typed, so a list opened by
+     * one keystroke stayed open over the rest of the form.
+     *
+     * The subset sentence goes with it, including the one a settling timer was
+     * about to write. `.combo-status` counts what the list is showing, and a
+     * count left standing under a closed list is a sentence about something that
+     * is no longer there.
+     */
+    const close = () => {
+      activate(-1);
+      listbox.hidden = true;
+      field.setAttribute('aria-expanded', 'false');
+      clearTimeout(settling);
+      status.textContent = '';
+    };
+
+    /*
+     * Wrapping, because the alternative is a key that does nothing at an end the
+     * operator cannot see. The first press lands on the near end of the list in
+     * the direction it was pressed, which is what makes ↓ the way in.
+     */
+    const step = (by) => {
+      const count = listbox.children.length;
+      if (count === 0) {
+        return;
+      }
+      activate(active < 0 ? (by > 0 ? 0 : count - 1) : (active + by + count) % count);
+    };
+
+    field.addEventListener('keydown', (event) => {
+      switch (event.key) {
+        case 'ArrowDown':
+        case 'ArrowUp':
+          // Reopened here rather than only on the next keystroke: Escape closes
+          // a list the operator may not be finished with, and without this the
+          // only way back to the options is to change what is typed.
+          if (listbox.hidden) {
+            draw(matching());
+          }
+          step(event.key === 'ArrowDown' ? 1 : -1);
+          // Refused, because both keys already mean "the caret goes to the end
+          // of the value" in a text field, and an operator moving through paths
+          // would be dragging the caret with them.
+          event.preventDefault();
+          break;
+
+        case 'Enter': {
+          const option = optionAt(active);
+          // Enter with nothing active is the submit this form has always had,
+          // and it is deliberately untouched: a path typed in full is sent by
+          // the same key whether or not this file ran. Only the accept is
+          // claimed, and only when there is something to accept.
+          if (!option) {
+            return;
+          }
+          accept(option);
+          event.preventDefault();
+          break;
+        }
+
+        case 'Escape':
+          // What was typed stays typed. Escape dismisses the offer and never the
+          // answer — no path through here touches the field's value — and it is
+          // refused so that a browser which reads Escape in a text field as
+          // "revert what was typed" does not do that instead.
+          if (listbox.hidden) {
+            return;
+          }
+          close();
+          event.preventDefault();
+          break;
+
+        case 'Tab':
+          // Never refused: Tab is how the operator leaves this field, and
+          // whatever is in it stands exactly as it would with this file absent.
+          // The list is shut on the way out so it cannot hang over the control
+          // that now has focus.
+          close();
+          break;
+
+        default:
+          // Typing, which is never intercepted.
+          break;
+      }
+    });
+
+    /*
+     * The accept, which two things now ask for and which is written once (T017).
+     *
+     * It sits between its callers because it belongs to neither: the key above
+     * and the pointer below take the same option and put the same text in the
+     * field, and a second assignment would be a second answer to what the
+     * operator chose — on the one field where any path has to stay typeable in
+     * full (FR-008), which is a property held by there being exactly one write
+     * in this file and by that write reading an option the daemon offered.
+     */
+    const accept = (option) => {
+      field.value = option.textContent;
+      close();
+    };
+
+    /*
+     * The pointer (T017), which is the one thing this enhancement took away
+     * rather than added: the popup it replaces was clickable, the themed list
+     * was not, and .combo-list li has drawn `cursor: pointer` since T009 over a
+     * control that did nothing.
+     *
+     * Bound on mousedown and never on click. The blur below shuts the list, and
+     * a blur lands between the press and the click that would have followed it,
+     * so a click handler here would only ever select an option when it won a
+     * race — a selection that works most of the time on a fast machine and
+     * reads as flakiness rather than as a bug. That is why the two are one
+     * change.
+     *
+     * The press is refused for every position inside the list rather than only
+     * one that lands on an option, because the default action of a press on
+     * something that cannot hold focus is to take focus off the field: dragging
+     * this box's scroll bar would otherwise blur the field and shut the list
+     * under the pointer. Refusing it leaves focus where the operator left it,
+     * which is also where aria-activedescendant has been telling a reader it is.
+     *
+     * Delegated from the list for the reason the toast is delegated from the
+     * document: every option is new markup on every keystroke, so a handler
+     * bound to one when this ran is a handler on an element that is gone.
+     *
+     * The option is a <li> with a listener and not a <button>, which is not the
+     * thing docs/components.md's floor forbids. Focus stays on the input for as
+     * long as this control is open — a focusable option would take it out of
+     * the field being typed in — and what makes the option operable without a
+     * pointer is the keyboard above, which is what that rule is about.
+     */
+    listbox.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+
+      const option = event.target instanceof Element ? event.target.closest('li') : null;
+      if (!option) {
+        return;
+      }
+      // The same two steps in the same order Enter runs them: what was pointed
+      // at becomes the active option first, so the ring, the reader and the
+      // value all name the one that was taken.
+      activate([...listbox.children].indexOf(option));
+      accept(option);
+    });
+
+    /*
+     * And the close that has to be written with it (T017). Escape, Tab and
+     * Enter all shut the list; a pointer put anywhere else on the page shut
+     * nothing, so the one way out of this control that an operator using a
+     * mouse actually takes was the one that left a list hanging over the rest
+     * of the form.
+     *
+     * The same `close` the keyboard runs, and nothing here touches what was
+     * typed. A blur that normalised the field to the nearest option is the
+     * shape FR-008 refuses — the list would have become the allowlist, quietly,
+     * on the path an operator never watches.
+     */
+    field.addEventListener('blur', () => {
+      close();
     });
   };
 
-  for (const field of document.querySelectorAll('input[data-workdir-note]')) {
-    announceSubset(field);
+  for (const combo of document.querySelectorAll('[data-combo]')) {
+    enhance(combo);
   }
 })();
 

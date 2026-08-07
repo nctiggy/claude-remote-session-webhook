@@ -7,7 +7,7 @@ a `*.example.com` hostname. Each session runs in a tmux window with
 `--dangerously-skip-permissions`. Two clients: a browser UI behind Cloudflare Access
 (Google identity), and a companion Claude skill authenticating by HMAC signature.
 
-> **Status: milestones 1, 2 and 3 are complete and deployed; milestone 4 is
+> **Status: milestones 1 through 4 are complete and deployed; milestone 5 is
 > landing.** The daemon core — config, `tmuxctl`, session CRUD, HMAC auth, the
 > audit log, and the reaper — ships alongside daemon-side Cloudflare Access
 > validation and a dashboard that reads, streams **and acts**: create, destroy,
@@ -15,9 +15,14 @@ a `*.example.com` hostname. Each session runs in a tmux window with
 > off. Both doors are real: a browser is admitted by Google identity and then
 > re-verified by the daemon, and the API client is admitted by an Access service
 > token and then checked by signature, timestamp, replay and per-session token.
-> Milestone 4 adds the configuration file, the read-only `/settings` page that
-> says where every value came from, and the startup dependency probes. The
-> device-code login relay and the companion Claude skill are still ahead of it.
+> Milestone 4 added the configuration file, the read-only `/settings` page that
+> says where every value came from, and the startup dependency probes. Milestone
+> 5 finishes the dashboard: remote control chosen as a **mode** rather than by
+> command name, working-directory suggestions that exist on a default install
+> behind a themed picker, a settings link on every page, and two defects in
+> shipped code — a dependency probe that warned falsely and an audit trail that
+> could not be read as documented. The device-code login relay and the companion
+> Claude skill are still ahead of it.
 
 ---
 
@@ -69,8 +74,9 @@ one loop for the lot.
 | 2 | Read-only dashboard | Access JWT validation, session list, live pane via SSE |
 | 3 | Dashboard actions | create, destroy, rename, compact |
 | 4 | Configure and operate | config file, read-only `/settings`, dependency probes, a dashboard that works without script |
+| 5 | Finish the dashboard | remote control as a mode, working-directory suggestions + themed picker, the settings link, the audit-trail and probe defects |
 
-The device-code login relay and the companion Claude skill follow milestone 4;
+The device-code login relay and the companion Claude skill follow milestone 5;
 they are not in it.
 
 ## Working in this repo
@@ -129,9 +135,10 @@ stands in for the permission prompt that is gone.
 | `CRSW_SHARED_SECRET` | **yes** | — | The HMAC secret the API client signs with. Unset, or shorter than 32 bytes, refuses to start |
 | `CRSW_ALLOWED_ROOTS` | no | `$HOME/code`, with a loud banner | Colon-separated absolute directories a session may run in. An entry that is empty, relative, missing, unresolvable, or not a directory refuses |
 | `CRSW_DISCOVER_ROOTS` | no | `false` | Offer each approved root's immediate subdirectories as working-directory suggestions. Anything but a boolean refuses |
+| `CRSW_WORKDIR_SUGGESTIONS` | no | empty | Comma-separated absolute directories offered on the create form beside the roots. An entry that is empty or relative refuses; one outside the roots is offered and refused on create, because the list is a convenience and `CRSW_ALLOWED_ROOTS` is the control |
 | `CRSW_LISTEN` | no | `127.0.0.1:8765` | The listener. A host that is not a loopback IP literal, or a port out of range, refuses |
 | `CRSW_MAX_SESSIONS` | no | `5` | How many sessions may exist at once. Below 1 refuses |
-| `CRSW_DESTROY_ON_SHUTDOWN` | no | `false` | Tear every session down when the daemon stops. **This build parses the key and does not act on it** — sessions survive a clean stop whatever it says |
+| `CRSW_DESTROY_ON_SHUTDOWN` | no | `false` | Tear every session down when the daemon stops. Off by default: sessions survive a clean stop and startup adoption reclaims them, so a redeploy no longer costs the fleet. `true` restores the old behaviour, for a host being decommissioned rather than updated |
 | `CRSW_SESSION_LIFETIME` | no | `24h` | How long a session may live from creation. Zero or negative refuses; there is no "never" |
 | `CRSW_SESSION_LIFETIME_MAX` | no | `CRSW_SESSION_LIFETIME` | The ceiling a per-session lifetime override may not exceed. Below the default refuses |
 | `CRSW_IDLE_TIMEOUT` | no | `60m` | How long a session may sit without a request before the reaper takes it. Longer than the lifetime refuses |
@@ -163,6 +170,24 @@ Notes worth having before you set these:
   is legal but announced on stderr at every start, and the default is `$HOME/code`
   rather than `$HOME`, which would put SSH keys and cloud credentials inside the
   allowlist.
+- **The create form offers three sources of working directory, unioned.** The
+  approved roots themselves, always; `CRSW_WORKDIR_SUGGESTIONS`; and each root's
+  immediate subdirectories when `CRSW_DISCOVER_ROOTS` is on. Sorted and
+  deduplicated, so a default install with neither of the other two set still
+  offers something rather than an empty list. **A suggestion is never an
+  authorisation**: the field submits an ordinary string, so a path taken from the
+  list and a path typed in full meet the same allowlist check, the same refusal,
+  and the same audit record. The list is a convenience and `CRSW_ALLOWED_ROOTS`
+  is the control, which is why a suggestion outside the roots is legal to
+  configure and refused on create.
+- **Remote control is a mode, not a command name.** The create form renders one
+  checkbox, and a ticked box posts `remote_control=on` while an unticked one
+  posts nothing — so a lost or stripped field yields the *less* privileged mode.
+  Which configured command that mode runs is `CRSW_REMOTE_CONTROL_COMMAND`, read
+  server-side; **no command name is ever sent to or accepted from a browser**,
+  and a real configured name submitted in that field is refused like any other
+  value. `CRSW_START_COMMANDS` is still how the API door names one, because that
+  door takes names.
 - **`CRSW_LISTEN` will not take a hostname.** `localhost` is refused rather than
   resolved: `/etc/hosts` or a resolver could move the bind off loopback without
   this value changing. Reachability is the tunnel's job.
@@ -243,6 +268,10 @@ instead — loudly, naming both files, because it is then running on the older o
 
 ### Seeing what it is configured to do
 
+Every page carries a **Settings link** in the header, beside the operator's
+identity and outside the page's heading. One link is not a navigation bar, and
+it is the whole of the dashboard's navigation.
+
 `GET /settings` is the read-only account of how this daemon was configured: one
 row per key, the effective value, and **which layer supplied it**. Provenance is
 recorded by the precedence shim as it decides rather than inferred by comparison —
@@ -262,14 +291,41 @@ At startup the daemon probes what it shells out to, and the two dependencies fai
 differently on purpose:
 
 - **`tmux` missing is fatal.** Without it there is nothing this daemon can do, so
-  starting would only defer the failure to the operator's first create.
+  starting would only defer the failure to the operator's first create. It is
+  looked for on the daemon's own `PATH` and nowhere else, because the daemon is
+  what runs it.
 - **A start command's binary missing is a warning.** It can still serve the
   dashboard, adopt the sessions already on the host, and say what is wrong.
 
 The second probe reads the *configured* commands, not a fixed `claude`, and the
 install line it suggests comes from `/etc/os-release` rather than being guessed
-from `GOOS`. Nothing installs anything and nothing runs what it found: the probe's
-only contact with the host is `exec.LookPath`.
+from `GOOS`. Nothing installs anything and nothing runs what it found.
+
+**It resolves a start command the way the session will, and that has three
+outcomes rather than two.** A start command is typed into a login shell inside a
+tmux pane, so the operator's profile has already run by the time the name is
+looked up — `claude` under `~/.local/bin` is on that `PATH` and not on the
+service manager's, which is the ordinary case for a tool installed under a home
+directory. So:
+
+| The binary is… | The daemon says |
+|---|---|
+| on the daemon's own `PATH` | nothing |
+| absent there but on the login shell's | nothing — the session will find it |
+| absent from both | a warning, naming the command, the setting it came from, and **both** places that were checked |
+| unresolvable, because the shell could not be asked | a **note** saying what was checked and what could not be — never that the command is missing |
+
+The last row is the point. A check that says "missing" about a command that works
+trains an operator to ignore it, which is worse than not checking at all.
+
+> **This makes the operator's login shell a startup dependency.** The daemon runs
+> `$SHELL -l` and asks it, on stdin, for one thing: the value of `$PATH`. It never
+> names the command to the shell — a `sh -lc "command -v $binary"` resolves
+> identically and is the shell string `docs/security.md` §2 forbids — and it asks
+> **at most once per start**, only after a command has already failed to resolve
+> on the daemon's own `PATH`. The ask is bounded by a 5s timeout and a 1s wait
+> delay, and a shell that cannot be run is the note above rather than a refusal.
+> A profile that blocks therefore costs a start five seconds; it cannot hang one.
 
 ---
 
@@ -322,9 +378,18 @@ Audit records are structured JSON on stdout, which makes the journal the entire
 storage design — no file mode, no rotation, no disk to fill.
 
 ```bash
-journalctl --user -u crswd -f -o cat | jq .
-journalctl --user -u crswd -o cat | jq 'select(.action == "auth.reject")'
+journalctl --user -u crswd -f -o cat | grep '^{' | jq .
+journalctl --user -u crswd -o cat | grep '^{' | jq 'select(.action == "auth.reject")'
 ```
+
+**The `grep` is not optional.** The daemon writes records to stdout and its own
+diagnostics to stderr — the startup probe's banners, the config loader, the `log`
+package — and **systemd merges both file descriptors into one journal**, so
+`journalctl` hands them back interleaved however cleanly the daemon separated
+them. Without the filter the first banner is a `jq: parse error` and the trail
+reads as unparseable (#88). `_COMM=crswd` is not a substitute and was measured:
+the non-JSON lines are the daemon's own, so filtering to its process keeps every
+one of them.
 
 `-o cat` is what makes this work: it prints the message alone, without the syslog
 prefix systemd would otherwise put in front of the JSON. No record carries prompt

@@ -111,11 +111,13 @@ const (
 // invent a setting or forget one, and the order is the order config.go declares
 // them.
 //
-// One row per key, including a key with no loader behind it. CRSW_DESTROY_ON_SHUTDOWN
-// is one today — it has a constant, a field and a consumer, and nothing reads it
-// (internal/config's own varWithNoLoader pins the gap) — so this page reports it
-// as `false` from `default`, which is what that daemon actually does. Dropping
-// the row would hide the defect from the one page an operator would find it on.
+// One row per key, including a key with no loader behind it. There is no such
+// key today — CRSW_DESTROY_ON_SHUTDOWN was the example when this page was
+// written and has been loaded and acted on since — but the rule is what matters
+// rather than the example: a key the shim never looked up is absent from
+// cfg.Sources, so it reports its zero value from `default`, which is what that
+// daemon actually does. Dropping such a row would hide the gap from the one page
+// an operator would find it on.
 func settingsOf(cfg *config.Config) []settingRow {
 	rows := make([]settingRow, 0, len(config.Vars()))
 	for _, name := range config.Vars() {
@@ -165,6 +167,12 @@ func settingText(cfg *config.Config, name, key string) string {
 const (
 	rootsSeparator         = ", "
 	startCommandsSeparator = ","
+
+	// The suggestion list keeps its own grammar for the start-command set's
+	// reason and not the root list's: these paths are the operator's own,
+	// unresolved and unread, so the cell is the line they wrote and stays one
+	// they could paste back.
+	workdirSuggestionsSeparator = ","
 )
 
 // settingValue is the effective value of one non-secret setting, and whether
@@ -202,6 +210,8 @@ func settingValue(cfg *config.Config, name string) (value string, known bool) {
 		return strings.Join(paths, rootsSeparator), true
 	case config.EnvDiscoverRoots:
 		return strconv.FormatBool(cfg.DiscoverRoots), true
+	case config.EnvWorkdirSuggestions:
+		return strings.Join(cfg.WorkdirSuggestions, workdirSuggestionsSeparator), true
 	case config.EnvListen:
 		return cfg.Listen, true
 	case config.EnvMaxSessions:

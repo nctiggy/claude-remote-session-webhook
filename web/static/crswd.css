@@ -95,6 +95,11 @@
      than spelled into the rule that uses it. */
   --toast-max: 34rem;
   --pane-h: 30rem;
+  /* The picker listbox's ceiling, here for the same reason --toast-max is: a
+     layout dimension the design system does not name, declared once rather
+     than spelled into the rule that uses it. A popup that grows with its list
+     is not a control — the discovery walk alone stops at 200 directories. */
+  --combo-h: 14rem;
 
   /* The rain's two permitted strengths. Opacity belongs to the surface the
      canvas sits in rather than to the canvas, so it is selected by ancestor. */
@@ -198,13 +203,49 @@ body {
 }
 
 /* Whose credentials are driving sessions on this host. Long addresses truncate
-   rather than push the brand off the bar; the title attribute carries the rest. */
+   rather than push the brand off the bar; the title attribute carries the rest.
+
+   The auto margin arrived with the settings link and is what keeps the bar the
+   shape docs/components.md describes: identity right. space-between was written
+   for two children and puts a third's middle item in the centre, so without this
+   the address would drift away from the mark it belongs opposite. It pushes the
+   free space in front of the pair instead, and the two stay together at the end
+   — which is also what makes the link read as being about this operator. */
 .operator {
   margin: 0;
+  margin-inline-start: auto;
   overflow: hidden;
   color: var(--dim);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The route to the settings page (FR-011). It is the second and last anchor in
+   this bar, and it is outside the wordmark's heading for the reason the template
+   gives.
+
+   Dim like the address beside it: this bar spends --phosphor on the brand, and a
+   link that took the accent would read as the more important of the two things
+   at that end. The underline is what says it is a link at all — the wordmark can
+   go without one because a mark returning you home is an old enough convention
+   to be the affordance itself, and a word reading "Settings" is not.
+
+   The treatment is the card heading's rather than a second one, hover included:
+   the underline warms to the text's own colour instead of a new accent being
+   introduced for one link. Nothing here removes the outline, so the page's one
+   :focus-visible ring is this control's indicator. */
+.masthead-link {
+  color: var(--dim);
+  text-decoration: underline;
+  text-decoration-color: var(--edge-bright);
+  transition:
+    color var(--transition),
+    text-decoration-color var(--transition);
+}
+
+.masthead-link:hover {
+  color: var(--text);
+  text-decoration-color: currentcolor;
 }
 
 .shell {
@@ -559,6 +600,100 @@ body {
   font: var(--fs-body)/var(--lh-body) var(--mono);
 }
 
+/* The working-directory picker's wrapper (T008 built it, T009 dresses it). The
+   native control works first and everything below is a theme over it, so no
+   rule here changes what the field accepts, what it submits, or what it offers
+   with no script running.
+
+   `display: grid` is not decoration here. An <input> is inline-block, so a
+   plain block wrapper would size the field to its default character width; as a
+   grid the input stretches exactly as it did when it was .field's own item.
+
+   `position: relative` is what lets the listbox open *over* the page rather
+   than in it. In the flow it would push the roots hint and the submit button
+   down as soon as an operator typed, moving the control they were aiming at —
+   and the native popup this replaces overlays too, so anything else would be
+   the enhancement costing behaviour rather than adding to it. */
+.combo {
+  position: relative;
+  display: grid;
+  gap: var(--s1);
+}
+
+/* The themed listbox, empty and hidden until the enhancement fills it (T010).
+   Raised, which is --surface-lift's own documented meaning, and bounded by the
+   field's own bright edge so it reads as the same control the input is rather
+   than a panel that appeared beside it.
+
+   Bounded and scrolling, because an unbounded popup is not a control: the
+   discovery walk alone stops at 200 directories, and a list that long is a
+   page. No marker, as .field-hint-list is set, since a bullet column beside a
+   monospace path reads as two columns.
+
+   It hangs off the bottom of the wrapper rather than the field, so the subset
+   sentence sits between the two: the field, then what the list is showing, then
+   the list. It renders hidden, so [hidden] at the end of this file outranks
+   every declaration here. */
+.combo-list {
+  position: absolute;
+  inset-block-start: 100%;
+  inset-inline: 0;
+  max-block-size: var(--combo-h);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  background: var(--surface-lift);
+  border: var(--edge-width) solid var(--edge-bright);
+  border-radius: var(--r);
+}
+
+/* One option is a path, so it is set as the field it will fill is: mono, body
+   size, wrapping anywhere rather than running out of the box, because an
+   operator picking between two long paths is reading them character by
+   character. */
+.combo-list li {
+  padding: var(--s1) var(--s2);
+  color: var(--text);
+  font: var(--fs-body)/var(--lh-body) var(--mono);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+/* Under the pointer, and under the keyboard (T011). Both are painted on the
+   ground the field itself sits on, so the option that is about to become the
+   field's value reads as continuous with it.
+
+   The active one carries the ring as well, and that is a requirement rather
+   than emphasis: :focus-visible can never reach an option, because focus stays
+   on the input and aria-activedescendant is what points here. Without this rule
+   a keyboard operator moves an invisible cursor. The offset is negative, or the
+   ring on the first and last options is clipped by the scroll box holding
+   them. */
+.combo-list li:hover {
+  background: var(--ground);
+}
+
+.combo-list li[aria-selected="true"] {
+  background: var(--ground);
+  outline: var(--focus-width) solid var(--phosphor);
+  outline-offset: calc(var(--focus-offset) * -1);
+}
+
+/* What the list is doing right now, written by the enhancement (T010). Set as
+   .field-hint is, because it is one: an aside beside the control, in the sans
+   that prose a human wrote is set in, dim so it never competes with the paths
+   it is counting. Present and empty rather than hidden, per
+   docs/components.md's accessibility floor — with no margin it is a grid box
+   with no child, and costs the field nothing until it speaks. */
+.combo-status {
+  margin: 0;
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: var(--fs-prose);
+}
+
 /* What a field says about what it will accept — today, the roots a working
    directory has to be under (T014). Dim sans, because it is an aside beside the
    control rather than an answer to something the operator did: that is the
@@ -591,6 +726,55 @@ body {
 .field-hint-root {
   font-family: var(--mono);
   overflow-wrap: anywhere;
+}
+
+/* The remote-control switch's row. A checkbox is read as "control, then what it
+   controls", so this is the one field whose label sits beside its input rather
+   than above it — the stacking .field does for a text entry would put a caption
+   under a box with nothing between them. */
+.field-switch {
+  grid-auto-flow: column;
+  justify-content: start;
+  align-items: center;
+  gap: var(--s2);
+}
+
+/* The native checkbox, themed rather than replaced. accent-color paints the
+   platform's own control in the palette's one green *without* appearance: none,
+   so what an operator reads is the tick — a shape — and the colour is
+   reinforcement exactly as it is on the pill (FR-019). Take the appearance away
+   and the only difference between the two states is whatever fill this file
+   draws, which is a state carried by hue alone.
+
+   The pointer is on the label as well as the box: they are one control, and a
+   checkbox this size is a small target for what starts an unsandboxed shell in
+   the more privileged mode.
+
+   Nothing here removes the outline, so the global :focus-visible ring applies
+   to it untouched. */
+.switch-input {
+  accent-color: var(--phosphor);
+  inline-size: var(--s4);
+  block-size: var(--s4);
+  margin: 0;
+  cursor: pointer;
+}
+
+/* The switch's own presentation, which is no longer .field-label's (T009). A
+   caption above a text entry is a section eyebrow; this is the name of the
+   control sitting beside it, which is the design system's label role — the
+   size and the tracking the pill is set in.
+
+   --text rather than the --dim every other label on this form carries. The box
+   beside it is drawn by the platform and says only ticked or not; these two
+   words are the whole of what says *what* the tick means, so they are body
+   text rather than a caption an operator has to already know how to read. */
+.switch-label {
+  color: var(--text);
+  font-size: var(--fs-label);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  cursor: pointer;
 }
 
 /* The page's one primary control (docs/components.md: exactly one per view).

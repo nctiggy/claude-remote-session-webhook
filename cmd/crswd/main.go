@@ -4,6 +4,28 @@
 // no flags are defined here; flag.Parse still runs so -h reports usage rather
 // than an unknown-flag error. There are two subcommands, `config check` and
 // `config migrate`, and they are in config_cmd.go.
+//
+// # The two streams
+//
+// The daemon writes to two of them and they are different things for different
+// readers. Every line on stdout is an audit record — one JSON object, nothing
+// else, ever. Every human-readable diagnostic goes to stderr: the dependency
+// probe's banners, the configuration loader's, and the standard logger that the
+// last-resort report channels in internal/httpapi and internal/session use.
+//
+// systemd merges both into one journal, so the split is not what separates them
+// for the operator — `grep '^{'` is (#88):
+//
+//	journalctl --user -u crswd -o cat | grep '^{' | jq .
+//
+// That filter is a correct one only because of the invariant above. A single
+// warning printed to stdout makes it silently drop an audit record, which is
+// the one failure this daemon's trail cannot afford, so the rule is "records
+// only" rather than "mostly records" (FR-023a).
+//
+// The subcommands are outside it rather than an exception to it: `config check`
+// runs *instead of* the daemon, writes no record, and its report on stdout is
+// the answer the operator ran it for.
 package main
 
 import (
@@ -100,6 +122,10 @@ func run(ctx context.Context) error {
 	// — and before anything else because a host with no tmux cannot manage a
 	// session, so every line below it would be work done on the way to failing
 	// the operator's first request instead of their restart (FR-012).
+	//
+	// os.Stderr is the requirement and not a default: this banner is the one the
+	// live daemon printed on every start, and it is what the documented
+	// `grep '^{'` filter has to be able to drop. See the two streams, above.
 	if err := cfg.CheckDependencies(os.Stderr); err != nil {
 		return err
 	}

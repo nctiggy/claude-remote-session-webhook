@@ -21,10 +21,24 @@
   signature the edge wrote rather than from a caller, so escaping it is defence
   in depth — but it is the primary defence for everything else this dashboard
   renders, and a template carrying one exception is a template someone copies.
+
+  The settings link is here and not in the heading (FR-011, FR-012). #46 made the
+  wordmark the route home and it lives inside the page's one first-level heading;
+  a second anchor in there would compete for that role, and a heading holding two
+  links is a heading that has become a menu. Beside the operator's identity it
+  reads as what it is — something about this daemon and this operator, not a
+  section of a site. **One link is not a navigation bar**, and if a third arrives
+  that is the moment to reconsider the shape rather than to keep appending.
+
+  It is a link to a page and nothing more. `GET /settings` is the only verb
+  registered on that path, so reaching it from every page adds a route to read
+  and no way to write — the absence of a mutating handler is the safeguard, not
+  the obscurity of the address it just lost.
 */}}<header class="masthead">
 {{ template "rain" }}
 <div class="masthead-bar">
 <h1 class="brand"><a class="brand-link" href="/">crswd</a> <span class="brand-tag">session control</span></h1>
 <p class="operator" title="{{ .Email }}">{{ .Email }}</p>
+<a class="masthead-link" href="/settings">Settings</a>
 </div>
 </header>

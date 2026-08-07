@@ -56,7 +56,7 @@ neither does CI. Run the one that matches what you touched:
 | Tag | Covers | Needs |
 |---|---|---|
 | `tmux` | `internal/tmuxctl` driven against the real binary | `tmux` installed. Each test gets a private `-L` socket, never the operator's server |
-| `quickstart` | `cmd/crswd` acceptance — a real build, a real port, real tmux | `tmux`, and `127.0.0.1:8765` free: the deployed daemon holds it and two startup cases bind that exact port |
+| `quickstart` | `cmd/crswd` acceptance — a real build, a real port, real tmux | `tmux`; `jq`, because one case runs the unit file's documented audit-trail command as written; and `127.0.0.1:8765` free: the deployed daemon holds it and two startup cases bind that exact port |
 | `dev` | `internal/access`'s loopback auth bypass, which is absent from the shipping build | nothing |
 
 `go vet -tags <tag> ./...` compiles a tagged suite without running it — the cheap check

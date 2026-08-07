@@ -474,11 +474,6 @@ func createReason(err error) error {
 	// for everything.
 	for _, reason := range []error{
 		session.ErrUnknownStartCommand,
-		// Reachable from the browser door alone: this door's request carries no
-		// conversation field, so a create through it always starts fresh. It is
-		// listed here rather than beside that door because the trail must say the
-		// same thing about the same refusal whichever door reported it (T032).
-		session.ErrUnknownConversation,
 		session.ErrInvalidLifetime,
 		session.ErrNameIsTmuxTarget,
 		session.ErrWorkDirNotAbsolute,

@@ -29,7 +29,15 @@ ExecStart=%h/bin/crswd
 # trail is kept. Stated rather than inherited from a distro default, because
 # "what happened" depends on it:
 #
-#   journalctl --user -u crswd -o cat | jq .
+#   journalctl --user -u crswd -o cat | grep '^{' | jq .
+#
+# The grep is not optional, and filtering by process is not a substitute for it:
+# `_COMM=crswd` narrows the journal to this daemon and the command still fails,
+# because the non-JSON lines are the daemon's OWN diagnostics rather than
+# systemd's (#88). Both descriptors below are journalled and systemd interleaves
+# them into one stream, so the split the daemon does make — every line on stdout
+# is a record, every human-readable line is on stderr — is what makes `^{` a
+# correct filter, not what separates the two for whoever is reading.
 StandardOutput=journal
 StandardError=journal
 
@@ -67,6 +75,12 @@ Environment=CRSW_ALLOWED_ROOTS=%h/code
 # one to opt into. It widens nothing: the roots are still the control, and a
 # suggested path is checked against them on create exactly as a typed one is.
 Environment=CRSW_DISCOVER_ROOTS=
+
+# Extra directories the create form offers, comma-separated and absolute, on top
+# of the roots above — which are always offered. Default: empty. It reads no
+# filesystem, and a path listed here that is outside the roots is refused on
+# create exactly as a typed one is.
+Environment=CRSW_WORKDIR_SUGGESTIONS=
 Environment=CRSW_LISTEN=127.0.0.1:8765
 Environment=CRSW_MAX_SESSIONS=5
 
