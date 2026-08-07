@@ -29,6 +29,12 @@ type Exec struct {
 	// environment variable that would isolate right up until it silently did
 	// not — the same lesson the //go:build tmux tests learned.
 	socket string
+
+	// paneBound is the largest screen CapturePane will hand back, counted in
+	// lines. It comes from the operator's pane_bound setting (FR-052) and is
+	// never zero on an Exec NewExec built: a bound that defaults to "no bound"
+	// is the state this field exists to make unreachable.
+	paneBound int
 }
 
 // ErrNoSocket is returned by NewExec for an empty server name, and by every
@@ -36,13 +42,33 @@ type Exec struct {
 // default server, so there is nothing to fall back to.
 var ErrNoSocket = errors.New("tmuxctl: no tmux server name; refusing to drive tmux's default server")
 
+// ErrNoPaneBound is returned by NewExec for a bound below one line, and by
+// CapturePane on an Exec that somehow has one. "Capture as much as arrives" is
+// exactly the assumption FR-052 requires be stated rather than inherited, so
+// there is no value of this field meaning "unbounded" to fall back to.
+var ErrNoPaneBound = errors.New("tmuxctl: no pane bound; refusing to capture a screen of unstated size")
+
+// ErrPaneTooLarge is returned instead of a shortened screen. Callers branch on
+// it to tell "the screen is unusable" from "tmux would not answer", and neither
+// is a screen they may render (FR-053).
+var ErrPaneTooLarge = errors.New("tmuxctl: the captured pane is past the bound")
+
 // NewExec returns a Controller driving the tmux server named by socket, which
 // is tmux's -L. Use SocketFor to derive it from the daemon's listen address.
-func NewExec(socket string) (*Exec, error) {
+//
+// paneBound is config.Config.PaneBound, in lines: what CapturePane will accept
+// from that server. It is a parameter rather than a constant here because it is
+// the operator's setting, and it is required rather than defaulted because a
+// caller that forgot it would silently get the unbounded capture this package
+// no longer performs.
+func NewExec(socket string, paneBound int) (*Exec, error) {
 	if socket == "" {
 		return nil, ErrNoSocket
 	}
-	return &Exec{socket: socket}, nil
+	if paneBound < 1 {
+		return nil, ErrNoPaneBound
+	}
+	return &Exec{socket: socket, paneBound: paneBound}, nil
 }
 
 // SocketFor derives a daemon's tmux server name from the address it listens on,
@@ -135,28 +161,70 @@ func (e *Exec) Paste(ctx context.Context, name string, payload []byte) error {
 	return nil
 }
 
-// CapturePane returns tmux's rendered screen verbatim. It is already plain text
-// because argvCapturePane never passes -e; the defensive stripper is a separate
-// second line of defence.
+// CapturePane returns tmux's rendered screen verbatim, or refuses. It is
+// already plain text because argvCapturePane never passes -e; the defensive
+// stripper is a separate second line of defence.
 //
-// The size of what comes back is bounded, but only by argv: argvCapturePane
-// passes -p with no -S or -E, so tmux returns the *visible screen* rather than
-// the scrollback behind it. That is why callers can size a buffer from the
-// result's length without a limit of their own — it is a screen, not a history,
-// and a detached session keeps tmux's default dimensions.
+// **The bound, stated where it is relied upon (FR-052).** What comes back is at
+// most e.paneBound lines, and everything downstream — the SSE frame, the pane
+// element, the buffer sized from the result's length — is entitled to assume
+// that. Two things hold it, and only one of them used to:
 //
-// Adding -S to capture scrollback would remove that bound silently, and every
-// caller downstream would keep assuming it. If that is ever wanted, give this
-// function an explicit byte limit in the same change rather than after it
-// (issue #41). CodeQL flags the downstream allocation for overflow, which is
-// unreachable — a len() cannot overflow when the heap already holds the data it
-// measures — but the reason the allocation is *small* lives here, not there.
+//   - argv. argvCapturePane passes -p with no -S or -E, so tmux returns the
+//     *visible screen* rather than the scrollback behind it: a screen, not a
+//     history, and a detached session keeps tmux's default dimensions.
+//   - this check. Adding -S upstream would remove the argv bound silently while
+//     every caller downstream kept assuming it (issue #41), and so would a tmux
+//     that one day answers a capture differently. The bound is now a property of
+//     what this function returns rather than of how it asks.
+//
+// It refuses rather than shortening, which is the whole of FR-053: half a
+// screen is a *wrong* screen, not a smaller one — the tail is where a prompt,
+// an error and the cursor are, so a truncated capture is a confident answer
+// about a session that is doing something else. A refusal is also the safe
+// failure downstream: the stream does not record an unsent screen as sent, so
+// the next capture retries rather than the pane going quiet on a stale one.
+//
+// The line count is safe to name in the error and the screen is not (FR-042):
+// pane content is secret under docs/security.md §3, and a size is not content.
+//
+// CodeQL flags the downstream allocation for overflow, which is unreachable — a
+// len() cannot overflow when the heap already holds the data it measures — but
+// the reason the allocation is *small* lives here, not there.
 func (e *Exec) CapturePane(ctx context.Context, name string) (string, error) {
+	// Before the exec, not after: an Exec built as a struct literal has no
+	// bound, and the one thing it may not do is read a screen nothing bounds.
+	// It is the same guard, for the same reason, that run makes of the socket.
+	if e.paneBound < 1 {
+		return "", fmt.Errorf("tmux capture-pane %s: %w", name, ErrNoPaneBound)
+	}
+
 	stdout, stderr, err := e.run(ctx, argvCapturePane(name), nil)
 	if err != nil {
 		return "", fmt.Errorf("tmux capture-pane %s: %w", name, withStderr(err, stderr))
 	}
+	if lines := countLines(stdout); lines > e.paneBound {
+		return "", fmt.Errorf("tmux capture-pane %s: %w: %d lines past the %d-line bound",
+			name, ErrPaneTooLarge, lines, e.paneBound)
+	}
 	return stdout, nil
+}
+
+// countLines counts the lines of a captured screen the way tmux writes one:
+// every pane line followed by a newline, so an empty capture is nought lines.
+//
+// A final line with no newline still counts, because the question this answers
+// is how much screen arrived and not whether it was terminated. Miscounting it
+// downwards would let exactly one line past the bound.
+func countLines(screen string) int {
+	if screen == "" {
+		return 0
+	}
+	n := strings.Count(screen, "\n")
+	if !strings.HasSuffix(screen, "\n") {
+		n++
+	}
+	return n
 }
 
 func (e *Exec) Kill(ctx context.Context, name string) error {

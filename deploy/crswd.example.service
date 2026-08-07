@@ -79,6 +79,13 @@ Environment=CRSW_CREATE_RATE_PER_MIN=6
 Environment=CRSW_MAX_BODY_BYTES=65536
 Environment=CRSW_MAX_STREAMS=10
 
+# The largest screen a pane capture may return, in lines. A capture past it is
+# refused rather than shortened — half a screen is a wrong screen, not a smaller
+# one. The daemon never attaches to the sessions it starts, so they keep tmux's
+# 80x24 default and nothing real approaches this; it is a tripwire on the
+# assumption, not a display limit.
+Environment=CRSW_PANE_BOUND=200
+
 # The two start-command variables are quoted because a command line has spaces
 # in it, and an unquoted `Environment=` assignment ends at the first one.
 #

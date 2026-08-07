@@ -160,6 +160,7 @@ func Vars() []string {
 		EnvAccessAUD,
 		EnvAccessAllowedEmails,
 		EnvMaxStreams,
+		EnvPaneBound,
 		EnvStartCommand,
 		EnvStartCommands,
 		EnvRemoteControlCommand,

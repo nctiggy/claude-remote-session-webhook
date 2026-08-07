@@ -226,6 +226,8 @@ func settingValue(cfg *config.Config, name string) (value string, known bool) {
 		return cfg.AccessAUD, true
 	case config.EnvMaxStreams:
 		return strconv.Itoa(cfg.MaxStreams), true
+	case config.EnvPaneBound:
+		return strconv.Itoa(cfg.PaneBound), true
 	case config.EnvStartCommand:
 		// The command bound to the default name, which is what this variable
 		// sets and what a create that asks for nothing in particular runs.

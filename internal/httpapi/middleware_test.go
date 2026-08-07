@@ -77,6 +77,12 @@ func testConfig(listen string) *config.Config {
 		// about the cap set their own — see watchingWithCap in stream_test.go.
 		MaxStreams: config.DefaultMaxStreams,
 
+		// The production default a third time, and required for the reason the
+		// two above are: New hands it to tmuxctl.NewExec, which refuses a bound
+		// below one line rather than capturing a screen nothing bounds. A zero
+		// here is a Config no Load produces (T033).
+		PaneBound: config.DefaultPaneBound,
+
 		// Deliberately not the production default, which is the opposite choice
 		// from MaxSessions above and for the same reason: quickstart.md's cap
 		// check needs six creates through one server to reach the cap, and a

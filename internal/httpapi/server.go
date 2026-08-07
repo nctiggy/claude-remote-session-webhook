@@ -252,7 +252,10 @@ func New(cfg *config.Config) (*Server, error) {
 	// Two daemons sharing tmux's default server cannot tell each other's
 	// sessions apart, so the second adopts the first's and reaps them on
 	// shutdown (#22).
-	tmux, err := tmuxctl.NewExec(tmuxctl.SocketFor(cfg.Listen))
+	//
+	// The pane bound travels with it: it is the operator's setting, so the only
+	// place it can enter the driver is where the driver is built.
+	tmux, err := tmuxctl.NewExec(tmuxctl.SocketFor(cfg.Listen), cfg.PaneBound)
 	if err != nil {
 		return nil, err
 	}

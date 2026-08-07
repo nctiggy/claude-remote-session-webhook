@@ -90,6 +90,16 @@ const (
 
 	EnvMaxStreams = "CRSW_MAX_STREAMS"
 
+	// EnvPaneBound is the largest screen a capture may return, in lines (#41,
+	// FR-052). It reaches tmuxctl.NewExec, and tmuxctl.Exec.CapturePane is where
+	// it is relied upon and stated.
+	//
+	// A capture past it is refused rather than shortened, because half a screen
+	// is a wrong screen and not a smaller one (FR-053) — so this is a bound on
+	// what the daemon is willing to *believe* about a pane, not a display
+	// preference. Below 1 is a startup failure like every other count here.
+	EnvPaneBound = "CRSW_PANE_BOUND"
+
 	// EnvStartCommand is the command line typed into a new session's shell. It
 	// names the command bound to DefaultStartCommandName, which is what a create
 	// that asks for no command in particular gets.
@@ -174,6 +184,19 @@ const (
 	// loaded host is watchable from two tabs before the daemon starts refusing.
 	// The spec fixes the property, not the number: capped, and refusing past it.
 	DefaultMaxStreams = 10
+
+	// DefaultPaneBound is 200 lines: a tmux session this daemon starts is never
+	// attached, so it keeps tmux's 80x24 default, and 200 is far above the
+	// tallest terminal an operator could resize one to. Like DefaultMaxStreams
+	// the spec fixes the property rather than the number — bounded, and refusing
+	// past it — so this is chosen to fire only when the assumption behind it has
+	// broken, never because a pane is merely full.
+	//
+	// What breaks it is a capture that reaches into the scrollback: tmux's own
+	// history-limit defaults to 2000 lines, an order of magnitude past this, so
+	// a -S added upstream is refused on the first capture instead of quietly
+	// enlarging every screen the daemon believes in.
+	DefaultPaneBound = 200
 
 	// DefaultStartCommand is what every session started before this was
 	// configurable at all, byte for byte. An operator who sets neither
@@ -353,6 +376,11 @@ type Config struct {
 	// MaxStreams bounds concurrent live-output streams, which are the one thing
 	// a browser can hold open indefinitely.
 	MaxStreams int
+
+	// PaneBound is how many lines of screen a capture may return, handed to
+	// tmuxctl.NewExec at wiring time. Read tmuxctl.Exec.CapturePane for what a
+	// larger one means and why it is refused rather than shortened.
+	PaneBound int
 
 	// StartCommands is the named set a create chooses from, always carrying
 	// DefaultStartCommandName.
@@ -568,6 +596,10 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 	if err != nil {
 		return nil, err
 	}
+	paneBound, err := loadInt(getenv, EnvPaneBound, DefaultPaneBound)
+	if err != nil {
+		return nil, err
+	}
 	teamDomain, err := loadTeamDomain(getenv, o.accessBypassed)
 	if err != nil {
 		return nil, err
@@ -609,6 +641,7 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 		AccessAUD:           aud,
 		AccessAllowedEmails: emails,
 		MaxStreams:          maxStreams,
+		PaneBound:           paneBound,
 		SessionLifetime:     lifetime,
 		SessionLifetimeMax:  lifetimeMax,
 		IdleTimeout:         idle,

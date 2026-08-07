@@ -84,7 +84,9 @@ func newModeFixture(t *testing.T) modeFixture {
 	}
 
 	socket := modeSocketFor(t.Name())
-	e, err := tmuxctl.NewExec(socket)
+	// The daemon's own bound, because these tests drive a real tmux and a screen
+	// it renders is exactly what production captures.
+	e, err := tmuxctl.NewExec(socket, config.DefaultPaneBound)
 	if err != nil {
 		t.Fatalf("NewExec(%q): %v", socket, err)
 	}

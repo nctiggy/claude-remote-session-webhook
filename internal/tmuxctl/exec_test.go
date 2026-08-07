@@ -40,11 +40,17 @@ var _ Controller = (*Exec)(nil)
 // is not tmux's default.
 const execSocket = "crswd-127-0-0-1-8765"
 
+// execPaneBound is the pane bound every stubbed Exec below is built with.
+// Deliberately not config.DefaultPaneBound: this package does not import that
+// one, and a test that took the daemon's number would stop saying anything the
+// day the number changed.
+const execPaneBound = 24
+
 // newStubExec is the Exec the stub on PATH answers for.
 func newStubExec(t *testing.T) *Exec {
 	t.Helper()
 
-	e, err := NewExec(execSocket)
+	e, err := NewExec(execSocket, execPaneBound)
 	if err != nil {
 		t.Fatalf("NewExec: %v", err)
 	}
@@ -282,6 +288,90 @@ func TestExecCapturePaneReturnsTmuxOutputVerbatim(t *testing.T) {
 	}
 	if got != pane {
 		t.Errorf("CapturePane = %q, want %q", got, pane)
+	}
+}
+
+// FR-052 and FR-053, which are one property read from two ends: the screen a
+// capture hands back is at most the bound, and a capture past it comes back as
+// a refusal rather than as the part that fit. The whole reason is in the last
+// case — a shortened screen is not a smaller answer, it is a confident wrong
+// one, because the tail is where the prompt, the error and the cursor are.
+func TestCaptureRefusesPastBound(t *testing.T) {
+	// Distinctive so the refusal can be searched for it. Pane content is secret
+	// under docs/security.md §3, and an error is written wherever errors go.
+	const marker = "SECRET-PANE-CONTENT"
+
+	full := strings.Repeat(marker+"\n", execPaneBound)
+
+	tests := []struct {
+		name    string
+		screen  string
+		refused bool
+	}{
+		{"a screen at the bound is a whole screen", full, false},
+		{"an empty screen", "", false},
+		{"one line past the bound", full + marker + "\n", true},
+		// The line tmux did not terminate is still a line. Counting only the
+		// newlines would let exactly one screenful past the bound.
+		{"a last line with no newline still counts", full + marker, true},
+		// What issue #41 is actually about: a capture that reached into the
+		// scrollback rather than a pane that is merely full. tmux's own
+		// history-limit defaults to 2000 lines.
+		{"a capture that reached into the scrollback", strings.Repeat(marker+"\n", 2000), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Not parallel: install mutates the environment.
+			stub{stdout: tt.screen}.install(t)
+
+			got, err := newStubExec(t).CapturePane(context.Background(), execName)
+
+			if !tt.refused {
+				if err != nil {
+					t.Fatalf("CapturePane: %v", err)
+				}
+				if got != tt.screen {
+					t.Errorf("CapturePane returned %d bytes, want the %d tmux printed", len(got), len(tt.screen))
+				}
+				return
+			}
+
+			if !errors.Is(err, ErrPaneTooLarge) {
+				t.Fatalf("CapturePane of %d lines = %d bytes, %v; want ErrPaneTooLarge",
+					strings.Count(tt.screen, "\n"), len(got), err)
+			}
+			if got != "" {
+				t.Errorf("CapturePane returned %d bytes beside its refusal; half a screen is a wrong screen, not a smaller one", len(got))
+			}
+			if strings.Contains(err.Error(), marker) {
+				t.Errorf("the refusal carries pane content: %v", err)
+			}
+		})
+	}
+}
+
+// The bound is required rather than defaulted, at both ends: a struct literal
+// is one keystroke away from NewExec here exactly as it is for the socket, and
+// an Exec with a server and no bound is the unbounded capture this package no
+// longer performs.
+func TestExecWithoutAPaneBoundCapturesNothing(t *testing.T) {
+	// Not parallel: install mutates the environment. If the guard ever fails
+	// open, the stub records the call and this test says so.
+	recorded := stub{stdout: "$ \n"}.install(t)
+
+	if _, err := NewExec(execSocket, 0); !errors.Is(err, ErrNoPaneBound) {
+		t.Errorf("NewExec with no bound = %v, want ErrNoPaneBound", err)
+	}
+
+	e := &Exec{socket: execSocket}
+	got, err := e.CapturePane(context.Background(), execName)
+	if !errors.Is(err, ErrNoPaneBound) {
+		t.Fatalf("CapturePane on an unbounded Exec = %q, %v; want ErrNoPaneBound", got, err)
+	}
+	//nolint:gosec // same path as every other read here: install(t) set it from this test's own t.TempDir
+	if _, err := os.Stat(os.Getenv(stubRecordEnv)); !os.IsNotExist(err) {
+		t.Errorf("the unbounded Exec ran capture-pane anyway: %v", recorded(t))
 	}
 }
 
@@ -588,11 +678,11 @@ func TestExecSocketSelection(t *testing.T) {
 func TestExecRefusesTheDefaultServer(t *testing.T) {
 	t.Parallel()
 
-	if _, err := NewExec(""); !errors.Is(err, ErrNoSocket) {
+	if _, err := NewExec("", execPaneBound); !errors.Is(err, ErrNoSocket) {
 		t.Errorf("NewExec(\"\") error = %v, want ErrNoSocket", err)
 	}
 
-	got, err := NewExec("crswd-127-0-0-1-8765")
+	got, err := NewExec("crswd-127-0-0-1-8765", execPaneBound)
 	if err != nil {
 		t.Fatalf("NewExec: %v", err)
 	}
