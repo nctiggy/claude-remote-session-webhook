@@ -165,7 +165,7 @@ under `NEEDS CLARIFICATION` and stop.
 
 - [x] T026 Carry forward the card split from `claude/issue-issue-60-...0406`
 - [x] T027 Rename moves to the session page as a disclosure
-- [ ] T028 A text selection inside the anchor does not navigate
+- [x] T028 A text selection inside the anchor does not navigate
 
 ### Independent of the stories
 

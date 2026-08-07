@@ -2461,3 +2461,98 @@ navigating, in `web/static/crswd.js`; it must stay a papercut fix, not a functio
   which caught the orphaned `.rename-summary` rule); and the rename form put back on the card (red on
   `TestRenameAbsentFromFleet` for the fleet page and the component, and on
   `TestTheCardsDestroyFormCarriesWhatTheRouteRequires`'s count of two).
+
+---
+
+## Iteration 28 — 2026-08-07 08:38
+
+**Did:** T028. A fifth IIFE at the end of `web/static/crswd.js` declines one navigation: a delegated
+`click` on the document, `event.target.closest('a.card-link')`, and `preventDefault()` when
+`window.getSelection()` is uncollapsed **and** its range's `commonAncestorContainer` is inside that
+anchor. Nothing else. Test `TestSelectionDoesNotNavigate` in `internal/httpapi/stylesheet_test.go`,
+beside the other script assertions. No Go changed, no template changed, no stylesheet rule added.
+
+**Learned:**
+
+- **`preventDefault()` was already in the file, so a `strings.Contains` for it proved nothing.** The
+  toast's delegated submit handler calls one (crswd.js:792). The first draft of the test put it in
+  the required-strings map and **stayed green** with the whole refusal replaced by `return` — caught
+  by mutation, not by reading. It is now positional in the file's own idiom (the scroll-offset
+  ordering assertion two hundred lines above): `strings.Index(source, "card-link")`, then
+  `Contains(source[lookup:], "preventDefault()")`. **Any future assertion about this file should be
+  checked for a second caller before it is trusted** — `.close()`, `.hidden =`, `dataset.` and
+  `addEventListener(` all appear several times over.
+- **The whole-file sweeps in `stylesheet_test.go` constrain what new script may be written**, and
+  they are not obvious from the block being added: `TestSubsetAnnounced` forbids `setAttribute(`,
+  `removeAttribute(`, `createElement(`, `new Option(`, `\.value\s*=` and the word `datalist`
+  *anywhere in the file*; `TestTheStreamClientReplacesTheScreenWithText` requires every content
+  assignment in the file to be `textContent =`; `TestTheFleetClientSubscribesAndSaysWhenItStops`
+  pins `onerror =` at exactly 2 and `TestTheFleetUpdatesInPlaceRatherThanReloading` pins
+  `location.reload(` at exactly 1. A new block that reached for any of those would fail a test named
+  after a feature it has nothing to do with. Read those four before touching this file again.
+- **`event.detail === 0` is the keyboard's exemption and it is load-bearing, not politeness.** Enter
+  on a focused link fires a `click` with no pointer behind it. A selection sitting inside the anchor
+  — left by Shift+arrow, or by a drag a moment earlier — would otherwise swallow that activation and
+  make the card unreachable by keyboard until something collapsed it: a papercut traded for the
+  accessibility floor. Ctrl+A does *not* hit this, because a document-wide selection's common
+  ancestor is the body and the containment check already declines it.
+- **A plain click arrives with the selection collapsed**, because mousedown collapses whatever was
+  selected before it. That is what makes `isCollapsed` sufficient to tell an ordinary click from the
+  one that ends a drag, with no pointer position remembered anywhere.
+- **A drag that starts inside the anchor and releases outside it never reaches this code**, and needs
+  no case: a `click` event fires on the nearest common ancestor of the press and the release, so a
+  release past the anchor's edge is a click on the article rather than on the link, and the browser
+  does not navigate for it either way.
+- **The markup half of the test is the "papercut, not dependency" clause.** It renders the card and
+  asserts the anchor still carries `href="/sessions/…`, and that the card's `data-` attributes are
+  exactly `[data-session]` — so a future edit that moved the destination into a hook this script
+  reads fails here, which is what "the card must still work with no script" means in a language Go
+  cannot execute.
+
+**Left:** T029–T035. Next is **T029** (Phase 8, independent of the stories) — startup dependency
+probes in a new `internal/config/depcheck.go`: `tmux` via `exec.LookPath` is fatal, the first word of
+each `start_commands` entry is a warning, and the check must never hardcode `claude` (FR-015).
+
+**Findings:**
+
+- **`docs/components.md:14` says the one script "draws rain, reads panes and follows the fleet
+  stream"** — an enumeration that was already three behaviours short before this iteration (the
+  submit-once guard, the action toast, the subset announcement) and is four short now. The same
+  sentence appears in `partials_test.go:87` and at `docs/components.md:299` as "draws rain and reads
+  panes". Not this task's file (AR-008) and T035 owns the doc sweep, but it is the third iteration
+  that has walked past it.
+- **The selection fix is untestable here in the way that matters.** Go cannot execute the script, so
+  every claim is about bytes; whether a browser really declines that click is issue #17's territory —
+  the accessibility and behaviour verification deferred to a human with a browser. The test is
+  written so that the *shape* cannot drift, not so that the behaviour is proved.
+- **Renaming from the session page with scripting on still leaves the card above showing the old
+  name** (27-28): the delegated handler writes the banner into the toast and re-renders nothing.
+- **Every action still redirects to the fleet** (19-28), so a rename or compact begun on a session
+  page ends on the dashboard with scripting off. **The `aria-describedby` on the card's link is still
+  redundant** (26-28) now that the identifier is inside the anchor. **Nothing posts to
+  `/dashboard/sessions/{id}/mode`** (19-28) — tenth iteration carrying it, and still the finding most
+  likely to end the milestone with a feature the operator cannot use.
+- **`docs/components.md`'s action table still says the rename answers "`200` and the renamed card"**
+  and the destroy "`200` and a sentence" — stale for all four rows since T014 (27-28).
+- **Still open from iterations 5-27:** the three red `-tags quickstart` tests (`CRSW_DESTROY_ON_SHUTDOWN`
+  has no loader); `.fleet-note:empty { display: none }` against the accessibility floor; nothing
+  rendering a directory suggestion in the shipped default and the walk's silent cap;
+  `contracts/directory-picker.md`'s `name="workdir"`; `contracts/settings-page.md`'s 405 row and its
+  worked example; three `ReadFile` refusals missing from `contracts/config-file.md`; the `version < 1`
+  row; "exactly eight keys" against nine; a dangling symlink reading as absent; `f.values` having no
+  enumerator; `os.Open` on a FIFO blocking startup; `--config <path>` unbuilt; `README.md` and
+  `deploy/README.md` silent on the config file (T034/T035); the misnamed `Test*AndAnswersWithItsCard`
+  pair; the unsynchronised `s.report` in `newAuditedServerWith`; the two `TestParseSessions` fixtures
+  passing for the wrong reason; `contracts/tmuxctl.md` stale by three fields; `contracts/actions.md`
+  stale in nine places; `contracts/card-layout.md` naming three tests this milestone has no task for;
+  the NEEDS CLARIFICATION from iteration 20 about a start command that ignores SIGINT.
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean; `go build`, `go vet`, `go test -count=1 ./...` all green; `go vet` green under `-tags tmux`,
+  `-tags quickstart` and `-tags dev`; `go.sum` still absent. This task touches no tmux and no
+  `cmd/crswd`, so neither tagged suite was run. Five mutations were run and reverted by reverse
+  `Edit`: the listener moved to `mouseup` (red on the delegated-click clause); the refusal replaced
+  by `window.location.href = link.href` (red on two clauses of the navigation sweep); the refusal
+  replaced by `return` (**green** against the first draft's `Contains("preventDefault()")`, red once
+  the assertion became positional — the mutation that changed the test); the `event.detail` guard
+  deleted (red on the keyboard clause); and the anchor's `href` replaced by `data-card-open` in
+  `session-card.html` (red on both markup clauses — the destination and the one-hook count).
