@@ -42,10 +42,24 @@
   refusal in words, and nothing a browser decides is permitted to be the reason a
   session does or does not start. They are pinned to the daemon's own rules by a
   test all the same, because a hint that drifted would refuse a name this daemon
-  would have accepted, in a browser, with nothing on the page to say why. There
-  is deliberately no hint on the working directory: the roots are the daemon's
-  configuration, and a pattern spelling them would put a map of this host in the
-  markup.
+  would have accepted, in a browser, with nothing on the page to say why.
+
+  The working directory has no `pattern`, and now has a hint that names the
+  configured roots (T014). Those are two different things, and only the first was
+  ever the security argument: a regular expression spelling the allowlist would
+  be a client-side copy of the containment rule, free to drift from
+  ResolveWorkDir, and the refusal it produced would be a native browser bubble
+  this daemon never wrote. Listing the roots is not that. They are this
+  authenticated operator's own configuration, they are already on every card in
+  the fleet as a working directory, and the uniform refusal they sit beside is
+  protecting something else entirely — that one answers "outside the roots",
+  "not a directory" and "not there at all" identically so a caller cannot ask
+  this form whether a path exists. Naming the permitted set is not confirming
+  what is inside it. Without them the field is one an operator has to guess at,
+  and the refusal deliberately will not tell them.
+
+  Every configured root renders, not the first. A hint missing an operator's
+  second root would read as a refusal they have no way to explain.
 
   The submit disables itself on submission (crswd.js). It is the one genuine
   idempotence exposure of the four actions — a second destroy finds no record, a
@@ -57,7 +71,9 @@
   The note beside it is FR-031's in-progress state, hidden until the submission
   reveals it. Its copy lives here rather than in the script for the reason the
   pane's ended note does: what the interface says to a person belongs to a
-  template.
+  template. It says the page reloads rather than that a card replaces it, which
+  is what T014 made true: the route answers 303 and the browser comes back to the
+  fleet.
   `if` rather than `with`, so `.` stays the view inside the form: the chooser
   below needs StartCommands, and `with` would have rebound the dot to the token
   alone. The token is passed explicitly to its own template instead, which says
@@ -69,8 +85,127 @@
 <input class="field-input" id="create-name" type="text" name="name" required maxlength="64" pattern="[-a-zA-Z0-9]+" autocomplete="off" spellcheck="false">
 </div>
 <div class="field">
-<label class="field-label" for="create-work-dir">Working directory</label>
-<input class="field-input" id="create-work-dir" type="text" name="work_dir" required autocomplete="off" spellcheck="false">
+<label class="field-label" for="create-work-dir">Working directory</label>{{/*
+  The picker is the platform's own control and nothing besides (T022,
+  contracts/directory-picker.md). `list` plus a `<datalist>` filter as the
+  operator types (FR-039), are operable by keyboard (FR-044), announce their
+  options to a screen reader (FR-044), and leave the field free text (FR-040) —
+  five of the six picker requirements, with no script running at all. The one
+  remaining requirement, saying when the list is showing a subset (FR-045), is
+  an addition to a control that already works rather than the thing that makes
+  it work.
+
+  The abandoned branch's hand-rolled combobox is deliberately not carried here:
+  225 lines reimplementing filtering, focus management and ARIA roles the
+  browser already provides correctly, which degrade to nothing with scripting
+  off and own accessibility bugs the browser would otherwise own. Only its
+  discovery walk is worth carrying, and that is T023's.
+
+  **A suggestion is never an authorisation.** The datalist submits an ordinary
+  string, so the handler cannot tell a chosen path from a typed one and both
+  meet ResolveWorkDir, the same refusal and the same audit record (FR-042).
+  That is the whole security story of this control: the list is presentation,
+  the allowlist is the control. A path listed here grants nothing.
+
+  The attribute and the element are both conditional on there being something
+  to suggest, so a daemon with no suggestions renders the field exactly as it
+  shipped before the picker existed — FR-043's degradation, and FR-018a's
+  discipline about absent values applied to a control. An empty `<datalist>` is
+  markup that reads like an offer and makes none, and a `list` pointing at an
+  element that was not rendered is an attribute an operator cannot act on.
+
+  Still no `placeholder` and still no `pattern`. A placeholder is not a label
+  (docs/components.md's Form rules). A pattern would be the containment rule
+  copied into the markup, free to drift from ResolveWorkDir and refusing in a
+  native browser bubble this daemon never wrote — which is the same reason this
+  is not a `<select>`: a path absent from the list must still be typeable in
+  full.
+*/}}
+<input class="field-input" id="create-work-dir" type="text" name="work_dir"{{ if .Suggestions }} list="workdir-suggestions" data-workdir-note="create-workdir-subset"{{ end }} required autocomplete="off" spellcheck="false" aria-describedby="create-roots">{{ with .Suggestions }}<datalist id="workdir-suggestions">{{ range . }}<option value="{{ . }}"></option>{{ end }}</datalist>{{ end }}{{/*
+  The whole hint is one element carrying one id, so aria-describedby on the input
+  reaches the sentence and the list together. A daemon configured with no root at
+  all cannot start — config.Load refuses it — so the `with` here is the zero
+  value's business rather than a state an operator can reach: a component
+  rendered without roots offers no hint instead of an empty list, which is
+  FR-018a's discipline about absent values.
+*/}}{{ with .Roots }}<div class="field-hint" id="create-roots">
+<p class="field-hint-text">A session may only run in a directory under {{ if eq (len .) 1 }}this root{{ else }}one of these roots{{ end }}:</p>
+<ul class="field-hint-list">{{ range . }}<li class="field-hint-root">{{ . }}</li>
+{{ end }}</ul>
+</div>{{ end }}{{/*
+  What the list is doing right now (T025, FR-045) — the one picker requirement
+  the platform's own control does not answer, and the only thing any script adds
+  to this field. The browser filters as the operator types, takes a keyboard,
+  announces its options and accepts a path typed in full with nothing running;
+  what it does not do is say that what is on offer has been narrowed.
+
+  The sentence is here rather than in crswd.js, for the reason every other
+  sentence this interface says is: a script that authored its own prose would be
+  a second place to look for it. `{n}` and `{all}` are filled by the same
+  substitution the fleet's own announcement uses, and both are counted off the
+  options above rather than being numbers this page could go stale about.
+
+  Present and empty rather than hidden, per docs/components.md's accessibility
+  floor: a live region has to be in the accessibility tree before its text
+  arrives for the announcement to happen at all. Empty it is a grid box with no
+  child, no padding and no margin, so it costs the field nothing until it
+  speaks — which is why it needs no `:empty` rule and no second class. It is
+  this field's aside, set exactly as the field's other aside is.
+
+  It is deliberately absent from aria-describedby. A description is read when
+  focus arrives; a live region is read when it changes. Naming it in both would
+  say the count on every focus and again on every filter, which is the noise the
+  accessibility floor keeps off the grid and the pane.
+
+  Conditional on there being something to suggest, exactly as the datalist and
+  the `list` attribute are. A field pointing at no list can never be showing a
+  subset of one, and a region that can never speak is markup shaped like a
+  feature — FR-018a's discipline about absent values, applied to an
+  announcement.
+*/}}{{ with .Suggestions }}<div class="field-hint" id="create-workdir-subset" role="status" aria-live="polite" data-workdir-subset="Showing {n} of {all} suggested directories."></div>{{ end }}
+</div>{{/*
+  The conversation to carry on from (T032, FR-033). **Empty is fresh, and empty
+  is how this field renders**: there is no value, no preselected option and no
+  checkbox already ticked, so an operator who fills in nothing starts a new
+  conversation and a resume is always something they chose (FR-037). The default
+  is the absence of a value rather than a value meaning "fresh", which is what
+  makes it impossible for a later edit to change the default without deleting
+  something visible.
+
+  It is the working-directory field's control for the working-directory field's
+  reasons: `list` plus a `<datalist>` filter as the operator types, take a
+  keyboard, announce their options, and leave the field free text — with nothing
+  running. The last of those is what keeps this usable on a daemon that suggests
+  no directories at all: an operator who has an identifier from Claude Code's own
+  `--resume` list pastes it in full, exactly as a path absent from the picker is
+  still typed in full (FR-040).
+
+  Two fields, one submission, and the offer therefore carries the directory each
+  conversation belongs to: this page cannot know which working directory the
+  operator is about to name, so it says which one each identifier came from and
+  lets the create route check the pairing. **A conversation offered here is never
+  an authorisation.** The identifier is checked against the listing of the
+  directory that was actually submitted, so choosing from this list and typing an
+  identifier meet the same refusal — the relationship the datalist above has to
+  ResolveWorkDir (FR-042), applied to the conversation.
+
+  No `maxlength` and no `pattern`. Both would be the daemon's own rule about what
+  an identifier is copied into markup, free to drift from resumableID, and a
+  maxlength would silently truncate a pasted identifier into one this daemon
+  refuses for a reason nothing on the page could explain.
+
+  What the option says is the directory and how long ago the conversation was
+  last written, which is everything session.Conversation carries. There is no
+  title, no first line and no summary, because every one of them would have to be
+  read out of the transcript — the listing's narrowness is the whole security
+  property of this offer (FR-034).
+*/}}
+<div class="field">
+<label class="field-label" for="create-resume">Conversation</label>
+<input class="field-input" id="create-resume" type="text" name="resume"{{ if .Conversations }} list="conversation-suggestions"{{ end }} autocomplete="off" spellcheck="false" aria-describedby="create-resume-hint">{{ with .Conversations }}<datalist id="conversation-suggestions">{{ range . }}<option value="{{ .ID }}">{{ .WorkDir }}, last used {{ .Age }} ago</option>{{ end }}</datalist>{{ end }}
+<div class="field-hint" id="create-resume-hint">
+<p class="field-hint-text">Leave this empty to start a fresh conversation. Resuming one still starts a new session, with its own identifier and its own lifetime.</p>
+</div>
 </div>{{/*
   The start-command chooser (#38, #39), rendered only when the operator has
   configured more than one. A select with a single option is a control that
@@ -91,5 +226,5 @@
 </div>{{ end }}
 <button class="button button-primary" type="submit">Start session</button>
 </form>
-<p class="create-note" id="create-busy" hidden>Starting a session. This page is replaced by the new card when the host answers.</p>
+<p class="create-note" id="create-busy" hidden>Starting a session. This page reloads with the fleet when the host answers.</p>
 </section>{{ end }}

@@ -1,7 +1,9 @@
 // Command crswd is the claude-remote-session-webhook daemon.
 //
-// Configuration is environment-only (CRSW_*), so no flags are defined here yet;
-// flag.Parse still runs so -h reports usage rather than an unknown-flag error.
+// Every setting is a variable or a line in the configuration file (CRSW_*), so
+// no flags are defined here; flag.Parse still runs so -h reports usage rather
+// than an unknown-flag error. There are two subcommands, `config check` and
+// `config migrate`, and they are in config_cmd.go.
 package main
 
 import (
@@ -9,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"log"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -27,6 +30,14 @@ const shutdownBudget = 30 * time.Second
 func main() {
 	flag.Parse()
 
+	// A subcommand runs *instead* of the daemon and never beside it. `config
+	// check` exists to be run on a host that is already serving, and a program
+	// that answered the question and then started would bind the port the
+	// running daemon is on and reconcile its sessions onto a second process.
+	if args := flag.Args(); len(args) > 0 {
+		os.Exit(runConfigCommand(os.Stdout, os.Stderr, args))
+	}
+
 	// log rather than the audit trail: the trail is stdout and belongs to
 	// requests, and this is what is left when there is no daemon yet to audit.
 	// It carries an error built in this repo and never a secret (FR-043) —
@@ -41,6 +52,10 @@ func main() {
 // Configuration first, because a missing or weak secret, a non-loopback listen
 // address, or an unresolvable root is a startup failure and not a warning
 // (docs/security.md §4) — nothing below runs on a Config that failed to load.
+//
+// Then the dependency probe, which is the same choice one layer out: a host
+// without tmux is a host this daemon can do nothing on, and starting there would
+// only move the failure to the first create.
 //
 // Then reconciliation, before anything binds (FR-021). A tmux session this
 // daemon started and then lost is a live shell running with
@@ -77,6 +92,15 @@ func run(ctx context.Context) error {
 	// build tag and never a flag on the artifact that ships.
 	cfg, err := loadConfig()
 	if err != nil {
+		return err
+	}
+
+	// After the configuration because the probe reads it — the start commands it
+	// checks are the ones this operator configured, never a fixed name (FR-015)
+	// — and before anything else because a host with no tmux cannot manage a
+	// session, so every line below it would be work done on the way to failing
+	// the operator's first request instead of their restart (FR-012).
+	if err := cfg.CheckDependencies(os.Stderr); err != nil {
 		return err
 	}
 

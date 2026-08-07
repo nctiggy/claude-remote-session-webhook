@@ -427,9 +427,25 @@ func TestDashboardQuickstartStory1Fleet(t *testing.T) {
 	}
 }
 
-// TestDashboardQuickstartStory1Adopted is FR-018a: a session the daemon adopted
-// after a restart has no name and no working directory, and the card says so
-// rather than inventing one.
+// TestDashboardQuickstartStory1Adopted is what FR-018a became.
+//
+// It used to assert the opposite of what it asserts now, and the change is the
+// point. In milestone 2 an adopted session genuinely had no name and no working
+// directory — the daemon held both in memory and a crash took them with it — so
+// the card said "no name recorded" because inventing one would have been worse.
+//
+// Milestone 3 made the record survive, in four tmux user options set at create
+// time (#63). The operator's report is what drove it: a session preserved across
+// a restart came back nameless, which made the fleet unreadable after exactly
+// the event preservation exists for. So the daemon now records what it knows,
+// and a crash no longer costs it.
+//
+// What this case pins is that the recording is real rather than incidental: the
+// name and the working directory are read back off the tmux server by a *second*
+// daemon process that never saw the create. The empty-state strings are still
+// the right answer for a session this daemon never created — that is
+// TestDashboardQuickstartStory4Coexistence's subject, and it is a different
+// session.
 func TestDashboardQuickstartStory1Adopted(t *testing.T) {
 	h := newHost(t)
 	e := newEdge(t)
@@ -449,16 +465,16 @@ func TestDashboardQuickstartStory1Adopted(t *testing.T) {
 	restarted := h.startDashboard(e, map[string]string{"CRSW_LISTEN": addr})
 	page := string(restarted.browse("/", e.mint(e.operatorClaims())).Body)
 
-	for _, want := range []string{"no name recorded", "no working directory recorded"} {
-		if !strings.Contains(page, want) {
-			t.Errorf("the adopted card does not state %q:\n%s", want, page)
+	if !strings.Contains(page, "outlives-the-daemon") {
+		t.Errorf("the adopted card lost the name the session was created with, which is the failure #63 fixed:\n%s", page)
+	}
+	if !strings.Contains(page, h.workDir) {
+		t.Errorf("the adopted card lost the working directory (%s):\n%s", h.workDir, page)
+	}
+	for _, absent := range []string{"no name recorded", "no working directory recorded"} {
+		if strings.Contains(page, absent) {
+			t.Errorf("the adopted card says %q about a session whose record survived:\n%s", absent, page)
 		}
-	}
-	if strings.Contains(page, "outlives-the-daemon") {
-		t.Error("the adopted card carries the name from before the restart, which the daemon does not record")
-	}
-	if strings.Contains(page, h.workDir) {
-		t.Errorf("the adopted card carries a working directory the daemon never recorded (%s)", h.workDir)
 	}
 }
 

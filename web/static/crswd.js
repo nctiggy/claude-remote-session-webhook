@@ -642,16 +642,23 @@
  *
  * The four action forms are real forms posting to real routes, and that is what
  * makes them work with scripting off and what makes their submit buttons
- * keyboard-operable without anything being added. But a form post navigates: the
- * browser replaced the fleet with the handler's answer, which is one sentence
- * with no page around it. An operator clicked Compact and got a white page.
+ * keyboard-operable without anything being added. But a form post navigates, and
+ * a navigation throws this page away to show one sentence somewhere else.
  *
  * So this posts them instead and writes the answer into the live region the page
  * already carries. Nothing here is required for the daemon to be correct — every
  * check that matters ran server-side before the answer existed — and a browser
- * that never runs this file still gets the old behaviour rather than none.
+ * that never runs this file gets the floor T014 put under it: a 303 back to the
+ * fleet with the same sentence rendered as a banner (FR-024). This is the
+ * enhancement over that, not the thing that makes the actions work.
  *
- * The answer is read as text, never inserted as markup. These fragments are
+ * What the fetch reads is therefore a whole fleet page, because the routes
+ * answer 303 and fetch follows it. The sentence is pulled out of the banner that
+ * page rendered, so the daemon's own fixed copy is what an operator is told
+ * whichever path they came down — there is one vocabulary (outcome.go) rather
+ * than one for the scripted half and one for the other.
+ *
+ * The answer is read as text, never inserted as markup. The banner is
  * daemon-authored today, so innerHTML would be safe today; textContent is what
  * keeps it safe after someone makes one of them carry a name or a path, which is
  * the same lesson docs/components.md was corrected for twice.
@@ -718,7 +725,7 @@
   }
 
   /*
-   * A fragment's text, without trusting it to be markup.
+   * The answer's text, without trusting it to be markup.
    *
    * DOMParser builds an inert document: no script runs, no image loads, nothing
    * in it reaches this page. Taking textContent from that is the same reading a
@@ -729,34 +736,37 @@
     const parsed = new DOMParser().parseFromString(html, 'text/html');
 
     /*
-     * The outcome, not the payload.
+     * The banner, not the page.
      *
-     * Destroy, rename and compact answer with one sentence, so the whole body
-     * was the message. A create answers with the new card — and taking its text
-     * put the entire card in the toast: name, identifier, mode, directory, age,
-     * and the labels of its own buttons (#78).
+     * What arrives here is the fleet the redirect landed on (T014), so the one
+     * thing worth reading out of it is the outcome banner it rendered — the same
+     * sentence, from the same closed vocabulary, that a scriptless operator sees
+     * on that page. Everything else on it is the fleet, which the operator is
+     * looking at already.
      *
-     * So look for the sentence a handler wrote, and treat anything else as
-     * having no message rather than as a message. A toast is a place for one
-     * line; if a route ever answers with something larger, saying nothing is
-     * better than reading it aloud.
+     * The alarming outcome is a titled block rather than a line, and both halves
+     * are said: reducing "Teardown could not be verified" to its body is exactly
+     * the flattening FR-023 forbids, and this region is the only place a scripted
+     * operator is told at all.
+     *
+     * Anything else is treated as having no message rather than as a message. A
+     * toast is a place for one line; if a route ever answers with something
+     * larger, saying nothing is better than reading a page aloud — the mistake
+     * that put an entire card in here when a create answered with one (#78).
      */
-    const outcome = parsed.querySelector('.card-outcome');
+    const alarm = parsed.querySelector('.outcome-alarm');
+    if (alarm) {
+      const heading = (alarm.querySelector('.outcome-heading')?.textContent || '').trim();
+      const body = (alarm.querySelector('.outcome-body')?.textContent || '').trim();
+      return [heading, body].filter(Boolean).join('. ');
+    }
+
+    const outcome = parsed.querySelector('.outcome');
     if (outcome) {
       return (outcome.textContent || '').trim();
     }
 
-    // A card came back, which is what a successful create looks like. The card
-    // itself lands on the fleet through the stream; this only has to say so.
-    if (parsed.querySelector('.card')) {
-      return 'Session started.';
-    }
-
-    const whole = (parsed.body.textContent || '').trim();
-    // A stray long body is not a toast. Anything past a sentence is a page that
-    // lost its wrapper, and the operator is better served by silence than by a
-    // paragraph in a corner.
-    return whole.length <= 200 ? whole : '';
+    return '';
   };
 
   /*
@@ -811,6 +821,152 @@
       // must not be told anything happened, because nothing did.
       show('That action could not be sent. The fleet is unchanged.');
       reenable();
+    }
+  });
+})();
+
+/*
+ * The working-directory picker's one addition (T025, FR-045).
+ *
+ * The control itself is markup and stays markup: `<input list>` and a
+ * `<datalist>` filter as the operator types, take a keyboard, announce their
+ * options to a screen reader and leave any path typeable in full, with nothing
+ * running at all (contracts/directory-picker.md). Five of the six picker
+ * requirements are the browser's own. The sixth is the one a browser does not
+ * say out loud — that the list is showing a subset — and it is the whole of
+ * what this block does.
+ *
+ * So it is additive by construction, and that is the property to keep rather
+ * than the sentence. Nothing here sets the field's value, builds or removes an
+ * option, or touches the `list` attribute that joins the two: with this file
+ * absent the picker is exactly the control the template rendered, minus one
+ * sentence. The abandoned branch got this backwards — 225 lines reimplementing
+ * filtering, focus and ARIA roles the platform already has, degrading to nothing
+ * with scripting off.
+ *
+ * The count is this file's own arithmetic, and has to be: the filtered popup is
+ * not in the document and no event reports it, so the only alternative to
+ * counting is owning the list, which is the thing being avoided. What is counted
+ * is the rule the engines filter by — a case-insensitive substring of the
+ * option's value — so the number approximates what is on screen rather than
+ * reading it. That is an acceptable cost for a sentence nothing depends on, and
+ * would not be for anything the operator had to act on; the list, the field and
+ * the allowlist behind it are all untouched by it either way.
+ *
+ * The sentence is the template's, filled here, for the reason every other
+ * sentence this interface says is.
+ */
+(() => {
+  'use strict';
+
+  /*
+   * How long the typing has to stop before the note is rewritten. A polite live
+   * region queues rather than interrupts, so a note written on every keystroke
+   * hands a screen reader a backlog of counts to read out after the operator has
+   * finished — each one already wrong by the time it is spoken.
+   */
+  const SETTLE_MS = 400;
+
+  const announceSubset = (field) => {
+    const note = document.getElementById(field.dataset.workdirNote);
+    const suggestions = field.list;
+    if (!note || !suggestions || !note.dataset.workdirSubset) {
+      return;
+    }
+
+    /*
+     * Counted off the options the daemon rendered, never off a tally kept here —
+     * the rule the summary row already follows. A number this file carried would
+     * be a second source of truth about a list it does not own.
+     */
+    const say = () => {
+      const typed = field.value.trim().toLowerCase();
+      const offered = suggestions.options.length;
+      let showing = offered;
+      if (typed !== '') {
+        showing = 0;
+        for (const option of suggestions.options) {
+          if (option.value.toLowerCase().includes(typed)) {
+            showing += 1;
+          }
+        }
+      }
+
+      // Silent while nothing is filtered. FR-045 is about a list showing a
+      // subset; a region that also said "showing all of them" would be narrating
+      // the operator's own typing back at them, which is the noise
+      // docs/components.md keeps off the grid and the pane.
+      note.textContent = showing === offered
+        ? ''
+        : note.dataset.workdirSubset.replace('{n}', showing).replace('{all}', offered);
+    };
+
+    let settling;
+    field.addEventListener('input', () => {
+      clearTimeout(settling);
+      settling = setTimeout(say, SETTLE_MS);
+    });
+  };
+
+  for (const field of document.querySelectorAll('input[data-workdir-note]')) {
+    announceSubset(field);
+  }
+})();
+
+/*
+ * A click that ends a text selection is not a click on a link (T028, FR-051).
+ *
+ * The card's readable half is one anchor now (#60), so the 32 characters a card
+ * renders precisely so they can be copied sit *inside* a link. Dragging across
+ * them already yields a selection rather than a link drag — that is what
+ * draggable="false" on the anchor buys (session-card.html) — but releasing at
+ * the end of that drag is still a click on a link, so the browser navigates and
+ * the operator is on another page holding text they cannot see the source of.
+ *
+ * This is a papercut and the fix stays one. It is a single preventDefault on the
+ * click that *ends* a selection, and that is the whole of what this block does:
+ * nothing here navigates. With this file absent the anchor is exactly the link
+ * the template rendered and a click on it opens the session — which is the
+ * property to keep rather than the behaviour. A card that needed a script to be
+ * clickable would have turned FR-051's convenience into a dependency, on the one
+ * page US3 spent a milestone making work with nothing running.
+ *
+ * Delegated from the document rather than attached per anchor, for the reason
+ * the toast above is: the fleet's live half replaces a card whenever the stream
+ * says that session changed, and a replaced card is a new anchor that never had
+ * a listener. Every card on this page is one of those after its first update.
+ *
+ * The selection has to be inside *this* anchor. A collapsed one is an ordinary
+ * click — a mousedown collapses whatever was selected before it, so a plain
+ * click on a card arrives here with nothing selected — and a selection anywhere
+ * else on the page is somebody's earlier reading rather than the drag that just
+ * ended here. Both navigate, because both are what an operator asked for.
+ *
+ * `detail` is the keyboard's exemption, and it is not politeness. Enter on a
+ * focused link fires a click with no pointer behind it (detail === 0). A
+ * selection sitting inside the anchor — left by Shift+arrow, or by a drag that
+ * ended a moment ago — would otherwise make that card unreachable by keyboard
+ * until something collapsed it, trading a papercut for the accessibility floor
+ * docs/components.md sets.
+ */
+(() => {
+  'use strict';
+
+  document.addEventListener('click', (event) => {
+    if (event.detail === 0) {
+      return;
+    }
+    const link = event.target instanceof Element ? event.target.closest('a.card-link') : null;
+    if (!link) {
+      return;
+    }
+
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+      return;
+    }
+    if (link.contains(selection.getRangeAt(0).commonAncestorContainer)) {
+      event.preventDefault();
     }
   });
 })();

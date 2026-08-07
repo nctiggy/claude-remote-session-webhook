@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 )
 
 // The instants from contracts/http-api.md's create response, transcribed rather
@@ -470,6 +471,119 @@ func TestDisplayStateAndTheReaperAgreeOnIdle(t *testing.T) {
 		if dashboardSaysIdle := s.DisplayState(now) == DisplayIdle; dashboardSaysIdle != reaperSaysIdle {
 			t.Errorf("at %v the dashboard says idle=%v and the reaper says idle=%v", now, dashboardSaysIdle, reaperSaysIdle)
 		}
+	}
+}
+
+// Mode is derived from the one name the record already carries (research R5),
+// and the cases below are the ones where a plausible implementation gets a
+// different answer from the operator's own configuration.
+func TestModeDerivedFromStartCommand(t *testing.T) {
+	t.Parallel()
+
+	const remote = "rc"
+
+	tests := []struct {
+		name          string
+		startCommand  string
+		remoteCommand string
+		want          Mode
+	}{
+		{
+			name:          "the configured remote-control name",
+			startCommand:  remote,
+			remoteCommand: remote,
+			want:          ModeRemote,
+		},
+		{
+			name:          "any other configured name",
+			startCommand:  config.DefaultStartCommandName,
+			remoteCommand: remote,
+			want:          ModeLocal,
+		},
+		{
+			// A create that named no command runs the default, so the mode has to
+			// be read against the name it resolved to and not against the empty
+			// string the caller sent.
+			name:          "no name at all is the default name",
+			startCommand:  "",
+			remoteCommand: remote,
+			want:          ModeLocal,
+		},
+		{
+			// The same rule the other way up: an operator whose remote-control
+			// command is the default gets a remote session from a create that
+			// asked for nothing, because that is the command it started.
+			name:          "no name at all when the default is the remote one",
+			startCommand:  "",
+			remoteCommand: config.DefaultStartCommandName,
+			want:          ModeRemote,
+		},
+		{
+			// A daemon with no remote-control command has no remote sessions,
+			// whatever a record carries — including a record adopted from a host
+			// where an older configuration did have one.
+			name:          "nothing configured as remote",
+			startCommand:  remote,
+			remoteCommand: "",
+			want:          ModeLocal,
+		},
+		{
+			// Names are compared byte for byte, as StartCommands.Command compares
+			// them. "Close enough" is how a session silently reads as the wrong
+			// mode.
+			name:          "a name differing only in case",
+			startCommand:  "RC",
+			remoteCommand: remote,
+			want:          ModeLocal,
+		},
+		{
+			// FR-030 in the direction that matters here: what a record carries is
+			// a name, and a command line is not one. Nothing in this method reads
+			// a command line, and a value that is one matches no configured name.
+			name:          "a command line where a name belongs",
+			startCommand:  "claude remote-control --permission-mode bypassPermissions",
+			remoteCommand: remote,
+			want:          ModeLocal,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := newTestSession(testID("5"), auth.CallerOperator)
+			s.StartCommand = tt.startCommand
+
+			if got := s.Mode(tt.remoteCommand); got != tt.want {
+				t.Errorf("Mode(%q) on start command %q = %q, want %q",
+					tt.remoteCommand, tt.startCommand, got, tt.want)
+			}
+		})
+	}
+}
+
+// "Derived, not stored" is a claim about the struct, so it is checked against
+// the struct, exactly as the expiry claim above is. A Mode field or a
+// RemoteControl bool would be a second answer to a question the start-command
+// name already answers — free to disagree with it after a restart or a toggle
+// that half succeeded, which is the failure research R5 rejected the field for.
+func TestSessionStoresNoModeField(t *testing.T) {
+	t.Parallel()
+
+	forbidden := []string{"mode", "remote"}
+
+	rt := reflect.TypeOf(Session{})
+	for i := 0; i < rt.NumField(); i++ {
+		lower := strings.ToLower(rt.Field(i).Name)
+		for _, word := range forbidden {
+			if strings.Contains(lower, word) {
+				t.Errorf("Session has field %q; mode is derived from StartCommand, never stored", rt.Field(i).Name)
+			}
+		}
+	}
+
+	if _, ok := rt.MethodByName("Mode"); !ok {
+		t.Error("Session has no Mode method; the mode has to be available, just not as a field")
 	}
 }
 

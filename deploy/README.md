@@ -29,22 +29,44 @@ The AUD tag and team domain are not secrets in the cryptographic sense, but they
 identify your specific Access application, and the allowlist names a person. Keep
 all three out of a public repo anyway — there is no upside to publishing them.
 
-**The daemon reads all three and refuses to start without them.** They are what it
-checks a browser's assertion against: the team domain fixes both the expected
-issuer and the key set the signature is verified with, the AUD tag pins the one
-Access application, and the allowlist is the daemon's own copy of the list the edge
-enforces — the edge is the gate, and this is the daemon asserting the gate is
-configured as believed. Configuring them on the Cloudflare side alone is a daemon
-that does not start, which is the inverse of the failure this section used to have.
+**The three are all-or-nothing, and this deployment needs all three.** They are
+what the daemon checks a browser's assertion against: the team domain fixes both
+the expected issuer and the key set the signature is verified with, the AUD tag
+pins the one Access application, and the allowlist is the daemon's own copy of the
+list the edge enforces — the edge is the gate, and this is the daemon asserting the
+gate is configured as believed. Setting *some* of them is a startup failure: a
+half-configured door would refuse every login while looking correctly configured.
+Setting none is a supported deployment — the API works and the dashboard admits
+nobody — and the daemon says so in a banner at every start, so a dashboard that
+turns out to admit nobody is never a surprise found from the browser.
 
 Everything the daemon reads is named in [`.env.example`](../.env.example), with
-what each value refuses to start on. Four are required — `CRSW_SHARED_SECRET` and
-the three `CRSW_ACCESS_*` above — and the rest have defaults, which
-`crswd.example.service` sets to their own default value so the whole list is
-visible in one place. Among them is `CRSW_MAX_STREAMS` (default 10): how many live
-output streams the dashboard may hold open at once, across every tab. It is a
-second cap of the same kind as `CRSW_MAX_SESSIONS` — past it an open is refused
-with 429 rather than the host quietly degrading.
+what each value refuses to start on. `CRSW_SHARED_SECRET` is required outright and
+the three `CRSW_ACCESS_*` above are required by this deployment; the rest have
+defaults, which `crswd.example.service` sets to their own default value so the
+whole list is visible in one place. Among them is `CRSW_MAX_STREAMS` (default 10):
+how many live output streams the dashboard may hold open at once, across every tab.
+It is a second cap of the same kind as `CRSW_MAX_SESSIONS` — past it an open is
+refused with 429 rather than the host quietly degrading.
+
+### Or configure it in a file
+
+Every one of those settings can be written in `~/.config/crswd/config` instead of
+the environment, one `key = value` per line, `#` comments — the key is the variable
+minus `CRSW_`, lower-cased. [`config.example`](../config.example) is the annotated
+copy to start from, and `crswd config check` reports what a file makes without
+starting anything.
+
+**The environment still wins.** Precedence is flag, then environment, then file,
+then default — so this unit's `Environment=` lines and its `EnvironmentFile` both
+override a file on the host, and a stale file cannot silently take over a
+deployment. `GET /settings` names which layer supplied each value, which is the
+question worth answering when an edit appears to have done nothing.
+
+A file holding `shared_secret` or `access_allowed_emails` **must be mode 0600** or
+the daemon refuses to start. The recipe below writes the `EnvironmentFile` under
+`umask 077` for the same reason, and either route is fine — what is not fine is a
+credential in the unit itself.
 
 ## Order of operations
 

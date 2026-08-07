@@ -214,6 +214,10 @@ func TestCreateSendsTheTmuxCommandsInOrder(t *testing.T) {
 		// a path may contain the separator list-sessions puts between fields.
 		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, "@crswd-name", f.request().Name}},
 		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, "@crswd-workdir", base64.StdEncoding.EncodeToString([]byte(f.repo()))}},
+		// The name mode is derived from, written even when it is the default's
+		// empty string: an option set to nothing and one never set read back
+		// identically, so the branch that skipped it would be untestable.
+		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, "@crswd-start", ""}},
 		{Op: tmuxctl.OpSendKeys, Argv: []string{
 			"tmux", "send-keys", "-t", pane, "--", "claude --dangerously-skip-permissions", "Enter",
 		}},
@@ -1366,6 +1370,293 @@ func TestCompactRefusesWhatItCannotDeliver(t *testing.T) {
 	}
 }
 
+// --- US4: the mode transition (T020) -----------------------------------------
+//
+// These are the untagged half. What needs a real tmux — that the window and its
+// scrollback are still there afterwards — is in mode_test.go behind //go:build
+// tmux, and `go test ./...` never reaches it, so everything a fake can answer is
+// asserted here where CI runs it.
+
+// The two configured names the transition moves between, and the command lines
+// they resolve to. Nothing executes them — the fake runs nothing — so they are
+// spelled to be unmistakable in an argv rather than to be runnable.
+const (
+	remoteCommandName = "rc"
+	localCommandLine  = "local-command"
+	remoteCommandLine = "remote-command"
+)
+
+// configuredForModes gives the fixture's manager the two things a toggle needs:
+// a named set with something other than the default in it, and which of the
+// names means remote (#58).
+func (f managerFixture) configuredForModes() {
+	f.mgr.SetStartCommands(config.NewStartCommands(map[string]string{
+		config.DefaultStartCommandName: localCommandLine,
+		remoteCommandName:              remoteCommandLine,
+	}))
+	f.mgr.SetRemoteControlCommand(remoteCommandName)
+}
+
+// SC-007 and FR-028 in the argv, which is where both are actually decided: the
+// transition is two sends and an option write, and there is no new-session and no
+// kill-session among them.
+//
+// **Must fail when** the implementation destroys and recreates the session — the
+// scrollback and the window go with it — or omits --continue, which starts the
+// configured command against an empty conversation and loses the work the
+// operator is toggling in order to keep driving.
+func TestSetModeRestartsInPlaceWithContinue(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	f.configuredForModes()
+	s, _ := mustCreate(t, f, f.request())
+	before := len(f.tmux.Calls())
+
+	if _, err := f.mgr.SetMode(context.Background(), *s, ModeRemote); err != nil {
+		t.Fatalf("SetMode() unexpected error: %v", err)
+	}
+
+	name := "crswd-" + s.ID
+	pane := "=" + name + ":"
+	want := []tmuxctl.Call{
+		// The interrupt, twice in one call: the first is a cancel to anything that
+		// catches SIGINT and only the second is a leave.
+		{Op: tmuxctl.OpSendKeys, Argv: []string{"tmux", "send-keys", "-t", pane, "--", "C-c", "C-c"}},
+		{Op: tmuxctl.OpSendKeys, Argv: []string{"tmux", "send-keys", "-t", pane, "--", remoteCommandLine + " --continue", "Enter"}},
+		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, tmuxctl.OptionStart, remoteCommandName}},
+	}
+
+	got := f.tmux.Calls()[before:]
+	if len(got) != len(want) {
+		t.Fatalf("SetMode() ran %d tmux commands, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Op != want[i].Op || !slices.Equal(got[i].Argv, want[i].Argv) {
+			t.Errorf("command %d is %s %q, want %s %q", i, got[i].Op, got[i].Argv, want[i].Op, want[i].Argv)
+		}
+	}
+	// Stated separately from the count above, because it is the claim rather than
+	// a consequence of it: a transition that tore the session down and built it
+	// again would satisfy every other assertion this file makes about the mode.
+	for _, call := range got {
+		if call.Op == tmuxctl.OpNew || call.Op == tmuxctl.OpKill {
+			t.Errorf("the transition ran %s (%q); the session, its window and its scrollback are the things it must not touch",
+				call.Op, call.Argv)
+		}
+	}
+}
+
+// FR-031: the mode is derived from a name, so the name is the whole of what a
+// transition writes — and it writes it in both places, because they answer
+// different questions. The record is what the fleet renders now; @crswd-start is
+// what the next daemon reads at adoption.
+//
+// **Must fail when** only one of the two is written. A record without the option
+// is a session that moves back to its old mode at the next restart, with nobody
+// asking; an option without the record is a card that keeps naming the mode the
+// session has left.
+func TestSetModeCarriesTheNewNameToTheHostAndTheRecord(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	f.configuredForModes()
+	s, _ := mustCreate(t, f, f.request())
+
+	moved, err := f.mgr.SetMode(context.Background(), *s, ModeRemote)
+	if err != nil {
+		t.Fatalf("SetMode() unexpected error: %v", err)
+	}
+
+	if got := moved.StartCommand; got != remoteCommandName {
+		t.Errorf("the returned record runs %q, want %q", got, remoteCommandName)
+	}
+	if got := moved.Mode(remoteCommandName); got != ModeRemote {
+		t.Errorf("the returned record reports mode %q, want %q", got, ModeRemote)
+	}
+	if got := mustStored(t, f, s.ID).StartCommand; got != remoteCommandName {
+		t.Errorf("the stored record runs %q, want %q — the fleet renders the store, not the copy the caller holds", got, remoteCommandName)
+	}
+	// The host's own copy, which is the only one that survives this process.
+	option, ok := f.tmux.Option("crswd-"+s.ID, tmuxctl.OptionStart)
+	if !ok || option != remoteCommandName {
+		t.Errorf("%s = %q (set: %v), want %q — a mode that is not on the host is a mode the next restart loses",
+			tmuxctl.OptionStart, option, ok, remoteCommandName)
+	}
+}
+
+// The other half of what a transition may not disturb: it is the same session,
+// running something else. The identifier is what every route and every audit
+// record names it by, the credential hash is what the API client is still
+// holding a token against, and the two deadlines are the bound Principle VI puts
+// on it.
+//
+// **Must fail when** a toggle mints a new record. That is the shape the
+// transition is most likely to be rewritten into — destroy, then create with the
+// other command — and it would hand the operator a session their client can no
+// longer drive, with its 24-hour ceiling silently restarted.
+func TestSetModeKeepsIdentifierCredentialAndLifetime(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	f.configuredForModes()
+	s, _ := mustCreate(t, f, f.request())
+	before := mustStored(t, f, s.ID)
+
+	moved, err := f.mgr.SetMode(context.Background(), *s, ModeRemote)
+	if err != nil {
+		t.Fatalf("SetMode() unexpected error: %v", err)
+	}
+
+	after := mustStored(t, f, s.ID)
+	switch {
+	case after.ID != before.ID, moved.ID != before.ID:
+		t.Errorf("the session is now %q, want %q — a mode change is not a new session", after.ID, before.ID)
+	case after.TokenHash != before.TokenHash:
+		t.Error("the credential hash changed; the token its owner is holding no longer opens the session they still have")
+	case !after.CreatedAt.Equal(before.CreatedAt):
+		t.Errorf("CreatedAt moved to %v from %v; the absolute deadline derives from it, so a toggle would extend the ceiling", after.CreatedAt, before.CreatedAt)
+	case after.Lifetime != before.Lifetime, after.Idle != before.Idle:
+		t.Errorf("the bounds are now %v/%v, want %v/%v", after.Lifetime, after.Idle, before.Lifetime, before.Idle)
+	case !after.AbsoluteDeadline().Equal(before.AbsoluteDeadline()):
+		t.Errorf("the absolute deadline moved to %v from %v", after.AbsoluteDeadline(), before.AbsoluteDeadline())
+	case after.Owner != before.Owner:
+		t.Errorf("the owner is now %q, want %q", after.Owner, before.Owner)
+	}
+}
+
+// A mode change drives the session, so it defers the idle deadline exactly as a
+// compact does (data-model.md). The browser is the only door it has, and that
+// door reaches its session through View, which is required not to touch the
+// clock (FR-034f) — so if this did not, nothing on the path would, and the
+// reaper would go on measuring a session the operator has just restarted as
+// idle.
+func TestSetModeDefersTheIdleDeadline(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	f.configuredForModes()
+	s, _ := mustCreate(t, f, f.request())
+
+	// Later than creation, for the reason the compact's own test needs it:
+	// Store.Touch only ever moves the clock forward.
+	later := f.now.Add(30 * time.Minute)
+	mgr := f.managerAt(t, f.store, later)
+	mgr.SetStartCommands(config.NewStartCommands(map[string]string{
+		config.DefaultStartCommandName: localCommandLine,
+		remoteCommandName:              remoteCommandLine,
+	}))
+	mgr.SetRemoteControlCommand(remoteCommandName)
+
+	if _, err := mgr.SetMode(context.Background(), *s, ModeRemote); err != nil {
+		t.Fatalf("SetMode() unexpected error: %v", err)
+	}
+
+	stored := mustStored(t, f, s.ID)
+	if !stored.LastActivity.Equal(later) {
+		t.Errorf("the transition left the idle clock at %v, want it advanced to %v", stored.LastActivity, later)
+	}
+}
+
+// Every refusal the transition owns, and the two claims each one has to make:
+// nothing reached the host, and the record still names what it named. A toggle
+// this daemon would not carry out must leave the pane exactly as it was, because
+// the alternative is a process the operator did not ask for.
+//
+// **Must fail when** a refusal interrupts first and discovers it has nowhere to
+// go afterwards — which is the ordering mistake, and the one that costs an
+// operator the session they were driving.
+func TestSetModeRefusesWhatItCannotCarryOut(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		// configure is what this daemon was told about modes, which is what three
+		// of the five refusals are actually about.
+		configure func(f managerFixture)
+		session   func(live Session) Session
+		mode      Mode
+		want      error
+	}{
+		"remote, on a daemon configuring no remote-control command": {
+			configure: func(f managerFixture) {
+				f.mgr.SetStartCommands(config.NewStartCommands(map[string]string{
+					config.DefaultStartCommandName: localCommandLine,
+				}))
+			},
+			mode: ModeRemote,
+			want: ErrModeUnavailable,
+		},
+		"local, where the remote-control command is the default": {
+			configure: func(f managerFixture) {
+				f.mgr.SetStartCommands(config.NewStartCommands(map[string]string{
+					config.DefaultStartCommandName: localCommandLine,
+				}))
+				f.mgr.SetRemoteControlCommand(config.DefaultStartCommandName)
+			},
+			mode: ModeLocal,
+			want: ErrModeUnavailable,
+		},
+		"the mode the session is already in": {
+			configure: managerFixture.configuredForModes,
+			mode:      ModeLocal,
+			want:      ErrModeUnchanged,
+		},
+		"a mode this daemon does not have": {
+			configure: managerFixture.configuredForModes,
+			mode:      Mode("claude --dangerously-skip-permissions"),
+			want:      ErrUnknownMode,
+		},
+		"a dead session": {
+			configure: managerFixture.configuredForModes,
+			session: func(live Session) Session {
+				live.State = StateDead
+				return live
+			},
+			mode: ModeRemote,
+			want: ErrSessionDead,
+		},
+		"a record with no id": {
+			configure: managerFixture.configuredForModes,
+			session: func(Session) Session {
+				return Session{Owner: auth.CallerOperator, State: StateStarting}
+			},
+			mode: ModeRemote,
+			want: ErrSessionNotFound,
+		},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newManagerFixture(t)
+			c.configure(f)
+			live, _ := mustCreate(t, f, f.request())
+
+			asked := *live
+			if c.session != nil {
+				asked = c.session(*live)
+			}
+
+			// Counted rather than compared: the create already ran six commands,
+			// and what this asserts is that the refusal added none.
+			before := len(f.tmux.Calls())
+			stored := mustStored(t, f, live.ID)
+
+			if _, err := f.mgr.SetMode(context.Background(), asked, c.mode); !errors.Is(err, c.want) {
+				t.Fatalf("SetMode() = %v, want %v", err, c.want)
+			}
+			if after := len(f.tmux.Calls()); after != before {
+				t.Errorf("the refused transition ran %v; a refusal must cost no tmux command — the process in the pane is the operator's",
+					f.tmux.Calls()[before:after])
+			}
+			if after := mustStored(t, f, live.ID); after != stored {
+				t.Errorf("the refused transition left %+v, want %+v unchanged", after, stored)
+			}
+		})
+	}
+}
+
 // Output's one command and what it does to the answer. The pane holds a colour
 // sequence, a title-setting OSC, and a raw control byte — none of which may
 // survive into a value the API will hand a client (FR-031) — and the instant
@@ -1950,7 +2241,7 @@ func TestAdoptTakesBackASurvivingSessionWithAFreshCredential(t *testing.T) {
 	// argv is spelled out rather than built from tmuxctl's helpers: this asserts
 	// the command line tmux will receive, not that Adopt called a builder.
 	want := []tmuxctl.Call{
-		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}"}},
+		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}"}},
 		{Op: tmuxctl.OpHas, Argv: []string{"tmux", "has-session", "-t", "=" + name}},
 	}
 	calls := f.tmux.Calls()[before:]

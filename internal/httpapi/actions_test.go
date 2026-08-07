@@ -63,6 +63,40 @@ const actionPath = "/dashboard/sessions/0123456789abcdef0123456789abcdef/destroy
 // content type ParseForm reads a body for.
 const contentTypeForm = "application/x-www-form-urlencoded"
 
+// wantOutcome is what every one of the four actions answers with after T014: a
+// 303 to the fleet carrying one code out of outcome.go's closed vocabulary, and
+// no body at all.
+//
+// The location is spelled here rather than built by calling redirectOutcome, for
+// the reason every body in this file is quoted rather than read from the
+// constant it asserts: a test that asked the code what it writes proves only
+// that the code agrees with itself.
+//
+// 303 rather than 302 is the load-bearing half. It is the status that turns the
+// POST into a GET on the redirect, so the reload an operator reaches for after
+// an action re-fetches the fleet instead of re-submitting the action — and a
+// re-submitted create is a second unsandboxed shell.
+func wantOutcome(t *testing.T, w *httptest.ResponseRecorder, code outcome) {
+	t.Helper()
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d (%s); want %d — an action answers with a redirect to the fleet",
+			w.Code, w.Body.String(), http.StatusSeeOther)
+	}
+	if got, want := w.Header().Get(headerLocation), "/?outcome="+string(code); got != want {
+		t.Errorf("%s = %q; want %q", headerLocation, got, want)
+	}
+	// A 303 nobody renders is a body that only ever appears when something else
+	// has already gone wrong, and a fragment left here would be the page an
+	// operator lands on when their browser declines to follow.
+	if got := strings.TrimSpace(w.Body.String()); got != "" {
+		t.Errorf("the redirect carried a body: %q; want none", got)
+	}
+	if got, want := w.Header().Get(headerContentTypeOptions), wantActionNosniff; got != want {
+		t.Errorf("%s = %q; want %q — an action's answer carries the same headers a page does", headerContentTypeOptions, got, want)
+	}
+}
+
 // actionDoor is the browser door with the action gate on it, and everything
 // behind it readable: the trail it writes, and whether the guarded handler ran.
 //
@@ -590,14 +624,20 @@ func TestNotFoundUniform(t *testing.T) {
 // handleAction would leave every case above green with the milestone's entire
 // cross-site defence absent from the one route that can end an unsandboxed shell.
 
-// The destroy's own answers. Each is quoted here rather than read from the
-// constant the code writes, for the reason the refusal above is: a test asserting
-// against the variable proves only that the code agrees with itself.
+// The destroy's own answers, which are outcome codes since T014 rather than the
+// three fragments this route used to write. Each is spelled here rather than
+// read from the constant the code writes, for the reason the refusal above is: a
+// test asserting against the variable proves only that the code agrees with
+// itself.
+//
+// What each code *says* is asserted where the page renders it, not here. A
+// route's claim is now the pair — the code it chose, and the sentence the fleet
+// maps it to — and splitting the two assertions is what keeps a redirect to the
+// wrong code from being invisible behind copy that reads fine.
 const (
-	wantDestroyedBody   = `<p class="card-outcome">Session destroyed. The host confirmed its window is gone.</p>`
-	wantUnconfirmedBody = `<p class="card-outcome">This destroy was not confirmed, so nothing was torn down.</p>`
-	// From contracts/actions.md, which fixes this one byte for byte.
-	wantUnverifiedBody = `<p class="card-outcome">Teardown could not be verified. This session may still be running on the host.</p>`
+	wantDestroyedOutcome   = outcome("destroyed")
+	wantUnconfirmedOutcome = outcome("unconfirmed")
+	wantUnverifiedOutcome  = outcome("teardown-unverified")
 )
 
 // destroyer is the registered destroy route with everything behind it readable:
@@ -714,12 +754,13 @@ func (d *destroyer) kills() int {
 //
 // **Must fail when** the route stops calling Manager.Destroy, or answers before
 // the host has confirmed: the window assertion goes red on the first and the
-// status on the second.
+// outcome on the second.
 //
-// The response is asserted as bytes rather than as "a 200", because the fragment
-// is what replaces the card. A destroy that answered with an empty body would
-// leave the operator looking at a card that quietly vanished, which FR-030 and
-// FR-031 both forbid.
+// The answer is asserted as a redirect carrying the destroyed code rather than
+// as a fragment (T014). A destroy that answered with a bare 303 to the fleet and
+// no code would leave the operator looking at a card that quietly vanished,
+// which FR-030 and FR-031 both forbid — the sentence has simply moved to the
+// page they land on.
 func TestDestroyTearsTheSessionDown(t *testing.T) {
 	t.Parallel()
 
@@ -728,21 +769,7 @@ func TestDestroyTearsTheSessionDown(t *testing.T) {
 
 	w := d.post(t, live.ID, d.confirmed(t))
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusOK)
-	}
-	if got := w.Body.String(); got != wantDestroyedBody {
-		t.Errorf("body\n%s\nwant\n%s", got, wantDestroyedBody)
-	}
-	if got, want := w.Header().Get(headerContentType), wantActionContentType; got != want {
-		t.Errorf("%s = %q; want %q", headerContentType, got, want)
-	}
-	if got, want := w.Header().Get(headerContentLength), strconv.Itoa(len(wantDestroyedBody)); got != want {
-		t.Errorf("%s = %q; want %q", headerContentLength, got, want)
-	}
-	if got, want := w.Header().Get(headerContentTypeOptions), wantActionNosniff; got != want {
-		t.Errorf("%s = %q; want %q — an action's answer carries the same headers a page does", headerContentTypeOptions, got, want)
-	}
+	wantOutcome(t, w, wantDestroyedOutcome)
 
 	if recorded, running := d.standing(t, live); recorded || running {
 		t.Errorf("after a verified teardown the record is %v and the window is %v; want both gone",
@@ -834,7 +861,7 @@ func TestDestroyRunsBehindTheActionGate(t *testing.T) {
 // refused, and nothing is torn down.
 //
 // **Must fail when** the confirm check is removed — every case below then answers
-// 200 with the session gone.
+// the destroyed outcome with the session gone.
 //
 // The confirming value is compared rather than interpreted, which is what the
 // four near-misses are for. `on`, `true` and an upper-case `YES` are what a stray
@@ -871,12 +898,7 @@ func TestDestroyRequiresConfirm(t *testing.T) {
 
 			w := d.post(t, live.ID, form)
 
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusBadRequest)
-			}
-			if got := w.Body.String(); got != wantUnconfirmedBody {
-				t.Errorf("body\n%s\nwant\n%s", got, wantUnconfirmedBody)
-			}
+			wantOutcome(t, w, wantUnconfirmedOutcome)
 
 			recorded, running := d.standing(t, live)
 			if !recorded || !running {
@@ -902,9 +924,9 @@ func TestDestroyRequiresConfirm(t *testing.T) {
 
 	confirmed := newDestroyer(t)
 	live := confirmed.live(t)
-	if w := confirmed.post(t, live.ID, confirmed.confirmed(t)); w.Code != http.StatusOK {
-		t.Fatalf("a confirmed destroy answered %d (%s); want %d — every refusal above is satisfied by a route that refuses everyone",
-			w.Code, w.Body.String(), http.StatusOK)
+	if w := confirmed.post(t, live.ID, confirmed.confirmed(t)); w.Header().Get(headerLocation) != "/?outcome="+string(wantDestroyedOutcome) {
+		t.Fatalf("a confirmed destroy answered %d to %q; want the destroyed outcome — every refusal above is satisfied by a route that refuses everyone",
+			w.Code, w.Header().Get(headerLocation))
 	}
 	if _, running := confirmed.standing(t, live); running {
 		t.Error("a confirmed destroy left the window running")
@@ -916,9 +938,8 @@ func TestDestroyRequiresConfirm(t *testing.T) {
 // way to make the daemon claim otherwise.
 //
 // **Must fail when** the verification is skipped or its result ignored — the
-// status, the body and the retained record all move at once, because
-// Manager.Destroy only ever drops a record after confirmGone said the window is
-// gone.
+// outcome code and the retained record move together, because Manager.Destroy
+// only ever drops a record after confirmGone said the window is gone.
 //
 // The three arrangements are the three shapes a teardown fails in, taken from the
 // API door's own suite so both doors are asked the same question: a kill that
@@ -954,16 +975,9 @@ func TestDestroyUnverifiedTeardown(t *testing.T) {
 
 			w := d.post(t, live.ID, d.confirmed(t))
 
-			if w.Code != http.StatusConflict {
-				t.Fatalf("status = %d (%s); want %d — an unverified teardown is not a teardown",
-					w.Code, w.Body.String(), http.StatusConflict)
-			}
-			if got := w.Body.String(); got != wantUnverifiedBody {
-				t.Errorf("body\n%s\nwant\n%s", got, wantUnverifiedBody)
-			}
-			if got, want := w.Header().Get(headerContentType), wantActionContentType; got != want {
-				t.Errorf("%s = %q; want %q", headerContentType, got, want)
-			}
+			// An unverified teardown is not a teardown, and it is the one outcome
+			// with a code of its own for exactly that reason (FR-023).
+			wantOutcome(t, w, wantUnverifiedOutcome)
 
 			// The record is the only thing carrying an owner and two deadlines for a
 			// session that may still be running, and adoption runs at startup: a
@@ -1008,9 +1022,9 @@ func TestDestroyUnverifiedTeardown(t *testing.T) {
 	}
 
 	w := forced.post(t, live.ID, form)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("a destroy carrying a force field answered %d (%s); want %d — there is no force path (AR-004)",
-			w.Code, w.Body.String(), http.StatusConflict)
+	if got, want := w.Header().Get(headerLocation), "/?outcome="+string(wantUnverifiedOutcome); got != want {
+		t.Fatalf("a destroy carrying a force field answered %d to %q; want %q — there is no force path (AR-004)",
+			w.Code, got, want)
 	}
 	if _, err := forced.fixture.store.Get(live.ID, auth.CallerOperator); err != nil {
 		t.Errorf("a destroy carrying a force field dropped the record of a session that may still be running: %v", err)
@@ -1117,10 +1131,10 @@ func TestDestroyCrossOwnerUniform(t *testing.T) {
 
 	served := newDestroyer(t)
 	mine := served.live(t)
-	if w := served.post(t, mine.ID, served.confirmed(t)); w.Code != http.StatusOK {
-		t.Fatalf("a destroy of this operator's own session answered %d (%s); want %d — "+
+	if w := served.post(t, mine.ID, served.confirmed(t)); w.Header().Get(headerLocation) != "/?outcome="+string(wantDestroyedOutcome) {
+		t.Fatalf("a destroy of this operator's own session answered %d to %q; want the destroyed outcome — "+
 			"every refusal above is satisfied by a route that refuses everyone",
-			w.Code, w.Body.String(), http.StatusOK)
+			w.Code, w.Header().Get(headerLocation))
 	}
 }
 
@@ -1477,17 +1491,14 @@ func TestEitherHalfOfTheDefenceRefusesAlone(t *testing.T) {
 	}
 
 	// The non-vacuity, and it has to destroy something rather than merely answer
-	// 200: every row above is satisfied by a route that refuses everyone, and a
-	// gate that refuses everyone is not a defence with two halves — it is a broken
-	// dashboard that would ship looking secure.
+	// the destroyed outcome: every row above is satisfied by a route that refuses
+	// everyone, and a gate that refuses everyone is not a defence with two halves —
+	// it is a broken dashboard that would ship looking secure.
 	admitted := newDestroyer(t)
 	live := admitted.live(t)
 
 	w := admitted.post(t, live.ID, admitted.confirmed(t))
-	if w.Code != http.StatusOK {
-		t.Fatalf("a destroy satisfying both halves answered %d (%s); want %d",
-			w.Code, w.Body.String(), http.StatusOK)
-	}
+	wantOutcome(t, w, wantDestroyedOutcome)
 	if recorded, running := admitted.standing(t, live); recorded || running {
 		t.Errorf("a destroy satisfying both halves left the record %v and the window %v; want both gone", recorded, running)
 	}
@@ -1503,14 +1514,17 @@ func TestEitherHalfOfTheDefenceRefusesAlone(t *testing.T) {
 // is why it is registered through the same gate, and why the claims below are
 // about what reached the host as much as about what the caller was told.
 
-// The create's own answers, quoted here rather than read from the constants
-// actions.go writes, for the reason every other body in this file is: a test
-// asserting against the variable proves only that the code agrees with itself.
+// The create's own answers, which are outcome codes since T014. Spelled here
+// rather than read from the constants outcome.go writes, for the reason every
+// other literal in this file is: a test asserting against the variable proves
+// only that the code agrees with itself.
 const (
-	wantCreateBadNameBody    = `<p class="card-outcome">That is not a usable session name. Use letters, digits and hyphens, up to 64 characters.</p>`
-	wantCreateBadWorkDirBody = `<p class="card-outcome">This daemon may not start a session in that working directory.</p>`
-	wantCreateLimitedBody    = `<p class="card-outcome">No session was started: this host is at its limit for now. Destroy one, or try again shortly.</p>`
-	wantCreateFailedBody     = `<p class="card-outcome">The session could not be started.</p>`
+	wantCreatedOutcome               = outcome("created")
+	wantCreateBadNameOutcome         = outcome("bad-name")
+	wantCreateBadWorkDirOutcome      = outcome("bad-work-dir")
+	wantCreateBadConversationOutcome = outcome("bad-conversation")
+	wantCreateLimitedOutcome         = outcome("limited")
+	wantCreateFailedOutcome          = outcome("create-failed")
 )
 
 // createPath is the route from contracts/actions.md's table, written out rather
@@ -1624,14 +1638,19 @@ func (c *creator) started() int {
 // on the host, and answered with the card the fleet will draw for it.
 //
 // **Must fail when** the route stops calling Manager.Create — the store and the
-// host both go quiet — or when it answers with something other than the canonical
-// card, which is what makes a created session look on arrival exactly as it will
-// look on every later page load.
+// host both go quiet — or when the fleet the operator is returned to does not
+// draw the session that was just started, which is what makes a created session
+// look on arrival exactly as it will look on every later page load.
+//
+// The card is asserted on the fleet rather than in the answer since T014: the
+// route redirects, and the grid is where the new card is. That is the same claim
+// the fragment used to make, moved to the page that owns the grid — and it is a
+// stronger one, because the card is now drawn beside its siblings by the handler
+// that draws all of them rather than by a second render here.
 //
 // The card is asserted to carry a page token as well. A card whose form had none
 // would render no action row at all (session-card.html), so the session this route
-// just started would be the one card on the fleet the operator cannot act on until
-// they reload.
+// just started would be the one card on the fleet the operator cannot act on.
 func TestBrowserCreateStartsTheSessionAndAnswersWithItsCard(t *testing.T) {
 	t.Parallel()
 
@@ -1639,16 +1658,7 @@ func TestBrowserCreateStartsTheSessionAndAnswersWithItsCard(t *testing.T) {
 
 	w := c.post(t, c.wellFormed(t))
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusOK)
-	}
-	if got, want := w.Header().Get(headerContentType), wantActionContentType; got != want {
-		t.Errorf("%s = %q; want %q", headerContentType, got, want)
-	}
-	if got, want := w.Header().Get(headerContentTypeOptions), wantActionNosniff; got != want {
-		t.Errorf("%s = %q; want %q — a create's answer carries the same headers a page does",
-			headerContentTypeOptions, got, want)
-	}
+	wantOutcome(t, w, wantCreatedOutcome)
 
 	owned := c.owned()
 	if len(owned) != 1 {
@@ -1682,9 +1692,29 @@ func TestBrowserCreateStartsTheSessionAndAnswersWithItsCard(t *testing.T) {
 			live.TmuxName(), dir, ok, c.fixture.repo)
 	}
 
-	body := w.Body.String()
+	// The trail, read before the fleet is opened: that page is a request of its
+	// own and leaves a dashboard.view record, so the create's one record has to be
+	// counted while it is still the only one (FR-041).
+	rec := c.only(t)
+	if got, want := rec["action"], string(audit.ActionDashboardCreate); got != want {
+		t.Errorf("action = %v; want %v — a browser create is not the API's session.create", got, want)
+	}
+	if got, want := rec["decision"], string(audit.Allow); got != want {
+		t.Errorf("decision = %v; want %v", got, want)
+	}
+	if got := rec["session_id"]; got != live.ID {
+		t.Errorf("session_id = %v; want %q", got, live.ID)
+	}
+
+	// The fleet the redirect sends the operator back to, which is where the new
+	// card is.
+	landed := c.page(t)
+	if landed.Code != http.StatusOK {
+		t.Fatalf("the fleet the create redirected to = %d (%s); want %d", landed.Code, landed.Body.String(), http.StatusOK)
+	}
+	body := landed.Body.String()
 	if !strings.Contains(body, `<article class="card"`) {
-		t.Errorf("the answer is not the canonical card:\n%s", body)
+		t.Errorf("the fleet draws no canonical card for the session that was just started:\n%s", body)
 	}
 	for what, want := range map[string]string{
 		"the identifier":        live.ID,
@@ -1698,17 +1728,6 @@ func TestBrowserCreateStartsTheSessionAndAnswersWithItsCard(t *testing.T) {
 	if !strings.Contains(body, fieldPageToken) {
 		t.Errorf("the card carries no %s, so the session it announces offers no control the gate would admit:\n%s",
 			fieldPageToken, body)
-	}
-
-	rec := c.only(t)
-	if got, want := rec["action"], string(audit.ActionDashboardCreate); got != want {
-		t.Errorf("action = %v; want %v — a browser create is not the API's session.create", got, want)
-	}
-	if got, want := rec["decision"], string(audit.Allow); got != want {
-		t.Errorf("decision = %v; want %v", got, want)
-	}
-	if got := rec["session_id"]; got != live.ID {
-		t.Errorf("session_id = %v; want %q", got, live.ID)
 	}
 }
 
@@ -1733,18 +1752,21 @@ func servedTheToken(served string, hash [sha256.Size]byte) bool {
 // TestBrowserCreateNeverServesToken is FR-013 at the browser door: the bearer
 // token a create mints reaches no response, no template, and no record.
 //
-// **Must fail when** the token is passed to the template. Handing it to cardOf in
-// place of the page token renders it into the new card's hidden field, and the
-// sweep finds it there — which is the whole point of sweeping the bytes rather
-// than asserting that some particular field is absent: a token disclosed through a
-// field nobody thought to check is disclosed all the same.
+// **Must fail when** the token is kept where a render can reach it. Storing it on
+// the record in place of the hash puts it in front of cardOf, which renders it
+// into the fleet's hidden field, and the sweep finds it there — which is the whole
+// point of sweeping the bytes rather than asserting that some particular field is
+// absent: a token disclosed through a field nobody thought to check is disclosed
+// all the same.
 //
-// The fleet page is swept as well as the answer, because the two are different
-// claims. The first is that this route did not write the token out; the second is
-// that nothing kept it where a later render could. Store.List hands every field of
-// the record to the page handler, and the difference between a page that never
-// shows the credential and one that happens not to today is the difference between
-// a record holding a hash and a record holding the token.
+// The route's own answer is swept as well as the fleet, because the two are
+// different claims. The first is that this route did not write the token out —
+// which since T014 is a 303 that must stay a 303 with nothing in it, including a
+// Location a credential could ride in. The second is that nothing kept it where a
+// later render could: Store.List hands every field of the record to the page
+// handler, and the difference between a page that never shows the credential and
+// one that happens not to today is the difference between a record holding a hash
+// and a record holding the token.
 //
 // The trail is swept for the reason a leak test exists at all: a session token in
 // journald is the key to an unsandboxed shell, and it would sit there long after
@@ -1759,16 +1781,14 @@ func TestBrowserCreateNeverServesToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("session.NewToken = _, _, %v; want a credential", err)
 	}
-	if !servedTheToken(`<p class="card-outcome">`+planted+`</p>`, hash) {
+	if !servedTheToken(`<p class="outcome">`+planted+`</p>`, hash) {
 		t.Fatal("the sweep cannot find a token it was handed, so finding none below would prove nothing")
 	}
 
 	c := newCreator(t)
 
 	w := c.post(t, c.wellFormed(t))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusOK)
-	}
+	wantOutcome(t, w, wantCreatedOutcome)
 
 	owned := c.owned()
 	if len(owned) != 1 {
@@ -1865,9 +1885,11 @@ func workDirRefusals() []workDirRefusal {
 // answers with the identical bytes, and the rule that refused is kept server-side.
 //
 // **Must fail when** the messages diverge. Each row is compared against the first
-// row's whole response — status, body and Content-Length — rather than each being
-// asserted a 400, because "one message" is the claim and a second body that
-// happened to also be a 400 would satisfy anything weaker.
+// row's whole response — status, body and Location — rather than each being
+// asserted a 303, because "one message" is the claim and a second answer that
+// happened to also be a 303 would satisfy anything weaker. Since T014 the message
+// travels as an outcome code, so the Location *is* the message: a route that told
+// two causes apart would do it by redirecting to two codes.
 //
 // The rows are driven in one loop rather than as parallel subtests for that
 // comparison's sake: the claim is *between* rows, so the responses have to exist
@@ -1888,15 +1910,7 @@ func TestWorkDirRefusalsAreOneMessage(t *testing.T) {
 		c := newCreator(t)
 		w := c.post(t, c.asked(t, "refactor-auth", row.dir(t, c)))
 
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("%s: status = %d (%s); want %d", row.name, w.Code, w.Body.String(), http.StatusBadRequest)
-		}
-		if got := w.Body.String(); got != wantCreateBadWorkDirBody {
-			t.Errorf("%s: body\n%s\nwant\n%s", row.name, got, wantCreateBadWorkDirBody)
-		}
-		if got, want := w.Header().Get(headerContentLength), strconv.Itoa(len(wantCreateBadWorkDirBody)); got != want {
-			t.Errorf("%s: %s = %q; want %q", row.name, headerContentLength, got, want)
-		}
+		wantOutcome(t, w, wantCreateBadWorkDirOutcome)
 
 		if first == nil {
 			firstName, first = row.name, w
@@ -1908,9 +1922,9 @@ func TestWorkDirRefusalsAreOneMessage(t *testing.T) {
 			if got, want := w.Body.String(), first.Body.String(); got != want {
 				t.Errorf("%s answered\n%s\n%s answered\n%s\nthe two are distinguishable", row.name, got, firstName, want)
 			}
-			if got, want := w.Header().Get(headerContentLength), first.Header().Get(headerContentLength); got != want {
+			if got, want := w.Header().Get(headerLocation), first.Header().Get(headerLocation); got != want {
 				t.Errorf("%s answered %s: %q; %s answered %q — the two are distinguishable",
-					row.name, headerContentLength, got, firstName, want)
+					row.name, headerLocation, got, firstName, want)
 			}
 		}
 
@@ -1936,14 +1950,209 @@ func TestWorkDirRefusalsAreOneMessage(t *testing.T) {
 	}
 }
 
+// suggestedWorkDir is one arrangement in which the create form offers a path the
+// allowlist behind the create route will not accept, and what makes it so.
+//
+// Both rows are the same sentence — a path present in the datalist and outside
+// the allowlist — reached the two ways this daemon can reach it: the page and the
+// check reading different configuration, and the host changing between the render
+// and the submission. Only the first of them can still be offered at the moment
+// the create is checked, which is why the test's mutation note names it.
+type suggestedWorkDir struct {
+	name string
+
+	// offer arranges the suggestion and returns the path the rendered form must
+	// carry. The test asserts the markup really holds it before submitting it, so
+	// a row that quietly stopped being offered fails on the render rather than
+	// going on to make a claim about a suggestion nobody was given.
+	offer func(t *testing.T, c *creator) string
+
+	// moved runs between the render and the submission, for the row whose host
+	// changes underneath a page the operator is still looking at. nil for the row
+	// that needs no change.
+	moved func(t *testing.T, path string)
+}
+
+func suggestedWorkDirs() []suggestedWorkDir {
+	return []suggestedWorkDir{
+		{
+			// The row that carries the claim. The page's suggestions and the
+			// manager's allowlist are read from different places — the walk from
+			// the Config the server holds, the check from the roots the manager
+			// was built on — and pointing them at different directories is the
+			// only way to observe a handler consulting the first. The divergence
+			// is the instrument; that the handler reaches the same allowlist
+			// whatever the page offered is the claim.
+			//
+			// It is also the shape the *explicit* suggestion source has.
+			// contracts/directory-picker.md names two, and `workdir_suggestions`
+			// is an operator's own list of paths — nothing constrains one of them
+			// to sit under an approved root, so a page offering a directory this
+			// daemon will refuse is that source working exactly as specified.
+			name: "a suggestion source the allowlist does not share",
+			offer: func(t *testing.T, c *creator) string {
+				t.Helper()
+
+				elsewhere, err := filepath.EvalSymlinks(t.TempDir())
+				if err != nil {
+					t.Fatalf("resolve a directory outside the approved root: %v", err)
+				}
+				offered := filepath.Join(elsewhere, "not-allowlisted")
+				if err := os.Mkdir(offered, 0o750); err != nil {
+					t.Fatalf("create %s: %v", offered, err)
+				}
+				c.cfg.Roots = []config.ApprovedRoot{{Path: elsewhere}}
+				c.cfg.DiscoverRoots = true
+				return offered
+			},
+		},
+		{
+			// The row that is a fact about time rather than about configuration:
+			// a datalist is a snapshot of the host as it was at the render, and
+			// an operator may submit it minutes later. The suggestion was inside
+			// the root when the page was drawn and resolves out of it when the
+			// create is checked, which is the same escape the typed symlink row
+			// of workDirRefusals sends — and it must be refused in the same words,
+			// because a page this daemon rendered is not evidence about a
+			// filesystem it no longer describes.
+			name: "a suggestion the host moved out from under the page",
+			offer: func(t *testing.T, c *creator) string {
+				t.Helper()
+
+				c.cfg.Roots = []config.ApprovedRoot{{Path: c.fixture.root}}
+				c.cfg.DiscoverRoots = true
+				return c.fixture.repo
+			},
+			moved: func(t *testing.T, path string) {
+				t.Helper()
+
+				outside, err := filepath.EvalSymlinks(t.TempDir())
+				if err != nil {
+					t.Fatalf("resolve a directory outside the approved root: %v", err)
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatalf("remove the offered directory %s: %v", path, err)
+				}
+				if err := os.Symlink(outside, path); err != nil {
+					t.Fatalf("link %s out of the approved root: %v", path, err)
+				}
+			},
+		},
+	}
+}
+
+// TestChosenPathValidatedIdentically is FR-042, and it is the one real
+// vulnerability the picker could introduce: a suggestion is never an
+// authorisation.
+//
+// **Must fail when** the handler trusts a value because it was suggested — a
+// membership test against the offered list, a flag on the form saying the path
+// came from the datalist, anything that reaches a decision. The first row is what
+// catches it: its suggestion is still on the list at the moment the create is
+// checked, so a handler consulting the list accepts a directory outside the
+// allowlist and starts an unsandboxed shell in it. The second row would survive
+// that mutation, because by then the walk no longer offers the path either; what
+// it pins is the other half — a page is a snapshot, and one rendered before the
+// host changed grants nothing after it.
+//
+// The refusal is compared against a *typed* one byte for byte rather than merely
+// asserted to be a refusal. "Refused as well" is a weaker claim than "refused
+// identically": a route that told the two apart at all — a different outcome
+// code, a different status, a record naming the suggestion — would be a route
+// where being on the list is a fact the daemon acts on, and the difference is
+// readable from outside. The record is compared too, because that is the half a
+// caller cannot see and the operator can.
+//
+// Nothing is created on either row, asserted in the store and on the host both. A
+// refusal that started a session before refusing would be this test passing over
+// the exact failure it exists to prevent.
+func TestChosenPathValidatedIdentically(t *testing.T) {
+	t.Parallel()
+
+	// The control, reached by typing a path the form never offered. It is built
+	// first so the rows below have something to be identical *to*; asserting each
+	// row is a 303 on its own would be satisfied by a second answer that merely
+	// happened to also be one.
+	typed := newCreator(t)
+	control := typed.post(t, typed.asked(t, "refactor-auth", filepath.Dir(typed.fixture.root)))
+	wantOutcome(t, control, wantCreateBadWorkDirOutcome)
+	controlReason := typed.only(t)["reason"]
+	if want := session.ErrWorkDirOutsideRoots.Error(); controlReason != want {
+		t.Fatalf("the typed control was refused for %v; want %v — the rows below are compared against it", controlReason, want)
+	}
+
+	for _, row := range suggestedWorkDirs() {
+		c := newCreator(t)
+		offered := row.offer(t, c)
+
+		// The render, which is what makes this a claim about a path the operator
+		// was handed rather than about any path at all.
+		page := c.page(t)
+		if page.Code != http.StatusOK {
+			t.Fatalf("%s: the fleet = %d (%s); want %d", row.name, page.Code, page.Body.String(), http.StatusOK)
+		}
+		create := sectionOf(t, page.Body.String(), "create")
+		if suggestion := `<option value="` + offered + `">`; !strings.Contains(create, suggestion) {
+			t.Fatalf("%s: the create form offers no %s, so submitting it proves nothing about a suggested path:\n%s",
+				row.name, offered, create)
+		}
+
+		if row.moved != nil {
+			row.moved(t, offered)
+		}
+
+		w := c.post(t, c.asked(t, "refactor-auth", offered))
+
+		if w.Code != control.Code {
+			t.Errorf("%s answered %d; the typed path answered %d — a suggested path is told apart from a typed one",
+				row.name, w.Code, control.Code)
+		}
+		if got, want := w.Body.String(), control.Body.String(); got != want {
+			t.Errorf("%s answered\n%s\nthe typed path answered\n%s\nthe two are distinguishable", row.name, got, want)
+		}
+		if got, want := w.Header().Get(headerLocation), control.Header().Get(headerLocation); got != want {
+			t.Errorf("%s answered %s: %q; the typed path answered %q — being on the list changed the answer",
+				row.name, headerLocation, got, want)
+		}
+
+		if owned := c.owned(); len(owned) != 0 {
+			t.Errorf("%s: the store holds %d records; want none — a suggestion outside the allowlist creates nothing",
+				row.name, len(owned))
+		}
+		if got := c.started(); got != 0 {
+			t.Errorf("%s: the host was asked to start %d sessions; want 0 — a suggested path outside the roots is a shell that must not run",
+				row.name, got)
+		}
+
+		// The trail, which is the half a caller does not get. Two records: the
+		// render's own dashboard.view, then the refused create — one per request,
+		// which is FR-041 asserted across both.
+		recs := c.records(t)
+		if len(recs) != 2 {
+			t.Fatalf("%s: the render and the create emitted %d records (%v); want one each", row.name, len(recs), recs)
+		}
+		rec := recs[1]
+		if got, want := rec["action"], string(audit.ActionDashboardCreate); got != want {
+			t.Errorf("%s: action = %v; want %v — a refused create is still a create", row.name, got, want)
+		}
+		if got, want := rec["decision"], string(audit.Deny); got != want {
+			t.Errorf("%s: decision = %v; want %v", row.name, got, want)
+		}
+		if got := rec["reason"]; got != controlReason {
+			t.Errorf("%s: reason = %v; the typed path was recorded as %v — the record says which path the operator picked it from",
+				row.name, got, controlReason)
+		}
+	}
+}
+
 // TestBrowserCreateRefusesAnUnusableName is the other 400, and the half of it that
 // matters: the answer names the field and says nothing whatever about the host.
 //
-// **Must fail when** the name check stops running — every row then answers with a
-// card and a session started — or when its answer starts describing the
-// filesystem, which the comparison against the working directory's own refusal
-// catches: a name refusal that spoke of directories would let a caller ask
-// questions about the host by sending a name that cannot pass.
+// **Must fail when** the name check stops running — every row then answers with
+// the created outcome and a session started — or when its answer starts
+// describing the filesystem, which the comparison against the working directory's
+// own outcome catches: a name refusal that spoke of directories would let a caller
+// ask questions about the host by sending a name that cannot pass.
 //
 // The colon is not decoration. A tmux target is `session:window.pane`, so a name
 // carrying one addresses a different window — it is the case ValidateName keeps a
@@ -1970,14 +2179,9 @@ func TestBrowserCreateRefusesAnUnusableName(t *testing.T) {
 			c := newCreator(t)
 			w := c.post(t, c.asked(t, tc.name, c.fixture.repo))
 
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusBadRequest)
-			}
-			if got := w.Body.String(); got != wantCreateBadNameBody {
-				t.Errorf("body\n%s\nwant\n%s", got, wantCreateBadNameBody)
-			}
-			if got := w.Body.String(); got == wantCreateBadWorkDirBody {
-				t.Errorf("a refused name was answered with the working directory's own refusal:\n%s", got)
+			wantOutcome(t, w, wantCreateBadNameOutcome)
+			if got := w.Header().Get(headerLocation); got == "/?outcome="+string(wantCreateBadWorkDirOutcome) {
+				t.Errorf("a refused name was answered with the working directory's own outcome: %q", got)
 			}
 
 			if owned := c.owned(); len(owned) != 0 {
@@ -1993,6 +2197,75 @@ func TestBrowserCreateRefusesAnUnusableName(t *testing.T) {
 	}
 }
 
+// TestBrowserCreateReadsTheConversationField is T032 at the route, which is the
+// half a refusal with passing unit tests can still be missing: a handler that
+// never reads the field would start a fresh session, answer "created", and leave
+// an operator with a session that has quietly forgotten everything they asked it
+// to carry on from.
+//
+// **Must fail when** the field is not read, spelled differently here than in the
+// markup, or read from the query string — a create this daemon would accept from
+// a URL is a session a link can start.
+//
+// The identifier is one no store on any host holds, which is what makes the
+// assertion safe to make against a fixture with no conversations of its own: it
+// is refused because it names nothing, and a handler that ignored it would answer
+// with a session instead. The named conversation is never resolved to whatever
+// this directory's most recent one happens to be (FR-032).
+func TestBrowserCreateReadsTheConversationField(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a conversation this daemon cannot resume", func(t *testing.T) {
+		t.Parallel()
+
+		c := newCreator(t)
+		form := c.wellFormed(t)
+		form.Set("resume", "11111111-2222-3333-4444-555555555555")
+
+		w := c.post(t, form)
+
+		wantOutcome(t, w, wantCreateBadConversationOutcome)
+		if owned := c.owned(); len(owned) != 0 {
+			t.Errorf("the store holds %d records after a refused create; want none", len(owned))
+		}
+		if got := c.started(); got != 0 {
+			t.Errorf("the host was asked to start %d sessions; want 0 — the conversation is answered before anything runs", got)
+		}
+		if got, want := c.only(t)["reason"], session.ErrUnknownConversation.Error(); got != want {
+			t.Errorf("reason = %v; want %v", got, want)
+		}
+	})
+
+	// The default arrives by the field being empty rather than by the handler
+	// substituting anything, so the ordinary create — which sends no such field at
+	// all — must still start a session (FR-037).
+	t.Run("a create that sends no conversation starts one", func(t *testing.T) {
+		t.Parallel()
+
+		c := newCreator(t)
+
+		wantOutcome(t, c.post(t, c.wellFormed(t)), wantCreatedOutcome)
+		if got := len(c.owned()); got != 1 {
+			t.Errorf("the store holds %d records; want the session that was asked for", got)
+		}
+	})
+
+	// Nothing this route accepts may arrive on a URL. The gate reads the token
+	// from PostForm and so does every field, which is what keeps a create out of
+	// reach of a link the operator followed.
+	t.Run("a conversation in the query string is not read", func(t *testing.T) {
+		t.Parallel()
+
+		c := newCreator(t)
+		form := c.wellFormed(t)
+
+		w := c.send(t, http.MethodPost, createPath+"?resume=11111111-2222-3333-4444-555555555555",
+			secFetchSiteSameOrigin, form)
+
+		wantOutcome(t, w, wantCreatedOutcome)
+	})
+}
+
 // TestBrowserCreateRefusesPastTheBoundsWithoutStartingAnything is the 429, in both
 // of the conditions that produce it, with the fleet asserted untouched under each.
 //
@@ -2002,8 +2275,9 @@ func TestBrowserCreateRefusesAnUnusableName(t *testing.T) {
 // the operator a second create budget by opening a browser — one per door rather
 // than one per identity, which is a limit that does not limit.
 //
-// One body answers both, which is the assertion the two halves share: an operator
-// is told nothing was started, and reads which bound it was in the trail.
+// One outcome answers both, which is the assertion the two halves share: an
+// operator is told nothing was started, and reads which bound it was in the
+// trail.
 func TestBrowserCreateRefusesPastTheBoundsWithoutStartingAnything(t *testing.T) {
 	t.Parallel()
 
@@ -2017,12 +2291,7 @@ func TestBrowserCreateRefusesPastTheBoundsWithoutStartingAnything(t *testing.T) 
 
 		w := c.post(t, c.wellFormed(t))
 
-		if w.Code != http.StatusTooManyRequests {
-			t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusTooManyRequests)
-		}
-		if got := w.Body.String(); got != wantCreateLimitedBody {
-			t.Errorf("body\n%s\nwant\n%s", got, wantCreateLimitedBody)
-		}
+		wantOutcome(t, w, wantCreateLimitedOutcome)
 		if got := len(c.owned()); got != config.DefaultMaxSessions {
 			t.Errorf("the store holds %d records after a refused create; want the %d that were already there",
 				got, config.DefaultMaxSessions)
@@ -2048,20 +2317,15 @@ func TestBrowserCreateRefusesPastTheBoundsWithoutStartingAnything(t *testing.T) 
 		burst := burstFor(config.DefaultCreateRatePerMin)
 
 		for i := range burst {
-			if w := c.post(t, c.wellFormed(t)); w.Code != http.StatusOK {
-				t.Fatalf("create %d of the burst = %d (%s); want %d", i+1, w.Code, w.Body.String(), http.StatusOK)
+			if w := c.post(t, c.wellFormed(t)); w.Header().Get(headerLocation) != "/?outcome="+string(wantCreatedOutcome) {
+				t.Fatalf("create %d of the burst = %d to %q; want the created outcome",
+					i+1, w.Code, w.Header().Get(headerLocation))
 			}
 		}
 
 		w := c.post(t, c.wellFormed(t))
 
-		if w.Code != http.StatusTooManyRequests {
-			t.Fatalf("the create after a spent budget = %d (%s); want %d",
-				w.Code, w.Body.String(), http.StatusTooManyRequests)
-		}
-		if got := w.Body.String(); got != wantCreateLimitedBody {
-			t.Errorf("body\n%s\nwant\n%s", got, wantCreateLimitedBody)
-		}
+		wantOutcome(t, w, wantCreateLimitedOutcome)
 		if got := len(c.owned()); got != burst {
 			t.Errorf("the store holds %d records; want the %d the budget allowed", got, burst)
 		}
@@ -2086,9 +2350,9 @@ func TestBrowserCreateRefusesPastTheBoundsWithoutStartingAnything(t *testing.T) 
 // started, said in the words of something that failed rather than by a card that
 // never appeared.
 //
-// **Must fail when** the failure is answered with a card, or with an empty body —
-// either of which renders as a control that did nothing at all, which is the
-// silent failure FR-031 forbids.
+// **Must fail when** the failure is answered with the created outcome, or with a
+// bare redirect carrying no code — either of which renders as a control that did
+// nothing at all, which is the silent failure FR-031 forbids.
 //
 // The record is asserted gone as well. Manager.Create's rollback verifies the
 // teardown and drops the record only once the host confirms nothing survived, so a
@@ -2102,12 +2366,7 @@ func TestBrowserCreateSaysSoWhenTheHostRefuses(t *testing.T) {
 
 	w := c.post(t, c.wellFormed(t))
 
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusInternalServerError)
-	}
-	if got := w.Body.String(); got != wantCreateFailedBody {
-		t.Errorf("body\n%s\nwant\n%s", got, wantCreateFailedBody)
-	}
+	wantOutcome(t, w, wantCreateFailedOutcome)
 	if owned := c.owned(); len(owned) != 0 {
 		t.Errorf("the store holds %d records after a create the host refused; want none", len(owned))
 	}
@@ -2291,9 +2550,10 @@ func (c *creator) fillToTheCap(t *testing.T) []session.Session {
 	t.Helper()
 
 	for i := range config.DefaultMaxSessions {
-		if w := c.post(t, c.asked(t, "running-"+strconv.Itoa(i), c.fixture.repo)); w.Code != http.StatusOK {
-			t.Fatalf("create %d of the cap's %d = %d (%s); want %d",
-				i+1, config.DefaultMaxSessions, w.Code, w.Body.String(), http.StatusOK)
+		w := c.post(t, c.asked(t, "running-"+strconv.Itoa(i), c.fixture.repo))
+		if w.Header().Get(headerLocation) != "/?outcome="+string(wantCreatedOutcome) {
+			t.Fatalf("create %d of the cap's %d = %d to %q; want the created outcome",
+				i+1, config.DefaultMaxSessions, w.Code, w.Header().Get(headerLocation))
 		}
 	}
 
@@ -2354,7 +2614,7 @@ func describeSession(s session.Session) string {
 // rather than counted, which is what separates this from the cap case above.
 //
 // It must also fail when the cap stops being consulted at all, which is the
-// non-vacuity: a sixth create that succeeded answers 200 with a card.
+// non-vacuity: a sixth create that succeeded answers the created outcome.
 func TestTheCapRefusesTheCreateAndLeavesTheFleetAsItWas(t *testing.T) {
 	t.Parallel()
 
@@ -2364,12 +2624,7 @@ func TestTheCapRefusesTheCreateAndLeavesTheFleetAsItWas(t *testing.T) {
 
 	w := c.post(t, c.asked(t, "one-too-many", c.fixture.repo))
 
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("the create at the cap = %d (%s); want %d", w.Code, w.Body.String(), http.StatusTooManyRequests)
-	}
-	if got := w.Body.String(); got != wantCreateLimitedBody {
-		t.Errorf("body\n%s\nwant\n%s", got, wantCreateLimitedBody)
-	}
+	wantOutcome(t, w, wantCreateLimitedOutcome)
 
 	after := c.owned()
 	if len(after) != len(before) {
@@ -2457,7 +2712,15 @@ type createAttempt struct {
 
 	form func(t *testing.T, c *creator) url.Values
 
-	status   int
+	status int
+
+	// code is the outcome the redirect carries, and it is empty on the one row
+	// the gate refused before the handler ran. That row is the reason both fields
+	// are here rather than one: a refusal is answered where it was refused and is
+	// never a redirect (FR-025), so "what the caller was told" is a status on that
+	// row and an outcome code on every other.
+	code outcome
+
 	action   audit.Action
 	decision audit.Decision
 
@@ -2488,7 +2751,8 @@ func createAttempts() []createAttempt {
 				t.Helper()
 				return c.asked(t, "refactor:1", c.fixture.repo)
 			},
-			status:   http.StatusBadRequest,
+			status:   http.StatusSeeOther,
+			code:     wantCreateBadNameOutcome,
 			action:   audit.ActionDashboardCreate,
 			decision: audit.Deny,
 			reason:   session.ErrNameIsTmuxTarget,
@@ -2499,7 +2763,8 @@ func createAttempts() []createAttempt {
 				t.Helper()
 				return c.asked(t, "refactor-auth", filepath.Dir(c.fixture.root))
 			},
-			status:   http.StatusBadRequest,
+			status:   http.StatusSeeOther,
+			code:     wantCreateBadWorkDirOutcome,
 			action:   audit.ActionDashboardCreate,
 			decision: audit.Deny,
 			reason:   session.ErrWorkDirOutsideRoots,
@@ -2526,7 +2791,8 @@ func createAttempts() []createAttempt {
 				t.Helper()
 				return c.asked(t, "running-"+strconv.Itoa(i), c.fixture.repo)
 			},
-			status:   http.StatusOK,
+			status:   http.StatusSeeOther,
+			code:     wantCreatedOutcome,
 			action:   audit.ActionDashboardCreate,
 			decision: audit.Allow,
 		})
@@ -2535,7 +2801,8 @@ func createAttempts() []createAttempt {
 	return append(attempts, createAttempt{
 		name:     "the create past the cap",
 		form:     wellFormed,
-		status:   http.StatusTooManyRequests,
+		status:   http.StatusSeeOther,
+		code:     wantCreateLimitedOutcome,
 		action:   audit.ActionDashboardCreate,
 		decision: audit.Deny,
 		reason:   errCreateCapReached,
@@ -2578,6 +2845,11 @@ func TestEveryCreateAttemptLeavesOneRecord(t *testing.T) {
 			if w.Code != row.status {
 				t.Fatalf("attempt %d (%s): status = %d (%s); want %d",
 					i+1, row.name, w.Code, w.Body.String(), row.status)
+			}
+			if row.code != "" {
+				if got, want := w.Header().Get(headerLocation), "/?outcome="+string(row.code); got != want {
+					t.Errorf("attempt %d (%s): %s = %q; want %q", i+1, row.name, headerLocation, got, want)
+				}
 			}
 			if row.decision == audit.Allow {
 				allowed++
@@ -2655,27 +2927,21 @@ func TestEveryCreateAttemptLeavesOneRecord(t *testing.T) {
 		burst := burstFor(config.DefaultCreateRatePerMin)
 
 		for i := range burst {
-			if w := c.post(t, c.asked(t, "running-"+strconv.Itoa(i), c.fixture.repo)); w.Code != http.StatusOK {
-				t.Fatalf("create %d of the burst = %d (%s); want %d", i+1, w.Code, w.Body.String(), http.StatusOK)
+			w := c.post(t, c.asked(t, "running-"+strconv.Itoa(i), c.fixture.repo))
+			if w.Header().Get(headerLocation) != "/?outcome="+string(wantCreatedOutcome) {
+				t.Fatalf("create %d of the burst = %d to %q; want the created outcome",
+					i+1, w.Code, w.Header().Get(headerLocation))
 			}
 		}
 
 		// More than one refusal, which is the half a single over-budget request
 		// cannot ask about: a door that recorded the first and then went quiet — the
 		// "log it once" that is a kindness on a noisy endpoint and a blind spot on
-		// the one that starts unsandboxed shells — answers all three of these 429
-		// exactly as this daemon does.
+		// the one that starts unsandboxed shells — answers all three of these the
+		// limited outcome exactly as this daemon does.
 		const overBudget = 3
-		for i := range overBudget {
-			w := c.post(t, c.wellFormed(t))
-
-			if w.Code != http.StatusTooManyRequests {
-				t.Fatalf("over-budget create %d = %d (%s); want %d",
-					i+1, w.Code, w.Body.String(), http.StatusTooManyRequests)
-			}
-			if got := w.Body.String(); got != wantCreateLimitedBody {
-				t.Errorf("over-budget create %d: body\n%s\nwant\n%s", i+1, got, wantCreateLimitedBody)
-			}
+		for range overBudget {
+			wantOutcome(t, c.post(t, c.wellFormed(t)), wantCreateLimitedOutcome)
 		}
 
 		records := c.records(t)
@@ -2713,10 +2979,18 @@ func TestEveryCreateAttemptLeavesOneRecord(t *testing.T) {
 // of handleAction would leave every gate case in this file green while the one
 // route that can relabel every session on this host answers an ambient cookie.
 
-// The rename's own refusal, quoted here rather than read from the constant the
-// code writes, for the reason the destroy's are: a test asserting against the
-// variable proves only that the code agrees with itself.
-const wantRenameBadNameBody = `<p class="card-outcome">That is not a usable session name. Use letters, digits and hyphens, up to 64 characters. This session is still called what it was.</p>`
+// The rename's own outcomes, spelled here rather than read from the constants
+// outcome.go writes, for the reason the destroy's are: a test asserting against
+// the variable proves only that the code agrees with itself.
+//
+// A refused name is the create's own code since T014 and deliberately not a
+// second one — the redirect earns that, because nothing replaces the card any
+// more and the fleet the operator lands on is still saying what the session is
+// called.
+const (
+	wantRenamedOutcome       = outcome("renamed")
+	wantRenameBadNameOutcome = outcome("bad-name")
+)
 
 // originalName is the label every case below starts from, and the one a refused
 // rename has to leave behind.
@@ -2805,13 +3079,14 @@ func (n *renamer) stored(t *testing.T, s session.Session) session.Session {
 }
 
 // TestRenameRelabelsTheRecordAndAnswersWithItsCard is US4's first scenario end to
-// end: the operator's own session, renamed from the card, answered with the card
-// the fleet will draw for it, and the host never spoken to.
+// end: the operator's own session, renamed from the card, returned to a fleet
+// drawing the new label, and the host never spoken to.
 //
 // **Must fail when** the route stops calling Manager.Rename — the store keeps the
-// old label — or when it answers with something other than the canonical card,
-// which is what makes a renamed session look exactly as it will on every later
-// page load.
+// old label — or when the fleet the operator lands on does not draw the canonical
+// card, which is what makes a renamed session look exactly as it will on every
+// later page load. Since T014 that card is on the page rather than in the answer:
+// the route redirects, and the grid is where the renamed card is.
 //
 // The tmux half is FR-015, and it is asserted as "no command at all" rather than
 // as "the window is still there": a rename that ran a tmux rename and then ran it
@@ -2829,16 +3104,7 @@ func TestRenameRelabelsTheRecordAndAnswersWithItsCard(t *testing.T) {
 
 	w := n.post(t, live.ID, n.asked(t, renamed))
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusOK)
-	}
-	if got, want := w.Header().Get(headerContentType), wantActionContentType; got != want {
-		t.Errorf("%s = %q; want %q", headerContentType, got, want)
-	}
-	if got, want := w.Header().Get(headerContentTypeOptions), wantActionNosniff; got != want {
-		t.Errorf("%s = %q; want %q — a rename's answer carries the same headers a page does",
-			headerContentTypeOptions, got, want)
-	}
+	wantOutcome(t, w, wantRenamedOutcome)
 
 	held := n.stored(t, live)
 	if held.Name != renamed {
@@ -2855,32 +3121,9 @@ func TestRenameRelabelsTheRecordAndAnswersWithItsCard(t *testing.T) {
 		t.Errorf("the host is running %s: %t (err: %v); a renamed session is the same session", live.TmuxName(), running, err)
 	}
 
-	body := w.Body.String()
-	if !strings.Contains(body, `<article class="card"`) {
-		t.Errorf("the answer is not the canonical card:\n%s", body)
-	}
-	// The name slot's own contents rather than a search of the whole fragment,
-	// because a card is what the operator is left looking at: a search for the new
-	// name is satisfied by a card that renders it with something appended, and the
-	// claim here is that the answer describes the record this route just wrote.
-	shown := renderedCardName.FindStringSubmatch(body)
-	if shown == nil {
-		t.Fatalf("the card renders no name at all:\n%s", body)
-	}
-	if shown[1] != held.Name {
-		t.Errorf("the card is headed %q and the daemon holds %q; the answer describes a session that does not exist", shown[1], held.Name)
-	}
-	if shown[1] != renamed {
-		t.Errorf("the card is headed %q; want %q — the operator is looking at the label they just replaced", shown[1], renamed)
-	}
-	if !strings.Contains(body, live.ID) {
-		t.Errorf("the card does not carry the identifier (%q):\n%s", live.ID, body)
-	}
-	if !strings.Contains(body, fieldPageToken) {
-		t.Errorf("the card carries no %s, so the session it re-renders offers no control the gate would admit until the operator reloads:\n%s",
-			fieldPageToken, body)
-	}
-
+	// The trail, read before the fleet is opened: that page is a request of its
+	// own and leaves a dashboard.view record, so the rename's one record has to be
+	// counted while it is still the only one (FR-041).
 	rec := n.only(t)
 	if got, want := rec["action"], string(audit.ActionDashboardRename); got != want {
 		t.Errorf("action = %v; want %v", got, want)
@@ -2891,11 +3134,43 @@ func TestRenameRelabelsTheRecordAndAnswersWithItsCard(t *testing.T) {
 	if got := rec["session_id"]; got != live.ID {
 		t.Errorf("session_id = %v; want %q", got, live.ID)
 	}
+
+	// The fleet the redirect sends the operator back to, where the card now
+	// carries the new name.
+	landed := n.browse(t, pathFleet)
+	if landed.Code != http.StatusOK {
+		t.Fatalf("the fleet the rename redirected to = %d (%s); want %d", landed.Code, landed.Body.String(), http.StatusOK)
+	}
+	body := landed.Body.String()
+	if !strings.Contains(body, `<article class="card"`) {
+		t.Errorf("the fleet draws no canonical card for the renamed session:\n%s", body)
+	}
+	// The name slot's own contents rather than a search of the whole page,
+	// because a card is what the operator is left looking at: a search for the new
+	// name is satisfied by a card that renders it with something appended, and the
+	// claim here is that the page describes the record this route just wrote.
+	shown := renderedCardName.FindStringSubmatch(body)
+	if shown == nil {
+		t.Fatalf("the card renders no name at all:\n%s", body)
+	}
+	if shown[1] != held.Name {
+		t.Errorf("the card is headed %q and the daemon holds %q; the page describes a session that does not exist", shown[1], held.Name)
+	}
+	if shown[1] != renamed {
+		t.Errorf("the card is headed %q; want %q — the operator is looking at the label they just replaced", shown[1], renamed)
+	}
+	if !strings.Contains(body, live.ID) {
+		t.Errorf("the card does not carry the identifier (%q):\n%s", live.ID, body)
+	}
+	if !strings.Contains(body, fieldPageToken) {
+		t.Errorf("the card carries no %s, so the session it draws offers no control the gate would admit:\n%s",
+			fieldPageToken, body)
+	}
 }
 
-// TestRenameRefusesAnUnusableNameAndLeavesTheLabel is the contract's 400: a name
-// ValidateName refuses is refused here, and the session goes on being called what
-// it was.
+// TestRenameRefusesAnUnusableNameAndLeavesTheLabel is the contract's refused
+// name: a name ValidateName refuses is refused here, and the session goes on
+// being called what it was.
 //
 // **Must fail when** the route validates the name itself instead of calling
 // Manager.Rename. The two tmux-target rows are the ones a hand-written character
@@ -2932,15 +3207,7 @@ func TestRenameRefusesAnUnusableNameAndLeavesTheLabel(t *testing.T) {
 
 			w := n.post(t, live.ID, n.asked(t, tc.to))
 
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), http.StatusBadRequest)
-			}
-			if got := w.Body.String(); got != wantRenameBadNameBody {
-				t.Errorf("body\n%s\nwant\n%s", got, wantRenameBadNameBody)
-			}
-			if got, want := w.Header().Get(headerContentLength), strconv.Itoa(len(wantRenameBadNameBody)); got != want {
-				t.Errorf("%s = %q; want %q", headerContentLength, got, want)
-			}
+			wantOutcome(t, w, wantRenameBadNameOutcome)
 
 			if held := n.stored(t, live); held.Name != originalName {
 				t.Errorf("a refused rename left the session called %q; want %q unchanged", held.Name, originalName)
@@ -2966,8 +3233,12 @@ func TestRenameRefusesAnUnusableNameAndLeavesTheLabel(t *testing.T) {
 			if tc.to == "" {
 				return
 			}
-			if strings.Contains(w.Body.String(), tc.to) {
-				t.Errorf("the refusal quotes the rejected name back:\n%s", w.Body.String())
+			// The Location as well as the body, which is what T014 added to this
+			// claim: the refusal now travels as a redirect, and a URL built from the
+			// name that was refused would be caller-supplied text on its way back out
+			// through the address bar (FR-042).
+			if answer := w.Header().Get(headerLocation) + w.Body.String(); strings.Contains(answer, tc.to) {
+				t.Errorf("the refusal quotes the rejected name back:\n%s", answer)
 			}
 			if strings.Contains(n.sink.String(), tc.to) {
 				t.Errorf("the trail carries the rejected name:\n%s", n.sink.String())
@@ -3344,7 +3615,7 @@ func identifierOps() []identifierOp {
 		},
 		{
 			name:  "POST /dashboard/sessions/{id}/destroy",
-			works: http.StatusOK,
+			works: http.StatusSeeOther,
 			run: func(t *testing.T, n *renamer, s session.Session, _ string) *httptest.ResponseRecorder {
 				t.Helper()
 
@@ -3356,7 +3627,7 @@ func identifierOps() []identifierOp {
 		},
 		{
 			name:  "POST /dashboard/sessions/{id}/rename",
-			works: http.StatusOK,
+			works: http.StatusSeeOther,
 			run: func(t *testing.T, n *renamer, s session.Session, _ string) *httptest.ResponseRecorder {
 				t.Helper()
 				return n.post(t, s.ID, n.asked(t, renamedAgain))
@@ -3369,7 +3640,7 @@ func identifierOps() []identifierOp {
 			// crswd-<id> alone (FR-015), and a delivery that reached for the label
 			// anywhere in that argv is what the comparison sees.
 			name:  "POST /dashboard/sessions/{id}/compact",
-			works: http.StatusAccepted,
+			works: http.StatusSeeOther,
 			run: func(t *testing.T, n *renamer, s session.Session, _ string) *httptest.ResponseRecorder {
 				t.Helper()
 
@@ -3514,9 +3785,9 @@ func TestRenameThenIdentifierOperations(t *testing.T) {
 			// wire would leave this sweep asking its question of a state no browser
 			// can produce.
 			renamed := n.post(t, subject.ID, n.asked(t, afterTheRename))
-			if renamed.Code != http.StatusOK {
-				t.Fatalf("the rename this case rests on was answered %d (%s); want %d",
-					renamed.Code, renamed.Body.String(), http.StatusOK)
+			if got, want := renamed.Header().Get(headerLocation), "/?outcome="+string(wantRenamedOutcome); got != want {
+				t.Fatalf("the rename this case rests on was answered %d to %q; want %q",
+					renamed.Code, got, want)
 			}
 			held := n.stored(t, subject)
 			if held.Name != afterTheRename {
@@ -3570,9 +3841,28 @@ func TestRenameThenIdentifierOperations(t *testing.T) {
 // proves only that the code agrees with itself, and on this route the words are
 // the requirement.
 const (
-	wantCompactDeliveredBody = `<p class="card-outcome">Compact delivered. The session decides what to do with it.</p>`
-	wantCompactFailedBody    = `<p class="card-outcome">The compact could not be delivered.</p>`
+	wantCompactedOutcome     = outcome("compacted")
+	wantCompactFailedOutcome = outcome("compact-failed")
 )
+
+// renderedBanner reads the outcome banner off a fleet page, which is where an
+// action's sentence lives since T014.
+//
+// The sentence is asserted on the page rather than in the answer because that is
+// where it now is, and the two halves of a claim like FR-016a have to be made
+// where each half exists: the route chose the code, and the page turned it into
+// words. A test that only checked the code would go on passing through an edit to
+// the copy, which is the exact drift contracts/actions.md pinned bytes against.
+var renderedBanner = regexp.MustCompile(`<p class="outcome">([^<]*)</p>`)
+
+// bannerOn is the sentence a fleet page is carrying, or the empty string.
+func bannerOn(page string) string {
+	shown := renderedBanner.FindStringSubmatch(page)
+	if shown == nil {
+		return ""
+	}
+	return shown[1]
+}
 
 // deliveredCompact is what the session is handed, spelled out here rather than
 // read from internal/session's own constant so that an edit to that constant
@@ -3649,6 +3939,25 @@ func (c *compactor) send(t *testing.T, method, path, site string, form url.Value
 	return w
 }
 
+// landed opens the fleet the redirect sent the operator to, carrying the outcome
+// the route chose — which is where the sentence an operator reads now lives
+// (T014). It follows the redirect by hand rather than through a client, because
+// what is under test is what the daemon writes at each end and not what a
+// transport does in between.
+func (c *compactor) landed(t *testing.T, code outcome) string {
+	t.Helper()
+
+	r := httptest.NewRequest(http.MethodGet, pathFleet+"?"+queryOutcome+"="+string(code), nil)
+	r.Header.Set(headerAccessAssertion, c.keys.mint(t, c.keys.claims()))
+
+	w := httptest.NewRecorder()
+	c.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("the fleet at %s = %d (%s); want %d", r.URL, w.Code, w.Body.String(), http.StatusOK)
+	}
+	return bannerOn(w.Body.String())
+}
+
 // delivered is every payload that reached the host, read off the fake's call log
 // rather than off the response — whether bytes were delivered is a fact about
 // what the daemon asked tmux for, and this route's whole claim is about that.
@@ -3691,50 +4000,16 @@ func TestCompactReportsDeliveryNotSuccess(t *testing.T) {
 
 	w := c.post(t, live.ID, c.asked(t))
 
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status = %d (%s); want %d — a compact is accepted for delivery, and what happens after it is the session's",
-			w.Code, w.Body.String(), http.StatusAccepted)
-	}
-	body := w.Body.String()
-	if body != wantCompactDeliveredBody {
-		t.Errorf("body\n%s\nwant contracts/actions.md's own\n%s", body, wantCompactDeliveredBody)
-	}
-	if got, want := w.Header().Get(headerContentLength), strconv.Itoa(len(wantCompactDeliveredBody)); got != want {
-		t.Errorf("%s = %q; want %q", headerContentLength, got, want)
-	}
-
-	// FR-016a as the claim it is, rather than as a second string comparison. The
-	// daemon delivered bytes into a pane and looked at nothing afterwards; a body
-	// saying the compaction happened is this daemon asserting something no part of
-	// this process observed.
-	for _, claim := range claimedCompaction {
-		if strings.Contains(strings.ToLower(body), claim) {
-			t.Errorf("the answer says %q; the daemon cannot see what the assistant is carrying, so it reports the delivery and never the compaction (FR-016a):\n%s",
-				claim, body)
-		}
-	}
-	// And the other direction, which the list above alone does not give: an empty
-	// body carries no forbidden claim either, and would leave the operator with a
-	// card that vanished when they pressed a button.
-	if !strings.Contains(strings.ToLower(body), "delivered") {
-		t.Errorf("the answer never says what did happen — the bytes were delivered:\n%s", body)
-	}
-
-	// The bytes really went, through the buffer path and nothing else (T019).
-	if got := c.delivered(); !slices.Equal(got, []string{deliveredCompact}) {
-		t.Errorf("the host was handed %q; want exactly one delivery of %q — an answer that says delivered while tmux was never asked is the failure no status code shows",
-			got, deliveredCompact)
-	}
-	for _, call := range c.fixture.tmux.Calls() {
-		if call.Op == tmuxctl.OpSendKeys {
-			t.Errorf("the compact reached the session as send-keys %q; the delivered text goes in on stdin and never on a command line", call.Argv)
-		}
-	}
+	wantOutcome(t, w, wantCompactedOutcome)
 
 	// One record, naming the action and the session, and carrying none of what was
 	// delivered (FR-016b, AR-007). The bytes hold no secret, being the daemon's
 	// own — what is held here is the shape, because the next payload this door
 	// delivers may not be a constant.
+	//
+	// Read before the fleet is opened, because that page is a request of its own
+	// and leaves a dashboard.view record: the compact's one record has to be
+	// counted while it is still the only one (FR-041).
 	rec := c.only(t)
 	if got, want := rec["action"], string(audit.ActionDashboardCompact); got != want {
 		t.Errorf("action = %v; want %v — a browser compact is not session.prompt and not any other door's action", got, want)
@@ -3749,17 +4024,54 @@ func TestCompactReportsDeliveryNotSuccess(t *testing.T) {
 	if strings.Contains(string(line), strings.TrimSpace(deliveredCompact)) {
 		t.Errorf("the record carries the delivered text: %s", line)
 	}
+
+	// contracts/actions.md's own sentence, read off the page the redirect landed
+	// on: the route picks the code and the fleet turns it into words, so the claim
+	// FR-016a governs is made here.
+	const wantDelivered = "Compact delivered. The session decides what to do with it."
+	body := c.landed(t, wantCompactedOutcome)
+	if body != wantDelivered {
+		t.Errorf("banner\n%s\nwant contracts/actions.md's own\n%s", body, wantDelivered)
+	}
+
+	// FR-016a as the claim it is, rather than as a second string comparison. The
+	// daemon delivered bytes into a pane and looked at nothing afterwards; a
+	// sentence saying the compaction happened is this daemon asserting something no
+	// part of this process observed.
+	for _, claim := range claimedCompaction {
+		if strings.Contains(strings.ToLower(body), claim) {
+			t.Errorf("the banner says %q; the daemon cannot see what the assistant is carrying, so it reports the delivery and never the compaction (FR-016a):\n%s",
+				claim, body)
+		}
+	}
+	// And the other direction, which the list above alone does not give: no banner
+	// at all carries no forbidden claim either, and would leave the operator on a
+	// page that says nothing happened when they pressed a button.
+	if !strings.Contains(strings.ToLower(body), "delivered") {
+		t.Errorf("the banner never says what did happen — the bytes were delivered:\n%s", body)
+	}
+
+	// The bytes really went, through the buffer path and nothing else (T019).
+	if got := c.delivered(); !slices.Equal(got, []string{deliveredCompact}) {
+		t.Errorf("the host was handed %q; want exactly one delivery of %q — an answer that says delivered while tmux was never asked is the failure no status code shows",
+			got, deliveredCompact)
+	}
+	for _, call := range c.fixture.tmux.Calls() {
+		if call.Op == tmuxctl.OpSendKeys {
+			t.Errorf("the compact reached the session as send-keys %q; the delivered text goes in on stdin and never on a command line", call.Argv)
+		}
+	}
 }
 
 // TestCompactSaysSoWhenTheDeliveryFails is the fail-closed half: a paste that did
-// not land is a 500 stating the delivery failed, never a 202 saying it went.
+// not land states the delivery failed, never that it went.
 //
 // **Must fail when** the error from Manager.Compact is dropped — the route
-// answers its 202 whatever tmux did, which is the same defect as claiming the
-// compaction happened, one layer down: an operator is told bytes reached a
-// session that never received them.
+// answers its delivered outcome whatever tmux did, which is the same defect as
+// claiming the compaction happened, one layer down: an operator is told bytes
+// reached a session that never received them.
 //
-// The body claims nothing about the session's state, which is asserted as the
+// The sentence claims nothing about the session's state, which is asserted as the
 // absence of the destroy's kind of specific claim: a failure nobody classified is
 // not evidence about what a pane now holds.
 func TestCompactSaysSoWhenTheDeliveryFails(t *testing.T) {
@@ -3771,28 +4083,10 @@ func TestCompactSaysSoWhenTheDeliveryFails(t *testing.T) {
 
 	w := c.post(t, live.ID, c.asked(t))
 
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d (%s); want %d — a delivery that did not land is not an accepted one",
-			w.Code, w.Body.String(), http.StatusInternalServerError)
-	}
-	if got := w.Body.String(); got != wantCompactFailedBody {
-		t.Errorf("body\n%s\nwant\n%s", got, wantCompactFailedBody)
-	}
-	// The affirmative sentence, not the word: "could not be delivered" says the
-	// right thing and contains the wrong substring, so what is forbidden here is
-	// the claim the success body makes.
-	if got := strings.ToLower(w.Body.String()); strings.Contains(got, "compact delivered") {
-		t.Errorf("the answer to a failed delivery says it was delivered:\n%s", w.Body.String())
-	}
-	for _, claim := range claimedCompaction {
-		if strings.Contains(strings.ToLower(w.Body.String()), claim) {
-			t.Errorf("the answer to a failed delivery says %q:\n%s", claim, w.Body.String())
-		}
-	}
-	if got := w.Body.String(); strings.Contains(got, strings.TrimSpace(deliveredCompact)) {
-		t.Errorf("the failure quotes what was being delivered:\n%s", got)
-	}
+	wantOutcome(t, w, wantCompactFailedOutcome)
 
+	// Read before the fleet is opened, for the reason the delivered case reads it
+	// first: opening that page is a request of its own and leaves a record.
 	rec := c.only(t)
 	if got, want := rec["action"], string(audit.ActionDashboardCompact); got != want {
 		t.Errorf("action = %v; want %v", got, want)
@@ -3800,8 +4094,28 @@ func TestCompactSaysSoWhenTheDeliveryFails(t *testing.T) {
 	if got, want := rec["reason"], errCompactRefused.Error(); got != want {
 		t.Errorf("reason = %v; want %v — the record is the only place the cause is named", got, want)
 	}
-	if strings.Contains(w.Body.String(), errCompactRefused.Error()) {
-		t.Errorf("the response quotes the reason back:\n%s", w.Body.String())
+
+	const wantFailed = "The compact could not be delivered."
+	body := c.landed(t, wantCompactFailedOutcome)
+	if body != wantFailed {
+		t.Errorf("banner\n%s\nwant\n%s", body, wantFailed)
+	}
+	// The affirmative sentence, not the word: "could not be delivered" says the
+	// right thing and contains the wrong substring, so what is forbidden here is
+	// the claim the success sentence makes.
+	if got := strings.ToLower(body); strings.Contains(got, "compact delivered") {
+		t.Errorf("the answer to a failed delivery says it was delivered:\n%s", body)
+	}
+	for _, claim := range claimedCompaction {
+		if strings.Contains(strings.ToLower(body), claim) {
+			t.Errorf("the answer to a failed delivery says %q:\n%s", claim, body)
+		}
+	}
+	if strings.Contains(body, strings.TrimSpace(deliveredCompact)) {
+		t.Errorf("the failure quotes what was being delivered:\n%s", body)
+	}
+	if strings.Contains(body, errCompactRefused.Error()) {
+		t.Errorf("the page quotes the reason back:\n%s", body)
 	}
 }
 
@@ -4016,5 +4330,1387 @@ func TestACompactIsNoRouteOnAnyOtherMethod(t *testing.T) {
 				t.Errorf("%s on the compact path handed the host %q; a path this daemon does not serve delivers nothing", method, got)
 			}
 		})
+	}
+}
+
+// --- US3: a refusal is not a redirect (T015) --------------------------------
+//
+// T014 made every action's *answer* a 303 to the fleet. What it deliberately
+// left where it was is a refusal (FR-025), and this section is where that
+// exclusion is asserted — across every registered action route at once, which is
+// the only place the claim can be made. Every test above sweeps one route; a
+// redirecting refusal added to the compact alone would be invisible to all of
+// them.
+
+// refuser is every registered action route with everything a refusal turns
+// on under the test's control: the assertion the edge forwarded, the initiator
+// the browser reported, the identity the form's token was minted for, and the
+// session the path names.
+//
+// It is a fixture of its own rather than another method on destroyer, creator,
+// renamer, compactor and toggler, because what varies here is the *route* — and
+// holding the route fixed is exactly what those are for.
+type refuser struct {
+	*testServer
+	keys *keyServer
+}
+
+func newRefuser(t *testing.T) *refuser {
+	t.Helper()
+
+	keys := newKeyServer(t)
+	r := &refuser{testServer: newAuditedServerWith(t, keys.validator(t)), keys: keys}
+	// The mode route is the only one of the five whose success depends on how the
+	// daemon is configured rather than on the request alone, and every case here
+	// needs a request that would have worked to vary from.
+	r.offersRemoteControl()
+	return r
+}
+
+// mine plants a running session of this operator's own — the session every case
+// below starts by naming, so that whatever refuses is the case's own doing and
+// never an identifier that happened not to resolve.
+func (r *refuser) mine(t *testing.T) session.Session {
+	t.Helper()
+
+	planted, _ := r.fixture.plant(t, session.Session{Name: "under-refusal", WorkDir: r.fixture.repo})
+	return planted
+}
+
+// attempt is one request at an action route, in the four parts the cases below
+// vary. Each of the first three may be absent, which is a different shape from
+// present-and-empty: an absent Sec-Fetch-Site and an absent token are causes of
+// their own.
+type attempt struct {
+	assertion string
+	site      string
+	token     string
+	id        string
+
+	// smuggled is anything a caller put in the form beyond what the route asks
+	// for, merged over the route's own fields (T016). It is how a case poses the
+	// question FR-022 answers — the caller wrote something, and the outcome must
+	// still be the daemon's — and it can overwrite one of the route's fields,
+	// which is what a caller filling in a field the handler really reads does.
+	//
+	// Nil for every refusal case below: what those vary is who the caller is, not
+	// what they typed.
+	smuggled url.Values
+}
+
+// wellFormed is the attempt every case varies from — everything the door asks
+// for, satisfied — so that each one differs from a request that would have
+// worked by exactly the thing it is named for.
+func (r *refuser) wellFormed(t *testing.T, id string) attempt {
+	t.Helper()
+
+	return attempt{
+		assertion: r.keys.mint(t, r.keys.claims()),
+		site:      secFetchSiteSameOrigin,
+		token:     mustMint(t, r.pageKey, testOperatorEmail, testTime),
+		id:        id,
+	}
+}
+
+// send drives one attempt at one route through the **registered** mux, which is
+// load-bearing rather than convenient: the claim is about what the routes
+// contracts/actions.md fixes actually answer, and a fixture handler of this
+// test's own making could not notice one of them wired to redirect its refusals.
+func (r *refuser) send(t *testing.T, route mutatingRoute, a attempt) *httptest.ResponseRecorder {
+	t.Helper()
+
+	form := route.fields(t, r)
+	// After the route's own fields, so a case can put a caller's text in one of
+	// them, and before the token, which the attempt owns: a form field must never
+	// be able to reach past the gate by naming what the gate reads.
+	maps.Copy(form, a.smuggled)
+	if a.token != absent {
+		form.Set(fieldPageToken, a.token)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, route.path(a.id), strings.NewReader(form.Encode()))
+	req.Header.Set(headerContentType, contentTypeForm)
+	if a.assertion != absent {
+		req.Header.Set(headerAccessAssertion, a.assertion)
+	}
+	if a.site != absent {
+		req.Header.Set(headerSecFetchSite, a.site)
+	}
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// callerText is a field a route really reads, filled with words the caller
+// chose, and what the fleet says about the request that carried them (T016).
+//
+// It is the FR-022 case with teeth. A field no handler reads could only reach a
+// page by being echoed on purpose; this text is already in the handler's hand at
+// the instant it picks an outcome, which is where "the outcome is built from
+// caller-supplied text" would actually be written.
+type callerText struct {
+	field string
+
+	// yields is the code the route chooses for it, and states is the sentence
+	// the fleet renders — the daemon's own words about a refusal the caller's
+	// text caused, carrying none of that text (FR-042).
+	yields outcome
+	states string
+}
+
+// mutatingRoute is one of the routes that changes something — the four
+// contracts/actions.md registers and the mode toggle
+// contracts/session-mode.md adds — in the parts a refusal case needs: where to
+// post, whether the path names a session at all, and what a request that would
+// have *worked* carries beyond the page token.
+//
+// That last part is what keeps each case below refusing for the reason it is
+// named for and nothing else. A destroy posted without the confirming step is
+// refused by FR-029 before the case's own variation is ever reached — and FR-029
+// answers with a redirect, because the operator who sent it was authorised.
+// Every row here would then be red for a reason it did not mean.
+type mutatingRoute struct {
+	name string
+
+	// path takes the identifier the attempt chose. The create ignores it: it
+	// names no session, which is why the two lookup refusals cannot reach it.
+	path func(id string) string
+
+	// namesASession is false for the create alone.
+	namesASession bool
+
+	// fields is everything the route needs beyond the page token, which the
+	// attempt owns because it is what two of the cases vary.
+	fields func(t *testing.T, r *refuser) url.Values
+
+	// succeeds is the code the route redirects with when nothing refuses it —
+	// the non-vacuity every case below rests on.
+	succeeds outcome
+
+	// states is the sentence the fleet renders for that code (T016), quoted from
+	// outcome.go's map rather than read out of it — the discipline every literal
+	// in this file follows. It is a fact about the route rather than about either
+	// test, which is why it sits here beside the code it is the words for.
+	states string
+
+	// chosen is a field this route reads and what a caller writing their own
+	// words into it is told (T016). The compact carries none, and that is FR-016
+	// rather than a gap: it reads no field at all, so there is nothing on it for
+	// a caller to fill in.
+	chosen callerText
+}
+
+func mutatingRoutes() []mutatingRoute {
+	// The sentence a refused name is answered with, on the create and the rename
+	// alike — one sentence for both, which the redirect earned (outcome.go). It
+	// is written once here because two rows state it, not because the code shares
+	// a constant: what these rows quote is contracts/actions.md's copy.
+	const refusedName = "That is not a usable session name. Use letters, digits and hyphens, up to 64 characters. Nothing was changed."
+
+	return []mutatingRoute{
+		{
+			name:          "POST /dashboard/sessions/{id}/destroy",
+			path:          func(id string) string { return "/dashboard/sessions/" + id + "/destroy" },
+			namesASession: true,
+			fields: func(t *testing.T, _ *refuser) url.Values {
+				t.Helper()
+
+				form := url.Values{}
+				form.Set(fieldConfirm, confirmYes)
+				return form
+			},
+			succeeds: wantDestroyedOutcome,
+			states:   "Session destroyed. The host confirmed its window is gone.",
+			// The confirming step is the one value this route reads, and anything
+			// that is not `yes` is a destroy that did not happen (FR-029).
+			chosen: callerText{
+				field:  fieldConfirm,
+				yields: wantUnconfirmedOutcome,
+				states: "This destroy was not confirmed, so nothing was torn down.",
+			},
+		},
+		{
+			name:          "POST /dashboard/sessions",
+			path:          func(string) string { return createPath },
+			namesASession: false,
+			fields: func(t *testing.T, r *refuser) url.Values {
+				t.Helper()
+
+				form := url.Values{}
+				form.Set(fieldName, "refused-or-started")
+				form.Set(fieldWorkDir, r.fixture.repo)
+				return form
+			},
+			succeeds: wantCreatedOutcome,
+			states:   "Session started. Its card is on the fleet below.",
+			chosen: callerText{
+				field:  fieldName,
+				yields: wantCreateBadNameOutcome,
+				states: refusedName,
+			},
+		},
+		{
+			name:          "POST /dashboard/sessions/{id}/rename",
+			path:          func(id string) string { return "/dashboard/sessions/" + id + "/rename" },
+			namesASession: true,
+			fields: func(t *testing.T, _ *refuser) url.Values {
+				t.Helper()
+
+				form := url.Values{}
+				form.Set(fieldName, "renamed-after-all")
+				return form
+			},
+			succeeds: wantRenamedOutcome,
+			states:   "Session renamed.",
+			chosen: callerText{
+				field:  fieldName,
+				yields: wantRenameBadNameOutcome,
+				states: refusedName,
+			},
+		},
+		{
+			name:          "POST /dashboard/sessions/{id}/compact",
+			path:          func(id string) string { return "/dashboard/sessions/" + id + "/compact" },
+			namesASession: true,
+			// The one route that reads no field of its own (FR-016): what is
+			// delivered is a constant in the manager, so there is nothing here for a
+			// caller to choose.
+			fields:   func(*testing.T, *refuser) url.Values { return url.Values{} },
+			succeeds: wantCompactedOutcome,
+			states:   "Compact delivered. The session decides what to do with it.",
+			// No chosen field, for the reason there are no fields: a route that
+			// reads nothing cannot be told anything.
+		},
+		{
+			// The fifth, added with the transition behind it (T020). It was left out
+			// while the route could only refuse: every row here rests on a request
+			// nothing refuses being answered with a success, and there was none to
+			// name.
+			name:          "POST /dashboard/sessions/{id}/mode",
+			path:          func(id string) string { return "/dashboard/sessions/" + id + "/mode" },
+			namesASession: true,
+			fields: func(t *testing.T, _ *refuser) url.Values {
+				t.Helper()
+
+				form := url.Values{}
+				form.Set(fieldConfirm, confirmYes)
+				// The session refuser.mine plants names no start command, so it is
+				// local and remote is the mode it can actually be moved to.
+				form.Set(fieldMode, modeRemote)
+				return form
+			},
+			succeeds: wantModeChangedOutcome,
+			states:   "Mode changed. The process in the pane was restarted where it left off, and the session, its window and its scrollback are as they were.",
+			// The one field on this door that could name something to run, which is
+			// what makes it the row worth having here: whatever a caller writes in
+			// it, the sentence they are sent to is the daemon's own and carries none
+			// of it (FR-030, FR-042).
+			chosen: callerText{
+				field:  fieldMode,
+				yields: wantBadModeOutcome,
+				states: "That is not a mode this daemon offers. Nothing was changed.",
+			},
+		},
+	}
+}
+
+// refusalShape is one way an action route can refuse, and the uniform answer it
+// must give.
+//
+// Three answers rather than one, because they are three different facts: layer 1
+// refused the identity, the gate refused the request, or the lookup found
+// nothing this operator may act on. What FR-025 says about all three is the same
+// — none of them is a redirect.
+type refusalShape struct {
+	name string
+
+	// namesASession marks the cases that can only be posed to a route carrying an
+	// {id}. Skipping them on the create is not a gap: what they assert is the
+	// lookup's answer, and a route that looks nothing up has none to give.
+	namesASession bool
+
+	// vary turns the well-formed attempt into the one this case is named for. It
+	// takes the fixture because two of the cases have to mint or plant first.
+	vary func(t *testing.T, r *refuser, a attempt) attempt
+
+	status int
+	body   string
+}
+
+func refusalShapes() []refusalShape {
+	// Not on the allowlist and not testOperatorEmail's owner: a second operator
+	// whose sessions this one must not be able to act on or detect.
+	const stranger auth.CallerID = "a-second-operator"
+
+	return []refusalShape{
+		{
+			name: "the edge forwarded no assertion at all",
+			vary: func(_ *testing.T, _ *refuser, a attempt) attempt {
+				a.assertion = absent
+				return a
+			},
+			status: http.StatusUnauthorized,
+			// Layer 1's refusal is compared against the constant and not a literal,
+			// which is the one departure from this file's rule and is
+			// TestActionGateOrder's own: those bytes are contracts/dashboard.md's,
+			// not contracts/actions.md's, and what this row claims is "layer 1's own
+			// refusal, whichever bytes those are, rather than a redirect".
+			body: string(bodyBrowserRefused),
+		},
+		{
+			name: "the assertion names an address that is not on the allowlist",
+			vary: func(t *testing.T, r *refuser, a attempt) attempt {
+				t.Helper()
+
+				// Genuine, signed by the published key, inside its validity, for this
+				// audience. The only thing wrong with it is who it names — which is
+				// the refusal an operator is most likely to meet and the one a
+				// redirect would be most useful to an attacker on.
+				claims := r.keys.claims()
+				claims["email"] = testStrangerEmail
+				a.assertion = r.keys.mint(t, claims)
+				return a
+			},
+			status: http.StatusUnauthorized,
+			body:   string(bodyBrowserRefused),
+		},
+		{
+			name: "the browser said the request came from another site",
+			vary: func(_ *testing.T, _ *refuser, a attempt) attempt {
+				a.site = "cross-site"
+				return a
+			},
+			status: wantActionStatus,
+			body:   wantActionBody,
+		},
+		{
+			name: "the browser sent no Sec-Fetch-Site at all",
+			vary: func(_ *testing.T, _ *refuser, a attempt) attempt {
+				a.site = absent
+				return a
+			},
+			status: wantActionStatus,
+			body:   wantActionBody,
+		},
+		{
+			name: "the form carried no page token",
+			vary: func(_ *testing.T, _ *refuser, a attempt) attempt {
+				a.token = absent
+				return a
+			},
+			status: wantActionStatus,
+			body:   wantActionBody,
+		},
+		{
+			name: "the token was minted for another identity",
+			vary: func(t *testing.T, r *refuser, a attempt) attempt {
+				t.Helper()
+
+				a.token = mustMint(t, r.pageKey, testStrangerEmail, testTime)
+				return a
+			},
+			status: wantActionStatus,
+			body:   wantActionBody,
+		},
+		{
+			name:          "the path names no session this host ever had",
+			namesASession: true,
+			vary: func(_ *testing.T, _ *refuser, a attempt) attempt {
+				// Well-formed — 32 lowercase hex — so the route matches it and what
+				// refuses is the lookup rather than the shape check in front of it.
+				a.id = strings.Repeat("c", session.IDLen)
+				return a
+			},
+			status: wantNotFoundStatus,
+			body:   wantNotFoundBody,
+		},
+		{
+			name:          "the path names a session another operator owns",
+			namesASession: true,
+			vary: func(t *testing.T, r *refuser, a attempt) attempt {
+				t.Helper()
+
+				theirs, _ := r.fixture.plant(t, session.Session{
+					Owner: stranger, Name: "not-yours", WorkDir: r.fixture.repo,
+				})
+				a.id = theirs.ID
+				return a
+			},
+			status: wantNotFoundStatus,
+			body:   wantNotFoundBody,
+		},
+	}
+}
+
+// TestRefusalIsNotARedirect is FR-025, and the half of T014 that is an exclusion
+// rather than a change: every action answers with a 303, and no refusal does.
+//
+// **Must fail when** a refusal is answered with a redirect. Sending an
+// unauthorised caller somewhere tells them their request was processed — they
+// follow the Location, land on the fleet, and read a banner about an action this
+// daemon refused to take. It is worse than misleading: the answers milestone 3
+// made uniform stop being uniform the moment one of them carries a Location, and
+// a caller probing this door learns which of their forgeries got far enough to
+// be redirected.
+//
+// The redirect claim is asserted first and on its own, so that a route which
+// grew a redirecting refusal fails with the sentence above rather than with a
+// status mismatch that reads like a typo.
+//
+// Every case is driven at every registered action route, because FR-025 is a
+// property of the door rather than of any one handler. The two lookup cases
+// cannot reach the create, which names no session — noted on the case rather
+// than silently skipped.
+//
+// What is deliberately **not** here is the unconfirmed destroy. That one does
+// redirect, and must: the operator was verified, the gate admitted them, and
+// what they are told is that nothing was torn down (FR-029). FR-025 is about a
+// caller this daemon would not act for at all, which is what every row below is.
+//
+// The last block is the non-vacuity and it is not decoration: every assertion
+// above is satisfied by a daemon that refuses everything and redirects nowhere.
+// It makes the opposite claim on the same routes through the same fixture —
+// a request nothing refuses *is* answered with a 303 — which is what makes the
+// rows above an exclusion rather than a description of a door that never works.
+func TestRefusalIsNotARedirect(t *testing.T) {
+	t.Parallel()
+
+	for _, route := range mutatingRoutes() {
+		t.Run(route.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, c := range refusalShapes() {
+				if c.namesASession && !route.namesASession {
+					continue
+				}
+
+				t.Run(c.name, func(t *testing.T) {
+					t.Parallel()
+
+					r := newRefuser(t)
+					w := r.send(t, route, c.vary(t, r, r.wellFormed(t, r.mine(t).ID)))
+
+					// The claim, stated on its own. The status is what a browser acts
+					// on and the Location is what it acts on it with, so both are
+					// asserted: a 303 with no Location strands the caller, and a
+					// Location on a 403 is a header the next well-meaning edit turns
+					// into a redirect.
+					if w.Code >= http.StatusMultipleChoices && w.Code < http.StatusBadRequest {
+						t.Fatalf("the refusal was answered %d to %q; a refusal is never a redirect (FR-025) — "+
+							"sending an unauthorised caller somewhere tells them their request was processed",
+							w.Code, w.Header().Get(headerLocation))
+					}
+					if got := w.Header().Get(headerLocation); got != "" {
+						t.Errorf("the refusal carried %s: %q; want no such header", headerLocation, got)
+					}
+
+					// And it is still the uniform answer it was before T014. A refusal
+					// that stopped redirecting by answering something new of its own
+					// would satisfy both claims above and lose what FR-004 and FR-017
+					// are for.
+					if w.Code != c.status {
+						t.Fatalf("status = %d (%s); want %d — the uniform answer this refusal had before the redirect",
+							w.Code, w.Body.String(), c.status)
+					}
+					if got := w.Body.String(); got != c.body {
+						t.Errorf("body\n%s\nwant the uniform answer\n%s", got, c.body)
+					}
+				})
+			}
+
+			t.Run("a request nothing refuses is answered with a redirect", func(t *testing.T) {
+				t.Parallel()
+
+				r := newRefuser(t)
+				wantOutcome(t, r.send(t, route, r.wellFormed(t, r.mine(t).ID)), route.succeeds)
+			})
+		})
+	}
+}
+
+// --- US3: every action with no script at all (T016) -------------------------
+//
+// SC-006, per action, and the claim US3 exists for. T014 made every action
+// answer a 303 and T015 fixed what deliberately does not; neither follows the
+// redirect, and the operator this story is about is the one who does. Without a
+// script that is the whole interaction: a form post, and the GET the browser
+// makes of the Location it was handed. Milestone 3 answered the first half
+// correctly and left that operator on a bare `<p>` with no page around it, which
+// is a defect only a test that makes the second request can see.
+//
+// No audit assertion in this section, deliberately, and not because there is
+// nothing to say: the four per-route tests above each count their action's
+// record while it is still the only one. Following a redirect is a second
+// request and leaves a dashboard.view of its own, so a count taken here would
+// either have to run before the page is opened — where it duplicates theirs — or
+// be a count of two requests, which is not what FR-041 claims about either.
+
+// withoutScript is every registered action route driven the way a browser with
+// no script drives them: the post refuser already builds, and then the GET of
+// whatever Location came back.
+//
+// It embeds that fixture rather than replacing it because what varies here is
+// still the route — the thing refuser and mutatingRoutes exist for — and a
+// fixture of this section's own would be a second way to build the one request
+// these doors take. What it adds is the second half of the interaction, which is
+// the half US3 is about.
+type withoutScript struct{ *refuser }
+
+// wholePage is what tells the page an action returns to from the fragment
+// milestone 3 answered with.
+//
+// The first two are the document itself, which a fragment has none of. The third
+// is the fleet's own shell, so a page that is *some* whole page — the not-found,
+// a refusal — does not pass. The fourth is the one that makes "usable" more than
+// "renders": the create form is on it, carrying a freshly minted token, so the
+// operator who just acted can act again without going anywhere. That is the
+// difference between landing somewhere sensible and landing somewhere.
+var wholePage = []string{
+	"<!doctype html>",
+	`<html lang="en">`,
+	`<main class="shell"`,
+	`<form class="create-form"`,
+}
+
+// callerSentence is what a caller writes into a form when the thing they are
+// attacking is the page rather than the host: a claim about this daemon, wrapped
+// in markup, addressed to the one operator who trusts this page about their own
+// machine.
+const callerSentence = `<em>the daemon says your key is exposed</em>`
+
+// callerFragments is every shape of it a page must not carry. The escaped forms
+// are named because escaping is not the claim — html/template would render a
+// reflected value harmlessly, and a harmless lie on this page is still a lie
+// this daemon told.
+var callerFragments = []string{
+	callerSentence,
+	"the daemon says your key is exposed",
+	"<em",
+	"&lt;em",
+}
+
+// follows is the browser doing what the 303 told it to, with nothing running on
+// the page: it re-issues the Location as a GET and reads what comes back.
+//
+// The address comes off the response's own header rather than being rebuilt
+// here. A URL this test composed would prove that the fleet renders a code the
+// test chose; what is under test is that it renders the one the daemon wrote.
+//
+// It carries the edge's assertion and no Sec-Fetch-Site, which is what a
+// navigation is: the cross-site check guards the actions, and a GET of the fleet
+// that demanded it would refuse every operator who followed a link to it.
+func (s withoutScript) follows(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+
+	to := w.Header().Get(headerLocation)
+	if to == "" {
+		t.Fatalf("the action answered %d with no %s; a browser with no script has nowhere to go from here",
+			w.Code, headerLocation)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, to, nil)
+	r.Header.Set(headerAccessAssertion, s.keys.mint(t, s.keys.claims()))
+
+	landed := httptest.NewRecorder()
+	s.ServeHTTP(landed, r)
+	if landed.Code != http.StatusOK {
+		t.Fatalf("following %s to %q = %d (%s); want %d — an action that redirects somewhere unusable is the defect US3 is about",
+			headerLocation, to, landed.Code, landed.Body.String(), http.StatusOK)
+	}
+	return landed.Body.String()
+}
+
+// states asserts the sentence the page an operator landed on is carrying.
+func statesOutcome(t *testing.T, page, want string) {
+	t.Helper()
+
+	if got := bannerOn(page); got != want {
+		t.Errorf("the page states\n%q\nwant outcome.go's own\n%q\nfull page:\n%s", got, want, page)
+	}
+}
+
+// carriesNothingOfTheCallers is FR-022 read at the far end: whatever the caller
+// wrote, none of it is on the page they were sent to.
+func carriesNothingOfTheCallers(t *testing.T, page string) {
+	t.Helper()
+
+	for _, fragment := range callerFragments {
+		if strings.Contains(page, fragment) {
+			t.Errorf("the page carries %q, which the caller wrote — an outcome is chosen from a fixed set by the daemon and never built from what arrived (FR-022):\n%s",
+				fragment, page)
+		}
+	}
+}
+
+// TestEveryActionIsUsableWithoutScript is SC-006 and FR-021 together, for each
+// of create, destroy, rename, compact and the mode toggle: the action answers
+// 303, and the page the browser then asks for is a whole, usable fleet stating
+// what happened in words from outcome.go's fixed vocabulary.
+//
+// The toggle joined the sweep with the transition behind it (T020). It was named
+// for four while the fifth route could only refuse — a row here needs a success
+// to drive, and answering one this daemon had not performed is the defect that
+// route's own tests are about.
+//
+// **Must fail when** an outcome is built from caller-supplied text (FR-022). It
+// fails three ways, because there are three ways to write that defect. A handler
+// that redirected with a field it reads — `outcome(r.PostForm.Get(fieldName))` is
+// the whole of it — sends a code no vocabulary spells, and the fleet renders no
+// banner at all: the first case sees a page that says nothing happened. A handler
+// that let the caller name the code outright is the second case, which sends a
+// *real* code the route did not choose and would land an operator on an alarm
+// about a teardown nobody attempted. And a refusal that quoted the text it
+// refused is the third, which is the one a well-meaning hand actually writes —
+// "that name is not usable" reads better with the name in it, and it is caller
+// text on its way back out through a page (FR-042).
+//
+// It must also fail when the answer stops being a page. Following the redirect is
+// what makes that visible: milestone 3's four routes answered exactly one request
+// each, correctly, and the operator with no script was left on a fragment — so a
+// test that stopped at the 303 would have passed against the defect this story
+// was written for.
+func TestEveryActionIsUsableWithoutScript(t *testing.T) {
+	t.Parallel()
+
+	for _, route := range mutatingRoutes() {
+		t.Run(route.name, func(t *testing.T) {
+			t.Parallel()
+
+			t.Run("it lands the browser on a whole page that says what happened", func(t *testing.T) {
+				t.Parallel()
+
+				s := withoutScript{newRefuser(t)}
+				w := s.send(t, route, s.wellFormed(t, s.mine(t).ID))
+
+				wantOutcome(t, w, route.succeeds)
+
+				page := s.follows(t, w)
+				for _, mark := range wholePage {
+					if !strings.Contains(page, mark) {
+						t.Errorf("the page carries no %s, so this is not a fleet an operator can act from again:\n%s", mark, page)
+					}
+				}
+				statesOutcome(t, page, route.states)
+			})
+
+			t.Run("nothing the caller sent decides what the page says", func(t *testing.T) {
+				t.Parallel()
+
+				s := withoutScript{newRefuser(t)}
+				a := s.wellFormed(t, s.mine(t).ID)
+				// Three fields no route reads, and the first is the attack proper: a
+				// code that really is in the vocabulary, so a handler taking the
+				// outcome from the form would not merely render nothing — it would
+				// tell this operator a shell may have survived a destroy they never
+				// asked for.
+				a.smuggled = url.Values{
+					queryOutcome: []string{string(outcomeTeardownUnverified)},
+					"message":    []string{callerSentence},
+					"banner":     []string{callerSentence},
+				}
+				w := s.send(t, route, a)
+
+				wantOutcome(t, w, route.succeeds)
+
+				page := s.follows(t, w)
+				statesOutcome(t, page, route.states)
+				if strings.Contains(page, outcomeAlarmClass) {
+					t.Errorf("a form field named the alarming outcome and the page rendered it:\n%s", page)
+				}
+				carriesNothingOfTheCallers(t, page)
+			})
+
+			// The compact reads no field, so there is nothing on it to fill in —
+			// see mutatingRoute.chosen. Skipping it is the absence of a case rather
+			// than a case that does not apply.
+			if route.chosen.field == "" {
+				return
+			}
+
+			t.Run("a refusal the caller's own words caused is stated in the daemon's", func(t *testing.T) {
+				t.Parallel()
+
+				s := withoutScript{newRefuser(t)}
+				a := s.wellFormed(t, s.mine(t).ID)
+				a.smuggled = url.Values{route.chosen.field: []string{callerSentence}}
+				w := s.send(t, route, a)
+
+				wantOutcome(t, w, route.chosen.yields)
+
+				page := s.follows(t, w)
+				statesOutcome(t, page, route.chosen.states)
+				carriesNothingOfTheCallers(t, page)
+			})
+		})
+	}
+}
+
+// --- US4: the mode toggle (T019) ---------------------------------------------
+//
+// The fifth action route, and the only one that reads a value naming what a
+// session runs. Everything below drives the **registered** route through
+// Server.ServeHTTP, for the reason the destroy's cases do: a toggle wired with
+// handleBrowser instead of handleAction would leave the cross-site defence
+// absent from the one route that can restart an unsandboxed assistant under a
+// different command, and every case that drove the handler directly would still
+// be green.
+
+// The toggle's own answers, and the action its records carry. Each is written
+// out here rather than read from the constant the code writes, which is the
+// discipline every literal in this file follows: a test asserting against
+// outcomeBadMode would prove only that the code agrees with itself, and
+// contracts/session-mode.md is what fixes `session.mode`.
+const (
+	wantBadModeOutcome         = outcome("bad-mode")
+	wantModeUnconfirmedOutcome = outcome("mode-unconfirmed")
+	wantModeFailedOutcome      = outcome("mode-failed")
+	wantModeChangedOutcome     = outcome("mode-changed")
+
+	wantModeAction = "session.mode"
+)
+
+// The two words this route accepts, spelled as a form carries them.
+const (
+	modeLocal  = "local"
+	modeRemote = "remote"
+)
+
+// plantedStartCommand is the command *name* every session below is started
+// under, and the field the mode is derived from (T018).
+//
+// Every refusal here asserts the record still carries it afterwards, and that is
+// what "the mode is unchanged" means on a record: there is deliberately no mode
+// field to read, so the name is the whole of the state a toggle can move.
+const plantedStartCommand = "rc"
+
+// offersRemoteControl configures this daemon the way an operator who wants the
+// toggle configures theirs: a named set with something other than the default in
+// it, and which of those names means remote (#58).
+//
+// It is a method on the server fixture rather than on either of the two that use
+// it, because both need it for the same reason — a transition resolves the mode
+// against this configuration, so a manager nobody told has no remote mode to
+// move to and refuses every toggle. Nothing here runs: the fake executes
+// nothing, so the command lines are spelled to be recognisable in an argv.
+func (s *testServer) offersRemoteControl() {
+	s.fixture.mgr.SetStartCommands(config.NewStartCommands(map[string]string{
+		config.DefaultStartCommandName: "local-command",
+		plantedStartCommand:            "remote-command",
+	}))
+	s.fixture.mgr.SetRemoteControlCommand(plantedStartCommand)
+}
+
+// toggler is the registered mode route with everything behind it readable: the
+// store, the fake host, and the trail.
+type toggler struct {
+	*testServer
+	keys *keyServer
+}
+
+func newToggler(t *testing.T) *toggler {
+	t.Helper()
+
+	keys := newKeyServer(t)
+	return &toggler{testServer: newAuditedServerWith(t, keys.validator(t)), keys: keys}
+}
+
+// live plants a running session of this operator's own, started under a
+// configured command name.
+func (g *toggler) live(t *testing.T) session.Session {
+	t.Helper()
+
+	planted, _ := g.fixture.plant(t, session.Session{
+		Name:         "to-be-toggled",
+		WorkDir:      g.fixture.repo,
+		StartCommand: plantedStartCommand,
+	})
+	return planted
+}
+
+// asked is the form a rendered control submits: the page token, the confirming
+// step FR-029 requires, and the mode.
+func (g *toggler) asked(t *testing.T, mode string) url.Values {
+	t.Helper()
+
+	form := url.Values{}
+	form.Set(fieldPageToken, mustMint(t, g.pageKey, testOperatorEmail, testTime))
+	form.Set(fieldConfirm, confirmYes)
+	form.Set(fieldMode, mode)
+	return form
+}
+
+// post submits one form at the mode route, as the browser this daemon rendered
+// the page for.
+func (g *toggler) post(t *testing.T, id string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+
+	return g.send(t, "/dashboard/sessions/"+id+"/mode", secFetchSiteSameOrigin, form)
+}
+
+// send is post with the browser's own account of where the request came from
+// chosen by the caller — the one thing the cross-site cases have to vary and a
+// rendered control never does.
+//
+// post is expressed through it rather than beside it so that a varied case
+// differs from the ordinary one in exactly the field it means to vary. An
+// initiator of absent sends no Sec-Fetch-Site header at all, which is a
+// different shape from sending an empty one and is its own cause on a route that
+// changes something.
+func (g *toggler) send(t *testing.T, path, site string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	r.Header.Set(headerContentType, contentTypeForm)
+	r.Header.Set(headerAccessAssertion, g.keys.mint(t, g.keys.claims()))
+	if site != absent {
+		r.Header.Set(headerSecFetchSite, site)
+	}
+
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, r)
+	return w
+}
+
+// runs is the command name the daemon's own record still carries, read back out
+// of the store rather than off the copy the test planted.
+func (g *toggler) runs(t *testing.T, s session.Session) string {
+	t.Helper()
+
+	live, err := g.fixture.store.Get(s.ID, auth.CallerOperator)
+	if err != nil {
+		t.Fatalf("read the store for session %s: %v", s.ID, err)
+	}
+	return live.StartCommand
+}
+
+// untouched is the assertion every refusal below shares: the record still names
+// the command it named, and nothing reached the host at all.
+//
+// The second half is what the first cannot see. A toggle that restarted the pane
+// and then failed to write the record would leave the store looking exactly like
+// a request refused before it ran, and the difference between those two is a
+// process the operator did not ask for, running unsandboxed.
+func (g *toggler) untouched(t *testing.T, s session.Session) {
+	t.Helper()
+
+	if got := g.runs(t, s); got != plantedStartCommand {
+		t.Errorf("the record runs %q; want %q — a refused toggle changes nothing", got, plantedStartCommand)
+	}
+	if calls := g.fixture.tmux.Calls(); len(calls) != 0 {
+		t.Errorf("a refused toggle reached the host %d times (%v); want 0 — nothing is restarted by a request this daemon would not carry out",
+			len(calls), calls)
+	}
+}
+
+// answered is the Location and the body together, which is the whole of what a
+// caller gets back from an action: a 303 answering a POST carries no body, so
+// anything of theirs that survived is in the one header that varies.
+//
+// The security headers are deliberately not searched. `script-src` contains the
+// two letters of a command name the table below submits, and a test that read
+// them would fail on the content-security policy rather than on a disclosure.
+func answered(w *httptest.ResponseRecorder) string {
+	return w.Header().Get(headerLocation) + "\n" + w.Body.String()
+}
+
+// TestArbitraryModeValueRefused is FR-030 in the direction that matters most: a
+// `mode` field naming anything other than the two words this daemon has is
+// refused, uniformly, and nothing runs.
+//
+// **Must fail when** the value is passed through as a command. The host-call
+// count is the direct claim — a handler that took the field as something to run
+// would have reached tmux — and the answer and the trail are the two places the
+// value could otherwise surface.
+//
+// The table is the shapes a hostile or careless value arrives in. The first is
+// the attack proper, spelled as contracts/session-mode.md spells it. The second
+// is subtler and is the one a well-meaning edit produces: `rc` is a real
+// start-command *name* on this daemon, and a route accepting names rather than
+// modes would be the browser choosing which configured command to run — a wider
+// surface than the two-word toggle FR-030 permits, and one nothing here would
+// catch if the check were a lookup instead of a comparison. The rest are
+// near-misses — case, whitespace, both modes at once — because the check is a
+// comparison rather than a parse, and each is what a hand-built request or a
+// helpful client sends.
+//
+// The last stanza is the non-vacuity: a real mode is answered differently.
+// Without it every case here is satisfied by a route that refuses everyone.
+func TestArbitraryModeValueRefused(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"a command line":                   "claude --dangerously-skip-permissions",
+		"a configured start-command name":  plantedStartCommand,
+		"the default start command's name": "default",
+		"the field is absent":              absent,
+		"the field is empty":               "",
+		"the value is not lowercase":       "Local",
+		"the value carries whitespace":     " remote ",
+		"both modes at once":               "local,remote",
+		"a mode with something after it":   "local; claude --dangerously-skip-permissions",
+		"a path to something on this host": "/usr/local/bin/claude",
+	}
+
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			g := newToggler(t)
+			live := g.live(t)
+
+			form := g.asked(t, modeLocal)
+			if value == absent {
+				form.Del(fieldMode)
+			} else {
+				form.Set(fieldMode, value)
+			}
+
+			w := g.post(t, live.ID, form)
+
+			wantOutcome(t, w, wantBadModeOutcome)
+			g.untouched(t, live)
+
+			// Only the values long enough that a match is a disclosure rather than
+			// a coincidence. Two of the entries above are shorter than the fixed
+			// strings a redirect and a reason are built from, and asserting on
+			// those would be asserting about the alphabet.
+			if len(value) >= 4 {
+				if got := answered(w); strings.Contains(got, value) {
+					t.Errorf("the answer carried the submitted value back:\n%s", got)
+				}
+				if got := g.sink.String(); strings.Contains(got, value) {
+					t.Errorf("the trail carried the submitted value:\n%s", got)
+				}
+			}
+
+			rec := g.only(t)
+			if got, want := rec["action"], wantModeAction; got != want {
+				t.Errorf("action = %v; want %v — the gate admitted this request; the value is what refused it", got, want)
+			}
+			if got, want := rec["decision"], string(audit.Deny); got != want {
+				t.Errorf("decision = %v; want %v", got, want)
+			}
+			if got, want := rec["reason"], errModeNotOffered.Error(); got != want {
+				t.Errorf("reason = %v; want %v — the reason names the check and never the value (FR-042)", got, want)
+			}
+		})
+	}
+
+	offered := newToggler(t)
+	live := offered.live(t)
+	if w := offered.post(t, live.ID, offered.asked(t, modeRemote)); w.Header().Get(headerLocation) == "/?outcome="+string(wantBadModeOutcome) {
+		t.Fatalf("a toggle naming %q was refused as a mode this daemon does not offer; every case above is satisfied by a route that refuses everyone", modeRemote)
+	}
+}
+
+// TestToggleRequiresConfirm is FR-029 on the toggle: a mode change without the
+// confirming step is refused, and the session goes on running what it was
+// running.
+//
+// **Must fail when** the confirm check is removed — every case below then reaches
+// the transition and answers something other than the unconfirmed outcome.
+//
+// The near-misses are the destroy's, for the destroy's reason: `on`, `true` and
+// an upper-case `YES` are what a stray checkbox, a hand-built request and a
+// helpful client produce, and none of them is the deliberate act FR-029 asks
+// for. What a toggle ends is the process the operator is watching, and the
+// conversation inside it survives only because the transition asks for it to —
+// so a mode change nobody meant to make is not a refusal worth softening.
+func TestToggleRequiresConfirm(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"the field is absent":        absent,
+		"the field is empty":         "",
+		"the operator said no":       "no",
+		"a checkbox said on":         "on",
+		"a client said true":         "true",
+		"the value is not lowercase": "YES",
+	}
+
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			g := newToggler(t)
+			live := g.live(t)
+
+			form := g.asked(t, modeRemote)
+			if value == absent {
+				form.Del(fieldConfirm)
+			} else {
+				form.Set(fieldConfirm, value)
+			}
+
+			w := g.post(t, live.ID, form)
+
+			wantOutcome(t, w, wantModeUnconfirmedOutcome)
+			g.untouched(t, live)
+
+			rec := g.only(t)
+			if got, want := rec["action"], wantModeAction; got != want {
+				t.Errorf("action = %v; want %v — the gate admitted this request; the confirming step is what refused it", got, want)
+			}
+			if got, want := rec["decision"], string(audit.Deny); got != want {
+				t.Errorf("decision = %v; want %v", got, want)
+			}
+			if got, want := rec["reason"], errModeUnconfirmed.Error(); got != want {
+				t.Errorf("reason = %v; want %v", got, want)
+			}
+		})
+	}
+
+	confirmed := newToggler(t)
+	live := confirmed.live(t)
+	if w := confirmed.post(t, live.ID, confirmed.asked(t, modeRemote)); w.Header().Get(headerLocation) == "/?outcome="+string(wantModeUnconfirmedOutcome) {
+		t.Fatal("a confirmed toggle was answered as unconfirmed; every refusal above is satisfied by a route that refuses everyone")
+	}
+}
+
+// TestToggleEmitsExactlyOneAuditRecord is FR-041 on the fifth route: one
+// request, one record, under the action contracts/session-mode.md names.
+//
+// **Must fail when** the transition emits records of its own. A toggle ends one
+// process and starts another, and the shape this is written against is the
+// obvious one — a destroy-like record for the stop and a create-like record for
+// the start — which would leave an operator counting two events for a thing they
+// did once, on the route where "how many times did this happen" matters most.
+//
+// Every shape a request can take is driven rather than only the accepted one,
+// because the count is what FR-041 claims about *requests* and not about
+// successes: a refusal recorded twice is the same defect. The decision is
+// deliberately not asserted here — what this holds is the count and the name,
+// and both stay true whichever way the transition behind the door goes.
+func TestToggleEmitsExactlyOneAuditRecord(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		vary       func(form url.Values)
+		namesTheID bool
+	}{
+		"a toggle this daemon admits": {
+			vary:       func(url.Values) {},
+			namesTheID: true,
+		},
+		"a toggle naming no mode this daemon has": {
+			vary: func(form url.Values) { form.Set(fieldMode, "claude --dangerously-skip-permissions") },
+		},
+		"a toggle nobody confirmed": {
+			vary: func(form url.Values) { form.Del(fieldConfirm) },
+		},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			g := newToggler(t)
+			live := g.live(t)
+
+			form := g.asked(t, modeRemote)
+			c.vary(form)
+			g.post(t, live.ID, form)
+
+			rec := g.only(t)
+			if got, want := rec["action"], wantModeAction; got != want {
+				t.Errorf("action = %v; want %v", got, want)
+			}
+			if !c.namesTheID {
+				return
+			}
+			// Stamped from the daemon's own record, and only once the ownership
+			// check has matched it to this operator: it is what makes a toggle
+			// findable in the trail under the session it was against.
+			if got := rec["session_id"]; got != live.ID {
+				t.Errorf("session_id = %v; want %q", got, live.ID)
+			}
+		})
+	}
+}
+
+// TestToggleCrossSiteBothHalves is AR-005 on the newest action route: each half
+// of the cross-site defence refuses on its own, with the other satisfied.
+//
+// **Must fail when** the route is registered with handleBrowser rather than
+// handleAction, and when a case satisfies neither half — which is why each one
+// below sends a *valid* page token or a *real* same-origin header for the half it
+// is not varying. Nothing here disables a check: a build tag or a flag that
+// turned one off is the exact defect this gate exists to prevent, and it would
+// leave every case passing against a daemon with no defence at all.
+//
+// The absent header is a case of its own rather than a variant of the wrong one.
+// A stream tolerates it — non-browser clients send no fetch metadata — and a
+// route that changes something does not, because the only legitimate caller here
+// is a form this daemon rendered, and a browser sends the header on every one.
+//
+// The record is asserted as dashboard.reject rather than session.mode, which is
+// the distinction research R5 draws: an identity that got in and *then* failed
+// the cross-site check is a more alarming event than one that never got in, and
+// an operator counting toggles must not be counting these with them.
+func TestToggleCrossSiteBothHalves(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		site string
+		vary func(form url.Values)
+	}{
+		"the form carried no page token": {
+			site: secFetchSiteSameOrigin,
+			vary: func(form url.Values) { form.Del(fieldPageToken) },
+		},
+		"the form carried a page token this daemon never minted": {
+			site: secFetchSiteSameOrigin,
+			vary: func(form url.Values) { form.Set(fieldPageToken, "not-a-token-this-daemon-minted") },
+		},
+		"the browser said the request came from another site": {
+			site: "cross-site",
+			vary: func(url.Values) {},
+		},
+		"the browser said nothing about where the request came from": {
+			site: absent,
+			vary: func(url.Values) {},
+		},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			g := newToggler(t)
+			live := g.live(t)
+
+			form := g.asked(t, modeRemote)
+			c.vary(form)
+
+			w := g.send(t, "/dashboard/sessions/"+live.ID+"/mode", c.site, form)
+
+			if w.Code != wantActionStatus {
+				t.Fatalf("status = %d (%s); want %d — the mode route is not behind the gate",
+					w.Code, w.Body.String(), wantActionStatus)
+			}
+			if got := w.Body.String(); got != wantActionBody {
+				t.Errorf("body\n%s\nwant the gate's uniform refusal\n%s", got, wantActionBody)
+			}
+			g.untouched(t, live)
+
+			if got, want := g.only(t)["action"], string(audit.ActionDashboardReject); got != want {
+				t.Errorf("action = %v; want %v", got, want)
+			}
+		})
+	}
+
+	admitted := newToggler(t)
+	live := admitted.live(t)
+	if w := admitted.post(t, live.ID, admitted.asked(t, modeRemote)); w.Code == wantActionStatus {
+		t.Fatalf("a toggle satisfying both halves was answered %d; every case above is satisfied by a route that refuses everyone", w.Code)
+	}
+}
+
+// TestToggleAgainstASessionThatIsNotTheOperatorsIsUniform is the ownership half
+// of the security checklist on the newest route: a toggle naming a session this
+// operator may not act on is the uniform not-found, whichever of the three
+// causes applied (FR-017, SC-009).
+//
+// **Must fail when** the refusal becomes a redirect. FR-025 keeps a refusal off
+// the outcome path — sending an unauthorised caller to a page is telling them
+// their request was processed — and the three causes are told apart on the
+// record alone, which is what stops this route being an oracle for which
+// identifiers on this host are real.
+//
+// There is deliberately no mutation that removes the ownership check here,
+// because there is nothing to remove: Manager.View cannot be called without an
+// owner, so a handler that skipped the check would have to reach past the
+// manager into the store. What this holds is the answer's shape.
+func TestToggleAgainstASessionThatIsNotTheOperatorsIsUniform(t *testing.T) {
+	t.Parallel()
+
+	// Not on the allowlist and not this operator's owner: a second operator whose
+	// sessions this one must not be able to detect the existence of.
+	const stranger auth.CallerID = "a-second-operator"
+
+	cases := []struct {
+		name   string
+		target func(t *testing.T, g *toggler) session.Session
+		reason error
+	}{
+		{
+			name: "an identifier no session on this host ever had",
+			target: func(*testing.T, *toggler) session.Session {
+				return session.Session{ID: strings.Repeat("d", session.IDLen)}
+			},
+			reason: session.ErrSessionNotFound,
+		},
+		{
+			name: "a session another operator owns",
+			target: func(t *testing.T, g *toggler) session.Session {
+				t.Helper()
+				theirs, _ := g.fixture.plant(t, session.Session{
+					Owner: stranger, Name: "not-this-operators", WorkDir: g.fixture.repo,
+					StartCommand: plantedStartCommand,
+				})
+				return theirs
+			},
+			reason: session.ErrSessionNotFound,
+		},
+		{
+			name: "a session of the operator's own that is no longer there",
+			target: func(t *testing.T, g *toggler) session.Session {
+				t.Helper()
+				gone, _ := g.fixture.plant(t, session.Session{
+					Name: "already-gone", WorkDir: g.fixture.repo, State: session.StateDead,
+					StartCommand: plantedStartCommand,
+				})
+				return gone
+			},
+			reason: session.ErrSessionDead,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := newToggler(t)
+			target := tc.target(t, g)
+
+			w := g.post(t, target.ID, g.asked(t, modeRemote))
+
+			if w.Code != wantNotFoundStatus {
+				t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), wantNotFoundStatus)
+			}
+			if got := w.Body.String(); got != wantNotFoundBody {
+				t.Errorf("body\n%s\nwant\n%s", got, wantNotFoundBody)
+			}
+			if calls := g.fixture.tmux.Calls(); len(calls) != 0 {
+				t.Errorf("the host was reached %d times (%v) for a session that is not this operator's to act on", len(calls), calls)
+			}
+
+			rec := g.only(t)
+			if got, want := rec["reason"], tc.reason.Error(); got != want {
+				t.Errorf("reason = %v; want %v — the record is the only place the cause is named", got, want)
+			}
+			if strings.Contains(w.Body.String(), tc.reason.Error()) {
+				t.Errorf("the response quotes the reason back:\n%s", w.Body.String())
+			}
+		})
+	}
+}
+
+// TestToggleSaysSoWhenItCannotAct is the honest half of the route, now that the
+// transition behind it exists (T020): a toggle this daemon admits but cannot
+// carry out is told it did not happen, and the two reasons it cannot are told
+// apart in the trail.
+//
+// **Must fail when** this route answers a success it did not perform. An
+// operator told their session is now remote-controlled, on a daemon that has no
+// remote-control command to run, would be reading a card describing a session
+// that is still local — the one claim this route must never get wrong, and it is
+// the reason both arms below assert the record as well as the answer.
+//
+// Neither refusal is a fact about the session. One says this daemon configures
+// no such command and the other says the session is already there, and both are
+// answers an operator can read off their own settings page — which is what makes
+// them safe to distinguish in the journal while the page says the same sentence
+// for each.
+func TestToggleSaysSoWhenItCannotAct(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		// configure is what this daemon was told about modes. The zero fixture is
+		// a daemon that configures no remote control at all, which is the first
+		// case and needs no setup.
+		configure func(g *toggler)
+		mode      string
+		reason    error
+	}{
+		"remote, on a daemon configuring no remote-control command": {
+			configure: func(*toggler) {},
+			mode:      modeRemote,
+			reason:    errModeUnavailable,
+		},
+		"the mode the session is already in": {
+			configure: (*toggler).offersRemoteControl,
+			// The planted session runs plantedStartCommand, which is the name this
+			// daemon has just been told means remote.
+			mode:   modeRemote,
+			reason: errModeUnchanged,
+		},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			g := newToggler(t)
+			c.configure(g)
+			live := g.live(t)
+
+			w := g.post(t, live.ID, g.asked(t, c.mode))
+
+			wantOutcome(t, w, wantModeFailedOutcome)
+			g.untouched(t, live)
+
+			rec := g.only(t)
+			if got, want := rec["decision"], string(audit.Deny); got != want {
+				t.Errorf("decision = %v; want %v — a mode this daemon did not change is not an allowed action", got, want)
+			}
+			if got, want := rec["reason"], c.reason.Error(); got != want {
+				t.Errorf("reason = %v; want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestToggleRestartsTheSessionUnderTheOtherCommand is the route's success, and
+// the non-vacuity every refusal above rests on: a daemon configured for both
+// modes carries the transition out, says so in the fixed vocabulary, and leaves
+// the record naming the command the session is now running.
+//
+// **Must fail when** the route answers `mode-changed` without the transition
+// having happened. The host calls are the direct claim — the two sends and the
+// option write Manager.SetMode is made of — because an answer alone is exactly
+// what a stub produces, and this daemon's whole job on this route is that the
+// word on the card and the process in the pane agree.
+func TestToggleRestartsTheSessionUnderTheOtherCommand(t *testing.T) {
+	t.Parallel()
+
+	g := newToggler(t)
+	g.offersRemoteControl()
+	live := g.live(t)
+
+	w := g.post(t, live.ID, g.asked(t, modeLocal))
+
+	wantOutcome(t, w, wantModeChangedOutcome)
+
+	if got := g.runs(t, live); got != config.DefaultStartCommandName {
+		t.Errorf("the record runs %q; want %q — the mode a card derives comes from this name", got, config.DefaultStartCommandName)
+	}
+	// The pane was restarted rather than the record merely relabelled. Asserted as
+	// a count of what reached the host and the flag on the line that was typed,
+	// which is the whole of what the daemon claims to have done.
+	calls := g.fixture.tmux.Calls()
+	if len(calls) == 0 {
+		t.Fatal("the toggle reached the host 0 times; a mode the daemon only wrote down is a card that does not describe its session")
+	}
+	var restarted bool
+	for _, call := range calls {
+		if slices.ContainsFunc(call.Argv, func(arg string) bool { return strings.Contains(arg, "--continue") }) {
+			restarted = true
+		}
+		if call.Op == tmuxctl.OpNew || call.Op == tmuxctl.OpKill {
+			t.Errorf("the toggle ran %s (%q); the session and its scrollback are the things it must not touch", call.Op, call.Argv)
+		}
+	}
+	if !restarted {
+		t.Errorf("nothing typed into the pane carried --continue, so the conversation did not survive the toggle: %v", calls)
+	}
+
+	rec := g.only(t)
+	if got, want := rec["decision"], string(audit.Allow); got != want {
+		t.Errorf("decision = %v; want %v", got, want)
+	}
+	if got := rec["session_id"]; got != live.ID {
+		t.Errorf("session_id = %v; want %q", got, live.ID)
 	}
 }

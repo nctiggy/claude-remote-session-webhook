@@ -265,6 +265,7 @@ func TestUnitInlineValuesAreTheDaemonDefaults(t *testing.T) {
 		config.EnvCreateRatePerMin: strconv.Itoa(config.DefaultCreateRatePerMin),
 		config.EnvMaxBodyBytes:     strconv.FormatInt(config.DefaultMaxBodyBytes, 10),
 		config.EnvMaxStreams:       strconv.Itoa(config.DefaultMaxStreams),
+		config.EnvPaneBound:        strconv.Itoa(config.DefaultPaneBound),
 		config.EnvStartCommand:     config.DefaultStartCommand,
 		// Empty is this one's default: the named set adds to the default command
 		// and nothing else exists until an operator writes an entry.

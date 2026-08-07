@@ -10,6 +10,7 @@ package httpapi
 import (
 	"io/fs"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -335,29 +336,22 @@ var templateAction = regexp.MustCompile(`(?s)\{\{.*?\}\}`)
 
 const composedClass = "\x00"
 
-// actionFragments is the markup an action route writes for itself.
+// actionFragments is the markup a route writes for itself rather than rendering.
 //
 // Every other byte a browser is handed comes out of web/templates, and the
-// sweeps below walk that tree — but an action's answer replaces the card it
-// acted on, and by the time a destroy has an answer there is no record left to
-// render a card from, so those four sentences are composed in Go (actions.go).
-// They are markup all the same. Without them here, a class only a fragment
-// carries is styled by a rule "no template renders" in one direction and served
-// unstyled in the other, and both failures look like the opposite mistake.
-// A create's own four join them for the same reason, from the other direction: a
-// refused create has no record to render a card from, so what the operator is
-// told is composed in Go as well. Every action route this milestone adds owes
-// this map its answers, or the class they carry is invisible to both sweeps.
+// sweeps below walk that tree. What is left here is what no template can answer:
+// the uniform not-found, which is written when there is no record to render a
+// card from and must stay byte-identical whichever of its three causes applied.
+//
+// It held nine entries until T014. The other eight were the four routes' own
+// answers, composed in Go because each one replaced the card it acted on — and
+// they are now outcome codes the fleet renders through partials/outcome.html,
+// which this walk already covers. Anything a route writes without a template
+// still owes this map its answer, or the class it carries is styled by a rule
+// "no template renders" in one direction and served unstyled in the other, and
+// both failures look like the opposite mistake.
 var actionFragments = map[string][]byte{
-	"the destroyed marker":            bodyActionDestroyed,
-	"the unconfirmed refusal":         bodyActionUnconfirmed,
-	"the unverified teardown":         bodyActionTeardownUnverified,
-	"the failed destroy":              bodyActionDestroyFailed,
-	"the action not-found":            bodyActionNotFound,
-	"the refused session name":        bodyActionCreateBadName,
-	"the refused working directory":   bodyActionCreateBadWorkDir,
-	"the create refused by the bound": bodyActionCreateLimited,
-	"the failed create":               bodyActionCreateFailed,
+	"the action not-found": bodyActionNotFound,
 }
 
 // renderedClasses is every class name the embedded templates put in the markup,
@@ -395,18 +389,22 @@ func renderedClasses(t *testing.T) map[string]string {
 	}
 
 	// Counted before the fragments are folded in, so a template tree that stopped
-	// rendering classes altogether still fails here rather than being covered by
-	// the four sentences a destroy answers with.
-	found := 0
+	// rendering classes altogether still fails above rather than being covered by
+	// whatever a route composed in Go.
+	//
+	// There is no vacuity guard on the fold itself since T014, and its absence is
+	// deliberate: the eight bodies that used to carry `card-outcome` are outcome
+	// codes now, and the one body left is the uniform not-found, which carries no
+	// class at all. A guard asserting that some Go-composed body is styled would be
+	// asserting something this door is no longer meant to do. The fold stays so
+	// that the next route to write markup without a template is swept the moment it
+	// is added to the map above.
 	for what, fragment := range actionFragments {
 		for _, attr := range classAttr.FindAllStringSubmatch(string(fragment), -1) {
 			for _, name := range strings.Fields(attr[1]) {
-				out[name], found = what, found+1
+				out[name] = what
 			}
 		}
-	}
-	if found == 0 {
-		t.Fatal("no action fragment carries a class, so the outcome an operator is shown is styled by nothing")
 	}
 	return out
 }
@@ -717,6 +715,57 @@ func TestTheScriptSpendsASubmitOnce(t *testing.T) {
 	}
 }
 
+// TestTheToastReadsTheBannerTheDaemonRenders is FR-024 held as code: the in-page
+// behaviour survives T014's redirect rather than being replaced by it.
+//
+// The four actions answer 303 now, so a script that posts one gets the fleet the
+// browser would have landed on. The sentence it shows has to come out of that
+// page's banner — the same closed vocabulary, rendered by the same handler — or
+// the scripted half and the scriptless half start telling an operator two
+// different things about one action.
+//
+// **Must fail when** the script goes on looking for the fragments the routes used
+// to write. That is the drift with no symptom in Go and an obvious one in a
+// browser: every click answers "the host answered without a message", or worse,
+// reads the whole fleet aloud into a corner of the page (#78). The class names
+// are the joint, so they are asserted from both sides — here against the script,
+// and against the template tree by the sweep at the top of this file.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed,
+// which is the footing every other script assertion in this file stands on.
+func TestTheToastReadsTheBannerTheDaemonRenders(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	for selector, why := range map[string]string{
+		".outcome":         "an ordinary outcome is the line the fleet renders, and nothing else on that page is the answer to what the operator just did",
+		".outcome-alarm":   "a teardown that could not be verified is a block rather than a line, and reading it as one would flatten the one outcome FR-023 keeps prominent",
+		".outcome-heading": "the alarming outcome's heading is half of what it says; a toast carrying only the body drops the sentence an operator scans for",
+		".outcome-body":    "the alarming outcome's body is the other half",
+	} {
+		if !regexp.MustCompile(`querySelector\(\s*['"]` + regexp.QuoteMeta(selector) + `['"]\s*\)`).MatchString(source) {
+			t.Errorf("crswd.js never queries %q: %s", selector, why)
+		}
+	}
+
+	// And not the fragments T014 deleted. A file still reaching for them is a
+	// file whose toast has been silently broken since the routes started
+	// redirecting.
+	for _, gone := range []string{".card-outcome", "'Session started.'", `"Session started."`} {
+		if strings.Contains(source, gone) {
+			t.Errorf("crswd.js still reaches for %s, which no route writes since the actions began answering 303", gone)
+		}
+	}
+
+	// textContent and never innerHTML, which is the rule that outlives the class
+	// names: the banner is daemon-authored today, and the toast has to stay safe
+	// after someone makes an outcome carry a name or a path.
+	if strings.Contains(source, ".innerHTML") {
+		t.Error("crswd.js assigns innerHTML; the answer is parsed into an inert document and read as text, which is what keeps a name a caller typed out of this page")
+	}
+}
+
 // TestTheFleetClientSubscribesAndSaysWhenItStops is the script half of US3, and
 // the half TestStreamLossIsVisible cannot see: that test proves the fleet page
 // carries a prepared sentence about a stream that stopped, and markup nothing
@@ -840,6 +889,265 @@ func TestTheFleetUpdatesInPlaceRatherThanReloading(t *testing.T) {
 	// carried would be the second source of truth issue #51 forbids.
 	if !regexp.MustCompile(`replace\(\s*['"]\{n\}['"]`).MatchString(source) {
 		t.Error("crswd.js never fills the {n} the page's sentence leaves for it, so the announcement is a fixed string a reader may not announce twice")
+	}
+}
+
+// TestSubsetAnnounced is FR-045, and it is as much about what this file does
+// *not* do to the working-directory picker as about the sentence it adds.
+//
+// The control is markup (contracts/directory-picker.md): `<input list>` and a
+// `<datalist>` filter as the operator types, take a keyboard, announce their
+// options and leave any path typeable in full, with nothing running. Five of the
+// six picker requirements are the browser's own. The sixth — saying that the
+// list has been narrowed — is the one a browser does not say out loud, and it is
+// an addition to a control that already works.
+//
+// **Must fail when** the announcement becomes the thing that makes the control
+// function. That is the direction this task is most likely to be lost in by
+// improvement rather than by mistake: a file that builds the options, sets the
+// field's value or attaches the `list` attribute has reimplemented the combobox
+// the abandoned branch was rejected for — 225 lines that degrade to nothing with
+// scripting off. So the middle section is a sweep for every operation that would
+// make this file load-bearing, and the last one holds the picker's markup where
+// it is, in the template, where an operator running no script still gets it.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed
+// — the same footing every other script assertion in this file stands on.
+func TestSubsetAnnounced(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	// Something calls it. A query naming the attribute the field renders is as
+	// close to that as a language Go cannot execute allows, and it is the
+	// direction this whole task can be lost in silently — an announcement that is
+	// written, correct, and attached to nothing.
+	query := regexp.MustCompile(`querySelectorAll\(\s*['"][^'"]*data-workdir-note[^'"]*['"]\s*\)`)
+	if query.FindString(source) == "" {
+		t.Error("crswd.js never queries the document for a field naming its subset note, so nothing is ever announced and FR-045 is markup nobody reads")
+	}
+	for want, why := range map[string]string{
+		"dataset.workdirNote":   "the field names the region to write into, so the script does not carry an id the template could rename out from under it",
+		"dataset.workdirSubset": "the sentence is the template's; a script that authored its own prose would be a second place to look for it",
+		".options":              "the count comes off the options the daemon rendered rather than a tally this file keeps — the rule the summary row already follows",
+	} {
+		if !strings.Contains(source, want) {
+			t.Errorf("crswd.js does not carry %q: %s", want, why)
+		}
+	}
+	// Both halves of the sentence are filled. A count with no total is a number an
+	// operator cannot tell "narrowed to three" from "all three" by, which is the
+	// one distinction FR-045 exists to make.
+	for _, placeholder := range []string{"{n}", "{all}"} {
+		if !regexp.MustCompile(`replace\(\s*['"]` + regexp.QuoteMeta(placeholder) + `['"]`).MatchString(source) {
+			t.Errorf("crswd.js never fills the %s the page's sentence leaves for it", placeholder)
+		}
+	}
+
+	// The addition sweep. Each of these is this file taking ownership of the
+	// control rather than commenting on it, and every one of them takes the
+	// picker away from a browser running no script.
+	for _, forbidden := range []struct {
+		pattern *regexp.Regexp
+		what    string
+		why     string
+	}{
+		{regexp.MustCompile(`(?i)datalist`), "names the datalist element", "the list is composed by the template; a file that composes one has a picker that exists only while it runs"},
+		{regexp.MustCompile(`(?i)\bnew Option\(|createElement\(`), "builds an element", "an option built here is an offer the daemon never made, and one that is gone with scripting off"},
+		{regexp.MustCompile(`\.value\s*=[^=]`), "assigns a value", "choosing the operator's path for them is the combobox this control was chosen instead of (FR-040)"},
+		{regexp.MustCompile(`\b(set|remove)Attribute\(`), "moves an attribute", "the field is joined to its list in the markup; an attribute added here is a picker that only exists when this file runs (FR-043)"},
+	} {
+		if match := forbidden.pattern.FindString(source); match != "" {
+			t.Errorf("crswd.js %s (%q): %s", forbidden.what, match, forbidden.why)
+		}
+	}
+
+	// And the markup half, which is what the sweep above is protecting. The
+	// spellings are a joint between two trees — the hook the field renders and the
+	// id the script looks up — so they are asserted together here, because nothing
+	// else holds them.
+	form, err := fs.ReadFile(web.Templates, "templates/partials/create-form.html")
+	if err != nil {
+		t.Fatalf("read the embedded create form: %v", err)
+	}
+	markup := templateComment.ReplaceAllString(string(form), "")
+
+	for want, why := range map[string]string{
+		`data-workdir-note="create-workdir-subset"`:  "the field names the region, and this is the spelling crswd.js reads back",
+		`id="create-workdir-subset"`:                 "the region the field names has to be the region that is rendered",
+		`<option value="{{ . }}">`:                   "the suggestions are the template's, so the list is there for an operator running no script (FR-043)",
+		`list="workdir-suggestions"`:                 "the field is joined to its list in the markup, by the same rule",
+		`data-workdir-subset="Showing {n} of {all} `: "the sentence is the page's own copy, with both halves left for the script to fill",
+	} {
+		if !strings.Contains(markup, want) {
+			t.Errorf("the create form does not carry %q: %s", want, why)
+		}
+	}
+
+	// Present and empty rather than hidden. docs/components.md's accessibility
+	// floor is explicit about the difference: a live region has to be in the
+	// accessibility tree before its text arrives for the announcement to happen at
+	// all, and a region revealed and written in one go is one some readers never
+	// announce.
+	region := regexp.MustCompile(`<div\b[^>]*\bid="create-workdir-subset"[^>]*>\s*</div>`).FindString(markup)
+	if region == "" {
+		t.Fatalf("the create form renders no empty subset region; a region composed at announcement time is one a reader may never hear:\n%s", markup)
+	}
+	if strings.Contains(region, " hidden") {
+		t.Errorf("the subset region is rendered hidden (%s); it is empty markup that costs the field nothing, and hiding it keeps it out of the accessibility tree until the moment it has something to say", region)
+	}
+	if !strings.Contains(region, `role="status"`) || !strings.Contains(region, `aria-live="polite"`) {
+		t.Errorf("the subset region is not a polite live region (%s), so the one thing FR-045 asks be said is said to nobody who cannot see it", region)
+	}
+}
+
+// TestSelectionDoesNotNavigate is FR-051, and it is as much about what this file
+// is not allowed to become as about the one call that satisfies it.
+//
+// The card's readable half is one anchor (FR-046), so the identifier a card
+// renders precisely so it can be copied is now inside a link. Dragging across it
+// gives a selection rather than a link drag — draggable="false" buys that in the
+// markup — but the release that ends the drag is still a click on a link, and
+// the browser navigates away from the page the operator was reading.
+//
+// **Must fail when** this becomes a functional dependency rather than a papercut
+// fix. That is the direction it is likeliest to be lost in by improvement rather
+// than by mistake: a block that read the destination off the card and went there
+// itself would look like the same feature, work identically in a browser running
+// it, and leave a card that does nothing at all in one that is not — which is the
+// floor US3 spent a milestone putting under every other control on this page. So
+// the sweep is for every way of navigating rather than for a spelling, and the
+// markup half below holds the destination where a browser can reach it with this
+// file absent.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed
+// — the same footing every other script assertion in this file stands on.
+func TestSelectionDoesNotNavigate(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	// Something calls it, and on the document rather than on each anchor: the
+	// fleet's live half replaces a card whenever the stream says that session
+	// changed, so a listener attached at load is one no card on the page has
+	// after its first update — the defect the toast was rewritten for.
+	if !regexp.MustCompile(`document\.addEventListener\(\s*['"]click['"]`).MatchString(source) {
+		t.Error("crswd.js listens for no click on the document, so either nothing implements FR-051 or it is bound per card and lost the moment the fleet replaces one")
+	}
+	if regexp.MustCompile(`closest\(\s*['"][^'"]*card-link[^'"]*['"]\s*\)`).FindString(source) == "" {
+		t.Error("crswd.js never looks for the card's anchor from the clicked element, so a click on the identifier inside it is not recognised as a click on the link")
+	}
+
+	for want, why := range map[string]string{
+		"getSelection": "what tells a drag that ended from a click is the platform's own selection, not a position remembered here",
+		"isCollapsed":  "a plain click arrives with the selection collapsed, and that click has to navigate — the requirement is about the one that does not",
+		"event.detail": "Enter on a focused link is a click with no pointer behind it, and swallowing it would make a card unreachable by keyboard for as long as a selection sat inside it",
+	} {
+		if !strings.Contains(source, want) {
+			t.Errorf("crswd.js does not carry %q: %s", want, why)
+		}
+	}
+
+	// The refusal itself, and it is asserted *after* the anchor lookup rather
+	// than anywhere in the file. This is the second preventDefault here — the
+	// toast calls one on every action form — so a bare Contains would be answered
+	// by a block that has nothing to do with a card and would stay green with
+	// this one deleted.
+	if lookup := strings.Index(source, "card-link"); lookup >= 0 && !strings.Contains(source[lookup:], "preventDefault()") {
+		t.Error("crswd.js finds the card's anchor and never refuses the click on it; the whole of the fix is declining this one navigation, and anything more is this file owning the link")
+	}
+
+	// The navigation sweep. Each of these is this file taking the destination
+	// over rather than declining one click of it, and every one of them leaves a
+	// card that opens nothing with scripting off.
+	for _, forbidden := range []struct {
+		pattern *regexp.Regexp
+		what    string
+		why     string
+	}{
+		{regexp.MustCompile(`location\.(href|assign|replace)`), "navigates the page itself", "the anchor's href is what opens a session, and a script that went there instead is the one thing standing between a card and its page"},
+		{regexp.MustCompile(`window\.open\(`), "opens a window", "same destination, same dependency, and a popup blocker away from doing nothing at all"},
+		{regexp.MustCompile(`\.href\s*=[^=]`), "assigns an href", "a destination written here is a destination absent from the markup a browser running no script is handed"},
+		{regexp.MustCompile(`\.click\(\)`), "clicks an element for the operator", "synthesising the activation this block just refused is the papercut fix reimplementing the browser"},
+	} {
+		if match := forbidden.pattern.FindString(source); match != "" {
+			t.Errorf("crswd.js %s (%q): %s", forbidden.what, match, forbidden.why)
+		}
+	}
+
+	// And the markup half, which is what the sweep is protecting. The card is a
+	// link with a real destination in it, and it carries no hook for this block:
+	// the anchor is found by the class the stylesheet already gives it, so the
+	// card a browser is handed is the same markup whether or not this file runs.
+	// A card that had acquired a data- attribute for the selection fix would be a
+	// card whose behaviour had moved out of the template.
+	got := renderComponent(t, "session-card", actionableCard())
+
+	anchors := cardAnchor.FindAllStringSubmatch(got, -1)
+	if len(anchors) != 1 {
+		t.Fatalf("the card renders %d links, so there is no one anchor a selection could be inside of:\n%s", len(anchors), got)
+	}
+	if target := `href="/sessions/`; !strings.Contains(anchors[0][1], target) {
+		t.Errorf("the card's anchor carries no %s, so the session it opens is somewhere other than the markup and a browser running no script cannot reach it:\n%s", target, got)
+	}
+	if hooks := regexp.MustCompile(`data-[a-z-]+`).FindAllString(got, -1); !slices.Equal(hooks, []string{"data-session"}) {
+		t.Errorf("the card renders %v; data-session is the one hook it has, and a second means the selection fix asked the template for something rather than reading what was already there:\n%s", hooks, got)
+	}
+}
+
+// TestBoundaryIsNotColourAlone is FR-048, and it is two claims because the
+// requirement is two clauses.
+//
+// The rule is what makes the anchor safe to grow: everything above it is what
+// the session is, everything below it does something, and the card carries
+// exactly one link because the halves are told apart by a boundary rather than
+// by which words happen to be underlined. A card that lost it would be a block
+// link with a row of buttons floating in it.
+//
+// The first claim is the one a screenshot cannot make. A line says nothing to a
+// screen reader, and a high-contrast theme is free to drop borders — so the
+// halves are separate elements in the markup, and the rule is the visual
+// expression of a split that already exists. That is asserted against a rendered
+// card rather than against the stylesheet, because it is the markup that has to
+// carry it.
+//
+// The second is that what the stylesheet draws is the design system's own edge
+// and is accompanied by spacing from a token. Two cues, neither of which is
+// colour: a browser that never drew the border still shows two halves.
+//
+// **Must fail when** the split is presentational only — one block with a line
+// across it — or when the line becomes the only thing dividing the card.
+func TestBoundaryIsNotColourAlone(t *testing.T) {
+	t.Parallel()
+
+	card := renderComponent(t, "session-card", actionableCard())
+
+	readable := regexp.MustCompile(`(?s)<div[^>]*\bclass="card-read"[^>]*>(.*?)</div>`).FindStringSubmatch(card)
+	if readable == nil {
+		t.Fatalf("the card renders no readable half of its own; a boundary between two halves needs two elements, or it is a border drawn across one:\n%s", card)
+	}
+	if !strings.Contains(readable[1], "<a") {
+		t.Errorf("the card's readable half does not hold the anchor, so the element and the link are not the same half:\n%s", card)
+	}
+	if strings.Contains(readable[1], `class="card-actions"`) {
+		t.Errorf("the card's action row is inside its readable half; the halves are siblings or they are not halves:\n%s", card)
+	}
+
+	rule := blockFor(t, stylesheet(t), ".card-actions")
+
+	edge := regexp.MustCompile(`(?i)border-block-start\s*:\s*([^;}]+)`).FindStringSubmatch(rule)
+	if edge == nil {
+		t.Fatalf("the action row has no top edge, so nothing visible separates what a session is from what can be done to it: %q", rule)
+	}
+	for _, token := range []string{"var(--edge-width)", "var(--edge)"} {
+		if !strings.Contains(edge[1], token) {
+			t.Errorf("the rule between the card's halves is drawn as %q and does not spend %s; a boundary is the design system's own edge, not a length and a colour invented here", strings.TrimSpace(edge[1]), token)
+		}
+	}
+
+	space := regexp.MustCompile(`(?i)padding-block-start\s*:\s*(var\(--s[^;}]*)`).FindStringSubmatch(rule)
+	if space == nil {
+		t.Errorf("the action row sets no spacing above its controls from a spacing token (%q); the line must not be the only thing dividing the card, for the reason a state is never a colour alone", rule)
 	}
 }
 

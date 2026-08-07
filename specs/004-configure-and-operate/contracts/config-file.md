@@ -54,7 +54,7 @@ allowed_roots = /home/nctiggy/code,/home/nctiggy/work
 start_commands = default=claude --dangerously-skip-permissions,rc=claude remote-control --permission-mode bypassPermissions
 
 # Sessions live a day unless told otherwise; -1 disables idle reaping.
-default_lifetime = 24h
+session_lifetime = 24h
 idle_timeout = -1
 
 # This value contains a "#". It is not a comment, because a comment
@@ -62,9 +62,13 @@ idle_timeout = -1
 shared_secret = hunter2#not-a-comment
 ```
 
-Parsing that file yields exactly eight keys. `shared_secret` is
-`hunter2#not-a-comment`, and `start_commands` retains both `=` signs in its
-value.
+Parsing that file yields exactly seven keys, of which **six are settings**:
+`version` is the schema the file was written against, not something the daemon
+reads, so it maps to no environment variable and the settings page must not
+render a row for it.
+
+`shared_secret` is `hunter2#not-a-comment`, and `start_commands` retains both `=`
+signs in its value.
 
 ## Refusals
 
@@ -83,7 +87,7 @@ error is written to stderr and kept in a journal.
 | Bad version | `config file %s:%d has a version that is not a whole number; refusing to start` | FR-009 |
 
 The permission refusal fires only when the file **contains a secret key**
-(`shared_secret` or `allowed_identities` — see `config.IsSecret`). A file holding
+(`shared_secret` or `access_allowed_emails` — see `config.IsSecret`). A file holding
 only `allowed_roots` is not a secret file, and refusing to start over its mode
 would be a refusal the operator cannot act on sensibly.
 
@@ -97,7 +101,7 @@ config file, it is explicit, and it keeps a backup at `config.bak` (FR-009).
 
 | Test | Asserts | **Must fail when** |
 |---|---|---|
-| `TestParseAcceptsWorkedExample` | The eight keys above parse to exactly those values | The parser splits on the last `=`, or strips trailing `#` |
+| `TestParseAcceptsWorkedExample` | The seven keys above parse to exactly those values, and `version` is not among the settings | The parser splits on the last `=`, or strips trailing `#`, or keeps `version` as a setting |
 | `TestValueMayContainHash` | `shared_secret` parses as `hunter2#not-a-comment` | Trailing-comment stripping is added |
 | `TestValueMayContainEquals` | `start_commands` retains both `=` signs | `strings.Split` replaces `strings.Cut` |
 | `TestWhitespaceAroundSeparatorIgnored` | `a=b`, `a = b`, `  a  =  b  ` all yield `a`→`b` | Key or value is not trimmed |

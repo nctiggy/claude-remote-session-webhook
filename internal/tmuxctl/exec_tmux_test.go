@@ -22,6 +22,13 @@ import (
 	"time"
 )
 
+// tmuxPaneBound is deliberately far above any screen the tmux these tests start
+// can render, because nothing here is about the bound: the stubbed suite in
+// exec_test.go owns that, with a screen it composes itself. A bound at a real
+// screen's own height would make every capture below a coin-flip on whatever
+// `default-size` the host's tmux was built or configured with.
+const tmuxPaneBound = 1000
+
 // newTestExec gives each test its own tmux server. One shared server was enough
 // for a test's kill-server to race the next test's new-session — the loser sees
 // "server exited unexpectedly" — and it would also let one test's leftover
@@ -33,7 +40,7 @@ func newTestExec(t *testing.T) *Exec {
 		t.Skipf("tmux is not installed: %v", err)
 	}
 
-	e := &Exec{socket: socketFor(t.Name())}
+	e := &Exec{socket: socketFor(t.Name()), paneBound: tmuxPaneBound}
 	t.Cleanup(func() {
 		// Constant argv, and -L keeps this off the operator's own server.
 		out, err := exec.Command("tmux", "-L", e.socket, "kill-server").CombinedOutput() //nolint:gosec // socket is socketFor(t.Name())

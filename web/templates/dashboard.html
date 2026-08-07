@@ -62,6 +62,17 @@
 */}}
 <main class="shell" data-fleet-stream="/dashboard/fleet/stream" data-fleet-card="/sessions/{id}/view" data-fleet-stalled="fleet-stalled" data-fleet-changed="fleet-changed">
 {{/*
+  What the action that redirected here did (T014), and nothing at all on an
+  ordinary visit. It is first in the page on purpose: an operator arriving from
+  an action is arriving to find out what happened, and it is the only thing here
+  that is about a moment rather than about the fleet. The component renders
+  nothing for a query this daemon does not recognise — see partials/outcome.html.
+
+  A browser running the script never sees it, because that path never navigates:
+  the toast at the foot of this page is where the same sentence lands. This is
+  the floor under the enhancement, not a replacement for it (FR-024).
+*/}}{{ template "outcome" .Outcome }}
+{{/*
   What the page says when it can no longer keep itself current (FR-020).
 
   It ships hidden and the live half reveals it, on any interruption of the

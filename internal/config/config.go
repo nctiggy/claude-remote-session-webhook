@@ -1,5 +1,9 @@
-// Package config loads the daemon's whole configuration from the process
-// environment, once, before anything binds or spawns.
+// Package config loads the daemon's whole configuration once, before anything
+// binds or spawns: from the process environment, and behind it from the
+// operator's file (file.go), which answers for every setting the environment
+// does not. Everything below withFile reads one getenv and cannot tell the two
+// apart, which is the point — the file is a second *source*, never a second set
+// of rules.
 //
 // Every check here is fail-closed on purpose. Sessions run with
 // --dangerously-skip-permissions, so the allowlisted roots, the loopback bind,
@@ -26,8 +30,11 @@ import (
 	"unicode"
 )
 
-// The environment is the only configuration surface (FR-001). Named as
-// constants so an error message and the variable it blames cannot drift.
+// Every setting the daemon has, named as constants so an error message and the
+// variable it blames cannot drift. Each is also a configuration-file key — the
+// same name lower-cased without its CRSW_ prefix (KeyForVar in file.go) — so
+// there is one list of settings rather than two that can disagree about which
+// exist.
 //
 // gosec G101 fires on EnvSharedSecret because the identifier says "secret" and
 // the value is a string literal. The value is the *name* of an environment
@@ -38,6 +45,24 @@ const (
 	EnvAllowedRoots = "CRSW_ALLOWED_ROOTS"
 	EnvListen       = "CRSW_LISTEN"
 	EnvMaxSessions  = "CRSW_MAX_SESSIONS"
+
+	// EnvDiscoverRoots offers the immediate subdirectories of each approved root
+	// as working-directory suggestions on the create form (#59, FR-041).
+	//
+	// Off by default, and that default is the setting's whole point: listing a
+	// filesystem is a disclosure, however mild, and an operator opts into it
+	// rather than finding their directory names on a page they did not ask to
+	// have read the host. Anything strconv.ParseBool refuses — `yes`, `on`, `2`
+	// — is a startup failure rather than a silent off, for the reason every
+	// loader here refuses rather than defaults: an operator who wrote `yes` said
+	// on, and a daemon that read it as off would run without the thing they asked
+	// for and say nothing.
+	//
+	// It widens nothing. EnvAllowedRoots is still the control — a suggestion is
+	// checked against the roots as it is offered and every path, picked or typed,
+	// meets session.ResolveWorkDir on the create it is submitted with. See
+	// Config.DiscoveredWorkDirs for what the walk may and may not name.
+	EnvDiscoverRoots = "CRSW_DISCOVER_ROOTS"
 
 	// EnvDestroyOnShutdown restores the pre-#63 behaviour: tear every session
 	// down when the daemon stops. Default is off — a restart preserves them and
@@ -64,6 +89,16 @@ const (
 	EnvAccessAllowedEmails = "CRSW_ACCESS_ALLOWED_EMAILS"
 
 	EnvMaxStreams = "CRSW_MAX_STREAMS"
+
+	// EnvPaneBound is the largest screen a capture may return, in lines (#41,
+	// FR-052). It reaches tmuxctl.NewExec, and tmuxctl.Exec.CapturePane is where
+	// it is relied upon and stated.
+	//
+	// A capture past it is refused rather than shortened, because half a screen
+	// is a wrong screen and not a smaller one (FR-053) — so this is a bound on
+	// what the daemon is willing to *believe* about a pane, not a display
+	// preference. Below 1 is a startup failure like every other count here.
+	EnvPaneBound = "CRSW_PANE_BOUND"
 
 	// EnvStartCommand is the command line typed into a new session's shell. It
 	// names the command bound to DefaultStartCommandName, which is what a create
@@ -149,6 +184,19 @@ const (
 	// loaded host is watchable from two tabs before the daemon starts refusing.
 	// The spec fixes the property, not the number: capped, and refusing past it.
 	DefaultMaxStreams = 10
+
+	// DefaultPaneBound is 200 lines: a tmux session this daemon starts is never
+	// attached, so it keeps tmux's 80x24 default, and 200 is far above the
+	// tallest terminal an operator could resize one to. Like DefaultMaxStreams
+	// the spec fixes the property rather than the number — bounded, and refusing
+	// past it — so this is chosen to fire only when the assumption behind it has
+	// broken, never because a pane is merely full.
+	//
+	// What breaks it is a capture that reaches into the scrollback: tmux's own
+	// history-limit defaults to 2000 lines, an order of magnitude past this, so
+	// a -S added upstream is refused on the first capture instead of quietly
+	// enlarging every screen the daemon believes in.
+	DefaultPaneBound = 200
 
 	// DefaultStartCommand is what every session started before this was
 	// configurable at all, byte for byte. An operator who sets neither
@@ -286,6 +334,12 @@ type Config struct {
 	Listen      string
 	MaxSessions int
 
+	// DiscoverRoots turns the working-directory suggestions on the create form
+	// into a walk one level below each approved root. Off unless the operator
+	// asked for it; DiscoveredWorkDirs in discover.go is the walk it gates, and
+	// is the only thing that reads this.
+	DiscoverRoots bool
+
 	// DestroyOnShutdown tears every session down on a clean stop. Off by
 	// default: a graceful restart is overwhelmingly the common case, and
 	// destroying a fleet to redeploy a binary is a cost nobody asked for.
@@ -323,6 +377,11 @@ type Config struct {
 	// a browser can hold open indefinitely.
 	MaxStreams int
 
+	// PaneBound is how many lines of screen a capture may return, handed to
+	// tmuxctl.NewExec at wiring time. Read tmuxctl.Exec.CapturePane for what a
+	// larger one means and why it is refused rather than shortened.
+	PaneBound int
+
 	// StartCommands is the named set a create chooses from, always carrying
 	// DefaultStartCommandName.
 	StartCommands StartCommands
@@ -332,6 +391,32 @@ type Config struct {
 	// remote-control command, and the dashboard renders no switch — an operator
 	// is never offered a control whose only outcome is a refusal.
 	RemoteControlCommand string
+
+	// Sources is which layer supplied each value, keyed by environment-variable
+	// name — the record that answers "why did my edit do nothing?" (FR-018).
+	//
+	// It is written by withFile as it decides and never computed afterwards. A
+	// value present and equal in the environment and the file is indistinguishable
+	// by comparison, and that is precisely the case where an operator is asking
+	// the question; so provenance is a byproduct of having one place decide
+	// (research R4).
+	//
+	// Populated once, during LoadFrom, and not written again: nothing calls the
+	// shim after the Config is built. A key absent from it was never looked up,
+	// and reads SourceDefault — the zero value, which is why that constant is
+	// zero. The settings page reads this, and nothing else does.
+	Sources map[string]Source
+
+	// FilePath is the configuration file these values were read from, and is
+	// empty when none was (FR-018). The settings page names it above the table.
+	//
+	// It is the file that was actually *read*, which is not always the file the
+	// operator most recently wrote: a start recovered from the backup beside it
+	// carries the backup's path, because naming the live file there would have
+	// the page describe a set of values that is not in effect. That is the same
+	// question provenance answers one row at a time — "which layer supplied
+	// this?" — asked once about the whole file.
+	FilePath string
 }
 
 // String redacts the shared secret so that formatting a Config — in a log line,
@@ -370,8 +455,9 @@ func WithAccessBypassActive() Option {
 	return func(o *loadOptions) { o.accessBypassed = true }
 }
 
-// Load reads the configuration from the real environment, writing any startup
-// warning to stderr. It is the only form cmd/crswd needs.
+// Load reads the configuration from the real environment and the file at
+// DefaultPath, writing any startup warning to stderr. It is the only form
+// cmd/crswd needs.
 func Load(opts ...Option) (*Config, error) { return LoadFrom(os.Getenv, os.Stderr, opts...) }
 
 // LoadFrom is Load with the environment and the warning sink injected, so tests
@@ -390,11 +476,98 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 		warn = os.Stderr
 	}
 
+	// The file is a source *behind* this seam and never a system beside it. Every
+	// loader below reads through getenv exactly as it did before there was a
+	// file, so a value the operator wrote in one is bounded by the same check,
+	// defaulted by the same fallback and blamed in the same message as one they
+	// put in a unit. A file layer with validation of its own would be a second
+	// set of rules for the first to disagree with, and the disagreement would
+	// surface as a bound that means one thing in a test and another in
+	// production.
+	path := DefaultPath(getenv)
+	var file *File
+	var err error
+	if path != "" {
+		file, err = ReadFile(path, warn)
+	}
+	if err == nil {
+		cfg, loadErr := loadWith(getenv, file, warn, o)
+		if loadErr == nil {
+			return cfg, nil
+		}
+		// A file that was never there cannot be the reason this failed, and the
+		// backup of one is not the recovery: the environment and the defaults
+		// that produced the refusal are the same with the backup layered in. The
+		// deployment with no file at all keeps refusing exactly as it does today.
+		if file == nil {
+			return nil, loadErr
+		}
+		err = loadErr
+	}
+
+	// FR-010. The operator's file will not load; the last known-good one is
+	// beside it, and reading it is the only recovery that does not need shell
+	// access on this host.
+	cfg, announceErr := loadBackup(getenv, path, warn, o, err)
+	switch {
+	case announceErr != nil:
+		// A fallback nobody was told about is a daemon running on a
+		// configuration its operator did not write, so a warning that could not
+		// be emitted refuses the start instead of proceeding quietly.
+		return nil, announceErr
+	case cfg != nil:
+		return cfg, nil
+	default:
+		// No usable backup: the operator's own file is the problem, and its
+		// refusal is the one they can act on. The backup's is not — they never
+		// wrote it.
+		return nil, err
+	}
+}
+
+// loadWith is the load itself, with the file already resolved: it layers that
+// file behind the environment, reads every setting through the one seam, and
+// builds the Config.
+//
+// It is separate from LoadFrom because FR-010 runs it twice — once on the
+// operator's file, and, when that will not load, once on the backup beside it.
+// Both attempts go through exactly this code, so a value recovered from a
+// backup is bounded, defaulted and refused identically to one read live. The
+// cost is that a warning the first attempt emitted is emitted again by the
+// second; the announcement between them says why the same line appears twice.
+func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOptions) (*Config, error) {
+	// Provenance is recorded by the shim as it answers, because the shim is the
+	// only code that knows which layer won. The map is handed in rather than
+	// returned so that the recording is the same statement as the decision — a
+	// second traversal that worked it out afterwards could only compare values,
+	// and two equal values do not say which one was used.
+	sources := make(map[string]Source, len(Vars()))
+	getenv = withFile(getenv, file, sources)
+
 	secret, err := loadSecret(getenv)
 	if err != nil {
 		return nil, err
 	}
 	roots, err := loadRoots(getenv, warn)
+	if err != nil {
+		return nil, err
+	}
+	discoverRoots, err := loadBool(getenv, EnvDiscoverRoots)
+	if err != nil {
+		return nil, err
+	}
+	// Read here for the first time since #63 shipped the variable. The constant
+	// existed, server.go branched on the field, and the settings page rendered
+	// it — but nothing ever assigned it, so it was false on every daemon that
+	// has ever run and the operator's opt-out did nothing. Nothing failed
+	// loudly: a flag that silently means its default looks exactly like a flag
+	// working, right up until somebody needs the other behaviour.
+	//
+	// It is the fourth time this repository has shipped code with no caller, and
+	// the first one a page caught: the settings page renders every variable's
+	// value and its source, so this one read "false / default" no matter what
+	// the operator set. That is the whole argument for the page.
+	destroyOnShutdown, err := loadBool(getenv, EnvDestroyOnShutdown)
 	if err != nil {
 		return nil, err
 	}
@@ -438,6 +611,10 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 	if err != nil {
 		return nil, err
 	}
+	paneBound, err := loadInt(getenv, EnvPaneBound, DefaultPaneBound)
+	if err != nil {
+		return nil, err
+	}
 	teamDomain, err := loadTeamDomain(getenv, o.accessBypassed)
 	if err != nil {
 		return nil, err
@@ -470,6 +647,8 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 	return &Config{
 		SharedSecret:        secret,
 		Roots:               roots,
+		DiscoverRoots:       discoverRoots,
+		DestroyOnShutdown:   destroyOnShutdown,
 		Listen:              listen,
 		MaxSessions:         maxSessions,
 		CreateRatePerMin:    createRate,
@@ -478,6 +657,7 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 		AccessAUD:           aud,
 		AccessAllowedEmails: emails,
 		MaxStreams:          maxStreams,
+		PaneBound:           paneBound,
 		SessionLifetime:     lifetime,
 		SessionLifetimeMax:  lifetimeMax,
 		IdleTimeout:         idle,
@@ -485,7 +665,129 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 		StartCommands:       startCommands,
 
 		RemoteControlCommand: remoteControl,
+		Sources:              sources,
+
+		// The file this load actually read, taken from the *File that was
+		// layered in rather than from DefaultPath: a path that was looked for
+		// and not found would otherwise have the settings page name a file
+		// nobody wrote. A nil *File is the deployment with no file at all and
+		// answers with the empty string; the recovery in loadBackup comes
+		// through here with the backup's own *File, so it names the file whose
+		// values are in effect.
+		FilePath: file.Path(),
 	}, nil
+}
+
+// loadBackup answers with the configuration the last known-good file makes, or
+// with nil when there is no usable one (FR-010).
+//
+// The recovery this exists for is the operator who edited the file from
+// somewhere that is not a terminal on this host — the daemon is how they reach
+// it, and a daemon that refuses to start is a daemon they cannot reach to fix.
+// A copy of the file that worked, read loudly, is the only way back that does
+// not need shell access.
+//
+// The failed file is never touched. It is what they will fix, the announcement
+// says where it is, and nothing in this package has a write path to it anyway.
+//
+// The backup is accepted only if it loads *completely*: it goes through the
+// same loadWith as the live file, so a stale backup that no longer satisfies a
+// bound is not a start either. Anything less would make this the one path where
+// a value skipped its check.
+//
+// The error returned is the announcement's, never the load's: a caller reading
+// nil, nil is being told there is nothing here, and the refusal it reports is
+// the operator's own file, which is the one they can act on.
+func loadBackup(getenv func(string) string, path string, warn io.Writer, o loadOptions, cause error) (*Config, error) {
+	if path == "" {
+		return nil, nil
+	}
+	backup := BackupPath(path)
+	f, err := ReadFile(backup, warn)
+	if err != nil || f == nil {
+		return nil, nil
+	}
+	cfg, err := loadWith(getenv, f, warn, o)
+	if err != nil {
+		return nil, nil
+	}
+	if err := warnLoadedFromBackup(warn, path, backup, cause); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// warnLoadedFromBackup says, loudly and on every start, that this daemon is not
+// running on the file its operator most recently wrote.
+//
+// It names both files, because the recovery is a two-step one: the daemon is up
+// on the older configuration, and the newer one is still there with the defect
+// still in it. It carries the refusal that caused it, which is built in this
+// repository and names a path and a line and never a value — the same error
+// main.go would have printed on the way to exiting.
+func warnLoadedFromBackup(warn io.Writer, path, backup string, cause error) error {
+	banner := fmt.Sprintf(
+		"crswd: the configuration at %s will not load (%v); started from the backup at %s instead. "+
+			"This daemon is running on the older file: %s is unchanged, and every setting written into it since the backup was taken is NOT in effect. Fix it and restart.\n",
+		path, cause, backup, path)
+
+	if _, err := io.WriteString(warn, banner); err != nil {
+		return fmt.Errorf("emit the warning that the configuration was read from %s: %w", backup, err)
+	}
+	return nil
+}
+
+// withFile answers from the environment first and the file second, and records
+// which one answered. That is the whole of the precedence chain
+// (contracts/config-precedence.md), and its size is the design: precedence has
+// one implementation, and no bound, default or refusal is written a second time
+// behind it. It is the only code that knows where a value came from, which is
+// why it is also the only code that records it.
+//
+//	flag > environment > file > default
+//
+// There is no flag layer yet. When there is, it goes in front of this one and
+// nothing underneath has to learn about it.
+//
+// The environment beats the file so a container or a test can change one value
+// without writing one (FR-004). Reversed, a stale file on a host would silently
+// override the environment a container was deployed with — which is why this is
+// four lines that are read rather than a merge that is trusted. The file beats
+// only the built-in default, which is what makes a daemon with no file behave
+// exactly as it does today (FR-003, SC-002).
+//
+// Non-emptiness rather than presence, because non-emptiness is the whole of what
+// a getenv can see — and because `CRSW_LISTEN=` in a unit is an operator
+// clearing a variable rather than setting it to something the loader could use.
+// It falls through to the file and then to the default, which is what an unset
+// variable has always done.
+//
+// A nil *File is the deployment with no file at all: every lookup misses and
+// every value falls through, and this shim still runs for every key rather than
+// being skipped, so there is one code path and not two.
+//
+// src is written for every name asked of it and never read here, so a name that
+// is not a setting — HOME, which defaultRoot reads through this seam — is
+// recorded as truthfully as the rest. That costs nothing: the settings page
+// walks Vars() and asks this map about each, so it renders the settings and only
+// the settings. A filter here would be a second rule about what a setting is,
+// which is the thing this package keeps to one place.
+//
+// What is never recorded is a value. This map is names and layers, so the record
+// of where the shared secret came from cannot become a copy of it.
+func withFile(getenv func(string) string, f *File, src map[string]Source) func(string) string {
+	return func(name string) string {
+		if v := getenv(name); v != "" {
+			src[name] = SourceEnv
+			return v
+		}
+		if v, ok := f.Lookup(name); ok {
+			src[name] = SourceFile
+			return v
+		}
+		src[name] = SourceDefault
+		return ""
+	}
 }
 
 // loadRemoteControlCommand decides what the dashboard's remote-control switch
@@ -999,6 +1301,26 @@ func loadAllowedEmails(getenv func(string) string, bypassed bool) ([]string, err
 		emails = append(emails, address)
 	}
 	return emails, nil
+}
+
+// loadBool reads an on/off setting, off when unset.
+//
+// A value that is neither is a startup failure rather than a false, which is the
+// same choice loadInt makes about a number that will not parse: an operator who
+// wrote `yes` meant on, and a daemon that read that as off would run with the
+// thing they asked for silently absent. The value is quoted back because it is
+// the operator's own word for true and nothing about it is secret — the keys
+// where that is not so are the two IsSecret names, and neither is a boolean.
+func loadBool(getenv func(string) string, name string) (bool, error) {
+	v := strings.TrimSpace(getenv(name))
+	if v == "" {
+		return false, nil
+	}
+	on, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("%s %q is not true or false; refusing to start", name, v)
+	}
+	return on, nil
 }
 
 func loadInt(getenv func(string) string, name string, def int) (int, error) {

@@ -47,7 +47,7 @@ func NewWithBypass(cfg *config.Config, warn io.Writer) (*Server, error) {
 	// Its own tmux server, for the reason New gives — and this is the build a
 	// developer runs *alongside* the real daemon to check a template change,
 	// which is precisely the case #22 describes.
-	tmux, err := tmuxctl.NewExec(tmuxctl.SocketFor(cfg.Listen))
+	tmux, err := tmuxctl.NewExec(tmuxctl.SocketFor(cfg.Listen), cfg.PaneBound)
 	if err != nil {
 		return nil, err
 	}

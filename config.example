@@ -1,0 +1,334 @@
+# crswd configuration — EXAMPLE
+#
+# Copy this to ~/.config/crswd/config and uncomment only what you mean to
+# change. Every setting below is commented out, so a copy with nothing
+# uncommented is a daemon that behaves exactly as one with no configuration
+# file at all — which is every crswd deployed before this file existed. The
+# value shown on each line is the default where there is one that can be
+# written down, and an illustration where there is not; either way the block
+# above it names the default in words.
+#
+# The daemon reads this once, before it binds or spawns anything. Nothing here
+# can be changed while it runs, and a value that would weaken a bound is a
+# startup failure rather than a warning: sessions run with
+# --dangerously-skip-permissions, and these settings are what stands in for the
+# permission prompt that is gone.
+#
+#
+# WHERE THIS FILE GOES
+#
+#   $CRSW_CONFIG_FILE, if it is set — it names the file outright
+#   else $XDG_CONFIG_HOME/crswd/config
+#   else ~/.config/crswd/config
+#
+# CRSW_CONFIG_FILE is taken exactly as written, a relative path included. In a
+# systemd unit a relative path resolves against that unit's WorkingDirectory
+# and not against the directory you ran systemctl from, so name an absolute one
+# unless you mean that.
+#
+# The file is not required and its absence is never an error. A file that is
+# there and cannot be opened is one: an unreadable file is a file you expect to
+# be read, and starting on the environment instead would ignore every bound you
+# wrote in it.
+#
+# `crswd config check` reads it and says what it makes, without starting
+# anything. If it stops loading, the daemon starts from the config.bak beside
+# it instead — loudly, naming both files, because it is then running on the
+# older one and your most recent edits are not in effect.
+#
+#
+# THE FORMAT, AND WHY IT IS THIS ONE
+#
+#   key = value
+#   # a comment
+#
+# `#` is a comment marker at the start of a line and nowhere else. There are no
+# trailing comments: a shared secret may legitimately contain a `#`, and
+# stripping from the first one would truncate that secret into a daemon that
+# starts, looks healthy, and rejects every request it is sent.
+#
+# The separator is the FIRST `=`. start_commands always carries an `=` inside
+# its value, and a parser that refused that ambiguity would be refusing valid
+# configuration.
+#
+# A key is its environment variable without the CRSW_ prefix, lower-cased:
+# allowed_roots is CRSW_ALLOWED_ROOTS. That is a rule rather than a table, so
+# every variable named in .env.example is a key here, and the reverse. Keys are
+# lower-case [a-z0-9_]; a key outside that alphabet is refused rather than
+# folded, so each setting has exactly one spelling.
+#
+# The environment still wins. Precedence is flag, then environment, then this
+# file, then the built-in default — so a container or a unit can override one
+# value without writing a file, and a stale file on a host cannot silently
+# override the environment a deployment was configured with. The /settings page
+# names which layer each value actually came from, which is the question worth
+# answering when an edit here appears to have done nothing.
+#
+# A misspelled key is refused, never skipped, and so is a key set twice. An
+# `alowed_roots` that quietly did nothing is how a containment boundary ends up
+# unset on a daemon whose operator believes they set it.
+#
+# It is not JSON, and that is the decision this format exists for: JSON has no
+# comments, so everything you are reading would have been deleted from it, and
+# what each bound is for is the most useful thing this file has to say. YAML
+# and TOML were never candidates — neither has a standard-library parser and
+# neither is safe to hand-roll, and a dependency for one would create the
+# go.sum this repository does not have (docs/security.md §5).
+#
+# NOTHING IN THE DAEMON WRITES THIS FILE. It is yours, and a daemon that
+# reformatted it would have taken a decision that was not its to take.
+# `crswd config migrate` is the only code in this repository that writes a
+# configuration file at all.
+
+# The schema this file was written against. Absent means 1, which is what every
+# hand-written file is. A number higher than the daemon understands is refused
+# rather than read optimistically: the reason to raise it is that a key changed
+# meaning, and guessing at the new meaning is how a containment boundary ends
+# up set to something you did not write.
+version = 1
+
+
+# --- Required. There is no default, and no way to start without it. ---
+
+# The HMAC shared secret the API client signs with. At least 32 bytes; unset or
+# shorter is a startup failure, because an absent secret is an absent
+# authentication layer and a daemon that starts with one is worse than a daemon
+# that does not start. It is never logged, never returned in an error, and
+# never echoed back — not even its length.
+#
+# Generate one with `openssl rand -hex 32`.
+#
+# A file that sets this, or access_allowed_emails, must be mode 0600: the
+# daemon refuses to start from one that any other account on this host can read
+# or write. That refusal fires only on a file that actually holds one of the
+# two — refusing over the mode of a file holding nothing but allowed_roots
+# would be demanding a change that protects nothing.
+# shared_secret = paste the output of openssl rand -hex 32 here
+
+
+# --- The blast radius. Read docs/security.md before widening anything here. ---
+
+# Colon-separated (`:`) absolute paths. A session may only run in a directory
+# contained by one of these, and this is the real containment control — keep it
+# narrow. Every entry must already exist as a directory that resolves; one that
+# does not is a startup failure, as is an empty entry. Two spellings of the
+# same directory collapse to one.
+#
+# Default: $HOME/code, announced by a banner on stderr at every start. $HOME
+# itself is never the default: SSH keys, cloud credentials and browser profiles
+# all live directly under it, which would make the allowlist decorative.
+# allowed_roots = /home/you/code:/home/you/work
+
+# Offer the immediate subdirectories of each approved root as
+# working-directory suggestions on the create form. Off by default, and that
+# default is the whole point: listing a filesystem is a disclosure, however
+# mild, and you opt into it rather than finding your directory names on a page
+# you never asked to have read the host.
+#
+# It widens nothing. allowed_roots is still the control — a suggestion is
+# checked against the roots as it is offered, and every path, picked or typed,
+# is resolved and checked again on the create it arrives with.
+#
+# true or false. Anything else — `yes`, `on`, `2` — is a startup failure rather
+# than a silent off: you meant on, and a daemon that read it as off would run
+# without the thing you asked for and say nothing.
+# discover_roots = false
+
+# host:port for the daemon's own listener. Loopback only, and the host must be
+# an IP literal: a name can be pointed anywhere by /etc/hosts or a resolver,
+# which would move the bind off loopback without changing this value.
+# Reachability comes from the Cloudflare Tunnel and never from this.
+#
+# Default: 127.0.0.1:8765.
+# listen = 127.0.0.1:8765
+
+# How many sessions may exist at once. Past it the daemon refuses to create
+# rather than degrading the host it is running on. At least 1; anything that is
+# not a whole number is a startup failure.
+#
+# Default: 5.
+# max_sessions = 5
+
+# Tear every session down when the daemon stops, which is what it did before
+# sessions survived a restart. Off by default: a graceful restart is
+# overwhelmingly the common case, destroying a fleet to redeploy a binary is a
+# cost nobody asked for, and startup adoption reclaims what a restart left.
+#
+# This build does not read the key. It parses, and /settings renders it, but
+# the loader has no case for it yet — so sessions survive a clean stop whatever
+# is written here.
+# destroy_on_shutdown = false
+
+# How long a session may live from creation, whatever it is doing. Go duration
+# syntax: `24h`, `90m`. It must be positive. There is deliberately no way to
+# say "never": a session that can outlive the daemon's own memory of why it
+# exists is what the bound is written against.
+#
+# Default: 24h.
+# session_lifetime = 24h
+
+# The ceiling a per-session lifetime override may not exceed. A create asking
+# for more is refused rather than quietly clamped — a caller who asked for
+# thirty days and was given one believes they have thirty, and nothing tells
+# them otherwise until the session is gone. Below session_lifetime it is a
+# startup failure, because every create would then be refused by a ceiling
+# under its own default.
+#
+# Default: whatever session_lifetime is.
+# session_lifetime_max = 24h
+
+# How long a session may sit without a request before the reaper takes it,
+# measured from its last activity and moving with it. It may not be negative,
+# and longer than session_lifetime is a startup failure because it could then
+# never fire — a setting that does nothing is worse than one that refuses,
+# since nothing tells you it did nothing.
+#
+# `0` is not a disable here: zero reads as unset further down and the built-in
+# 60m applies. Switching idle reaping off belongs to one session, as a
+# create-time override, rather than to every session this daemon will start.
+#
+# Default: 60m.
+# idle_timeout = 60m
+
+# The ceiling for a per-session idle override, as session_lifetime_max is for
+# lifetimes. Below idle_timeout is a startup failure.
+#
+# Default: whatever idle_timeout is.
+# idle_timeout_max = 60m
+
+# How many sessions may be created per minute before the daemon starts refusing
+# creates. At least 1.
+#
+# Default: 6.
+# create_rate_per_min = 6
+
+# The largest request body the daemon will read, in bytes. Past it a request is
+# refused rather than truncated. At least 1.
+#
+# Default: 65536.
+# max_body_bytes = 65536
+
+
+# --- Layer 1: the browser door. All three of these, or none of them. ---
+#
+# None of the three means this daemon serves the API and admits nobody to the
+# dashboard, which is a deployment it supports and says loudly at every start.
+# Some of them is a startup failure: a team domain without an audience is a
+# half-configured door, and a daemon that started anyway would refuse every
+# login while looking correctly configured.
+
+# Your Cloudflare Access team domain, normally <team>.cloudflareaccess.com. It
+# is one value because two things must agree: the expected issuer and the key
+# set are both derived from it, and configuring them separately would allow an
+# issuer and a key set that do not belong to each other — a validator checking
+# signatures against the wrong authority.
+#
+# A full origin is accepted too. http:// is refused unless the host is a
+# loopback IP literal; that carve-out exists so the acceptance tests can serve
+# a key set they control without a Cloudflare account, and it skips no
+# validation.
+#
+# Default: none, and the dashboard admits nobody.
+# access_team_domain = your-team.cloudflareaccess.com
+
+# The Access application's AUD tag, from the application's settings in the
+# Cloudflare dashboard. It is compared for equality against the assertion's
+# audience and never parsed, so an assertion minted for another application on
+# the same team — or for another team entirely — is refused.
+#
+# Default: none.
+# access_aud = the AUD tag from your Access application
+
+# Comma-separated addresses allowed to reach the dashboard. The edge is the
+# gate; this is the daemon asserting the gate is configured as you believe, so
+# an Access policy somebody widened in the dashboard does not widen this. An
+# entry that is empty, or that carries a space, is a startup failure —
+# whitespace inside an address is the separator typed wrong, and left to run it
+# is an address that never matches with nothing saying why.
+#
+# It is treated as a secret. It authenticates nobody, but it names *who* may
+# reach a daemon that runs unsandboxed code on this host, which is worth
+# exactly as little publication as the secret that authenticates them: a file
+# setting it must be mode 0600, and /settings reports it as present or absent
+# and never spells it.
+#
+# Default: none.
+# access_allowed_emails = you@example.com,colleague@example.com
+
+
+# --- Bounds on what the dashboard may hold open and believe. ---
+
+# How many live output streams may be open at once — the one thing a browser
+# can hold open indefinitely. The default is twice max_sessions, so every
+# session on a fully loaded host is watchable from two tabs before the daemon
+# starts refusing. At least 1.
+#
+# Default: 10.
+# max_streams = 10
+
+# The largest screen a pane capture may return, in lines. A capture past it is
+# refused rather than shortened: half a screen is a wrong screen, not a smaller
+# one. At least 1.
+#
+# 200 is far above the 24 lines a session this daemon starts actually has —
+# nothing ever attaches to one, so it keeps tmux's 80x24 default. What the
+# bound is watching for is a capture that reaches into the scrollback, where
+# tmux's own history-limit default of 2000 lines is an order of magnitude past
+# this. It should fire when the assumption behind it has broken, never because
+# a pane is merely full.
+#
+# Default: 200.
+# pane_bound = 200
+
+
+# --- What the daemon types into a new session's shell. ---
+#
+# A create carries a NAME from the set below and never a command line. A route
+# that took a command line would make this a general remote-shell service
+# behind whatever authenticates it, rather than a Claude session manager — the
+# same reason a working directory is chosen from allowed_roots instead of being
+# named freely.
+#
+# Every command line here is checked at startup rather than at delivery, so you
+# learn about a bad one from a daemon that refuses to boot instead of from a
+# session that came up three quarters configured. A `;` is refused, because
+# tmux's parser eats one before the line is ever typed; so is any control
+# character, which would submit the line early. A command line may not contain
+# a comma, which is the list separator. `{name}` is the one substitution the
+# daemon makes — the session's own name, restricted to [a-zA-Z0-9-] so it
+# cannot change the shape of the line — and any other `{token}` is refused
+# rather than typed at a shell.
+
+# The command line bound to the name `default`, which is what a create that
+# asks for nothing in particular runs.
+#
+# Default: claude --dangerously-skip-permissions, byte for byte what every
+# session started before this was configurable at all.
+# start_command = claude --dangerously-skip-permissions
+
+# The named set a create may choose from, spelled as name/command pairs
+# separated by commas. Note the `=` inside the value: the parser splits on the
+# first one only, which is why this line means what it looks like. Names are
+# [a-z0-9-] and at most 32 characters, because a name reaches the audit trail.
+#
+# Naming `default` here as well as in start_command is a startup failure rather
+# than one of them silently winning. Which of two spellings takes effect is the
+# question you can least afford to guess about: the answer decides what gets
+# typed into an unsandboxed shell on every create that names no command.
+#
+# Default: none, so the set is exactly the one `default` above.
+# start_commands = rc=claude remote-control --name {name}
+
+# Which entry of that set the dashboard's remote-control switch means. It
+# carries a name for the same reason a create does: a switch wired to a name is
+# one you can read out of your own configuration and change here, and a switch
+# wired to a command line would be the thing the allowlist exists to prevent.
+#
+# Unset means `rc` when you have configured a command by that name, and no
+# switch at all when you have not — you are never offered a control whose only
+# outcome is a refusal. Set to a name the set does not have, it is a startup
+# failure: you have said which command you mean, and a switch that quietly
+# started plain sessions instead would be worse than no switch.
+#
+# Default: rc, when a command by that name exists.
+# remote_control_command = rc

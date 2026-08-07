@@ -64,7 +64,7 @@ Open `/settings` in the browser.
 | Check | Expected |
 |---|---|
 | Every configured key is listed | Yes |
-| `shared_secret` and `allowed_identities` | `present` or `absent` — **never** a value, prefix, or length |
+| `shared_secret` and `access_allowed_emails` | `present` or `absent` — **never** a value, prefix, or length |
 | The file that was read | Named at the top, verbatim |
 | Source column | `file` for the keys above |
 | Now set `CRSW_LISTEN` in the environment and restart | That row reads `environment` — this is what answers "why is my change not applied?" (SC-004) |

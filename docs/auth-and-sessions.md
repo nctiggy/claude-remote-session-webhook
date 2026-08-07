@@ -445,7 +445,7 @@ Destroying a session clears **all** of:
 A killed session that leaves a tmux window behind is a live unsandboxed shell with
 no owner. Verify the kill; log the failure loudly if it did not work.
 
-## Relaying Claude's own login (milestone 4)
+## Relaying Claude's own login (not built yet)
 
 A fresh session may sit at Claude Code's device-code prompt instead of a shell. The
 daemon detects that, surfaces the URL in the dashboard, takes the code the operator

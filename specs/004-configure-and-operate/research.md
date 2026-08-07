@@ -91,7 +91,7 @@ and the present/absent rendering (FR-017):
 | Key | Why |
 |---|---|
 | `shared_secret` | The API credential. Disclosure is total compromise of the six operations. |
-| `allowed_identities` | The allowlisted addresses. Not a credential, but it names *who* can reach this daemon, which is exactly what an attacker needs to know to target the identity check. |
+| `access_allowed_emails` | The allowlisted addresses. Not a credential, but it names *who* can reach this daemon, which is exactly what an attacker needs to know to target the identity check. |
 
 The classification lives in **one exported function** in `internal/config`, so
 the permission check and the page render cannot disagree about what a secret is:

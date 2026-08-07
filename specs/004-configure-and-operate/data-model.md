@@ -14,7 +14,7 @@ and never writes it** (FR-008).
 | Property | Value |
 |---|---|
 | Default location | `$XDG_CONFIG_HOME/crswd/config`, falling back to `~/.config/crswd/config` |
-| Override | `--config <path>` flag, or `CRSW_CONFIG_FILE` |
+| Override | `CRSW_CONFIG_FILE`, and a path argument to the `config` subcommands. **Built in T009** — `DefaultPath` honours nothing but `XDG_CONFIG_HOME` before then. Resolved *before* parsing, never through the `withFile` shim: it selects which file to read, so routing it through the file's own lookup would make it a key that configures where it is read from. |
 | Backup consulted on failure | `config.bak` in the same directory (FR-010) |
 | Encoding | UTF-8, LF or CRLF line endings |
 | Absent | Not an error (FR-003) |
@@ -30,10 +30,10 @@ exist as of this milestone.
 | `version` | integer | no | Schema the file was written against. Absent means 1. |
 | `listen` | string | no | |
 | `shared_secret` | string | **yes** | May contain `#` and `=`. See the grammar. |
-| `allowed_identities` | list | **yes** | Names who may reach this daemon. |
+| `access_allowed_emails` | list | **yes** | Names who may reach this daemon. |
 | `allowed_roots` | list | no | The containment boundary. |
 | `start_commands` | list | no | `name=command` pairs, comma-separated. |
-| `default_lifetime` | duration | no | |
+| `session_lifetime` | duration | no | |
 | `idle_timeout` | duration | no | Negative disables idle reaping. |
 | `pane_bound` | integer | no | New this milestone (FR-052). |
 | `discover_roots` | boolean | no | New this milestone. Off by default (FR-041). |

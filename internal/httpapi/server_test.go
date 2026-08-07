@@ -608,6 +608,15 @@ func TestNewRefusesMissingDependencies(t *testing.T) {
 			capless.MaxStreams = 0
 			return newServer(&capless, net.Listen, testAuth(t), testBrowser(), testTrail(t), mgr, lim())
 		},
+		// The pane bound the operator configured must be the one the tmux driver
+		// is built with, and a zero is the shape that a number hard-coded here
+		// would hide: tmuxctl.NewExec refuses a bound below one line, so this
+		// case goes red the moment New stops passing cfg.PaneBound (T033).
+		"a pane bound that states nothing": func() (*Server, error) {
+			unbounded := *cfg
+			unbounded.PaneBound = 0
+			return New(&unbounded)
+		},
 		"no shared secret": func() (*Server, error) { return New(&config.Config{Listen: loopbackListen, MaxBodyBytes: 64}) },
 		"no body size cap": func() (*Server, error) {
 			return New(&config.Config{Listen: loopbackListen, SharedSecret: testSecret()})

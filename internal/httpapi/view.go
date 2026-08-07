@@ -57,6 +57,23 @@ type sessionView struct {
 	// dressed as a fact.
 	StartCommand string
 
+	// Mode is where this session is driven from, in the two words
+	// session.Mode spells: local, or remote (FR-031, T021).
+	//
+	// It is not the same fact as StartCommand above, which is why both are here.
+	// The name says what is running; the mode says whether claude.ai can reach
+	// it. Reading the name and knowing which one means remote is configuration —
+	// the settings page, not a card — so a card that showed only the name would
+	// be asking an operator to hold this daemon's configuration in their head to
+	// answer the one question the toggle exists for.
+	//
+	// Derived by the record's own method rather than carried on it, so this
+	// field is the projection's copy of an answer computed at render (research
+	// R5). There is no case in which it is empty: Mode returns one of its two
+	// constants for every record, including an adopted one, which is why the
+	// card renders it unconditionally where it states the absence of a name.
+	Mode session.Mode
+
 	// Age is already formatted — coarse, human-readable, computed server-side.
 	// There is no ticking clock in the browser for it to drift from, and no
 	// duration formatting inside a template, so the string is the projection's
@@ -181,6 +198,129 @@ type createFormView struct {
 	// identity that is already allowlisted — and the command lines they map to
 	// are deliberately not here.
 	StartCommands []string
+
+	// Roots is every directory this daemon will start a session under —
+	// CRSW_ALLOWED_ROOTS as config.Load resolved it, absolute and with the
+	// symlinks already followed.
+	//
+	// It renders as a hint under the working-directory field (T014), which
+	// reverses milestone 3's deliberate omission. That omission was right about
+	// the wrong disclosure: the uniform working-directory refusal stays one
+	// message for every cause precisely so a caller cannot ask whether a path
+	// exists, and nothing here changes that. Which roots are *permitted* is a
+	// different fact — it is this authenticated operator's own configuration, it
+	// is already on every card in the fleet as a working directory, and without
+	// it the field is one an operator has to guess at. Naming the permitted set
+	// is not confirming what is inside it.
+	//
+	// Every configured root renders, not the first: an operator whose second
+	// root is missing from the hint would read it as a refusal they have no way
+	// to explain.
+	Roots []string
+
+	// Suggestions is what the working-directory picker offers (T022): the paths
+	// that render as `<option>` elements inside the field's `<datalist>`.
+	//
+	// It is not the Roots hint in another shape. That sentence says which
+	// directories a session may run *under*; this list is the working
+	// directories themselves, one level in, and a form can carry both because
+	// they answer different questions — "what is permitted" and "what is here".
+	//
+	// **Nothing in this list is validated, and nothing in it needs to be.** The
+	// datalist submits an ordinary string, so a chosen path and a typed one are
+	// indistinguishable to the handler and both meet ResolveWorkDir — the same
+	// allowlist check, the same uniform refusal, the same audit record (FR-042).
+	// A path here grants nothing, and a path absent from it is still acceptable
+	// typed (FR-040). Treating a suggestion as an authorisation is the one real
+	// vulnerability this control could introduce, and it is closed by the list
+	// reaching no decision at all.
+	//
+	// Empty renders no datalist and no `list` attribute — the field as it
+	// shipped before the picker existed (FR-043), and what a daemon whose
+	// operator did not ask for discovery renders. It is filled by
+	// config.Config.DiscoveredWorkDirs (T023), which is off unless
+	// CRSW_DISCOVER_ROOTS says otherwise. The contract names a second source, an
+	// explicit list, and no task in this milestone builds one.
+	Suggestions []string
+
+	// Conversations is what the form offers for resume (T032, FR-033): the prior
+	// conversations of the directories above, each with the directory it belongs
+	// to and how long ago it was last written.
+	//
+	// It is the Suggestions list's companion and not a second picker. This form
+	// asks for a working directory and a conversation in one submission, so the
+	// page cannot know which directory an operator is about to name — the offer
+	// therefore carries the directory with each entry, and the create route
+	// checks the identifier against the directory that was actually submitted.
+	// A conversation offered here for some other directory is refused exactly as
+	// an invented one is.
+	//
+	// **Nothing in this list is validated, and nothing in it needs to be**, for
+	// the reason Suggestions needs none: it reaches no decision. What makes a
+	// resume legal is Manager.Create finding the identifier in the resolved
+	// working directory's own listing, so an entry here grants nothing and an
+	// identifier absent from here is still resumable typed.
+	//
+	// Empty renders no datalist and no `list` attribute, leaving a plain field an
+	// operator can still paste an identifier into — FR-018a's discipline about
+	// absent values, and the reason a daemon that discovers no directory is not
+	// a daemon that cannot resume.
+	Conversations []conversationOffer
+}
+
+// conversationOffer is one prior conversation as the create form renders it: the
+// identifier the operator would submit, and enough context to tell one from
+// another (T032).
+//
+// Everything here is either the identifier itself or derived from a modification
+// time, which is the whole of what session.Conversation carries — no title, no
+// first prompt, no summary, because every one of them would have to be read out
+// of a transcript (FR-034). A projection that grew such a field would put the
+// listing's narrowness — its entire security property — behind a template.
+type conversationOffer struct {
+	// ID is the identifier Claude Code named the conversation with, and the value
+	// the field submits. It is rendered as an attribute value and escaped like
+	// every other, but it is also the one string on this page that reaches a
+	// command line if it comes back, which is why session.resumableID has already
+	// refused anything but letters, digits, "-" and "_".
+	ID string
+
+	// WorkDir is the directory the conversation belongs to, so an operator can
+	// tell two identifiers apart — a UUID says nothing on its own, and the
+	// directory is the one fact that makes the offer legible. It is already on
+	// every card in the fleet and in the field above.
+	WorkDir string
+
+	// Age is how long ago the conversation was last written, formatted by
+	// formatAge for the reason a card's is: coarse, computed server-side, and
+	// spelled by the one function that pluralises, so a conversation and a
+	// session cannot describe the same duration two ways.
+	Age string
+}
+
+// outcomeView is the banner the fleet renders for what an action just did (T014).
+//
+// Its copy is never caller text. The page reads a code out of the query string,
+// bannerFor accepts only codes this package spells, and what is rendered is the
+// sentence that code maps to — so the field below holds a string chosen by a
+// handler and never one chosen by whoever wrote the link (FR-022). An
+// unrecognised code produces no view at all, which is why the fleet holds a
+// pointer.
+type outcomeView struct {
+	// Message is the sentence the operator reads. It is the whole of an ordinary
+	// outcome and the body of the one alarming one.
+	Message string
+
+	// Heading is carried by the alarming outcome alone, and empty everywhere
+	// else. It exists so that the one outcome an operator must not scan past has
+	// a shape of its own rather than a shade of its own — colour is
+	// reinforcement and never the signal (docs/design-system.md).
+	Heading string
+
+	// Alarm marks the outcome that must not read as one line alongside
+	// "renamed": a teardown this daemon could not verify means a live
+	// unsandboxed shell may have survived it (FR-023, AR-004).
+	Alarm bool
 }
 
 // actionView is one entry in an action row, and it is deliberately empty.

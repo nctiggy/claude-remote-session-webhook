@@ -104,53 +104,20 @@ const (
 	confirmYes   = "yes"
 )
 
-// The four things a destroy can answer, each a fragment because the caller is a
-// card on a page rather than a client reading JSON.
+// The four things a destroy can answer are four outcome codes rather than four
+// fragments (T014, outcome.go).
 //
-// Only the 409 is quoted from contracts/actions.md byte for byte. The other
-// three are authored here, the way milestone 2 authored the empty state's and
-// the not-found page's copy at their call sites: the contract fixes what each
-// one must *say* — a removal marker, a refusal that tore nothing down, a failure
-// that states it failed — and does not fix the words. Every one of them is a
-// text node and none carries colour, markup, or a control, which is FR-030 and
-// FR-031 met at the point the answer is written rather than in the stylesheet
-// that will style it (T007).
+// Milestone 3 wrote each of them as markup here, because contracts/actions.md
+// said the response would replace the card it acted on. Nothing did the
+// replacing without a script — the form is a plain post — so an operator with
+// scripting off navigated to a bare `<p>` with no page around it. The sentences
+// are unchanged and now live in outcome.go's map, where the fleet renders them
+// after the redirect lands, next to the fleet the destroy changed.
 //
-// They share one class with the 409 so the three outcomes are one component and
-// not three. What tells them apart to an operator is the sentence, not the
-// styling — a card that went quiet, or changed colour and said nothing, would be
-// the silent revert FR-031 forbids.
-var (
-	// bodyActionDestroyed is the removal marker: the card is replaced by the
-	// statement that the session it described is gone. It claims only what the
-	// host confirmed — Manager.Destroy returns nil after confirmGone said so, and
-	// never on the strength of the kill alone (FR-019).
-	bodyActionDestroyed = []byte(`<p class="card-outcome">Session destroyed. The host confirmed its window is gone.</p>`)
-
-	// bodyActionUnconfirmed answers a destroy that never carried the confirming
-	// step. It says what did not happen, because that is the fact the operator
-	// needs: a control that failed silently and left the card in place would be
-	// indistinguishable from one that did nothing at all.
-	bodyActionUnconfirmed = []byte(`<p class="card-outcome">This destroy was not confirmed, so nothing was torn down.</p>`)
-
-	// bodyActionTeardownUnverified is contracts/actions.md's literal, and the one
-	// non-uniform failure body on these routes.
-	//
-	// Being specific here discloses nothing: this operator has already been
-	// matched to this session by the ownership check above, so the one fact it
-	// carries is a fact about their own session. Being specific is also the point.
-	// The alternative is telling an operator a session was torn down while a live
-	// unsandboxed shell may have survived it, which is the one thing Principle VI
-	// does not let this daemon say quietly.
-	bodyActionTeardownUnverified = []byte(`<p class="card-outcome">Teardown could not be verified. This session may still be running on the host.</p>`)
-
-	// bodyActionDestroyFailed is the fail-closed answer for a teardown that failed
-	// for a reason no sentinel explains. It deliberately does not say the session
-	// may still be running — that is a specific claim, and a failure nobody
-	// classified is not evidence for it — and it deliberately does say something,
-	// because an empty 500 renders as a card that reverted (FR-031).
-	bodyActionDestroyFailed = []byte(`<p class="card-outcome">The session could not be destroyed.</p>`)
-)
+// The 409 the contract used to fix byte for byte is now outcomeTeardownUnverified,
+// which is the one outcome that keeps a shape of its own: a teardown this daemon
+// could not verify means a live unsandboxed shell may have survived, and FR-023
+// is explicit that it must not be reduced to a line of prose beside "renamed".
 
 // errDestroyUnconfirmed is what a destroy arriving without `confirm=yes` is
 // recorded as.
@@ -158,7 +125,7 @@ var (
 // It is a refusal worth a name of its own rather than a shrug. The trail is
 // where an operator would see a page submitting destroys without the confirming
 // step — which is either a broken template or something that is not this
-// daemon's page — and neither is visible from the 400 the caller gets.
+// daemon's page — and neither is visible from the redirect the caller gets.
 var errDestroyUnconfirmed = errors.New("a browser destroy arrived without the confirming step")
 
 // destroyFromBrowser is POST /dashboard/sessions/{id}/destroy (US1,
@@ -216,7 +183,7 @@ func (s *Server) destroyFromBrowser(w http.ResponseWriter, r *http.Request) {
 	// handler that read r.Body here would find it drained.
 	if r.PostForm.Get(fieldConfirm) != confirmYes {
 		AuditFrom(r.Context()).Deny(errDestroyUnconfirmed.Error())
-		s.writeFragment(w, http.StatusBadRequest, bodyActionUnconfirmed)
+		s.redirectOutcome(w, r, outcomeUnconfirmed)
 		return
 	}
 
@@ -237,9 +204,9 @@ func (s *Server) destroyFromBrowser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The id off the daemon's own record, never the bytes in the path, and stamped
-	// before the teardown so the 409 below names the session it could not confirm.
-	// That is what makes an unverified teardown findable in the trail rather than
-	// merely present in it.
+	// before the teardown so the unverified outcome below names the session it
+	// could not confirm. That is what makes an unverified teardown findable in the
+	// trail rather than merely present in it.
 	AuditFrom(r.Context()).SetSessionID(live.ID)
 
 	if err := s.sessions.Destroy(r.Context(), live); err != nil {
@@ -247,13 +214,14 @@ func (s *Server) destroyFromBrowser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.writeFragment(w, http.StatusOK, bodyActionDestroyed)
+	s.redirectOutcome(w, r, outcomeDestroyed)
 }
 
 // refuseBrowserDestroy maps a Destroy failure onto the answer contracts/actions.md
 // gives it, and it is refuseDestroy's shape on the other door for the same
-// reason: one case has a status of its own because an operator has to be able to
-// find it.
+// reason: one case has an answer of its own because an operator has to be able
+// to find it. That case is outcomeTeardownUnverified, which is the one outcome
+// the fleet renders as more than a line of prose (FR-023).
 //
 // The record is retained on both branches, and that is Manager.Destroy's doing
 // rather than this function's — it drops the record only on a confirmed teardown.
@@ -270,11 +238,11 @@ func (s *Server) destroyFromBrowser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) refuseBrowserDestroy(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, session.ErrOrphanedSession) {
 		AuditFrom(r.Context()).Deny(errDestroyOrphaned.Error())
-		s.writeFragment(w, http.StatusConflict, bodyActionTeardownUnverified)
+		s.redirectOutcome(w, r, outcomeTeardownUnverified)
 		return
 	}
 	AuditFrom(r.Context()).Deny(errDestroyRefused.Error())
-	s.writeFragment(w, http.StatusInternalServerError, bodyActionDestroyFailed)
+	s.redirectOutcome(w, r, outcomeDestroyFailed)
 }
 
 // --- Create ----------------------------------------------------------------
@@ -311,68 +279,30 @@ const (
 	// type into the new session's shell (#38). It carries a name; the command
 	// line it maps to never leaves the daemon's configuration.
 	fieldStartCommand = "start_command"
+
+	// fieldResume names a prior conversation to carry on from (T032, FR-033).
+	// Absent or empty starts fresh, which is what a form the operator did not
+	// fill in submits — the default is a property of the field being empty
+	// rather than a value this handler substitutes (FR-037).
+	//
+	// What it carries is an identifier, checked by Manager.Create against the
+	// listing of the working directory this same submission named. A form that
+	// could name a conversation in some other directory names one this daemon
+	// refuses, which is the point: the offer on the page reaches no decision.
+	fieldResume = "resume"
 )
 
-// The four things a create can answer other than a card, each a fragment for the
-// reason the destroy's are: the caller is a page, not a client reading JSON.
+// What a create answers is an outcome code, exactly as a destroy's is (T014).
+// The five refusals are outcomeBadName, outcomeBadWorkDir, outcomeBadStartCommand,
+// outcomeLimited and outcomeCreateFailed, and the success is outcomeCreated;
+// their sentences are milestone 3's own, moved into outcome.go's map.
 //
-// None is quoted from contracts/actions.md, which fixes what each must *say* and
-// not the words — a fragment naming the field for a bad name, one that speaks of
-// permission and never of existence for a working directory, one that says the
-// limit was reached, and one that says the session could not be started. Each is
-// a text node carrying no colour, no markup and no control, which is FR-030 and
-// FR-031 met where the answer is written; they share the class the destroy's
-// outcomes carry, because what an operator is told after an action is one
-// component and not five.
-var (
-	// bodyActionCreateBadName answers a name ValidateName refused. It names the
-	// field and states the alphabet, and says nothing whatever about the
-	// filesystem: the two fields are validated in one call, and an answer that
-	// mentioned the directory while refusing the name would be a way to ask
-	// questions about the host by sending a name that cannot pass.
-	bodyActionCreateBadName = []byte(`<p class="card-outcome">That is not a usable session name. Use letters, digits and hyphens, up to 64 characters.</p>`)
-
-	// bodyActionCreateBadWorkDir is the single answer every working-directory
-	// refusal shares — traversal, an absolute path outside the approved roots, a
-	// symlink that resolves out of them, a path that is not a directory, and a
-	// path that is not there at all (FR-012).
-	//
-	// One message is the whole point. ResolveWorkDir tells those apart and the
-	// trail keeps the difference, but a caller who could read it would hold a
-	// filesystem oracle: ask for a path, learn from the wording whether it exists,
-	// and map a host through a form. It speaks only of what this daemon permits,
-	// which is a fact about the daemon's own configuration rather than about the
-	// machine it runs on.
-	bodyActionCreateBadWorkDir = []byte(`<p class="card-outcome">This daemon may not start a session in that working directory.</p>`)
-
-	// Names the field rather than the value: the operator picked from a list
-	// this page rendered, so a mismatch means the list and the daemon disagree,
-	// which is worth saying plainly rather than blaming the choice.
-	bodyActionCreateBadStartCommand = []byte(`<p class="card-outcome">That start command is not one this daemon is configured with.</p>`)
-
-	// bodyActionCreateLimited is the 429, and it is one body for the
-	// concurrent-session cap and for the create rate alike — the arrangement
-	// bodyTooManyRequests has on the API door and for the reason it has it: the
-	// answer to either is to wait or to destroy something, so there is nothing a
-	// caller could do with the difference. Which of the two it was is on the
-	// record.
-	//
-	// It says nothing was started, because that is the fact the operator needs: a
-	// refusal that only named a limit would leave them wondering whether a session
-	// they cannot see is now running.
-	bodyActionCreateLimited = []byte(`<p class="card-outcome">No session was started: this host is at its limit for now. Destroy one, or try again shortly.</p>`)
-
-	// bodyActionCreateFailed is the fail-closed answer for a create that failed
-	// for a reason no sentinel explains, and for the orphan case with it.
-	//
-	// It deliberately does not say a shell may have survived. The record Create
-	// kept is what the reaper will collect, the caller holds no credential for it
-	// — the token was discarded — and a create that ended here started nothing the
-	// operator can drive, so the honest short answer is the one they can act on.
-	// The orphan itself is the trail's business, under the same reason the API
-	// door records for it, where an operator is already reading.
-	bodyActionCreateFailed = []byte(`<p class="card-outcome">The session could not be started.</p>`)
-)
+// The one that changed shape is the success. It used to be the new card itself,
+// rendered here and appended to a fleet by a swap only a running script
+// performed — so an operator with scripting off who started a session was shown
+// one card on a blank page. The fleet they are returned to now draws that card
+// from the same projection (cardOf) alongside every other, which is the
+// appending the plan described, done by the page that owns the grid.
 
 // createFromBrowser is POST /dashboard/sessions (US2, contracts/actions.md).
 //
@@ -416,7 +346,7 @@ func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
 	// layer-2 caller CallerFrom returns, and there is none on this door.
 	if !s.creates.allow(operator.Owner) {
 		AuditFrom(r.Context()).Deny(errCreateRateExceeded.Error())
-		s.writeFragment(w, http.StatusTooManyRequests, bodyActionCreateLimited)
+		s.redirectOutcome(w, r, outcomeLimited)
 		return
 	}
 
@@ -438,6 +368,12 @@ func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
 		Name:         r.PostForm.Get(fieldName),
 		WorkDir:      r.PostForm.Get(fieldWorkDir),
 		StartCommand: r.PostForm.Get(fieldStartCommand),
+		// Passed on rather than interpreted. Whether this names a conversation
+		// this daemon may resume is a question about the working directory beside
+		// it and about a store on the host, and both belong to the manager — a
+		// handler that answered it would be a second place deciding what a resume
+		// is, free to disagree with the one that types the command line.
+		Resume: r.PostForm.Get(fieldResume),
 	})
 	if err != nil {
 		s.refuseBrowserCreate(w, r, err)
@@ -449,29 +385,22 @@ func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
 	// rather than merely present in it.
 	AuditFrom(r.Context()).SetSessionID(created.ID)
 
-	// The card, rendered from the one projection the fleet and the session page
-	// render from (cardOf), so a session's first appearance describes it exactly as
-	// every later one will.
+	// The fleet, which is where the new card is (T014).
 	//
-	// The page token is the one the request carried, rendered back into the new
-	// card's own form rather than a second one minted here. A page is rendered for
-	// one identity at one instant and every form on it carries that render's token
-	// (T004); this card joins exactly that page, so the token that belongs on it is
-	// that page's own. Minting would give one card a later expiry than its
-	// siblings, and would put a mint *after* a session exists — where the only
-	// honest answer to a failure is a 500 for a create that succeeded. Nothing
-	// arbitrary can reach this line: admitAction verified the value as a MAC over
-	// this operator's identity before the handler ran, so what is written back is a
-	// value this daemon minted for this browser and not caller-chosen text.
+	// This used to render the card here and hand it back as a fragment, on the
+	// plan's expectation that something would append it to the grid. Only a
+	// running script did, so a create that worked put a scriptless operator on a
+	// page holding one card and nothing else — no header, no summary, no fleet, no
+	// create form. The redirect sends them to the page that draws the grid, and
+	// that page renders this session from the same projection (cardOf) as every
+	// other, so the first appearance of a card is a card in a fleet rather than a
+	// card on its own.
 	//
-	// renderPage rather than a fragment writer of its own. What it does is what a
-	// fragment built from a template needs — built into a buffer first, so a
-	// template that failed halfway cannot leave a browser holding half a card under
-	// a 200, and answered with no body at all when it does. That answer is right
-	// here for a reason it is not right anywhere else on this route: the session was
-	// started, so a fragment saying it could not be would be a lie, and the fleet
-	// the operator reloads will show the card this render could not.
-	s.renderPage(w, r, http.StatusOK, "session-card", cardOf(*created, s.clock.Now(), r.PostForm.Get(fieldPageToken)))
+	// Nothing about the token needs carrying across. The page the operator lands
+	// on mints its own for its own render, which is one fewer arrangement than the
+	// fragment needed — that one had to write the submitted token back into the
+	// new card so its siblings and it would expire together.
+	s.redirectOutcome(w, r, outcomeCreated)
 }
 
 // refuseBrowserCreate maps a Create failure onto the answer contracts/actions.md
@@ -491,30 +420,42 @@ func (s *Server) refuseBrowserCreate(w http.ResponseWriter, r *http.Request, err
 	switch {
 	case errors.Is(err, session.ErrInvalidName):
 		AuditFrom(r.Context()).Deny(createReason(err).Error())
-		s.writeFragment(w, http.StatusBadRequest, bodyActionCreateBadName)
+		s.redirectOutcome(w, r, outcomeBadName)
 	case errors.Is(err, session.ErrInvalidWorkDir):
 		AuditFrom(r.Context()).Deny(createReason(err).Error())
-		s.writeFragment(w, http.StatusBadRequest, bodyActionCreateBadWorkDir)
+		s.redirectOutcome(w, r, outcomeBadWorkDir)
 	case errors.Is(err, session.ErrUnknownStartCommand):
-		// A 400 rather than a 500: the operator named something this daemon does
-		// not have, which is a request to fix rather than a fault to report. The
-		// name is refused rather than falling back to the default, because a
-		// caller who asked for remote control and silently got a plain session
-		// has no way to discover that is what happened.
+		// An outcome of its own rather than the generic failure: the operator named
+		// something this daemon does not have, which is a request to fix rather than
+		// a fault to report. The name is refused rather than falling back to the
+		// default, because a caller who asked for remote control and silently got a
+		// plain session has no way to discover that is what happened.
 		AuditFrom(r.Context()).Deny(createReason(err).Error())
-		s.writeFragment(w, http.StatusBadRequest, bodyActionCreateBadStartCommand)
+		s.redirectOutcome(w, r, outcomeBadStartCommand)
+	case errors.Is(err, session.ErrUnknownConversation):
+		// An outcome of its own for outcomeBadStartCommand's reason, and a sharper
+		// one: the operator asked to carry on from somewhere, and a create that
+		// quietly started fresh instead would give them a session that looks right
+		// and has forgotten everything. It is refused rather than resolved to the
+		// most recent conversation in the directory, which is the whole of FR-032.
+		//
+		// The sentinel is what reaches the trail, never the identifier: it is
+		// caller text, and every reason on the record is one this codebase wrote.
+		AuditFrom(r.Context()).Deny(createReason(err).Error())
+		s.redirectOutcome(w, r, outcomeBadConversation)
 	case errors.Is(err, session.ErrTooManySessions):
-		// A full fleet is a 429 and not a 400, for the reason the API door gives:
-		// nothing the operator sent is wrong, and the only fix is to wait or to
-		// destroy something.
+		// A full fleet and a spent create budget are one outcome for the reason
+		// they were one body: nothing the operator sent is wrong, and the only fix
+		// is to wait or to destroy something. Which of the two it was is on the
+		// record.
 		AuditFrom(r.Context()).Deny(errCreateCapReached.Error())
-		s.writeFragment(w, http.StatusTooManyRequests, bodyActionCreateLimited)
+		s.redirectOutcome(w, r, outcomeLimited)
 	case errors.Is(err, session.ErrOrphanedSession):
 		AuditFrom(r.Context()).Deny(errCreateOrphaned.Error())
-		s.writeFragment(w, http.StatusInternalServerError, bodyActionCreateFailed)
+		s.redirectOutcome(w, r, outcomeCreateFailed)
 	default:
 		AuditFrom(r.Context()).Deny(errCreateRefused.Error())
-		s.writeFragment(w, http.StatusInternalServerError, bodyActionCreateFailed)
+		s.redirectOutcome(w, r, outcomeCreateFailed)
 	}
 }
 
@@ -535,35 +476,18 @@ func (s *Server) refuseBrowserCreate(w http.ResponseWriter, r *http.Request, err
 // (FR-033).
 const patternDashboardRename = "POST /dashboard/sessions/{" + pathValueID + "}/rename"
 
-// The two things a rename can answer other than a card, each a fragment because
-// the caller is a card on a page rather than a client reading JSON.
+// What a rename answers is an outcome code (T014): outcomeRenamed, outcomeBadName
+// for a name ValidateName refused, and outcomeRenameFailed for a failure no
+// sentinel explains.
 //
-// Neither is quoted from contracts/actions.md, which fixes what a rename must
-// *say* — that the name was refused, and that the session still holds the one it
-// had — and does not fix the words. Both are text nodes carrying no colour, no
-// markup and no control, and they share the class the destroy's and the create's
-// outcomes carry, because what an operator is told after an action is one
-// component and not seven.
-var (
-	// bodyActionRenameBadName answers a name ValidateName refused.
-	//
-	// It states the rule and then the outcome, and the second sentence is the one
-	// this route needs that the create's refusal does not: the answer *replaces
-	// the card*, so an operator who is told only that the name was bad is left
-	// looking at a slot where their session used to be, with no way to tell a
-	// refused rename from one that half happened (FR-031). What it never carries
-	// is the name that was refused — that is caller-supplied text on its way back
-	// out through a page (FR-042), and the rule is what the operator has to act
-	// on in any case.
-	bodyActionRenameBadName = []byte(`<p class="card-outcome">That is not a usable session name. Use letters, digits and hyphens, up to 64 characters. This session is still called what it was.</p>`)
-
-	// bodyActionRenameFailed is the fail-closed answer for a rename that failed
-	// for a reason no sentinel explains. It says nothing about the record's
-	// current state, because a failure nobody classified is not evidence about
-	// one — and it deliberately does say something, because an empty 500 renders
-	// as a card that reverted (FR-031).
-	bodyActionRenameFailed = []byte(`<p class="card-outcome">The session could not be renamed.</p>`)
-)
+// A refused name is the create's own outcome and not a second one, which the
+// redirect earns. Milestone 3 needed two, because a rename's answer *replaced
+// the card*: an operator told only that the name was bad was left looking at a
+// slot where their session used to be, so that sentence had to add that the
+// session was still called what it was. Nothing is replaced now — the card is on
+// the fleet the operator lands on, saying what it is still called — so the two
+// refusals are one sentence again. Neither carries the name that was refused;
+// that is caller-supplied text on its way back out through a page (FR-042).
 
 // errRenameRefused is the fail-closed reason for a rename that failed for a
 // reason no sentinel explains. A refusal nobody classified is still a refusal,
@@ -637,24 +561,19 @@ func (s *Server) renameFromBrowser(w http.ResponseWriter, r *http.Request) {
 	// that way: a rename this daemon would accept from a query string is a relabel
 	// a link can carry. The form itself was parsed by the gate, under the
 	// configured body limit.
-	renamed, err := s.sessions.Rename(live, r.PostForm.Get(fieldName))
-	if err != nil {
+	if _, err := s.sessions.Rename(live, r.PostForm.Get(fieldName)); err != nil {
 		s.refuseBrowserRename(w, r, err)
 		return
 	}
 
-	// The card, rendered from the one projection the fleet and the session page
-	// render from (cardOf), so a renamed session reads exactly as it will on every
-	// later page load — which is also the whole of what this route answers, because
-	// the name is the only thing about the card that moved.
-	//
-	// The page token is the one the request carried rather than a second one minted
-	// here, exactly as the create's answer carries it: this card rejoins the page
-	// that submitted the form, and a card holding a later expiry than its siblings
-	// is one that outlives them. Nothing arbitrary can reach this line — admitAction
-	// verified the value as a MAC over this operator's identity before the handler
-	// ran.
-	s.renderPage(w, r, http.StatusOK, "session-card", cardOf(renamed, s.clock.Now(), r.PostForm.Get(fieldPageToken)))
+	// The fleet, where the card now carries the new name (T014). It used to be the
+	// re-rendered card, handed back as a fragment on the expectation that
+	// something would put it where the old one was — and only a running script
+	// did, so a rename that worked put a scriptless operator on a page holding one
+	// card and no page around it. The name is the only thing about the card that
+	// moved, and the fleet draws it from the same projection this route used to
+	// call.
+	s.redirectOutcome(w, r, outcomeRenamed)
 }
 
 // refuseBrowserRename maps a Rename failure onto the answer contracts/actions.md
@@ -662,7 +581,7 @@ func (s *Server) renameFromBrowser(w http.ResponseWriter, r *http.Request) {
 // their reason: one function, so the branches are read together.
 //
 // Three arms over an error with two named causes. A name the shared check refused
-// is the contract's 400; a record that is no longer there, or is dead, is the
+// is the contract's refused name; a record that is no longer there, or is dead, is the
 // uniform not-found the other routes give — the session was there when View
 // answered and is not there now, which is exactly the "no longer exists" cause
 // T005's one answer exists to cover, and telling a caller that a session
@@ -678,13 +597,13 @@ func (s *Server) refuseBrowserRename(w http.ResponseWriter, r *http.Request, err
 	switch {
 	case errors.Is(err, session.ErrInvalidName):
 		AuditFrom(r.Context()).Deny(createReason(err).Error())
-		s.writeFragment(w, http.StatusBadRequest, bodyActionRenameBadName)
+		s.redirectOutcome(w, r, outcomeBadName)
 	case errors.Is(err, session.ErrSessionNotFound), errors.Is(err, session.ErrSessionDead):
 		AuditFrom(r.Context()).Deny(resolveReason(err).Error())
 		s.notFoundAction(w)
 	default:
 		AuditFrom(r.Context()).Deny(errRenameRefused.Error())
-		s.writeFragment(w, http.StatusInternalServerError, bodyActionRenameFailed)
+		s.redirectOutcome(w, r, outcomeRenameFailed)
 	}
 }
 
@@ -705,37 +624,16 @@ func (s *Server) refuseBrowserRename(w http.ResponseWriter, r *http.Request, err
 // path nothing claims rather than as a 405 with an Allow header (FR-033).
 const patternDashboardCompact = "POST /dashboard/sessions/{" + pathValueID + "}/compact"
 
-// The two things a compact can answer, each a fragment because the caller is a
-// card on a page rather than a client reading JSON.
+// What a compact answers is an outcome code (T014): outcomeCompacted, and
+// outcomeCompactFailed for a delivery that did not land.
 //
-// The first is contracts/actions.md's literal and the only *success* body on
-// this door that is quoted byte for byte. Everywhere else the contract fixes
-// what an answer must say and leaves the words to the call site; here the words
-// are the requirement — FR-016a is a rule about what this daemon is entitled to
-// claim, and a sentence authored freely is exactly how "delivered" becomes
-// "compacted" in a later edit that meant only to read better.
-var (
-	// bodyActionCompactDelivered is what the daemon watched happen and nothing
-	// more. Manager.Compact returns nil when the bytes reached the pane, and that
-	// is the whole of what it observed: nothing in this process can see what the
-	// assistant is carrying, so a body claiming the compaction happened would be
-	// asserting a fact no part of this daemon looked at (FR-016a). The second
-	// sentence is not decoration — it is what tells an operator that the outcome
-	// is the session's to decide, so a card that looks unchanged afterwards reads
-	// as expected rather than as a failure.
-	bodyActionCompactDelivered = []byte(`<p class="card-outcome">Compact delivered. The session decides what to do with it.</p>`)
-
-	// bodyActionCompactFailed is the fail-closed answer for a delivery that did
-	// not land. It states the delivery failed and claims nothing about the
-	// session's state, because a paste that errored is not evidence about what the
-	// pane holds — and it deliberately does say something, because an empty 500
-	// renders as a card that reverted (FR-031).
-	//
-	// It never carries what was being delivered. The bytes are the daemon's own
-	// and hold no secret, but a failure that quoted its payload is the shape of
-	// the leak AR-007 closes, and this door's next payload may not be a constant.
-	bodyActionCompactFailed = []byte(`<p class="card-outcome">The compact could not be delivered.</p>`)
-)
+// The code is a machine token and the sentence is the claim, which is where
+// FR-016a lives after this change. contracts/actions.md fixed the delivered
+// wording byte for byte because a sentence authored freely is exactly how
+// "delivered" becomes "compacted" in a later edit that meant only to read
+// better; that wording is now outcomeCompacted's entry in outcome.go's map,
+// unchanged, and the code beside it is spelled the way the audit action
+// dashboard.compact is. What an operator reads is the sentence.
 
 // errCompactRefused is the fail-closed reason for a delivery that failed for a
 // reason no sentinel explains. A refusal nobody classified is still a refusal,
@@ -762,10 +660,10 @@ var errCompactRefused = errors.New("the compact could not be delivered")
 //
 // The delivery is Manager.Compact and nothing else — the load-buffer path a
 // prompt uses, never send-keys (T019) — and its nil is carried straight through
-// to a 202 rather than being upgraded on the way. That status is the honest one:
-// the request was accepted for delivery, and the thing an operator asked for
-// happens after this handler has returned, in a process this daemon cannot see
-// into.
+// to an outcome that says delivered rather than being upgraded on the way. That
+// is the honest answer: the request was accepted for delivery, and the thing an
+// operator asked for happens after this handler has returned, in a process this
+// daemon cannot see into.
 func (s *Server) compactFromBrowser(w http.ResponseWriter, r *http.Request) {
 	operator, ok := OperatorFrom(r.Context())
 	if !ok {
@@ -813,13 +711,12 @@ func (s *Server) compactFromBrowser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The answer is a fragment and not a re-rendered card, which is the one place
-	// this route's shape departs from the rename's. A compact changes nothing a
-	// card draws — the name, the working directory and the age are all as they
-	// were, and the idle clock it deferred is not on the card at all — so a card
-	// rendered here would tell the operator only that something happened, without
-	// saying what. The sentence says it.
-	s.writeFragment(w, http.StatusAccepted, bodyActionCompactDelivered)
+	// A compact changes nothing a card draws — the name, the working directory and
+	// the age are all as they were, and the idle clock it deferred is not on the
+	// card at all — so the whole of what an operator learns here is the sentence
+	// the banner carries. That was true when the answer was a fragment and it is
+	// why this route never rendered a card.
+	s.redirectOutcome(w, r, outcomeCompacted)
 }
 
 // refuseBrowserCompact maps a Compact failure onto the answer this route gives,
@@ -835,8 +732,8 @@ func (s *Server) compactFromBrowser(w http.ResponseWriter, r *http.Request) {
 // under its lock, so a session the reaper collected mid-request lands here rather
 // than having bytes delivered into whatever its window has become.
 //
-// Everything else is the 500. A paste that failed is the only remaining cause and
-// it carries no sentinel, because there is nothing a caller could do differently:
+// Everything else is the failed delivery. A paste that failed is the only cause
+// and it carries no sentinel, because there is nothing a caller could do differently:
 // the delivery did not land, and whether tmux was busy, gone, or wrong is the
 // operator's question to take to the journal.
 func (s *Server) refuseBrowserCompact(w http.ResponseWriter, r *http.Request, err error) {
@@ -846,28 +743,238 @@ func (s *Server) refuseBrowserCompact(w http.ResponseWriter, r *http.Request, er
 		s.notFoundAction(w)
 	default:
 		AuditFrom(r.Context()).Deny(errCompactRefused.Error())
-		s.writeFragment(w, http.StatusInternalServerError, bodyActionCompactFailed)
+		s.redirectOutcome(w, r, outcomeCompactFailed)
 	}
 }
 
-// writeFragment writes one action's answer: the type, the length, the status and
-// the bytes, in that order and in one place.
+// --- Mode ------------------------------------------------------------------
 //
-// The length is written by hand for the reason refuseAction and notFoundAction
-// write theirs — so that what a response promises is a property of this function
-// rather than of how the response happened to be buffered. Everything else it
-// carries was written by setBrowserSecurityHeaders before layer 1 ran, so an
-// action's answer leaves with the identical header set to a served page (FR-026).
+// The fifth route on this door that changes something, and the only one of the
+// five that takes a value naming *what a session runs* (US4, T019,
+// contracts/session-mode.md).
 //
-// notFoundAction does not call it, and that is AR-008 rather than an oversight:
-// that function is T005's, its body is a different body, and rewriting a
-// neighbouring function is the churn this milestone's ground rules forbid.
-func (s *Server) writeFragment(w http.ResponseWriter, status int, body []byte) {
-	w.Header().Set(headerContentType, contentTypeHTML)
-	w.Header().Set(headerContentLength, strconv.Itoa(len(body)))
-	w.WriteHeader(status)
-	if _, err := w.Write(body); err != nil {
-		s.report(fmt.Errorf("write the browser door's %d action fragment: %w", status, err))
+// That is what makes it the dangerous one. The other four read a name, a
+// working directory, a confirmation, or nothing at all; this one reads the
+// choice between two things the operator configured to be executed. FR-030 is
+// the rule it exists under, and it cuts both ways: no command line reaches the
+// browser, and none arrives from it.
+
+// patternDashboardMode is the toggle route, from contracts/session-mode.md's
+// table.
+//
+// It is spelled the other four's way and for their reasons: under /dashboard/
+// so milestone 1's surface is untouched (FR-005) and a grep for the prefix
+// finds every browser-initiated change, the wildcard through pathValueID so the
+// name in the pattern and the name read back cannot drift apart, and the method
+// inside the pattern so a GET here falls to handleUnrouted's `/` and is answered
+// as a path nothing claims rather than as a 405 with an Allow header (FR-033).
+const patternDashboardMode = "POST /dashboard/sessions/{" + pathValueID + "}/mode"
+
+// fieldMode is the mode the operator asked for (contracts/session-mode.md).
+//
+// It carries a *mode* and never a command line. Which command each mode runs is
+// the operator's configuration, read at startup and never from a request, so the
+// widest thing this field can say is one of two words.
+const fieldMode = "mode"
+
+// offersMode is the mode this daemon has for the submitted value, and whether it
+// had one at all. It is an allowlist rather than a conversion.
+//
+// `session.Mode(value)` would compile, would be shorter, and would turn
+// `claude --dangerously-skip-permissions` into a Mode carrying that spelling —
+// which is FR-030 gone, arriving as a one-word edit that reads like a
+// simplification. What it returns instead is one of internal/session's own two
+// constants, so the value the caller sent is compared and then dropped: no byte
+// of it travels on into the transition.
+//
+// The literals are internal/session's own vocabulary rather than two strings
+// spelled here, so what a form posts and what a card derives cannot come to mean
+// different things. Which configured command each of them names is deliberately
+// not decided here — that is the transition's question, asked in
+// Manager.SetMode where the answer is used, and a copy of it on this door would
+// be a second place free to disagree about what "remote" runs.
+func offersMode(value string) (session.Mode, bool) {
+	switch value {
+	case string(session.ModeLocal):
+		return session.ModeLocal, true
+	case string(session.ModeRemote):
+		return session.ModeRemote, true
+	}
+	return "", false
+}
+
+// The three reasons a toggle can be turned away, each a sentinel authored here
+// so a record can never carry a byte the caller chose (FR-042).
+var (
+	// errModeNotOffered is a `mode` field this daemon has no mode for. It names
+	// neither the value nor its length: the whole point of the check is that
+	// what arrived may be a command line, and a trail that echoed one would put
+	// it in the operator's journal — the one place FR-042 keeps caller text out
+	// of.
+	errModeNotOffered = errors.New("a browser mode change named a mode this daemon does not offer")
+
+	// errModeUnconfirmed is a toggle without `confirm=yes` (FR-029). It is its
+	// own sentinel rather than the destroy's, for the reason every reason on this
+	// door is: what tells one action's records from another's is this.
+	errModeUnconfirmed = errors.New("a browser mode change arrived without the confirming step")
+
+	// errModeUnavailable is a mode this daemon has no command for: remote where
+	// no remote-control command is configured, and local where the configured one
+	// *is* the default (session.ErrModeUnavailable).
+	//
+	// It is a refusal about the daemon rather than about the request, so it
+	// discloses nothing an operator could not read off their own settings page —
+	// and it is the honest answer rather than a success: an operator told their
+	// session is now remote-controlled, on a session still running the local
+	// command, has been told the one thing this route must never get wrong.
+	errModeUnavailable = errors.New("this daemon configures no command for the mode a browser asked for")
+
+	// errModeUnchanged is a toggle to the mode the session is already in
+	// (session.ErrModeUnchanged). A stale card and a double submission both
+	// arrive here, and the transition refuses both rather than interrupting a
+	// process to leave it in the state it was already in.
+	errModeUnchanged = errors.New("a browser mode change named the mode the session is already in")
+
+	// errModeRefused is the transition that failed for a reason nothing here
+	// classified — tmux would not take the keys, or would not record the name.
+	// It carries no detail, for the reason the compact's refusal does not: what
+	// went wrong is the operator's question to take to the journal, where the
+	// manager's own wrapped error was reported.
+	errModeRefused = errors.New("a browser mode change could not be carried out")
+)
+
+// modeFromBrowser is POST /dashboard/sessions/{id}/mode (US4,
+// contracts/session-mode.md).
+//
+// Everything that authorises it has already run: handleAction wrapped this
+// handler in the gate, so layer 1 has verified an identity, the browser has said
+// the request came from this page, and the form has carried a token minted for
+// that identity. What is left is the value, the confirming step, the ownership
+// check, and the transition.
+//
+// The order is the destroy's with one step moved in front of it. The value is
+// read first — ahead of the confirming step and ahead of any lookup — because it
+// is the one field on this door that could name something to run, and an
+// operator reading the journal is owed the fact that something posted a command
+// line at this daemon whether or not the same request also forgot to confirm.
+// Both checks still run before the store is read, so a request that was never
+// going to be carried out costs no lookup and no tmux command.
+func (s *Server) modeFromBrowser(w http.ResponseWriter, r *http.Request) {
+	operator, ok := OperatorFrom(r.Context())
+	if !ok {
+		// Fail closed on the path that should not happen, the way every other
+		// handler on this door does: the gate in front puts the operator in the
+		// context, so a false here is a route wired without one.
+		AuditFrom(r.Context()).Deny(errDashboardNoOperator.Error())
+		s.refuseBrowser(w)
+		return
+	}
+
+	// The shape check the other three session-scoped actions run, ahead of the
+	// lookup and for their reason: an identifier off the 32-lowercase-hex
+	// alphabet cannot name a session this daemon minted, so it is a path nothing
+	// claims rather than a session that is not there.
+	id := r.PathValue(pathValueID)
+	if !routableID(id) {
+		AuditFrom(r.Context()).Deny(errScopeNoRoute.Error())
+		s.renderNotFound(w, r, operator)
+		return
+	}
+
+	// Read from PostForm and never Form, for the reason the gate reads the token
+	// that way: a mode change this daemon would accept from a query string is a
+	// restarted assistant that a link can cause. The form itself was parsed by the
+	// gate, under the configured body limit.
+	//
+	// The refusal is uniform across every value that is not one of the two, and
+	// deliberately does not say which value arrived or how it was wrong. A
+	// helpful "unknown mode: <value>" would be caller-authored text on its way
+	// back out through a page, and the values this check exists to turn away are
+	// exactly the ones nobody should be handed back.
+	mode, offered := offersMode(r.PostForm.Get(fieldMode))
+	if !offered {
+		AuditFrom(r.Context()).Deny(errModeNotOffered.Error())
+		s.redirectOutcome(w, r, outcomeBadMode)
+		return
+	}
+
+	// The confirming step, compared rather than parsed, exactly as the destroy
+	// compares it (FR-029). A mode change ends the process the operator is
+	// watching and starts another in its place; `on`, `true`, `1` and an empty
+	// value are all things a stray checkbox or a hand-built request produces, and
+	// none of them is the deliberate act this asks for.
+	if r.PostForm.Get(fieldConfirm) != confirmYes {
+		AuditFrom(r.Context()).Deny(errModeUnconfirmed.Error())
+		s.redirectOutcome(w, r, outcomeModeUnconfirmed)
+		return
+	}
+
+	// Manager.View, which is what a browser gets: it settles ownership without a
+	// per-session credential, because a browser holds none and must not be given
+	// one (FR-034a). An id that never existed, one another operator owns, and one
+	// whose session is already gone are one answer to the caller (FR-017, SC-009)
+	// and three sentinels on the record.
+	live, err := s.sessions.View(id, operator.Owner)
+	if err != nil {
+		// resolveReason rather than a reason of this route's own, for the reason
+		// the other three use it: the trail already has a vocabulary for these,
+		// and never the wrapped error, which would carry the caller's spelling of
+		// the id (FR-042).
+		AuditFrom(r.Context()).Deny(resolveReason(err).Error())
+		s.notFoundAction(w)
+		return
+	}
+	// The id off the daemon's own record, never the bytes in the path. It is
+	// stamped before the transition, so a mode change that failed is findable in
+	// the trail under the session it failed against.
+	AuditFrom(r.Context()).SetSessionID(live.ID)
+
+	// The transition, in internal/session/manager.go: the process inside the pane
+	// is interrupted and restarted with `--continue`, and the session, its window
+	// and its scrollback are not touched at all (T020, SC-007). The mode goes in
+	// as one of this package's own two constants and the submitted bytes stop at
+	// the check above — which is what keeps FR-030 true in the direction that
+	// matters: nothing a browser sent reaches a command line.
+	if _, err := s.sessions.SetMode(r.Context(), live, mode); err != nil {
+		s.refuseBrowserMode(w, r, err)
+		return
+	}
+
+	// The fleet, where the card now carries the new mode (T021), for the reason
+	// every other action returns there: it is the page that already reflects what
+	// the action did, and the only one this daemon renders a banner on.
+	s.redirectOutcome(w, r, outcomeModeChanged)
+}
+
+// refuseBrowserMode is what a failed transition answers, and it is the destroy's
+// and the compact's shape: the causes an operator can act on are named, and
+// everything else is one refusal.
+//
+// The two configuration refusals are told apart in the trail and answered
+// identically on the page, because there is one thing to say to the operator —
+// the session is running what it was running — and two things to say to whoever
+// reads the journal. Neither is a fact about the session, so neither is a
+// disclosure: both are answers about how this daemon is configured, which is the
+// operator's own settings page.
+//
+// A session that vanished between View and the transition answers as an unknown
+// id does, exactly as the compact's does (FR-017, SC-009), so a record that was
+// there for one read and gone for the next cannot be told from one that was never
+// the caller's.
+func (s *Server) refuseBrowserMode(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, session.ErrSessionNotFound), errors.Is(err, session.ErrSessionDead):
+		AuditFrom(r.Context()).Deny(resolveReason(err).Error())
+		s.notFoundAction(w)
+	case errors.Is(err, session.ErrModeUnavailable):
+		AuditFrom(r.Context()).Deny(errModeUnavailable.Error())
+		s.redirectOutcome(w, r, outcomeModeFailed)
+	case errors.Is(err, session.ErrModeUnchanged):
+		AuditFrom(r.Context()).Deny(errModeUnchanged.Error())
+		s.redirectOutcome(w, r, outcomeModeFailed)
+	default:
+		AuditFrom(r.Context()).Deny(errModeRefused.Error())
+		s.redirectOutcome(w, r, outcomeModeFailed)
 	}
 }
 

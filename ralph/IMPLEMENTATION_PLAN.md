@@ -85,7 +85,7 @@ under `NEEDS CLARIFICATION` and stop.
 | How is a list spelled? | **Comma-separated on one line**, exactly as the environment variable spells it today | The file is a second *source*, not a second set of rules. The value string is handed to the same parser the variable goes through |
 | Where is precedence decided? | **One `getenv` shim**, four lines, behind the existing `config.LoadFrom` seam | Flag → environment → file → default. No bound, default or refusal is written twice, so a value cannot mean one thing in a unit and another in a file. It is also why a daemon with no file behaves exactly as today, which is what lets SC-002 be verified against the **existing** acceptance suites unchanged |
 | How does the settings page know where each value came from? | **The shim records it as it decides** | Provenance is a byproduct of having one place decide, never an inference. A value present and equal in both sources is indistinguishable by comparison — and that is exactly when an operator is asking why their edit did nothing |
-| Which keys are secret? | **`shared_secret` and `allowed_identities`**, behind one exported `IsSecret` | The allowlist is not a credential but it names *who* can reach this daemon. One predicate means the permission check and the page render cannot disagree about what a secret is |
+| Which keys are secret? | **`shared_secret` and `access_allowed_emails`**, behind one exported `IsSecret` | The allowlist is not a credential but it names *who* can reach this daemon. One predicate means the permission check and the page render cannot disagree about what a secret is |
 | Does the 0600 refusal fire on any config file? | **Only one containing a secret key** | A file holding only `allowed_roots` is not a secret file, and refusing to start over its mode would be a refusal the operator cannot act on sensibly |
 | Is session mode stored or derived? | **Derived** from the start-command name | Two fields that must agree are two fields that can disagree. FR-031 is satisfied by carrying the name that determines the mode; the one real gap — the name not surviving a restart — is closed by a fifth tmux option, which is smaller than a second source of truth |
 | How does the directory picker work without JavaScript? | **`<input list>` + `<datalist>`** — the platform's own control | It satisfies five of the six picker requirements with **no script running**: filtering, keyboard operation, screen-reader announcement, free-text entry, and today's field unchanged. The abandoned branch's 225 lines of hand-rolled combobox degrade to nothing and own accessibility bugs the browser would otherwise own |
@@ -120,65 +120,65 @@ under `NEEDS CLARIFICATION` and stop.
 
 ### Foundation (blocks every story)
 
-- [ ] T001 🔒 `IsSecret` in `internal/config/secret.go` — the single classifier
-- [ ] T002 `Source` type and its four strings in `internal/config/source.go`
+- [x] T001 🔒 `IsSecret` in `internal/config/secret.go` — the single classifier
+- [x] T002 `Source` type and its four strings in `internal/config/source.go`
 
 ### US1 — Configure the daemon in a file (P1, MVP)
 
-- [ ] T003 Carry forward the parser from `claude/issue-issue-65-...0112`; grammar only
-- [ ] T004 The file-level refusals, none of which ever names the value
-- [ ] T005 🔒 The mode refusal, gated on the file containing a secret
-- [ ] T006 A missing file is not an error; the parser never writes
-- [ ] T007 🔒 Wire the file as a fallback `getenv` — **the keystone**
-- [ ] T008 Record provenance in the same shim
-- [ ] T009 `crswd config check` and `crswd config migrate`, plus `config.bak` fallback
+- [x] T003 Carry forward the parser from `claude/issue-issue-65-...0112`; grammar only
+- [x] T004 The file-level refusals, none of which ever names the value
+- [x] T005 🔒 The mode refusal, gated on the file containing a secret
+- [x] T006 A missing file is not an error; the parser never writes
+- [x] T007 🔒 Wire the file as a fallback `getenv` — **the keystone**
+- [x] T008 Record provenance in the same shim
+- [x] T009 `crswd config check` and `crswd config migrate`, plus `config.bak` fallback
 
 ### US2 — See what it is configured to do (P2)
 
-- [ ] T010 The read-only `/settings` route, `GET` only, `settings.view`
-- [ ] T011 🔒 Secrets render `present` / `absent`, never a value
-- [ ] T012 One row per key with its source; name the file that was read
-- [ ] T013 Sweep every route and assert no secret appears anywhere (SC-005)
+- [x] T010 The read-only `/settings` route, `GET` only, `settings.view`
+- [x] T011 🔒 Secrets render `present` / `absent`, never a value
+- [x] T012 One row per key with its source; name the file that was read
+- [x] T013 Sweep every route and assert no secret appears anywhere (SC-005)
 
 ### US3 — The dashboard behaves without script (P3)
 
-- [ ] T014 Carry forward post-redirect-get from `claude/issue-issue-42-...1832`
-- [ ] T015 Finish the ~19 tests still asserting fragment responses
-- [ ] T016 All four actions usable with scripting disabled
+- [x] T014 Carry forward post-redirect-get from `claude/issue-issue-42-...1832`
+- [x] T015 Finish the ~19 tests still asserting fragment responses
+- [x] T016 All four actions usable with scripting disabled
 
 ### US4 — Turn remote control on and off (P4)
 
-- [ ] T017 Persist the start-command name as `@crswd-start`, the fifth tmux option
-- [ ] T018 `Session.Mode()`, derived; refuse a mode naming an unconfigured command
-- [ ] T019 🔒 `POST /dashboard/sessions/{id}/mode`, fields `mode` and `confirm`
-- [ ] T020 Restart the process in place, with `--continue`, preserving scrollback
-- [ ] T021 Show the mode on the card, textually
+- [x] T017 Persist the start-command name as `@crswd-start`, the fifth tmux option
+- [x] T018 `Session.Mode()`, derived; refuse a mode naming an unconfigured command
+- [x] T019 🔒 `POST /dashboard/sessions/{id}/mode`, fields `mode` and `confirm`
+- [x] T020 Restart the process in place, with `--continue`, preserving scrollback
+- [x] T021 Show the mode on the card, textually
 
 ### US5 — Pick a working directory (P5)
 
-- [ ] T022 Replace the field with `<input list>` + `<datalist>`
-- [ ] T023 Carry the discovery walk forward; one level, off by default
-- [ ] T024 🔒 A suggested path outside the allowlist is refused identically
-- [ ] T025 Announce a filtered subset
+- [x] T022 Replace the field with `<input list>` + `<datalist>`
+- [x] T023 Carry the discovery walk forward; one level, off by default
+- [x] T024 🔒 A suggested path outside the allowlist is refused identically
+- [x] T025 Announce a filtered subset
 
 ### US6 — The card's two halves (P6)
 
-- [ ] T026 Carry forward the card split from `claude/issue-issue-60-...0406`
-- [ ] T027 Rename moves to the session page as a disclosure
-- [ ] T028 A text selection inside the anchor does not navigate
+- [x] T026 Carry forward the card split from `claude/issue-issue-60-...0406`
+- [x] T027 Rename moves to the session page as a disclosure
+- [x] T028 A text selection inside the anchor does not navigate
 
 ### Independent of the stories
 
-- [ ] T029 Startup dependency probes — tmux fatal, start command warning
-- [ ] T030 Install command from `/etc/os-release`, never guessed
-- [ ] T031 List prior conversations — identifier and time only, never contents
-- [ ] T032 Offer them at create time, fresh by default; refuse when ambiguous
-- [ ] T033 Bound the captured pane explicitly; refuse past it rather than truncate
+- [x] T029 Startup dependency probes — tmux fatal, start command warning
+- [x] T030 Install command from `/etc/os-release`, never guessed
+- [x] T031 List prior conversations — identifier and time only, never contents
+- [x] T032 Offer them at create time, fresh by default; refuse when ambiguous
+- [x] T033 Bound the captured pane explicitly; refuse past it rather than truncate
 
 ### Ship it
 
-- [ ] T034 `config.example`, carrying the commentary that justified the format
-- [ ] T035 Docs, and assert `go.sum` is still absent
+- [x] T034 `config.example`, carrying the commentary that justified the format
+- [x] T035 Docs, and assert `go.sum` is still absent
 
 ---
 

@@ -17,9 +17,31 @@
   like a real name or a real path: a card showing an invented directory is
   telling an operator something false about an unsandboxed shell.
 
-  The heading is the link, and it is the only one on the card. The identifier
-  used to be, which made the least human-readable thing here the only thing a
-  mouse or a Tab key could reach, on a card that reads as clickable end to end.
+  The readable half is the link, and it is the only one on the card. The
+  identifier used to be, which made the least human-readable thing here the only
+  thing a mouse or a Tab key could reach; then the heading was, which was the
+  name and nothing else — a few words of target on a card that reads as clickable
+  end to end (#16, #60).
+
+  So the anchor wraps everything above the rule: the name, the pill, the
+  identifier, the start-command label and the meta list. Still exactly one <a>
+  (FR-046), still no control inside it (FR-047), and the target is now most of
+  the card.
+
+  The two halves are elements and not one block with a line drawn across it
+  (FR-048). What separates them is the readable half being a box of its own and
+  the action row being another, which is a separation a screen reader meets and a
+  high-contrast theme cannot drop; the rule the stylesheet draws on the row is
+  that boundary made visible, and the spacing around it says the same thing a
+  third time. A card whose halves were told apart by a border alone would be
+  telling only the readers who can see it which controls act on this host.
+
+  draggable="false" is the one thing a block link costs. Dragging across text
+  inside an <a> starts a link drag rather than a selection in every browser that
+  ships one, so an operator trying to copy the 32 characters this card renders
+  precisely so they can be copied would get a dragged URL instead. The attribute
+  gives the selection back; nothing else about the link changes, and a click
+  still opens the session.
 
   The identifier is still rendered. It is the only handle a session with no name
   has — without it every adopted card would read identically — and it carries no
@@ -40,7 +62,9 @@
   identifier is a handle, and what authorises anything done with it is the
   identity the daemon verifies on the request that arrives.
 */}}<article class="card" data-session="{{ .ID }}">
-<h2 class="card-heading"><a class="card-link" href="/sessions/{{ .ID }}/view" aria-describedby="card-id-{{ .ID }}">{{ if .Name }}<span class="card-name" title="{{ .Name }}">{{ .Name }}</span>{{ else }}<span class="card-unknown">no name recorded</span>{{ end }}</a></h2>
+<div class="card-read">
+<a class="card-link" href="/sessions/{{ .ID }}/view" aria-describedby="card-id-{{ .ID }}" draggable="false">
+<h2 class="card-heading">{{ if .Name }}<span class="card-name" title="{{ .Name }}">{{ .Name }}</span>{{ else }}<span class="card-unknown">no name recorded</span>{{ end }}</h2>
 {{ template "status-pill" .DisplayState }}
 <p class="card-id" id="card-id-{{ .ID }}" title="{{ .ID }}">{{ .ID }}</p>{{/*
   What this session is running (#38, #39), when it is not the daemon's default.
@@ -56,15 +80,45 @@
   daemon did not start it and does not know what did — and "default" printed
   there would be a guess wearing the clothes of a fact.
 
-  Text, never a colour or a badge shape alone (FR-030), and outside the card's
-  single anchor (FR-027, #16).
+  Text, never a colour or a badge shape alone (FR-030), and inside the card's
+  single anchor because that is what it is: a label, not a control (FR-047, #60).
 */}}{{ with .StartCommand }}<p class="card-mode">running <span class="card-mode-name">{{ . }}</span></p>{{ end }}
-<dl class="card-meta">
+<dl class="card-meta">{{/*
+  Where this session is driven from (US4, FR-031): the operator's own dashboard,
+  or claude.ai through the configured remote-control command.
+
+  Two words and nothing else — never a dot, never a badge, never a colour
+  (FR-059, and the design system's fifth non-negotiable). A mode carried by a
+  shade would be invisible to a reader who cannot see it and ambiguous to one who
+  can, on the one fact that says whether something outside this host can type
+  into an unsandboxed shell.
+
+  It is a row of the meta list rather than a component of its own, so it needs no
+  class, no token and no stylesheet rule: the list already renders a label and a
+  value, and a second vocabulary for one word is the drift docs/components.md
+  exists to prevent. It sits first because contracts/card-layout.md reads the
+  card in that order — name, state, mode, working directory, age.
+
+  Rendered unconditionally, unlike the name and the working directory above and
+  below it. Those may genuinely be unknown; this cannot be. Mode() answers for
+  every record this daemon holds, including one adopted after a restart with no
+  @crswd-start at all — that session is local, which is a fact about it and not a
+  gap in what the daemon knows.
+
+  It is not the start command spelled twice. That paragraph names *what* is
+  running; this says whether it is reachable from claude.ai, which is the
+  question the toggle answers and the one an operator cannot work out from a name
+  without reading the settings page.
+*/}}
+<dt>mode</dt>
+<dd>{{ .Mode }}</dd>
 <dt>working directory</dt>
 <dd>{{ if .WorkDir }}<span class="card-path" title="{{ .WorkDir }}">{{ .WorkDir }}</span>{{ else }}<span class="card-unknown">no working directory recorded</span>{{ end }}</dd>
 <dt>age</dt>
 <dd>{{ .Age }}</dd>
 </dl>
+</a>
+</div>
 {{/*
   The action row, and the first control on this card that changes something on
   the host (US1, FR-024a's parameter finally filled rather than restored).
@@ -80,11 +134,24 @@
   what a component test constructs — offers nothing, which is FR-018a's
   discipline about absent values applied to an affordance.
 
-  The form is a sibling of the heading and never a descendant of it: the card
-  carries exactly one <a> and no control is nested inside it (FR-027). That is
-  not only a markup rule — an <a> wrapping a submit control is a link and a
-  button occupying one target, and the destroy is the one action here that ends
-  an unsandboxed shell.
+  The row is a sibling of the anchor and never a descendant of it: the card
+  carries exactly one <a> and no control is nested inside it (FR-027, restated
+  this milestone as FR-046 and FR-047). That is not only a markup rule — an <a>
+  wrapping a submit control is a link and a button occupying one target, and the
+  destroy is the one action here that ends an unsandboxed shell. It matters more
+  now that the anchor is the whole readable half rather than the heading alone: a
+  control left above the rule is not a control beside a link, it is a control
+  inside one.
+
+  The rule along this row's top edge is where the card's two halves are drawn
+  apart (#60). It is a border here rather than an <hr> because a thematic break
+  would be announced as a separator on every card in a fleet of twenty, and what
+  it separates is already said by what is on each side of it — the readable half
+  is its own element, so the halves are distinct with the stylesheet switched off
+  entirely. The spacing carries it as well: the card's own gap sits above the
+  rule and this row's padding below it, so a browser that never drew the line
+  would still show two halves. A boundary is never a line alone, for the reason a
+  state is never a colour alone (FR-048).
 
   A submit button and a plain form post, per research.md R4: keyboard operability
   is then a property of the element rather than work (FR-028), the focus ring the
@@ -110,56 +177,29 @@
 */}}{{ with .PageToken }}<div class="card-actions">
 <form method="post" action="/dashboard/sessions/{{ $.ID }}/destroy">{{ template "page-token" . }}<input type="hidden" name="confirm" value="yes"><button class="button button-danger" type="submit" aria-describedby="card-id-{{ $.ID }}">Destroy</button></form>
 {{/*
-  The second control on this card, and the only one of the four actions that
-  changes nothing on the host (US4). It sits in the same row, outside the same
-  single anchor, for the reason the destroy does (FR-027): a text entry nested
-  inside a link is a target a click cannot mean two things about.
+  There is no rename between these two forms any more, and the absence is the
+  requirement rather than an oversight (FR-049, T027). A fleet is twenty of these
+  cards, and a text entry on every one of them is twenty fields an operator
+  scrolls past to read what is running on this host — spent on the one action of
+  the four that changes nothing on the host and that nobody opens a dashboard to
+  do. It is on the session's own page now, disclosed on request rather than
+  resident (session.html, FR-050).
 
-  It takes the row to itself rather than sitting beside the destroy, which is the
-  stylesheet's doing and not this template's. What belongs here is the ordering:
-  the destroy is first because it was, and moving it would be churn this
-  milestone's ground rules forbid.
+  The note is here because this is where it would come back. The route is
+  registered, the form is six elements, and the row below has room for it: a hand
+  adding a rename to a card would be reverting a requirement rather than filling
+  a gap, and would find nothing in the way.
 
-  The field carries a real <label>, per docs/components.md's Form rules — a
-  placeholder is not a label. Its `for` is the session's own identifier, like
-  every other id this card renders, because a fleet of cards each carrying a
-  field called "rename-name" would be a page where every label names the first
-  one. The button is described by the identifier for the reason the destroy's is:
-  a column of controls announcing the same word, each relabelling a different
-  session, tells a screen reader nothing.
+  What follows is the second control on this card, and the only one that reaches
+  into the running assistant (US5). It is outside the single anchor above for the
+  reason the destroy is (FR-027).
 
-  The field is rendered with the name the daemon currently holds, so the operator
-  edits a label rather than recalling one. It discloses nothing the card does not
-  already show as text two lines above, and an adopted session — which has no
-  recorded name at all (FR-018a) — renders an empty field rather than an invented
-  one.
-
-  The client hints are the create form's, pinned to ValidateName by a test for
-  the reason that form's are: a hint that drifted would refuse a name this daemon
-  would have accepted, in a native bubble this daemon never wrote. Validation is
-  server-side and authoritative — the route calls the same ValidateName and
-  answers a refusal in words.
-
-  `name` is fieldName in actions.go, spelled here a second time because this
-  template set is parsed with no function map and cannot reach a Go constant. The
-  test in partials_test.go is what holds the two spellings together, exactly as
-  it does for `confirm=yes` above.
-
-  A plain form post and a submit button, per research.md R4, and no
-  data-submit-once: a second rename to the same name is the same end state, so
-  this is not the idempotence exposure the create is (research.md R7).
-*/}}<form class="card-rename" method="post" action="/dashboard/sessions/{{ $.ID }}/rename">{{ template "page-token" . }}<label class="field-label" for="rename-{{ $.ID }}">New name</label><input class="field-input" id="rename-{{ $.ID }}" type="text" name="name" value="{{ $.Name }}" required maxlength="64" pattern="[-a-zA-Z0-9]+" autocomplete="off" spellcheck="false"><button class="button" type="submit" aria-describedby="card-id-{{ $.ID }}">Rename</button></form>
-{{/*
-  The third control on this card, and the only one that reaches into the running
-  assistant (US5). It is outside the same single anchor as the other two, for the
-  reason they are (FR-027).
-
-  It is last rather than beside the destroy, and that is a decision twice over.
-  The rename above takes the row to itself, so appending leaves every existing
-  control exactly where it was — the churn this milestone's ground rules forbid.
-  It also keeps this button off the line the destroy sits on: two plain buttons
-  sharing a row are two targets a mis-aimed click can confuse, and one of them
-  ends an unsandboxed shell while this one asks a question the session may ignore.
+  It is second because the destroy was first before this existed, and moving
+  either would be churn this milestone's ground rules forbid. The two share a
+  line now, which is what a wrapping row does and what the rename's full-width
+  field used to prevent: what tells them apart is the word on each — "Destroy"
+  against "Compact" — with the danger variant reinforcing the first and never
+  carrying it on its own (FR-030, and the design system's fifth non-negotiable).
 
   One hidden field and no more. A compact carries nothing to choose: what is
   delivered is a constant in the manager (FR-016), and a text field here would be

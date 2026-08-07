@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
@@ -288,22 +289,34 @@ func describedBy(t *testing.T, markup, id string) (string, bool) {
 	return strings.TrimSpace(match[1]), true
 }
 
-// TestTheCardLinksTheNameAndNotOnlyTheIdentifier is issue #16.
+// TestAnchorCoversReadableBlock is issue #16 as issue #60 leaves it, and SC-010.
 //
-// The accessibility floor was already met before this: the identifier was a real
-// <a>, focus-ringed, in tab order, and every card was reachable. What was wrong
-// was the affordance. The card reads as clickable end to end, the heading is the
-// session's name, and the only thing that opened the session was the 32-character
-// hex — so a mouse aimed at the obvious target hit nothing and a keyboard landed
-// on the least human-readable string on the card.
+// The accessibility floor was met before either: the identifier was a real <a>,
+// focus-ringed, in tab order, and every card was reachable. What was wrong was
+// the affordance. First the only link was the 32-character hex, so a mouse aimed
+// at the obvious target hit nothing and a keyboard landed on the least
+// human-readable string on the card (#16). Then the link was the name and
+// nothing else — a few words of target on a card that reads as clickable end to
+// end, which is the same defect with a better label (#60).
 //
-// One link and not two. A card that linked the name and went on linking the hex
-// would put two identical destinations next to each other in every link list,
-// which reads worse than the arrangement being fixed rather than better.
-func TestTheCardLinksTheNameAndNotOnlyTheIdentifier(t *testing.T) {
+// So the anchor is the whole readable half: the name, the pill, the identifier,
+// the start command and the meta list, everything above the rule. One link
+// still, and not two — a card that wrapped the block and went on linking the
+// name inside it would put two identical destinations next to each other in
+// every link list, which reads worse than the arrangement being fixed.
+//
+// The identifier is inside the link now and still rendered as text, which is
+// what the last assertion is about: it is the only handle a session with no name
+// has, and a card that lost it while gaining a bigger target would have traded
+// one #16 for another.
+//
+// **Must fail when** the anchor wraps the name alone (FR-046, SC-010).
+func TestAnchorCoversReadableBlock(t *testing.T) {
 	t.Parallel()
 
-	card := ownedCard()
+	card := actionableCard()
+	card.StartCommand = "claude-remote"
+	card.Mode = session.ModeRemote
 	got := renderComponent(t, "session-card", card)
 
 	anchors := cardAnchor.FindAllStringSubmatch(got, -1)
@@ -315,23 +328,34 @@ func TestTheCardLinksTheNameAndNotOnlyTheIdentifier(t *testing.T) {
 	if target := "/sessions/" + card.ID + "/view"; !strings.Contains(attributes, `href="`+target+`"`) {
 		t.Errorf("the card's link does not open %s:\n%s", target, got)
 	}
-	if !strings.Contains(text, card.Name) {
-		t.Errorf("the card's link reads %q and the session is called %q; the name is what an operator reads and aims at:\n%s", text, card.Name, got)
-	}
-	if strings.Contains(text, card.ID) {
-		t.Errorf("the identifier is the link's own text; it is the handle, not the label:\n%s", got)
+
+	// Everything the card says about what this session *is*, inside the one
+	// anchor. The pill is here for the same reason the rest is: it is text, not a
+	// control, and a state an operator can read but not aim at is this issue's
+	// bigger target with a hole in it.
+	for what, want := range map[string]string{
+		"the name":              card.Name,
+		"the state pill":        string(card.DisplayState),
+		"the identifier":        card.ID,
+		"the start command":     card.StartCommand,
+		"the mode":              string(card.Mode),
+		"the working directory": card.WorkDir,
+		"the age":               card.Age,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the card's link does not cover %s (%q); the anchor is the readable half of the card and not a phrase inside it:\n%s", what, want, got)
+		}
 	}
 
 	heading := cardHeading.FindStringSubmatch(got)
 	if heading == nil {
 		t.Fatalf("the card renders no heading:\n%s", got)
 	}
-	if !strings.Contains(heading[1], "<a") {
-		t.Errorf("the card's heading is not the link, so the name is still inert:\n%s", got)
+	if !strings.Contains(text, heading[0]) {
+		t.Errorf("the card's heading is outside the link, so the name an operator aims at is inert again:\n%s", got)
 	}
 
-	// Still rendered, and now as text. It is the only handle a session with no
-	// name has, so linking the name must not have cost the card the identifier.
+	// Rendered as text, and as the only handle a session with no name has.
 	identifier := cardIdentifier.FindStringSubmatch(got)
 	if identifier == nil || strings.TrimSpace(identifier[1]) != card.ID {
 		t.Errorf("the card does not render the identifier as text; a session with no name would have no handle left:\n%s", got)
@@ -393,38 +417,78 @@ func formPostingTo(forms [][]string, target string) (attributes, contents string
 	return "", "", false
 }
 
-// TestCardHasExactlyOneAnchor is FR-027 on the card that finally has a control
-// to put somewhere.
+// TestCardHasExactlyOneAnchor is FR-046 — FR-027 before this milestone restated
+// it — on the card that finally has a control to put somewhere.
 //
-// The count alone is not the requirement. A destroy button nested inside the
-// card's link would leave the count at one and still be the defect: a link and a
-// submit control occupying one target, where the control ends an unsandboxed
-// shell and the link merely opens a page. So the anchor's own contents are read
-// as well, and the control is confirmed to exist — a card rendering no control
-// at all would satisfy both of the other assertions and prove nothing.
+// One link per card is the recurring regression here, and it has gone wrong in
+// both directions: the identifier was the only link and the name was inert
+// (#16), then the name was linked and the block around it was not (#60). Each
+// fix is one <a> away from adding a second, and two links to one destination is
+// a link list that reads worse than either arrangement it replaced.
 //
-// **Must fail when** a control is added inside the anchor: the second assertion
-// catches it where the first cannot.
+// The count is asserted on a card that really carries its controls, so it is
+// asserted against the markup a browser is handed rather than a skeleton — and
+// against the surface where a second link is likeliest, since every control
+// below the rule is something a template author might reach for an <a> to do.
+//
+// **Must fail when** a second link is added.
 func TestCardHasExactlyOneAnchor(t *testing.T) {
+	t.Parallel()
+
+	got := renderComponent(t, "session-card", actionableCard())
+
+	if anchors := cardAnchor.FindAllStringSubmatch(got, -1); len(anchors) != 1 {
+		t.Fatalf("a card carrying its action row renders %d links; the card carried exactly one before it had controls and FR-046 keeps it there:\n%s", len(anchors), got)
+	}
+
+	// The row is really there, so the count above is about a card with something
+	// in it. Without this a component that dropped its controls entirely would
+	// read as passing.
+	if !strings.Contains(got, `class="card-actions"`) {
+		t.Errorf("the card renders no action row at all, so the count above was taken on a card with nothing to put a second link in:\n%s", got)
+	}
+}
+
+// TestNoControlInsideAnchor is FR-047, and it is the half of the rule above that
+// the count cannot see.
+//
+// A destroy button nested inside the card's link leaves the count at one and is
+// still the defect: a link and a submit control occupying one target, where the
+// control ends an unsandboxed shell and the link merely opens a page. It is also
+// invalid HTML, so what a browser does with it is a parser's guess rather than
+// anything this template decided.
+//
+// It matters more now that the anchor is the whole readable half rather than the
+// heading (#60). The old anchor was a few words and nesting a form in it would
+// have been obviously wrong; this one wraps most of the card, so a control added
+// to the readable half lands inside the link by default, and only the rule below
+// it says where the anchor ends.
+//
+// <details> and <summary> are swept alongside the form controls because a
+// disclosure is a control the way a button is — T027 moves the rename into one,
+// and a <details> inside a link is a target that navigates when you try to open
+// it.
+//
+// **Must fail when** any control is nested inside the anchor.
+func TestNoControlInsideAnchor(t *testing.T) {
 	t.Parallel()
 
 	got := renderComponent(t, "session-card", actionableCard())
 
 	anchors := cardAnchor.FindAllStringSubmatch(got, -1)
 	if len(anchors) != 1 {
-		t.Fatalf("a card carrying its action row renders %d links; the card carried exactly one before it had controls and FR-027 keeps it there:\n%s", len(anchors), got)
+		t.Fatalf("a card carrying its action row renders %d links, so there is no one anchor to read the contents of:\n%s", len(anchors), got)
 	}
-	for _, control := range []string{"<form", "<button", "<input"} {
+	for _, control := range []string{"<form", "<button", "<input", "<details", "<summary", "<select", "<textarea"} {
 		if strings.Contains(strings.ToLower(anchors[0][2]), control) {
 			t.Errorf("the card's link contains %q; a control nested in the anchor is one target holding two things to do, and one of them is irreversible:\n%s", control, got)
 		}
 	}
 
-	// The row is really there, so the two assertions above are about a card with
-	// something in it. Without this a component that dropped the control entirely
-	// would read as passing.
-	if !strings.Contains(got, `class="card-actions"`) {
-		t.Errorf("the card renders no action row at all, so nothing above was asserted about a control:\n%s", got)
+	// The controls exist, outside it. Without this the sweep above is satisfied
+	// by a card that renders no control anywhere.
+	if !strings.Contains(got, "<button") {
+		t.Errorf("the card renders no control at all, so nothing above was asserted about where one sits:\n%s", got)
 	}
 }
 
@@ -445,8 +509,12 @@ func TestTheCardsDestroyFormCarriesWhatTheRouteRequires(t *testing.T) {
 	got := renderComponent(t, "session-card", card)
 
 	forms := cardForm.FindAllStringSubmatch(got, -1)
-	if len(forms) != 3 {
-		t.Fatalf("the card renders %d action forms; this milestone's card carries three, the destroy, the rename and the compact:\n%s", len(forms), got)
+	// Two, not three: the rename left the card for the session's own page (T027,
+	// FR-049), and a count is the cheapest thing that notices it coming back — a
+	// third form here is either that or a control nobody meant to ship on twenty
+	// cards at once.
+	if len(forms) != 2 {
+		t.Fatalf("the card renders %d action forms; this milestone's card carries two, the destroy and the compact:\n%s", len(forms), got)
 	}
 
 	target := strings.Replace(strings.TrimPrefix(patternDashboardDestroy, "POST "), "{"+pathValueID+"}", card.ID, 1)
@@ -484,11 +552,16 @@ func TestTheCardsDestroyFormCarriesWhatTheRouteRequires(t *testing.T) {
 	}
 }
 
-// TestTheCardsRenameFormCarriesWhatTheRouteRequires is the destroy form's
-// linkage for the second control on the card (T017): the markup, the route and
-// the handler have to agree about one address and two field names, and when they
-// do not, the card renders perfectly and every rename is refused — by the gate if
-// the token field moved, and as bad input if the name field did.
+// TestTheRenameFormCarriesWhatTheRouteRequires is the destroy form's linkage for
+// the rename (T017): the markup, the route and the handler have to agree about
+// one address and two field names, and when they do not, the form renders
+// perfectly and every rename is refused — by the gate if the token field moved,
+// and as bad input if the name field did.
+//
+// It reads the session's own page rather than the card, because T027 moved the
+// control there and left the route where it was (FR-049, FR-050). Every
+// assertion below is the one the card's version made: moving a control is not an
+// invitation to re-decide what it submits.
 //
 // The address and both names are derived from what the daemon registers and reads
 // rather than spelled again here. This template set is parsed with no function
@@ -497,19 +570,20 @@ func TestTheCardsDestroyFormCarriesWhatTheRouteRequires(t *testing.T) {
 //
 // The label is asserted because docs/components.md requires one on every input
 // and a placeholder is not a label — and its `for` is asserted to name *this*
-// card's field, because a fleet is many cards and a label pointing at another
-// card's input reads correctly while operating the wrong session.
-func TestTheCardsRenameFormCarriesWhatTheRouteRequires(t *testing.T) {
+// session's field, because the identifier is what qualifies every other id in
+// this tree and a label pointing elsewhere reads correctly while operating the
+// wrong session.
+func TestTheRenameFormCarriesWhatTheRouteRequires(t *testing.T) {
 	t.Parallel()
 
 	card := actionableCard()
-	got := renderComponent(t, "session-card", card)
+	got := renderedSessionPage(t, card)
 
 	forms := cardForm.FindAllStringSubmatch(got, -1)
 	target := strings.Replace(strings.TrimPrefix(patternDashboardRename, "POST "), "{"+pathValueID+"}", card.ID, 1)
 	attributes, contents, ok := formPostingTo(forms, target)
 	if !ok {
-		t.Fatalf("no form on the card posts to %q, which is where the daemon serves the rename:\n%s", target, got)
+		t.Fatalf("no form on the session page posts to %q, which is where the daemon serves the rename:\n%s", target, got)
 	}
 
 	// A GET on that path is an unknown route rather than a 405, so a form that
@@ -532,7 +606,7 @@ func TestTheCardsRenameFormCarriesWhatTheRouteRequires(t *testing.T) {
 		t.Fatalf("the rename form submits no %q field, and the handler reads the new label out of one:\n%s", fieldName, got)
 	}
 	if !strings.Contains(contents, `type="submit"`) {
-		t.Errorf("the rename form holds no submit control, so nothing on the card operates it:\n%s", got)
+		t.Errorf("the rename form holds no submit control, so nothing on the page operates it:\n%s", got)
 	}
 
 	id, ok := attributeValue(t, name, "id")
@@ -540,7 +614,7 @@ func TestTheCardsRenameFormCarriesWhatTheRouteRequires(t *testing.T) {
 		t.Fatalf("the %q input carries no id (%s), so no label can name it", fieldName, name)
 	}
 	if !strings.Contains(id, card.ID) {
-		t.Errorf("the %q input is called %q, which does not name this session; every card on a fleet renders this form, and duplicate ids point every label at the first one", fieldName, id)
+		t.Errorf("the %q input is called %q, which does not name this session; every id in this tree is qualified by the identifier, and an unqualified one is a label waiting to name somebody else's field", fieldName, id)
 	}
 	labelled := false
 	for _, label := range formLabel.FindAllStringSubmatch(contents, -1) {
@@ -561,15 +635,15 @@ func TestTheCardsRenameFormCarriesWhatTheRouteRequires(t *testing.T) {
 	adopted := actionableCard()
 	adopted.Name = ""
 	nameless := regexp.MustCompile(`<input\b[^>]*\bname="` + regexp.QuoteMeta(fieldName) + `"[^>]*>`).
-		FindString(renderComponent(t, "session-card", adopted))
+		FindString(renderedSessionPage(t, adopted))
 	if value, _ := attributeValue(t, nameless, "value"); value != "" {
-		t.Errorf("a session with no recorded name renders the rename field holding %q; an invented label is the card telling an operator something false about an unsandboxed shell", value)
+		t.Errorf("a session with no recorded name renders the rename field holding %q; an invented label is the page telling an operator something false about an unsandboxed shell", value)
 	}
 
 	// The client hints, pinned to the daemon's own rule rather than to a second
 	// spelling of it — the create form's arrangement, and for its reason: a hint
 	// that disagrees refuses in a native bubble this daemon never wrote, about a
-	// rule it does not have, with nothing on the card to say why.
+	// rule it does not have, with nothing on the page to say why.
 	if limit, ok := attributeValue(t, name, "maxlength"); !ok {
 		t.Errorf("the %q input sets no maxlength (%s); the daemon's ceiling is %d characters", fieldName, name, session.MaxNameLen)
 	} else if limit != strconv.Itoa(session.MaxNameLen) {
@@ -594,15 +668,23 @@ func TestTheCardsRenameFormCarriesWhatTheRouteRequires(t *testing.T) {
 		}
 	}
 	// The route refuses an empty name, so a form that submits without one is a
-	// round trip whose only outcome is a refusal — and, on this route, a card
-	// replaced by that refusal.
+	// round trip whose only outcome is the refusal the fleet renders after the
+	// redirect — on a page the operator has been taken off to read it.
 	if !regexp.MustCompile(`\brequired\b`).MatchString(name) {
 		t.Errorf("the %q input is not required (%s), and the route refuses an empty one", fieldName, name)
+	}
+
+	// And the page offers none of this without a token to submit, which is the
+	// discipline every action on the card above it already follows: a control the
+	// gate is certain to refuse is worse than no control, because an operator
+	// cannot tell the two apart until they use it.
+	if unauthorised := renderedSessionPage(t, ownedCard()); strings.Contains(unauthorised, target) {
+		t.Errorf("a session page rendered with no page token still offers the rename:\n%s", unauthorised)
 	}
 }
 
 // TestTheCardsCompactFormCarriesWhatTheRouteRequires is the destroy's and the
-// rename's linkage for the third control on the card (T020), and it is the
+// rename's linkage for the second control on the card (T020), and it is the
 // shortest of the three because the route reads no field of its own: what is
 // delivered is a constant in the manager, so all this form has to carry is the
 // evidence the gate demands.
@@ -1064,6 +1146,145 @@ func renderedFleet(t *testing.T) string {
 		Empty:    emptyView{Title: "No sessions running", Body: "Nothing is executing on this host right now."},
 		Create:   createForm(),
 	})
+}
+
+// renderedSessionPage is one session's own page as a browser receives it, given
+// the card that page is about.
+//
+// It takes the card because that is the parameter every assertion here varies:
+// a card carrying a token and one carrying none are the two pages the rename has
+// to behave differently on, and an adopted session's blank name is the third.
+// The operator and the pane are fixtures, and neither is asserted through this.
+func renderedSessionPage(t *testing.T, card sessionView) string {
+	t.Helper()
+
+	return renderComponent(t, "session", sessionPageView{
+		Operator: &access.VerifiedOperator{Email: "operator@example.com"},
+		Session:  card,
+		Pane:     paneView{ID: card.ID, Text: "$ go test ./..."},
+	})
+}
+
+// disclosure is a <details> element with its attributes and everything it holds.
+var disclosure = regexp.MustCompile(`(?s)<details\b([^>]*)>(.*?)</details>`)
+
+// TestRenameAbsentFromFleet is FR-049, and it is the half of T027 that is an
+// absence — which is the half that comes back by accident.
+//
+// A rename on a card is a text entry on every card in the fleet: twenty fields
+// between an operator and the thing a dashboard is scanned for, spent on the one
+// action of the four that changes nothing on the host. The card is where it was
+// and where a hand would put it back, so the claim is made against the page and
+// against the component both. The component matters on its own because the
+// fleet's live half re-fetches a *card* from its own route as sessions change —
+// a rename restored there would reach a browser without this page ever being
+// rendered again.
+//
+// The second half is the vacuity guard. "No form posts to the rename" is
+// satisfied by a fleet that renders no controls at all, which is a much worse
+// bug wearing this test's green, so the two controls that stayed are asserted
+// present in the same pass.
+//
+// **Must fail when** rename returns to the card (FR-049).
+func TestRenameAbsentFromFleet(t *testing.T) {
+	t.Parallel()
+
+	card := actionableCard()
+	rename := strings.Replace(strings.TrimPrefix(patternDashboardRename, "POST "), "{"+pathValueID+"}", card.ID, 1)
+
+	fleetless := map[string]string{
+		"the fleet page":     renderedFleet(t),
+		"the card component": renderComponent(t, "session-card", card),
+		// The third is the one that would not be caught by reading either of the
+		// two above. The fleet's live half re-fetches a session's *page* and lifts
+		// the <article> out of it (crswd.js), so a rename rendered inside the card
+		// on that page is a rename the fleet grows on its first state change —
+		// correct on load, wrong the moment anything happens, which is the worst
+		// shape a bug has. It is outside the card here, which is what makes that
+		// impossible rather than stripped afterwards.
+		"the card the fleet lifts from the session page": cardFor(t, renderedSessionPage(t, card), card.ID),
+	}
+	for name, markup := range fleetless {
+		if _, _, found := formPostingTo(cardForm.FindAllStringSubmatch(markup, -1), rename); found {
+			t.Errorf("%s renders a form posting to %q; the rename is on the session's own page and on no card (FR-049):\n%s", name, rename, markup)
+		}
+	}
+
+	// The controls that stayed, asserted on the same three surfaces, so none of
+	// the absences above can be satisfied by markup that offers nothing at all —
+	// an empty string lifted out of a page included.
+	for what, pattern := range map[string]string{
+		"destroy": patternDashboardDestroy,
+		"compact": patternDashboardCompact,
+	} {
+		target := strings.Replace(strings.TrimPrefix(pattern, "POST "), "{"+pathValueID+"}", card.ID, 1)
+		for name, markup := range fleetless {
+			if _, _, ok := formPostingTo(cardForm.FindAllStringSubmatch(markup, -1), target); !ok {
+				t.Errorf("%s offers no %s either (%q); this test would then be passing on markup with no controls in it at all:\n%s", name, what, target, markup)
+			}
+		}
+	}
+}
+
+// TestRenameOnSessionPageIsDisclosure is FR-050, and it is two claims: the
+// control is on the session's own page, and it is revealed on request rather
+// than resident.
+//
+// The second is what a <details> with no `open` attribute means, and it is
+// asserted structurally rather than by class, because "closed until asked for"
+// is a property of the element and not of a stylesheet — a page that styled a
+// resident field to look collapsed would satisfy any assertion about appearance
+// and none about what a screen reader is handed.
+//
+// The summary's words are asserted for the same reason the label's are: a
+// disclosure whose control announces nothing is a control a non-sighted operator
+// cannot find, and this is the only route to the field behind it.
+//
+// **Must fail when** it becomes a resident field (FR-050) — the form outside a
+// disclosure, or a disclosure rendered open.
+func TestRenameOnSessionPageIsDisclosure(t *testing.T) {
+	t.Parallel()
+
+	card := actionableCard()
+	page := renderedSessionPage(t, card)
+	rename := strings.Replace(strings.TrimPrefix(patternDashboardRename, "POST "), "{"+pathValueID+"}", card.ID, 1)
+
+	if _, _, ok := formPostingTo(cardForm.FindAllStringSubmatch(page, -1), rename); !ok {
+		t.Fatalf("the session page posts nothing to %q, so the rename is on no page at all (FR-050):\n%s", rename, page)
+	}
+
+	var attributes, contents string
+	for _, details := range disclosure.FindAllStringSubmatch(page, -1) {
+		if strings.Contains(details[2], `action="`+rename+`"`) {
+			attributes, contents = details[1], details[2]
+		}
+	}
+	if contents == "" {
+		t.Fatalf("the rename form sits outside every <details> on the page; a field that is always there is not revealed on request (FR-050):\n%s", page)
+	}
+
+	// `open` is the whole of the difference between a disclosure and a field with
+	// a heading over it, and it is one word away in either direction.
+	if regexp.MustCompile(`(?i)\bopen\b`).MatchString(attributes) {
+		t.Errorf("the rename disclosure is rendered open (<details%s>), so it is resident markup wearing a summary (FR-050)", attributes)
+	}
+
+	summary := regexp.MustCompile(`(?s)<summary\b[^>]*>(.*?)</summary>`).FindStringSubmatch(contents)
+	if summary == nil {
+		t.Fatalf("the rename disclosure carries no <summary>, so the browser labels the one control that opens it:\n%s", contents)
+	}
+	if strings.TrimSpace(summary[1]) == "" {
+		t.Errorf("the rename disclosure's summary holds no words; the control that reveals the field announces nothing")
+	}
+
+	// And nothing script-shaped opens it. The element does that itself, which is
+	// why it was chosen — the page loads one script, and it draws rain and reads
+	// panes.
+	for _, offer := range scriptedMarkup {
+		if strings.Contains(strings.ToLower(contents), offer) {
+			t.Errorf("the rename disclosure is wired with %q; a disclosure that needs script is one that does not open with script disabled:\n%s", offer, contents)
+		}
+	}
 }
 
 // TestStreamLossIsVisible is FR-020, and it is the pane's ended note made about
@@ -1594,6 +1815,360 @@ func TestTheCreateFormOffersTheConfiguredStartCommands(t *testing.T) {
 	})
 }
 
+// TestTheCreateFormNamesTheConfiguredRoots is the other half of T014: the
+// working-directory field says which directories this daemon will start a
+// session under, so an operator can fill it in.
+//
+// **Must fail when** the hint drops a root, or renders when there is none. The
+// first is the failure with consequences — an operator whose second root is
+// missing reads the uniform refusal as one they have no way to explain, because
+// that refusal deliberately will not tell them which rule applied.
+//
+// This is not the disclosure the uniform refusal prevents. That one answers
+// "outside the roots", "not a directory" and "not there at all" identically so a
+// caller cannot ask this form whether a path exists; naming the permitted set is
+// not confirming what is inside it, and every card on the fleet already renders
+// a working directory under one of them.
+func TestTheCreateFormNamesTheConfiguredRoots(t *testing.T) {
+	t.Parallel()
+
+	t.Run("every configured root renders", func(t *testing.T) {
+		t.Parallel()
+
+		roots := []string{"/home/operator/code", "/srv/work"}
+		out := renderComponent(t, "create-form", createFormView{PageToken: "t", Roots: roots})
+		for _, root := range roots {
+			if !strings.Contains(out, `<li class="field-hint-root">`+root+`</li>`) {
+				t.Errorf("the hint omits the root %q:\n%s", root, out)
+			}
+		}
+		// The field has to point at the hint, or a screen reader reaches the
+		// control without the sentence that says what it will accept.
+		if !strings.Contains(out, `aria-describedby="create-roots"`) || !strings.Contains(out, `id="create-roots"`) {
+			t.Errorf("the working-directory field is not described by the hint:\n%s", out)
+		}
+	})
+
+	// FR-040's half of the picker arrives in T022; what this pins now is that the
+	// hint did not become a control. A field that only accepted what it listed
+	// would be an allowlist rendered into the markup, free to drift from
+	// ResolveWorkDir, and the refusal it produced would be a browser bubble this
+	// daemon never wrote.
+	t.Run("the field stays typeable", func(t *testing.T) {
+		t.Parallel()
+
+		out := renderComponent(t, "create-form", createFormView{PageToken: "t", Roots: []string{"/srv/work"}})
+		if !strings.Contains(out, `<input class="field-input" id="create-work-dir" type="text" name="work_dir"`) {
+			t.Errorf("the working directory is no longer a text field:\n%s", out)
+		}
+		if strings.Contains(out, `name="work_dir"`) && strings.Contains(out, "<select") &&
+			!strings.Contains(out, `name="start_command"`) {
+			t.Errorf("the working directory became a chooser:\n%s", out)
+		}
+	})
+
+	// A daemon configured with no root cannot start — config.Load refuses it — so
+	// this is the zero value's business rather than a state an operator reaches.
+	// It renders no hint rather than an empty list, which is FR-018a's discipline
+	// about absent values: state the absence, never render something that reads
+	// like a value.
+	//
+	// Asserted against this hint's own id rather than against the field-hint
+	// class, which stopped distinguishing when the conversation field grew a hint
+	// of its own (T032). That one is unconditional and says what an empty field
+	// does, so it is not the absent value this case is about.
+	t.Run("no roots renders no hint", func(t *testing.T) {
+		t.Parallel()
+
+		out := renderComponent(t, "create-form", createFormView{PageToken: "t"})
+		if strings.Contains(out, `id="create-roots"`) {
+			t.Errorf("a form rendered without roots offers an empty hint:\n%s", out)
+		}
+	})
+}
+
+// The picker's fixture and the element it hangs off. Two paths, because a list
+// of one cannot show that the whole list renders, and both under a plausible
+// root because that is what either source produces — a configured list or
+// T023's walk one level below an approved root.
+var (
+	workdirSuggestions = []string{"/home/operator/code/crswd", "/home/operator/code/notes"}
+	workdirInput       = regexp.MustCompile(`<input\b[^>]*\bname="work_dir"[^>]*>`)
+)
+
+// TestPickerWorksWithoutScript is T022's named test and the reason the
+// abandoned branch's combobox was not carried: this control is markup, and
+// markup runs whether or not a script does.
+//
+// **Must fail when** the control becomes script-dependent (FR-043) — a field
+// whose suggestions are assembled by crswd.js offers nothing at all with
+// scripting off, which is the state this dashboard is required to work in.
+//
+// The assertion is deliberately made against the field's own `list` attribute
+// rather than against the literal id: a datalist nothing points at is invisible
+// to the browser and to a screen reader alike, and the two spellings drifting
+// apart is exactly the failure that leaves a form looking correct in review.
+func TestPickerWorksWithoutScript(t *testing.T) {
+	t.Parallel()
+
+	out := renderComponent(t, "create-form", createFormView{PageToken: "t", Suggestions: workdirSuggestions})
+
+	input := workdirInput.FindString(out)
+	if input == "" {
+		t.Fatalf("the create form renders no work_dir field at all:\n%s", out)
+	}
+	list, ok := attributeValue(t, input, "list")
+	if !ok {
+		t.Fatalf("the working-directory field points at no list (%s), so the suggestions below it are markup the browser never reads:\n%s", input, out)
+	}
+	if !strings.Contains(out, `<datalist id="`+list+`">`) {
+		t.Errorf("the field points at the datalist %q and no such element is rendered:\n%s", list, out)
+	}
+	for _, path := range workdirSuggestions {
+		if !strings.Contains(out, `<option value="`+path+`">`) {
+			t.Errorf("the datalist omits the suggestion %q:\n%s", path, out)
+		}
+	}
+
+	// Nothing has to run for any of the above to be true. The form already
+	// carries data-submit-once, which is an enhancement over a form that
+	// submits without it; what must not appear is markup that only works
+	// because a script interpreted it.
+	for _, scripted := range scriptedMarkup {
+		if strings.Contains(out, scripted) {
+			t.Errorf("the create form carries %q; the picker is the platform's own control and needs none of it:\n%s", scripted, out)
+		}
+	}
+	if strings.Contains(strings.ToLower(out), "<script") {
+		t.Errorf("the create form loads a script of its own:\n%s", out)
+	}
+
+	// A suggestion is an attribute value, and from T023 it is a directory name
+	// off a filesystem walk rather than a line the operator typed. A directory
+	// named with a quote must close nothing.
+	hostile := renderComponent(t, "create-form", createFormView{PageToken: "t", Suggestions: []string{`/srv/work/" onfocus="stealFocus`}})
+	if strings.Contains(hostile, `" onfocus="stealFocus`) {
+		t.Errorf("a suggestion escaped its attribute:\n%s", hostile)
+	}
+}
+
+// TestAnyPathStillTypeable is FR-040, and the requirement a picker is most
+// likely to be "improved" past: a list of directories is one short step from a
+// chooser of directories, and the chooser is wrong.
+//
+// **Must fail when** a `<select>` replaces the input, or a `pattern` appears on
+// it. Either turns the convenience into the control — an allowlist rendered
+// into markup, free to drift from ResolveWorkDir, refusing in a native bubble
+// this daemon never wrote and with nothing on the page to say why.
+//
+// The other half of the sentence — that a typed path *is* accepted when it is
+// allowlisted — is the handler's, unchanged by this task and pinned by the
+// create route's own tests. This control narrows nothing it hands over.
+func TestAnyPathStillTypeable(t *testing.T) {
+	t.Parallel()
+
+	for name, view := range map[string]createFormView{
+		"offering suggestions": {PageToken: "t", Suggestions: workdirSuggestions},
+		"offering none":        {PageToken: "t"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			out := renderComponent(t, "create-form", view)
+
+			input := workdirInput.FindString(out)
+			if input == "" {
+				t.Fatalf("the working directory is no longer a field the operator can type into:\n%s", out)
+			}
+			if kind, _ := attributeValue(t, input, "type"); kind != "text" {
+				t.Errorf("the working-directory field is type %q; free text is what makes any path reachable (%s)", kind, input)
+			}
+			if pattern, ok := attributeValue(t, input, "pattern"); ok {
+				t.Errorf("the working-directory field carries pattern=%q, which is the containment rule copied into the markup:\n%s", pattern, out)
+			}
+			if chooser := regexp.MustCompile(`<select\b[^>]*\bname="work_dir"`).FindString(out); chooser != "" {
+				t.Errorf("the working directory became a chooser (%s):\n%s", chooser, out)
+			}
+		})
+	}
+}
+
+// TestNoSuggestionsRendersPlainField is the absent-value half, and it is the
+// state every render is in today: no task yet supplies a suggestion, so this is
+// what an operator actually meets.
+//
+// **Must fail when** an empty `<datalist>` is emitted, or the field points at
+// one that was not rendered. Both are the same defect in two shapes — markup
+// that reads like an offer and makes none — and FR-018a's rule about absent
+// values is that a component states the absence rather than rendering
+// something shaped like a value.
+func TestNoSuggestionsRendersPlainField(t *testing.T) {
+	t.Parallel()
+
+	out := renderComponent(t, "create-form", createForm())
+
+	if strings.Contains(out, "<datalist") {
+		t.Errorf("a form with nothing to suggest renders a datalist anyway:\n%s", out)
+	}
+	input := workdirInput.FindString(out)
+	if input == "" {
+		t.Fatalf("the create form renders no work_dir field at all:\n%s", out)
+	}
+	if list, ok := attributeValue(t, input, "list"); ok {
+		t.Errorf("the field points at the datalist %q and none is rendered (%s); the field with nothing to suggest is the field that shipped before this existed", list, input)
+	}
+}
+
+// The conversation offer's fixture and the element it hangs off. Two entries
+// under different working directories, because the directory is what makes an
+// identifier legible and a list of one could not show that it renders.
+var (
+	conversationOffers = []conversationOffer{
+		{ID: "8f14e45f-ceea-467a-9b3d-0f2fc9de5b21", WorkDir: "/home/operator/code/crswd", Age: "2 hours"},
+		{ID: "c9f0f895-fb98-4b9d-8c1e-a34dbb8bb7a1", WorkDir: "/home/operator/code/notes", Age: "3 days"},
+	}
+	resumeInput = regexp.MustCompile(`<input\b[^>]*\bname="resume"[^>]*>`)
+)
+
+// TestFreshIsDefault is FR-037 in the markup, and the whole of what makes a
+// resume something the operator chose: this form asks for a conversation without
+// ever proposing one.
+//
+// **Must fail when** the field arrives pre-filled — a `value`, a `selected`
+// option, a `checked` box — or when it becomes a control that cannot express
+// "fresh" at all. A default of "carry on from the last conversation" is the one
+// setting here an operator would not notice until a session came back knowing
+// things they never told it.
+//
+// It is asserted with an offer present, which is the state the mistake would be
+// made in: a form with nothing to offer is trivially fresh, and a list of
+// conversations beside an empty field is exactly the arrangement that invites
+// preselecting the first one.
+func TestFreshIsDefault(t *testing.T) {
+	t.Parallel()
+
+	for name, view := range map[string]createFormView{
+		"offering conversations": {PageToken: "t", Conversations: conversationOffers},
+		"offering none":          {PageToken: "t"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			out := renderComponent(t, "create-form", view)
+
+			field := resumeInput.FindString(out)
+			if field == "" {
+				t.Fatalf("the create form asks for no conversation at all:\n%s", out)
+			}
+			if value, ok := attributeValue(t, field, "value"); ok {
+				t.Errorf("the conversation field arrives holding %q; fresh is the default and a default is what an empty field means (%s)", value, field)
+			}
+			if _, ok := attributeValue(t, field, "checked"); ok {
+				t.Errorf("the conversation field arrives ticked (%s)", field)
+			}
+			if _, ok := attributeValue(t, field, "required"); ok {
+				t.Errorf("the conversation field is required, so no submission can start fresh (%s)", field)
+			}
+			if strings.Contains(out, "selected") {
+				t.Errorf("the create form preselects an option:\n%s", out)
+			}
+			// A chooser could not express "fresh" without an option meaning it,
+			// which is a second spelling of the default the handler already reads
+			// as an empty field.
+			if chooser := regexp.MustCompile(`<select\b[^>]*\bname="resume"`).FindString(out); chooser != "" {
+				t.Errorf("the conversation became a chooser (%s):\n%s", chooser, out)
+			}
+			// The operator has to be told what an empty field does. A default
+			// nothing says out loud is one an operator discovers by losing work.
+			if !strings.Contains(out, `id="create-resume-hint"`) || !strings.Contains(out, "empty") {
+				t.Errorf("nothing on the form says what leaving the conversation empty does:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestTheCreateFormOffersPriorConversations is FR-033's half of the offer: an
+// operator can only choose a conversation the page shows them.
+//
+// **Must fail when** the offer stops carrying the directory each conversation
+// belongs to. Two fields are submitted together and the route checks the pairing,
+// so a list of bare identifiers is one an operator cannot use — every entry looks
+// equally plausible beside whichever directory they typed.
+//
+// The absent case is the picker's rule applied here: no datalist and no `list`
+// attribute, leaving a field an identifier can still be pasted into. That is what
+// keeps this usable on the shipped default, where the directory walk is off and
+// there is nothing to offer.
+func TestTheCreateFormOffersPriorConversations(t *testing.T) {
+	t.Parallel()
+
+	t.Run("what the daemon found", func(t *testing.T) {
+		t.Parallel()
+
+		out := renderComponent(t, "create-form", createFormView{PageToken: "t", Conversations: conversationOffers})
+
+		field := resumeInput.FindString(out)
+		list, ok := attributeValue(t, field, "list")
+		if !ok {
+			t.Fatalf("the conversation field points at no list (%s), so the offer below it is markup the browser never reads:\n%s", field, out)
+		}
+		if !strings.Contains(out, `<datalist id="`+list+`">`) {
+			t.Errorf("the field points at the datalist %q and no such element is rendered:\n%s", list, out)
+		}
+		for _, offer := range conversationOffers {
+			if !strings.Contains(out, `<option value="`+offer.ID+`">`) {
+				t.Errorf("the offer omits the conversation %q:\n%s", offer.ID, out)
+			}
+			if !strings.Contains(out, offer.WorkDir) {
+				t.Errorf("the offer does not say which directory %q belongs to:\n%s", offer.ID, out)
+			}
+			if !strings.Contains(out, offer.Age) {
+				t.Errorf("the offer does not say how old %q is:\n%s", offer.ID, out)
+			}
+		}
+
+		// Nothing runs for any of that to be true, and nothing may: this control
+		// is the platform's own for the reason the directory picker is.
+		for _, scripted := range scriptedMarkup {
+			if strings.Contains(out, scripted) {
+				t.Errorf("the conversation offer carries %q:\n%s", scripted, out)
+			}
+		}
+	})
+
+	t.Run("nothing to offer", func(t *testing.T) {
+		t.Parallel()
+
+		out := renderComponent(t, "create-form", createForm())
+
+		field := resumeInput.FindString(out)
+		if field == "" {
+			t.Fatalf("a form with nothing to offer asks for no conversation at all:\n%s", out)
+		}
+		if list, ok := attributeValue(t, field, "list"); ok {
+			t.Errorf("the field points at the datalist %q and none is rendered (%s)", list, field)
+		}
+		if kind, _ := attributeValue(t, field, "type"); kind != "text" {
+			t.Errorf("the conversation field is type %q; free text is what lets an operator paste an identifier this daemon never offered (%s)", kind, field)
+		}
+	})
+
+	// An identifier is a directory entry's name off the host, and the directory
+	// beside it is a path. Neither may close the attribute it is rendered into.
+	t.Run("a hostile offer escapes nothing", func(t *testing.T) {
+		t.Parallel()
+
+		out := renderComponent(t, "create-form", createFormView{PageToken: "t", Conversations: []conversationOffer{
+			{ID: `" onfocus="stealFocus`, WorkDir: `/srv/work/"><script>`, Age: "1 hour"},
+		}})
+		for _, leak := range []string{`" onfocus="stealFocus`, `"><script>`} {
+			if strings.Contains(out, leak) {
+				t.Errorf("an offer escaped its attribute:\n%s", out)
+			}
+		}
+	})
+}
+
 // TestTheCardSaysWhatItIsRunning covers the other half: two sessions are
 // otherwise identical on a fleet, and an operator needs to tell the
 // remote-control one from the plain one.
@@ -1612,6 +2187,73 @@ func TestTheCardSaysWhatItIsRunning(t *testing.T) {
 	without := renderComponent(t, "session-card", sessionView{ID: strings.Repeat("b", 32), Name: "x"})
 	if strings.Contains(without, "card-mode") {
 		t.Errorf("a card with no recorded start command labels one anyway:\n%s", without)
+	}
+}
+
+// cardModeValue is the meta list's mode row as a reader receives it: the label,
+// and whatever the value cell holds.
+//
+// It captures markup and strips it rather than matching text directly, so a
+// value wrapped for styling still passes and a value that is *only* markup — the
+// coloured dot FR-059 forbids — leaves nothing behind and fails. A test that
+// demanded a bare text node would refuse a legitimate span; one that searched
+// the whole card for the word would pass on a title attribute nobody can read.
+var (
+	cardModeRow = regexp.MustCompile(`(?s)<dt>mode</dt>\s*<dd>(.*?)</dd>`)
+	markupTags  = regexp.MustCompile(`<[^>]*>`)
+)
+
+// TestCardShowsMode is FR-031 and FR-059 on the card: a session's mode is shown,
+// and it is shown in words.
+//
+// It renders through cardOf rather than a hand-built view, because the claim is
+// about what a page shows and the projection is half of that — a template that
+// renders a field nothing fills is the shape of bug this plan warns about twice.
+// The name that means remote is passed in the same way the daemon passes it, so
+// this test also fails if the card ever starts deciding that for itself.
+//
+// The local case is not the trivial half. It is what every session on a daemon
+// configuring no remote control is, and what an adopted session is, so a card
+// that shows a mode only when it is the interesting one would leave the ordinary
+// operator reading a card that says nothing about the thing the toggle changes.
+func TestCardShowsMode(t *testing.T) {
+	t.Parallel()
+
+	const remoteCommand = "rc"
+	now := time.Date(2026, time.August, 7, 12, 0, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		start string
+		want  session.Mode
+	}{
+		{start: remoteCommand, want: session.ModeRemote},
+		{start: "review", want: session.ModeLocal},
+	} {
+		t.Run(string(tc.want), func(t *testing.T) {
+			t.Parallel()
+
+			card := cardOf(session.Session{
+				ID:           strings.Repeat("c", 32),
+				Name:         "a session",
+				WorkDir:      "/home/operator/code/crswd",
+				StartCommand: tc.start,
+				CreatedAt:    now.Add(-time.Hour),
+				LastActivity: now,
+			}, now, testCardToken, remoteCommand)
+
+			if card.Mode != tc.want {
+				t.Fatalf("cardOf projected mode %q for a session running %q, want %q", card.Mode, tc.start, tc.want)
+			}
+
+			out := renderComponent(t, "session-card", card)
+			row := cardModeRow.FindStringSubmatch(out)
+			if row == nil {
+				t.Fatalf("the card carries no labelled mode, so the fact the toggle changes is not on it:\n%s", out)
+			}
+			if got := strings.TrimSpace(markupTags.ReplaceAllString(row[1], "")); got != string(tc.want) {
+				t.Errorf("the card's mode reads %q, want %q — state is never carried by markup or colour alone (FR-059):\n%s", got, tc.want, out)
+			}
+		})
 	}
 }
 

@@ -460,8 +460,14 @@ type leakRun struct {
 	// The mutating half's own (T021). pageProof is the token the fleet render
 	// handed this browser, kept because it is the one marked value in this suite
 	// the daemon authors rather than the fixture — no constant can predict it, so
-	// the sweep has to collect it. The two cards are what the create and the
-	// rename answered with, which is where a name a caller typed comes back out.
+	// the sweep has to collect it.
+	//
+	// The two fleets are the pages the create's and the rename's redirects landed
+	// on (T014), which is where a name a caller typed comes back out now that an
+	// action answers 303 rather than with the card itself. Reading them is not a
+	// weaker claim than reading the fragments was — it is the same markup, drawn
+	// by the handler that draws every card, and it is what the operator actually
+	// sees.
 	pageProof       string
 	createdCard     string
 	renamedCard     string
@@ -858,14 +864,16 @@ func (r *leakRun) driveTheActionRoutes(t *testing.T, assertion string) {
 		return fields
 	}
 
-	// A create, and the card it answers with. It is the one action that mints a
-	// bearer token and hands it to nobody (FR-013) — a credential in scope with
-	// no field anywhere to hold it, which is the arrangement most likely to end
-	// with one in a record instead.
-	r.createdCard = r.act(t, http.StatusOK, "POST /dashboard/sessions", browserAction{
+	// A create, and the fleet its redirect lands on. It is the one action that
+	// mints a bearer token and hands it to nobody (FR-013) — a credential in
+	// scope with no field anywhere to hold it, which is the arrangement most
+	// likely to end with one in a record instead.
+	r.act(t, http.StatusSeeOther, "POST /dashboard/sessions", browserAction{
 		path: "/dashboard/sessions", assertion: assertion, site: siteSameOrigin,
 		form: authorised(url.Values{fieldName: {browserName}, fieldWorkDir: {r.repo}}),
-	}).Body.String()
+	})
+	r.createdCard = r.present(t, http.StatusOK, "the fleet a create redirected to",
+		"/?outcome=created", assertion).Body.String()
 
 	id := r.idFrom(t, r.createdCard)
 	// A screen for it, so every later action against this session is decided by a
@@ -875,24 +883,26 @@ func (r *leakRun) driveTheActionRoutes(t *testing.T, assertion string) {
 	// The two ways a create is refused, each carrying something a refusal would be
 	// tempted to quote back: a name spelled as a tmux target, and a working
 	// directory no allowlist approves.
-	r.act(t, http.StatusBadRequest, "a browser create naming a tmux target", browserAction{
+	r.act(t, http.StatusSeeOther, "a browser create naming a tmux target", browserAction{
 		path: "/dashboard/sessions", assertion: assertion, site: siteSameOrigin,
 		form: authorised(url.Values{fieldName: {targetName}, fieldWorkDir: {r.repo}}),
 	})
-	r.act(t, http.StatusBadRequest, "a browser create outside every approved root", browserAction{
+	r.act(t, http.StatusSeeOther, "a browser create outside every approved root", browserAction{
 		path: "/dashboard/sessions", assertion: assertion, site: siteSameOrigin,
 		form: authorised(url.Values{fieldName: {browserName}, fieldWorkDir: {outsideRoot}}),
 	})
 
-	// A rename carrying finding 408's credential-shaped name, and the card it
-	// comes back in. This is the one route on this door whose caller text is
-	// rendered into its own answer, so it is the one where a record built from
-	// the response would be built from something a caller wrote.
-	r.renamedCard = r.act(t, http.StatusOK, "POST /dashboard/sessions/{id}/rename", browserAction{
+	// A rename carrying finding 408's credential-shaped name, and the fleet its
+	// redirect lands on. That page is where a caller's text is rendered back to
+	// them, so it is where a record built from what a browser was shown would be
+	// built from something a caller wrote.
+	r.act(t, http.StatusSeeOther, "POST /dashboard/sessions/{id}/rename", browserAction{
 		path: "/dashboard/sessions/" + id + "/rename", assertion: assertion, site: siteSameOrigin,
 		form: authorised(url.Values{fieldName: {hostileRename}}),
-	}).Body.String()
-	r.act(t, http.StatusBadRequest, "a browser rename naming a tmux target", browserAction{
+	})
+	r.renamedCard = r.present(t, http.StatusOK, "the fleet a rename redirected to",
+		"/?outcome=renamed", assertion).Body.String()
+	r.act(t, http.StatusSeeOther, "a browser rename naming a tmux target", browserAction{
 		path: "/dashboard/sessions/" + id + "/rename", assertion: assertion, site: siteSameOrigin,
 		form: authorised(url.Values{fieldName: {targetName}}),
 	})
@@ -901,7 +911,7 @@ func (r *leakRun) driveTheActionRoutes(t *testing.T, assertion string) {
 	// swept all the same: contracts/actions.md forbids the delivered text from
 	// the trail whatever it happens to say, because the next payload delivered
 	// through this door may not be a constant.
-	r.act(t, http.StatusAccepted, "POST /dashboard/sessions/{id}/compact", browserAction{
+	r.act(t, http.StatusSeeOther, "POST /dashboard/sessions/{id}/compact", browserAction{
 		path: "/dashboard/sessions/" + id + "/compact", assertion: assertion, site: siteSameOrigin,
 		form: authorised(url.Values{}),
 	})
@@ -913,7 +923,7 @@ func (r *leakRun) driveTheActionRoutes(t *testing.T, assertion string) {
 	// holding *both* the delivered command and something it did not author while
 	// it decides what to record.
 	r.tmux.FailOp(tmuxctl.OpPaste, errHostError)
-	r.act(t, http.StatusInternalServerError, "a browser compact the host refused", browserAction{
+	r.act(t, http.StatusSeeOther, "a browser compact the host refused", browserAction{
 		path: "/dashboard/sessions/" + id + "/compact", assertion: assertion, site: siteSameOrigin,
 		form: authorised(url.Values{}),
 	})
@@ -922,11 +932,11 @@ func (r *leakRun) driveTheActionRoutes(t *testing.T, assertion string) {
 	// A destroy without the confirming step, and then with it. The first is the
 	// one refusal on this door that tears nothing down (FR-029); the second ends
 	// the session this function created.
-	r.act(t, http.StatusBadRequest, "a browser destroy that was not confirmed", browserAction{
+	r.act(t, http.StatusSeeOther, "a browser destroy that was not confirmed", browserAction{
 		path: "/dashboard/sessions/" + id + "/destroy", assertion: assertion, site: siteSameOrigin,
 		form: authorised(url.Values{}),
 	})
-	r.act(t, http.StatusOK, "POST /dashboard/sessions/{id}/destroy", browserAction{
+	r.act(t, http.StatusSeeOther, "POST /dashboard/sessions/{id}/destroy", browserAction{
 		path: "/dashboard/sessions/" + id + "/destroy", assertion: assertion, site: siteSameOrigin,
 		form: authorised(url.Values{fieldConfirm: {confirmYes}}),
 	})

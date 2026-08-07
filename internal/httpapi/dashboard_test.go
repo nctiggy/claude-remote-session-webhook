@@ -14,6 +14,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -22,6 +24,7 @@ import (
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 )
@@ -533,6 +536,18 @@ func TestTheRenderedFleetOffersTheCreateForm(t *testing.T) {
 				t.Errorf("the create form submits no %s, so the gate refuses it:\n%s", fieldPageToken, create)
 			}
 
+			// The roots this daemon is configured with, named where the operator
+			// fills the field in (T014). It is asserted on the served page rather
+			// than on the component because the component cannot lose it: what can
+			// is the page forgetting to pass them, which is the shape of failure
+			// this repository has shipped three times.
+			for _, root := range f.cfg.Roots {
+				if !strings.Contains(create, root.Path) {
+					t.Errorf("the create form does not name the approved root %q, so the field is one an operator has to guess at:\n%s",
+						root.Path, create)
+				}
+			}
+
 			// Outside every card, which is the placement the task is about: a create
 			// names no session, so a form drawn inside a card would act for whichever
 			// card happened to hold it — and would be drawn once per session on a
@@ -542,6 +557,126 @@ func TestTheRenderedFleetOffersTheCreateForm(t *testing.T) {
 			}
 			if strings.Contains(page, `action="`+target+`"`) && strings.Count(page, `action="`+target+`"`) != 1 {
 				t.Errorf("the page posts to %q %d times; one page offers one create:\n%s", target, strings.Count(page, `action="`+target+`"`), page)
+			}
+		})
+	}
+}
+
+// TestTheRenderedFleetOffersWhatDiscoveryFound is T023 at the call site, which
+// is the half a walk with three passing unit tests can still be missing: the
+// picker's markup shipped one task before its only source, so a daemon that
+// discovers directories no page asks it for renders an empty field forever. This
+// repository has shipped code nothing called three times.
+//
+// The pair of cases is what makes it an assertion about the *configuration*
+// rather than about the markup. Suggestions wired to anything constant — the
+// roots, a literal, the walk with its gate dropped — passes the first case and
+// fails the second.
+func TestTheRenderedFleetOffersWhatDiscoveryFound(t *testing.T) {
+	t.Parallel()
+
+	for name, discover := range map[string]bool{
+		"an operator who asked for discovery":  true,
+		"an operator who did not, the default": false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFleet(t)
+			// The fixture's root is a real resolved directory with one
+			// subdirectory in it, which is what a walk is a question about — the
+			// server's own root is deliberately a path that resolves to nothing.
+			// Both are set on this server's own Config before anything has
+			// rendered, and only the fleet's projection reads either.
+			f.cfg.Roots = []config.ApprovedRoot{{Path: f.fixture.root}}
+			f.cfg.DiscoverRoots = discover
+
+			create := sectionOf(t, f.view(t).Body.String(), "create")
+			suggestion := `<option value="` + f.fixture.repo + `">`
+
+			if discover {
+				if !strings.Contains(create, suggestion) {
+					t.Errorf("discovery is on and the create form offers no %s, so the datalist T022 rendered has nothing in it:\n%s", f.fixture.repo, create)
+				}
+				if !strings.Contains(create, `list="workdir-suggestions"`) {
+					t.Errorf("the create form lists suggestions the field does not point at:\n%s", create)
+				}
+				return
+			}
+			if strings.Contains(create, suggestion) {
+				t.Errorf("discovery is off and the create form names %s anyway; the host is read only when an operator asks:\n%s", f.fixture.repo, create)
+			}
+			if strings.Contains(create, "<datalist") {
+				t.Errorf("discovery is off and the create form renders a datalist; with nothing to suggest the field is the one that shipped before the picker:\n%s", create)
+			}
+		})
+	}
+}
+
+// TestTheRenderedFleetOffersPriorConversations is T032 at the call site, and the
+// half three passing component tests cannot see: session.ListConversations
+// shipped one task before anything called it, which is the shape of failure this
+// repository has shipped three times.
+//
+// **Must fail when** the offer is wired to anything but the store — a constant, a
+// list built from the directories alone, a walk with its gate dropped. The pair
+// of cases is what makes it an assertion about the *host*: an offer that ignored
+// the store passes the first case and fails the second.
+//
+// It is serial, alone in this file, because it describes a home directory. The
+// store's location comes from the environment Claude Code itself reads, and there
+// is no way to say "this host has recorded a conversation" without saying where
+// this host keeps them.
+func TestTheRenderedFleetOffersPriorConversations(t *testing.T) {
+	const conversation = "8f14e45f-ceea-467a-9b3d-0f2fc9de5b21"
+
+	for name, recorded := range map[string]bool{
+		"a directory Claude Code has been run in": true,
+		"a directory it has not":                  false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFleet(t)
+			f.cfg.Roots = []config.ApprovedRoot{{Path: f.fixture.root}}
+			f.cfg.DiscoverRoots = true
+
+			// The daemon's own home, which is where Claude Code keeps the store
+			// and therefore the only place this daemon looks. A test that pointed
+			// the code somewhere else would be asserting against a layout no host
+			// has.
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			if recorded {
+				dir := filepath.Join(home, ".claude", "projects", strings.ReplaceAll(f.fixture.repo, "/", "-"))
+				if err := os.MkdirAll(dir, 0o750); err != nil {
+					t.Fatalf("create the conversation store: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, conversation+".jsonl"), []byte("{}\n"), 0o600); err != nil {
+					t.Fatalf("record a conversation: %v", err)
+				}
+			}
+
+			create := sectionOf(t, f.view(t).Body.String(), "create")
+			offer := `<option value="` + conversation + `">`
+
+			if recorded {
+				if !strings.Contains(create, offer) {
+					t.Errorf("this host has a conversation for %s and the create form offers none:\n%s", f.fixture.repo, create)
+				}
+				if !strings.Contains(create, `list="conversation-suggestions"`) {
+					t.Errorf("the create form offers conversations the field does not point at:\n%s", create)
+				}
+				// The identifier and a time, and nothing that could only come from
+				// inside the transcript (FR-034).
+				if strings.Contains(create, "{}") {
+					t.Errorf("the create form carries transcript contents:\n%s", create)
+				}
+				return
+			}
+			if strings.Contains(create, offer) {
+				t.Errorf("the create form offers a conversation this host has not recorded:\n%s", create)
+			}
+			if strings.Contains(create, `list="conversation-suggestions"`) {
+				t.Errorf("the field points at an offer that was not rendered:\n%s", create)
 			}
 		})
 	}

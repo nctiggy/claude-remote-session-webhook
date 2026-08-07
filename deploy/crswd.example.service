@@ -61,6 +61,12 @@ EnvironmentFile=%h/.config/crswd/env
 # value shown is the daemon's own default, so a line deleted here changes
 # nothing. `.env.example` says what each one refuses to start on.
 Environment=CRSW_ALLOWED_ROOTS=%h/code
+
+# Whether the create form suggests the immediate subdirectories of the roots
+# above. Default: off — listing a filesystem is a disclosure, however mild, and
+# one to opt into. It widens nothing: the roots are still the control, and a
+# suggested path is checked against them on create exactly as a typed one is.
+Environment=CRSW_DISCOVER_ROOTS=
 Environment=CRSW_LISTEN=127.0.0.1:8765
 Environment=CRSW_MAX_SESSIONS=5
 
@@ -72,6 +78,13 @@ Environment=CRSW_DESTROY_ON_SHUTDOWN=
 Environment=CRSW_CREATE_RATE_PER_MIN=6
 Environment=CRSW_MAX_BODY_BYTES=65536
 Environment=CRSW_MAX_STREAMS=10
+
+# The largest screen a pane capture may return, in lines. A capture past it is
+# refused rather than shortened — half a screen is a wrong screen, not a smaller
+# one. The daemon never attaches to the sessions it starts, so they keep tmux's
+# 80x24 default and nothing real approaches this; it is a tripwire on the
+# assumption, not a display limit.
+Environment=CRSW_PANE_BOUND=200
 
 # The two start-command variables are quoted because a command line has spaces
 # in it, and an unquoted `Environment=` assignment ends at the first one.

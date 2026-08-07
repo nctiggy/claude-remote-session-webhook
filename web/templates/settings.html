@@ -1,0 +1,76 @@
+{{/*
+  The settings page — GET /settings (contracts/settings-page.md). It is the
+  read-only account of how this daemon was configured, and it is the page that
+  makes the configuration file legible: an operator who edited a file and saw
+  nothing change reads here which layer actually supplied each value.
+
+  What it holds is the same header every other page carries and a table of what
+  this daemon is configured to do: one row per key config.go declares, in that
+  order, with the layer that supplied it beside the value.
+
+  Above the table is the file those values were read from, or the sentence saying
+  none was (FR-018). It is first because it qualifies everything under it — the
+  commonest form of "why did my edit do nothing?" is an edit made to a file this
+  daemon never read, and no amount of per-row provenance answers that one.
+
+  The value of a secret is `present` or `absent` and is never the value, its
+  length, a prefix, a suffix, or a hash (FR-017). That word is chosen in Go, by
+  the one predicate the 0600 refusal also asks, and arrives here already decided —
+  so there is nothing in this file that could be made to print more of a
+  credential than it was handed, and no way to add a "helpful" masked form without
+  editing the projection that a test reads.
+
+  There is no form here, and there is not going to be one. No mutating verb is
+  registered on this path (spec, Out of Scope), so this page carries no page
+  token, no action row and no live region — the three things every actionable
+  page in this tree carries and this one must not. A form rendered here would be a
+  form the daemon has no route to receive, which is the one shape of dead control
+  the design system cannot show an operator is dead.
+
+  Load-bearing, and the same three absences the other three pages carry: no
+  inline <script>, no inline <style>, and no external origin. The policy in
+  docs/security.md is sent unmodified, so each would fail in a browser rather than
+  in review. The script is the embedded asset that drives the rain the header
+  renders a canvas for, and it has to be a file for exactly the reason an inline
+  one would fail.
+
+  No rain sits behind the settings themselves. The design system permits the
+  effect behind the header and in the empty state and nowhere else, and a table of
+  values an operator is reading is reading content.
+*/}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>crswd — settings</title>
+<link rel="stylesheet" href="/static/crswd.css">
+<script src="/static/crswd.js" defer></script>
+</head>
+<body>
+{{ template "header" .Operator }}
+<main class="shell">
+<div class="settings">
+<p>{{ if .ConfigFile }}Read from {{ .ConfigFile }}{{ else }}No configuration file was read.{{ end }}</p>
+<table>
+<caption>Configuration</caption>
+<thead>
+<tr>
+<th scope="col">Key</th>
+<th scope="col">Value</th>
+<th scope="col">Source</th>
+</tr>
+</thead>
+<tbody>
+{{ range .Settings }}
+<tr>
+<th scope="row">{{ .Key }}</th>
+<td>{{ .Value }}</td>
+<td>{{ .Source }}</td>
+</tr>
+{{ end }}
+</tbody>
+</table>
+</div>
+</main>
+</body>
+</html>

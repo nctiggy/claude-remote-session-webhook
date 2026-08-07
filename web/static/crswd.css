@@ -166,12 +166,12 @@ body {
 /* The route home (#48). Colour is inherited so the mark keeps its phosphor and
    its glow rather than gaining a second accent.
 
-   No underline, unlike .card-link. A wordmark is not prose with a link in it —
-   it is the product's own name, and an underline made it read as a hyperlink
-   that happened to be sitting where the logo goes. The convention that a
-   wordmark returns you to the front page is old enough to be the affordance by
+   No underline, unlike the card's heading. A wordmark is not prose with a link
+   in it — it is the product's own name, and an underline made it read as a
+   hyperlink that happened to be sitting where the logo goes. The convention that
+   a wordmark returns you to the front page is old enough to be the affordance by
    itself, which is the one place that argument holds: it would not hold for a
-   word inside a sentence, and .card-link keeps its underline for exactly that
+   word inside a sentence, and .card-heading keeps its underline for exactly that
    reason.
 
    The hover cue is the glow rather than a rule appearing, so nothing about the
@@ -220,7 +220,7 @@ body {
    Prose a human wrote, so it is set in sans on the same terms as the notes
    beside a pane — and in --text rather than --dim, because it is the answer to
    something that has happened rather than an aside, which is the reading
-   .card-outcome already makes.
+   .outcome below makes as well.
 
    No state token. Those name what a session is (docs/design-system.md), and
    this sentence is about the page; borrowing amber for it would be the parallel
@@ -244,6 +244,54 @@ body {
    is not what "nothing has changed yet" should look like. */
 .fleet-note:empty {
   display: none;
+}
+
+/* What the last action did (T014). It sits where the severed-fleet note sits and
+   reads as that note's sibling, because both are the page speaking about itself
+   rather than about a session — so it borrows the same surface, border and prose
+   settings rather than inventing a second banner.
+
+   Nothing here distinguishes a success from a refusal. That is the rule the
+   fragments this replaced already kept: an outcome is told apart by what it
+   says, never by a shade (FR-030, FR-031), and a stylesheet that coloured
+   "destroyed" apart from "could not be destroyed" would be encoding the answer
+   in a colour an operator may not be able to see. */
+.outcome {
+  margin: 0 0 var(--s5);
+  padding: var(--s3) var(--s4);
+  background: var(--surface);
+  border: var(--edge-width) solid var(--edge-bright);
+  border-radius: var(--r);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: var(--fs-prose);
+}
+
+/* The one outcome that is not a line of prose: a destroy whose teardown the host
+   would not confirm, which means a live unsandboxed shell may have survived
+   (FR-023, Principle VI).
+
+   What makes it prominent is structure and not colour — it is a titled block
+   where the others are a sentence, and it keeps the same palette as its
+   siblings. Colour is reinforcement and never the signal (the design system's
+   fifth non-negotiable), and an operator who cannot distinguish two greens must
+   still be unable to scan past this one. The heavier rule down the inline start
+   is the emphasis border doing what it already does on .fleet-note, spent
+   harder. */
+.outcome-alarm {
+  display: block;
+  border-inline-start-width: var(--s1);
+}
+
+.outcome-heading {
+  margin: 0 0 var(--s2);
+  color: var(--text);
+  font-size: var(--fs-brand);
+  font-weight: 600;
+}
+
+.outcome-body {
+  margin: 0;
 }
 
 /* The summary comes before any detail — a dashboard is scanned, not read. */
@@ -294,10 +342,27 @@ body {
   border-color: var(--edge-bright);
 }
 
+/* The card's readable half (#60): the element the anchor fills, and the far side
+   of the rule from everything that acts on this host. One column, allowed to be
+   narrower than its content for the reason .card's is — a 64-character name
+   truncates inside it rather than widening the card. */
+.card-read {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s3);
+}
+
+/* The underline is the link's affordance, and it stays on the name now that the
+   anchor wraps the whole readable half. Under the identifier, the path and the
+   age as well it would be four lines of decoration rather than one affordance —
+   and none of those is the word the card is about. */
 .card-heading {
   margin: 0;
   font-size: inherit;
   font-weight: 700;
+  text-decoration: underline;
+  text-decoration-color: var(--edge-bright);
+  transition: text-decoration-color var(--transition);
 }
 
 /* Caller-supplied text: a 64-character name breaks the layout's line, never
@@ -324,18 +389,22 @@ body {
   color: var(--dim);
 }
 
-/* The link is the heading, so it takes the heading's colour and weight rather
-   than restating them — the underline is the affordance and the card's own
-   hover is the feedback. Block, so the name inside it can be truncated by a box
-   the grid track is allowed to make narrower than its content. */
+/* The link is the whole readable half (#60), so it takes the card's own colour
+   rather than restating one, and it lays its rows out the way the card used to:
+   the same single column and the same gap, so wrapping the block in an anchor
+   moved nothing on screen.
+
+   The underline is on the heading inside it rather than here — see .card-heading
+   — which is why this one is removed rather than inherited. */
 .card-link {
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s3);
   color: inherit;
-  text-decoration-color: var(--edge-bright);
-  transition: text-decoration-color var(--transition);
+  text-decoration: none;
 }
 
-.card-link:hover {
+.card-link:hover .card-heading {
   text-decoration-color: currentcolor;
 }
 
@@ -361,11 +430,23 @@ body {
 
 /* The row of controls that change something on the host. It renders only for a
    card carrying the token those controls submit, so a card that cannot
-   authorise an action does not offer one. */
+   authorise an action does not offer one.
+
+   Its top edge is the rule between the card's two halves (#60): everything above
+   is what the session is, everything below does something. It is a border here
+   rather than an element of its own because that is what it is — the boundary of
+   the acting half — and --edge is the token the design system already spends on
+   exactly this. It is not the only cue, and it is not even the first: the halves
+   are separate elements in the markup, so they stay distinct with no stylesheet
+   at all. The spacing carries it as well — the card's own gap sits above the rule
+   and this padding below it — so a browser that dropped the border, or a
+   high-contrast theme that did, still shows two halves (FR-048). */
 .card-actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--s2);
+  padding-block-start: var(--s3);
+  border-block-start: var(--edge-width) solid var(--edge);
 }
 
 /* Each action is its own form — a plain post, no script (research.md R4) — and
@@ -373,26 +454,6 @@ body {
    grid. Nothing else about it is visual; the row does the spacing. */
 .card-actions form {
   margin: 0;
-}
-
-/* The rename, which is the one action carrying a field rather than only a
-   button. It takes the row to itself: the row above wraps, and a text entry
-   sharing a line with the one control on this card that cannot be taken back is
-   a destroy sitting where a Tab from a half-typed name lands.
-
-   The label spans both columns rather than sitting beside the field, which is
-   the arrangement the create panel's fields already use — a label beside a
-   narrow input in a card-width column leaves neither enough room to read. */
-.card-rename {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: var(--s1) var(--s2);
-  inline-size: 100%;
-}
-
-.card-rename .field-label {
-  grid-column: 1 / -1;
 }
 
 /* Every control that submits something. A button does not inherit the page's
@@ -428,24 +489,6 @@ body {
 .button-danger {
   border-color: var(--state-dead);
   color: var(--state-dead);
-}
-
-/* What an action answers with, replacing the card it acted on. Prose a human
-   wrote, so it is set in sans on the same terms as an absent value or a note
-   beside a pane — and in --text rather than --dim, because it is the answer to
-   something the operator just did rather than an aside.
-
-   The copy is the route's (actions.go): destroyed, not confirmed, could not be
-   verified, could not be destroyed. Nothing here distinguishes them, and that is
-   the point of there being one class — a failure is told apart from a success by
-   what it says, which is the whole of FR-030 and FR-031. A stylesheet that
-   coloured the four apart would be encoding an outcome in a shade, and a card
-   that simply came back unchanged would be the silent revert FR-031 forbids. */
-.card-outcome {
-  margin: 0;
-  color: var(--text);
-  font-family: var(--sans);
-  font-size: var(--fs-prose);
 }
 
 /* The create form's container. It is a panel rather than a card — a card is one
@@ -514,6 +557,40 @@ body {
   border-radius: var(--r);
   color: var(--text);
   font: var(--fs-body)/var(--lh-body) var(--mono);
+}
+
+/* What a field says about what it will accept — today, the roots a working
+   directory has to be under (T014). Dim sans, because it is an aside beside the
+   control rather than an answer to something the operator did: that is the
+   reading .create-note already makes, and the distinction .outcome does not.
+
+   The paths themselves are mono. They are what the machine says (the design
+   system's typography rule), they are the same strings a card renders as a
+   working directory, and an operator comparing one against what they typed is
+   reading character by character. */
+.field-hint {
+  display: grid;
+  gap: var(--s1);
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: var(--fs-prose);
+}
+
+.field-hint-text {
+  margin: 0;
+}
+
+/* No marker: the roots are a set the operator scans, not an ordered argument,
+   and a bullet column beside a monospace path reads as two columns. */
+.field-hint-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.field-hint-root {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
 }
 
 /* The page's one primary control (docs/components.md: exactly one per view).
@@ -621,6 +698,57 @@ body {
   color: var(--dim);
   font-family: var(--sans);
   font-size: var(--fs-prose);
+}
+
+/* The rename disclosure, which is on the session's own page and on no card
+   (FR-049, FR-050). A panel rather than a card, on the create form's terms: a
+   card is one session and this is a control beside one, so it borrows the
+   surface and the border without the grid or the hover that belong to something
+   clickable.
+
+   Nothing here opens or closes it. <details> does that itself, which is why the
+   element was chosen — and nothing here animates the opening either: the design
+   system permits a transition on a disclosure, and a block of markup sliding
+   into a page above a live terminal is motion beside content an operator is
+   reading. */
+.rename {
+  margin-block-start: var(--s5);
+  padding: var(--s4);
+  background: var(--surface);
+  border: var(--edge-width) solid var(--edge);
+  border-radius: var(--r);
+}
+
+/* The disclosure's own control, set as the section eyebrow the create panel's
+   heading already uses: this is a section of the page saying what it is, and a
+   second voice for that would be a second heading style. The pointer is the one
+   thing a <summary> does not get from the platform's own affordance. */
+.rename-summary {
+  color: var(--dim);
+  font-size: var(--fs-eyebrow);
+  font-weight: 600;
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+/* The field and its button, in the arrangement the card's rename had: the label
+   spans both columns rather than sitting beside the field, because a label
+   beside a narrow input leaves neither enough room to read. Bounded by the
+   grid's own track token rather than by a width invented for a form, exactly as
+   .field is — a name is short and an input spanning the shell is a control with
+   nothing in most of it. */
+.rename-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--s1) var(--s2);
+  margin-block-start: var(--s4);
+  inline-size: min(100%, var(--card-min));
+}
+
+.rename-form .field-label {
+  grid-column: 1 / -1;
 }
 
 /* The one surface where the rain runs at full strength: nothing competes with
@@ -763,6 +891,61 @@ body {
 
 .card-mode-name {
   color: var(--text);
+  text-transform: uppercase;
+}
+
+/* The settings table — the read-only account of how this daemon was configured.
+   Wide content scrolls inside its own container rather than moving the page
+   sideways, which is the rule docs/design-system.md gives panes and tables
+   alike. No rain sits behind it: a table of values an operator is reading is
+   reading content.
+   Element selectors under one class rather than a class per cell. The table is
+   the whole of this page's structure, and a class on every cell would be a
+   component docs/components.md never defined. */
+.settings {
+  overflow-x: auto;
+}
+
+.settings table {
+  inline-size: 100%;
+  border-collapse: collapse;
+}
+
+/* The file the values were read from, above the table it qualifies. Dim, because
+   it is the provenance of the whole page rather than a setting on it — and mono
+   by inheritance, since a path is what the machine calls a file. */
+.settings p {
+  margin-block: 0 var(--s5);
+  color: var(--dim);
+}
+
+/* The table's accessible name, where a heading would only repeat the masthead.
+   Aligned to the start rather than centred: a centred caption over a table this
+   narrow reads as a title for the page instead of for the table. */
+.settings caption {
+  margin-block-end: var(--s3);
+  color: var(--dim);
+  font-size: var(--fs-eyebrow);
+  letter-spacing: var(--ls-eyebrow);
+  text-align: start;
+  text-transform: uppercase;
+}
+
+/* A key is what the machine calls the setting, so both columns stay in mono and
+   the row header is not bolded — the emphasis in this table is the border grid,
+   not weight. */
+.settings th,
+.settings td {
+  padding: var(--s2) var(--s3);
+  border-block-end: var(--edge-width) solid var(--edge);
+  font-weight: 400;
+  text-align: start;
+}
+
+.settings thead th {
+  color: var(--dim);
+  font-size: var(--fs-label);
+  letter-spacing: var(--ls-label);
   text-transform: uppercase;
 }
 
