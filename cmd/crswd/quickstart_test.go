@@ -1238,10 +1238,10 @@ func TestQuickstartStory4Restart(t *testing.T) {
 	c := d.createSession("survivor")
 	d.waitForPane(c.ID, c.Token, shimReady)
 
-	// SIGKILL, not SIGTERM. A termination signal is the ending FR-040 gives the
-	// daemon and it reaps every session on the way out, so the danger state this
-	// story is about — a live session with no daemon — can only be reached by
-	// the daemon dying without warning.
+	// SIGKILL, not SIGTERM: the state this story is about is a live session whose
+	// daemon left without draining, and only a crash produces it. A clean stop
+	// leaves the session running too since #63, but it leaves it running on
+	// purpose, and the second half of this test covers that ending separately.
 	_ = d.stop(syscall.SIGKILL)
 	if !h.hasSession("crswd-" + c.ID) {
 		t.Fatalf("the session did not outlive the crash, so there is nothing to adopt")
@@ -1356,15 +1356,53 @@ func TestQuickstartStory4Restart(t *testing.T) {
 		t.Error("the adopted session's credential is in the audit trail")
 	}
 
-	// Shutdown still reaps it, which is the half that does work without a token.
+	// A clean stop leaves it running (#63), and that is this story's point rather
+	// than a hole in it. This case used to end by asserting that SIGTERM reaped
+	// the adopted session — verified teardown, which is real and is still what
+	// Destroy, the reaper and CRSW_DESTROY_ON_SHUTDOWN do. But it only ever
+	// covered the graceful stop, because a crash leaves the fleet running by
+	// definition; that is why the first half of this test has anything to adopt.
+	// So the old ending made a redeploy cost the operator every session while
+	// leaving the case it claimed to guard — the crash — untouched.
+	//
+	// What bounds the fleet instead is the adoption above: a reclaimed session
+	// keeps the absolute deadline it always had, measured from tmux's own
+	// session_created, so passing it between daemons buys it nothing.
 	if err := restarted.stop(syscall.SIGTERM); err != nil {
 		t.Errorf("SIGTERM: %v\n%s", err, restarted.readTrail())
 	}
-	if h.hasSession("crswd-" + c.ID) {
-		t.Errorf("the adopted session outlived the daemon's shutdown")
+	if !h.hasSession("crswd-" + c.ID) {
+		t.Error("a clean stop destroyed the adopted session; a restart must not cost the fleet (#63)")
 	}
 	if !h.hasSession(lookalike) {
 		t.Errorf("shutdown destroyed %s, which the daemon never owned", lookalike)
+	}
+
+	// And it is still adoptable, which is what makes surviving the stop
+	// management rather than an orphan: the story is "restart without orphans",
+	// and a session no later daemon takes back is exactly the unowned shell
+	// Principle VI forbids.
+	third := h.start(map[string]string{"CRSW_LISTEN": addr})
+	defer func() { _ = third.stop(syscall.SIGKILL) }()
+
+	again := third.call(http.MethodGet, "/sessions", "", "")
+	if again.Status != http.StatusOK {
+		t.Fatalf("GET /sessions after the clean stop = %d, want 200: %s", again.Status, again.Body)
+	}
+	if err := json.Unmarshal(again.Body, &listed); err != nil {
+		t.Fatalf("decode the list after the clean stop: %v", err)
+	}
+	readopted := false
+	for _, s := range listed.Sessions {
+		if s.ID == c.ID {
+			readopted = true
+			if !s.Adopted {
+				t.Errorf("session %s survived the stop but is not marked adopted", s.ID)
+			}
+		}
+	}
+	if !readopted {
+		t.Errorf("the session that survived the clean stop is unowned; no daemon took it back: %s", again.Body)
 	}
 }
 
@@ -1445,10 +1483,17 @@ func TestQuickstartStory5Cap(t *testing.T) {
 	// a minute the burst is three (burstFor), so a loop of six creates is
 	// refused by the rate limiter on its fourth — the same 429, for a different
 	// reason. The two bounds are asserted separately for exactly that reason.
-	d := h.start(map[string]string{
+	//
+	// The address is pinned rather than left to the kernel because the second
+	// daemon below has to land on the same tmux server as the first, and since
+	// #22 the server name is derived from the address a daemon listens on. A
+	// restart on a fresh port is a restart that can see none of its own fleet.
+	env := map[string]string{
+		"CRSW_LISTEN":              freePort(t),
 		"CRSW_MAX_SESSIONS":        "5",
 		"CRSW_CREATE_RATE_PER_MIN": "120",
-	})
+	}
+	d := h.start(env)
 
 	for i := 1; i <= 5; i++ {
 		c := d.createSession(fmt.Sprintf("cap-%d", i))
@@ -1482,14 +1527,26 @@ func TestQuickstartStory5Cap(t *testing.T) {
 		t.Errorf("no cap refusal in the trail:\n%s", d.readTrail())
 	}
 
-	// quickstart.md's last block: SIGTERM reaps the fleet with verification.
+	// quickstart.md's last block asks for an empty host after SIGTERM, and that
+	// stopped being the ending in #63: a clean stop preserves the fleet and the
+	// next daemon adopts it. The bound this story is about is the cap, and the
+	// cap is asserted above — what is asserted here is that a stop does not
+	// quietly become a way around it. Five sessions were capped at five; five
+	// survive, and the daemon that comes back counts all five against the same
+	// ceiling, so the sixth create is still refused.
 	if err := d.stop(syscall.SIGTERM); err != nil {
 		t.Errorf("SIGTERM: %v\n%s", err, d.readTrail())
 	}
-	for _, name := range h.sessionNames() {
-		if strings.HasPrefix(name, "crswd-") {
-			t.Errorf("%s outlived the daemon's shutdown", name)
-		}
+	if got := len(h.sessionNames()); got != 5 {
+		t.Errorf("the host holds %d sessions after a clean stop, want the 5 it was capped at: %v", got, h.sessionNames())
+	}
+
+	restarted := h.start(env)
+	defer func() { _ = restarted.stop(syscall.SIGKILL) }()
+
+	seventh := restarted.call(http.MethodPost, "/sessions", fmt.Sprintf(`{"name":"cap-7","work_dir":%q}`, h.workDir), "")
+	if seventh.Status != http.StatusTooManyRequests {
+		t.Errorf("a create against a fleet the daemon adopted back to the cap = %d, want 429: %s", seventh.Status, seventh.Body)
 	}
 }
 

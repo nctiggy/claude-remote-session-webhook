@@ -427,9 +427,23 @@ func TestDashboardQuickstartStory1Fleet(t *testing.T) {
 	}
 }
 
-// TestDashboardQuickstartStory1Adopted is FR-018a: a session the daemon adopted
-// after a restart has no name and no working directory, and the card says so
-// rather than inventing one.
+// TestDashboardQuickstartStory1Adopted is FR-018a as #72 left it: a session the
+// daemon adopted after a crash carries the name and the working directory it was
+// created with, because the daemon writes both onto the tmux session itself and
+// reads them back when it adopts.
+//
+// It used to assert the opposite, and quickstart.md still describes that world:
+// adoption recovered nothing, so the card stated its own ignorance rather than
+// inventing a plausible value. The honesty is the part that survived — what
+// changed is that the daemon is no longer ignorant. Once sessions began
+// outliving a clean stop (#63), adoption stopped being the after-a-crash path
+// and became the every-redeploy one, and an operator was left with a fleet of
+// unnamed cards in unknown directories.
+//
+// The empty branch has not gone away — a session created before those tmux
+// options existed still adopts with both fields blank — and its rendering is
+// covered where it belongs, by internal/httpapi's card tests. What it is not,
+// any more, is what a restart produces, so asserting it here asserted a defect.
 func TestDashboardQuickstartStory1Adopted(t *testing.T) {
 	h := newHost(t)
 	e := newEdge(t)
@@ -449,16 +463,15 @@ func TestDashboardQuickstartStory1Adopted(t *testing.T) {
 	restarted := h.startDashboard(e, map[string]string{"CRSW_LISTEN": addr})
 	page := string(restarted.browse("/", e.mint(e.operatorClaims())).Body)
 
-	for _, want := range []string{"no name recorded", "no working directory recorded"} {
+	for _, want := range []string{"outlives-the-daemon", h.workDir} {
 		if !strings.Contains(page, want) {
-			t.Errorf("the adopted card does not state %q:\n%s", want, page)
+			t.Errorf("the adopted card does not carry %q from before the restart (#72):\n%s", want, page)
 		}
 	}
-	if strings.Contains(page, "outlives-the-daemon") {
-		t.Error("the adopted card carries the name from before the restart, which the daemon does not record")
-	}
-	if strings.Contains(page, h.workDir) {
-		t.Errorf("the adopted card carries a working directory the daemon never recorded (%s)", h.workDir)
+	for _, unwanted := range []string{"no name recorded", "no working directory recorded"} {
+		if strings.Contains(page, unwanted) {
+			t.Errorf("the adopted card states %q for a session the daemon recorded both of on the host:\n%s", unwanted, page)
+		}
 	}
 }
 
