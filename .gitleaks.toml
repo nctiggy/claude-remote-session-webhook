@@ -45,4 +45,29 @@ regexes = [
   # real assertion — signed, RS256 — does not match and is still caught, including
   # inside a test file, which is the point of not allowlisting the path instead.
   '''eyJhbGciOiJub25lIn0\.[A-Za-z0-9_-]+\.$''',
+
+  # Fixtures that announce themselves. A secret of the right *shape* is what a
+  # generic-key rule is built to catch, and a 32-byte string beside the word
+  # "secret" is exactly that — so internal/config's test-only-shared-secret
+  # constant failed CI on every pull request, from a branch none of them had
+  # merged, because the gitleaks step scans all fetched history on purpose.
+  #
+  # Allowed by construction rather than by assertion: the prefix is the claim.
+  # A value beginning `test-only-` is one somebody wrote to be found, and a real
+  # secret that happened to start that way would be one its author had already
+  # published. Narrower than allowlisting the test paths, which is the tempting
+  # fix and the wrong one — a genuine credential pasted into a _test.go file is
+  # still caught, and that is the case worth keeping.
+  '''test-only-[A-Za-z0-9_-]+''',
+
+  # The hex alphabet, repeated. A 64-character run of 0123456789abcdef is what
+  # a fixture looks like when somebody needed a secret-shaped string and had no
+  # secret — it is used in internal/config to assert that a parse error does not
+  # quote the value back, which is a test the repository wants.
+  #
+  # Safe by construction, like the two entries above: the pattern is the hex
+  # alphabet in order, so a matching value carries no entropy and can protect
+  # nothing. A real 64-hex secret does not repeat its alphabet and is still
+  # caught by crsw-shared-secret.
+  '''(0123456789abcdef)+''',
 ]
