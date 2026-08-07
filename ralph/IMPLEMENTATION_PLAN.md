@@ -199,7 +199,17 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
 
 ### US3 — Reaching the settings page (independent)
 
-- [ ] T012 Add the settings link to the header, outside the brand heading
+- [x] T012 Add the settings link to the header, outside the brand heading
+  - Seven tests, not six: `TestSettingsLinkHasVisibleFocusRing` is in
+    `contracts/settings-link.md` and absent from `tasks.md`, and the contract supersedes.
+    **`TestSettingsStillHasNoMutatingVerb` reads the `href` out of the rendered header**
+    and asks the four verbs at *that* path — `settings_test.go`'s `TestNoMutatingVerbRegistered`
+    already holds the same claim against the constant, so a copy would have been the assertion
+    twice. `renderedPages` is checked against the template tree, so a page added later cannot
+    ship with an unasserted header. **`.operator` gained `margin-inline-start: auto`**: a third
+    child under `space-between` puts the identity in the centre, which breaks what
+    `docs/components.md` says the header is and which no test can see — see `PROGRESS.md`
+    iteration 12.
 
 ### Two defects in shipped code (independent)
 

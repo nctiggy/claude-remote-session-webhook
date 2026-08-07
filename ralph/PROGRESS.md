@@ -916,3 +916,90 @@ permission to add editing.
    `CRSW_DESTROY_ON_SHUTDOWN` row, `settings.go:114-118`, and
    `contracts/directory-suggestions.md:62`'s comma-spelled `allowed_roots`. Iteration 6's
    uncapped-union note and iteration 7's missing wiring test are also still open and unowned.
+
+---
+
+## Iteration 12 — 2026-08-07 18:04
+
+**Did:** T012, in commit `16ee01d`. `web/templates/partials/header.html` now renders
+`<a class="masthead-link" href="/settings">Settings</a>` inside `.masthead-bar`, after the
+operator and outside the `<h1 class="brand">`; `crswd.css` gained the `.masthead-link` rule
+and its hover. Seven tests in `partials_test.go`: the six the task named plus
+`TestSettingsLinkHasVisibleFocusRing`, which is in `contracts/settings-link.md` and not in
+`tasks.md` — the contract supersedes, and the plan says so.
+
+**Learned:**
+
+- **`.masthead-bar` is `justify-content: space-between`, written for two children.** A third
+  puts the *operator* in the centre, which quietly breaks what `docs/components.md` says the
+  header is ("identity right"). `margin-inline-start: auto` on `.operator` puts the free space
+  in front of the pair instead. That is a second rule edited outside the task's named files
+  and it is deliberate: without it this task changes the documented layout, which no test in
+  this repo can see. AR-008 forbids tidying, not the change the task requires.
+- **A rendered class with no rule is red**, as in T008/T009 — `TestTheStylesheetAndTheMarkupNameTheSameThings`
+  sweeps both directions, so the CSS was never optional. Verified: deleting the link from the
+  template fails that sweep too, because the rule is then styling nothing.
+- **`TestSettingsStillHasNoMutatingVerb` is deliberately not a copy of `TestNoMutatingVerbRegistered`**
+  (`settings_test.go:213`), which already holds the same claim against `settingsPath`. The new
+  one reads the `href` **out of the rendered header** and asks the four verbs at whatever it
+  points to, so it is the pairing this task creates — the page is one click away now — rather
+  than the route table asserted twice. It compares against a path nothing claims for the
+  existing test's reason: a 405 is a route table handed to whoever asks.
+- **`renderedPages` is checked against the template tree rather than trusted.** The map is
+  keyed by template name and every `templates/*.html` must appear in it, so a page added later
+  cannot ship with an unasserted header. There is no shared layout here — each page composes
+  the partial itself, which is exactly how one falls behind (the same shape as `#77`, which
+  `TestEveryActionablePageCarriesTheLiveRegion` was written for).
+- **The not-found page carries the header too** and is now in that sweep. It was already
+  rendering the partial; nothing was needed beyond listing it.
+- **Mutation-verified six ways, each reverted:** (a) the anchor moved inside the `<h1>` — only
+  `TestSettingsLinkIsOutsideTheBrandHeading` fails, both halves of it, which is the contract's
+  named must-fail; (b) the anchor placed before the wordmark — `TestWordmarkIsStillTheFirstAnchor`
+  fails; (c) the anchor deleted — four tests plus the stylesheet sweep fail; (d) `settings.html`
+  composing its own masthead without the link — `TestEveryPageCarriesTheHeader` fails naming
+  the page; (e) `POST /settings` registered on the same handler — `TestSettingsStillHasNoMutatingVerb`
+  fails with the 200 it answered; (f) `outline: none` on `.masthead-link` — the focus-ring test
+  fails. A seventh: a new page template added to `web/templates/` and not to `renderedPages`
+  fails the staleness guard by name.
+- Linter confirmed v2 before trusting the green: `golangci-lint 2.12.2`, 0 issues.
+  `go test ./...` green (`-count=1` on `internal/httpapi`); `gofmt -l` clean; `go vet` compiles
+  all three tagged suites. No `go.sum`. **`-tags quickstart` was not run: `127.0.0.1:8765` is
+  held by the deployed daemon** (as in iterations 9–11). This task touches no `cmd/crswd` code,
+  but note that quickstart drives *real pages* — the next iteration that finds the port free
+  should run it, because T012 changed markup every page renders.
+
+**Left:** T013–T016. **T013 is next** and is independent: diagnostics to stderr, audit records
+to stdout across `internal/httpapi/server.go`, `internal/config/depcheck.go` and
+`cmd/crswd/main.go`, establishing "every line on stdout is a record". T015 depends on it in
+substance — the documented `grep '^{'` filter only works once T013 lands — and T015's test is
+`-tags quickstart`, so **T015 needs `127.0.0.1:8765` free**; if it is still held, T014 and T016
+are the ones that can run.
+
+**Findings:**
+
+1. **The settings link is the second anchor on every page and nothing counts anchors
+   per page.** `TestHeaderHasExactlyTwoAnchors` is about the header component, and
+   `TestCardHasExactlyOneAnchor` is about a card; the fleet page as a whole now carries
+   two-plus-one-per-card, which is correct and unasserted. Not a defect — noting it because
+   the "one link per card" rule and the header's two are easy to conflate, and a future test
+   counting anchors page-wide would make them contradict each other. The existing comment on
+   `mastheadElement` already says this; it is now true of a second link as well.
+2. **Nothing selects a picker option with the pointer** (iterations 10 and 11, still open,
+   still **milestone 6's or T016's if it will touch behaviour**), and **the list has no blur
+   close**. The two must be written together — `mousedown`, not `click`, or the blur eats the
+   selection.
+3. Iteration 9's reduced-motion hole is still open and still **T016's or milestone 6's**:
+   nothing in `crswd.css` stops an `animation` under `prefers-reduced-motion`, only a
+   `transition`. T012 adds two transitions and no animation, both under the universal reset.
+4. `docs/components.md` still documents no `.combo`, `.combo-list`, `.combo-status` or
+   `.switch-*` entry (iterations 8–11, still open, still **T016's**). T012 adds one more line
+   for it: the Header row says "product identity left, operator identity right" and there is
+   now a `.masthead-link` after the identity — **and the `.operator` auto margin is what holds
+   that sentence true**, which is worth writing down beside it.
+5. The stale-prose findings from iterations 4–7 are all still open and all still **T016's**:
+   `outcome.go`'s `outcomeBadStartCommand` comment, `config.example:157`, `README.md`'s
+   `CRSW_DESTROY_ON_SHUTDOWN` row, `settings.go:114-118`, and
+   `contracts/directory-suggestions.md:62`'s comma-spelled `allowed_roots`. Iteration 6's
+   uncapped-union note and iteration 7's missing wiring test are also still open and unowned.
+6. **#95 still has not received T002's SHA** (`ef18756`), because `gh` is not an approved
+   command in the loop's session. Unchanged since iteration 2 and still needs a human.
