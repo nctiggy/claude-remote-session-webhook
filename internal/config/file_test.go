@@ -1266,6 +1266,151 @@ func TestBackupIsConsultedWhenTheFileWillNotLoad(t *testing.T) {
 	})
 }
 
+// configExamplePath is the operator's copy of everything this daemon can be
+// told, and the only place that says *why* each bound is what it is — the
+// commentary JSON would have deleted, which is the reason this format is not
+// JSON (research D1).
+const configExamplePath = "../../config.example"
+
+// exampleLine is one `# key = value` line of config.example: the form an
+// operator uncomments, and the only form this test recognises. A key named in
+// prose is not a setting anyone can turn on by uncommenting it.
+type exampleLine struct {
+	key   string
+	value string
+	line  int
+}
+
+// exampleLines reads those lines out of config.example, filtering to keys the
+// daemon actually has so that a sentence of prose is not mistaken for a
+// setting. A key mentioned mid-sentence is left alone — everything before the
+// first `=` has to be the key and nothing else, which is exactly the test an
+// operator's eye applies when deciding what to uncomment.
+func exampleLines(t *testing.T, raw []byte, known map[string]bool) []exampleLine {
+	t.Helper()
+
+	var out []exampleLine
+	for i, text := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(text)
+		if !strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		key, value, found := strings.Cut(strings.TrimPrefix(trimmed, "#"), "=")
+		if !found {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if !known[key] {
+			continue
+		}
+		out = append(out, exampleLine{key: key, value: strings.TrimSpace(value), line: i + 1})
+	}
+	return out
+}
+
+// TestConfigExampleParsesAndCoversEveryKey pins config.example to the daemon
+// that reads it (T034). Three things rot silently about an example file, and
+// none of them shows up in a run of the package it documents:
+//
+//   - a setting added to config.go that the example never names, so no operator
+//     learns it exists;
+//   - a line that no longer parses the way it reads, so uncommenting it sets
+//     something other than what it looks like;
+//   - a live assignment, which is both a daemon that behaves differently the
+//     moment the file is copied and the way a secret reaches this repository.
+//
+// The keys come from config.go's own declarations rather than from a list kept
+// here, so a variable added there and forgotten in the example is a red build —
+// which is the whole of this task's obligation.
+func TestConfigExampleParsesAndCoversEveryKey(t *testing.T) {
+	t.Parallel()
+
+	raw, err := os.ReadFile(configExamplePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", configExamplePath, err)
+	}
+
+	// The daemon's own parser, not a second reading of the same bytes. An
+	// example an operator copies has to be a file this daemon starts on.
+	f, err := config.ParseFile(configExamplePath, raw, io.Discard)
+	if err != nil {
+		t.Fatalf("%s does not parse: %v", configExamplePath, err)
+	}
+
+	// And copying it changes nothing (FR-003, SC-002): every setting in it is
+	// commented out, so the only live line is the schema version, which is not
+	// a setting. The value is deliberately not quoted back — the case this
+	// catches is a real one having been left on a line.
+	for _, name := range config.Vars() {
+		if _, set := f.Lookup(name); set {
+			t.Errorf("%s sets %s; every setting in it is commented out, so that copying it leaves the daemon exactly as it is without a file — and so that no value is published here",
+				configExamplePath, config.KeyForVar(name))
+		}
+	}
+
+	known := make(map[string]bool)
+	for name := range declaredVars(t) {
+		known[config.KeyForVar(name)] = true
+	}
+
+	shown := exampleLines(t, raw, known)
+	seen := make(map[string]int, len(shown))
+	for _, l := range shown {
+		if first, dup := seen[l.key]; dup {
+			t.Errorf("%s:%d names %s a second time, first on line %d; one line per setting, or the page it is compared against no longer lines up with it",
+				configExamplePath, l.line, l.key, first)
+			continue
+		}
+		seen[l.key] = l.line
+	}
+	for key := range known {
+		if _, ok := seen[key]; !ok {
+			t.Errorf("%s reads %s and %s never shows it, so no operator learns the setting exists",
+				configSourcePath, config.VarForKey(key), configExamplePath)
+		}
+	}
+
+	// The order is the settings page's order, which is config.go's. The page
+	// exists to be read beside this file, and a table and an example that
+	// disagree about where a setting is make that comparison manual.
+	if len(shown) == len(config.Vars()) {
+		for i, name := range config.Vars() {
+			if key := config.KeyForVar(name); shown[i].key != key {
+				t.Errorf("%s:%d shows %s where config.go declares %s; the example is read beside /settings, which renders in declaration order",
+					configExamplePath, shown[i].line, shown[i].key, key)
+			}
+		}
+	}
+
+	// Each line means what it looks like once uncommented. start_commands is
+	// the one that makes this worth asserting: its value contains an `=`, and
+	// the claim that the parser splits on the first one is made *in* this file.
+	for _, l := range shown {
+		one, err := config.ParseFile(configExamplePath, []byte(l.key+" = "+l.value+"\n"), io.Discard)
+		if err != nil {
+			t.Errorf("%s:%d does not parse once uncommented: %v", configExamplePath, l.line, err)
+			continue
+		}
+		got, ok := one.Lookup(config.VarForKey(l.key))
+		if !ok {
+			t.Errorf("%s:%d sets nothing once uncommented", configExamplePath, l.line)
+			continue
+		}
+		if got != l.value {
+			// Neither half is quoted for the two IsSecret keys. Their example
+			// line is the one an operator replaces with a real value, and a
+			// test that printed whatever was on it would be the one thing in
+			// this repository that publishes it.
+			if config.IsSecret(l.key) {
+				t.Errorf("%s:%d does not set the value it shows for %s", configExamplePath, l.line, l.key)
+				continue
+			}
+			t.Errorf("%s:%d reads as %s = %q and uncommenting it sets %q instead",
+				configExamplePath, l.line, l.key, l.value, got)
+		}
+	}
+}
+
 // longAgo is far enough back that any write at all moves the mtime by years
 // rather than by whatever the clock's granularity happens to be.
 var longAgo = time.Date(2020, time.January, 2, 3, 4, 5, 0, time.UTC)
