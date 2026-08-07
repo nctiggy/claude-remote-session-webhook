@@ -1,0 +1,95 @@
+name: Release
+
+# A release per merge to main, not per tag. Tag-only means a release happens
+# when somebody remembers to tag, and self-update then has nothing to find —
+# which for anyone downstream is the same as not shipping at all.
+on:
+  push:
+    branches: [main]
+  # For a publish that failed part-way. Re-running a commit that already has a
+  # release fails on the duplicate tag, on purpose: the version is the commit
+  # count, so a second release of the same commit would be one version naming
+  # two different sets of bytes.
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the release and upload its assets
+
+# One publish at a time, and never cancelled part-way: a cancelled run can leave
+# a release created with some of its assets missing, which reads as a release.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    # GitHub-hosted, unlike ci.yml. The self-hosted runners are the operator's
+    # own machines, which also run unsandboxed Claude sessions — collapsing
+    # those two trust boundaries is what docs/github-automation.md §2 refuses.
+    # These bytes are the ones other people download and execute, so they are
+    # built somewhere that holds nothing of his. A stall here delays a release
+    # rather than blocking a merge, so #77's reason for leaving GitHub-hosted
+    # runners does not reach this workflow.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The version is the commit count, and actions/checkout defaults to a
+          # depth of 1 — which counts 1. Without this every release is v0.1.
+          fetch-depth: 0
+
+      - name: Version
+        id: version
+        # Counted from the repository, not from github.run_number, which resets
+        # when a workflow is recreated — an older release would then outrank a
+        # newer one and break both "is this newer" and retention.
+        run: |
+          version="v0.$(git rev-list --count HEAD)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version"
+
+      - uses: actions/setup-go@v7
+        with:
+          # Match ci.yml and the dev host. The three move together.
+          go-version: '1.24'
+          cache: true
+
+      - name: Build linux/amd64 and linux/arm64
+        env:
+          # The artifact has to run where there is no compiler and no matching
+          # libc. With cgo on, net and os/user resolve through the host's C
+          # library and the binary links it dynamically — which works here on
+          # the builder and fails on someone else's host, the only place the
+          # answer matters.
+          CGO_ENABLED: "0"
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            # arm64 is cross-compiled on this same runner rather than built on a
+            # second machine: without cgo, GOARCH is the whole difference.
+            #
+            # The -X path is spelled character for character in
+            # cmd/crswd/version_test.go, and a test asserts the two agree. A
+            # mistyped symbol is not an error — the linker sets nothing, the
+            # "dev" default survives, and the release calls itself unreleased.
+            GOOS=linux GOARCH="$arch" go build \
+              -trimpath \
+              -ldflags "-s -w -X github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo.Version=$VERSION" \
+              -o "dist/$arch/crswd" ./cmd/crswd
+            tar -C "dist/$arch" -czf "dist/crswd_${VERSION}_linux_${arch}.tar.gz" crswd
+          done
+          ls -l dist
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --target "$GITHUB_SHA" \
+            --generate-notes \
+            "dist/crswd_${VERSION}_linux_amd64.tar.gz" \
+            "dist/crswd_${VERSION}_linux_arm64.tar.gz"
