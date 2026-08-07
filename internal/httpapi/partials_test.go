@@ -289,22 +289,34 @@ func describedBy(t *testing.T, markup, id string) (string, bool) {
 	return strings.TrimSpace(match[1]), true
 }
 
-// TestTheCardLinksTheNameAndNotOnlyTheIdentifier is issue #16.
+// TestAnchorCoversReadableBlock is issue #16 as issue #60 leaves it, and SC-010.
 //
-// The accessibility floor was already met before this: the identifier was a real
-// <a>, focus-ringed, in tab order, and every card was reachable. What was wrong
-// was the affordance. The card reads as clickable end to end, the heading is the
-// session's name, and the only thing that opened the session was the 32-character
-// hex — so a mouse aimed at the obvious target hit nothing and a keyboard landed
-// on the least human-readable string on the card.
+// The accessibility floor was met before either: the identifier was a real <a>,
+// focus-ringed, in tab order, and every card was reachable. What was wrong was
+// the affordance. First the only link was the 32-character hex, so a mouse aimed
+// at the obvious target hit nothing and a keyboard landed on the least
+// human-readable string on the card (#16). Then the link was the name and
+// nothing else — a few words of target on a card that reads as clickable end to
+// end, which is the same defect with a better label (#60).
 //
-// One link and not two. A card that linked the name and went on linking the hex
-// would put two identical destinations next to each other in every link list,
-// which reads worse than the arrangement being fixed rather than better.
-func TestTheCardLinksTheNameAndNotOnlyTheIdentifier(t *testing.T) {
+// So the anchor is the whole readable half: the name, the pill, the identifier,
+// the start command and the meta list, everything above the rule. One link
+// still, and not two — a card that wrapped the block and went on linking the
+// name inside it would put two identical destinations next to each other in
+// every link list, which reads worse than the arrangement being fixed.
+//
+// The identifier is inside the link now and still rendered as text, which is
+// what the last assertion is about: it is the only handle a session with no name
+// has, and a card that lost it while gaining a bigger target would have traded
+// one #16 for another.
+//
+// **Must fail when** the anchor wraps the name alone (FR-046, SC-010).
+func TestAnchorCoversReadableBlock(t *testing.T) {
 	t.Parallel()
 
-	card := ownedCard()
+	card := actionableCard()
+	card.StartCommand = "claude-remote"
+	card.Mode = session.ModeRemote
 	got := renderComponent(t, "session-card", card)
 
 	anchors := cardAnchor.FindAllStringSubmatch(got, -1)
@@ -316,23 +328,34 @@ func TestTheCardLinksTheNameAndNotOnlyTheIdentifier(t *testing.T) {
 	if target := "/sessions/" + card.ID + "/view"; !strings.Contains(attributes, `href="`+target+`"`) {
 		t.Errorf("the card's link does not open %s:\n%s", target, got)
 	}
-	if !strings.Contains(text, card.Name) {
-		t.Errorf("the card's link reads %q and the session is called %q; the name is what an operator reads and aims at:\n%s", text, card.Name, got)
-	}
-	if strings.Contains(text, card.ID) {
-		t.Errorf("the identifier is the link's own text; it is the handle, not the label:\n%s", got)
+
+	// Everything the card says about what this session *is*, inside the one
+	// anchor. The pill is here for the same reason the rest is: it is text, not a
+	// control, and a state an operator can read but not aim at is this issue's
+	// bigger target with a hole in it.
+	for what, want := range map[string]string{
+		"the name":              card.Name,
+		"the state pill":        string(card.DisplayState),
+		"the identifier":        card.ID,
+		"the start command":     card.StartCommand,
+		"the mode":              string(card.Mode),
+		"the working directory": card.WorkDir,
+		"the age":               card.Age,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the card's link does not cover %s (%q); the anchor is the readable half of the card and not a phrase inside it:\n%s", what, want, got)
+		}
 	}
 
 	heading := cardHeading.FindStringSubmatch(got)
 	if heading == nil {
 		t.Fatalf("the card renders no heading:\n%s", got)
 	}
-	if !strings.Contains(heading[1], "<a") {
-		t.Errorf("the card's heading is not the link, so the name is still inert:\n%s", got)
+	if !strings.Contains(text, heading[0]) {
+		t.Errorf("the card's heading is outside the link, so the name an operator aims at is inert again:\n%s", got)
 	}
 
-	// Still rendered, and now as text. It is the only handle a session with no
-	// name has, so linking the name must not have cost the card the identifier.
+	// Rendered as text, and as the only handle a session with no name has.
 	identifier := cardIdentifier.FindStringSubmatch(got)
 	if identifier == nil || strings.TrimSpace(identifier[1]) != card.ID {
 		t.Errorf("the card does not render the identifier as text; a session with no name would have no handle left:\n%s", got)
@@ -394,38 +417,78 @@ func formPostingTo(forms [][]string, target string) (attributes, contents string
 	return "", "", false
 }
 
-// TestCardHasExactlyOneAnchor is FR-027 on the card that finally has a control
-// to put somewhere.
+// TestCardHasExactlyOneAnchor is FR-046 — FR-027 before this milestone restated
+// it — on the card that finally has a control to put somewhere.
 //
-// The count alone is not the requirement. A destroy button nested inside the
-// card's link would leave the count at one and still be the defect: a link and a
-// submit control occupying one target, where the control ends an unsandboxed
-// shell and the link merely opens a page. So the anchor's own contents are read
-// as well, and the control is confirmed to exist — a card rendering no control
-// at all would satisfy both of the other assertions and prove nothing.
+// One link per card is the recurring regression here, and it has gone wrong in
+// both directions: the identifier was the only link and the name was inert
+// (#16), then the name was linked and the block around it was not (#60). Each
+// fix is one <a> away from adding a second, and two links to one destination is
+// a link list that reads worse than either arrangement it replaced.
 //
-// **Must fail when** a control is added inside the anchor: the second assertion
-// catches it where the first cannot.
+// The count is asserted on a card that really carries its controls, so it is
+// asserted against the markup a browser is handed rather than a skeleton — and
+// against the surface where a second link is likeliest, since every control
+// below the rule is something a template author might reach for an <a> to do.
+//
+// **Must fail when** a second link is added.
 func TestCardHasExactlyOneAnchor(t *testing.T) {
+	t.Parallel()
+
+	got := renderComponent(t, "session-card", actionableCard())
+
+	if anchors := cardAnchor.FindAllStringSubmatch(got, -1); len(anchors) != 1 {
+		t.Fatalf("a card carrying its action row renders %d links; the card carried exactly one before it had controls and FR-046 keeps it there:\n%s", len(anchors), got)
+	}
+
+	// The row is really there, so the count above is about a card with something
+	// in it. Without this a component that dropped its controls entirely would
+	// read as passing.
+	if !strings.Contains(got, `class="card-actions"`) {
+		t.Errorf("the card renders no action row at all, so the count above was taken on a card with nothing to put a second link in:\n%s", got)
+	}
+}
+
+// TestNoControlInsideAnchor is FR-047, and it is the half of the rule above that
+// the count cannot see.
+//
+// A destroy button nested inside the card's link leaves the count at one and is
+// still the defect: a link and a submit control occupying one target, where the
+// control ends an unsandboxed shell and the link merely opens a page. It is also
+// invalid HTML, so what a browser does with it is a parser's guess rather than
+// anything this template decided.
+//
+// It matters more now that the anchor is the whole readable half rather than the
+// heading (#60). The old anchor was a few words and nesting a form in it would
+// have been obviously wrong; this one wraps most of the card, so a control added
+// to the readable half lands inside the link by default, and only the rule below
+// it says where the anchor ends.
+//
+// <details> and <summary> are swept alongside the form controls because a
+// disclosure is a control the way a button is — T027 moves the rename into one,
+// and a <details> inside a link is a target that navigates when you try to open
+// it.
+//
+// **Must fail when** any control is nested inside the anchor.
+func TestNoControlInsideAnchor(t *testing.T) {
 	t.Parallel()
 
 	got := renderComponent(t, "session-card", actionableCard())
 
 	anchors := cardAnchor.FindAllStringSubmatch(got, -1)
 	if len(anchors) != 1 {
-		t.Fatalf("a card carrying its action row renders %d links; the card carried exactly one before it had controls and FR-027 keeps it there:\n%s", len(anchors), got)
+		t.Fatalf("a card carrying its action row renders %d links, so there is no one anchor to read the contents of:\n%s", len(anchors), got)
 	}
-	for _, control := range []string{"<form", "<button", "<input"} {
+	for _, control := range []string{"<form", "<button", "<input", "<details", "<summary", "<select", "<textarea"} {
 		if strings.Contains(strings.ToLower(anchors[0][2]), control) {
 			t.Errorf("the card's link contains %q; a control nested in the anchor is one target holding two things to do, and one of them is irreversible:\n%s", control, got)
 		}
 	}
 
-	// The row is really there, so the two assertions above are about a card with
-	// something in it. Without this a component that dropped the control entirely
-	// would read as passing.
-	if !strings.Contains(got, `class="card-actions"`) {
-		t.Errorf("the card renders no action row at all, so nothing above was asserted about a control:\n%s", got)
+	// The controls exist, outside it. Without this the sweep above is satisfied
+	// by a card that renders no control anywhere.
+	if !strings.Contains(got, "<button") {
+		t.Errorf("the card renders no control at all, so nothing above was asserted about where one sits:\n%s", got)
 	}
 }
 

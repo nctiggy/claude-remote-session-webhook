@@ -166,12 +166,12 @@ body {
 /* The route home (#48). Colour is inherited so the mark keeps its phosphor and
    its glow rather than gaining a second accent.
 
-   No underline, unlike .card-link. A wordmark is not prose with a link in it —
-   it is the product's own name, and an underline made it read as a hyperlink
-   that happened to be sitting where the logo goes. The convention that a
-   wordmark returns you to the front page is old enough to be the affordance by
+   No underline, unlike the card's heading. A wordmark is not prose with a link
+   in it — it is the product's own name, and an underline made it read as a
+   hyperlink that happened to be sitting where the logo goes. The convention that
+   a wordmark returns you to the front page is old enough to be the affordance by
    itself, which is the one place that argument holds: it would not hold for a
-   word inside a sentence, and .card-link keeps its underline for exactly that
+   word inside a sentence, and .card-heading keeps its underline for exactly that
    reason.
 
    The hover cue is the glow rather than a rule appearing, so nothing about the
@@ -342,10 +342,27 @@ body {
   border-color: var(--edge-bright);
 }
 
+/* The card's readable half (#60): the element the anchor fills, and the far side
+   of the rule from everything that acts on this host. One column, allowed to be
+   narrower than its content for the reason .card's is — a 64-character name
+   truncates inside it rather than widening the card. */
+.card-read {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s3);
+}
+
+/* The underline is the link's affordance, and it stays on the name now that the
+   anchor wraps the whole readable half. Under the identifier, the path and the
+   age as well it would be four lines of decoration rather than one affordance —
+   and none of those is the word the card is about. */
 .card-heading {
   margin: 0;
   font-size: inherit;
   font-weight: 700;
+  text-decoration: underline;
+  text-decoration-color: var(--edge-bright);
+  transition: text-decoration-color var(--transition);
 }
 
 /* Caller-supplied text: a 64-character name breaks the layout's line, never
@@ -372,18 +389,22 @@ body {
   color: var(--dim);
 }
 
-/* The link is the heading, so it takes the heading's colour and weight rather
-   than restating them — the underline is the affordance and the card's own
-   hover is the feedback. Block, so the name inside it can be truncated by a box
-   the grid track is allowed to make narrower than its content. */
+/* The link is the whole readable half (#60), so it takes the card's own colour
+   rather than restating one, and it lays its rows out the way the card used to:
+   the same single column and the same gap, so wrapping the block in an anchor
+   moved nothing on screen.
+
+   The underline is on the heading inside it rather than here — see .card-heading
+   — which is why this one is removed rather than inherited. */
 .card-link {
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s3);
   color: inherit;
-  text-decoration-color: var(--edge-bright);
-  transition: text-decoration-color var(--transition);
+  text-decoration: none;
 }
 
-.card-link:hover {
+.card-link:hover .card-heading {
   text-decoration-color: currentcolor;
 }
 
@@ -409,11 +430,23 @@ body {
 
 /* The row of controls that change something on the host. It renders only for a
    card carrying the token those controls submit, so a card that cannot
-   authorise an action does not offer one. */
+   authorise an action does not offer one.
+
+   Its top edge is the rule between the card's two halves (#60): everything above
+   is what the session is, everything below does something. It is a border here
+   rather than an element of its own because that is what it is — the boundary of
+   the acting half — and --edge is the token the design system already spends on
+   exactly this. It is not the only cue, and it is not even the first: the halves
+   are separate elements in the markup, so they stay distinct with no stylesheet
+   at all. The spacing carries it as well — the card's own gap sits above the rule
+   and this padding below it — so a browser that dropped the border, or a
+   high-contrast theme that did, still shows two halves (FR-048). */
 .card-actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--s2);
+  padding-block-start: var(--s3);
+  border-block-start: var(--edge-width) solid var(--edge);
 }
 
 /* Each action is its own form — a plain post, no script (research.md R4) — and

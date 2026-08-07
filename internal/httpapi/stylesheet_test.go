@@ -1000,6 +1000,62 @@ func TestSubsetAnnounced(t *testing.T) {
 	}
 }
 
+// TestBoundaryIsNotColourAlone is FR-048, and it is two claims because the
+// requirement is two clauses.
+//
+// The rule is what makes the anchor safe to grow: everything above it is what
+// the session is, everything below it does something, and the card carries
+// exactly one link because the halves are told apart by a boundary rather than
+// by which words happen to be underlined. A card that lost it would be a block
+// link with a row of buttons floating in it.
+//
+// The first claim is the one a screenshot cannot make. A line says nothing to a
+// screen reader, and a high-contrast theme is free to drop borders — so the
+// halves are separate elements in the markup, and the rule is the visual
+// expression of a split that already exists. That is asserted against a rendered
+// card rather than against the stylesheet, because it is the markup that has to
+// carry it.
+//
+// The second is that what the stylesheet draws is the design system's own edge
+// and is accompanied by spacing from a token. Two cues, neither of which is
+// colour: a browser that never drew the border still shows two halves.
+//
+// **Must fail when** the split is presentational only — one block with a line
+// across it — or when the line becomes the only thing dividing the card.
+func TestBoundaryIsNotColourAlone(t *testing.T) {
+	t.Parallel()
+
+	card := renderComponent(t, "session-card", actionableCard())
+
+	readable := regexp.MustCompile(`(?s)<div[^>]*\bclass="card-read"[^>]*>(.*?)</div>`).FindStringSubmatch(card)
+	if readable == nil {
+		t.Fatalf("the card renders no readable half of its own; a boundary between two halves needs two elements, or it is a border drawn across one:\n%s", card)
+	}
+	if !strings.Contains(readable[1], "<a") {
+		t.Errorf("the card's readable half does not hold the anchor, so the element and the link are not the same half:\n%s", card)
+	}
+	if strings.Contains(readable[1], `class="card-actions"`) {
+		t.Errorf("the card's action row is inside its readable half; the halves are siblings or they are not halves:\n%s", card)
+	}
+
+	rule := blockFor(t, stylesheet(t), ".card-actions")
+
+	edge := regexp.MustCompile(`(?i)border-block-start\s*:\s*([^;}]+)`).FindStringSubmatch(rule)
+	if edge == nil {
+		t.Fatalf("the action row has no top edge, so nothing visible separates what a session is from what can be done to it: %q", rule)
+	}
+	for _, token := range []string{"var(--edge-width)", "var(--edge)"} {
+		if !strings.Contains(edge[1], token) {
+			t.Errorf("the rule between the card's halves is drawn as %q and does not spend %s; a boundary is the design system's own edge, not a length and a colour invented here", strings.TrimSpace(edge[1]), token)
+		}
+	}
+
+	space := regexp.MustCompile(`(?i)padding-block-start\s*:\s*(var\(--s[^;}]*)`).FindStringSubmatch(rule)
+	if space == nil {
+		t.Errorf("the action row sets no spacing above its controls from a spacing token (%q); the line must not be the only thing dividing the card, for the reason a state is never a colour alone", rule)
+	}
+}
+
 // blockFor returns the body of the first block whose prelude contains marker,
 // so a test can assert about one rule rather than about the whole file. Braces
 // are counted, because a media query holds rules of its own.

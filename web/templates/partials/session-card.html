@@ -17,9 +17,31 @@
   like a real name or a real path: a card showing an invented directory is
   telling an operator something false about an unsandboxed shell.
 
-  The heading is the link, and it is the only one on the card. The identifier
-  used to be, which made the least human-readable thing here the only thing a
-  mouse or a Tab key could reach, on a card that reads as clickable end to end.
+  The readable half is the link, and it is the only one on the card. The
+  identifier used to be, which made the least human-readable thing here the only
+  thing a mouse or a Tab key could reach; then the heading was, which was the
+  name and nothing else — a few words of target on a card that reads as clickable
+  end to end (#16, #60).
+
+  So the anchor wraps everything above the rule: the name, the pill, the
+  identifier, the start-command label and the meta list. Still exactly one <a>
+  (FR-046), still no control inside it (FR-047), and the target is now most of
+  the card.
+
+  The two halves are elements and not one block with a line drawn across it
+  (FR-048). What separates them is the readable half being a box of its own and
+  the action row being another, which is a separation a screen reader meets and a
+  high-contrast theme cannot drop; the rule the stylesheet draws on the row is
+  that boundary made visible, and the spacing around it says the same thing a
+  third time. A card whose halves were told apart by a border alone would be
+  telling only the readers who can see it which controls act on this host.
+
+  draggable="false" is the one thing a block link costs. Dragging across text
+  inside an <a> starts a link drag rather than a selection in every browser that
+  ships one, so an operator trying to copy the 32 characters this card renders
+  precisely so they can be copied would get a dragged URL instead. The attribute
+  gives the selection back; nothing else about the link changes, and a click
+  still opens the session.
 
   The identifier is still rendered. It is the only handle a session with no name
   has — without it every adopted card would read identically — and it carries no
@@ -40,7 +62,9 @@
   identifier is a handle, and what authorises anything done with it is the
   identity the daemon verifies on the request that arrives.
 */}}<article class="card" data-session="{{ .ID }}">
-<h2 class="card-heading"><a class="card-link" href="/sessions/{{ .ID }}/view" aria-describedby="card-id-{{ .ID }}">{{ if .Name }}<span class="card-name" title="{{ .Name }}">{{ .Name }}</span>{{ else }}<span class="card-unknown">no name recorded</span>{{ end }}</a></h2>
+<div class="card-read">
+<a class="card-link" href="/sessions/{{ .ID }}/view" aria-describedby="card-id-{{ .ID }}" draggable="false">
+<h2 class="card-heading">{{ if .Name }}<span class="card-name" title="{{ .Name }}">{{ .Name }}</span>{{ else }}<span class="card-unknown">no name recorded</span>{{ end }}</h2>
 {{ template "status-pill" .DisplayState }}
 <p class="card-id" id="card-id-{{ .ID }}" title="{{ .ID }}">{{ .ID }}</p>{{/*
   What this session is running (#38, #39), when it is not the daemon's default.
@@ -56,8 +80,8 @@
   daemon did not start it and does not know what did — and "default" printed
   there would be a guess wearing the clothes of a fact.
 
-  Text, never a colour or a badge shape alone (FR-030), and outside the card's
-  single anchor (FR-027, #16).
+  Text, never a colour or a badge shape alone (FR-030), and inside the card's
+  single anchor because that is what it is: a label, not a control (FR-047, #60).
 */}}{{ with .StartCommand }}<p class="card-mode">running <span class="card-mode-name">{{ . }}</span></p>{{ end }}
 <dl class="card-meta">{{/*
   Where this session is driven from (US4, FR-031): the operator's own dashboard,
@@ -93,6 +117,8 @@
 <dt>age</dt>
 <dd>{{ .Age }}</dd>
 </dl>
+</a>
+</div>
 {{/*
   The action row, and the first control on this card that changes something on
   the host (US1, FR-024a's parameter finally filled rather than restored).
@@ -108,11 +134,24 @@
   what a component test constructs — offers nothing, which is FR-018a's
   discipline about absent values applied to an affordance.
 
-  The form is a sibling of the heading and never a descendant of it: the card
-  carries exactly one <a> and no control is nested inside it (FR-027). That is
-  not only a markup rule — an <a> wrapping a submit control is a link and a
-  button occupying one target, and the destroy is the one action here that ends
-  an unsandboxed shell.
+  The row is a sibling of the anchor and never a descendant of it: the card
+  carries exactly one <a> and no control is nested inside it (FR-027, restated
+  this milestone as FR-046 and FR-047). That is not only a markup rule — an <a>
+  wrapping a submit control is a link and a button occupying one target, and the
+  destroy is the one action here that ends an unsandboxed shell. It matters more
+  now that the anchor is the whole readable half rather than the heading alone: a
+  control left above the rule is not a control beside a link, it is a control
+  inside one.
+
+  The rule along this row's top edge is where the card's two halves are drawn
+  apart (#60). It is a border here rather than an <hr> because a thematic break
+  would be announced as a separator on every card in a fleet of twenty, and what
+  it separates is already said by what is on each side of it — the readable half
+  is its own element, so the halves are distinct with the stylesheet switched off
+  entirely. The spacing carries it as well: the card's own gap sits above the
+  rule and this row's padding below it, so a browser that never drew the line
+  would still show two halves. A boundary is never a line alone, for the reason a
+  state is never a colour alone (FR-048).
 
   A submit button and a plain form post, per research.md R4: keyboard operability
   is then a property of the element rather than work (FR-028), the focus ring the

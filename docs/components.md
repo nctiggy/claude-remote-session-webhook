@@ -108,9 +108,15 @@ action row.
 Rules:
 - The card is the **only** place a session's summary is composed. The list view and
   the detail header both use it, and the fleet stream re-fetches this same card.
-- The card carries **exactly one `<a>`** — the heading. No control is nested inside
-  it: a link wrapping a submit control is two things occupying one target, and one
-  of these controls ends an unsandboxed shell.
+- The card carries **exactly one `<a>`**, and it covers the whole readable
+  half — name, pill, identifier, start command, meta list. Not the heading alone:
+  a card reads as clickable end to end, so a target of a few words is the same
+  defect as the identifier-only link it replaced.
+- **No control is nested inside that link**: a link wrapping a submit control is
+  two things occupying one target, and one of these controls ends an unsandboxed
+  shell. The readable half and the action row are **separate elements**, and the
+  rule between them is that split made visible rather than the split itself — a
+  border says nothing to a screen reader and a high-contrast theme may drop it.
 - Destroy is `.button-danger` + `confirm=yes`. Rename and Compact are plain
   `.button`.
 - Working directory renders as text, truncated with a `title` attribute — it is
