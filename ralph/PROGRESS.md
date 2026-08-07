@@ -1726,3 +1726,112 @@ thing that renders what this iteration writes. It needs the remote-control name 
   already-in-that-mode guard short-circuited (red in both packages), and the `@crswd-start` write
   removed (two red) — each reverted by reverse `Edit`, with `git diff --stat` afterwards showing
   additions only.
+
+---
+
+## Iteration 21 — 2026-08-07 07:20
+
+**Did:** T021. The card shows the mode. `sessionView` gains a `Mode session.Mode` field,
+`cardOf` gains a fourth parameter — the configured remote-control name — and projects
+`live.Mode(remoteCommand)`; both call sites in `dashboard.go` pass `s.cfg.RemoteControlCommand`.
+The card renders it as the **first row of the existing `<dl class="card-meta">`** (`<dt>mode</dt>`
+/ `<dd>{{ .Mode }}</dd>`), above working directory and age, which is the order
+`contracts/card-layout.md` reads the card in. Test `TestCardShowsMode` in `partials_test.go`.
+
+**Learned:**
+
+- **No CSS was needed, and that was the point.** `.card-meta` is a
+  `grid-template-columns: max-content minmax(0, 1fr)` list that already styles a label and a
+  value, so a mode row is markup only — no new class, no new token, nothing in `crswd.css`. A
+  `.card-mode`-style component for one word would have been the second vocabulary
+  `docs/components.md` forbids. **If a later task wants the mode emphasised, add it to the row,
+  do not build a pill for it.**
+- **`.card-mode` is *not* the mode.** That class (and `.card-mode-name`, and
+  `TestTheCardSaysWhatItIsRunning`) is #39's **start-command** label — the `running rc` paragraph
+  above the meta list. The names collide and the facts do not: the paragraph says *what* is
+  running and is absent for a default or adopted session; the new row says *where it is driven
+  from* and is never absent. Do not merge them without reading both.
+- **The mode row renders unconditionally, so a hand-built `sessionView{}` now renders an empty
+  `<dd>`.** That is only reachable from tests: `cardOf` is the sole production constructor
+  (grepped), and `Session.Mode` returns one of two constants for every record. `TestCardShowsMode`
+  therefore drives `cardOf` rather than a literal view, which is the plan's "done when something
+  calls it" rule applied to a projection — a template rendering a field nothing fills is exactly
+  the failure this repo has shipped three times.
+- **The `>word<` idiom that `TestTheStatusPillAlwaysCarriesItsLabelAsText` uses is too strict for a
+  cell that may later be wrapped.** The new test captures `<dt>mode</dt>\s*<dd>(.*?)</dd>`, strips
+  tags from the capture, and compares the remaining text. A `<span class="mode-remote">remote</span>`
+  still passes; a coloured dot leaves the empty string and fails, which is the direction FR-059
+  cares about.
+- **Both card tests still fit in `partials_test.go` without a server**: `renderComponent` executes
+  the daemon's own template set, and `cardOf` is package-private in the same package, so the
+  projection and the markup are asserted together in one test with no HTTP.
+
+**Left:** T022–T035. Next is **T022** (replace the working-directory field with `<input list>` +
+`<datalist>`), the first of US5's three. Note its explicit instruction *not* to carry the
+hand-rolled combobox from `claude/issue-issue-59-20260807-0055` — only T023 takes anything from
+that branch, and only the discovery walk.
+
+**Findings:**
+
+- **The card now states two adjacent facts about the same session, and nothing reconciles them.**
+  A remote session renders `running rc` (the #39 paragraph) and `MODE remote` (this row) one line
+  apart. Both are wanted — a name is not a mode — but **T026's card split is where they should be
+  laid out together**, and whoever does it should decide the order and the spacing deliberately
+  rather than inheriting this one.
+- **`contracts/card-layout.md` names the test `TestModeShownTextually`; `tasks.md` T021 and
+  `contracts/session-mode.md` both name it `TestCardShowsMode`.** Two of three won, so the test is
+  `TestCardShowsMode`. One-word docs fix, and it belongs in the same docs commit as the stale
+  contracts below.
+- **Still nothing posts to `/dashboard/sessions/{id}/mode`** (iterations 19-20, unchanged). This
+  iteration renders the mode; no task in the plan adds the control that changes it, so the route
+  stays reachable, gated, functional and unreferenced by any page. Carried forward for the third
+  iteration — **this is the standing finding most likely to end the milestone with a feature the
+  operator cannot use.**
+- **NEEDS CLARIFICATION (not blocking, iteration 20): a start command that ignores SIGINT would
+  receive the new command line as a prompt.** Unchanged and still the operator's call — closing it
+  needs either a Claude-specific exit sequence (FR-015 forbids hardcoding `claude`) or a read-only
+  `#{pane_current_command}`/`#{pane_pid}` verb in `internal/tmuxctl`. A task, not a line.
+- **The toggle redirects to the fleet where the contract says the session page** (iterations
+  19-20). `session.html` renders no banner, so redirecting there would drop what the operator is
+  told. Closing it means teaching `sessionPage` an `Outcome` field, with whichever task adds the
+  control.
+- **`session.mode` puts a browser-door action in the API's `session.*` namespace** (iterations
+  19-20). One-line change in three places plus two spec files if the operator wants
+  `dashboard.mode`.
+- **`contracts/session-mode.md` and `data-model.md` still spell `Mode()` with no parameter and
+  still describe `remote_start_commands`, a plural key this daemon does not have** (iteration 18).
+  Same docs commit as the transition wording from iteration 20 and the test name above.
+- **Two `TestParseSessions` fixtures still pass for the wrong reason** (iterations 17-20): the
+  stray `\n` in `"creation time is not a number"` and `"creation time missing entirely"` in
+  `internal/tmuxctl/exec_test.go`. **Fix-lane commit:** drop the `\n`, pad to six fields.
+- **`specs/001-crswd-daemon-core/contracts/tmuxctl.md` is stale by three fields** (iterations
+  17-20): line 163's `list-sessions` format string and lines 81-82's two `set-option` calls against
+  five.
+- **`contracts/actions.md` (milestone 3's) is still stale in nine places** — iterations 14-20.
+  Every route it documents as 200/202/400/409/429/500 is a `303` today, and it describes four
+  action routes where the daemon registers five. Eighth iteration logging it.
+- **`TestBrowserCreateStartsTheSessionAndAnswersWithItsCard` and
+  `TestRenameRelabelsTheRecordAndAnswersWithItsCard` are still misnamed** (iterations 14-20).
+- **`internal/httpapi` still carries the data race in its own fixture** (iterations 13-20):
+  `newAuditedServerWith` sets `s.report` unsynchronised (`middleware_test.go:215`). Ninth iteration
+  logging it.
+- **Still open from iterations 5-20:** the three red `-tags quickstart` tests
+  (`CRSW_DESTROY_ON_SHUTDOWN` has no loader — the oldest unfixed finding here; not run this
+  iteration either, `ss -ltn` shows the live daemon still holding `127.0.0.1:8765`, though
+  `go vet -tags quickstart ./...` is green); `contracts/settings-page.md`'s
+  `TestNoMutatingVerbRegistered` row still saying 405, and its worked example showing values no
+  loader would produce; three `ReadFile` refusals missing from `contracts/config-file.md`'s table;
+  the `version < 1` row; the contract's "yields exactly eight keys" against seven; a dangling
+  symlink reading as absent; `f.values` having no enumerator; `os.Open` on a FIFO blocking startup
+  with no message; `--config <path>` still unbuilt; `README.md` and `deploy/README.md` silent on
+  the config file (T034/T035).
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean, `go build`, `go vet`, `go test -count=1 ./...` all green; `go vet` green under `-tags
+  tmux`, `-tags quickstart` and `-tags dev`; `go.sum` still absent. This task touches no tmux and
+  no `cmd/crswd`, so neither tagged suite was run — the vets are the cheap check `AGENTS.md`
+  prescribes when the environment is not free. Three mutations were run rather than reasoned about
+  — the mode row replaced by `<span class="mode-{{ .Mode }}">` (red: the cell strips to the empty
+  string), the row deleted outright (both subtests red on the missing label), and
+  `live.Mode(remoteCommand)` weakened to `live.Mode("")` (red: the projection reports `local` for
+  an `rc` session) — each reverted by reverse `Edit`, with `git diff --stat` afterwards showing
+  129 insertions against 5 deletions.
