@@ -121,7 +121,7 @@ under `NEEDS CLARIFICATION` and stop.
 ### Foundation (blocks every story)
 
 - [x] T001 🔒 `IsSecret` in `internal/config/secret.go` — the single classifier
-- [ ] T002 `Source` type and its four strings in `internal/config/source.go`
+- [x] T002 `Source` type and its four strings in `internal/config/source.go`
 
 ### US1 — Configure the daemon in a file (P1, MVP)
 

@@ -103,3 +103,67 @@ shaped like a key classifier — one `string` in, one `bool` out, `secret` in it
   decide whether it is a **rename** of `access_allowed_emails` (belonging in `renamedKeys`, FR-006)
   or a new key with no variable behind it. Not a blocker for T001, which was told the two literals
   outright. **Flagging it for T003, not guessing it here.**
+
+---
+
+## Iteration 2 — 2026-08-07 02:42
+
+**Did:** T002. `internal/config/source.go` holds `type Source uint8`, the four constants in the
+`data-model.md` iota order, and `String()` returning `default` / `file` / `environment` / `flag`.
+`source_test.go` carries `TestSourceStringsAreTheSettingsPageVocabulary`: the four words as
+literals, `SourceDefault == 0`, an unnamed layer must not borrow a named one's word, and a walk
+of the package's non-test files for any `Source` constant the list does not account for.
+
+**Learned:**
+
+- **The five mutations were run, not reasoned about**, per iteration 1's rule. Caught: a fifth
+  constant appended to the iota run; a fifth declared as `const SourceOverride = Source(4)` in a
+  block of its own; `"environment"` abbreviated to `"env"`; the `default:` arm returning a real
+  word; and the iota reordered so `SourceDefault` is 3. Each was reverted and `source.go` read
+  back byte-for-byte before the gate.
+- **`packageFiles`, `declares` and `stringLiterals` from `secret_test.go` are reusable** — same
+  `package config_test`, so a new test file just calls them. `sourceConstants` is the only new
+  helper. Whatever T007/T008 add to `source_test.go`, the AST scaffolding already exists.
+- **The `default:` arm of `String()` is load-bearing and is not dead code.** It returns
+  `Source(4)` rather than a word so a layer with no vocabulary cannot blend into the settings
+  page's source column as one of the four. The mutation that made it return `"flag"` is the one
+  a reader would "tidy up" into existence.
+- **A const walk has to handle two spellings.** An iota continuation carries no `Type` and no
+  `Values` and inherits from the spec that opened the run; a constant in its own block carries a
+  value and no type. `sourceConstants` tracks the run *and* falls back to a `Source`-prefixed
+  name, which is what catches the second spelling.
+- **`config.Source(len(sourceVocabulary))` trips gosec G115** (int → uint8). `config.SourceFlag + 1`
+  says the same thing with no conversion — untyped constant arithmetic on a typed value. Worth
+  knowing before T008 writes `map[string]Source` code with indices in it.
+
+- **Iteration 1's `NEEDS CLARIFICATION` was answered by the operator *during* this iteration.**
+  Commit `b0f16c2` landed at 02:38, between this iteration's first read of `secret.go` and its
+  gate, and renamed two keys across the contracts, `data-model.md`, `tasks.md` and `secret.go`:
+  `allowed_identities` → **`access_allowed_emails`** and `default_lifetime` → **`session_lifetime`**,
+  both by applying the stated rule (the variable minus `CRSW_`, lower-cased) instead of describing
+  the setting. **T003 must derive keys by that rule and must not enter either old spelling in
+  `renamedKeys`** — a rename of a spelling that never shipped invents version skew. Anything above
+  this line in the notebook that says `allowed_identities` is describing a spelling that no longer
+  exists. Nothing in T002 depended on it; the gate was re-run on the merged tree.
+
+**Left:** T003–T035. Next is T003 (carry the parser forward from
+`claude/issue-issue-65-20260807-0112`), which is the first task that touches an abandoned branch.
+
+**Findings:**
+
+- **The session-start warning about the linter is overstated, and that matters.** It says a pre-v2
+  binary "runs zero linters and exits 0". The v1.62.2 binary on PATH **flagged a real gosec G115**
+  in the first draft of `source_test.go`, so it is reading the v2 `enable:` list (gosec is not in
+  v1's default set) and running at least part of it. It is still not the pinned v2.12.2 and is
+  still not the gate — but "a green here proves nothing" is not the same claim as "it checks
+  nothing", and treating a v1 *finding* as noise would have shipped that conversion to CI. Not
+  fixing the hook here (AR-008); flagging the wording.
+- **`go install golangci-lint/v2@v2.12.2` was not retried.** Iteration 1 recorded it as denied by
+  the sandbox in a non-interactive session; nothing has changed, so lint stays UNVERIFIED locally
+  and CI remains the real gate.
+- **T008 will key provenance by environment-variable name (`CRSW_LISTEN`) while T011/T012 render
+  the file spelling (`listen`).** `IsSecret` takes the file spelling; the provenance map takes the
+  variable name. Something has to convert between them, and `data-model.md` states the rule — the
+  variable minus `CRSW_`, lower-cased — but no code owns it yet. T003 derives keys by that same
+  rule for the parser, so **T003 is the natural home for one exported conversion**, and T012
+  reading the map should not re-derive it a second time.
