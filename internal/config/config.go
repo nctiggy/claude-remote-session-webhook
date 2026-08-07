@@ -46,6 +46,24 @@ const (
 	EnvListen       = "CRSW_LISTEN"
 	EnvMaxSessions  = "CRSW_MAX_SESSIONS"
 
+	// EnvDiscoverRoots offers the immediate subdirectories of each approved root
+	// as working-directory suggestions on the create form (#59, FR-041).
+	//
+	// Off by default, and that default is the setting's whole point: listing a
+	// filesystem is a disclosure, however mild, and an operator opts into it
+	// rather than finding their directory names on a page they did not ask to
+	// have read the host. Anything strconv.ParseBool refuses — `yes`, `on`, `2`
+	// — is a startup failure rather than a silent off, for the reason every
+	// loader here refuses rather than defaults: an operator who wrote `yes` said
+	// on, and a daemon that read it as off would run without the thing they asked
+	// for and say nothing.
+	//
+	// It widens nothing. EnvAllowedRoots is still the control — a suggestion is
+	// checked against the roots as it is offered and every path, picked or typed,
+	// meets session.ResolveWorkDir on the create it is submitted with. See
+	// Config.DiscoveredWorkDirs for what the walk may and may not name.
+	EnvDiscoverRoots = "CRSW_DISCOVER_ROOTS"
+
 	// EnvDestroyOnShutdown restores the pre-#63 behaviour: tear every session
 	// down when the daemon stops. Default is off — a restart preserves them and
 	// startup adoption reclaims them.
@@ -293,6 +311,12 @@ type Config struct {
 	Listen      string
 	MaxSessions int
 
+	// DiscoverRoots turns the working-directory suggestions on the create form
+	// into a walk one level below each approved root. Off unless the operator
+	// asked for it; DiscoveredWorkDirs in discover.go is the walk it gates, and
+	// is the only thing that reads this.
+	DiscoverRoots bool
+
 	// DestroyOnShutdown tears every session down on a clean stop. Off by
 	// default: a graceful restart is overwhelmingly the common case, and
 	// destroying a fleet to redeploy a binary is a cost nobody asked for.
@@ -500,6 +524,10 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 	if err != nil {
 		return nil, err
 	}
+	discoverRoots, err := loadBool(getenv, EnvDiscoverRoots)
+	if err != nil {
+		return nil, err
+	}
 	listen, err := loadListen(getenv)
 	if err != nil {
 		return nil, err
@@ -572,6 +600,7 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 	return &Config{
 		SharedSecret:        secret,
 		Roots:               roots,
+		DiscoverRoots:       discoverRoots,
 		Listen:              listen,
 		MaxSessions:         maxSessions,
 		CreateRatePerMin:    createRate,
@@ -1223,6 +1252,26 @@ func loadAllowedEmails(getenv func(string) string, bypassed bool) ([]string, err
 		emails = append(emails, address)
 	}
 	return emails, nil
+}
+
+// loadBool reads an on/off setting, off when unset.
+//
+// A value that is neither is a startup failure rather than a false, which is the
+// same choice loadInt makes about a number that will not parse: an operator who
+// wrote `yes` meant on, and a daemon that read that as off would run with the
+// thing they asked for silently absent. The value is quoted back because it is
+// the operator's own word for true and nothing about it is secret — the keys
+// where that is not so are the two IsSecret names, and neither is a boolean.
+func loadBool(getenv func(string) string, name string) (bool, error) {
+	v := strings.TrimSpace(getenv(name))
+	if v == "" {
+		return false, nil
+	}
+	on, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("%s %q is not true or false; refusing to start", name, v)
+	}
+	return on, nil
 }
 
 func loadInt(getenv func(string) string, name string, def int) (int, error) {

@@ -22,6 +22,7 @@ import (
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 )
@@ -554,6 +555,57 @@ func TestTheRenderedFleetOffersTheCreateForm(t *testing.T) {
 			}
 			if strings.Contains(page, `action="`+target+`"`) && strings.Count(page, `action="`+target+`"`) != 1 {
 				t.Errorf("the page posts to %q %d times; one page offers one create:\n%s", target, strings.Count(page, `action="`+target+`"`), page)
+			}
+		})
+	}
+}
+
+// TestTheRenderedFleetOffersWhatDiscoveryFound is T023 at the call site, which
+// is the half a walk with three passing unit tests can still be missing: the
+// picker's markup shipped one task before its only source, so a daemon that
+// discovers directories no page asks it for renders an empty field forever. This
+// repository has shipped code nothing called three times.
+//
+// The pair of cases is what makes it an assertion about the *configuration*
+// rather than about the markup. Suggestions wired to anything constant — the
+// roots, a literal, the walk with its gate dropped — passes the first case and
+// fails the second.
+func TestTheRenderedFleetOffersWhatDiscoveryFound(t *testing.T) {
+	t.Parallel()
+
+	for name, discover := range map[string]bool{
+		"an operator who asked for discovery":  true,
+		"an operator who did not, the default": false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFleet(t)
+			// The fixture's root is a real resolved directory with one
+			// subdirectory in it, which is what a walk is a question about — the
+			// server's own root is deliberately a path that resolves to nothing.
+			// Both are set on this server's own Config before anything has
+			// rendered, and only the fleet's projection reads either.
+			f.cfg.Roots = []config.ApprovedRoot{{Path: f.fixture.root}}
+			f.cfg.DiscoverRoots = discover
+
+			create := sectionOf(t, f.view(t).Body.String(), "create")
+			suggestion := `<option value="` + f.fixture.repo + `">`
+
+			if discover {
+				if !strings.Contains(create, suggestion) {
+					t.Errorf("discovery is on and the create form offers no %s, so the datalist T022 rendered has nothing in it:\n%s", f.fixture.repo, create)
+				}
+				if !strings.Contains(create, `list="workdir-suggestions"`) {
+					t.Errorf("the create form lists suggestions the field does not point at:\n%s", create)
+				}
+				return
+			}
+			if strings.Contains(create, suggestion) {
+				t.Errorf("discovery is off and the create form names %s anyway; the host is read only when an operator asks:\n%s", f.fixture.repo, create)
+			}
+			if strings.Contains(create, "<datalist") {
+				t.Errorf("discovery is off and the create form renders a datalist; with nothing to suggest the field is the one that shipped before the picker:\n%s", create)
 			}
 		})
 	}

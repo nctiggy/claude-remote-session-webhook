@@ -236,9 +236,11 @@ type createFormView struct {
 	// reaching no decision at all.
 	//
 	// Empty renders no datalist and no `list` attribute — the field as it
-	// shipped before the picker existed (FR-043). It is empty in every render
-	// today: the sources the contract names are a configured list and the
-	// discovery walk, and T023 is what supplies them.
+	// shipped before the picker existed (FR-043), and what a daemon whose
+	// operator did not ask for discovery renders. It is filled by
+	// config.Config.DiscoveredWorkDirs (T023), which is off unless
+	// CRSW_DISCOVER_ROOTS says otherwise. The contract names a second source, an
+	// explicit list, and no task in this milestone builds one.
 	Suggestions []string
 }
 

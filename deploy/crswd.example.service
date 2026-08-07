@@ -61,6 +61,12 @@ EnvironmentFile=%h/.config/crswd/env
 # value shown is the daemon's own default, so a line deleted here changes
 # nothing. `.env.example` says what each one refuses to start on.
 Environment=CRSW_ALLOWED_ROOTS=%h/code
+
+# Whether the create form suggests the immediate subdirectories of the roots
+# above. Default: off — listing a filesystem is a disclosure, however mild, and
+# one to opt into. It widens nothing: the roots are still the control, and a
+# suggested path is checked against them on create exactly as a typed one is.
+Environment=CRSW_DISCOVER_ROOTS=
 Environment=CRSW_LISTEN=127.0.0.1:8765
 Environment=CRSW_MAX_SESSIONS=5
 

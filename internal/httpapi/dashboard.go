@@ -272,10 +272,18 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string, outcome 
 		// beside them is one an operator can fill in (T014). See
 		// createFormView.Roots for why naming them discloses nothing the uniform
 		// working-directory refusal is protecting.
+		//
+		// The suggestions are the discovery walk (T023), and they are read here
+		// on every render rather than once at startup because what is on the host
+		// is a question with one honest reading and it is the one taken now. On a
+		// daemon whose operator did not ask for discovery — the shipped default —
+		// the walk touches no filesystem and the field renders exactly as it did
+		// before the picker existed.
 		Create: createFormView{
 			PageToken:     token,
 			StartCommands: s.cfg.StartCommands.Names(),
 			Roots:         s.rootPaths(),
+			Suggestions:   s.cfg.DiscoveredWorkDirs(),
 		},
 		Outcome: outcome,
 	}

@@ -146,6 +146,7 @@ func Vars() []string {
 	return []string{
 		EnvSharedSecret,
 		EnvAllowedRoots,
+		EnvDiscoverRoots,
 		EnvListen,
 		EnvMaxSessions,
 		EnvDestroyOnShutdown,

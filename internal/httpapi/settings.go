@@ -200,6 +200,8 @@ func settingValue(cfg *config.Config, name string) (value string, known bool) {
 			paths = append(paths, root.Path)
 		}
 		return strings.Join(paths, rootsSeparator), true
+	case config.EnvDiscoverRoots:
+		return strconv.FormatBool(cfg.DiscoverRoots), true
 	case config.EnvListen:
 		return cfg.Listen, true
 	case config.EnvMaxSessions:
