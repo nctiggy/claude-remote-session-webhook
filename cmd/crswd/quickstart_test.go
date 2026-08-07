@@ -1040,6 +1040,73 @@ func TestQuickstartStory1StartupFailures(t *testing.T) {
 	}
 }
 
+// TestQuickstartMissingDependencies is #71, asserted against the artifact
+// rather than the package that decides it: a unit test can prove the check
+// answers correctly and still leave a daemon that never calls it.
+//
+// Both halves run the real binary with a PATH that is missing exactly one
+// thing. Without tmux it must refuse — a daemon that starts and cannot create a
+// session looks healthy to systemd right up to the first request. Without the
+// start command it must warn and serve, because the dashboard and the reaper
+// are still working.
+func TestQuickstartMissingDependencies(t *testing.T) {
+	h := newHost(t)
+
+	t.Run("no tmux", func(t *testing.T) {
+		// h.shimDir holds the stand-in for the start command and nothing else,
+		// so this PATH is a host with the start command and no tmux — the one
+		// dependency the daemon may not start without.
+		addr := freePort(t)
+		out, code := h.run(map[string]string{"PATH": h.shimDir, "CRSW_LISTEN": addr})
+
+		if code == 0 {
+			t.Errorf("exit=0 on a host with no tmux:\n%s", out)
+		}
+		for _, want := range []string{"tmux", "install it with"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("the refusal does not mention %q:\n%s", want, out)
+			}
+		}
+		if ln, err := net.Listen("tcp", addr); err != nil {
+			t.Errorf("%s is still held after the refusal: %v", addr, err)
+		} else {
+			_ = ln.Close()
+		}
+		t.Logf("no tmux exit=%d %s", code, firstLine(out))
+	})
+
+	t.Run("no start command", func(t *testing.T) {
+		// The mirror image: tmux and nothing else. The default start command's
+		// binary is absent, which is a warning and not a refusal.
+		d := h.start(map[string]string{"PATH": tmuxOnlyPath(t)})
+		defer func() { _ = d.stop(syscall.SIGTERM) }()
+
+		trail := d.readTrail()
+		for _, want := range []string{"start command", "not on PATH", "Starting anyway"} {
+			if !strings.Contains(trail, want) {
+				t.Errorf("the trail of a daemon with no start command does not mention %q:\n%s", want, trail)
+			}
+		}
+	})
+}
+
+// tmuxOnlyPath is a PATH holding tmux and nothing else, so that whatever else
+// this host has installed — a real start command among it — cannot decide the
+// warning case above.
+func tmuxOnlyPath(t *testing.T) string {
+	t.Helper()
+
+	tmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatalf("tmux is not installed: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.Symlink(tmux, filepath.Join(dir, "tmux")); err != nil {
+		t.Fatalf("link tmux into a PATH of its own: %v", err)
+	}
+	return dir
+}
+
 // run starts the daemon and waits for it to exit on its own, which is what the
 // startup-failure cases do.
 func (h *host) run(over map[string]string) (string, int) {
