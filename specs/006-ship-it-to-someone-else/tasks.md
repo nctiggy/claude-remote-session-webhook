@@ -64,7 +64,7 @@ environment where they cannot fail.
 
 - [x] T007 [US2] Add retention to `.github/workflows/release.yml`: keep the last **20**, never delete the two most recent, never delete one a pointer still resolves to. Test `TestRetentionKeepsTwentyAndNeverTheNewestTwo`. **Must fail when** it prunes by age alone and deletes what `latest` points at — a `latest` that 404s is worse than an unbounded list.
 
-- [ ] T008 [US2] Add `Restart=always` to `deploy/crswd.example.service`, with a comment naming self-update as the reason. Test `TestUnitRestartsAlways` in `internal/release/assets_test.go`. **Must fail when** it is omitted — self-update exits expecting systemd to restart it, and without this, step 7 is just the daemon stopping.
+- [x] T008 [US2] Add `Restart=always` to `deploy/crswd.example.service`, with a comment naming self-update as the reason. Test `TestUnitRestartsAlways` in `internal/release/assets_test.go`. **Must fail when** it is omitted — self-update exits expecting systemd to restart it, and without this, step 7 is just the daemon stopping.
 
 ---
 

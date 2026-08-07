@@ -469,3 +469,74 @@ BLOCKED-ON-HUMAN; T014 and after wait on it.
 5. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
 6. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
 7. **No ad-hoc defects observed** in the code touched.
+
+---
+
+## Iteration 8 — 2026-08-07 23:35
+
+**Did:** T008, the last of US2. `deploy/crswd.example.service` now says `Restart=always` where it
+said `Restart=on-failure`, under a comment naming self-update's step 7 as the reason.
+`TestUnitRestartsAlways` in `internal/release/assets_test.go` reads the directive back out of
+`[Service]` and requires that comment. Gate green: build, vet, `go test ./...`,
+**`go test -tags quickstart ./cmd/crswd` (31.5s, real)**, `golangci-lint run` (2.12.2, 0 issues),
+`gofmt -l` empty.
+
+**Learned:**
+
+- **`on-failure` is the wrong value *silently*, which is why the test says so by name.** Step 7
+  of `contracts/self-update.md` is `exit 0` — deliberate, after the rename. `on-failure` treats
+  a clean exit as success and does nothing, so the update completes, every check passes, and the
+  host is left with the new binary and no daemon running it. There is no error anywhere.
+- **`RestartSec=5s` was already there and is untouched**, so a restart loop is still bounded.
+  `Restart=always` does **not** make the unit unstoppable — an explicit `systemctl --user stop`
+  still stops it; the directive governs the daemon ending on its own. That objection is the one
+  a reviewer raises, so it is answered in the file's comment rather than left to be rediscovered.
+- **The test reads the unit through `deployed["crswd.service"]`, not a second path constant.**
+  That map already pins `deploy/crswd.example.service` for `TestReleaseCarriesEveryAsset`, so a
+  rename in `deploy/` now fails in one place instead of two. **T009–T012 should do the same** —
+  `install.sh` needs the same file and the same name-it-once rule applies.
+- **Comment attribution is by contiguous block, and a blank line ends it.** The parser keeps the
+  comment lines immediately above a directive and clears them on any blank line or section
+  header, so prose elsewhere in the file cannot stand in for a missing reason. That is a real
+  mutation, not a hypothetical — inserting one blank line reds the test.
+- **`RestartSec=` is excluded by the `=`, not by a special case.** `strings.HasPrefix(trimmed,
+  "Restart=")` is the whole discrimination; `HasPrefix(…, "Restart")` would have matched both.
+- **Section tracking matters.** `Restart=` is only a restart policy inside `[Service]`; moved to
+  `[Unit]` systemd ignores it with a warning nobody reads. The test scopes its search, so that
+  move reports as "sets no `Restart=` in `[Service]`" rather than passing.
+- **All six mutations were run and each fails with the right message**: `on-failure`; the
+  directive deleted; the comment deleted; a second `Restart=on-failure` added lower in
+  `[Service]` (systemd takes the last); the directive moved into `[Unit]`; and one blank line
+  inserted between the comment and the directive.
+- **A `//nolint:gosec // G304` on the `os.ReadFile` turned out to be unnecessary and was
+  removed** — gosec does not fire on a path joined from package-level constants here, unlike the
+  `os.MkdirAll`/`os.WriteFile` modes iteration 6 hit. **Check before adding one**; an unused
+  directive is noise the linter does not flag.
+- **The quickstart suite ran for real, not just `go vet -tags quickstart`.** `tmux`, `jq` and a
+  free `127.0.0.1:8765` were all available on this host, so `quickstart_test.go:1687`'s read of
+  the unit file was genuinely exercised against the edit. Checking that with
+  `systemctl --user is-active crswd` was refused by the sandbox; running the suite was not.
+  **Try the suite before assuming the environment is unavailable.**
+
+**Left:** T009–T021. **US2 is complete and the milestone is shippable here** — a daemon that can
+say what it is (T001–T003) and a release with every asset, checksummed and pruned (T004–T008).
+T009 (`install.sh`: detect, download, verify before anything is executable) is next and
+unblocked; it starts US3, all four tasks of which are about another machine. `stepScript` and the
+`gh`-as-a-bash-function stub in `assets_test.go` are both there for T012's install job. T013
+remains BLOCKED-ON-HUMAN; T014 and after wait on it.
+
+**Findings:**
+
+1. **No prose anywhere restates the restart policy**, so this edit stranded no documentation —
+   checked, not assumed (`grep -rn "on-failure\|Restart=" --include=*.md .` finds only the plan
+   and this notebook). `deploy/README.md` mentions restarts twice but only about `KillMode` and
+   session survival, both still true. **Nothing here for T021's README pass.**
+2. **Iteration 7's finding about `gh release list --limit 1000` still stands** — invisible until
+   the release cadence changes.
+3. **Iteration 6's finding about `data-model.md`/`contracts/release.md` and `SHA256SUMS.sig`
+   still stands** — T015's verifier must expect the sums file to cover five names, not seven.
+4. **Iteration 5's finding about `crswd-api` arriving non-executable still stands** (T021's README).
+5. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
+6. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
+7. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
+8. **No ad-hoc defects observed** in the code touched.
