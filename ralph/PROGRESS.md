@@ -2047,3 +2047,103 @@ a suggested path is finally something a page can produce.
   target — offered on the page), and `Suggestions` wired to `s.rootPaths()` (red: the "asked for
   discovery" case). Each reverted by reverse `Edit`; `git diff --stat` afterwards showed 138
   insertions against 3 deletions across eight files, plus the two new ones.
+
+---
+
+## Iteration 24 — 2026-08-07 07:47
+
+**Did:** T024 🔒. `TestChosenPathValidatedIdentically` in `internal/httpapi/actions_test.go`:
+the fleet is rendered, the create form is asserted to really carry `<option value="…">` for the
+path, that path is submitted, and the refusal is compared against a *typed* path outside the
+roots byte for byte — status, body, `Location` — with the same `reason` on the record, the store
+empty and the tmux fake never asked to start anything. Test-only: the behaviour is
+`Manager.Create`'s and already correct; what was missing was anything that would notice it
+changing.
+
+**Learned:**
+
+- **A datalist entry cannot be outside the allowlist unless the two sources disagree, so the
+  test has to make them.** `childOf` is *stricter* than `ResolveWorkDir` (iteration 23), so with
+  one set of roots everything discovery offers is acceptable and the test would assert nothing.
+  Row 1 therefore points `c.cfg.Roots` (what the walk reads) at a directory the manager's roots
+  do not cover — which is not a contrived state but the shape the **explicit** source has:
+  `contracts/directory-picker.md` names `workdir_suggestions` as an operator's own list, and
+  nothing constrains its entries to sit under an approved root. Whoever builds that key inherits
+  this test already written for it.
+- **`s.cfg.Roots` and the manager's allowlist are separate snapshots today.** `newWithLayer1`
+  hands `cfg.Roots` to `session.NewManager` once at construction; the walk reads the live
+  `*config.Config` on every render. Nothing mutates `cfg.Roots` in the shipping build, so they
+  agree — but the create route is correct *whether or not* they do, and that is the property
+  worth pinning rather than their agreement.
+- **The trust defect is not currently expressible at the handler.** `createFromBrowser` has no
+  work-dir check of its own to weaken; the only seam is a field on `CreateRequest`. The mutation
+  run was exactly that — `Suggested bool`, set from
+  `slices.Contains(s.cfg.DiscoveredWorkDirs(), …)`, appending the submitted path to the roots
+  inside `Create` — and it turned **exactly one test in the whole suite red**, this one.
+  `TestWorkDirRefusalsAreOneMessage` and `TestAnyPathStillTypeable` stayed green, which is the
+  isolation claim: no existing test renders suggestions, so none of them can see the difference.
+- **A test that renders a page before acting cannot use `only(t)`.** The fleet's own
+  `dashboard.view` record is written first, so the create's record is `records(t)[1]` and the
+  length assertion (2) is FR-041 across both requests rather than one.
+- **`creator` already has everything the render needs.** `c.page(t)` opens the fleet as the same
+  operator and `c.cfg` is the server's own Config, so no new fixture was added — `sectionOf(t,
+  page, "create")` from `dashboard_test.go` scopes the markup assertion.
+
+**Left:** T025–T035. Next is **T025** (`TestSubsetAnnounced` in
+`internal/httpapi/stylesheet_test.go`) — the FR-045 announcement in `web/static/crswd.js`, which
+must be an addition to a control that already works, never the thing that makes it work.
+
+**Findings:**
+
+- **Row 2 of the new test is a TOCTOU claim, not a trust claim, and says so.** A suggestion the
+  host moved out from under a rendered page is refused identically — but that row *survives* the
+  suggestion-trust mutation, because by then the walk no longer offers the path either. It is
+  kept because the snapshot property is real and nothing else asserts it; it is documented as not
+  carrying the "must fail when".
+- **The walk's cap is still silent** (iteration 23): `maxDiscoveredWorkDirs = 200`, nothing tells
+  an operator the list was cut short. If T025's announcement grows a place to say "showing a
+  subset", truncation belongs in the same sentence.
+- **Still no task owns `workdir_suggestions`** (22-24): `contracts/directory-picker.md` names two
+  suggestion sources and only discovery has one, so the shipped default renders a plain field and
+  SC-008/SC-009 cannot be demonstrated without configuration. Row 1 of T024's test is written
+  against the shape that key will have.
+- **`contracts/directory-picker.md` line 12 still spells the input `name="workdir"`** where the
+  daemon's field is `work_dir` (22-24). Fix the contract, not the template.
+- **Nothing posts to `/dashboard/sessions/{id}/mode`** (19-24). Sixth iteration carrying it;
+  still the finding most likely to end the milestone with a feature the operator cannot use.
+- **NEEDS CLARIFICATION (not blocking, iteration 20): a start command that ignores SIGINT would
+  receive the new command line as a prompt.** Still the operator's call.
+- **The mode toggle redirects to the fleet where the contract says the session page** (19-24).
+  **`session.mode` puts a browser-door action in the API's `session.*` namespace** (19-24).
+  **`contracts/session-mode.md` and `data-model.md` still spell `Mode()` with no parameter and
+  still describe `remote_start_commands`** (18-24). **`contracts/card-layout.md` names T021's
+  test `TestModeShownTextually` where two other files say `TestCardShowsMode`** (21-24).
+- **Two `TestParseSessions` fixtures still pass for the wrong reason** (17-24): the stray `\n` in
+  `"creation time is not a number"` and `"creation time missing entirely"` in
+  `internal/tmuxctl/exec_test.go`. **Fix-lane commit:** drop the `\n`, pad to six fields.
+- **`specs/001-crswd-daemon-core/contracts/tmuxctl.md` is stale by three fields** (17-24): line
+  163's `list-sessions` format string and lines 81-82's two `set-option` calls against five.
+- **`contracts/actions.md` (milestone 3's) is still stale in nine places** — iterations 14-24.
+- **`TestBrowserCreateStartsTheSessionAndAnswersWithItsCard` and
+  `TestRenameRelabelsTheRecordAndAnswersWithItsCard` are still misnamed** (14-24).
+- **`internal/httpapi` still carries the data race in its own fixture** (13-24):
+  `newAuditedServerWith` sets `s.report` unsynchronised (`middleware_test.go:215`). Twelfth
+  iteration logging it.
+- **`docs/components.md`'s Form section still says there is "deliberately no hint on the working
+  directory"** (22-24) — false since T014 and false twice since T022.
+- **Still open from iterations 5-24:** the three red `-tags quickstart` tests
+  (`CRSW_DESTROY_ON_SHUTDOWN` has no loader — the oldest unfixed finding here; not run this
+  iteration, the live daemon still holds `127.0.0.1:8765`, though `go vet -tags quickstart ./...`
+  is green); `contracts/settings-page.md`'s `TestNoMutatingVerbRegistered` row still saying 405,
+  and its worked example showing values no loader would produce; three `ReadFile` refusals missing
+  from `contracts/config-file.md`'s table; the `version < 1` row; the contract's "yields exactly
+  eight keys" against nine; a dangling symlink reading as absent; `f.values` having no enumerator;
+  `os.Open` on a FIFO blocking startup with no message; `--config <path>` still unbuilt;
+  `README.md` and `deploy/README.md` silent on the config file (T034/T035).
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean, `go build`, `go vet`, `go test -count=1 ./...` all green; `go vet` green under `-tags
+  tmux`, `-tags quickstart` and `-tags dev`; `go.sum` still absent. This task touches no tmux and
+  no `cmd/crswd`, so neither tagged suite was run — the vets are the cheap check `AGENTS.md`
+  prescribes. One mutation was run rather than reasoned about (above), reverted by reverse `Edit`
+  across two production files; `git diff --stat` afterwards showed the commit touching
+  `actions_test.go` alone, 195 insertions against 0 deletions.
