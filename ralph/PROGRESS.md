@@ -1499,3 +1499,113 @@ mode, and the plan's own ordering is what defers it by one task.
   ./internal/config ./internal/httpapi` green; `go.sum` still absent. All three mutations were run,
   not reasoned about, and reverted by reverse `Edit` (`git diff --stat` afterwards shows additions
   only).
+
+## Iteration 19 — 2026-08-07 06:45
+
+**Did:** T019 🔒. `POST /dashboard/sessions/{id}/mode` in `internal/httpapi/actions.go`, registered
+through `handleAction` under the new `audit.ActionSessionMode` (`session.mode`), with `offersMode`
+matching the `mode` field against `session.ModeLocal`/`ModeRemote`, `confirm=yes` (FR-029), the
+ownership lookup, and three new outcome codes — `bad-mode`, `mode-unconfirmed`, `mode-failed`.
+Six tests in `actions_test.go` (the four the task names, plus the cross-owner uniformity the
+security checklist requires and one pinning the deferred answer), the two new codes in
+`outcome_test.go`'s `spelledOutcomes`, and the route added to `settings_test.go`'s
+`registeredPatterns` **with a row driving it**, without which SC-005 would sweep nine routes and
+say nothing about the tenth.
+
+**Learned:**
+
+- **The transition is T020's, so this route deliberately answers a refusal on its success path.**
+  The plan orders the door before the engine, and `internal/session/manager.go` is T020's named
+  file, so there is nothing behind this handler that can restart a pane. It answers
+  `outcome=mode-failed` with `errModeUnavailable` on the record rather than a 303 saying the mode
+  changed — a success nobody performed would put a card describing a local session under the word
+  remote, which is the one claim this route must never get wrong. **T020's iteration replaces
+  exactly two lines** (the `Deny` + `redirectOutcome` at the foot of `modeFromBrowser`), adds
+  `outcomeModeChanged`, and must rewrite `TestToggleSaysSoWhenItCannotAct` — which is why that test
+  exists and says so in its own comment. Nothing links to the route yet (no template posts to it),
+  so the live daemon gains a gated route that refuses and changes nothing.
+- **The value check is an allowlist and must never become a conversion.** `session.Mode(value)`
+  compiles, is shorter, and hands `claude --dangerously-skip-permissions` straight through as a
+  `Mode` carrying that spelling. `offersMode` compares against the session package's two literals
+  instead, so what a form posts and what a card derives cannot come to mean different things.
+- **The value is checked *before* the confirming step**, which is the reverse of the destroy's
+  order and deliberate: both run before the store is read, and the journal should carry the fact
+  that something posted a command line at this daemon whether or not the same request also forgot
+  to confirm.
+- **Which configured command each mode names was left to T020.** The mapping (remote →
+  `Config.RemoteControlCommand`, local → `DefaultStartCommandName`) belongs where the transition
+  uses it; a copy on this door would be a second place free to disagree about what "remote" runs.
+  The consequence to know: **`mode=remote` on a daemon configuring no remote-control command is
+  admitted by this door today** and stopped by the unavailable arm behind it. T020 owes that
+  refusal — and the one for a daemon whose remote command *is* `default`, where no local command
+  exists to switch to.
+- **`registeredPatterns` is the one thing a new browser route cannot drift from silently.** Its
+  own comment says a tenth entry has to be added by hand; adding the pattern without a request
+  driving it fails loudly (`... is registered on this daemon and nothing above drove it`), which is
+  the good failure. `mutatingRoutes()` was left at four on purpose: every row needs a `succeeds`
+  outcome and there is no success to name until T020.
+- **`script-src` contains `rc`.** The "the answer never carries the submitted value" assertion
+  searches the `Location` and the body only, not the headers — the CSP would false-positive on the
+  `rc` start-command-name case. The check is gated on values of four characters or more for the
+  same reason.
+- **Both `session.mode` and the two `dashboard.*`-shaped alternatives were considered; the
+  contract's literal won.** See the first finding.
+
+**Left:** T020–T035. Next is **T020** (the transition itself, `-tags tmux`), which is the first
+thing that makes this route do anything.
+
+**Findings:**
+
+- **`session.mode` puts a browser-door action in the API's `session.*` namespace.** `tasks.md`
+  T019 and `contracts/session-mode.md` both fix the literal, so that is what shipped, but
+  `docs/security.md` says a browser action is audited under its own name and lists four
+  `dashboard.*` ones — an operator grepping `session\.` now counts one browser action among the API
+  operations. `settings.view` is the existing precedent for a browser route named for its subject,
+  so this is consistent with the newer half of the trail rather than with the older half. **If the
+  operator wants `dashboard.mode` instead, it is a one-line change in three places**
+  (`internal/audit/audit.go`, `server.go`, `wantModeAction` in the test) plus the two spec files.
+- **The contract says the toggle redirects to the *session page*; this route redirects to the
+  fleet.** `contracts/session-mode.md`'s success row says "303 to the session page (per the PRG
+  contract)", and the PRG contract as built (`redirectOutcome`, T014) goes to `/` — which is the
+  only page that renders a banner at all (`dashboard.html` executes `{{ template "outcome" }}`,
+  `session.html` does not). Redirecting to the session page today would silently drop what the
+  operator is told. Closing this properly means teaching `sessionPage` an `Outcome` field, which is
+  outside T019's named files; **T020 or T021 should decide**, and one of them owns the toggle's
+  markup, which does not exist yet either — no task in the plan adds the control that posts to this
+  route.
+- **Two `TestParseSessions` fixtures still pass for the wrong reason** (iterations 17-18,
+  untouched): `"creation time is not a number"` and `"creation time missing entirely"` in
+  `internal/tmuxctl/exec_test.go` carry a stray `\n`, so each is two rows and the first fails on
+  separator count before `ParseInt` is reached. **Fix-lane commit:** drop the `\n`, pad to six
+  fields.
+- **`specs/001-crswd-daemon-core/contracts/tmuxctl.md` is stale by three fields** (iterations
+  17-18): line 163's `list-sessions` format string and lines 81-82's two `set-option` calls against
+  five. **Wants a docs commit** alongside the `contracts/actions.md` one.
+- **`contracts/actions.md` (milestone 3's) is still stale in nine places** — iterations 14-18,
+  unchanged. Every route it documents as 200/202/400/409/429/500 is a `303` today. It now also
+  describes four action routes where the daemon registers five. Sixth iteration logging it.
+- **`TestBrowserCreateStartsTheSessionAndAnswersWithItsCard` and
+  `TestRenameRelabelsTheRecordAndAnswersWithItsCard` are still misnamed** (iterations 14-18).
+  Neither answers with a card. Fix-lane or nothing.
+- **`internal/httpapi` still carries the data race in its own fixture** (iterations 13-18):
+  `newAuditedServerWith` sets `s.report` unsynchronised (`middleware_test.go:215`). Seventh
+  iteration logging it; still wants the lock `syncSink` already has.
+- **Still open from iterations 5-18:** the three red `-tags quickstart` tests
+  (`CRSW_DESTROY_ON_SHUTDOWN` has no loader — the oldest unfixed finding here; not run this
+  iteration, the port is held by the live daemon, and this task touches no `cmd/crswd` file, though
+  `go vet -tags quickstart ./...` is green); `contracts/settings-page.md`'s
+  `TestNoMutatingVerbRegistered` row still saying 405, and its worked example showing values no
+  loader would produce; three `ReadFile` refusals missing from `contracts/config-file.md`'s table;
+  the `version < 1` row; the contract's "yields exactly eight keys" against seven; a dangling
+  symlink reading as absent; `f.values` having no enumerator; `os.Open` on a FIFO blocking startup
+  with no message; `--config <path>` still unbuilt; `README.md` and `deploy/README.md` silent on the
+  config file (T034/T035).
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean, `go build`, `go vet`, `go test -count=1 ./...` green; `go test -count=1 -tags tmux ./...`
+  green; `go vet` green under `-tags tmux`, `-tags quickstart` and `-tags dev`; `go test -tags dev
+  ./internal/access ./internal/config ./internal/httpapi` green; `go.sum` still absent. All three
+  mutations were run, not reasoned about — the value check widened to accept anything non-empty
+  (`TestArbitraryModeValueRefused` red on eight cases), the confirming step dropped
+  (`TestToggleRequiresConfirm` red on all six), and the route re-registered with `handleBrowser`
+  (`TestToggleCrossSiteBothHalves` red on all four, each answering 303 where 403 was wanted) — and
+  each reverted by reverse `Edit`, with `git diff --stat` afterwards showing additions only.
