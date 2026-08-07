@@ -220,7 +220,7 @@ body {
    Prose a human wrote, so it is set in sans on the same terms as the notes
    beside a pane — and in --text rather than --dim, because it is the answer to
    something that has happened rather than an aside, which is the reading
-   .card-outcome already makes.
+   .outcome below makes as well.
 
    No state token. Those name what a session is (docs/design-system.md), and
    this sentence is about the page; borrowing amber for it would be the parallel
@@ -244,6 +244,54 @@ body {
    is not what "nothing has changed yet" should look like. */
 .fleet-note:empty {
   display: none;
+}
+
+/* What the last action did (T014). It sits where the severed-fleet note sits and
+   reads as that note's sibling, because both are the page speaking about itself
+   rather than about a session — so it borrows the same surface, border and prose
+   settings rather than inventing a second banner.
+
+   Nothing here distinguishes a success from a refusal. That is the rule the
+   fragments this replaced already kept: an outcome is told apart by what it
+   says, never by a shade (FR-030, FR-031), and a stylesheet that coloured
+   "destroyed" apart from "could not be destroyed" would be encoding the answer
+   in a colour an operator may not be able to see. */
+.outcome {
+  margin: 0 0 var(--s5);
+  padding: var(--s3) var(--s4);
+  background: var(--surface);
+  border: var(--edge-width) solid var(--edge-bright);
+  border-radius: var(--r);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: var(--fs-prose);
+}
+
+/* The one outcome that is not a line of prose: a destroy whose teardown the host
+   would not confirm, which means a live unsandboxed shell may have survived
+   (FR-023, Principle VI).
+
+   What makes it prominent is structure and not colour — it is a titled block
+   where the others are a sentence, and it keeps the same palette as its
+   siblings. Colour is reinforcement and never the signal (the design system's
+   fifth non-negotiable), and an operator who cannot distinguish two greens must
+   still be unable to scan past this one. The heavier rule down the inline start
+   is the emphasis border doing what it already does on .fleet-note, spent
+   harder. */
+.outcome-alarm {
+  display: block;
+  border-inline-start-width: var(--s1);
+}
+
+.outcome-heading {
+  margin: 0 0 var(--s2);
+  color: var(--text);
+  font-size: var(--fs-brand);
+  font-weight: 600;
+}
+
+.outcome-body {
+  margin: 0;
 }
 
 /* The summary comes before any detail — a dashboard is scanned, not read. */
@@ -430,24 +478,6 @@ body {
   color: var(--state-dead);
 }
 
-/* What an action answers with, replacing the card it acted on. Prose a human
-   wrote, so it is set in sans on the same terms as an absent value or a note
-   beside a pane — and in --text rather than --dim, because it is the answer to
-   something the operator just did rather than an aside.
-
-   The copy is the route's (actions.go): destroyed, not confirmed, could not be
-   verified, could not be destroyed. Nothing here distinguishes them, and that is
-   the point of there being one class — a failure is told apart from a success by
-   what it says, which is the whole of FR-030 and FR-031. A stylesheet that
-   coloured the four apart would be encoding an outcome in a shade, and a card
-   that simply came back unchanged would be the silent revert FR-031 forbids. */
-.card-outcome {
-  margin: 0;
-  color: var(--text);
-  font-family: var(--sans);
-  font-size: var(--fs-prose);
-}
-
 /* The create form's container. It is a panel rather than a card — a card is one
    session (docs/components.md) and a create names none — so it borrows the
    card's surface and border without its grid or its hover, which belong to
@@ -514,6 +544,40 @@ body {
   border-radius: var(--r);
   color: var(--text);
   font: var(--fs-body)/var(--lh-body) var(--mono);
+}
+
+/* What a field says about what it will accept — today, the roots a working
+   directory has to be under (T014). Dim sans, because it is an aside beside the
+   control rather than an answer to something the operator did: that is the
+   reading .create-note already makes, and the distinction .outcome does not.
+
+   The paths themselves are mono. They are what the machine says (the design
+   system's typography rule), they are the same strings a card renders as a
+   working directory, and an operator comparing one against what they typed is
+   reading character by character. */
+.field-hint {
+  display: grid;
+  gap: var(--s1);
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: var(--fs-prose);
+}
+
+.field-hint-text {
+  margin: 0;
+}
+
+/* No marker: the roots are a set the operator scans, not an ordered argument,
+   and a bullet column beside a monospace path reads as two columns. */
+.field-hint-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.field-hint-root {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
 }
 
 /* The page's one primary control (docs/components.md: exactly one per view).

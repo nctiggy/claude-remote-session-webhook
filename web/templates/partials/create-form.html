@@ -42,10 +42,24 @@
   refusal in words, and nothing a browser decides is permitted to be the reason a
   session does or does not start. They are pinned to the daemon's own rules by a
   test all the same, because a hint that drifted would refuse a name this daemon
-  would have accepted, in a browser, with nothing on the page to say why. There
-  is deliberately no hint on the working directory: the roots are the daemon's
-  configuration, and a pattern spelling them would put a map of this host in the
-  markup.
+  would have accepted, in a browser, with nothing on the page to say why.
+
+  The working directory has no `pattern`, and now has a hint that names the
+  configured roots (T014). Those are two different things, and only the first was
+  ever the security argument: a regular expression spelling the allowlist would
+  be a client-side copy of the containment rule, free to drift from
+  ResolveWorkDir, and the refusal it produced would be a native browser bubble
+  this daemon never wrote. Listing the roots is not that. They are this
+  authenticated operator's own configuration, they are already on every card in
+  the fleet as a working directory, and the uniform refusal they sit beside is
+  protecting something else entirely — that one answers "outside the roots",
+  "not a directory" and "not there at all" identically so a caller cannot ask
+  this form whether a path exists. Naming the permitted set is not confirming
+  what is inside it. Without them the field is one an operator has to guess at,
+  and the refusal deliberately will not tell them.
+
+  Every configured root renders, not the first. A hint missing an operator's
+  second root would read as a refusal they have no way to explain.
 
   The submit disables itself on submission (crswd.js). It is the one genuine
   idempotence exposure of the four actions — a second destroy finds no record, a
@@ -57,7 +71,9 @@
   The note beside it is FR-031's in-progress state, hidden until the submission
   reveals it. Its copy lives here rather than in the script for the reason the
   pane's ended note does: what the interface says to a person belongs to a
-  template.
+  template. It says the page reloads rather than that a card replaces it, which
+  is what T014 made true: the route answers 303 and the browser comes back to the
+  fleet.
   `if` rather than `with`, so `.` stays the view inside the form: the chooser
   below needs StartCommands, and `with` would have rebound the dot to the token
   alone. The token is passed explicitly to its own template instead, which says
@@ -70,7 +86,18 @@
 </div>
 <div class="field">
 <label class="field-label" for="create-work-dir">Working directory</label>
-<input class="field-input" id="create-work-dir" type="text" name="work_dir" required autocomplete="off" spellcheck="false">
+<input class="field-input" id="create-work-dir" type="text" name="work_dir" required autocomplete="off" spellcheck="false" aria-describedby="create-roots">{{/*
+  The whole hint is one element carrying one id, so aria-describedby on the input
+  reaches the sentence and the list together. A daemon configured with no root at
+  all cannot start — config.Load refuses it — so the `with` here is the zero
+  value's business rather than a state an operator can reach: a component
+  rendered without roots offers no hint instead of an empty list, which is
+  FR-018a's discipline about absent values.
+*/}}{{ with .Roots }}<div class="field-hint" id="create-roots">
+<p class="field-hint-text">A session may only run in a directory under {{ if eq (len .) 1 }}this root{{ else }}one of these roots{{ end }}:</p>
+<ul class="field-hint-list">{{ range . }}<li class="field-hint-root">{{ . }}</li>
+{{ end }}</ul>
+</div>{{ end }}
 </div>{{/*
   The start-command chooser (#38, #39), rendered only when the operator has
   configured more than one. A select with a single option is a control that
@@ -91,5 +118,5 @@
 </div>{{ end }}
 <button class="button button-primary" type="submit">Start session</button>
 </form>
-<p class="create-note" id="create-busy" hidden>Starting a session. This page is replaced by the new card when the host answers.</p>
+<p class="create-note" id="create-busy" hidden>Starting a session. This page reloads with the fleet when the host answers.</p>
 </section>{{ end }}

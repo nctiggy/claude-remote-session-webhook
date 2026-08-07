@@ -115,6 +115,15 @@ type fleetView struct {
 	// grid — and it is the fleet's control rather than a card's, because a
 	// create names no session.
 	Create createFormView
+
+	// Outcome is what the action that redirected here did (T014), or nil.
+	//
+	// It is nil for an ordinary visit and nil for a query naming something this
+	// package does not spell — bannerFor is the only thing that produces one,
+	// and it produces one only for a code in the closed vocabulary. So there is
+	// no arrangement in which text from a URL reaches the page: not escaped
+	// text, not sanitised text, none (FR-022).
+	Outcome *outcomeView
 }
 
 // sessionPageView is the whole of what the single-session page renders against:
@@ -172,7 +181,15 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	// No SetSessionID: this page is about the fleet and not about one session,
 	// and data-model.md carries session_id on the single-session view alone.
-	s.renderPage(w, r, http.StatusOK, "dashboard", s.fleet(operator, token))
+	//
+	// The outcome is read from the query string and not from the form the action
+	// submitted, because by the time this handler runs there is no form: the
+	// action answered 303 and the browser came back with a GET (T014). Reading it
+	// out of Query rather than Form is deliberate all the same — this route
+	// accepts no body, and a page that would take an outcome from one would take
+	// it from a POST nothing minted a token for.
+	s.renderPage(w, r, http.StatusOK, "dashboard",
+		s.fleet(operator, token, bannerFor(r.URL.Query().Get(queryOutcome))))
 }
 
 // pageTokenFor mints the one page token a render's action forms carry, bound to
@@ -227,7 +244,7 @@ func (s *Server) pageTokenFor(w http.ResponseWriter, r *http.Request, operator *
 // above: it belongs to the render rather than to a card, so every card on the page
 // carries the same value and the page cannot hand two of its own forms two
 // different tokens.
-func (s *Server) fleet(operator *access.VerifiedOperator, token string) fleetView {
+func (s *Server) fleet(operator *access.VerifiedOperator, token string, outcome *outcomeView) fleetView {
 	now := s.clock.Now()
 
 	owned := s.sessions.List(operator.Owner)
@@ -250,8 +267,36 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string) fleetVie
 		// form is one more thing on this page that acts for this identity at this
 		// instant, so it is handed the page's token rather than a second mint —
 		// the reason cardOf takes one as a parameter instead of issuing one.
-		Create: createFormView{PageToken: token, StartCommands: s.cfg.StartCommands.Names()},
+		//
+		// The roots are the configured allowlist, rendered as a hint so the field
+		// beside them is one an operator can fill in (T014). See
+		// createFormView.Roots for why naming them discloses nothing the uniform
+		// working-directory refusal is protecting.
+		Create: createFormView{
+			PageToken:     token,
+			StartCommands: s.cfg.StartCommands.Names(),
+			Roots:         s.rootPaths(),
+		},
+		Outcome: outcome,
 	}
+}
+
+// rootPaths is the configured allowlist as the create form's hint renders it.
+//
+// It projects config.ApprovedRoot down to the path and drops IsDefault, which is
+// a startup concern — the loud warning and the startup record — and not
+// something a form has anything to say about. A hint that distinguished the
+// built-in default from a configured root would be describing this daemon's
+// configuration history rather than answering "where may a session run".
+//
+// The order is config.Load's own, kept rather than sorted, so the hint lists the
+// roots in the order the operator wrote them in CRSW_ALLOWED_ROOTS.
+func (s *Server) rootPaths() []string {
+	paths := make([]string, 0, len(s.cfg.Roots))
+	for _, root := range s.cfg.Roots {
+		paths = append(paths, root.Path)
+	}
+	return paths
 }
 
 // cardOf projects one record into the parameters the card renders from.

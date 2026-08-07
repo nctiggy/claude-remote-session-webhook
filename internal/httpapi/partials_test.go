@@ -1594,6 +1594,73 @@ func TestTheCreateFormOffersTheConfiguredStartCommands(t *testing.T) {
 	})
 }
 
+// TestTheCreateFormNamesTheConfiguredRoots is the other half of T014: the
+// working-directory field says which directories this daemon will start a
+// session under, so an operator can fill it in.
+//
+// **Must fail when** the hint drops a root, or renders when there is none. The
+// first is the failure with consequences — an operator whose second root is
+// missing reads the uniform refusal as one they have no way to explain, because
+// that refusal deliberately will not tell them which rule applied.
+//
+// This is not the disclosure the uniform refusal prevents. That one answers
+// "outside the roots", "not a directory" and "not there at all" identically so a
+// caller cannot ask this form whether a path exists; naming the permitted set is
+// not confirming what is inside it, and every card on the fleet already renders
+// a working directory under one of them.
+func TestTheCreateFormNamesTheConfiguredRoots(t *testing.T) {
+	t.Parallel()
+
+	t.Run("every configured root renders", func(t *testing.T) {
+		t.Parallel()
+
+		roots := []string{"/home/operator/code", "/srv/work"}
+		out := renderComponent(t, "create-form", createFormView{PageToken: "t", Roots: roots})
+		for _, root := range roots {
+			if !strings.Contains(out, `<li class="field-hint-root">`+root+`</li>`) {
+				t.Errorf("the hint omits the root %q:\n%s", root, out)
+			}
+		}
+		// The field has to point at the hint, or a screen reader reaches the
+		// control without the sentence that says what it will accept.
+		if !strings.Contains(out, `aria-describedby="create-roots"`) || !strings.Contains(out, `id="create-roots"`) {
+			t.Errorf("the working-directory field is not described by the hint:\n%s", out)
+		}
+	})
+
+	// FR-040's half of the picker arrives in T022; what this pins now is that the
+	// hint did not become a control. A field that only accepted what it listed
+	// would be an allowlist rendered into the markup, free to drift from
+	// ResolveWorkDir, and the refusal it produced would be a browser bubble this
+	// daemon never wrote.
+	t.Run("the field stays typeable", func(t *testing.T) {
+		t.Parallel()
+
+		out := renderComponent(t, "create-form", createFormView{PageToken: "t", Roots: []string{"/srv/work"}})
+		if !strings.Contains(out, `<input class="field-input" id="create-work-dir" type="text" name="work_dir"`) {
+			t.Errorf("the working directory is no longer a text field:\n%s", out)
+		}
+		if strings.Contains(out, `name="work_dir"`) && strings.Contains(out, "<select") &&
+			!strings.Contains(out, `name="start_command"`) {
+			t.Errorf("the working directory became a chooser:\n%s", out)
+		}
+	})
+
+	// A daemon configured with no root cannot start — config.Load refuses it — so
+	// this is the zero value's business rather than a state an operator reaches.
+	// It renders no hint rather than an empty list, which is FR-018a's discipline
+	// about absent values: state the absence, never render something that reads
+	// like a value.
+	t.Run("no roots renders no hint", func(t *testing.T) {
+		t.Parallel()
+
+		out := renderComponent(t, "create-form", createFormView{PageToken: "t"})
+		if strings.Contains(out, "field-hint") {
+			t.Errorf("a form rendered without roots offers an empty hint:\n%s", out)
+		}
+	})
+}
+
 // TestTheCardSaysWhatItIsRunning covers the other half: two sessions are
 // otherwise identical on a fleet, and an operator needs to tell the
 // remote-control one from the plain one.

@@ -335,29 +335,22 @@ var templateAction = regexp.MustCompile(`(?s)\{\{.*?\}\}`)
 
 const composedClass = "\x00"
 
-// actionFragments is the markup an action route writes for itself.
+// actionFragments is the markup a route writes for itself rather than rendering.
 //
 // Every other byte a browser is handed comes out of web/templates, and the
-// sweeps below walk that tree — but an action's answer replaces the card it
-// acted on, and by the time a destroy has an answer there is no record left to
-// render a card from, so those four sentences are composed in Go (actions.go).
-// They are markup all the same. Without them here, a class only a fragment
-// carries is styled by a rule "no template renders" in one direction and served
-// unstyled in the other, and both failures look like the opposite mistake.
-// A create's own four join them for the same reason, from the other direction: a
-// refused create has no record to render a card from, so what the operator is
-// told is composed in Go as well. Every action route this milestone adds owes
-// this map its answers, or the class they carry is invisible to both sweeps.
+// sweeps below walk that tree. What is left here is what no template can answer:
+// the uniform not-found, which is written when there is no record to render a
+// card from and must stay byte-identical whichever of its three causes applied.
+//
+// It held nine entries until T014. The other eight were the four routes' own
+// answers, composed in Go because each one replaced the card it acted on — and
+// they are now outcome codes the fleet renders through partials/outcome.html,
+// which this walk already covers. Anything a route writes without a template
+// still owes this map its answer, or the class it carries is styled by a rule
+// "no template renders" in one direction and served unstyled in the other, and
+// both failures look like the opposite mistake.
 var actionFragments = map[string][]byte{
-	"the destroyed marker":            bodyActionDestroyed,
-	"the unconfirmed refusal":         bodyActionUnconfirmed,
-	"the unverified teardown":         bodyActionTeardownUnverified,
-	"the failed destroy":              bodyActionDestroyFailed,
-	"the action not-found":            bodyActionNotFound,
-	"the refused session name":        bodyActionCreateBadName,
-	"the refused working directory":   bodyActionCreateBadWorkDir,
-	"the create refused by the bound": bodyActionCreateLimited,
-	"the failed create":               bodyActionCreateFailed,
+	"the action not-found": bodyActionNotFound,
 }
 
 // renderedClasses is every class name the embedded templates put in the markup,
@@ -395,18 +388,22 @@ func renderedClasses(t *testing.T) map[string]string {
 	}
 
 	// Counted before the fragments are folded in, so a template tree that stopped
-	// rendering classes altogether still fails here rather than being covered by
-	// the four sentences a destroy answers with.
-	found := 0
+	// rendering classes altogether still fails above rather than being covered by
+	// whatever a route composed in Go.
+	//
+	// There is no vacuity guard on the fold itself since T014, and its absence is
+	// deliberate: the eight bodies that used to carry `card-outcome` are outcome
+	// codes now, and the one body left is the uniform not-found, which carries no
+	// class at all. A guard asserting that some Go-composed body is styled would be
+	// asserting something this door is no longer meant to do. The fold stays so
+	// that the next route to write markup without a template is swept the moment it
+	// is added to the map above.
 	for what, fragment := range actionFragments {
 		for _, attr := range classAttr.FindAllStringSubmatch(string(fragment), -1) {
 			for _, name := range strings.Fields(attr[1]) {
-				out[name], found = what, found+1
+				out[name] = what
 			}
 		}
-	}
-	if found == 0 {
-		t.Fatal("no action fragment carries a class, so the outcome an operator is shown is styled by nothing")
 	}
 	return out
 }
@@ -714,6 +711,57 @@ func TestTheScriptSpendsASubmitOnce(t *testing.T) {
 	// answers by clicking again.
 	if !strings.Contains(source, "dataset.submitOnce") {
 		t.Error("crswd.js never reads the hook naming the in-progress note, so a spent control says nothing about why (FR-031)")
+	}
+}
+
+// TestTheToastReadsTheBannerTheDaemonRenders is FR-024 held as code: the in-page
+// behaviour survives T014's redirect rather than being replaced by it.
+//
+// The four actions answer 303 now, so a script that posts one gets the fleet the
+// browser would have landed on. The sentence it shows has to come out of that
+// page's banner — the same closed vocabulary, rendered by the same handler — or
+// the scripted half and the scriptless half start telling an operator two
+// different things about one action.
+//
+// **Must fail when** the script goes on looking for the fragments the routes used
+// to write. That is the drift with no symptom in Go and an obvious one in a
+// browser: every click answers "the host answered without a message", or worse,
+// reads the whole fleet aloud into a corner of the page (#78). The class names
+// are the joint, so they are asserted from both sides — here against the script,
+// and against the template tree by the sweep at the top of this file.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed,
+// which is the footing every other script assertion in this file stands on.
+func TestTheToastReadsTheBannerTheDaemonRenders(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	for selector, why := range map[string]string{
+		".outcome":         "an ordinary outcome is the line the fleet renders, and nothing else on that page is the answer to what the operator just did",
+		".outcome-alarm":   "a teardown that could not be verified is a block rather than a line, and reading it as one would flatten the one outcome FR-023 keeps prominent",
+		".outcome-heading": "the alarming outcome's heading is half of what it says; a toast carrying only the body drops the sentence an operator scans for",
+		".outcome-body":    "the alarming outcome's body is the other half",
+	} {
+		if !regexp.MustCompile(`querySelector\(\s*['"]` + regexp.QuoteMeta(selector) + `['"]\s*\)`).MatchString(source) {
+			t.Errorf("crswd.js never queries %q: %s", selector, why)
+		}
+	}
+
+	// And not the fragments T014 deleted. A file still reaching for them is a
+	// file whose toast has been silently broken since the routes started
+	// redirecting.
+	for _, gone := range []string{".card-outcome", "'Session started.'", `"Session started."`} {
+		if strings.Contains(source, gone) {
+			t.Errorf("crswd.js still reaches for %s, which no route writes since the actions began answering 303", gone)
+		}
+	}
+
+	// textContent and never innerHTML, which is the rule that outlives the class
+	// names: the banner is daemon-authored today, and the toast has to stay safe
+	// after someone makes an outcome carry a name or a path.
+	if strings.Contains(source, ".innerHTML") {
+		t.Error("crswd.js assigns innerHTML; the answer is parsed into an inert document and read as text, which is what keeps a name a caller typed out of this page")
 	}
 }
 

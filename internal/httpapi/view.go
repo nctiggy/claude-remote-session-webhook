@@ -181,6 +181,50 @@ type createFormView struct {
 	// identity that is already allowlisted — and the command lines they map to
 	// are deliberately not here.
 	StartCommands []string
+
+	// Roots is every directory this daemon will start a session under —
+	// CRSW_ALLOWED_ROOTS as config.Load resolved it, absolute and with the
+	// symlinks already followed.
+	//
+	// It renders as a hint under the working-directory field (T014), which
+	// reverses milestone 3's deliberate omission. That omission was right about
+	// the wrong disclosure: the uniform working-directory refusal stays one
+	// message for every cause precisely so a caller cannot ask whether a path
+	// exists, and nothing here changes that. Which roots are *permitted* is a
+	// different fact — it is this authenticated operator's own configuration, it
+	// is already on every card in the fleet as a working directory, and without
+	// it the field is one an operator has to guess at. Naming the permitted set
+	// is not confirming what is inside it.
+	//
+	// Every configured root renders, not the first: an operator whose second
+	// root is missing from the hint would read it as a refusal they have no way
+	// to explain.
+	Roots []string
+}
+
+// outcomeView is the banner the fleet renders for what an action just did (T014).
+//
+// Its copy is never caller text. The page reads a code out of the query string,
+// bannerFor accepts only codes this package spells, and what is rendered is the
+// sentence that code maps to — so the field below holds a string chosen by a
+// handler and never one chosen by whoever wrote the link (FR-022). An
+// unrecognised code produces no view at all, which is why the fleet holds a
+// pointer.
+type outcomeView struct {
+	// Message is the sentence the operator reads. It is the whole of an ordinary
+	// outcome and the body of the one alarming one.
+	Message string
+
+	// Heading is carried by the alarming outcome alone, and empty everywhere
+	// else. It exists so that the one outcome an operator must not scan past has
+	// a shape of its own rather than a shade of its own — colour is
+	// reinforcement and never the signal (docs/design-system.md).
+	Heading string
+
+	// Alarm marks the outcome that must not read as one line alongside
+	// "renamed": a teardown this daemon could not verify means a live
+	// unsandboxed shell may have survived it (FR-023, AR-004).
+	Alarm bool
 }
 
 // actionView is one entry in an action row, and it is deliberately empty.

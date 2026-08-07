@@ -533,6 +533,18 @@ func TestTheRenderedFleetOffersTheCreateForm(t *testing.T) {
 				t.Errorf("the create form submits no %s, so the gate refuses it:\n%s", fieldPageToken, create)
 			}
 
+			// The roots this daemon is configured with, named where the operator
+			// fills the field in (T014). It is asserted on the served page rather
+			// than on the component because the component cannot lose it: what can
+			// is the page forgetting to pass them, which is the shape of failure
+			// this repository has shipped three times.
+			for _, root := range f.cfg.Roots {
+				if !strings.Contains(create, root.Path) {
+					t.Errorf("the create form does not name the approved root %q, so the field is one an operator has to guess at:\n%s",
+						root.Path, create)
+				}
+			}
+
 			// Outside every card, which is the placement the task is about: a create
 			// names no session, so a form drawn inside a card would act for whichever
 			// card happened to hold it — and would be drawn once per session on a

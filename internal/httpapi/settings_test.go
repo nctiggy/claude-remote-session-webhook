@@ -1081,10 +1081,14 @@ func TestFullRouteSweepLeaksNoSecret(t *testing.T) {
 		// driven here.
 		{"a session's live stream", http.MethodGet, "/sessions/" + browser.ID + "/stream", nil, http.StatusInternalServerError},
 		{"the fleet stream", http.MethodGet, fleetStreamPath, nil, http.StatusInternalServerError},
-		{"a create from the browser", http.MethodPost, "/dashboard/sessions", create, http.StatusOK},
-		{"a rename from the browser", http.MethodPost, "/dashboard/sessions/" + browser.ID + "/rename", rename, http.StatusOK},
-		{"a compact from the browser", http.MethodPost, "/dashboard/sessions/" + browser.ID + "/compact", compact, http.StatusAccepted},
-		{"a destroy from the browser", http.MethodPost, "/dashboard/sessions/" + browser.ID + "/destroy", destroy, http.StatusOK},
+		// The four actions answer 303 since T014, and the sweep reads what they
+		// write rather than following the redirect: the fleet they redirect *to* is
+		// the first row of this table, already swept, and a Location is a header
+		// like any other — so a secret that reached one would be found here.
+		{"a create from the browser", http.MethodPost, "/dashboard/sessions", create, http.StatusSeeOther},
+		{"a rename from the browser", http.MethodPost, "/dashboard/sessions/" + browser.ID + "/rename", rename, http.StatusSeeOther},
+		{"a compact from the browser", http.MethodPost, "/dashboard/sessions/" + browser.ID + "/compact", compact, http.StatusSeeOther},
+		{"a destroy from the browser", http.MethodPost, "/dashboard/sessions/" + browser.ID + "/destroy", destroy, http.StatusSeeOther},
 		{"a path nothing claims", http.MethodGet, "/not-a-route", nil, http.StatusNotFound},
 		{"a mutating verb at the settings page", http.MethodPost, settingsPath, nil, http.StatusNotFound},
 		// Refused by ServeHTTP ahead of the router, which is a path of its own:

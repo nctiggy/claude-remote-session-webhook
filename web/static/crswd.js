@@ -642,16 +642,23 @@
  *
  * The four action forms are real forms posting to real routes, and that is what
  * makes them work with scripting off and what makes their submit buttons
- * keyboard-operable without anything being added. But a form post navigates: the
- * browser replaced the fleet with the handler's answer, which is one sentence
- * with no page around it. An operator clicked Compact and got a white page.
+ * keyboard-operable without anything being added. But a form post navigates, and
+ * a navigation throws this page away to show one sentence somewhere else.
  *
  * So this posts them instead and writes the answer into the live region the page
  * already carries. Nothing here is required for the daemon to be correct — every
  * check that matters ran server-side before the answer existed — and a browser
- * that never runs this file still gets the old behaviour rather than none.
+ * that never runs this file gets the floor T014 put under it: a 303 back to the
+ * fleet with the same sentence rendered as a banner (FR-024). This is the
+ * enhancement over that, not the thing that makes the actions work.
  *
- * The answer is read as text, never inserted as markup. These fragments are
+ * What the fetch reads is therefore a whole fleet page, because the routes
+ * answer 303 and fetch follows it. The sentence is pulled out of the banner that
+ * page rendered, so the daemon's own fixed copy is what an operator is told
+ * whichever path they came down — there is one vocabulary (outcome.go) rather
+ * than one for the scripted half and one for the other.
+ *
+ * The answer is read as text, never inserted as markup. The banner is
  * daemon-authored today, so innerHTML would be safe today; textContent is what
  * keeps it safe after someone makes one of them carry a name or a path, which is
  * the same lesson docs/components.md was corrected for twice.
@@ -718,7 +725,7 @@
   }
 
   /*
-   * A fragment's text, without trusting it to be markup.
+   * The answer's text, without trusting it to be markup.
    *
    * DOMParser builds an inert document: no script runs, no image loads, nothing
    * in it reaches this page. Taking textContent from that is the same reading a
@@ -729,34 +736,37 @@
     const parsed = new DOMParser().parseFromString(html, 'text/html');
 
     /*
-     * The outcome, not the payload.
+     * The banner, not the page.
      *
-     * Destroy, rename and compact answer with one sentence, so the whole body
-     * was the message. A create answers with the new card — and taking its text
-     * put the entire card in the toast: name, identifier, mode, directory, age,
-     * and the labels of its own buttons (#78).
+     * What arrives here is the fleet the redirect landed on (T014), so the one
+     * thing worth reading out of it is the outcome banner it rendered — the same
+     * sentence, from the same closed vocabulary, that a scriptless operator sees
+     * on that page. Everything else on it is the fleet, which the operator is
+     * looking at already.
      *
-     * So look for the sentence a handler wrote, and treat anything else as
-     * having no message rather than as a message. A toast is a place for one
-     * line; if a route ever answers with something larger, saying nothing is
-     * better than reading it aloud.
+     * The alarming outcome is a titled block rather than a line, and both halves
+     * are said: reducing "Teardown could not be verified" to its body is exactly
+     * the flattening FR-023 forbids, and this region is the only place a scripted
+     * operator is told at all.
+     *
+     * Anything else is treated as having no message rather than as a message. A
+     * toast is a place for one line; if a route ever answers with something
+     * larger, saying nothing is better than reading a page aloud — the mistake
+     * that put an entire card in here when a create answered with one (#78).
      */
-    const outcome = parsed.querySelector('.card-outcome');
+    const alarm = parsed.querySelector('.outcome-alarm');
+    if (alarm) {
+      const heading = (alarm.querySelector('.outcome-heading')?.textContent || '').trim();
+      const body = (alarm.querySelector('.outcome-body')?.textContent || '').trim();
+      return [heading, body].filter(Boolean).join('. ');
+    }
+
+    const outcome = parsed.querySelector('.outcome');
     if (outcome) {
       return (outcome.textContent || '').trim();
     }
 
-    // A card came back, which is what a successful create looks like. The card
-    // itself lands on the fleet through the stream; this only has to say so.
-    if (parsed.querySelector('.card')) {
-      return 'Session started.';
-    }
-
-    const whole = (parsed.body.textContent || '').trim();
-    // A stray long body is not a toast. Anything past a sentence is a page that
-    // lost its wrapper, and the operator is better served by silence than by a
-    // paragraph in a corner.
-    return whole.length <= 200 ? whole : '';
+    return '';
   };
 
   /*
