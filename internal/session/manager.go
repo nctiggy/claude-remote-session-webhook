@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -63,22 +62,6 @@ const interruptKey = "C-c"
 // It is daemon-authored and carries no ";" for tmux's parser to eat, so it
 // travels the way the start command does rather than through Paste.
 const continueFlag = "--continue"
-
-// resumeFlag is how a create starts on a conversation that already exists
-// (FR-033), and it is deliberately not continueFlag.
-//
-// The two are the difference FR-032 turns on. --continue means "the last
-// conversation in this directory", which is a question the *host* answers and
-// which has two answers in a directory two sessions share; this one names the
-// conversation, so what is resumed was chosen by the operator and checked
-// against that directory's own listing before anything started.
-//
-// It is appended by the daemon rather than configured, for continueFlag's
-// reason: a start command carrying it would resume on every create, which is a
-// daemon that never starts fresh — the opposite of FR-037. The identifier it
-// carries has been through resumableID, so this constant and the word after it
-// are the only things a create adds to the operator's own command line.
-const resumeFlag = "--resume"
 
 // compactCommand is Claude Code's own /compact and the newline that submits it
 // (FR-016, research D2). Nine bytes, every one of them delivered as data.
@@ -193,17 +176,6 @@ type Manager struct {
 	store *Store
 	roots []config.ApprovedRoot
 	clock Clock
-
-	// conversationStore is where Claude Code keeps its transcripts, resolved once
-	// at construction (T032). It is a field rather than a lookup per create
-	// because the daemon's home does not move while it runs, and because a create
-	// asking the environment where a store is would be a create whose refusals
-	// depend on the environment it inherited.
-	//
-	// Empty means this host has no store: every resume is refused and a fresh
-	// create is untouched, which is the correct reading of a daemon with no home
-	// and the one a create must not be able to change.
-	conversationStore string
 
 	// maxSessions is CRSW_MAX_SESSIONS, read once at construction. It is held
 	// here rather than in the store because it is configuration and the store is
@@ -345,22 +317,12 @@ func NewManagerWithClock(tmux tmuxctl.Controller, store *Store, roots []config.A
 		return nil, fmt.Errorf("session: a concurrent-session cap of %d would permit no session at all; refusing to start", maxSessions)
 	}
 
-	// A host with no home is a host with no conversation store, and that is not a
-	// reason to refuse to start: it costs an operator the ability to resume, never
-	// the ability to run a session. ListConversations reads the same fact the same
-	// way for the create form's own offer.
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = ""
-	}
-
 	return &Manager{
-		tmux:              tmux,
-		store:             store,
-		roots:             roots,
-		maxSessions:       maxSessions,
-		clock:             clock,
-		conversationStore: conversationStore(home),
+		tmux:        tmux,
+		store:       store,
+		roots:       roots,
+		maxSessions: maxSessions,
+		clock:       clock,
 	}, nil
 }
 
@@ -557,20 +519,6 @@ type CreateRequest struct {
 	// WorkDir is the caller's spelling of a directory. Only the resolved,
 	// allowlist-checked result of ResolveWorkDir is ever used (FR-028).
 	WorkDir string
-
-	// Resume names a prior conversation in that working directory to carry on
-	// from (T032, FR-033). Empty starts fresh, and empty is what every caller
-	// that says nothing means — a resume is something the operator asked for
-	// (FR-037).
-	//
-	// It is an identifier and never a flag, a path, or anything else the start
-	// command might be made to run: what a create may do with it is name one of
-	// the conversations the resolved working directory already holds, and
-	// resumableConversation refuses everything else. The session it produces is
-	// still a new record with its own identifier, credential and lifetime — the
-	// conversation is an input to starting a session, not an alternative to one
-	// (FR-036).
-	Resume string
 }
 
 // Create starts a session and returns the record plus the only copy of its
@@ -632,16 +580,6 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 	if err != nil {
 		return nil, "", fmt.Errorf("create session: %w", err)
 	}
-	// After the directory is resolved, because the conversation is looked for in
-	// the directory the session will actually run in rather than in the caller's
-	// spelling of one — and before anything is built, like every other refusal
-	// above it: a create naming a conversation this daemon cannot resume must cost
-	// no record, no tmux session and no token.
-	resume, err := resumableConversation(req.Resume, workDir, m.roots, m.conversationStore)
-	if err != nil {
-		return nil, "", fmt.Errorf("create session: %w", err)
-	}
-
 	id, err := NewID()
 	if err != nil {
 		return nil, "", fmt.Errorf("create session: %w", err)
@@ -680,12 +618,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 		return nil, "", fmt.Errorf("create session %s: %w", id, err)
 	}
 
-	// The conversation travels as an argument rather than on the record, because
-	// it is an input to starting this session and not a fact about it (FR-036,
-	// data-model §4). A field would be a second thing adoption has to carry, and
-	// carrying it would say a restarted daemon should resume — which is a decision
-	// belonging to whoever asks for a session, not to a restart.
-	if err := m.start(ctx, s, resume); err != nil {
+	if err := m.start(ctx, s); err != nil {
 		return nil, "", m.rollback(ctx, s, err)
 	}
 
@@ -1683,12 +1616,12 @@ func (m *Manager) confirmGone(ctx context.Context, name string) (bool, error) {
 // caller's Name is not passed to this package and could not reach a target if it
 // were.
 //
-// resume is the conversation this session carries on from, empty for a fresh one
-// (T032). It has already been checked against the working directory's own
-// listing and against resumableID's alphabet, which is what makes appending it to
-// a command line safe: by the time it is here it is one of the words Claude Code
-// itself wrote into the store, and nothing a caller composed.
-func (m *Manager) start(ctx context.Context, s Session, resume string) error {
+// What is typed into the shell is the configured command line and the session's
+// own name, and nothing else: no field of the request reaches it. That is the
+// property #95's removal restored — the one caller-supplied word that used to be
+// appended here is gone, so there is no request-shaped path to a command line
+// left to keep an alphabet for.
+func (m *Manager) start(ctx context.Context, s Session) error {
 	name := s.TmuxName()
 
 	if err := m.tmux.New(ctx, name, s.WorkDir); err != nil {
@@ -1742,13 +1675,6 @@ func (m *Manager) start(ctx context.Context, s Session, resume string) error {
 	command, err := config.RenderStartCommand(template, s.Name)
 	if err != nil {
 		return fmt.Errorf("render the start command for session %s: %w", s.ID, err)
-	}
-	// Appended last, so the operator's own command line is what it was and this
-	// daemon's addition is at the end where the flag belongs. A fresh create adds
-	// nothing at all, which is why a daemon nobody asked to resume types exactly
-	// the line it typed before this existed.
-	if resume != "" {
-		command += " " + resumeFlag + " " + resume
 	}
 	if err := m.tmux.SendKeys(ctx, name, command, enterKey); err != nil {
 		return fmt.Errorf("send the claude start command: %w", err)

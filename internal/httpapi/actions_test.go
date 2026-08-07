@@ -1519,12 +1519,11 @@ func TestEitherHalfOfTheDefenceRefusesAlone(t *testing.T) {
 // other literal in this file is: a test asserting against the variable proves
 // only that the code agrees with itself.
 const (
-	wantCreatedOutcome               = outcome("created")
-	wantCreateBadNameOutcome         = outcome("bad-name")
-	wantCreateBadWorkDirOutcome      = outcome("bad-work-dir")
-	wantCreateBadConversationOutcome = outcome("bad-conversation")
-	wantCreateLimitedOutcome         = outcome("limited")
-	wantCreateFailedOutcome          = outcome("create-failed")
+	wantCreatedOutcome          = outcome("created")
+	wantCreateBadNameOutcome    = outcome("bad-name")
+	wantCreateBadWorkDirOutcome = outcome("bad-work-dir")
+	wantCreateLimitedOutcome    = outcome("limited")
+	wantCreateFailedOutcome     = outcome("create-failed")
 )
 
 // createPath is the route from contracts/actions.md's table, written out rather
@@ -2197,73 +2196,62 @@ func TestBrowserCreateRefusesAnUnusableName(t *testing.T) {
 	}
 }
 
-// TestBrowserCreateReadsTheConversationField is T032 at the route, which is the
-// half a refusal with passing unit tests can still be missing: a handler that
-// never reads the field would start a fresh session, answer "created", and leave
-// an operator with a session that has quietly forgotten everything they asked it
-// to carry on from.
+// TestStrayResumeValueIsNotExecuted is what has to hold once the conversation
+// field is gone (#95): the name this daemon no longer reads is an unknown field
+// like any other, and an unknown field reaches nothing the host runs.
 //
-// **Must fail when** the field is not read, spelled differently here than in the
-// markup, or read from the query string — a create this daemon would accept from
-// a URL is a session a link can start.
+// It is the assertion the deletion is worth making. Removing a field removes its
+// *guard* too — `resume` used to be checked against an alphabet before it was
+// appended to a command line, and a later hand that reads the abandoned name back
+// out of the form has no such check to inherit. So the claim is about the argv,
+// not about the answer: the create succeeds either way, which is exactly why an
+// outcome assertion could not notice this.
 //
-// The identifier is one no store on any host holds, which is what makes the
-// assertion safe to make against a fixture with no conversations of its own: it
-// is refused because it names nothing, and a handler that ignored it would answer
-// with a session instead. The named conversation is never resolved to whatever
-// this directory's most recent one happens to be (FR-032).
-func TestBrowserCreateReadsTheConversationField(t *testing.T) {
+// The value is a command substitution rather than an identifier, because that is
+// what the alphabet existed to refuse. `$(whoami)` in a line typed into a shell
+// runs; in a form field this daemon ignores, it is bytes nobody looked at.
+//
+// **Must fail when** an abandoned field name is an unguarded path to a command —
+// which is what re-reading it would be, and the reason the field was removed
+// rather than left inert.
+func TestStrayResumeValueIsNotExecuted(t *testing.T) {
 	t.Parallel()
 
-	t.Run("a conversation this daemon cannot resume", func(t *testing.T) {
-		t.Parallel()
+	const stray = "$(whoami)"
 
-		c := newCreator(t)
-		form := c.wellFormed(t)
-		form.Set("resume", "11111111-2222-3333-4444-555555555555")
+	c := newCreator(t)
+	form := c.wellFormed(t)
+	form.Set("resume", stray)
 
-		w := c.post(t, form)
+	w := c.post(t, form)
 
-		wantOutcome(t, w, wantCreateBadConversationOutcome)
-		if owned := c.owned(); len(owned) != 0 {
-			t.Errorf("the store holds %d records after a refused create; want none", len(owned))
+	// An unknown field changes nothing, so the ordinary create still happens. This
+	// is what keeps the sweep below from passing vacuously: the host was asked to
+	// start something, and the line it was asked to start is there to be read.
+	wantOutcome(t, w, wantCreatedOutcome)
+	if got := len(c.owned()); got != 1 {
+		t.Fatalf("the store holds %d records; want the session that was asked for", got)
+	}
+	if got := c.started(); got != 1 {
+		t.Fatalf("the host was asked to start %d sessions; want the one this create asked for", got)
+	}
+
+	// Every call, not only the send-keys: Argv is a command line and Stdin is the
+	// other way bytes reach a pane, and a value the daemon does not read may travel
+	// on neither.
+	for _, call := range c.fixture.tmux.Calls() {
+		for _, arg := range call.Argv {
+			if strings.Contains(arg, stray) {
+				t.Errorf("the host was handed %q; a field this daemon no longer reads reached a command line", call.Argv)
+			}
 		}
-		if got := c.started(); got != 0 {
-			t.Errorf("the host was asked to start %d sessions; want 0 — the conversation is answered before anything runs", got)
+		if bytes.Contains(call.Stdin, []byte(stray)) {
+			t.Errorf("%v was handed %q on stdin; a field this daemon no longer reads reached the pane", call.Op, call.Stdin)
 		}
-		if got, want := c.only(t)["reason"], session.ErrUnknownConversation.Error(); got != want {
-			t.Errorf("reason = %v; want %v", got, want)
+		if slices.Contains(call.Argv, "--resume") {
+			t.Errorf("the host was handed %q; nothing this daemon starts resumes a conversation", call.Argv)
 		}
-	})
-
-	// The default arrives by the field being empty rather than by the handler
-	// substituting anything, so the ordinary create — which sends no such field at
-	// all — must still start a session (FR-037).
-	t.Run("a create that sends no conversation starts one", func(t *testing.T) {
-		t.Parallel()
-
-		c := newCreator(t)
-
-		wantOutcome(t, c.post(t, c.wellFormed(t)), wantCreatedOutcome)
-		if got := len(c.owned()); got != 1 {
-			t.Errorf("the store holds %d records; want the session that was asked for", got)
-		}
-	})
-
-	// Nothing this route accepts may arrive on a URL. The gate reads the token
-	// from PostForm and so does every field, which is what keeps a create out of
-	// reach of a link the operator followed.
-	t.Run("a conversation in the query string is not read", func(t *testing.T) {
-		t.Parallel()
-
-		c := newCreator(t)
-		form := c.wellFormed(t)
-
-		w := c.send(t, http.MethodPost, createPath+"?resume=11111111-2222-3333-4444-555555555555",
-			secFetchSiteSameOrigin, form)
-
-		wantOutcome(t, w, wantCreatedOutcome)
-	})
+	}
 }
 
 // TestBrowserCreateRefusesPastTheBoundsWithoutStartingAnything is the 429, in both
