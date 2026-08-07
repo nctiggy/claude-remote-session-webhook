@@ -176,6 +176,19 @@ jobs:
         if: steps.stack.outputs.present == 'true'
         run: go mod download
 
+      # goimports, because TestQuickstartPrerequisites checks for the toolchain
+      # AGENTS.md documents and the format-and-lint hook actually shells out to
+      # it. It is a developer tool rather than a dependency of the daemon: this
+      # installs a binary into the runner's GOPATH and touches neither go.mod
+      # nor go.sum, which must stay absent (SC-012). The step asserts that
+      # afterwards rather than trusting it.
+      - name: Install goimports
+        if: steps.stack.outputs.present == 'true'
+        run: |
+          go install golang.org/x/tools/cmd/goimports@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          test ! -f go.sum || { echo "go.sum appeared; SC-012 broken"; exit 1; }
+
       - name: Lint
         if: steps.stack.outputs.present == 'true'
         # Pinned to a commit SHA, not a tag: a tag can be moved, which is what
