@@ -230,6 +230,13 @@ func (s *Server) pageTokenFor(w http.ResponseWriter, r *http.Request, operator *
 func (s *Server) fleet(operator *access.VerifiedOperator, token string) fleetView {
 	now := s.clock.Now()
 
+	// Read per render rather than kept from startup (#59). A list built once
+	// would describe a host as it was when the daemon booted, and the picker's
+	// whole claim is that what it offers is what a create would accept now. It
+	// is bounded by session.MaxWorkDirChoices, and it reads nothing at all
+	// unless the operator configured a list or turned discovery on.
+	workDirs, truncated := session.WorkDirChoices(s.cfg.WorkDirs, s.cfg.WorkDirsDiscover, s.cfg.Roots)
+
 	owned := s.sessions.List(operator.Owner)
 	views := make([]sessionView, 0, len(owned))
 	for _, live := range owned {
@@ -250,7 +257,12 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string) fleetVie
 		// form is one more thing on this page that acts for this identity at this
 		// instant, so it is handed the page's token rather than a second mint —
 		// the reason cardOf takes one as a parameter instead of issuing one.
-		Create: createFormView{PageToken: token, StartCommands: s.cfg.StartCommands.Names()},
+		Create: createFormView{
+			PageToken:         token,
+			StartCommands:     s.cfg.StartCommands.Names(),
+			WorkDirs:          workDirs,
+			WorkDirsTruncated: truncated,
+		},
 	}
 }
 

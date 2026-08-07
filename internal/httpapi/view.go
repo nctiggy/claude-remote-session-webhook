@@ -181,6 +181,29 @@ type createFormView struct {
 	// identity that is already allowlisted — and the command lines they map to
 	// are deliberately not here.
 	StartCommands []string
+
+	// WorkDirs is the list the working-directory field filters against (#59),
+	// already resolved and already checked against the approved roots by
+	// session.WorkDirChoices.
+	//
+	// It is a convenience and grants nothing. The route calls ResolveWorkDir on
+	// whatever is submitted whether it came from this list or was typed over it,
+	// so a stale entry is refused exactly as a made-up path is — the picker is
+	// the convenience, the allowlist is the control.
+	//
+	// Empty renders no list at all, which is what makes the field a plain text
+	// input on a daemon that configured neither variable: the same form the
+	// dashboard had before this existed. That is also what it degrades to with
+	// no script running, because the list is inert markup until crswd.js
+	// upgrades the field.
+	WorkDirs []string
+
+	// WorkDirsTruncated says the list above is a subset of what the daemon
+	// found. A list cut short in silence is one an operator reads as complete,
+	// and the directory that is missing from it looks like a directory the
+	// daemon refuses — FR-018a's discipline about absent values, applied to a
+	// list instead of to a field.
+	WorkDirsTruncated bool
 }
 
 // actionView is one entry in an action row, and it is deliberately empty.

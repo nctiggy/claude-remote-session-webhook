@@ -814,3 +814,228 @@
     }
   });
 })();
+
+/*
+ * The working-directory picker (issue #59).
+ *
+ * A combobox: one control that is both a filter and a free-text path. Typing
+ * narrows the list the daemon rendered; typing something that is not in it is
+ * still accepted exactly as typed, because a one-off directory must never be
+ * blocked by a convenience.
+ *
+ * This is an enhancement over a control that already works, and the shape of
+ * the markup is what makes that true rather than a promise made here. The
+ * template renders a plain <input> and a `hidden` <ul> beside it, and the ARIA
+ * that turns the pair into a combobox is added *below* — so a browser that
+ * never runs this file gets the text field the form has always had, and no
+ * reader is ever told about a listbox that is not operable. The list is inert
+ * markup: it holds no form control, and what a create posts is the text in the
+ * field whether the operator typed it or this file put it there.
+ *
+ * Nothing here is a permission and nothing here is validation. Every path in
+ * the list was already resolved and checked against the approved roots by the
+ * daemon (session.WorkDirChoices), and whatever is submitted is checked again
+ * by ResolveWorkDir on the create — picked or typed alike, because a list
+ * rendered five minutes ago is not evidence about the filesystem now.
+ *
+ * The accessibility is the part that is easy to get wrong, so it is stated:
+ * focus never leaves the text field, the active option is *described* by
+ * aria-activedescendant rather than focused, arrow keys move through the list,
+ * Enter takes the active option, Escape closes and keeps what was typed, and
+ * the filtered count is announced — without which a screen reader user types
+ * and is told nothing at all about the list changing under them.
+ *
+ * Nothing animates. There is no transition and no scroll behaviour to disable,
+ * so a reduced-motion preference has nothing to remove here.
+ */
+(() => {
+  'use strict';
+
+  /*
+   * How many matching options are on screen at once. The list scrolls rather
+   * than growing the page, and past this the filter is the way to reach the
+   * rest — said out loud in the status region, because a list silently cut off
+   * at fifty is one an operator reads as a complete answer.
+   */
+  const VISIBLE = 50;
+
+  const upgrade = (field) => {
+    const list = document.getElementById(field.dataset.combobox);
+    if (!list) {
+      return;
+    }
+    const options = Array.from(list.querySelectorAll('[role="option"]'));
+    if (options.length === 0) {
+      return;
+    }
+    const status = document.getElementById(field.dataset.comboboxStatus);
+
+    // Added here and not in the template: a role naming a listbox is a promise
+    // about an interaction, and the interaction is this file.
+    field.setAttribute('role', 'combobox');
+    field.setAttribute('aria-controls', list.id);
+    field.setAttribute('aria-expanded', 'false');
+    field.setAttribute('aria-autocomplete', 'list');
+
+    let shown = [];
+    let active = -1;
+
+    const say = (name, n, total) => {
+      if (!status) {
+        return;
+      }
+      const sentence = status.dataset[name];
+      if (sentence) {
+        status.textContent = sentence.replace('{n}', n).replace('{total}', total);
+      }
+    };
+
+    /*
+     * Which option the arrow keys are on, in the two places that have to agree:
+     * the attribute a screen reader reads out, and the attribute the stylesheet
+     * highlights. One attribute for both, so the announcement and the highlight
+     * cannot come apart.
+     */
+    const mark = () => {
+      for (const option of options) {
+        option.removeAttribute('aria-selected');
+      }
+      const option = shown[active];
+      if (!option) {
+        field.removeAttribute('aria-activedescendant');
+        return;
+      }
+      option.setAttribute('aria-selected', 'true');
+      field.setAttribute('aria-activedescendant', option.id);
+      // Nearest, so a list scrolled by a keystroke moves as little as it can —
+      // and instantly, which is the only kind of scrolling this page does.
+      option.scrollIntoView({ block: 'nearest' });
+    };
+
+    const close = () => {
+      list.hidden = true;
+      field.setAttribute('aria-expanded', 'false');
+      active = -1;
+      mark();
+    };
+
+    /*
+     * A substring match on the whole path, per issue #59: `basket` finds
+     * /home/op/code/basketball-film-review. Case-insensitive, because a path an
+     * operator half-remembers is not one they remember the case of.
+     */
+    const filter = () => {
+      const needle = field.value.trim().toLowerCase();
+      const matched = options.filter((option) =>
+        (option.textContent || '').toLowerCase().includes(needle),
+      );
+      shown = matched.slice(0, VISIBLE);
+
+      const visible = new Set(shown);
+      for (const option of options) {
+        option.hidden = !visible.has(option);
+      }
+
+      active = -1;
+      mark();
+
+      if (matched.length === 0) {
+        say('comboboxNone', 0, options.length);
+      } else if (matched.length > shown.length) {
+        say('comboboxSubset', shown.length, matched.length);
+      } else {
+        say('comboboxMatches', matched.length, options.length);
+      }
+    };
+
+    const open = () => {
+      filter();
+      if (shown.length === 0) {
+        close();
+        return;
+      }
+      list.hidden = false;
+      field.setAttribute('aria-expanded', 'true');
+    };
+
+    // The field keeps what it is given, trimmed of the markup's own whitespace
+    // and of nothing else: a path is the daemon's own string, and altering it
+    // here would be this file deciding what a create runs in.
+    const choose = (option) => {
+      field.value = (option.textContent || '').trim();
+      close();
+    };
+
+    const move = (by) => {
+      if (list.hidden) {
+        open();
+        if (list.hidden) {
+          return;
+        }
+      }
+      if (shown.length === 0) {
+        return;
+      }
+      active = (active + by + shown.length) % shown.length;
+      mark();
+    };
+
+    field.addEventListener('input', open);
+    field.addEventListener('focus', open);
+    // Closed rather than left standing over the rest of the form, and without
+    // touching the value: what was typed is what the operator meant.
+    field.addEventListener('blur', close);
+
+    field.addEventListener('keydown', (event) => {
+      switch (event.key) {
+        case 'ArrowDown':
+          event.preventDefault();
+          move(1);
+          break;
+        case 'ArrowUp':
+          event.preventDefault();
+          move(-1);
+          break;
+        case 'Enter':
+          // Only when an option is really under the cursor keys. Otherwise this
+          // is a submit, and a picker that swallowed it would be a form an
+          // operator cannot send from the keyboard.
+          if (!list.hidden && shown[active]) {
+            event.preventDefault();
+            choose(shown[active]);
+          }
+          break;
+        case 'Escape':
+          // Closes and keeps what was typed. preventDefault because a browser's
+          // own Escape on a text field clears it, which is the opposite of what
+          // an operator dismissing a list asked for.
+          if (!list.hidden) {
+            event.preventDefault();
+            close();
+          }
+          break;
+        case 'Tab':
+          close();
+          break;
+        default:
+          break;
+      }
+    });
+
+    // Focus never leaves the field, not even for a pointer: the default on
+    // mousedown would blur the input, which closes the list before the click it
+    // was aimed at ever lands.
+    list.addEventListener('mousedown', (event) => event.preventDefault());
+    list.addEventListener('click', (event) => {
+      const option = event.target.closest('[role="option"]');
+      if (option) {
+        choose(option);
+        field.focus();
+      }
+    });
+  };
+
+  for (const field of document.querySelectorAll('input[data-combobox]')) {
+    upgrade(field);
+  }
+})();

@@ -1646,3 +1646,209 @@ func TestEveryActionablePageCarriesTheLiveRegion(t *testing.T) {
 		}
 	}
 }
+
+// pickerPaths is a list shaped like the one the daemon builds: absolute,
+// resolved, and under an approved root, because that is the only kind
+// session.WorkDirChoices returns.
+var pickerPaths = []string{"/home/operator/code/crswd", "/home/operator/code/basketball-film-review"}
+
+// pickerForm is the create form as a daemon with the picker configured renders
+// it (#59).
+func pickerForm() createFormView {
+	form := createForm()
+	form.WorkDirs = pickerPaths
+	return form
+}
+
+// workDirInput is the one field the picker is laid over, read out of a rendered
+// form so the assertions below are about the element a browser receives.
+func workDirInput(t *testing.T, markup string) string {
+	t.Helper()
+
+	input := regexp.MustCompile(`<input\b[^>]*\bname="` + regexp.QuoteMeta(fieldWorkDir) + `"[^>]*>`).FindString(markup)
+	if input == "" {
+		t.Fatalf("the create form renders no %q input at all:\n%s", fieldWorkDir, markup)
+	}
+	return input
+}
+
+// TestTheWorkDirPickerIsAnEnhancementOverAPlainTextField is issue #59's
+// load-bearing constraint, and the one a hand-built combobox loses first.
+//
+// Without script the field has to be what it was: a text input that accepts any
+// path. So the list ships `hidden` and inert, and the ARIA that would describe a
+// combobox is deliberately absent from the markup — crswd.js adds it, because a
+// role naming a listbox nothing can open is a page describing an interaction it
+// does not have.
+//
+// The input itself is asserted to be unchanged apart from the two hooks. A
+// picker that turned this into a select, or added a pattern, or made it
+// readonly, would be the convenience blocking the one-off directory it exists
+// beside.
+func TestTheWorkDirPickerIsAnEnhancementOverAPlainTextField(t *testing.T) {
+	t.Parallel()
+
+	with := renderComponent(t, "create-form", pickerForm())
+	without := renderComponent(t, "create-form", createForm())
+
+	field := workDirInput(t, with)
+	for _, forbidden := range []string{"readonly", "disabled", "pattern="} {
+		if strings.Contains(field, forbidden) {
+			t.Errorf("the %q input carries %q (%s); a path that is not in the list is still a path this daemon accepts", fieldWorkDir, forbidden, field)
+		}
+	}
+	if strings.Contains(strings.ToLower(with), "<select") && !strings.Contains(strings.ToLower(without), "<select") {
+		t.Errorf("the picker rendered a <select>; it cannot hold a value that is not one of its options, which is the one thing this field must always do:\n%s", with)
+	}
+
+	// The list is in the document and out of the way until something opens it.
+	// `hidden` rather than a class, as every other note on this page: it is the
+	// browser's own attribute and needs no rule in the stylesheet.
+	listbox := regexp.MustCompile(`(?s)<ul\b([^>]*\brole="listbox"[^>]*)>(.*?)</ul>`).FindStringSubmatch(with)
+	if listbox == nil {
+		t.Fatalf("the create form renders no listbox for the picker:\n%s", with)
+	}
+	if !strings.Contains(listbox[1], "hidden") {
+		t.Errorf("the picker's list renders visible (<ul%s>); with no script running it would be a list nothing can operate sitting under the field", listbox[1])
+	}
+	// Every option is one of the daemon's own paths, and each carries the id
+	// aria-activedescendant has to name.
+	for i, path := range pickerPaths {
+		option := regexp.MustCompile(`<li\b[^>]*\brole="option"[^>]*>` + regexp.QuoteMeta(path) + `</li>`).FindString(listbox[2])
+		if option == "" {
+			t.Errorf("the picker does not offer %q as an option:\n%s", path, listbox[0])
+			continue
+		}
+		if id, ok := attributeValue(t, option, "id"); !ok || id == "" {
+			t.Errorf("option %d carries no id (%s); aria-activedescendant names an option by id, and an option with none can never be the active one", i, option)
+		}
+	}
+
+	// The hook that ties the field to the list, and the direction it loses in
+	// silently: a script looking for an element that is not there upgrades
+	// nothing, and the page renders perfectly with a list that never opens.
+	hook, ok := attributeValue(t, field, "data-combobox")
+	if !ok {
+		t.Fatalf("the %q input names no list (%s), so crswd.js upgrades nothing and the markup below is inert forever", fieldWorkDir, field)
+	}
+	if id, _ := attributeValue(t, listbox[0], "id"); id != hook {
+		t.Errorf("the field points at %q and the list is %q; the two are in one file and still drifted", hook, id)
+	}
+
+	// And a daemon that configured neither variable renders exactly the form it
+	// rendered before this existed — no list, and no hook naming one.
+	if strings.Contains(strings.ToLower(without), `role="listbox"`) {
+		t.Errorf("a create form with no configured directories rendered a list anyway:\n%s", without)
+	}
+	if _, ok := attributeValue(t, workDirInput(t, without), "data-combobox"); ok {
+		t.Errorf("a create form with no configured directories still names a list:\n%s", without)
+	}
+}
+
+// TestTheWorkDirPickerAnnouncesWhatTheFilterDid is the accessibility half that
+// is not optional and has no visual equivalent.
+//
+// Filtering moves no focus and makes no sound. Without a live region a screen
+// reader user types and is told nothing at all — the list changes under them and
+// the interface says nothing about it. The sentences live in the template for
+// the reason every other sentence this interface says does, and `{n}` is the
+// substitution the fleet's own announcement already uses.
+func TestTheWorkDirPickerAnnouncesWhatTheFilterDid(t *testing.T) {
+	t.Parallel()
+
+	got := renderComponent(t, "create-form", pickerForm())
+
+	field := workDirInput(t, got)
+	hook, ok := attributeValue(t, field, "data-combobox-status")
+	if !ok {
+		t.Fatalf("the %q input names no status region (%s); a filter nobody is told about is a list that changes in silence", fieldWorkDir, field)
+	}
+
+	region := regexp.MustCompile(`<p[^>]*\bid="` + regexp.QuoteMeta(hook) + `"[^>]*>([^<]*)</p>`).FindStringSubmatch(got)
+	if region == nil {
+		t.Fatalf("the create form points the script at %q and renders no such element:\n%s", hook, got)
+	}
+	// Present and empty rather than hidden, on the fleet's own terms: a live
+	// region has to be in the accessibility tree before its text arrives, or the
+	// announcement never happens.
+	if strings.Contains(region[0], "hidden") {
+		t.Errorf("the status region renders hidden (%q); text arriving in a region that was not in the accessibility tree is text a reader may never announce", region[0])
+	}
+	if strings.TrimSpace(region[1]) != "" {
+		t.Errorf("the status region renders %q before anything was typed; it says what the filter did, and nothing has", region[1])
+	}
+	if !strings.Contains(region[0], `role="status"`) {
+		t.Errorf("the status region carries no role (%q), so nothing it is given is announced", region[0])
+	}
+
+	// One sentence for each of the three answers a filter can give, each with
+	// somewhere for the count to go. The subset sentence is the one that must
+	// exist: a list cut off at the visible cap and not said to be is one an
+	// operator reads as complete.
+	for _, sentence := range []string{"data-combobox-matches", "data-combobox-subset", "data-combobox-none"} {
+		value, ok := attributeValue(t, region[0], sentence)
+		if !ok || strings.TrimSpace(value) == "" {
+			t.Errorf("the status region carries no %s sentence (%q), so that answer is announced as nothing at all", sentence, region[0])
+			continue
+		}
+		if sentence != "data-combobox-none" && !strings.Contains(value, "{n}") {
+			t.Errorf("the %s sentence is %q and leaves nowhere for the count; a fixed string is one a reader may not announce twice", sentence, value)
+		}
+	}
+}
+
+// TestTheWorkDirPickerSaysWhenTheListIsASubset is the daemon's own truncation,
+// which is a different fact from the filter's and is true of the render rather
+// than of what anyone typed.
+//
+// A capped list that says nothing is one an operator believes is complete, and
+// the directory missing from it looks like a directory this daemon refuses —
+// which is exactly the opposite of what a cap means. It is FR-018a's rule about
+// absent values, applied to a list.
+func TestTheWorkDirPickerSaysWhenTheListIsASubset(t *testing.T) {
+	t.Parallel()
+
+	full := pickerForm()
+	subset := pickerForm()
+	subset.WorkDirsTruncated = true
+
+	if got := renderComponent(t, "create-form", full); strings.Contains(got, "combobox-note") {
+		t.Errorf("a complete list said it was showing part of what was found:\n%s", got)
+	}
+
+	got := renderComponent(t, "create-form", subset)
+	note := regexp.MustCompile(`<p[^>]*\bclass="combobox-note"[^>]*>([^<]*)</p>`).FindStringSubmatch(got)
+	if note == nil {
+		t.Fatalf("a truncated list rendered no note saying so:\n%s", got)
+	}
+	if strings.TrimSpace(note[1]) == "" {
+		t.Error("the truncation note carries no copy at all, so the page says nothing by rendering it")
+	}
+}
+
+// TestThePickerRendersPathsAsText is FR-028 at the one place this milestone puts
+// filesystem contents in a page.
+//
+// These paths are the daemon's own reading of its own disk rather than a
+// caller's bytes, which makes escaping defence in depth rather than the control
+// — but a directory name may contain anything a filesystem permits, including
+// the characters that open an element, and a template with one exception is one
+// somebody copies.
+func TestThePickerRendersPathsAsText(t *testing.T) {
+	t.Parallel()
+
+	const hostile = `/home/operator/code/<img src=x onerror=alert(1)>`
+	form := pickerForm()
+	form.WorkDirs = []string{hostile}
+
+	got := renderComponent(t, "create-form", form)
+	if strings.Contains(got, hostile) {
+		t.Errorf("the picker rendered %q verbatim:\n%s", hostile, got)
+	}
+	if strings.Contains(strings.ToLower(got), "<img") {
+		t.Errorf("the picker rendered an element the path opened:\n%s", got)
+	}
+	if !strings.Contains(got, "src=x") {
+		t.Errorf("the picker dropped the path instead of showing it as text; an operator would not see what the directory is really called:\n%s", got)
+	}
+}

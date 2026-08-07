@@ -14,14 +14,18 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 )
@@ -1592,5 +1596,54 @@ func TestTheFleetsRecordCarriesNothingThePageRendered(t *testing.T) {
 		if strings.Contains(trail, secret.value) {
 			t.Errorf("the trail carries %s; a record holds what the daemon derived and never what it rendered (FR-035):\n%s", secret.what, trail)
 		}
+	}
+}
+
+// TestTheFleetOffersTheConfiguredWorkingDirectories is the wiring between the
+// two halves of issue #59, and it is the join that loses silently: the config
+// loads, session.WorkDirChoices is correct and tested, the template renders a
+// list from whatever it is given — and the page hands it nothing, so the field
+// is a plain text box on a daemon that configured a picker.
+//
+// The allowlist is asserted on the same render rather than in a second test,
+// because these are one claim: the page offers what the operator configured
+// *and* filters it against the roots. A page that offered a configured
+// directory outside every root would be handing an operator a path the create
+// route is certain to refuse.
+func TestTheFleetOffersTheConfiguredWorkingDirectories(t *testing.T) {
+	t.Parallel()
+
+	// A real root, because the choices are a question about the real filesystem
+	// — the same reason internal/session's own fixture is built on disk.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve the temp dir: %v", err)
+	}
+	inside := filepath.Join(root, "crswd")
+	if err := os.Mkdir(inside, 0o750); err != nil {
+		t.Fatalf("create the configured directory: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.Mkdir(outside, 0o750); err != nil {
+		t.Fatalf("create the unapproved directory: %v", err)
+	}
+
+	s := newTestServer(t, loopbackListen)
+	s.cfg.Roots = []config.ApprovedRoot{{Path: root}}
+	s.cfg.WorkDirs = []string{inside, outside}
+
+	page := s.fleet(&access.VerifiedOperator{Email: testOperatorEmail}, testCardToken)
+	if len(page.Create.WorkDirs) != 1 || page.Create.WorkDirs[0] != inside {
+		t.Fatalf("the fleet offers %v; want only the configured directory under an approved root (%q)", page.Create.WorkDirs, inside)
+	}
+	if page.Create.WorkDirsTruncated {
+		t.Error("a list of one reported itself truncated")
+	}
+
+	// And nothing at all when the daemon configured nothing, which is the form
+	// the dashboard had before this existed.
+	bare := newTestServer(t, loopbackListen)
+	if got := bare.fleet(&access.VerifiedOperator{Email: testOperatorEmail}, testCardToken); len(got.Create.WorkDirs) != 0 {
+		t.Errorf("a daemon with no configured directories offered %v", got.Create.WorkDirs)
 	}
 }

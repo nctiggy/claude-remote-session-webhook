@@ -843,6 +843,61 @@ func TestTheFleetUpdatesInPlaceRatherThanReloading(t *testing.T) {
 	}
 }
 
+// TestTheComboboxIsBuiltInTheScriptAndNotInTheMarkup is issue #59's
+// progressive-enhancement claim held from the other side.
+//
+// partials_test.go proves the template renders a plain text input and an inert
+// hidden list. This proves the script is what turns them into a combobox — and
+// it is the direction the whole feature can be lost in silently, the one this
+// repository has shipped before: a widget that is written, correct, and attached
+// to nothing. A query naming the attribute the field renders is as close to
+// "something calls it" as a language Go cannot execute allows.
+//
+// The ARIA is asserted here rather than in the markup on purpose. A role naming
+// a listbox is a promise about an interaction; if the script never runs, the
+// promise must not have been made.
+func TestTheComboboxIsBuiltInTheScriptAndNotInTheMarkup(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	query := regexp.MustCompile(`querySelectorAll\(\s*['"][^'"]*data-combobox[^'"]*['"]\s*\)`)
+	if query.FindString(source) == "" {
+		t.Error("crswd.js never queries the document for a field carrying data-combobox, so the list the daemon rendered is markup nothing ever opens")
+	}
+
+	// The combobox pattern, in the four attributes that make a filtered list
+	// operable by a reader rather than only by an eye.
+	for attribute, why := range map[string]string{
+		"role":                  "the field has to say what it now is, and only the script can honestly say it",
+		"aria-expanded":         "a list that is open and a list that is closed are announced as one thing without it",
+		"aria-controls":         "the field names the list it filters, or the two are unrelated elements that happen to be adjacent",
+		"aria-activedescendant": "the active option is described rather than focused, which is what keeps focus in the text field",
+		"aria-autocomplete":     "a reader is told the field offers a list rather than completing it inline",
+	} {
+		if !strings.Contains(source, attribute) {
+			t.Errorf("crswd.js never sets %s: %s", attribute, why)
+		}
+	}
+
+	// Every key issue #59 names, each of which is the whole interaction for
+	// somebody. Escape is the one worth spelling out: it closes and keeps what
+	// was typed, so a picker that swallowed a one-off path would be the
+	// convenience blocking the case it exists beside.
+	for _, key := range []string{"ArrowDown", "ArrowUp", "Enter", "Escape"} {
+		if !strings.Contains(source, key) {
+			t.Errorf("crswd.js handles no %s in the picker; arrow keys move, Enter selects, Escape closes and keeps what was typed", key)
+		}
+	}
+
+	// The highlight is the attribute a reader is given, not a class only this
+	// file knows about — which is also what keeps the rule for it visible to the
+	// sweep above.
+	if !strings.Contains(source, "aria-selected") {
+		t.Error("crswd.js marks the active option with something other than aria-selected; the announcement and the highlight would then be two things that can disagree")
+	}
+}
+
 // blockFor returns the body of the first block whose prelude contains marker,
 // so a test can assert about one rule rather than about the whole file. Braces
 // are counted, because a media query holds rules of its own.

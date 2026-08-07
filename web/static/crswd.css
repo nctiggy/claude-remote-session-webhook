@@ -95,6 +95,12 @@
      than spelled into the rule that uses it. */
   --toast-max: 34rem;
   --pane-h: 30rem;
+  /* How tall the working-directory picker's list may get before it scrolls
+     (#59). Beside --pane-h for the same reason: a layout dimension the design
+     system names without a token of its own, declared once here rather than
+     spelled into the rule that reads it. A list that grew with its contents
+     would push the control an operator is reaching for off the screen. */
+  --combobox-h: 14rem;
 
   /* The rain's two permitted strengths. Opacity belongs to the surface the
      canvas sits in rather than to the canvas, so it is selected by ancestor. */
@@ -514,6 +520,78 @@ body {
   border-radius: var(--r);
   color: var(--text);
   font: var(--fs-body)/var(--lh-body) var(--mono);
+}
+
+/* The working-directory picker (#59): the input's positioning context and
+   nothing else. It exists so the list can be laid over what is beneath it
+   rather than pushing the submit button down the page every time an operator
+   types — the list is a temporary overlay on the form, not a part of it.
+
+   A grid of one, so the input still stretches to the field's width the way it
+   did as a grid item of .field. */
+.combobox {
+  position: relative;
+  display: grid;
+}
+
+/* The list itself. It is inert markup until crswd.js upgrades the field, and it
+   is `hidden` in the template, so a browser with no script running renders the
+   plain text input this form has always had.
+
+   Bounded and scrolling rather than growing: on a host with many repositories
+   the whole list is unreadable anyway, which is what the filter is for. Nothing
+   here animates, so there is nothing for prefers-reduced-motion to remove — a
+   list that faded in would be motion under a control an operator is typing
+   into. */
+.combobox-list {
+  position: absolute;
+  z-index: 1;
+  inset-block-start: 100%;
+  inset-inline: 0;
+  max-block-size: var(--combobox-h);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  background: var(--surface-lift);
+  border: var(--edge-width) solid var(--edge-bright);
+  border-radius: var(--r);
+}
+
+/* A path, so it is set in mono like every other thing the machine said. */
+.combobox-option {
+  padding: var(--s1) var(--s2);
+  color: var(--text);
+  font: var(--fs-body)/var(--lh-body) var(--mono);
+  cursor: default;
+}
+
+/* Which option the arrow keys are on. Selected by the attribute the script sets
+   rather than by a class it adds: aria-selected is what a screen reader reads,
+   so styling the same attribute keeps the highlight and the announcement from
+   being two things that can disagree — and a class only JavaScript ever writes
+   is invisible to the sweep in stylesheet_test.go, which would read the rule as
+   dead. */
+.combobox-option[aria-selected="true"] {
+  background: var(--surface);
+  color: var(--phosphor);
+}
+
+/* What the filter did, said in words. Prose a human wrote, so sans on the same
+   terms as every other note on this page. */
+.combobox-status,
+.combobox-note {
+  margin: 0;
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: var(--fs-prose);
+}
+
+/* A live region with nothing to say yet takes no room, exactly as the fleet's
+   does. It is present and empty from the first render because a region has to
+   be in the accessibility tree before its text arrives. */
+.combobox-status:empty {
+  display: none;
 }
 
 /* The page's one primary control (docs/components.md: exactly one per view).

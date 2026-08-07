@@ -70,7 +70,67 @@
 </div>
 <div class="field">
 <label class="field-label" for="create-work-dir">Working directory</label>
-<input class="field-input" id="create-work-dir" type="text" name="work_dir" required autocomplete="off" spellcheck="false">
+<div class="combobox">
+<input class="field-input" id="create-work-dir" type="text" name="work_dir" required autocomplete="off" spellcheck="false"{{ if .WorkDirs }} data-combobox="create-work-dir-list" data-combobox-status="create-work-dir-status"{{ end }}>{{/*
+  The working-directory picker (#59), and it is markup laid over a control that
+  already worked rather than a control of its own.
+
+  What is rendered is a text input and an inert list beside it. With no script
+  running the list is `hidden` and the field is the plain text box this form has
+  always had — which is the whole design: the picker is an enhancement, and a
+  one-off directory must never be blocked by a convenience. crswd.js is what
+  turns the pair into a combobox, and it is also what adds `role="combobox"` and
+  its aria attributes, because a role naming a listbox no reader can see would
+  be the page describing an interaction that is not there.
+
+  A native <select> would have been less work and is refused on two counts: it
+  renders as the operating system's widget against a phosphor-on-black theme,
+  and it cannot hold a value that is not one of its options — which is the one
+  thing this field must always be able to do.
+
+  Nothing here is a permission. Every path below has already been through
+  ResolveWorkDir against the approved roots (session.WorkDirChoices), and
+  whatever is submitted goes through it again on the create, picked or typed
+  alike: a list rendered five minutes ago is not evidence about the filesystem
+  now. The list renders with the page rather than from a search endpoint,
+  because a live-search route would be a new authenticated surface and this repo
+  does not add those without a contract.
+
+  It renders at all only when the daemon has something to offer, so a form with
+  neither variable configured is byte for byte the form it was before this
+  existed.
+
+  The options carry no `value` attribute and are not form controls: this list
+  submits nothing. What the create posts is the text in the field above, whether
+  the operator typed it or the script put it there.
+*/}}{{ if .WorkDirs }}
+<ul class="combobox-list" id="create-work-dir-list" role="listbox" aria-label="Known working directories" hidden>{{ range $index, $path := .WorkDirs }}
+<li class="combobox-option" id="create-work-dir-option-{{ $index }}" role="option">{{ $path }}</li>{{ end }}
+</ul>{{ end }}
+</div>{{/*
+  What the filter did, for an operator who cannot see the list change under
+  them. It is the one thing on this form that has to be spoken: filtering moves
+  no focus and makes no sound, so without this a screen reader user types and is
+  told nothing at all.
+
+  The sentences are here rather than in the script, for the reason every other
+  sentence this interface says is — and `{n}` and `{total}` are the substitution
+  the fleet's own announcement already uses. Rendered present and empty rather
+  than hidden, because a live region has to be in the accessibility tree before
+  its text arrives for the announcement to happen; empty, the stylesheet's
+  `:empty` rule takes it out of the layout.
+
+  The subset sentence is the cap being honest. The list scrolls rather than
+  growing the page, and only so many options are shown at once — a filter that
+  silently stopped at fifty is one an operator reads as a complete answer.
+*/}}{{ if .WorkDirs }}
+<p class="combobox-status" id="create-work-dir-status" role="status" aria-live="polite" data-combobox-matches="{n} of {total} known directories match." data-combobox-subset="Showing {n} of {total} matching directories. Keep typing to narrow the list." data-combobox-none="No known directory matches. What you type is used exactly as typed."></p>{{ end }}{{/*
+  And the other truncation, which is the daemon's rather than the browser's: the
+  list itself is capped, so on a host with more directories than that the filter
+  cannot reach the rest however much is typed. Said in the markup because it is
+  true of this render regardless of what anyone types into the field.
+*/}}{{ if .WorkDirsTruncated }}
+<p class="combobox-note">This list is capped and is showing part of what was found. Type the path in full if the directory you want is not here — a directory that is not listed is not a directory this daemon refuses.</p>{{ end }}
 </div>{{/*
   The start-command chooser (#38, #39), rendered only when the operator has
   configured more than one. A select with a single option is a control that
