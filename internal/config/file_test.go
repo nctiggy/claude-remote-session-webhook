@@ -67,7 +67,7 @@ func TestParseAcceptsWorkedExample(t *testing.T) {
 		t.Fatalf("ParseFile() rejected the worked example: %v", err)
 	}
 
-	want := map[string]string{
+	want := map[string]string{ //nolint:gosec // G101 false positive: these are the expected *parse results* of the worked example in contracts/config-file.md. The "secret" is a fixture chosen to carry a "#" precisely so this test proves a value is not truncated at one; it authenticates nothing and exists nowhere but here.
 		"listen":           "127.0.0.1:8787",
 		"allowed_roots":    "/home/nctiggy/code,/home/nctiggy/work",
 		"start_commands":   "default=claude --dangerously-skip-permissions,rc=claude remote-control --permission-mode bypassPermissions",
@@ -991,7 +991,7 @@ func TestParserNeverWrites(t *testing.T) {
 
 			// The error is deliberately not asserted on. This test is about the
 			// bytes on disk, and it must hold whichever way the parse went.
-			_, _ = config.ReadFile(path, io.Discard)
+			_, _ = config.ReadFile(path, io.Discard) //nolint:errcheck // deliberate, per the comment above: this test asserts on the bytes on disk and must hold whichever way the parse went.
 
 			after, afterInfo := snapshot(t, path)
 			if !bytes.Equal(before, after) {

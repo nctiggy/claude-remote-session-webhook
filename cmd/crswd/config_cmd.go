@@ -35,11 +35,11 @@ With no path, both subcommands read the file the daemon itself would: ` +
 // repository where an unrecognised instruction must not read as "carry on".
 func runConfigCommand(out, errOut io.Writer, args []string) int {
 	if args[0] != "config" {
-		fmt.Fprintf(errOut, "crswd: unknown argument %q\n%s", args[0], configUsage)
+		say(errOut, "crswd: unknown argument %q\n%s", args[0], configUsage)
 		return 2
 	}
 	if len(args) < 2 {
-		fmt.Fprintf(errOut, "crswd: config needs a subcommand\n%s", configUsage)
+		say(errOut, "crswd: config needs a subcommand\n%s", configUsage)
 		return 2
 	}
 
@@ -50,7 +50,7 @@ func runConfigCommand(out, errOut io.Writer, args []string) int {
 	case "migrate":
 		run = configMigrate
 	default:
-		fmt.Fprintf(errOut, "crswd: unknown config subcommand %q\n%s", args[1], configUsage)
+		say(errOut, "crswd: unknown config subcommand %q\n%s", args[1], configUsage)
 		return 2
 	}
 
@@ -59,7 +59,7 @@ func runConfigCommand(out, errOut io.Writer, args []string) int {
 		err = run(out, path)
 	}
 	if err != nil {
-		fmt.Fprintf(errOut, "crswd: %v\n", err)
+		say(errOut, "crswd: %v\n", err)
 		return 1
 	}
 	return 0
@@ -108,25 +108,25 @@ func configCheck(out io.Writer, path string) error {
 		// defaults, which is what every deployment before this milestone was
 		// (FR-003). Reporting it as an error would say the daemon will not
 		// start, which is false.
-		fmt.Fprintf(out, "No configuration file at %s.\nThe daemon starts from its environment and its built-in defaults.\n", path)
+		say(out, "No configuration file at %s.\nThe daemon starts from its environment and its built-in defaults.\n", path)
 		return nil
 	}
 
-	fmt.Fprintf(out, "config file %s parses, and sets:\n", path)
+	say(out, "config file %s parses, and sets:\n", path)
 	set := 0
 	for _, name := range config.Vars() {
 		if _, ok := f.Lookup(name); ok {
 			// The key, never the value. This output is read over a shoulder and
 			// pasted into issues, and one of the keys it can name is the shared
 			// secret (docs/security.md §3).
-			fmt.Fprintf(out, "  %s\n", config.KeyForVar(name))
+			say(out, "  %s\n", config.KeyForVar(name))
 			set++
 		}
 	}
 	if set == 0 {
-		fmt.Fprintln(out, "  nothing — every setting comes from the environment or a default")
+		sayln(out, "  nothing — every setting comes from the environment or a default")
 	}
-	fmt.Fprintln(out, "The values themselves are checked when the daemon starts, against the environment it starts in.")
+	sayln(out, "The values themselves are checked when the daemon starts, against the environment it starts in.")
 	return nil
 }
 
@@ -160,7 +160,7 @@ func configMigrate(out io.Writer, path string) error {
 		return err
 	}
 	if !changed {
-		fmt.Fprintf(out, "config file %s is already schema %d. Nothing was written.\n", path, config.SchemaVersion)
+		say(out, "config file %s is already schema %d. Nothing was written.\n", path, config.SchemaVersion)
 		return nil
 	}
 
@@ -172,7 +172,7 @@ func configMigrate(out io.Writer, path string) error {
 		return fmt.Errorf("%s is unchanged, and a copy of it is at %s: %w", path, backup, err)
 	}
 
-	fmt.Fprintf(out, "config file %s migrated to schema %d.\nThe file it replaced is at %s, which is what the daemon falls back to if this one stops loading.\n",
+	say(out, "config file %s migrated to schema %d.\nThe file it replaced is at %s, which is what the daemon falls back to if this one stops loading.\n",
 		path, config.SchemaVersion, backup)
 	return nil
 }
@@ -223,7 +223,7 @@ func writeConfigFile(path string, data []byte, mode os.FileMode) error {
 		// The half-written temporary file is removed rather than left beside the
 		// configuration, where the next reader would have to work out which of
 		// two files the daemon reads.
-		_ = os.Remove(name)
+		_ = os.Remove(name) //nolint:errcheck // the write already failed; a failed cleanup of its leftovers changes neither the error returned nor what the operator must do.
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
@@ -239,4 +239,21 @@ func writeAndSync(f *os.File, data []byte, mode os.FileMode) error {
 	// Synced before the rename, so the ending where the host loses power between
 	// the two is a directory entry pointing at bytes that are actually there.
 	return f.Sync()
+}
+
+// say and sayln write to a report stream and drop the write error, in one place
+// rather than at each of the dozen call sites below.
+//
+// The drop is deliberate and it is not a swallowed error in the sense AGENTS.md
+// bans. Every caller here is reporting to stdout or stderr, and there is no
+// answer to a failed write to the stream you would report the failure on. The
+// repo's errcheck runs with check-blank, so `_, _ =` at each site would be
+// flagged too — centralising it means a reviewer reads the argument once and can
+// count the exceptions, instead of skimming twelve identical //nolint comments.
+func say(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, format, args...) //nolint:errcheck // see the comment above.
+}
+
+func sayln(w io.Writer, line string) {
+	_, _ = fmt.Fprintln(w, line) //nolint:errcheck // see the comment above.
 }

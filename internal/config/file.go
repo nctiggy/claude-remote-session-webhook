@@ -297,7 +297,7 @@ func ReadFile(path string, warn io.Writer) (*File, error) {
 		}
 		return nil, fmt.Errorf("%w %s cannot be opened; refusing to start: %w", ErrConfigFile, path, err)
 	}
-	defer func() { _ = handle.Close() }()
+	defer func() { _ = handle.Close() }() //nolint:errcheck // read-only handle: a failed close cannot lose data, and the parse result is already returned.
 
 	info, err := handle.Stat()
 	if err != nil {
