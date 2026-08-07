@@ -1038,6 +1038,25 @@ func (m *Manager) commandForMode(mode Mode) (string, error) {
 	}
 }
 
+// RemoteStartCommand is the configured name a session started under remote
+// control runs, and the refusal when this daemon configures none (FR-004).
+//
+// It is commandForMode's remote branch and nothing else, exported so the create
+// route asks the question rather than answering it from the same configuration
+// a second time. Two readers of one setting are two things free to disagree the
+// moment either grows a rule, which is exactly what the comment above is about —
+// arriving on the door that *starts* sessions rather than the one that moves
+// them.
+//
+// There is deliberately no local counterpart. A create asking for local asks for
+// no command in particular, which CreateRequest.StartCommand already spells as
+// empty; commandForMode's local branch answers a *transition*, and its refusal —
+// the remote command is the default, so there is nowhere to move to — is a fact
+// about leaving a mode rather than about starting in one. A create refused on it
+// would be a daemon that cannot start a plain session, which is the opposite of
+// the direction a lost switch is meant to fall in.
+func (m *Manager) RemoteStartCommand() (string, error) { return m.commandForMode(ModeRemote) }
+
 // SetMode moves a live session between local and remote by restarting the
 // process inside its pane, and it is the whole of US4's transition (FR-026 …
 // FR-031, SC-007).

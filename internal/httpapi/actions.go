@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
@@ -264,8 +265,8 @@ func (s *Server) refuseBrowserDestroy(w http.ResponseWriter, r *http.Request, er
 // (FR-033).
 const patternDashboardCreate = "POST /dashboard/sessions"
 
-// The two fields a create carries beside the token the gate reads
-// (contracts/actions.md).
+// The three fields a create carries beside the token the gate reads
+// (contracts/actions.md, contracts/remote-control-toggle.md).
 //
 // Spelled once here so the field this handler reads has one spelling. The form
 // that submits them is T010's, in a template set parsed with no function map, so
@@ -275,10 +276,20 @@ const (
 	fieldName    = "name"
 	fieldWorkDir = "work_dir"
 
-	// fieldStartCommand names which of the operator's configured commands to
-	// type into the new session's shell (#38). It carries a name; the command
-	// line it maps to never leaves the daemon's configuration.
-	fieldStartCommand = "start_command"
+	// fieldRemoteControl is the switch, and it carries a *mode* rather than a
+	// name (FR-003, FR-004). It replaced a `<select name="start_command">` that
+	// let the browser choose which configured command ran, which is the thing
+	// FR-026 said not to do and milestone 4 shipped anyway.
+	//
+	// Which command each mode runs stays the daemon's decision, read from
+	// configuration below and never from this field, so the widest thing a
+	// request can say here is one of two states.
+	fieldRemoteControl = "remote_control"
+
+	// remoteControlOn is the value a ticked checkbox posts, and the only value
+	// this field has. An unticked one posts nothing at all, which is why absence
+	// is a state rather than a missing answer.
+	remoteControlOn = "on"
 )
 
 // What a create answers is an outcome code, exactly as a destroy's is (T014).
@@ -292,6 +303,51 @@ const (
 // one card on a blank page. The fleet they are returned to now draws that card
 // from the same projection (cardOf) alongside every other, which is the
 // appending the plan described, done by the page that owns the grid.
+
+// errCreateStateNotOffered is a `remote_control` field carrying anything but the
+// one value the switch posts.
+//
+// A sentinel authored here rather than a sentence built from what arrived, for
+// errModeNotOffered's reason and more sharply: the values this check exists to
+// turn away are configured command names and command lines, and a trail that
+// echoed one would put it in the operator's journal — the one place FR-042 keeps
+// caller text out of.
+//
+// It is its own reason rather than errModeNotOffered because what the two
+// refused differs. That one turned away a `mode` field on a live session; this
+// one turned away a create, and an operator reading the journal is entitled to
+// see that something tried to name what a *new* unsandboxed shell would run.
+var errCreateStateNotOffered = errors.New("a browser create named a remote-control state this daemon does not offer")
+
+// offersRemoteControlState is the mode a create asked for, and whether the field
+// said anything this daemon offers. It is an allowlist over the *presence* of
+// the field as much as over its value, because absence is one of the two states
+// (contracts/remote-control-toggle.md).
+//
+// An unticked checkbox posts nothing at all, so no field is the answer "local" —
+// and that is the safe direction to read a lost, stripped or proxied-away field
+// in: what goes missing yields the *less* privileged mode, never the more.
+// Absence is therefore never an error.
+//
+// Present, it must be exactly one `on`. A hand-built `remote_control=rc` names a
+// real configured command on a daemon that has one, and it is refused here for
+// being a name at all — the field carries a mode, and a value that is not one of
+// the two states is compared and then dropped, so no byte of it travels on.
+//
+// url.Values is read directly rather than through Get so that a present-but-empty
+// field and a repeated one are told apart from an absent one. Get flattens all
+// three to "", which would make the safe reading of absence also the reading of
+// two values this form cannot produce.
+func offersRemoteControlState(form url.Values) (session.Mode, bool) {
+	values, present := form[fieldRemoteControl]
+	if !present {
+		return session.ModeLocal, true
+	}
+	if len(values) == 1 && values[0] == remoteControlOn {
+		return session.ModeRemote, true
+	}
+	return "", false
+}
 
 // createFromBrowser is POST /dashboard/sessions (US2, contracts/actions.md).
 //
@@ -339,10 +395,54 @@ func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The mode the switch asked for, compared against the two states this daemon
+	// offers and then dropped (FR-003). It is read from PostForm rather than Form
+	// for the reason the token is, and it is read *after* the budget rather than
+	// before it, which is where the toggle's own value check would put it.
+	//
+	// The toggle reads its value ahead of everything because skipping a confirming
+	// step costs nothing and the journal is owed the fact that something posted a
+	// command line. A budget is not a confirming step: it is what bounds how often
+	// this door does anything at all, records included, and a refusal in front of
+	// it would be one an unbudgeted stream could produce for free.
+	//
+	// The refusal names neither the value nor its length. What this check exists
+	// to turn away is a configured command name — `rc` is real on a daemon that
+	// configures it, and is still refused, because the field carries a mode.
+	mode, offered := offersRemoteControlState(r.PostForm)
+	if !offered {
+		AuditFrom(r.Context()).Deny(errCreateStateNotOffered.Error())
+		s.redirectOutcome(w, r, outcomeBadMode)
+		return
+	}
+
+	// Which configured command that mode runs, asked of the manager rather than
+	// worked out here (FR-004). Local asks for no command in particular, which is
+	// what an empty StartCommand already means to config.StartCommands.Command,
+	// so the safe state needs no configuration to be available in.
+	//
+	// Remote is the one name the loader resolved, and a daemon that configures
+	// none refuses the create rather than starting a plain session: an operator
+	// who asked for remote control and silently got a local session has no way to
+	// discover that is what happened, which is the rule refuseBrowserCreate's
+	// unknown-name branch is already written to and the one config.go states as
+	// "worse than no switch". The trail carries which of the two it was; the page
+	// is told only that nothing started.
+	startCommand := ""
+	if mode == session.ModeRemote {
+		name, err := s.sessions.RemoteStartCommand()
+		if err != nil {
+			AuditFrom(r.Context()).Deny(errModeUnavailable.Error())
+			s.redirectOutcome(w, r, outcomeCreateFailed)
+			return
+		}
+		startCommand = name
+	}
+
 	// The form was parsed by the gate, under the configured body limit, and the
-	// two fields are read from PostForm rather than Form for the reason the token
-	// is: a create this daemon would accept from a query string is a session a
-	// link can start.
+	// three fields are read from PostForm rather than Form for the reason the
+	// token is: a create this daemon would accept from a query string is a session
+	// a link can start.
 	//
 	// The owner is the identity layer 1 verified and never a field. A form that
 	// could name its own owner would make every later ownership check a formality,
@@ -353,10 +453,12 @@ func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
 	// passed on, not given a name that a later edit could reach for. It is the
 	// strongest form FR-013 has in this language.
 	created, _, err := s.sessions.Create(r.Context(), session.CreateRequest{
-		Owner:        operator.Owner,
-		Name:         r.PostForm.Get(fieldName),
-		WorkDir:      r.PostForm.Get(fieldWorkDir),
-		StartCommand: r.PostForm.Get(fieldStartCommand),
+		Owner:   operator.Owner,
+		Name:    r.PostForm.Get(fieldName),
+		WorkDir: r.PostForm.Get(fieldWorkDir),
+		// The daemon's own answer to the mode above, never a byte the form
+		// carried. It is the whole of FR-004 in one assignment.
+		StartCommand: startCommand,
 	})
 	if err != nil {
 		s.refuseBrowserCreate(w, r, err)
@@ -387,8 +489,11 @@ func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
 }
 
 // refuseBrowserCreate maps a Create failure onto the answer contracts/actions.md
-// gives it, and it is refuseCreate's shape on the other door: the same four
-// branches, over the same sentinels, differing only in what a browser is handed.
+// gives it. It is refuseCreate's shape on the other door — the same sentinels,
+// differing in what a browser is handed — over more branches than that one has,
+// and the difference is what a page can say that a status code cannot: this door
+// tells the two invalid fields apart because it has a sentence for each, where
+// the API door answers both with one 400.
 //
 // The reasons are the API door's own, deliberately, exactly as refuseBrowserDestroy
 // borrows that door's. The same fact deserves the same words in the journal
@@ -408,11 +513,18 @@ func (s *Server) refuseBrowserCreate(w http.ResponseWriter, r *http.Request, err
 		AuditFrom(r.Context()).Deny(createReason(err).Error())
 		s.redirectOutcome(w, r, outcomeBadWorkDir)
 	case errors.Is(err, session.ErrUnknownStartCommand):
-		// An outcome of its own rather than the generic failure: the operator named
-		// something this daemon does not have, which is a request to fix rather than
+		// An outcome of its own rather than the generic failure: something named a
+		// command this daemon does not have, which is a request to fix rather than
 		// a fault to report. The name is refused rather than falling back to the
 		// default, because a caller who asked for remote control and silently got a
-		// plain session has no way to discover that is what happened.
+		// plain session has no way to discover that is what happened — the rule the
+		// create route now applies a step earlier, when the mode it was given has no
+		// configured command at all.
+		//
+		// Nothing a browser sends can reach here since T004: the name this door
+		// submits is the daemon's own, resolved from the configuration the manager
+		// was built with. It is kept because that is two objects agreeing rather
+		// than one fact, and the day they disagree this is the honest answer.
 		AuditFrom(r.Context()).Deny(createReason(err).Error())
 		s.redirectOutcome(w, r, outcomeBadStartCommand)
 	case errors.Is(err, session.ErrTooManySessions):
@@ -799,6 +911,13 @@ var (
 	// and it is the honest answer rather than a success: an operator told their
 	// session is now remote-controlled, on a session still running the local
 	// command, has been told the one thing this route must never get wrong.
+	//
+	// The create route records it too, for the first of those two cases: a switch
+	// ticked on a daemon that configures no remote-control command is the same
+	// fact about the same configuration, and the same words belong in the journal
+	// for it. What tells the two apart there is the action the middleware already
+	// set — dashboard.create against session.mode — which is how every other
+	// reason this door shares is told apart.
 	errModeUnavailable = errors.New("this daemon configures no command for the mode a browser asked for")
 
 	// errModeUnchanged is a toggle to the mode the session is already in

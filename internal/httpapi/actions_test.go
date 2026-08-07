@@ -1524,6 +1524,22 @@ const (
 	wantCreateBadWorkDirOutcome = outcome("bad-work-dir")
 	wantCreateLimitedOutcome    = outcome("limited")
 	wantCreateFailedOutcome     = outcome("create-failed")
+
+	// The switch's own refusal, and it is the toggle's code rather than one of
+	// this route's: the fact is the same either way — a browser named a state
+	// this daemon does not offer — and the sentence behind it says nothing about
+	// which route asked. Spelled out here for the reason the four above are.
+	wantCreateBadModeOutcome = outcome("bad-mode")
+)
+
+// The switch as a form carries it (contracts/remote-control-toggle.md). Written
+// out rather than read from fieldRemoteControl and remoteControlOn, because what
+// a browser posts is the contract's strings and a test that asked the code what
+// it reads could not notice the two parting company — the arrangement createPath
+// has for the route.
+const (
+	remoteControlField  = "remote_control"
+	remoteControlTicked = "on"
 )
 
 // createPath is the route from contracts/actions.md's table, written out rather
@@ -2251,6 +2267,286 @@ func TestStrayResumeValueIsNotExecuted(t *testing.T) {
 		if slices.Contains(call.Argv, "--resume") {
 			t.Errorf("the host was handed %q; nothing this daemon starts resumes a conversation", call.Argv)
 		}
+	}
+}
+
+// --- US1: remote control at create time (T004) ------------------------------
+//
+// The route's half of contracts/remote-control-toggle.md. T003 put the switch in
+// the markup; these are about what the daemon does with what it posts, and every
+// one of them turns on the same distinction: the field carries a *mode*, and
+// which configured command a mode runs is read from configuration.
+
+// ticked is the wellFormed create with the switch turned on, spelled as a browser
+// spells it.
+func (c *creator) ticked(t *testing.T) url.Values {
+	t.Helper()
+
+	form := c.wellFormed(t)
+	form.Set(remoteControlField, remoteControlTicked)
+	return form
+}
+
+// modeOnTheFleet is the word the operator reads off the one card on the page,
+// which is where "and the card says so" is answerable.
+//
+// It goes to the rendered fleet rather than to the record, because the record
+// holds a command *name* and the claim under test is about a mode — and because
+// the projection that turns one into the other reads the daemon's configuration,
+// which is the half a create could get right while the page still said the other
+// thing. cardModeRow strips the markup for partials_test.go's reason: a value
+// that is only a coloured dot leaves nothing behind.
+func (c *creator) modeOnTheFleet(t *testing.T) string {
+	t.Helper()
+
+	body := c.page(t).Body.String()
+	row := cardModeRow.FindStringSubmatch(body)
+	if row == nil {
+		t.Fatalf("the fleet renders no mode row for the session that was just created:\n%s", body)
+	}
+	return strings.TrimSpace(markupTags.ReplaceAllString(row[1], ""))
+}
+
+// TestAbsentFieldMeansLocal is the state a browser posts by *not* posting.
+//
+// **Must fail when** absence is treated as an error rather than as local. An
+// unticked checkbox contributes no field at all, so this is the ordinary create
+// on every daemon — and it is the direction a field lost to a proxy, a truncated
+// body or a hand-built request has to fall in, because the alternative is a
+// stripped field escalating a session to remote control.
+//
+// The daemon here configures remote control, which is what makes the case worth
+// asserting: a create that ran the remote command anyway would have somewhere to
+// go wrong.
+func TestAbsentFieldMeansLocal(t *testing.T) {
+	t.Parallel()
+
+	c := newCreator(t)
+	c.offersRemoteControl()
+
+	form := c.wellFormed(t)
+	if _, present := form[remoteControlField]; present {
+		t.Fatal("the ordinary create form already carries the switch, so this case varies nothing")
+	}
+
+	w := c.post(t, form)
+
+	wantOutcome(t, w, wantCreatedOutcome)
+	owned := c.owned()
+	if len(owned) != 1 {
+		t.Fatalf("the store holds %d records; want the one session this create asked for", len(owned))
+	}
+	if got := owned[0].StartCommand; got == plantedStartCommand {
+		t.Errorf("a create carrying no switch runs %q, which is the name this daemon calls remote; want the default", got)
+	}
+	if got, want := c.modeOnTheFleet(t), string(session.ModeLocal); got != want {
+		t.Errorf("the card says the session is %q; want %q — a create with no switch is the less privileged mode", got, want)
+	}
+}
+
+// TestRemoteControlOnMeansRemote is the other state, end to end: the value the
+// switch posts, the command the daemon chose for it, and the word the card says.
+//
+// **Must fail when** the value is accepted but not applied. The record is
+// asserted against the configured name and the card against the word, because
+// those are the two ways this can be half-done — a create that stored the right
+// name while the page reported local would leave an operator believing they are
+// driving something they are not.
+func TestRemoteControlOnMeansRemote(t *testing.T) {
+	t.Parallel()
+
+	c := newCreator(t)
+	c.offersRemoteControl()
+
+	w := c.post(t, c.ticked(t))
+
+	wantOutcome(t, w, wantCreatedOutcome)
+	owned := c.owned()
+	if len(owned) != 1 {
+		t.Fatalf("the store holds %d records; want the one session this create asked for", len(owned))
+	}
+	if got, want := owned[0].StartCommand, plantedStartCommand; got != want {
+		t.Errorf("a ticked switch started a session running %q; want %q, the name this daemon is configured to call remote", got, want)
+	}
+	if got, want := c.modeOnTheFleet(t), string(session.ModeRemote); got != want {
+		t.Errorf("the card says the session is %q; want %q", got, want)
+	}
+}
+
+// TestArbitraryRemoteControlValueRefused is the security case, and the first row
+// is the whole of it: `rc` is a **real configured command name** on this daemon,
+// and it is still refused.
+//
+// **Must fail when** the value is passed through as a command name. The field
+// carries a mode; a request that could name which of the operator's commands runs
+// is the browser choosing what executes unsandboxed on this host, which is the
+// thing FR-026 removed and this route must not hand back.
+//
+// Every case asserts three things beyond the answer: no record, no start, and no
+// byte of the submitted value anywhere the host was addressed. The last is the
+// one that survives a refactor — an implementation that refused and *also* built
+// a command line would pass the first two.
+func TestArbitraryRemoteControlValueRefused(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		// values is what the field carried, as a form carries it. A slice rather
+		// than a string so the repeated case can exist at all: PostForm.Get would
+		// flatten it, and flattening is what this check must not do.
+		values []string
+	}{
+		// The row this test exists for. The daemon really does configure a command
+		// by this name, so a handler that treated the field as a name would start
+		// a session and answer `created`.
+		"a real configured command name": {values: []string{plantedStartCommand}},
+		"a command line":                 {values: []string{"claude --dangerously-skip-permissions"}},
+		"the default command's name":     {values: []string{"default"}},
+		// The switch's own value in spellings the control cannot produce. Accepting
+		// these would widen the field from two states to a vocabulary, and the next
+		// value added to that vocabulary is the one that names something.
+		"another spelling of on": {values: []string{"true"}},
+		"on with different case": {values: []string{"On"}},
+		// Present and empty: a field that was posted and said nothing. It is not
+		// absence, and reading it as absence would mean the safe state is reachable
+		// by two spellings, only one of which a form can produce.
+		"a present but empty value": {values: []string{""}},
+		// Two of the right value. No form produces it, so something hand-built the
+		// request, and a handler that read only the first would be one whose answer
+		// depends on which copy it happened to look at.
+		"the value twice": {values: []string{"on", "on"}},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			c := newCreator(t)
+			c.offersRemoteControl()
+
+			form := c.wellFormed(t)
+			form[remoteControlField] = tc.values
+
+			w := c.post(t, form)
+
+			wantOutcome(t, w, wantCreateBadModeOutcome)
+			if got := len(c.owned()); got != 0 {
+				t.Errorf("the store holds %d records after a refused create; want none", got)
+			}
+			if got := c.started(); got != 0 {
+				t.Errorf("the host was asked to start %d sessions; want 0 — the value is refused before anything runs", got)
+			}
+
+			rec := c.only(t)
+			if got, want := rec["decision"], string(audit.Deny); got != want {
+				t.Errorf("decision = %v; want %v", got, want)
+			}
+			// Equality, not containment: the recorded reason is the whole of the
+			// authored sentinel, which is how FR-042 is kept — a record that quoted
+			// the refused value would differ from this string, and these are exactly
+			// the values that name something to run.
+			if got, want := rec["reason"], errCreateStateNotOffered.Error(); got != want {
+				t.Errorf("reason = %v; want %v", got, want)
+			}
+
+			// Nothing the caller sent reached the host, on either of the two ways
+			// bytes get to a pane. This is TestStrayResumeValueIsNotExecuted's sweep
+			// pointed at the field that replaced the one it was written for.
+			for _, call := range c.fixture.tmux.Calls() {
+				for _, value := range tc.values {
+					if value == "" {
+						continue
+					}
+					for _, arg := range call.Argv {
+						if strings.Contains(arg, value) {
+							t.Errorf("the host was handed %q; a refused remote-control value reached a command line", call.Argv)
+						}
+					}
+					if bytes.Contains(call.Stdin, []byte(value)) {
+						t.Errorf("%v was handed %q on stdin; a refused remote-control value reached the pane", call.Op, call.Stdin)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestRemoteControlOnWithNoRemoteCommandRefuses is what the switch means on a
+// daemon that configures no remote-control command, which is the question T003
+// left open and this task had to answer.
+//
+// It is refused, and the answer is not invented here: config.go states it —
+// *"a switch that silently started plain sessions instead would be worse than no
+// switch"* — Manager.commandForMode already refuses the same mode for the same
+// reason on the toggle, and refuseBrowserCreate's unknown-name branch is written
+// to the same rule. An operator who asked for remote control and was handed a
+// local session has no way to discover that is what happened.
+//
+// **Must fail when** the create falls back to the default command. That failure
+// answers `created`, starts a session, and leaves a card saying local — which is
+// a page telling an operator the truth about a session they did not ask for.
+func TestRemoteControlOnWithNoRemoteCommandRefuses(t *testing.T) {
+	t.Parallel()
+
+	// The zero fixture is the daemon in question: nothing configures remote
+	// control, which is what a default install is.
+	c := newCreator(t)
+
+	w := c.post(t, c.ticked(t))
+
+	wantOutcome(t, w, wantCreateFailedOutcome)
+	if got := len(c.owned()); got != 0 {
+		t.Errorf("the store holds %d records after a refused create; want none", got)
+	}
+	if got := c.started(); got != 0 {
+		t.Errorf("the host was asked to start %d sessions; want 0", got)
+	}
+
+	rec := c.only(t)
+	if got, want := rec["decision"], string(audit.Deny); got != want {
+		t.Errorf("decision = %v; want %v", got, want)
+	}
+	// Told apart in the trail from the refusal above, and answered identically on
+	// the page: one is a fact about the request, the other about how this daemon
+	// is configured, and only the journal has room for the difference.
+	if got, want := rec["reason"], errModeUnavailable.Error(); got != want {
+		t.Errorf("reason = %v; want %v", got, want)
+	}
+}
+
+// TestCreateEmitsExactlyOneAuditRecord is FR-041 across the choice this task
+// added: one record per create, whichever mode.
+//
+// **Must fail when** the mode choice adds a second record. It is a real risk on
+// this route rather than a formality — the mode is resolved against configuration
+// before Manager.Create runs, and a resolution that recorded what it decided
+// would give an operator two rows for one action and a create count that is
+// twice the number of sessions.
+func TestCreateEmitsExactlyOneAuditRecord(t *testing.T) {
+	t.Parallel()
+
+	for name, tick := range map[string]bool{"local": false, "remote": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			c := newCreator(t)
+			c.offersRemoteControl()
+
+			form := c.wellFormed(t)
+			if tick {
+				form = c.ticked(t)
+			}
+
+			wantOutcome(t, c.post(t, form), wantCreatedOutcome)
+
+			// only is the assertion: it fails on any count but one.
+			rec := c.only(t)
+			if got, want := rec["action"], string(audit.ActionDashboardCreate); got != want {
+				t.Errorf("action = %v; want %v", got, want)
+			}
+			if got, want := rec["decision"], string(audit.Allow); got != want {
+				t.Errorf("decision = %v; want %v", got, want)
+			}
+		})
 	}
 }
 
@@ -5081,12 +5377,19 @@ const plantedStartCommand = "rc"
 // against this configuration, so a manager nobody told has no remote mode to
 // move to and refuses every toggle. Nothing here runs: the fake executes
 // nothing, so the command lines are spelled to be recognisable in an argv.
+// The config is told as well as the manager, because a production daemon tells
+// both from one value (server.go) and the two answer different halves of the same
+// question: the manager decides what a mode *runs*, and the config is what cardOf
+// derives the word a card *says* from. A fixture that set only one would be a
+// daemon that cannot exist, and it would hide exactly the disagreement between
+// them that a create asserting on both is there to catch.
 func (s *testServer) offersRemoteControl() {
 	s.fixture.mgr.SetStartCommands(config.NewStartCommands(map[string]string{
 		config.DefaultStartCommandName: "local-command",
 		plantedStartCommand:            "remote-command",
 	}))
 	s.fixture.mgr.SetRemoteControlCommand(plantedStartCommand)
+	s.cfg.RemoteControlCommand = plantedStartCommand
 }
 
 // toggler is the registered mode route with everything behind it readable: the
