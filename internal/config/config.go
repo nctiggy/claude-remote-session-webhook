@@ -78,6 +78,19 @@ const (
 	// always used.
 	EnvStartCommands = "CRSW_START_COMMANDS"
 
+	// EnvRemoteControlCommand names which entry of that set the dashboard's
+	// remote-control switch means (#58). It carries a name for the same reason a
+	// create does: a switch wired to a name is a switch whose behaviour an
+	// operator can read out of their own configuration and change there, and a
+	// switch wired to a command line would be the thing the allowlist exists to
+	// prevent (#38).
+	//
+	// Unset means DefaultRemoteControlCommandName. Set to a name the daemon does
+	// not configure, it is a startup failure — an operator who spelled it
+	// differently has said which name they mean, and a switch that silently
+	// started plain sessions instead would be worse than no switch.
+	EnvRemoteControlCommand = "CRSW_REMOTE_CONTROL_COMMAND"
+
 	envHome = "HOME"
 
 	// rootListSeparator is fixed at ":" rather than os.PathListSeparator: the
@@ -103,7 +116,19 @@ const (
 	// trail. Anything longer is a command line typed into the wrong half of an
 	// entry.
 	maxStartCommandNameLen = 32
+
+	// maxSessionNameLen is session.ValidateName's ceiling, restated here for the
+	// reason RenderStartCommand restates its alphabet: this package cannot import
+	// the one that owns it, and the substitution's whole safety argument rests on
+	// the bound holding at the point of substitution.
+	maxSessionNameLen = 64
 )
+
+// ErrStartCommandName refuses a substitution whose session name is absent or
+// outside the alphabet the licence in StartCommandNamePlaceholder depends on.
+// Callers branch on it to answer a create the way they answer any other unusable
+// name — a refusal, never a command line with an empty argument in it.
+var ErrStartCommandName = errors.New("the session name cannot be put into the start command")
 
 // Defaults for everything optional. There is deliberately no default for the
 // shared secret: an absent secret is an absent auth layer.
@@ -135,6 +160,31 @@ const (
 	// EnvStartCommand or from DefaultStartCommand — so there is no configuration
 	// in which a create with no start_command has no command to run.
 	DefaultStartCommandName = "default"
+
+	// DefaultRemoteControlCommandName is the name the remote-control switch means
+	// when EnvRemoteControlCommand names none. A daemon that configures no such
+	// command offers no switch at all rather than one that cannot work.
+	DefaultRemoteControlCommandName = "rc"
+
+	// StartCommandNamePlaceholder is the one substitution a configured start
+	// command may carry: the session's own name, so that a `claude
+	// remote-control --name {name}` shows in claude.ai under the name the
+	// operator gave it here rather than one Claude invented (#58).
+	//
+	// Interpolating a value into a command line typed at a shell is normally how
+	// injection happens. It is safe for this one field, for one stated reason:
+	// **session.ValidateName restricts a name to `^[a-zA-Z0-9-]{1,64}$`** — no
+	// space, quote, semicolon, backtick, dollar or newline — so there is no name
+	// a caller can supply that changes the *shape* of the command line, only the
+	// argument it already had. RenderStartCommand re-checks that alphabet at the
+	// point of substitution rather than trusting its caller to have done so.
+	//
+	// That guarantee is the whole licence. If this set ever grows a second
+	// placeholder, the new value has to be *proven* unable to alter a command
+	// line — a working directory, for one, cannot be: it is a filesystem path and
+	// may contain anything. Extending the set is a decision to be reconsidered,
+	// not a line to be copied.
+	StartCommandNamePlaceholder = "{name}"
 )
 
 // ApprovedRoot is a directory a session may run in, resolved once at startup so
@@ -276,6 +326,12 @@ type Config struct {
 	// StartCommands is the named set a create chooses from, always carrying
 	// DefaultStartCommandName.
 	StartCommands StartCommands
+
+	// RemoteControlCommand is the *name* in that set which the dashboard's
+	// remote-control switch turns on (#58). Empty means this daemon configures no
+	// remote-control command, and the dashboard renders no switch — an operator
+	// is never offered a control whose only outcome is a refusal.
+	RemoteControlCommand string
 }
 
 // String redacts the shared secret so that formatting a Config — in a log line,
@@ -406,6 +462,10 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 	if err != nil {
 		return nil, err
 	}
+	remoteControl, err := loadRemoteControlCommand(getenv, startCommands)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Config{
 		SharedSecret:        secret,
@@ -423,7 +483,117 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 		IdleTimeout:         idle,
 		IdleTimeoutMax:      idleMax,
 		StartCommands:       startCommands,
+
+		RemoteControlCommand: remoteControl,
 	}, nil
+}
+
+// loadRemoteControlCommand decides what the dashboard's remote-control switch
+// means on this daemon (#58).
+//
+// Unset resolves to DefaultRemoteControlCommandName, and only if the operator
+// actually configured a command by that name — a daemon that configures none has
+// no remote control to switch on, so it gets the form it had before this
+// existed. Set explicitly, the name must exist: an operator who spelled their
+// command differently has said which one they mean, and a switch that quietly
+// started plain sessions is exactly the failure a create refuses an unknown name
+// to avoid.
+func loadRemoteControlCommand(getenv func(string) string, cmds StartCommands) (string, error) {
+	name := strings.TrimSpace(getenv(EnvRemoteControlCommand))
+	if name == "" {
+		if _, ok := cmds.Command(DefaultRemoteControlCommandName); !ok {
+			return "", nil
+		}
+		return DefaultRemoteControlCommandName, nil
+	}
+	if err := validateStartCommandName(EnvRemoteControlCommand, name); err != nil {
+		return "", err
+	}
+	if _, ok := cmds.Command(name); !ok {
+		return "", fmt.Errorf("%s names the %q start command, which %s does not configure; refusing to start",
+			EnvRemoteControlCommand, name, EnvStartCommands)
+	}
+	return name, nil
+}
+
+// RenderStartCommand substitutes a session's own name into a configured start
+// command, and is the only place a caller-supplied value ever reaches one.
+//
+// Read StartCommandNamePlaceholder for why this is safe and where the licence
+// ends. The alphabet is re-checked here, deliberately duplicating
+// session.ValidateName, because this function is where the value stops being
+// data and becomes part of a line typed at an unsandboxed shell — and because
+// internal/session imports this package, so the check cannot be borrowed.
+//
+// A command with no placeholder is returned untouched, so a name is never
+// required by a command that does not ask for one. A command that *does* ask
+// with nothing to give is an error rather than an empty `--name`: the operator
+// asked for their name on the other side, and a blank argument is neither that
+// nor an honest refusal.
+func RenderStartCommand(command, sessionName string) (string, error) {
+	if !strings.Contains(command, StartCommandNamePlaceholder) {
+		return command, nil
+	}
+	if sessionName == "" {
+		return "", fmt.Errorf("%w: the start command needs a session name and this session has none", ErrStartCommandName)
+	}
+	if len(sessionName) > maxSessionNameLen {
+		return "", fmt.Errorf("%w: longer than %d characters", ErrStartCommandName, maxSessionNameLen)
+	}
+	for _, c := range sessionName {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
+			return "", fmt.Errorf("%w: outside [a-zA-Z0-9-]", ErrStartCommandName)
+		}
+	}
+	return strings.ReplaceAll(command, StartCommandNamePlaceholder, sessionName), nil
+}
+
+// unknownPlaceholder finds the first `{identifier}` in a command line that is
+// not one this daemon substitutes.
+//
+// A typo is a startup failure rather than a literal: `{worrking_dir}` typed at a
+// shell is a brace expansion nobody asked for, and the operator who wrote it
+// believes their working directory is being passed. Naming the token in the
+// refusal is what turns that into a five-second fix.
+//
+// Only `{` immediately followed by an identifier and closed by `}` counts, so a
+// shell brace expansion like `{1..3}` still passes through — and `${HOME}` is
+// exempt outright, because that brace belongs to the shell's own grammar and the
+// daemon never interprets it.
+func unknownPlaceholder(command string) (string, bool) {
+	for i := 0; i < len(command); i++ {
+		if command[i] != '{' || (i > 0 && command[i-1] == '$') {
+			continue
+		}
+		end := strings.IndexByte(command[i:], '}')
+		if end < 0 {
+			break
+		}
+		token := command[i : i+end+1]
+		if !isPlaceholder(token) || token == StartCommandNamePlaceholder {
+			continue
+		}
+		return token, true
+	}
+	return "", false
+}
+
+// isPlaceholder reports whether a `{...}` run is shaped like one of ours: a
+// non-empty identifier and nothing else.
+func isPlaceholder(token string) bool {
+	inner := token[1 : len(token)-1]
+	if inner == "" {
+		return false
+	}
+	for i, c := range inner {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c == '_':
+		case i > 0 && c >= '0' && c <= '9':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // loadStartCommands builds the named set a create chooses from.
@@ -471,7 +641,7 @@ func loadStartCommands(getenv func(string) string) (StartCommands, error) {
 		}
 
 		name = strings.TrimSpace(name)
-		if err := validateStartCommandName(name); err != nil {
+		if err := validateStartCommandName(EnvStartCommands, name); err != nil {
 			return StartCommands{}, err
 		}
 		if named[name] {
@@ -502,16 +672,19 @@ func loadStartCommands(getenv func(string) string) (StartCommands, error) {
 // create carries, an operator types, and the audit trail records. Lowercase
 // letters, digits and hyphens only, so a name in a record cannot be mistaken for
 // anything else and cannot carry a byte a journal reader has to escape.
-func validateStartCommandName(name string) error {
+//
+// The variable is named by the caller because two of them carry a name now: the
+// set that defines them and EnvRemoteControlCommand, which chooses one.
+func validateStartCommandName(variable, name string) error {
 	if name == "" {
-		return fmt.Errorf("%s contains an entry with no name; refusing to start", EnvStartCommands)
+		return fmt.Errorf("%s contains an entry with no name; refusing to start", variable)
 	}
 	if len(name) > maxStartCommandNameLen {
-		return fmt.Errorf("%s contains a name longer than %d characters; refusing to start", EnvStartCommands, maxStartCommandNameLen)
+		return fmt.Errorf("%s contains a name longer than %d characters; refusing to start", variable, maxStartCommandNameLen)
 	}
 	for _, c := range name {
 		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
-			return fmt.Errorf("%s contains a name outside [a-z0-9-]; refusing to start", EnvStartCommands)
+			return fmt.Errorf("%s contains a name outside [a-z0-9-]; refusing to start", variable)
 		}
 	}
 	return nil
@@ -555,6 +728,14 @@ func validateStartCommand(variable, name, command string) error {
 			return fmt.Errorf("%s: the %q start command contains a control character, which would submit the line before it was finished; refusing to start",
 				variable, name)
 		}
+	}
+	// An unrecognised placeholder is refused rather than typed (#58). The
+	// operator who wrote it is expecting a value to be substituted; passing it
+	// through as a literal would type a brace expansion at a shell and tell
+	// nobody. The token is named so the fix is obvious.
+	if token, found := unknownPlaceholder(command); found {
+		return fmt.Errorf("%s: the %q start command contains %s, which is not a placeholder this daemon substitutes (only %s); refusing to start",
+			variable, name, token, StartCommandNamePlaceholder)
 	}
 	return nil
 }

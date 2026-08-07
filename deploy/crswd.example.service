@@ -85,6 +85,14 @@ Environment=CRSW_MAX_STREAMS=10
 Environment="CRSW_START_COMMAND=claude --dangerously-skip-permissions"
 Environment="CRSW_START_COMMANDS="
 
+# Which name in that set the dashboard's remote-control switch means (#58).
+# Default: `rc`. With the empty set above there is no such command, so the form
+# renders no switch; naming one the set does not define is a startup failure.
+# A command line in the set may carry `{name}` and nothing else in braces — it
+# becomes the session's own name, so `--name {name}` puts the operator's name on
+# the other side instead of one Claude invented.
+Environment=CRSW_REMOTE_CONTROL_COMMAND=
+
 # Session lifetimes (#37). Empty means the daemon's own defaults: 24h absolute,
 # 60m idle. The MAX pair are ceilings a per-session override may not exceed, and
 # default to the values above — so overrides buy nothing until a ceiling is
