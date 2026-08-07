@@ -28,10 +28,12 @@ package config
 //
 // It carries the grammar and the refusals a *configuration* makes — which keys
 // exist, which have been renamed, and which schema the file was written against
-// — and the one refusal the *file on disk* makes: its mode (FR-007). What
-// happens when it is absent arrives with T006.
+// — and the one refusal the *file on disk* makes: its mode (FR-007). The one
+// thing it never refuses is a file that is not there (FR-003): no file is the
+// configuration every deployment before this milestone had.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -178,6 +180,14 @@ func VarForKey(key string) string { return envPrefix + strings.ToUpper(key) }
 // ReadFile reads the configuration file at path, parses it, and refuses a file
 // that holds a secret and is reachable by another account on this host (FR-007).
 //
+// A file that is not there is not an error and never becomes one (FR-003).
+// Every deployment of this daemon so far has no configuration file, because
+// until this milestone there was none to have; a refusal here would take those
+// daemons down on upgrade, which is SC-002. It returns a nil *File rather than
+// an empty one so that "no file was read" stays distinguishable from "a file was
+// read and set nothing" — the settings page says which, and an empty *File
+// carrying a path would have it name a file that does not exist.
+//
 // The mode is taken from the open handle rather than from a second os.Stat of
 // the name, so the permission this refusal is made about belongs to the bytes
 // that were actually read. Checking one file and reading another is a
@@ -190,6 +200,14 @@ func VarForKey(key string) string { return envPrefix + strings.ToUpper(key) }
 func ReadFile(path string, warn io.Writer) (*File, error) {
 	handle, err := os.Open(path) //nolint:gosec // G304: the path is the operator's own config file, not something a request names.
 	if err != nil {
+		// Absence only, and nothing that merely resembles it. A file the
+		// operator wrote and this account cannot open — wrong owner, wrong mode,
+		// a plain file where a directory belongs on the path — is a file they
+		// expect to be read, and starting on the environment instead would
+		// silently ignore every bound they set in it.
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("config file %s cannot be opened; refusing to start: %w", path, err)
 	}
 	defer func() { _ = handle.Close() }()

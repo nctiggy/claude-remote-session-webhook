@@ -1,11 +1,11 @@
 package config_test
 
-// The configuration file's grammar, its refusals, and its mode (#65, T003, T004
-// and T005). The grammar cases drive config.ParseFile with bytes, because the
-// grammar is about the contents of a file rather than about the file on disk;
-// the mode cases from TestGroupReadableWithSecretRefuses onwards drive
-// config.ReadFile against a real file, because a mode is not something bytes
-// have. What happens when the file is absent is T006's decision.
+// The configuration file's grammar, its refusals, its mode, and its absence
+// (#65, T003, T004, T005 and T006). The grammar cases drive config.ParseFile
+// with bytes, because the grammar is about the contents of a file rather than
+// about the file on disk; the cases from TestGroupReadableWithSecretRefuses
+// onwards drive config.ReadFile against a real file, because a mode, an absence
+// and an mtime are not things bytes have.
 //
 // Two of the grammar cases are the reason the format is what it is. A `#` inside
 // a value belongs to the value, and a value may contain `=`. Both look like
@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 )
@@ -874,4 +875,170 @@ func TestAnOversizeFileIsRefused(t *testing.T) {
 	if _, err := config.ReadFile(path, io.Discard); err != nil {
 		t.Errorf("ReadFile() refused a file exactly at the bound: %v", err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// T006 — absence, and the absence of a write path.
+// ---------------------------------------------------------------------------
+
+// No file is not a misconfiguration: it is the configuration every deployment of
+// this daemon has today, because until this milestone there was no file to have
+// (FR-003). A refusal here would take all of them down on upgrade, which is what
+// SC-002 is for.
+func TestMissingFileIsNotAnError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	cases := []struct {
+		name string
+		path string
+	}{
+		{name: "no file in a directory that exists", path: filepath.Join(dir, "config")},
+		// The likelier shape by far: nobody has run this daemon with a file, so
+		// ~/.config/crswd does not exist either.
+		{name: "no directory to hold one", path: filepath.Join(dir, "crswd", "config")},
+		{name: "nothing anywhere along the path", path: filepath.Join(dir, "a", "b", "c", "config")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f, err := config.ReadFile(tc.path, io.Discard)
+			if err != nil {
+				t.Fatalf("ReadFile() refused to start over a file nobody wrote: %v", err)
+			}
+
+			// Empty, and empty in the way the precedence shim asks: every
+			// variable answers "not set", so every value falls through to the
+			// environment and then to the default it has today.
+			for _, name := range config.Vars() {
+				if v, ok := f.Lookup(name); ok {
+					t.Errorf("a file that does not exist set %s to %q", name, v)
+				}
+			}
+
+			// And it names no file. The settings page says "no configuration
+			// file was read" from this, and a path here would have it name a
+			// file the operator can go and look for in vain.
+			if p := f.Path(); p != "" {
+				t.Errorf("Path() = %q for a file that does not exist", p)
+			}
+		})
+	}
+}
+
+// A file that exists and cannot be read is still a refusal. The two are one
+// branch apart and collapsing them is the plausible mistake: an operator whose
+// file is owned by root gets a daemon running on none of the bounds they wrote,
+// and nothing anywhere says so.
+func TestAnUnreadableFileIsStillARefusal(t *testing.T) {
+	t.Parallel()
+
+	// A plain file where a directory belongs is the one case reachable without
+	// being able to change owners: opening under it fails ENOTDIR, which is not
+	// absence however much it looks like it from the path.
+	notADir := writeConfig(t, "listen = 127.0.0.1:8787\n", 0o600)
+	path := filepath.Join(notADir, "config")
+
+	if _, err := config.ReadFile(path, io.Discard); err == nil {
+		t.Fatal("ReadFile() treated an unreadable path as an absent file, so a daemon would start on none of the settings the operator wrote")
+	}
+}
+
+// file.go has no write path at all — not a formatter, not a normaliser, not an
+// "upgrade in place". The operator's file is the operator's, and under source
+// control a reformat is a diff nobody asked for. `crswd config migrate` is the
+// only code in this repository that writes one (FR-008).
+func TestParserNeverWrites(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		contents string
+		mode     os.FileMode
+	}{
+		{name: "a file that parses", contents: workedExample, mode: 0o600},
+		// The refusal paths matter more than the happy one here: a daemon that
+		// refuses is a daemon an operator is about to edit, and a file rewritten
+		// under them mid-edit is the worst version of this bug.
+		{name: "a file the grammar refuses", contents: "listen = x\nnonsense\n", mode: 0o600},
+		{name: "a file refused for its mode", contents: "shared_secret = " + hunter2 + "\n", mode: 0o644},
+		{name: "a file refused for its version", contents: "version = 99\n", mode: 0o600},
+		// Nothing normalises the spelling of a file that is merely untidy — no
+		// trimmed whitespace, no rewritten line ending, no added final newline.
+		{name: "a file that is untidy but valid", contents: "  listen  =  127.0.0.1:8787  \r\n\n\n# a note\nmax_sessions = 3", mode: 0o600},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			path := writeConfig(t, tc.contents, tc.mode)
+
+			// Backdated so the mtime comparison can fail at all. The kernel
+			// stamps an mtime from a coarse clock that does not tick within a
+			// test this short, so a fixture written moments ago and rewritten
+			// during the read keeps the same mtime to the nanosecond — the
+			// assertion would be green against a daemon that had just
+			// overwritten the operator's file.
+			if err := os.Chtimes(path, longAgo, longAgo); err != nil {
+				t.Fatalf("backdate the fixture config file: %v", err)
+			}
+
+			before, beforeInfo := snapshot(t, path)
+
+			// The error is deliberately not asserted on. This test is about the
+			// bytes on disk, and it must hold whichever way the parse went.
+			_, _ = config.ReadFile(path, io.Discard)
+
+			after, afterInfo := snapshot(t, path)
+			if !bytes.Equal(before, after) {
+				t.Errorf("the file's contents changed:\nbefore %q\nafter  %q", before, after)
+			}
+			if !afterInfo.ModTime().Equal(beforeInfo.ModTime()) {
+				t.Errorf("the file's mtime moved from %s to %s, so something opened it for writing",
+					beforeInfo.ModTime(), afterInfo.ModTime())
+			}
+			if afterInfo.Mode() != beforeInfo.Mode() {
+				t.Errorf("the file's mode changed from %04o to %04o; the mode refusal says what to run, it does not run it",
+					beforeInfo.Mode().Perm(), afterInfo.Mode().Perm())
+			}
+
+			// The other half of "never writes", and the one comparing bytes
+			// misses: a backup, a `.tmp` alongside, a migrated copy. Each
+			// fixture has its own directory, so anything here is new.
+			entries, err := os.ReadDir(filepath.Dir(path))
+			if err != nil {
+				t.Fatalf("list the fixture directory: %v", err)
+			}
+			if len(entries) != 1 || entries[0].Name() != filepath.Base(path) {
+				names := make([]string, 0, len(entries))
+				for _, e := range entries {
+					names = append(names, e.Name())
+				}
+				t.Errorf("reading the config file left %v beside it; config migrate is the only code that writes one", names)
+			}
+		})
+	}
+}
+
+// longAgo is far enough back that any write at all moves the mtime by years
+// rather than by whatever the clock's granularity happens to be.
+var longAgo = time.Date(2020, time.January, 2, 3, 4, 5, 0, time.UTC)
+
+// snapshot is what the file is, for a comparison of what it still is.
+func snapshot(t *testing.T, path string) ([]byte, os.FileInfo) {
+	t.Helper()
+
+	data, err := os.ReadFile(path) //nolint:gosec // G304: the path is this test's own fixture.
+	if err != nil {
+		t.Fatalf("read the fixture config file: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat the fixture config file: %v", err)
+	}
+	return data, info
 }
