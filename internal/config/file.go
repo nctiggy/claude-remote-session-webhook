@@ -20,15 +20,16 @@ package config
 //
 // **Nothing here ever writes.** The operator's file is the operator's; a daemon
 // that reformats one has taken a decision that was not its to take, especially
-// under source control where the reformat becomes a diff nobody asked for. This
-// file does not open one either: it is handed bytes, so there is no path here
-// for a write to be added to later.
+// under source control where the reformat becomes a diff nobody asked for.
+// ReadFile is the only function here that opens anything, it opens read-only,
+// and it hands the bytes to a parser that is given no way to write them back.
+// `crswd config migrate` is the only code in this repository that writes a
+// config file (FR-008).
 //
 // It carries the grammar and the refusals a *configuration* makes — which keys
-// exist, which have been renamed, and which schema the file was written against.
-// What mode the file must be and what happens when it is absent are decisions
-// about the file on disk rather than about its contents, and they arrive with
-// T005 and T006.
+// exist, which have been renamed, and which schema the file was written against
+// — and the one refusal the *file on disk* makes: its mode (FR-007). What
+// happens when it is absent arrives with T006.
 
 import (
 	"fmt"
@@ -44,6 +45,15 @@ const (
 
 	commentPrefix     = "#"
 	keyValueSeparator = "="
+
+	// maxConfigFileBytes bounds what is read into memory before anything looks
+	// at it. The largest plausible file this daemon has is a few hundred bytes,
+	// so the bound is not about configuration — it is about the path being the
+	// operator's own environment: an io.ReadAll aimed at /dev/zero by a typo in
+	// a unit file is a daemon that never starts and never says why. Past the
+	// bound it refuses rather than truncating, because a truncated file is a
+	// daemon running on a subset of the bounds its operator wrote.
+	maxConfigFileBytes = 1 << 20
 
 	// maxKeyLen bounds what an error message is willing to quote back.
 	//
@@ -164,6 +174,83 @@ func KeyForVar(name string) string {
 
 // VarForKey maps a file key back to its environment variable name.
 func VarForKey(key string) string { return envPrefix + strings.ToUpper(key) }
+
+// ReadFile reads the configuration file at path, parses it, and refuses a file
+// that holds a secret and is reachable by another account on this host (FR-007).
+//
+// The mode is taken from the open handle rather than from a second os.Stat of
+// the name, so the permission this refusal is made about belongs to the bytes
+// that were actually read. Checking one file and reading another is a
+// distinction that only ever matters on the day it is being exploited.
+//
+// The mode is checked *after* the parse because the refusal is gated on what the
+// file contains, and there is no way to know that without reading it. Reading
+// first costs nothing: this process can already read the file, which is exactly
+// what is wrong with the mode.
+func ReadFile(path string, warn io.Writer) (*File, error) {
+	handle, err := os.Open(path) //nolint:gosec // G304: the path is the operator's own config file, not something a request names.
+	if err != nil {
+		return nil, fmt.Errorf("config file %s cannot be opened; refusing to start: %w", path, err)
+	}
+	defer func() { _ = handle.Close() }()
+
+	info, err := handle.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("config file %s cannot be inspected; refusing to start: %w", path, err)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(handle, maxConfigFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("config file %s cannot be read; refusing to start: %w", path, err)
+	}
+	if len(data) > maxConfigFileBytes {
+		return nil, fmt.Errorf("config file %s is larger than %d bytes; refusing to start", path, maxConfigFileBytes)
+	}
+
+	f, err := ParseFile(path, data, warn)
+	if err != nil {
+		return nil, err
+	}
+
+	// A secret in a mode-0644 file has already leaked to every account on this
+	// host, which is the whole reason a file is better than an Environment= line
+	// in a unit that `systemctl show` prints to anyone who asks. Refusing is the
+	// only answer that leaves the operator better off than they started: the
+	// alternative is a daemon that starts, works, and never mentions it again.
+	//
+	// Group and world are one test rather than two. A file the operator's group
+	// can read is a file read by however many accounts that group has, which is
+	// a number nothing here can know; and 0o077 also catches the write bits,
+	// where the exposure is not the secret leaving but a command line arriving.
+	if perm := info.Mode().Perm(); perm&0o077 != 0 && f.holdsSecret() {
+		return nil, fmt.Errorf("config file %s is mode %04o, so it is readable by other accounts on this host and may hold the shared secret; run chmod 600 %s",
+			path, perm, path)
+	}
+
+	return f, nil
+}
+
+// holdsSecret reports whether this file sets any key IsSecret classifies as one.
+//
+// It is what makes the mode refusal something an operator can act on. A file
+// holding only allowed_roots is not a secret file, and a daemon refusing to
+// start over its mode would be demanding a change that protects nothing — the
+// kind of refusal that teaches an operator to stop reading them.
+//
+// Asking IsSecret rather than testing for the key here is the point of T001:
+// this refusal and the settings page's value column are the two places that
+// decide what a secret is, and a second list is how they come to disagree.
+func (f *File) holdsSecret() bool {
+	if f == nil {
+		return false
+	}
+	for key := range f.values {
+		if IsSecret(key) {
+			return true
+		}
+	}
+	return false
+}
 
 // ParseFile turns the bytes of a configuration file into the settings it makes,
 // writing the renamed-key warning to warn.

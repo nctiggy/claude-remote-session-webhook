@@ -21,3 +21,9 @@ func ParseFileWithRenames(path string, data []byte, renames map[string]string, w
 // RenamedKeys reports how many renames ship today, so a test can pin that the
 // table is still empty without being able to add to it.
 func RenamedKeys() int { return len(renamedKeys) }
+
+// MaxConfigFileBytes is the read bound, exposed so the test that proves a file
+// past it is refused builds its fixture from the same number the check uses. A
+// test carrying its own copy passes the day the bound changes and the fixture
+// stops being oversize.
+const MaxConfigFileBytes = maxConfigFileBytes

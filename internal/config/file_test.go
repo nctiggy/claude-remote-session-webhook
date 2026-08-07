@@ -1,10 +1,11 @@
 package config_test
 
-// The configuration file's grammar and its refusals (#65, T003 and T004). Every
-// case here drives config.ParseFile with bytes, because both are about the
-// contents of a file rather than about the file on disk: what mode it must be
-// and what happens when it is absent are decisions T005 and T006 make, and they
-// are tested where they are made.
+// The configuration file's grammar, its refusals, and its mode (#65, T003, T004
+// and T005). The grammar cases drive config.ParseFile with bytes, because the
+// grammar is about the contents of a file rather than about the file on disk;
+// the mode cases from TestGroupReadableWithSecretRefuses onwards drive
+// config.ReadFile against a real file, because a mode is not something bytes
+// have. What happens when the file is absent is T006's decision.
 //
 // Two of the grammar cases are the reason the format is what it is. A `#` inside
 // a value belongs to the value, and a value may contain `=`. Both look like
@@ -17,7 +18,10 @@ package config_test
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -678,5 +682,196 @@ func TestAnOverlongKeyIsRefusedWithoutQuotingIt(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), short) {
 		t.Errorf("error = %q, want a key at the bound named — the refusal is useless if no key is ever quoted", err)
+	}
+}
+
+// hunter2 is what a shared secret looks like on a line of a real file, `#` and
+// all — the contract's own example value. The refusals below must never print
+// it, and the file holding it must never be one another account can read.
+//
+// It is named for the value rather than for what the value is because gosec
+// G101 reads the *name*: a const called anything with "secret" in it and a
+// literal on the right is a hardcoded credential to the linter, whether or not
+// the file is a test fixture.
+const hunter2 = "hunter2#not-a-comment"
+
+// writeConfig writes a fixture config file and sets its mode explicitly.
+//
+// The mode argument to os.WriteFile passes through the umask, so a fixture that
+// relied on it would be testing the umask of whoever ran the suite. os.Chmod
+// does not, and these cases are about exact modes.
+func writeConfig(t *testing.T, contents string, mode os.FileMode) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "config")
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write the fixture config file: %v", err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("set the fixture config file to mode %04o: %v", mode, err)
+	}
+	return path
+}
+
+// A secret in a file another account can read has already leaked, so the daemon
+// refuses rather than starting and never mentioning it (FR-007). Group and world
+// are one test: a group-readable file is readable by however many accounts that
+// group holds, which is not a number this daemon can know.
+func TestGroupReadableWithSecretRefuses(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		contents string
+		mode     os.FileMode
+	}{
+		{name: "group readable", contents: "shared_secret = " + hunter2 + "\n", mode: 0o640},
+		{name: "world readable", contents: "shared_secret = " + hunter2 + "\n", mode: 0o604},
+		{name: "group and world readable", contents: "shared_secret = " + hunter2 + "\n", mode: 0o644},
+		// Not a leak but the other direction: a file the group can write is a
+		// file whose start_commands another account chooses.
+		{name: "group writable", contents: "shared_secret = " + hunter2 + "\n", mode: 0o620},
+		// The allowlist authenticates nobody and still names who may reach a
+		// daemon that runs unsandboxed code. It is secret because IsSecret says
+		// so, which is the only place that says so.
+		{name: "the allowlist alone is enough", contents: "access_allowed_emails = nctiggy@gmail.com\n", mode: 0o644},
+		{name: "a secret among ordinary settings", contents: "listen = 127.0.0.1:8787\nallowed_roots = /home/nctiggy/code\nshared_secret = " + hunter2 + "\n", mode: 0o644},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			path := writeConfig(t, tc.contents, tc.mode)
+
+			f, err := config.ReadFile(path, io.Discard)
+			if err == nil {
+				t.Fatalf("ReadFile() started on a mode %04o file holding a secret", tc.mode)
+			}
+			if f != nil {
+				t.Errorf("ReadFile() refused and returned values anyway; a caller reading them past the error would run on the file that was refused")
+			}
+
+			// The remedy has to be in the message. An operator who is told their
+			// file is wrong and not what to run about it is an operator who will
+			// reach for the environment variable instead.
+			if !strings.Contains(err.Error(), path) {
+				t.Errorf("error = %q, want the file named — an operator with two config files cannot act on this otherwise", err)
+			}
+			if want := fmt.Sprintf("chmod 600 %s", path); !strings.Contains(err.Error(), want) {
+				t.Errorf("error = %q, want it to name %q", err, want)
+			}
+			if want := fmt.Sprintf("mode %04o", tc.mode.Perm()); !strings.Contains(err.Error(), want) {
+				t.Errorf("error = %q, want it to name %q", err, want)
+			}
+			if strings.Contains(err.Error(), hunter2) {
+				t.Errorf("the refusal printed the secret it was refusing to leave readable: %q", err)
+			}
+		})
+	}
+}
+
+// The refusal in the other direction, which is a bug of the same kind. A file
+// holding only allowed_roots is not a secret file, and a daemon that refused to
+// start over its mode would be demanding a change that protects nothing.
+func TestGroupReadableWithoutSecretStarts(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		contents string
+		mode     os.FileMode
+		key      string
+		want     string
+	}{
+		{
+			name:     "the containment boundary is readable on purpose",
+			contents: "allowed_roots = /home/nctiggy/code\n",
+			mode:     0o644,
+			key:      "allowed_roots",
+			want:     "/home/nctiggy/code",
+		},
+		{
+			name:     "world readable and world writable",
+			contents: "listen = 127.0.0.1:8787\n",
+			mode:     0o666,
+			key:      "listen",
+			want:     "127.0.0.1:8787",
+		},
+		{
+			name:     "a key whose name merely resembles one",
+			contents: "start_commands = default=claude --dangerously-skip-permissions\n",
+			mode:     0o640,
+			key:      "start_commands",
+			want:     "default=claude --dangerously-skip-permissions",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			path := writeConfig(t, tc.contents, tc.mode)
+
+			f, err := config.ReadFile(path, io.Discard)
+			if err != nil {
+				t.Fatalf("ReadFile() refused a mode %04o file holding no secret: %v", tc.mode, err)
+			}
+
+			got, ok := f.Lookup(config.VarForKey(tc.key))
+			if !ok {
+				t.Fatalf("ReadFile() started and did not read %s; the mode check is not the only thing this function does", tc.key)
+			}
+			if got != tc.want {
+				t.Errorf("%s = %q, want %q", tc.key, got, tc.want)
+			}
+			if f.Path() != path {
+				t.Errorf("Path() = %q, want %q — the settings page names this file to answer \"why did my edit do nothing?\"", f.Path(), path)
+			}
+		})
+	}
+}
+
+// The mode the operator is told to set has to be the mode that starts, or the
+// refusal sends them somewhere that refuses them again.
+func TestOwnerOnlyModesWithSecretStart(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range []os.FileMode{0o600, 0o400} {
+		t.Run(fmt.Sprintf("%04o", mode), func(t *testing.T) {
+			t.Parallel()
+
+			path := writeConfig(t, "shared_secret = "+hunter2+"\n", mode)
+
+			f, err := config.ReadFile(path, io.Discard)
+			if err != nil {
+				t.Fatalf("ReadFile() refused a mode %04o file, which is what the refusal tells operators to run: %v", mode, err)
+			}
+			if got, _ := f.Lookup(config.EnvSharedSecret); got != hunter2 {
+				t.Errorf("shared_secret = %q, want %q", got, hunter2)
+			}
+		})
+	}
+}
+
+// The read is bounded before anything looks at what was read. The path comes
+// from the operator's own environment, and an io.ReadAll pointed at /dev/zero by
+// a typo in a unit file is a daemon that never starts and never says why.
+func TestAnOversizeFileIsRefused(t *testing.T) {
+	t.Parallel()
+
+	// A single comment line, so nothing but the bound can refuse it: were the
+	// check removed, this file parses to zero settings and no error.
+	oversize := strings.Repeat("#", config.MaxConfigFileBytes+1)
+
+	path := writeConfig(t, oversize, 0o600)
+	if _, err := config.ReadFile(path, io.Discard); err == nil {
+		t.Fatal("ReadFile() read a file past the bound")
+	}
+
+	atBound := strings.Repeat("#", config.MaxConfigFileBytes)
+	path = writeConfig(t, atBound, 0o600)
+	if _, err := config.ReadFile(path, io.Discard); err != nil {
+		t.Errorf("ReadFile() refused a file exactly at the bound: %v", err)
 	}
 }
