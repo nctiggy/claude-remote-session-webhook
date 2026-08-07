@@ -892,24 +892,33 @@ func TestTheFleetUpdatesInPlaceRatherThanReloading(t *testing.T) {
 	}
 }
 
-// TestSubsetAnnounced is FR-045, and it is as much about what this file does
-// *not* do to the working-directory picker as about the sentence it adds.
+// createFormMarkup is the create form's own source with its prose removed, for
+// the two tests below that hold a joint between this tree and the script's.
+func createFormMarkup(t *testing.T) string {
+	t.Helper()
+
+	form, err := fs.ReadFile(web.Templates, "templates/partials/create-form.html")
+	if err != nil {
+		t.Fatalf("read the embedded create form: %v", err)
+	}
+	return templateComment.ReplaceAllString(string(form), "")
+}
+
+// TestSubsetAnnounced is FR-045: the one picker requirement no browser answers
+// on its own. A datalist narrows silently — the popup simply has fewer rows in
+// it — and an operator who cannot see it is told nothing at all.
 //
-// The control is markup (contracts/directory-picker.md): `<input list>` and a
-// `<datalist>` filter as the operator types, take a keyboard, announce their
-// options and leave any path typeable in full, with nothing running. Five of the
-// six picker requirements are the browser's own. The sixth — saying that the
-// list has been narrowed — is the one a browser does not say out loud, and it is
-// an addition to a control that already works.
+// The sentence moved with T010. It was a region of its own beside the field, and
+// it is now the picker's own `.combo-status`, which is where the enhancement
+// writes what the list is doing. That is not tidying: the wrapper T008 shipped
+// brought a second `role="status"` to this one field, and a field with two live
+// regions has one that will never speak — markup shaped like a feature, which is
+// what FR-018a refuses about a value and docs/components.md's accessibility
+// floor refuses about an announcement.
 //
-// **Must fail when** the announcement becomes the thing that makes the control
-// function. That is the direction this task is most likely to be lost in by
-// improvement rather than by mistake: a file that builds the options, sets the
-// field's value or attaches the `list` attribute has reimplemented the combobox
-// the abandoned branch was rejected for — 225 lines that degrade to nothing with
-// scripting off. So the middle section is a sweep for every operation that would
-// make this file load-bearing, and the last one holds the picker's markup where
-// it is, in the template, where an operator running no script still gets it.
+// **Must fail when** the count stops coming off the options the daemon rendered,
+// when either half of the sentence goes unfilled, or when the field grows a
+// second live region again.
 //
 // Go cannot execute this, so the claims are about the bytes a browser is handed
 // — the same footing every other script assertion in this file stands on.
@@ -918,17 +927,17 @@ func TestSubsetAnnounced(t *testing.T) {
 
 	source := script(t)
 
-	// Something calls it. A query naming the attribute the field renders is as
+	// Something calls it. A query naming the attribute the wrapper renders is as
 	// close to that as a language Go cannot execute allows, and it is the
 	// direction this whole task can be lost in silently — an announcement that is
 	// written, correct, and attached to nothing.
-	query := regexp.MustCompile(`querySelectorAll\(\s*['"][^'"]*data-workdir-note[^'"]*['"]\s*\)`)
+	query := regexp.MustCompile(`querySelectorAll\(\s*['"][^'"]*data-combo[^'"]*['"]\s*\)`)
 	if query.FindString(source) == "" {
-		t.Error("crswd.js never queries the document for a field naming its subset note, so nothing is ever announced and FR-045 is markup nobody reads")
+		t.Error("crswd.js never queries the document for a wrapper carrying data-combo, so nothing is ever announced and FR-045 is markup nobody reads")
 	}
 	for want, why := range map[string]string{
-		"dataset.workdirNote":   "the field names the region to write into, so the script does not carry an id the template could rename out from under it",
 		"dataset.workdirSubset": "the sentence is the template's; a script that authored its own prose would be a second place to look for it",
+		".combo-status":         "the announcement goes into the region the template renders for it, which is the class the stylesheet sweep holds in both trees",
 		".options":              "the count comes off the options the daemon rendered rather than a tally this file keeps — the rule the summary row already follows",
 	} {
 		if !strings.Contains(source, want) {
@@ -944,60 +953,145 @@ func TestSubsetAnnounced(t *testing.T) {
 		}
 	}
 
-	// The addition sweep. Each of these is this file taking ownership of the
-	// control rather than commenting on it, and every one of them takes the
-	// picker away from a browser running no script.
+	// And the markup half. The sentence and the region it is written into are a
+	// joint between two trees — the copy the page carries and the hook the script
+	// reads back — so they are asserted together, because nothing else holds them.
+	markup := createFormMarkup(t)
+
+	region := regexp.MustCompile(`<p\b[^>]*\bclass="combo-status"[^>]*>\s*</p>`).FindString(markup)
+	if region == "" {
+		t.Fatalf("the create form renders no empty .combo-status; a region composed at announcement time is one a reader may never hear:\n%s", markup)
+	}
+	for want, why := range map[string]string{
+		`data-workdir-subset="Showing {n} of {all} `: "the sentence is the page's own copy, with both halves left for the script to fill",
+		`role="status"`:      "the region has to be a live one, or the one thing FR-045 asks be said is said to nobody who cannot see it",
+		`aria-live="polite"`: "polite, because a count queues behind whatever is being read rather than cutting into it",
+	} {
+		if !strings.Contains(region, want) {
+			t.Errorf("the create form's status region (%s) does not carry %q: %s", region, want, why)
+		}
+	}
+	if strings.Contains(region, " hidden") {
+		t.Errorf("the status region is rendered hidden (%s); it is empty markup that costs the field nothing, and hiding it keeps it out of the accessibility tree until the moment it has something to say", region)
+	}
+
+	// One live region on this field, and this is the assertion that says so. The
+	// region the sentence used to live in outlived the move as markup nothing
+	// writes into — an empty `role="status"` that can never speak, which reads as
+	// finished in review and is a dead announcement in a browser.
+	if strings.Contains(markup, "create-workdir-subset") {
+		t.Error("the create form still renders the subset note's old region; the sentence is written into .combo-status now, and a field carrying two live regions is carrying one that never speaks")
+	}
+	if n := strings.Count(markup, `role="status"`); n != 1 {
+		t.Errorf("the create form renders %d live regions; want exactly 1 — what this field has to say about a narrowed list is one sentence, said in one place", n)
+	}
+}
+
+// TestTheThemedPickerEnhancesTheNativeOne is T010, and the rule the whole
+// themed-combobox contract turns on: the native control works first, and the
+// theme is an enhancement over something that already functions.
+//
+// The reason there is an enhancement at all is the one thing a stylesheet cannot
+// reach. A `<datalist>` popup is drawn by the browser and styled by no CSS in
+// any engine, so the picker was the single control on this dashboard wearing the
+// browser's appearance instead of this interface's — the part milestone 4's R6
+// missed while being right about everything it weighed.
+//
+// **Must fail when** the `<datalist>` is removed rather than reused, giving the
+// script a second copy of the options that can disagree with the markup, or when
+// the `list` attribute is cut before the element it names has been read — which
+// leaves `field.list` null, the themed box permanently empty, and every test
+// above still green because the sentence it announces is about zero of zero.
+//
+// The sweep this replaces forbade `setAttribute`, `createElement` and the
+// datalist by name. It was right about a task that was markup-only and it
+// forbids the exact four operations this one is: the property worth holding is
+// not which calls appear, it is that the picker is still the daemon's with this
+// file absent. So what is swept for now is a second list, an id spelled here
+// rather than read off the element, and the ARIA landing anywhere but on the
+// elements the template rendered.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed
+// — the same footing every other script assertion in this file stands on.
+func TestTheThemedPickerEnhancesTheNativeOne(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	// The order, which is the one part of this that fails silently. `field.list`
+	// *is* the element the `list` attribute names, and removeAttribute is
+	// precisely what makes it null: read first, then cut.
+	read := regexp.MustCompile(`\.list\b`).FindStringIndex(source)
+	cut := regexp.MustCompile(`removeAttribute\(\s*['"]list['"]\s*\)`).FindStringIndex(source)
+	switch {
+	case cut == nil:
+		t.Error("crswd.js never removes the field's `list` attribute, so the browser draws its own unstyleable popup over the themed one — two lists open at once saying the same thing")
+	case read == nil:
+		t.Error("crswd.js never reads the field's own list, so whatever it offers is not what the daemon rendered")
+	case read[0] > cut[0]:
+		t.Errorf("crswd.js cuts the `list` attribute at %d and reads the list it names at %d; the read has to come first, or the enhancement holds null and the themed box is empty for good", cut[0], read[0])
+	}
+
+	// The ARIA the template deliberately does not carry, added by the code that
+	// makes it true. Each is the contract's own literal, because a reader is told
+	// about a combobox by the exact word or not at all.
+	for _, added := range []struct {
+		pattern *regexp.Regexp
+		what    string
+		why     string
+	}{
+		{regexp.MustCompile(`setAttribute\(\s*['"]role['"]\s*,\s*['"]combobox['"]`), `role="combobox"`, "the field is the control, and nothing else in the tree can be"},
+		{regexp.MustCompile(`setAttribute\(\s*['"]role['"]\s*,\s*['"]listbox['"]`), `role="listbox"`, "the <ul> the template renders is what the field controls"},
+		{regexp.MustCompile(`setAttribute\(\s*['"]role['"]\s*,\s*['"]option['"]`), `role="option"`, "a listbox whose children are plain list items offers a reader nothing to choose between"},
+		{regexp.MustCompile(`setAttribute\(\s*['"]aria-expanded['"]`), "aria-expanded", "whether the list is open is said to a reader who cannot see that it is"},
+		{regexp.MustCompile(`setAttribute\(\s*['"]aria-autocomplete['"]`), "aria-autocomplete", "the field completes from a list, which is what makes it a combobox rather than a text box beside one"},
+		{regexp.MustCompile(`setAttribute\(\s*['"]aria-controls['"]\s*,\s*[A-Za-z_$][\w$]*\.id`), "aria-controls, read off the listbox", "the id is the template's to rename; a spelling copied into this file is the joint that drifts unnoticed"},
+	} {
+		if !added.pattern.MatchString(source) {
+			t.Errorf("crswd.js never sets %s: %s", added.what, added.why)
+		}
+	}
+
+	// The list stays the daemon's. Every one of these is this file acquiring a
+	// second copy of the options, or a second spelling of where they live.
 	for _, forbidden := range []struct {
 		pattern *regexp.Regexp
 		what    string
 		why     string
 	}{
-		{regexp.MustCompile(`(?i)datalist`), "names the datalist element", "the list is composed by the template; a file that composes one has a picker that exists only while it runs"},
-		{regexp.MustCompile(`(?i)\bnew Option\(|createElement\(`), "builds an element", "an option built here is an offer the daemon never made, and one that is gone with scripting off"},
-		{regexp.MustCompile(`\.value\s*=[^=]`), "assigns a value", "choosing the operator's path for them is the combobox this control was chosen instead of (FR-040)"},
-		{regexp.MustCompile(`\b(set|remove)Attribute\(`), "moves an attribute", "the field is joined to its list in the markup; an attribute added here is a picker that only exists when this file runs (FR-043)"},
+		{regexp.MustCompile(`(?i)datalist`), "names the datalist element", "the list is reached through the field's own `list` attribute; a file that queries or builds one has a second handle on the options and a second place for them to disagree"},
+		{regexp.MustCompile(`(?i)\bnew Option\(`), "builds an option", "an option built here is an offer the daemon never made, and one that is gone with scripting off"},
+		{regexp.MustCompile(`workdir-listbox|create-work-dir|workdir-suggestions`), "spells an id the template owns", "every id this file needs is read off an element it was handed, so renaming one in the template renames it here"},
 	} {
 		if match := forbidden.pattern.FindString(source); match != "" {
 			t.Errorf("crswd.js %s (%q): %s", forbidden.what, match, forbidden.why)
 		}
 	}
 
-	// And the markup half, which is what the sweep above is protecting. The
-	// spellings are a joint between two trees — the hook the field renders and the
-	// id the script looks up — so they are asserted together here, because nothing
-	// else holds them.
-	form, err := fs.ReadFile(web.Templates, "templates/partials/create-form.html")
-	if err != nil {
-		t.Fatalf("read the embedded create form: %v", err)
+	// And the removal, which is the must-fail this task was given and the one the
+	// sweep above cannot see: a file that reads the options into an array of its
+	// own and then takes the element out of the document has exactly the second
+	// copy the arrangement exists to avoid, and it reads as tidying up. The
+	// element a variable holds is not spellable in a regular expression, so what
+	// is counted is every removal in the file — there is one, the fleet's own
+	// card, and a second is this.
+	if n := strings.Count(source, ".remove()"); n != 1 {
+		t.Errorf("crswd.js removes an element from the document in %d places; want exactly 1 — the fleet's departed card. The datalist is the enhancement's data source and stays where the daemon put it, or the options this file offers are a copy free to disagree with the markup", n)
 	}
-	markup := templateComment.ReplaceAllString(string(form), "")
 
+	// And the markup half, which is what all of the above is protecting: the
+	// control an operator meets with this file absent is the one the daemon
+	// rendered, joined to its own options, exactly as it was before any of this
+	// existed (FR-015, FR-043).
+	markup := createFormMarkup(t)
 	for want, why := range map[string]string{
-		`data-workdir-note="create-workdir-subset"`:  "the field names the region, and this is the spelling crswd.js reads back",
-		`id="create-workdir-subset"`:                 "the region the field names has to be the region that is rendered",
-		`<option value="{{ . }}">`:                   "the suggestions are the template's, so the list is there for an operator running no script (FR-043)",
-		`list="workdir-suggestions"`:                 "the field is joined to its list in the markup, by the same rule",
-		`data-workdir-subset="Showing {n} of {all} `: "the sentence is the page's own copy, with both halves left for the script to fill",
+		`list="workdir-suggestions"`: "the field is joined to its list in the markup, so a browser running no script still filters",
+		`<option value="{{ . }}">`:   "the suggestions are the template's, and they are the enhancement's one data source as well",
+		`class="combo-list"`:         "the listbox is rendered rather than composed, or the stylesheet sweep reads its rules as dead",
 	} {
 		if !strings.Contains(markup, want) {
 			t.Errorf("the create form does not carry %q: %s", want, why)
 		}
-	}
-
-	// Present and empty rather than hidden. docs/components.md's accessibility
-	// floor is explicit about the difference: a live region has to be in the
-	// accessibility tree before its text arrives for the announcement to happen at
-	// all, and a region revealed and written in one go is one some readers never
-	// announce.
-	region := regexp.MustCompile(`<div\b[^>]*\bid="create-workdir-subset"[^>]*>\s*</div>`).FindString(markup)
-	if region == "" {
-		t.Fatalf("the create form renders no empty subset region; a region composed at announcement time is one a reader may never hear:\n%s", markup)
-	}
-	if strings.Contains(region, " hidden") {
-		t.Errorf("the subset region is rendered hidden (%s); it is empty markup that costs the field nothing, and hiding it keeps it out of the accessibility tree until the moment it has something to say", region)
-	}
-	if !strings.Contains(region, `role="status"`) || !strings.Contains(region, `aria-live="polite"`) {
-		t.Errorf("the subset region is not a polite live region (%s), so the one thing FR-045 asks be said is said to nobody who cannot see it", region)
 	}
 }
 

@@ -145,16 +145,37 @@
 
   The `<datalist>` stays inside the wrapper and stays the one source of the
   options. The enhancement filters what the daemon rendered rather than keeping
-  a second copy of it that could disagree.
+  a second copy of it that could disagree — it reaches the element through the
+  field's own `list` attribute, so the two spellings a browser needs are the
+  only ones anything holds.
 
   Unconditional, where the `list` attribute and the `<datalist>` are not. Those
   two are an offer, and an offer with nothing behind it is the markup FR-018a
   refuses; these are the boxes an enhancement writes into, and a box that is
   empty says nothing either way.
+
+  `.combo-status` carries FR-045's sentence (T010) — the one picker requirement
+  the platform's own control does not answer. The browser filters as the
+  operator types, takes a keyboard, announces its options and accepts a path
+  typed in full with nothing running; what it does not do is say that what is on
+  offer has been narrowed. `{n}` and `{all}` are filled by the same substitution
+  the fleet's own announcement uses, and both are counted off the options above
+  rather than being numbers this page could go stale about.
+
+  The sentence is here rather than in crswd.js for the reason every other
+  sentence this interface says is: a script that authored its own prose would be
+  a second place to look for it. It sits on the status region rather than in a
+  region of its own, which is where it started — the field had two live regions
+  for exactly as long as it took the enhancement to arrive, and one of them would
+  have been dead the moment this one spoke. It is deliberately absent from
+  aria-describedby: a description is read when focus arrives and a live region is
+  read when it changes, so naming it in both would say the count on every focus
+  and again on every filter, which is the noise the accessibility floor keeps off
+  the grid and the pane.
 */}}<div class="combo" data-combo>
-<input class="field-input" id="create-work-dir" type="text" name="work_dir"{{ if .Suggestions }} list="workdir-suggestions" data-workdir-note="create-workdir-subset"{{ end }} required autocomplete="off" spellcheck="false" aria-describedby="create-roots">{{ with .Suggestions }}<datalist id="workdir-suggestions">{{ range . }}<option value="{{ . }}"></option>{{ end }}</datalist>{{ end }}
+<input class="field-input" id="create-work-dir" type="text" name="work_dir"{{ if .Suggestions }} list="workdir-suggestions"{{ end }} required autocomplete="off" spellcheck="false" aria-describedby="create-roots">{{ with .Suggestions }}<datalist id="workdir-suggestions">{{ range . }}<option value="{{ . }}"></option>{{ end }}</datalist>{{ end }}
 <ul class="combo-list" id="workdir-listbox" hidden></ul>
-<p class="combo-status" role="status" aria-live="polite"></p>
+<p class="combo-status" role="status" aria-live="polite" data-workdir-subset="Showing {n} of {all} suggested directories."></p>
 </div>{{/*
   The whole hint is one element carrying one id, so aria-describedby on the input
   reaches the sentence and the list together. A daemon configured with no root at
@@ -166,37 +187,7 @@
 <p class="field-hint-text">A session may only run in a directory under {{ if eq (len .) 1 }}this root{{ else }}one of these roots{{ end }}:</p>
 <ul class="field-hint-list">{{ range . }}<li class="field-hint-root">{{ . }}</li>
 {{ end }}</ul>
-</div>{{ end }}{{/*
-  What the list is doing right now (T025, FR-045) — the one picker requirement
-  the platform's own control does not answer, and the only thing any script adds
-  to this field. The browser filters as the operator types, takes a keyboard,
-  announces its options and accepts a path typed in full with nothing running;
-  what it does not do is say that what is on offer has been narrowed.
-
-  The sentence is here rather than in crswd.js, for the reason every other
-  sentence this interface says is: a script that authored its own prose would be
-  a second place to look for it. `{n}` and `{all}` are filled by the same
-  substitution the fleet's own announcement uses, and both are counted off the
-  options above rather than being numbers this page could go stale about.
-
-  Present and empty rather than hidden, per docs/components.md's accessibility
-  floor: a live region has to be in the accessibility tree before its text
-  arrives for the announcement to happen at all. Empty it is a grid box with no
-  child, no padding and no margin, so it costs the field nothing until it
-  speaks — which is why it needs no `:empty` rule and no second class. It is
-  this field's aside, set exactly as the field's other aside is.
-
-  It is deliberately absent from aria-describedby. A description is read when
-  focus arrives; a live region is read when it changes. Naming it in both would
-  say the count on every focus and again on every filter, which is the noise the
-  accessibility floor keeps off the grid and the pane.
-
-  Conditional on there being something to suggest, exactly as the datalist and
-  the `list` attribute are. A field pointing at no list can never be showing a
-  subset of one, and a region that can never speak is markup shaped like a
-  feature — FR-018a's discipline about absent values, applied to an
-  announcement.
-*/}}{{ with .Suggestions }}<div class="field-hint" id="create-workdir-subset" role="status" aria-live="polite" data-workdir-subset="Showing {n} of {all} suggested directories."></div>{{ end }}
+</div>{{ end }}
 </div>{{/*
   There is no conversation field here, and its absence is the requirement rather
   than a deletion that has not been finished (US5, FR-033 withdrawn). It asked an

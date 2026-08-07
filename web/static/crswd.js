@@ -826,90 +826,164 @@
 })();
 
 /*
- * The working-directory picker's one addition (T025, FR-045).
+ * The working-directory picker's theme (T010, contracts/themed-combobox.md),
+ * and FR-045's sentence, which now lives inside it.
  *
- * The control itself is markup and stays markup: `<input list>` and a
- * `<datalist>` filter as the operator types, take a keyboard, announce their
- * options to a screen reader and leave any path typeable in full, with nothing
- * running at all (contracts/directory-picker.md). Five of the six picker
- * requirements are the browser's own. The sixth is the one a browser does not
- * say out loud — that the list is showing a subset — and it is the whole of
- * what this block does.
+ * The control is markup and stays markup. `<input list>` and a `<datalist>`
+ * filter as the operator types, take a keyboard, announce their options and
+ * leave any path typeable in full with nothing running at all — five of the six
+ * picker requirements are the platform's own, and this file is not what makes
+ * any of them true (FR-015, FR-043). What it adds is the one thing no
+ * stylesheet can reach: a datalist popup is drawn by the browser and no CSS in
+ * any engine styles it, so the picker was the single control on this dashboard
+ * wearing the browser's appearance rather than this interface's. Milestone 4's
+ * R6 chose the native control and was right about everything it weighed; this
+ * is the part it missed, and the answer is to enhance that control rather than
+ * to replace it.
  *
- * So it is additive by construction, and that is the property to keep rather
- * than the sentence. Nothing here sets the field's value, builds or removes an
- * option, or touches the `list` attribute that joins the two: with this file
- * absent the picker is exactly the control the template rendered, minus one
- * sentence. The abandoned branch got this backwards — 225 lines reimplementing
- * filtering, focus and ARIA roles the platform already has, degrading to nothing
- * with scripting off.
+ * So the property to keep is the one the abandoned branch lost — 225 lines
+ * reimplementing filtering, focus and ARIA the platform already had, which
+ * degraded to nothing with scripting off. Everything below runs over a field
+ * that already works: with this file absent the operator meets exactly the
+ * control the daemon rendered, and nothing here narrows what may be typed or
+ * what may be submitted (FR-008).
  *
- * The count is this file's own arithmetic, and has to be: the filtered popup is
- * not in the document and no event reports it, so the only alternative to
- * counting is owning the list, which is the thing being avoided. What is counted
- * is the rule the engines filter by — a case-insensitive substring of the
- * option's value — so the number approximates what is on screen rather than
- * reading it. That is an acceptable cost for a sentence nothing depends on, and
- * would not be for anything the operator had to act on; the list, the field and
- * the allowlist behind it are all untouched by it either way.
+ * The first two statements are an order, and it is load-bearing twice over.
+ * `field.list` *is* the element the `list` attribute names — the daemon's own
+ * options, read rather than copied, so there is no second list here to disagree
+ * with the markup — and `removeAttribute` is precisely what makes it null. Read
+ * first, then cut: the other order leaves the enhancement with nothing to offer
+ * and the operator with a themed box that is permanently empty. Cutting at all
+ * is what stops the browser opening its own popup over this one, which is two
+ * lists saying the same thing in two appearances.
  *
- * The sentence is the template's, filled here, for the reason every other
- * sentence this interface says is.
+ * The ARIA is added here and never in the template, for the reason the template
+ * says at the point it declines to carry it: with no script there is no
+ * combobox to expand and no listbox to control, and markup that describes a
+ * control which is not there is worse for a screen reader than markup
+ * describing the plain field that is. Every attribute below is added by the
+ * code that makes it true, and `aria-controls` is read off the listbox rather
+ * than spelled here, so the id stays the template's to rename.
+ *
+ * The sentence is the template's too, filled here, exactly as it was when it
+ * had a region of its own. It has moved into `.combo-status` — the picker's own
+ * aside, beside the control it is about — so the field carries one live region
+ * rather than two with one of them dead.
  */
 (() => {
   'use strict';
 
   /*
-   * How long the typing has to stop before the note is rewritten. A polite live
-   * region queues rather than interrupts, so a note written on every keystroke
-   * hands a screen reader a backlog of counts to read out after the operator has
-   * finished — each one already wrong by the time it is spoken.
+   * How long the typing has to stop before the sentence is rewritten. A polite
+   * live region queues rather than interrupts, so a note written on every
+   * keystroke hands a screen reader a backlog of counts to read out after the
+   * operator has finished — each one already wrong by the time it is spoken.
+   *
+   * The list itself is not delayed by it. What is drawn is looked at rather
+   * than listened to, and a list that lagged the typing by four hundred
+   * milliseconds would be a control that felt broken to the operator it is
+   * fastest for.
    */
   const SETTLE_MS = 400;
 
-  const announceSubset = (field) => {
-    const note = document.getElementById(field.dataset.workdirNote);
-    const suggestions = field.list;
-    if (!note || !suggestions || !note.dataset.workdirSubset) {
+  const enhance = (combo) => {
+    const field = combo.querySelector('input');
+    const listbox = combo.querySelector('.combo-list');
+    const status = combo.querySelector('.combo-status');
+    if (!field || !listbox || !status) {
       return;
     }
 
+    // Read before the join is cut, and the guard is FR-018a rather than
+    // defensiveness: a daemon with nothing to suggest renders no list at all,
+    // and a combobox over no options would be this file announcing a control
+    // with nothing behind it.
+    const offered = field.list;
+    if (!offered) {
+      return;
+    }
+
+    field.removeAttribute('list');
+
+    field.setAttribute('role', 'combobox');
+    field.setAttribute('aria-expanded', 'false');
+    field.setAttribute('aria-autocomplete', 'list');
+    field.setAttribute('aria-controls', listbox.id);
+    listbox.setAttribute('role', 'listbox');
+
     /*
-     * Counted off the options the daemon rendered, never off a tally kept here —
-     * the rule the summary row already follows. A number this file carried would
-     * be a second source of truth about a list it does not own.
+     * The rule the engines filter by — a case-insensitive substring of the
+     * option's own value — so what is drawn here is what the popup this
+     * replaces would have shown. Read off the options the daemon rendered every
+     * time rather than out of an array built once, which is the same reason the
+     * summary row re-derives its counts from the cards below it.
      */
-    const say = () => {
+    const matching = () => {
       const typed = field.value.trim().toLowerCase();
-      const offered = suggestions.options.length;
-      let showing = offered;
-      if (typed !== '') {
-        showing = 0;
-        for (const option of suggestions.options) {
-          if (option.value.toLowerCase().includes(typed)) {
-            showing += 1;
-          }
+      const paths = [];
+      for (const option of offered.options) {
+        if (typed === '' || option.value.toLowerCase().includes(typed)) {
+          paths.push(option.value);
         }
       }
+      return paths;
+    };
 
-      // Silent while nothing is filtered. FR-045 is about a list showing a
-      // subset; a region that also said "showing all of them" would be narrating
-      // the operator's own typing back at them, which is the noise
-      // docs/components.md keeps off the grid and the pane.
-      note.textContent = showing === offered
+    /*
+     * The listbox, rebuilt from what matches. textContent and never innerHTML:
+     * a suggestion is a directory name off a filesystem walk, so it is a string
+     * this file has no business turning into markup — the rule docs/security.md
+     * sets for the pane, applied to the one other place this file writes what
+     * the host said.
+     *
+     * `hidden` carries whether it is open, and `aria-expanded` says the same
+     * thing to a reader who cannot see it. Nothing to show closes it: a bordered
+     * empty box under the field reads as a control that has broken, and a
+     * combobox claiming to be expanded over no options is that same lie told
+     * twice.
+     */
+    const draw = (paths) => {
+      listbox.replaceChildren(
+        ...paths.map((path) => {
+          const option = document.createElement('li');
+          option.setAttribute('role', 'option');
+          option.textContent = path;
+          return option;
+        }),
+      );
+      const open = paths.length > 0;
+      listbox.hidden = !open;
+      field.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+
+    /*
+     * Silent while nothing is filtered. FR-045 is about a list showing a
+     * subset; a region that also said "showing all of them" would be narrating
+     * the operator's own typing back at them, which is the noise
+     * docs/components.md keeps off the grid and the pane.
+     */
+    const say = (showing) => {
+      const sentence = status.dataset.workdirSubset;
+      if (!sentence) {
+        return;
+      }
+      const offering = offered.options.length;
+      status.textContent = showing === offering
         ? ''
-        : note.dataset.workdirSubset.replace('{n}', showing).replace('{all}', offered);
+        : sentence.replace('{n}', showing).replace('{all}', offering);
     };
 
     let settling;
     field.addEventListener('input', () => {
+      const paths = matching();
+      draw(paths);
       clearTimeout(settling);
-      settling = setTimeout(say, SETTLE_MS);
+      settling = setTimeout(() => say(paths.length), SETTLE_MS);
     });
   };
 
-  for (const field of document.querySelectorAll('input[data-workdir-note]')) {
-    announceSubset(field);
+  for (const combo of document.querySelectorAll('[data-combo]')) {
+    enhance(combo);
   }
 })();
 
