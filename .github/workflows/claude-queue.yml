@@ -49,7 +49,20 @@ jobs:
     steps:
       - name: Pick the next issue and hand it over
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # QUEUE_TOKEN, not GITHUB_TOKEN, and this is the whole reason the
+          # hand-off works.
+          #
+          # GitHub does not let an event caused by GITHUB_TOKEN trigger another
+          # workflow — it is loop prevention, and it is deliberate. So the label
+          # this step applies landed on the issue and woke nothing: the queue
+          # ran, the worker never did, and the backlog looked handled while
+          # standing still.
+          #
+          # A fine-grained token does trigger it. This one is scoped to this
+          # repository with Issues: write and nothing else — verified: it cannot
+          # see private repositories and cannot read this repository's secrets.
+          # If it ever leaks, the worst it can do is label an issue.
+          GH_TOKEN: ${{ secrets.QUEUE_TOKEN }}
           REPO: ${{ github.repository }}
           REQUESTED: ${{ inputs.issue }}
         run: |
