@@ -646,3 +646,87 @@ three carry T008's — T009 is replacing placeholders, not writing on a blank fi
    `CRSW_DESTROY_ON_SHUTDOWN` row, `settings.go:114-118`, and
    `contracts/directory-suggestions.md:62`'s comma-spelled `allowed_roots`. Iteration 6's
    uncapped-union note and iteration 7's missing wiring test are also still open and unowned.
+
+---
+
+## Iteration 9 — 2026-08-07 17:27
+
+**Did:** T009, in commit `01be599`. The picker and the switch are styled from the token
+block: `.combo` gains `position: relative`, `.combo-list` is a bounded scrolling popup on
+`--surface-lift` behind the field's own `--edge-bright`, `.combo-list li` is the field's own
+mono/body/`--text` with a hover on `--ground`, `.combo-list li[aria-selected="true"]` carries
+the design system's ring, `.combo-status` is set as `.field-hint` is, and `.switch-label`
+stopped being a copy of `.field-label`. One new token, `--combo-h: 14rem`. Five tests in
+`stylesheet_test.go`: `TestNoLiteralColourInComboRules`, `TestComboFocusRingSurvives`,
+`TestComboDoesNotAnimateUnderReducedMotion`, `TestModeNotConveyedByColourAlone`,
+`TestComboClassesAppearInRenderedMarkup`.
+
+**Learned:**
+
+- **The reduced-motion block resets `transition` and nothing else, and that gap is real.**
+  `TestReducedMotionStopsEveryTransition`'s universal rule says `transition: none`; an
+  `animation:` is a different property and obeys none of it. Verified: adding
+  `animation: fade .3s ease` to `.combo-list li` leaves that test **green**. So
+  `TestComboDoesNotAnimateUnderReducedMotion` forbids `animation` in a picker rule outright
+  rather than trusting the block. **The same hole is open for every other component in the
+  file** — nothing stops an animation anywhere else. Not fixed here (AR-008); worth a
+  universal `animation: none` in the block, which is a one-line change to a rule this task
+  does not own. **T016 or milestone 6.**
+- **An option can never be reached by `:focus-visible`,** so the ring on it is a rule rather
+  than inheritance: focus stays on the input and `aria-activedescendant` is what moves (T011).
+  T009 chose **`[aria-selected="true"]`** as the selector for "the option the keyboard is on"
+  — **T011 must set that attribute**, or the ring exists and nothing ever wears it. The
+  outline offset is negative on purpose: an outward ring on the first or last option is
+  clipped by the scroll box.
+- **`position: relative` on `.combo` is load-bearing and nothing pins it**, exactly as
+  iteration 8 said of `display: grid`. Drop it and the absolutely positioned listbox resolves
+  against the initial containing block — it lands somewhere near the top of the document
+  rather than under the field. Both are silent visual regressions no Go test can see.
+- **The listbox hangs off the wrapper, not the field**, because the template's order is
+  input → `<ul>` → `<p class="combo-status">` and T008's markup is fixed. So when the subset
+  sentence is written, it sits *between* the field and the options and the popup drops by one
+  line. That reads correctly — field, then what is showing, then the list — but it is a
+  consequence of the markup rather than a free choice, and T010 should not "fix" it by
+  moving the status region.
+- **`.switch-label` is no longer `.field-label`** (the duplication flagged in iterations 3 and
+  8 is closed). It is `--fs-label`/`--ls-label` — the design system's *label* role, which is
+  what a name beside a control is — and `--text` rather than `--dim`, because with the box
+  drawn by the platform those two words are the whole of what says what the tick means.
+- **Mutation-verified six ways, each reverted:** (a) `background: #101710` on `.combo-list` —
+  `TestNoLiteralColourInComboRules` fails twice, on the hex and on the missing token, and the
+  whole-file sweep fails too; (b) the option's `outline` dropped for a background-only cue —
+  only the new test fails, which is the half `TestTheFocusRingSurvives` cannot see;
+  (c) `outline: none` on `.combo-list li`; (d) `animation:` on the same rule — see above;
+  (e) `appearance: none` + a fill on `.switch-input`, and (f) a `.switch-input:checked` rule
+  whose only declaration is a colour — both fail `TestModeNotConveyedByColourAlone`;
+  (g) `.combo-status` renamed to `.combo-note` — the new test and the both-directions sweep
+  fail together.
+- Linter confirmed v2 before trusting the green: `golangci-lint 2.12.2`, 0 issues.
+  `go test ./...` green; `go vet` compiles all three tagged suites. **`-tags quickstart` was
+  not run: `127.0.0.1:8765` is held by the deployed daemon right now** (it was free in
+  iteration 8). This task touches no `cmd/crswd` code, and `go vet -tags quickstart ./...`
+  passes. No `go.sum`.
+
+**Left:** T010–T016. **T010 is next**, and iteration 8's warning stands: it must rewrite
+`TestSubsetAnnounced`'s addition sweep (`stylesheet_test.go:916`), which forbids the exact
+four operations T010 mandates, and it must **delete `#create-workdir-subset`** when it moves
+the sentence into `.combo-status`, or the field keeps two live regions with one dead. Add to
+that: T010 sets `aria-expanded` and `role="option"`, and **T011 sets `aria-selected="true"`**
+on the active option, which is the selector the ring T009 shipped is keyed on.
+
+**Findings:**
+
+1. **Nothing in the file stops an animation under `prefers-reduced-motion`** — see the first
+   learning. The picker is now covered by a test of its own; every other component is not.
+   **T016 or milestone 6**, as a universal `animation: none` beside the existing
+   `transition: none`.
+2. `docs/components.md` still documents no `.combo`, `.combo-list`, `.combo-status` or
+   `.switch-*` entry (iteration 8's finding 1, still open, still **T016's**). T009 makes it
+   more pressing, not less: there is now a listbox, an option, an active-option ring keyed on
+   an ARIA attribute, and a switch whose label is deliberately *not* a field label — four
+   decisions a future component will otherwise re-invent.
+3. The stale-prose findings from iterations 4–7 are all still open and all still **T016's**:
+   `outcome.go`'s `outcomeBadStartCommand` comment, `config.example:157`, `README.md`'s
+   `CRSW_DESTROY_ON_SHUTDOWN` row, `settings.go:114-118`, and
+   `contracts/directory-suggestions.md:62`'s comma-spelled `allowed_roots`. Iteration 6's
+   uncapped-union note and iteration 7's missing wiring test are also still open and unowned.

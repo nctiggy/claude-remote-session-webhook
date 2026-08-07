@@ -167,7 +167,14 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
     `TestSubsetAnnounced`'s addition sweep** — it forbids the exact operations T010 mandates —
     **and delete `#create-workdir-subset`** when it moves the sentence into `.combo-status`, or
     the field keeps two live regions with one dead. See `PROGRESS.md` iteration 8.
-- [ ] T009 Styling: tokens, focus rings, and the reduced-motion rule
+- [x] T009 Styling: tokens, focus rings, and the reduced-motion rule
+  - The active option's ring is keyed on **`[aria-selected="true"]`** — `:focus-visible`
+    can never reach an option, so **T011 must set that attribute** or the ring is worn by
+    nothing. `position: relative` on `.combo` is now load-bearing exactly as `display: grid`
+    is, and no test can see either. **The reduced-motion block resets `transition` and not
+    `animation`**: verified green with an `animation` on the listbox, so the picker's own
+    test forbids the property outright and every other component in the file is still
+    uncovered — **T016** or milestone 6. See `PROGRESS.md` iteration 9.
 - [ ] T010 Enhancement: suppress the native popup, add the ARIA, filter, announce the subset
 - [ ] T011 Keyboard: arrows, Enter, Escape, Tab, `aria-activedescendant`
 
