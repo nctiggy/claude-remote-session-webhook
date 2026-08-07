@@ -2,34 +2,60 @@
 
 > Worked top-to-bottom by `ralph/loop.sh` — one task per iteration.
 >
-> **This is milestone 3.** Milestones 1 and 2 are complete, reviewed, and deployed; their
-> task lists are archived at [`archive/milestone-1-tasks.md`](archive/milestone-1-tasks.md)
-> and [`archive/milestone-2-tasks.md`](archive/milestone-2-tasks.md) because
-> `PROGRESS.md` references their T-numbers. Milestone 4 gets its own plan.
+> **This is milestone 4.** Milestones 1, 2 and 3 are complete, reviewed, and deployed;
+> their task lists are archived at [`archive/milestone-1-tasks.md`](archive/milestone-1-tasks.md),
+> [`archive/milestone-2-tasks.md`](archive/milestone-2-tasks.md) and
+> [`archive/milestone-3-tasks.md`](archive/milestone-3-tasks.md) because `PROGRESS.md`
+> references their T-numbers.
 
 ## Status: generated from the spec
 
-Generated from [`specs/003-dashboard-actions/tasks.md`](../specs/003-dashboard-actions/tasks.md),
+Generated from [`specs/004-configure-and-operate/tasks.md`](../specs/004-configure-and-operate/tasks.md),
 which is the single source of truth. `spec.md`, `plan.md`, `research.md`, `data-model.md`
-and the two files in `contracts/` supersede anything this file summarises.
+and the seven files in `contracts/` supersede anything this file summarises.
 
 **Before starting a task, read its matching `T0NN` entry in `tasks.md`.** The entries below
 are the ordered checklist; the task file carries the exact literals, the test each task must
 include, and — for every task that adds behaviour — **the condition under which that test
 must fail**. That last part is the load-bearing half. Several tasks look wrong until you read
-the reason: a `403` where a `401` seems natural, a compact that reports delivery rather than
-success, a token that is deliberately never stored.
+the reason: whole-line-only comments, a split on the *first* `=` rather than the only one, a
+mode that is derived rather than stored, and a permission check that deliberately does not
+fire on a file holding no secret.
 
-## 🔒 Three tasks are security-critical
+## 🔒 Four tasks are security-critical
 
-**T002, T003 and T004** implement the cross-site defence. A mistake in any of them silently
-removes the protection this entire milestone exists to add, **while every other test still
-passes**. If an iteration is running on a smaller model, stop after each of these and get it
-reviewed rather than proceeding on green alone. Everything after T005 is mechanical.
+**T001, T007, T011 and T019.** A mistake in any of them is invisible: every other test still
+passes. If an iteration is running on a smaller model, stop after each and get it reviewed
+rather than proceeding on green alone.
+
+| Task | Why it is the dangerous one |
+|---|---|
+| **T001** `IsSecret` | Shared by the permission refusal *and* the settings page. A disagreement between them is invisible until it matters. |
+| **T007** the precedence shim | Ordering *is* the security property. Reversed, a stale file silently overrides the environment a container was configured with. |
+| **T011** secret rendering | The one page holding every secret at render time. A "helpful" masked prefix is still a disclosure. |
+| **T019** the mode toggle | The only new route taking a value that names something to run. If a command line can arrive from a browser, FR-030 is gone in both directions. |
+
+## This milestone is mostly finishing, not building
+
+Four abandoned lane branches hold **~3,800 lines** between them. Verified at planning time:
+each **builds standing alone**, and each broke only against a `main` that has since moved.
+Where a task says carry forward, the work is a **rebase-and-reconcile, not a rewrite** — read
+the branch first, and preserve its comments, which are the best documentation of why the
+format is what it is.
+
+| Branch | Carries | Task |
+|---|---|---|
+| `claude/issue-issue-65-20260807-0112` | `internal/config/file.go`, `file_test.go` | T003 |
+| `claude/issue-issue-42-20260805-1832` | four 303 handlers, `outcome.go`, banner partial | T014 |
+| `claude/issue-issue-60-20260806-0406` | card split, rename disclosure | T026 |
+| `claude/issue-issue-59-20260807-0055` | **the discovery walk only** | T023 |
+
+The last row is a deliberate exclusion: that branch's hand-rolled combobox is **replaced by
+markup**, not carried. See the resolved decision below.
 
 ## What is already running
 
-Milestones 1 and 2 are **live**, not merely built. Changes here land on a deployed daemon:
+Milestones 1 through 3 are **live**, not merely built. Changes here land on a deployed daemon:
 
 | | |
 |---|---|
@@ -37,30 +63,34 @@ Milestones 1 and 2 are **live**, not merely built. Changes here land on a deploy
 | tmux | **Its own server**, `-L crswd-<listen>` — never the operator's default server (#22) |
 | Public | `https://crswd.craigcloud.io` via the `crswd` Cloudflare Tunnel |
 | Edge | Access app `CRSWD Session Control`, two policies — Google identity, and Service Auth for the API client |
-| Daemon | Validates the Access assertion itself; the dashboard reads the fleet and streams panes |
+| Daemon | Validates the Access assertion itself; the dashboard reads, streams, and **acts** |
 | Audit | `journalctl --user -u crswd -o cat \| jq .` |
 | Secrets | `op://Lobster/crswd/{shared-secret,access-client-id,access-client-secret}` |
 
-**The dashboard can currently only read — that is what this milestone changes.** Everything
-it does today is safe on an ambient Access cookie *because* every mutating route demands an
-HMAC signature a browser cannot produce. The first task that adds a write ends that argument,
-which is why T002–T005 come before any action.
+**Sessions now survive a daemon restart with their metadata**, which is what makes a
+configuration change tolerable at all: a restart no longer costs the fleet. T017 extends that
+mechanism by one option rather than inventing a second one.
 
 ## Resolved decisions
 
-Answered by the operator or settled in the plan. **Do not re-litigate these in an iteration** —
-if one looks wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and stop.
+Answered by the operator or settled in [`research.md`](../specs/004-configure-and-operate/research.md).
+**Do not re-litigate these in an iteration** — if one looks wrong, write it in `PROGRESS.md`
+under `NEEDS CLARIFICATION` and stop.
 
 | Question | Decision | Consequence |
 |---|---|---|
-| An ambient cookie plus a mutating route is CSRF. What evidence must a write carry? | **Both** a same-origin check and a per-page token bound to the Access identity | Two independent checks. FR-002c requires each to be **separately disableable in a test that then fails** — two checks never tested apart are one check with extra steps |
-| Which same-origin mechanism? | **Reuse `crossSite()` from `stream.go`** — `Sec-Fetch-Site`, not a new `Origin` check | Milestone 2 already built it, fail-closed and tested, and it sees the `none` case (a URL opened by no page at all) that `Origin` cannot cleanly distinguish. FR-002a is satisfied by a different mechanism than it names |
-| A `SameSite` cookie policy, or a signature the page computes? | **Neither is available** | The Access cookie is Cloudflare's, issued under its own domain policy — outside this project's control and untestable by it. A page-computed HMAC would mean shipping the layer-2 secret to the browser, which hands out the API |
-| Where is the page token stored? | **Nowhere.** Self-authenticating: `<expiry>.<HMAC(pageKey, identity + "\n" + expiry)>` | Milestone 2 refused per-browser state on purpose — caching one "would be the daemon's first cross-request browser state, and with it the expiry, invalidation and fixation questions this design exists not to have". A stored token map puts all of that back |
-| How does a token die with its Access session? | **By construction, not bookkeeping** | The token check runs *after* layer 1 in the same middleware, so an ended Access session is refused before its token is examined. No record can drift out of step, because there is no record |
-| What does "compact" mean? | Deliver Claude Code's own **`/compact`** into the session | The daemon cannot see what the assistant is carrying, so it must report **delivered**, never compacted. Claiming otherwise asserts something it did not observe |
-| Does rename touch tmux? | **No** — record only | `TmuxName()` is `crswd-<id>`, so every tmux target and route parameter is unaffected. Read from the code, not assumed |
-| How does an open dashboard learn about changes? | A **fleet-level event stream**, contract written first | It is a new authenticated route, and this repo has never added one without a contract. Refreshing only after the page acts was rejected because it leaves #15 unfixed — reaper and API changes still go unseen |
+| YAML, TOML, JSON, or something hand-parsed? | **`key = value` with `#` comments**, hand-parsed | YAML and TOML have no standard-library parser and neither is safe to hand-roll; both would create `go.sum`, which `docs/security.md` §5 forbids. JSON was the real candidate and was rejected because it deletes the commentary in `config.example` — the most useful documentation this repo has about what each bound is for |
+| Are trailing comments allowed? | **No. `#` is a comment marker only at the start of a line** | This is a security decision wearing style clothes: `shared_secret` may legitimately contain `#`, and stripping from the first one would silently truncate a secret into a daemon that starts, looks healthy, and rejects every request |
+| Which `=` separates key from value? | **The first one** — `strings.Cut`, never `strings.Split` | `start_commands` always contains `=` inside its value. A parser that refused an ambiguous line would refuse valid configuration |
+| How is a list spelled? | **Comma-separated on one line**, exactly as the environment variable spells it today | The file is a second *source*, not a second set of rules. The value string is handed to the same parser the variable goes through |
+| Where is precedence decided? | **One `getenv` shim**, four lines, behind the existing `config.LoadFrom` seam | Flag → environment → file → default. No bound, default or refusal is written twice, so a value cannot mean one thing in a unit and another in a file. It is also why a daemon with no file behaves exactly as today, which is what lets SC-002 be verified against the **existing** acceptance suites unchanged |
+| How does the settings page know where each value came from? | **The shim records it as it decides** | Provenance is a byproduct of having one place decide, never an inference. A value present and equal in both sources is indistinguishable by comparison — and that is exactly when an operator is asking why their edit did nothing |
+| Which keys are secret? | **`shared_secret` and `allowed_identities`**, behind one exported `IsSecret` | The allowlist is not a credential but it names *who* can reach this daemon. One predicate means the permission check and the page render cannot disagree about what a secret is |
+| Does the 0600 refusal fire on any config file? | **Only one containing a secret key** | A file holding only `allowed_roots` is not a secret file, and refusing to start over its mode would be a refusal the operator cannot act on sensibly |
+| Is session mode stored or derived? | **Derived** from the start-command name | Two fields that must agree are two fields that can disagree. FR-031 is satisfied by carrying the name that determines the mode; the one real gap — the name not surviving a restart — is closed by a fifth tmux option, which is smaller than a second source of truth |
+| How does the directory picker work without JavaScript? | **`<input list>` + `<datalist>`** — the platform's own control | It satisfies five of the six picker requirements with **no script running**: filtering, keyboard operation, screen-reader announcement, free-text entry, and today's field unchanged. The abandoned branch's 225 lines of hand-rolled combobox degrade to nothing and own accessibility bugs the browser would otherwise own |
+| Does the settings page get an edit route? | **No route at all**, not a route that refuses | Editing is out of scope this milestone. A route that does not exist cannot be exploited, and writing the operator's file from a browser is the highest-consequence surface in the product |
+| Is a missing dependency fatal? | **tmux yes, the start command no** | Without tmux this daemon can do nothing, so starting only defers the failure to the first request. Without a start command it can still serve the dashboard and say what is wrong |
 
 ## Conventions
 
@@ -77,93 +107,116 @@ if one looks wrong, write it in `PROGRESS.md` under `NEEDS CLARIFICATION` and st
 - `go.sum` must never appear. An import needs justification under `docs/security.md` §5 first.
 - **AR-005: a test satisfies the cross-site checks, it never disables them.** Setting
   `Sec-Fetch-Site: same-origin` and minting a valid token is correct. A build tag or flag that
-  turns a check off is the exact defect this milestone exists to prevent — T008 disables them
-  deliberately to prove they work, and must leave no way to do so in the shipping build.
+  turns a check off is the exact defect the gate exists to prevent.
 - **AR-008: no refactoring outside the task**, however obvious the improvement.
 - **A task is not done when the code exists. It is done when something calls it.** This repo
   has shipped that failure three times — a reaper with no caller, `Store.Touch` with no caller,
-  and a PR-opener script no workflow invoked.
+  and a PR-opener script no workflow invoked. **T007 is the one to watch**: a config parser
+  that is never consulted is the exact bug left on the abandoned branch.
 
 ---
 
 ## Tasks
 
-### Setup
+### Foundation (blocks every story)
 
-- [x] T001 `internal/audit/audit.go`: six new constants — `dashboard.create`, `dashboard.destroy`, `dashboard.rename`, `dashboard.compact`, `dashboard.reject`, `fleet.open`. `dashboard.reject` is deliberately **not** `access.reject`: an identity that passed layer 1 and then failed the cross-site check is a different and more alarming event than one that never got in
+- [ ] T001 🔒 `IsSecret` in `internal/config/secret.go` — the single classifier
+- [ ] T002 `Source` type and its four strings in `internal/config/source.go`
 
-### Foundation — the cross-site gate (blocks every story)
+### US1 — Configure the daemon in a file (P1, MVP)
 
-- [x] T002 🔒 `internal/httpapi/pagetoken.go`: mint and verify, **stateless** — no map, no sweep. `<expiry>.<HMAC-SHA256(pageKey, identity + "\n" + expiry)>`, `pageKey` 32 random bytes at startup, unrelated to `CRSW_SHARED_SECRET`, never served. `hmac.Equal`, never `==`. Four tests, each with its must-fail condition
-- [x] T003 🔒 `internal/httpapi/browser.go`: the gate, in the exact order layer 1 → `crossSite` → token, before any handler and before any state change. **Reuse `crossSite` from `stream.go`; do not add an `Origin` check.** One uniform `403`, byte-identical across all five causes including `Content-Length`; the failed check named **server-side only**
-- [x] T004 🔒 `internal/httpapi/dashboard.go` + templates: one token per render, bound to that request's verified identity, in a hidden `crsw_page_token` field. Never in a URL, a cookie, a `data-` attribute, or a log
-- [x] T005 `internal/httpapi/actions.go`: the shared uniform `404` for unknown, not-owned, and no-longer-exists. One function, no reason parameter — there is nothing a caller could pass that may change a byte
+- [ ] T003 Carry forward the parser from `claude/issue-issue-65-...0112`; grammar only
+- [ ] T004 The file-level refusals, none of which ever names the value
+- [ ] T005 🔒 The mode refusal, gated on the file containing a secret
+- [ ] T006 A missing file is not an error; the parser never writes
+- [ ] T007 🔒 Wire the file as a fallback `getenv` — **the keystone**
+- [ ] T008 Record provenance in the same shim
+- [ ] T009 `crswd config check` and `crswd config migrate`, plus `config.bak` fallback
 
-### US1 — Destroy from the browser (P1, MVP)
+### US2 — See what it is configured to do (P2)
 
-- [x] T006 `POST /dashboard/sessions/{id}/destroy`: requires `confirm=yes` (FR-029), verified teardown, `409` with the record **retained** when it cannot be verified. **No force path**
-- [x] T007 `web/templates/partials/session-card.html` + CSS: the control **outside** the card's single anchor. Outcome as text, never colour alone; a failure says so rather than silently reverting
-- [x] T008 US1 acceptance: `GET` on the path is an unknown route, never `405`. **Each half of the defence disabled separately, the other still refuses.** AR-005 applies hardest here
+- [ ] T010 The read-only `/settings` route, `GET` only, `settings.view`
+- [ ] T011 🔒 Secrets render `present` / `absent`, never a value
+- [ ] T012 One row per key with its source; name the file that was read
+- [ ] T013 Sweep every route and assert no secret appears anywhere (SC-005)
 
-### US2 — Create from the browser (P2)
+### US3 — The dashboard behaves without script (P3)
 
-- [x] T009 `POST /dashboard/sessions`: reuse milestone 1's validation by **calling it**, not reimplementing it. The four `work_dir` refusals share **one** message — distinguishing "does not exist" from "not permitted" is a filesystem oracle. **The bearer token is discarded, never served**
-- [x] T010 The create form; submit disables on submission — the only genuine idempotence exposure of the four actions
-- [x] T011 US2 acceptance: `429` at the cap with existing sessions untouched, one record per attempt including refusals
+- [ ] T014 Carry forward post-redirect-get from `claude/issue-issue-42-...1832`
+- [ ] T015 Finish the ~19 tests still asserting fragment responses
+- [ ] T016 All four actions usable with scripting disabled
 
-### US3 — The fleet stays current (P3, closes #15)
+### US4 — Turn remote control on and off (P4)
 
-- [x] T012 `internal/session/manager.go`: an event source covering **every** path that changes the fleet — including the reaper and startup adoption. Non-blocking: a slow subscriber must never delay a destroy or shutdown. The reaper is the case most likely to be missed and is exactly what #15 reported
-- [x] T013 `internal/httpapi/fleet.go`: `GET /dashboard/fleet/stream`. Layer 1 + `crossSite`, **no page token** — it mutates nothing. Payload is `{"id":"..."}` only. Ownership filtered **before the event is written**. One `fleet.open` record per open, not per event
-- [x] T014 `web/static/crswd.js` + templates: re-fetch only the affected card; a severed stream **says so** rather than presenting a fleet it cannot vouch for
-- [x] T015 US3 acceptance: API create yields `appeared`, a reaper destroy yields `vanished`, a quiet stream yields a heartbeat comment
+- [ ] T017 Persist the start-command name as `@crswd-start`, the fifth tmux option
+- [ ] T018 `Session.Mode()`, derived; refuse a mode naming an unconfigured command
+- [ ] T019 🔒 `POST /dashboard/sessions/{id}/mode`, fields `mode` and `confirm`
+- [ ] T020 Restart the process in place, with `--continue`, preserving scrollback
+- [ ] T021 Show the mode on the card, textually
 
-### US4 — Rename (P4)
+### US5 — Pick a working directory (P5)
 
-- [x] T016 `internal/session/manager.go`: `Rename` — record only. **`TmuxName` is not touched**
-- [x] T017 `POST /dashboard/sessions/{id}/rename`, control outside the anchor
-- [x] T018 Rename, then run **every** identifier-based operation and assert unchanged behaviour
+- [ ] T022 Replace the field with `<input list>` + `<datalist>`
+- [ ] T023 Carry the discovery walk forward; one level, off by default
+- [ ] T024 🔒 A suggested path outside the allowlist is refused identically
+- [ ] T025 Announce a filtered subset
 
-### US5 — Compact (P5)
+### US6 — The card's two halves (P6)
 
-- [x] T019 `internal/session/manager.go`: `Compact` — `/compact` + newline via `load-buffer` + `paste-buffer -d`, **never `send-keys`**. Touches `LastActivity`. The delivered text is never audited
-- [x] T020 `POST /dashboard/sessions/{id}/compact` → `202`. **Says delivered, never compacted**
+- [ ] T026 Carry forward the card split from `claude/issue-issue-60-...0406`
+- [ ] T027 Rename moves to the session page as a disclosure
+- [ ] T028 A text selection inside the anchor does not navigate
+
+### Independent of the stories
+
+- [ ] T029 Startup dependency probes — tmux fatal, start command warning
+- [ ] T030 Install command from `/etc/os-release`, never guessed
+- [ ] T031 List prior conversations — identifier and time only, never contents
+- [ ] T032 Offer them at create time, fresh by default; refuse when ambiguous
+- [ ] T033 Bound the captured pane explicitly; refuse past it rather than truncate
 
 ### Ship it
 
-- [x] T021 `internal/audit/leak_test.go`: extend the corpus to all four action routes and the fleet stream. Nothing yet proves the *action* routes do not leak
-- [x] T022 Amend `docs/auth-and-sessions.md`, `docs/security.md` and `docs/components.md` — all three describe a browser that can only read
-- [x] T023 Run `specs/003-dashboard-actions/quickstart.md` end to end plus both tagged suites, and confirm milestone 1 and 2 acceptance passes **unchanged**. A story needing edits to accommodate this milestone is a regression to fix in the code, not in the test
+- [ ] T034 `config.example`, carrying the commentary that justified the format
+- [ ] T035 Docs, and assert `go.sum` is still absent
 
 ---
 
-## Shippable at T008
+## Shippable at T009
 
-T001–T008 are the demonstrable MVP and are deployable on their own: a dashboard that can destroy
-a session, with the cross-site defence proven in **both** halves independently. Every later
-action reuses that gate without changing it, so the security review happens once, early, on the
-smallest surface that exercises it.
+**T001–T009 are the demonstrable MVP and are deployable on their own**: an operator changes
+any setting by editing one file and restarting, and a daemon with no file behaves exactly as
+it does today. Everything after is additive, and US2 is the first thing that makes US1
+legible.
 
-T012–T015 close issue #15 and are independent of the action stories — they can run in parallel
-if an iteration is blocked elsewhere.
+T029–T033 are independent of every story and can run whenever an iteration is blocked
+elsewhere.
 
 ---
 
 ## Out of scope
 
-Deliberately NOT in milestone 3, so no iteration wanders into them:
+Deliberately NOT in milestone 4, so no iteration wanders into them:
 
-- The Claude device-code login relay, and the `needs-auth` state — milestone 4
+- **Releases, versioning, an installer, and self-update** (#57, #68, #69, #66). They are
+  distribution rather than operation, and they depend on this milestone's config file
+  existing first — they are the next milestone, not this one
+- **Editing settings from the browser.** The read-only view ships here; writing the operator's
+  file from a page carries a list of safeguards long enough to be its own piece of work, and
+  it is the highest-consequence surface in the product. **No mutating verb is registered on
+  `/settings` at all** — a route that does not exist cannot be exploited
+- **The rain's Easter eggs** (#54), and **the browser accessibility verification** (#17) —
+  polish, and a task only a human with a browser can do
+- The Claude device-code login relay, and the `needs-auth` state
 - The companion Claude skill
-- **Sending arbitrary prompt text from the browser.** This milestone adds four *named* actions;
-  a general "type into the session" control is a much larger surface with its own questions
+- **Sending arbitrary prompt text from the browser.** The mode toggle selects between
+  *configured names*; a general "type into the session" control is a much larger surface
 - Editing a session's working directory after creation
 - Bulk actions across multiple sessions at once
 - Persisting session records, dashboard state, or output history to disk
-- Any change to milestone 1's signing procedure, six operations, or audit record shape — the
-  API path must keep working **unchanged** (FR-005). This milestone adds a second way to
-  authorise a write; it does not alter the first
 - Multi-user support beyond one allowlisted identity and the ownership check that already
   exists. The check still runs on every action, and is still tested against a synthetic second
   owner — a check removed because it always passes is a check that will be missing when it
   stops always passing
+- Any change to milestone 1's signing procedure, its six operations, or the audit record
+  shape. The API path must keep working **unchanged**
