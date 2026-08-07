@@ -21,6 +21,7 @@ import (
 	"net/http"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 )
 
 // patternSettings is the settings page's route, and the method is part of it for
@@ -43,6 +44,105 @@ type settingsView struct {
 	// the only thing on this page that comes from the request at all, and it did
 	// not come from anything the caller wrote.
 	Operator *access.VerifiedOperator
+
+	// Settings is the table's rows, projected from the Config at render time by
+	// settingsOf. Today it holds the secret keys and only those (T011); T012
+	// widens the same walk to every key config.go declares and adds the source
+	// column beside the value.
+	Settings []settingRow
+}
+
+// settingRow is one configuration key as the page states it.
+//
+// There is a Value and there is no raw value beside it, which is the whole
+// arrangement: what reaches the template is what a browser is allowed to see, so
+// there is no field for a render to reach for by mistake and no second
+// projection where a "helpful" masked form could be added without touching
+// settingsOf.
+type settingRow struct {
+	// Key is the file spelling — the environment variable minus CRSW_,
+	// lower-cased — because that is the spelling an operator wrote in their own
+	// file and the spelling config.IsSecret takes.
+	Key string
+
+	// Value is the effective value, or — for a secret — one of the two words
+	// below and nothing else.
+	Value string
+}
+
+// The value column's entire vocabulary for a secret (FR-017,
+// contracts/settings-page.md). Not a length, not a prefix, not a suffix, not a
+// hash: a masked value is still a disclosure, and the four characters of a
+// credential a page is willing to print are four an attacker no longer has to
+// guess.
+const (
+	secretPresent = "present"
+	secretAbsent  = "absent"
+)
+
+// settingsOf projects a Config into the rows the settings page renders.
+//
+// config.IsSecret is the gate, and it is deliberately the same predicate the
+// 0600 refusal in internal/config/file.go asks (T001). A second list of secret
+// keys here would be invisible while every test passed: this page would
+// confidently print the value that check thought too sensitive to leave
+// group-readable, and the disagreement would surface as a credential in a
+// browser rather than as a failure.
+//
+// It walks config.Vars() rather than a list of its own, so the page cannot
+// invent a setting or forget one, and the order is the order config.go declares
+// them.
+func settingsOf(cfg *config.Config) []settingRow {
+	rows := make([]settingRow, 0, len(config.Vars()))
+	for _, name := range config.Vars() {
+		key := config.KeyForVar(name)
+		// Every other key is T012's, which owns the value column and the source
+		// beside it. This task owns the one cell whose contents are a security
+		// decision, and shipping it first is what keeps that decision from being
+		// retrofitted onto a table that already prints everything.
+		if !config.IsSecret(key) {
+			continue
+		}
+		configured, known := secretConfigured(cfg, name)
+		rows = append(rows, settingRow{Key: key, Value: presence(configured && known)})
+	}
+	return rows
+}
+
+// presence is the only function that turns a fact about a secret into text, so
+// there is one place that could ever be made to say more than two words.
+func presence(configured bool) string {
+	if configured {
+		return secretPresent
+	}
+	return secretAbsent
+}
+
+// secretConfigured reports whether a secret setting has a value on this daemon,
+// and whether this page can tell.
+//
+// It reads the Config's own field rather than the provenance map, because
+// provenance answers a different question — which layer supplied a value — and a
+// secret with no default makes the two look identical right up until one of them
+// is wrong.
+//
+// The second return exists for the key that is not here yet. config.IsSecret is
+// the classifier, so a third secret added there is hidden by settingsOf whether
+// or not this switch has heard of it; what it would otherwise lose is the
+// ability to say anything true about it. An unknown one reads as absent rather
+// than as present because that is the answer an operator investigates: reading
+// "absent" for a configured secret sends somebody to look, and reading "present"
+// for one that is missing does not. TestEverySecretKeyReportsItsPresence keeps
+// the branch unreachable.
+func secretConfigured(cfg *config.Config, name string) (configured, known bool) {
+	switch name {
+	case config.EnvSharedSecret:
+		return len(cfg.SharedSecret) > 0, true
+	case config.EnvAccessAllowedEmails:
+		return len(cfg.AccessAllowedEmails) > 0, true
+	default:
+		return false, false
+	}
 }
 
 // settings serves GET /settings (FR-016 … FR-020, contracts/settings-page.md).
@@ -67,5 +167,11 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	// The record the middleware emits carries settings.view and the identity that
 	// asked, which is the whole of what an operator counting who read the
 	// configuration needs.
-	s.renderPage(w, r, http.StatusOK, "settings", settingsView{Operator: operator})
+	// The Config the server was built from, read here and nowhere else: every
+	// value on this page was resolved once, at startup, so the page cannot
+	// disagree with the daemon it describes.
+	s.renderPage(w, r, http.StatusOK, "settings", settingsView{
+		Operator: operator,
+		Settings: settingsOf(s.cfg),
+	})
 }

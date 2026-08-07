@@ -4,10 +4,17 @@
   makes the configuration file legible: an operator who edited a file and saw
   nothing change reads here which layer actually supplied each value.
 
-  What it holds is the same header every other page carries and, once T011 and
-  T012 land, one row per configuration key with the source that supplied it. This
-  render is the route's own — the shell that proves the page is served, behind the
-  same identity middleware as the fleet, under its own audit action.
+  What it holds is the same header every other page carries and a table of what
+  this daemon is configured to do. The rows are the secret keys today (T011); T012
+  widens the same walk to every key and adds the source column beside the value,
+  and the line naming the file that was read.
+
+  The value of a secret is `present` or `absent` and is never the value, its
+  length, a prefix, a suffix, or a hash (FR-017). That word is chosen in Go, by
+  the one predicate the 0600 refusal also asks, and arrives here already decided —
+  so there is nothing in this file that could be made to print more of a
+  credential than it was handed, and no way to add a "helpful" masked form without
+  editing the projection that a test reads.
 
   There is no form here, and there is not going to be one. No mutating verb is
   registered on this path (spec, Out of Scope), so this page carries no page
@@ -38,6 +45,25 @@
 <body>
 {{ template "header" .Operator }}
 <main class="shell">
+<div class="settings">
+<table>
+<caption>Configuration</caption>
+<thead>
+<tr>
+<th scope="col">Key</th>
+<th scope="col">Value</th>
+</tr>
+</thead>
+<tbody>
+{{ range .Settings }}
+<tr>
+<th scope="row">{{ .Key }}</th>
+<td>{{ .Value }}</td>
+</tr>
+{{ end }}
+</tbody>
+</table>
+</div>
 </main>
 </body>
 </html>

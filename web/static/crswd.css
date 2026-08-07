@@ -766,6 +766,53 @@ body {
   text-transform: uppercase;
 }
 
+/* The settings table — the read-only account of how this daemon was configured.
+   Wide content scrolls inside its own container rather than moving the page
+   sideways, which is the rule docs/design-system.md gives panes and tables
+   alike. No rain sits behind it: a table of values an operator is reading is
+   reading content.
+   Element selectors under one class rather than a class per cell. The table is
+   the whole of this page's structure, and a class on every cell would be a
+   component docs/components.md never defined. */
+.settings {
+  overflow-x: auto;
+}
+
+.settings table {
+  inline-size: 100%;
+  border-collapse: collapse;
+}
+
+/* The table's accessible name, where a heading would only repeat the masthead.
+   Aligned to the start rather than centred: a centred caption over a table this
+   narrow reads as a title for the page instead of for the table. */
+.settings caption {
+  margin-block-end: var(--s3);
+  color: var(--dim);
+  font-size: var(--fs-eyebrow);
+  letter-spacing: var(--ls-eyebrow);
+  text-align: start;
+  text-transform: uppercase;
+}
+
+/* A key is what the machine calls the setting, so both columns stay in mono and
+   the row header is not bolded — the emphasis in this table is the border grid,
+   not weight. */
+.settings th,
+.settings td {
+  padding: var(--s2) var(--s3);
+  border-block-end: var(--edge-width) solid var(--edge);
+  font-weight: 400;
+  text-align: start;
+}
+
+.settings thead th {
+  color: var(--dim);
+  font-size: var(--fs-label);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+}
+
 /* The hidden attribute has to win (#77).
    `[hidden] { display: none }` is a user-agent rule, so any class that sets
    `display` outranks it — .empty, .grid, .summary and .empty-action all do, and

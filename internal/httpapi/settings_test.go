@@ -10,12 +10,15 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 )
 
 // settingsPath is derived from the pattern the server registers rather than
@@ -255,5 +258,276 @@ func TestNoMutatingVerbRegistered(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The two secret values these tests configure, and both are deliberately
+// gibberish.
+//
+// A canary made of words would make the sweeps below unreliable in the direction
+// that matters: "secret" or "here" turning up in a four-character window of the
+// page is a coincidence with English prose, and a test that has to be argued with
+// is a test that gets loosened. Nothing in this repository's markup, tokens or
+// copy carries a run of these.
+//
+// Neither address is the viewer's. The fixture Config's allowlist is the
+// operator's own address and the header renders that on every page in the
+// product, so a page-wide sweep for "the allowlisted address" against the default
+// fixture would find the identity layer 1 verified — a different thing wearing
+// one string — and fail on entirely correct code.
+//
+// Both carry the `test-only-` prefix .gitleaks.toml allows by construction — the
+// prefix is the claim, and a scanner that had to be argued with about a
+// secret-shaped string beside the word "secret" is one that stops being run. The
+// sweeps below therefore search for runs of the *body*, which is the part with
+// entropy in it: the announcement is not secret material, and a page that printed
+// it alone would have disclosed nothing. It also cannot be swept for safely — the
+// fixture Config's Access audience is `test-only-audience-tag`, so a search for
+// "test" would find that the moment T012 renders the value column.
+//
+// gosec G101 fires on canarySecret for the reason it fires on EnvSharedSecret in
+// config.go: the identifier says "secret" and the value is a string literal. This
+// one is a fixture, and the daemon this package builds authenticates with
+// testSecret and never with this.
+const (
+	canaryAnnounce = "test-only-"
+	canarySecret   = canaryAnnounce + "qx7v-zk2m-vb9n-ct4r-ls8w-pd3h-gj6f-wn5y-rt1u-mb0e" //nolint:gosec // G101: a canary a test sweeps for, not a credential
+	canaryAllowed  = canaryAnnounce + "zq8t-kd4p-mn7v@vb6n-xw3r.hj9c"
+)
+
+// settingsOn is a fleet whose Config the caller has adjusted before anything has
+// read it, which is how every claim below is made about a configured daemon
+// rather than about the fixture's defaults.
+//
+// The Config is adjusted after construction, in the shape watchingUnserved uses
+// for the stream cap: no request has been served yet, the fixture's Config is its
+// own rather than shared, and layer 1 here is a real validator built over the key
+// server's allowlist and not over this value — so changing the daemon's copy of
+// the allowlist changes what the page describes and not who may read it, which is
+// exactly the distinction these tests are about.
+func settingsOn(t *testing.T, adjust func(*config.Config)) *fleet {
+	t.Helper()
+
+	f := newFleet(t)
+	adjust(f.cfg)
+	return f
+}
+
+// settingsBody opens the settings page as the verified operator and hands back
+// what a browser would receive.
+func settingsBody(t *testing.T, f *fleet) string {
+	t.Helper()
+
+	w := f.open(t, settingsPath)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d (%s); want %d", settingsPath, w.Code, w.Body.String(), http.StatusOK)
+	}
+	return w.Body.String()
+}
+
+// settingsRowFor isolates the row naming one key, so an assertion about what the
+// page says *about a setting* cannot be satisfied by markup elsewhere on it —
+// the same reason cardFor exists.
+func settingsRowFor(t *testing.T, page, key string) string {
+	t.Helper()
+
+	for _, row := range strings.Split(page, "<tr>")[1:] {
+		body, _, _ := strings.Cut(row, "</tr>")
+		if strings.Contains(body, ">"+key+"<") {
+			return body
+		}
+	}
+	t.Fatalf("the settings page has no row for %q, so it says nothing at all about that setting:\n%s", key, page)
+	return ""
+}
+
+// TestSettingsNeverRendersSecretValue is contracts/settings-page.md's secret row
+// and SC-005 at the one page that holds every secret at render time.
+//
+// It sweeps for more than the value. A prefix, a suffix and a length are each a
+// disclosure of their own — four characters a page is willing to print are four
+// an attacker no longer has to guess, and a length turns a search space into a
+// smaller one — so what is asserted is that no run of either secret longer than
+// three characters reaches the browser, in either direction, and that neither
+// length appears as a number.
+//
+// **Must fail when** a "masked" value like `qx7v…` is introduced. That is the
+// mutation this exists for: it looks like a courtesy, it passes a test that
+// searched for the whole value, and it is a disclosure.
+func TestSettingsNeverRendersSecretValue(t *testing.T) {
+	t.Parallel()
+
+	f := settingsOn(t, func(cfg *config.Config) {
+		cfg.SharedSecret = []byte(canarySecret)
+		cfg.AccessAllowedEmails = []string{canaryAllowed}
+	})
+	page := settingsBody(t, f)
+
+	// Four, because three characters of a credential is not a run and a page of
+	// markup carries plenty of them by accident. Four is where a prefix starts
+	// being worth having.
+	const shortestRunWorthHaving = 4
+
+	for _, secret := range []struct {
+		what  string
+		value string
+	}{
+		{"the shared secret", canarySecret},
+		{"the allowlisted addresses", canaryAllowed},
+	} {
+		if strings.Contains(page, secret.value) {
+			t.Errorf("the settings page renders %s verbatim:\n%s", secret.what, page)
+		}
+		// The body rather than the whole value, for the reason canaryAnnounce
+		// gives. Any masked form long enough to disclose four characters of the
+		// entropy contains a run this finds, whichever end it was cut from.
+		body := strings.TrimPrefix(secret.value, canaryAnnounce)
+		for n := shortestRunWorthHaving; n < len(body); n++ {
+			if prefix := body[:n]; strings.Contains(page, prefix) {
+				t.Errorf("the settings page carries %q, the first %d characters of %s; a masked value is still a disclosure", prefix, n, secret.what)
+				break
+			}
+		}
+		for n := shortestRunWorthHaving; n < len(body); n++ {
+			if suffix := body[len(body)-n:]; strings.Contains(page, suffix) {
+				t.Errorf("the settings page carries %q, the last %d characters of %s; a masked value is still a disclosure", suffix, n, secret.what)
+				break
+			}
+		}
+		// The length, which is what "shorter than the required 32 bytes" is
+		// careful never to measure in a startup error either (loadSecret).
+		length := regexp.MustCompile(`\b` + strconv.Itoa(len(secret.value)) + `\b`)
+		if match := length.FindString(page); match != "" {
+			t.Errorf("the settings page carries %q, which is the length of %s", match, secret.what)
+		}
+	}
+}
+
+// TestSecretRendersPresentOrAbsent is the value column's whole vocabulary, held
+// for both secret keys in both states.
+//
+// The unset half is not symmetry for its own sake. It is the page an operator
+// reads when a credential is missing, and it has to say so in the same column and
+// the same two words — a blank cell there reads as a page that failed to render
+// rather than as a daemon with no secret configured (FR-018a).
+//
+// **Must fail when** the template prints the raw value for either secret key, and
+// when either word is composed from the value rather than chosen from the fact.
+func TestSecretRendersPresentOrAbsent(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		key    string
+		adjust func(*config.Config)
+		want   string
+	}{
+		{"a configured shared secret", "shared_secret", func(cfg *config.Config) {
+			cfg.SharedSecret = []byte(canarySecret)
+		}, secretPresent},
+		{"no shared secret at all", "shared_secret", func(cfg *config.Config) {
+			cfg.SharedSecret = nil
+		}, secretAbsent},
+		{"a configured allowlist", "access_allowed_emails", func(cfg *config.Config) {
+			cfg.AccessAllowedEmails = []string{canaryAllowed}
+		}, secretPresent},
+		{"an empty allowlist", "access_allowed_emails", func(cfg *config.Config) {
+			cfg.AccessAllowedEmails = nil
+		}, secretAbsent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			page := settingsBody(t, settingsOn(t, tc.adjust))
+			row := settingsRowFor(t, page, tc.key)
+
+			if !strings.Contains(row, "<td>"+tc.want+"</td>") {
+				t.Errorf("with %s, the %s row is %q; want a value cell holding exactly %q", tc.name, tc.key, row, tc.want)
+			}
+			other := secretPresent
+			if tc.want == secretPresent {
+				other = secretAbsent
+			}
+			if strings.Contains(row, other) {
+				t.Errorf("with %s, the %s row also says %q: %q", tc.name, tc.key, other, row)
+			}
+		})
+	}
+}
+
+// TestAllowedIdentitiesTreatedAsSecret is the second key, and the one a reader
+// has to be told about: it is not a credential and it authenticates nobody.
+//
+// It is secret because it names *who* may reach a daemon that runs unsandboxed
+// code on this host, which is worth exactly as little publication as the secret
+// that authenticates them — and because one predicate deciding for both is what
+// makes the permission refusal in internal/config and this page unable to
+// disagree (T001).
+//
+// **Must fail when** only `shared_secret` is classified. That mutation prints no
+// address on today's page — it drops the row, because settingsOf renders the keys
+// config.IsSecret names — so the row lookup is what catches it here, and the
+// address sweep is what will catch it once T012 fills the value column for every
+// other key.
+func TestAllowedIdentitiesTreatedAsSecret(t *testing.T) {
+	t.Parallel()
+
+	const second = "wt3k-fp9r@nq5d-bz7l.mv2x"
+	page := settingsBody(t, settingsOn(t, func(cfg *config.Config) {
+		cfg.AccessAllowedEmails = []string{canaryAllowed, second}
+	}))
+
+	row := settingsRowFor(t, page, "access_allowed_emails")
+	if !strings.Contains(row, "<td>"+secretPresent+"</td>") {
+		t.Errorf("the allowlist row is %q; a configured allowlist is %q", row, secretPresent)
+	}
+	for _, address := range []string{canaryAllowed, second} {
+		if strings.Contains(page, address) {
+			t.Errorf("the settings page names the allowlisted address %q; the list says who may reach an unsandboxed shell on this host, and it is published nowhere", address)
+		}
+	}
+	// Nor how many of them there are. A count is the same disclosure made
+	// smaller, and it is a shape Config.String settles on for a *log* line —
+	// where the alternative is naming them — rather than a licence for a page
+	// that has the two words it needs.
+	if strings.Contains(row, strconv.Itoa(2)) {
+		t.Errorf("the allowlist row is %q; it carries how many addresses are allowlisted", row)
+	}
+}
+
+// TestEverySecretKeyReportsItsPresence closes the drift secretConfigured's second
+// return value exists for.
+//
+// config.IsSecret is the classifier, so a third secret key added there is kept
+// out of the value column whether or not this package has heard of it — that half
+// is safe by construction. What is not safe is the sentence the page then writes
+// about it: a key nothing here can ask about reads as absent forever, which is
+// the settings page lying about a configured credential rather than leaking one.
+//
+// **Must fail when** a key joins config.IsSecret and nothing here learns how to
+// tell whether it is set.
+func TestEverySecretKeyReportsItsPresence(t *testing.T) {
+	t.Parallel()
+
+	secrets := 0
+	for _, name := range config.Vars() {
+		key := config.KeyForVar(name)
+		if !config.IsSecret(key) {
+			continue
+		}
+		secrets++
+		if _, known := secretConfigured(testConfig(loopbackListen), name); !known {
+			t.Errorf("config.IsSecret calls %s secret and the settings page cannot tell whether it is configured, so it will report %q for a value that is set", key, secretAbsent)
+		}
+	}
+	if secrets == 0 {
+		t.Fatal("no key in config.Vars() is secret, so this test asserted nothing — and the page has no secret to protect")
+	}
+
+	// And every one of them reaches the page. A classifier nothing consults is
+	// the failure this milestone has shipped three times: the code exists and
+	// nothing calls it.
+	if rows := settingsOf(testConfig(loopbackListen)); len(rows) != secrets {
+		t.Errorf("the settings page renders %d rows for %d secret keys (%v)", len(rows), secrets, rows)
 	}
 }
