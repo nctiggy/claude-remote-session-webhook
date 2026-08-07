@@ -131,6 +131,15 @@ const (
 	// whose volume is set by how busy the fleet is rather than by who asked to
 	// watch it.
 	ActionFleetOpen Action = "fleet.open"
+
+	// ActionSettingsView is the read-only settings page served, and it is its own
+	// action rather than a second dashboard.view for the reason dashboard.asset
+	// is: this is the one page in the product that composes every configured
+	// value at render time, and an operator counting who looked at it must not be
+	// counting fleet loads with them. The page can only be read — no mutating
+	// verb is registered on it — so there is no settings.* write to tell apart
+	// from this, and if one is ever added it will need its own name here.
+	ActionSettingsView Action = "settings.view"
 )
 
 // Decision is the allow/deny outcome, and unlike Action it is closed: two

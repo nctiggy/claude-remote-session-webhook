@@ -1,0 +1,43 @@
+{{/*
+  The settings page — GET /settings (contracts/settings-page.md). It is the
+  read-only account of how this daemon was configured, and it is the page that
+  makes the configuration file legible: an operator who edited a file and saw
+  nothing change reads here which layer actually supplied each value.
+
+  What it holds is the same header every other page carries and, once T011 and
+  T012 land, one row per configuration key with the source that supplied it. This
+  render is the route's own — the shell that proves the page is served, behind the
+  same identity middleware as the fleet, under its own audit action.
+
+  There is no form here, and there is not going to be one. No mutating verb is
+  registered on this path (spec, Out of Scope), so this page carries no page
+  token, no action row and no live region — the three things every actionable
+  page in this tree carries and this one must not. A form rendered here would be a
+  form the daemon has no route to receive, which is the one shape of dead control
+  the design system cannot show an operator is dead.
+
+  Load-bearing, and the same three absences the other three pages carry: no
+  inline <script>, no inline <style>, and no external origin. The policy in
+  docs/security.md is sent unmodified, so each would fail in a browser rather than
+  in review. The script is the embedded asset that drives the rain the header
+  renders a canvas for, and it has to be a file for exactly the reason an inline
+  one would fail.
+
+  No rain sits behind the settings themselves. The design system permits the
+  effect behind the header and in the empty state and nowhere else, and a table of
+  values an operator is reading is reading content.
+*/}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>crswd — settings</title>
+<link rel="stylesheet" href="/static/crswd.css">
+<script src="/static/crswd.js" defer></script>
+</head>
+<body>
+{{ template "header" .Operator }}
+<main class="shell">
+</main>
+</body>
+</html>

@@ -509,6 +509,16 @@ func newServer(
 	// an operator counting who watched the fleet is not counting page loads or pane
 	// reads with it.
 	s.handleBrowser(patternFleetStream, audit.ActionFleetOpen, s.fleetStream)
+	// The read-only account of how this daemon was configured, on the same door as
+	// the pages above and under an action of its own: an operator counting who read
+	// the configuration must not be counting fleet loads with them.
+	//
+	// handleBrowser and deliberately never handleAction, because there is nothing
+	// here for the gate to authorise — this route only reads, and no mutating verb
+	// is registered on the path at all. Editing the operator's file from a browser
+	// is out of scope this milestone, and the absence of a POST is the safeguard
+	// rather than a POST that refuses (contracts/settings-page.md).
+	s.handleBrowser(patternSettings, audit.ActionSettingsView, s.settings)
 	// The first route on this door that changes something, and the reason
 	// handleAction exists one line below handleBrowser rather than instead of it:
 	// everything above only reads, and a read is authorised by layer 1 alone.

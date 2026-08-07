@@ -254,6 +254,9 @@ func TestEmitAcceptsEveryDocumentedAction(t *testing.T) {
 		audit.ActionDashboardCompact: "dashboard.compact",
 		audit.ActionDashboardReject:  "dashboard.reject",
 		audit.ActionFleetOpen:        "fleet.open",
+
+		// Milestone 4's one addition: the read-only settings page.
+		audit.ActionSettingsView: "settings.view",
 	}
 	for action, want := range cases {
 		t.Run(want, func(t *testing.T) {
