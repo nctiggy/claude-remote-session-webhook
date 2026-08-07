@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 	"github.com/nctiggy/claude-remote-session-webhook/web"
 )
@@ -1758,62 +1759,193 @@ func TestEveryCanonicalComponentIsAPartial(t *testing.T) {
 	}
 }
 
-// TestTheCreateFormOffersTheConfiguredStartCommands is #39's half of #38: the
-// operator can only choose a start command if the page offers one.
+// TestCreateFormHasNoStartCommandSelect is the milestone-4 miss read at the one
+// layer that could have caught it. FR-026 said an operator chooses remote control
+// as a *mode* rather than selecting a command by name; three tasks shipped green
+// for it and this form kept its dropdown of names, because every assertion made
+// was about a route or a record.
 //
-// The single-command case is the one worth pinning. A select with one option is
-// a control that cannot change anything, and a daemon that configured nothing
-// must render the form it rendered before this feature existed — otherwise
-// every deployment gains a widget for a choice it does not have.
-func TestTheCreateFormOffersTheConfiguredStartCommands(t *testing.T) {
+// So this reads markup, and it asserts an absence rather than a presence: a
+// switch being there says nothing about the chooser still being there beside it.
+//
+// **Must fail when** the route accepts the right value but the form still renders
+// the old control. That is the exact shape of what shipped.
+//
+// It is asserted twice, and the second time is the one with teeth. The chooser
+// was conditional on the operator having configured more than one command, so a
+// component rendered from a bare view never drew it and a test reading only that
+// would pass with the `<select>` still in the template — the same near miss one
+// layer down. The page case configures two commands, which is the state the
+// control existed for.
+//
+// The field name is spelled here rather than taken from actions.go's constant on
+// purpose. What must be gone is the control an operator sees, and that stays true
+// whatever the handler goes on to read — a test bound to the constant would start
+// passing for the wrong reason the moment the route stopped reading it.
+func TestCreateFormHasNoStartCommandSelect(t *testing.T) {
 	t.Parallel()
 
-	t.Run("several configured", func(t *testing.T) {
+	// Not `<option`. The datalist beside the working-directory field renders
+	// those legitimately, and it is about to render more of them (T006) — the
+	// element the chooser is recognised by is the `<select>` around them.
+	gone := []string{"<select", `name="start_command"`, `id="create-start-command"`}
+
+	t.Run("the component", func(t *testing.T) {
 		t.Parallel()
 
-		out := renderComponent(t, "create-form", createFormView{
-			PageToken:     "t",
-			StartCommands: []string{"default", "rc"},
-		})
-		if !strings.Contains(out, `name="start_command"`) {
-			t.Errorf("the form offers no start_command control:\n%s", out)
-		}
-		for _, name := range []string{"default", "rc"} {
-			if !strings.Contains(out, `<option value="`+name+`">`) {
-				t.Errorf("the form omits the %q option:\n%s", name, out)
+		out := renderComponent(t, "create-form", createForm())
+		for _, chooser := range gone {
+			if strings.Contains(out, chooser) {
+				t.Errorf("the create form still renders %s, so it still asks an operator to pick a command by name:\n%s", chooser, out)
 			}
 		}
 	})
 
-	t.Run("one configured renders no chooser", func(t *testing.T) {
+	t.Run("a daemon with commands configured", func(t *testing.T) {
 		t.Parallel()
 
-		out := renderComponent(t, "create-form", createFormView{
-			PageToken:     "t",
-			StartCommands: []string{"default"},
+		f := newFleet(t)
+		f.cfg.StartCommands = config.NewStartCommands(map[string]string{
+			"default": "claude --dangerously-skip-permissions",
+			"rc":      "claude remote-control",
 		})
-		if strings.Contains(out, `name="start_command"`) {
-			t.Errorf("the form offers a choice of one:\n%s", out)
-		}
-	})
 
-	// A command line must never reach the page. The names are the operator's own
-	// configuration and are safe to render; what they run is not a thing a page
-	// asking "which one?" needs, and a page carrying it is a page that could be
-	// made to carry any of it.
-	t.Run("no command line reaches the markup", func(t *testing.T) {
-		t.Parallel()
-
-		out := renderComponent(t, "create-form", createFormView{
-			PageToken:     "t",
-			StartCommands: []string{"default", "rc"},
-		})
-		for _, leak := range []string{"claude ", "--dangerously", "remote-control", "--permission-mode"} {
-			if strings.Contains(out, leak) {
-				t.Errorf("the form carries %q, which is configuration and not a choice:\n%s", leak, out)
+		create := sectionOf(t, f.view(t).Body.String(), "create")
+		for _, chooser := range gone {
+			if strings.Contains(create, chooser) {
+				t.Errorf("a daemon configuring two commands still renders %s on its create form, which is choosing a command by name:\n%s", chooser, create)
 			}
 		}
 	})
+}
+
+// TestCreateFormRendersRemoteSwitch is the other half: what stands where the
+// chooser stood is the two-state control research.md settled on, and it is the
+// platform's own.
+//
+// Exactly one, and bound to a label. A second checkbox by the same name would
+// post two values for one mode, and an unlabelled one is a control a screen
+// reader announces as nothing — docs/components.md's Form rule, which is why the
+// label is asserted through `for` rather than by proximity in the markup.
+//
+// **Must fail when** the control is a button, a link, an unlabelled input, or a
+// checkbox posting anything but the one value the route will accept.
+func TestCreateFormRendersRemoteSwitch(t *testing.T) {
+	t.Parallel()
+
+	out := renderComponent(t, "create-form", createForm())
+
+	var boxes []string
+	for _, input := range formInput.FindAllStringSubmatch(out, -1) {
+		if kind, _ := attributeValue(t, input[1], "type"); kind == "checkbox" {
+			boxes = append(boxes, input[1])
+		}
+	}
+	if len(boxes) != 1 {
+		t.Fatalf("the create form renders %d checkboxes; the mode is one two-state control:\n%s", len(boxes), out)
+	}
+	box := boxes[0]
+
+	if name, _ := attributeValue(t, box, "name"); name != "remote_control" {
+		t.Errorf("the switch posts as %q and the route reads remote_control (<input%s>)", name, box)
+	}
+	// An unticked checkbox posts nothing, so this one value is the whole of what
+	// the ticked state says. A box with no value posts "on" by every browser's
+	// convention, which is the same string — but by their convention rather than
+	// by this daemon's, and the route spells what it accepts.
+	if value, ok := attributeValue(t, box, "value"); !ok || value != "on" {
+		t.Errorf("the switch submits %q and the route accepts on (<input%s>)", value, box)
+	}
+	if strings.Contains(box, "checked") {
+		t.Errorf("the switch renders already on (<input%s>); absence means local, and a control defaulting to the more privileged mode makes the safe direction the deliberate one", box)
+	}
+
+	id, ok := attributeValue(t, box, "id")
+	if !ok {
+		t.Fatalf("the switch carries no id (<input%s>), so no label can name it", box)
+	}
+	var labelled bool
+	for _, label := range formLabel.FindAllStringSubmatch(out, -1) {
+		if label[1] != id {
+			continue
+		}
+		labelled = true
+		if strings.TrimSpace(label[2]) == "" {
+			t.Errorf("the switch's label is empty; a control announced as nothing is an unlabelled control:\n%s", out)
+		}
+	}
+	if !labelled {
+		t.Errorf("no <label for=%q> names the switch; a placeholder is not a label and neither is proximity (docs/components.md):\n%s", id, out)
+	}
+}
+
+// TestCreateFormRendersNoCommandName is FR-002 at the only place it can be
+// checked: against a daemon that really has commands configured.
+//
+// It is a page test rather than a component test, and it has to be. The view no
+// longer carries the names at all, so a component rendered from one could not
+// leak what it was never given — what can still go wrong is the projection
+// putting them back, in a label, a value, a title or a data attribute, which is a
+// fact about `fleet` and not about the template.
+//
+// The create section alone, deliberately. A card names the command its session is
+// running (#38), which is a different disclosure with a different argument behind
+// it: it describes a session that already exists rather than offering a choice of
+// what to start.
+//
+// **Must fail when** a name or a command line reaches the markup by any route.
+func TestCreateFormRendersNoCommandName(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	// Two names, because one would let a form that rendered "the default" pass
+	// while still being a chooser, and the second is the worked example's `rc` —
+	// the real configured name T004 must go on refusing as a submitted value.
+	commands := map[string]string{"default": "claude --dangerously-skip-permissions", "rc": "claude remote-control"}
+	f.cfg.StartCommands = config.NewStartCommands(commands)
+
+	create := sectionOf(t, f.view(t).Body.String(), "create")
+
+	for name, command := range commands {
+		if n := strings.Count(create, name); n != 0 {
+			t.Errorf("the rendered create form names the configured command %q %d times; a mode is asked for without the daemon's vocabulary for it:\n%s", name, n, create)
+		}
+		// The command line was never offered even when the names were, and it
+		// stays out for the stronger reason: a page that carried one is a page
+		// that could be made to carry any of it.
+		if strings.Contains(create, command) {
+			t.Errorf("the rendered create form carries the command line %q, which is configuration and not a choice:\n%s", command, create)
+		}
+	}
+	// Non-vacuity: the section really did render, and it really does hold the
+	// control that replaced the chooser.
+	if !strings.Contains(create, `name="remote_control"`) {
+		t.Errorf("the rendered create form carries no remote_control switch, so the sweep above passed on markup that offers nothing:\n%s", create)
+	}
+}
+
+// TestViewCarriesNoStartCommands is the same removal one layer down, and it is
+// the half that keeps the chooser from coming back: a view still carrying the
+// names is a template edit away from listing them again.
+//
+// Written against the struct's own fields rather than against a call site, for
+// the reason TestViewCarriesNoConversations is — "left in place for later" is
+// exactly the state a call site cannot show, since an unpopulated field looks
+// like a daemon that configured nothing.
+//
+// **Must fail when** any command-shaped field is kept on the create form's
+// parameter list, whatever it is named or typed.
+func TestViewCarriesNoStartCommands(t *testing.T) {
+	t.Parallel()
+
+	form := reflect.TypeOf(createFormView{})
+	for i := range form.NumField() {
+		field := form.Field(i)
+		if strings.Contains(strings.ToLower(field.Name), "command") ||
+			strings.Contains(strings.ToLower(field.Type.String()), "startcommand") {
+			t.Errorf("the create form's parameters still expose the daemon's command names: %s %s", field.Name, field.Type)
+		}
+	}
 }
 
 // TestTheCreateFormNamesTheConfiguredRoots is the other half of T014: the

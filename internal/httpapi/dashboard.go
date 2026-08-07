@@ -290,11 +290,15 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string, outcome 
 		// form no longer carries the question, so the walk above is the only thing
 		// on this path that touches the filesystem — and on the shipped default,
 		// where discovery is off, it touches none.
+		//
+		// Nothing here names a configured command either (US1, FR-002). The form
+		// asks for a mode and the daemon resolves the mode to a command, so the
+		// names that used to be projected here are a fact the browser is no longer
+		// told — which is what stops the form from being a chooser of them again.
 		Create: createFormView{
-			PageToken:     token,
-			StartCommands: s.cfg.StartCommands.Names(),
-			Roots:         s.rootPaths(),
-			Suggestions:   suggestions,
+			PageToken:   token,
+			Roots:       s.rootPaths(),
+			Suggestions: suggestions,
 		},
 		Outcome: outcome,
 	}

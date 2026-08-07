@@ -187,18 +187,6 @@ type createFormView struct {
 	// because an operator cannot tell the two apart until they use it.
 	PageToken string
 
-	// StartCommands is the operator's configured command names, sorted (#38,
-	// #39), and it is what turns the start command from an API-only field into
-	// something the dashboard can offer.
-	//
-	// Fewer than two names renders no chooser at all: a select with one option
-	// is a control that cannot change anything, and a daemon configuring nothing
-	// should see the form it saw before this existed. The names are the
-	// operator's own configuration, so listing them discloses nothing to an
-	// identity that is already allowlisted — and the command lines they map to
-	// are deliberately not here.
-	StartCommands []string
-
 	// Roots is every directory this daemon will start a session under —
 	// CRSW_ALLOWED_ROOTS as config.Load resolved it, absolute and with the
 	// symlinks already followed.
@@ -243,6 +231,16 @@ type createFormView struct {
 	// explicit list, and no task in this milestone builds one.
 	Suggestions []string
 
+	// There is no StartCommands field either, and its absence is the requirement
+	// rather than an omission (US1, FR-002). It carried the operator's configured
+	// command *names* so the form could render a chooser of them, which is
+	// choosing a command by name — the thing FR-026 said not to do, shipped
+	// anyway because every assertion made for it was about a route or a record.
+	// What replaces it is a two-state switch, and a mode needs no vocabulary from
+	// the daemon's configuration to be asked for: which command each mode runs is
+	// read from configuration at the point a session starts, and crosses to the
+	// browser in neither direction.
+	//
 	// There is no Conversations field, and there is no projection behind one
 	// (US5). The form asked an operator for an opaque conversation identifier and
 	// offered the conversations of every *suggested directory* to fill it with,

@@ -593,6 +593,41 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* The remote-control switch's row. A checkbox is read as "control, then what it
+   controls", so this is the one field whose label sits beside its input rather
+   than above it — the stacking .field does for a text entry would put a caption
+   under a box with nothing between them. */
+.field-switch {
+  grid-auto-flow: column;
+  justify-content: start;
+  align-items: center;
+  gap: var(--s2);
+}
+
+/* The native checkbox, themed rather than replaced. accent-color paints the
+   platform's own control in the palette's one green without appearance: none, so
+   what an operator sees is a tick — a shape — and the colour is reinforcement
+   exactly as it is on the pill. Nothing here removes the outline, so the global
+   :focus-visible ring applies to it untouched. */
+.switch-input {
+  accent-color: var(--phosphor);
+  inline-size: var(--s4);
+  block-size: var(--s4);
+  margin: 0;
+}
+
+/* Set as .field-label is, because it is one: the same eyebrow naming the same
+   kind of thing. It is a rule of its own rather than a second class on the
+   element so that T009 can give the switch its own presentation without
+   redefining what a field label looks like. */
+.switch-label {
+  color: var(--dim);
+  font-size: var(--fs-eyebrow);
+  font-weight: 600;
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+}
+
 /* The page's one primary control (docs/components.md: exactly one per view).
    --phosphor on --surface is ≈16:1, and it is spent here because this is the
    single thing on the page an operator came to do — the destroys are dangerous

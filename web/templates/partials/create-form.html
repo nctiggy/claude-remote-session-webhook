@@ -74,10 +74,10 @@
   template. It says the page reloads rather than that a card replaces it, which
   is what T014 made true: the route answers 303 and the browser comes back to the
   fleet.
-  `if` rather than `with`, so `.` stays the view inside the form: the chooser
-  below needs StartCommands, and `with` would have rebound the dot to the token
-  alone. The token is passed explicitly to its own template instead, which says
-  what it is at the point it is used.
+  `if` rather than `with`, so `.` stays the view inside the form: the fields
+  below need Roots and Suggestions, and `with` would have rebound the dot to the
+  token alone. The token is passed explicitly to its own template instead, which
+  says what it is at the point it is used.
 */}}{{ if .PageToken }}<section class="create">
 <h2 class="create-heading">Start a session</h2>
 <form class="create-form" method="post" action="/dashboard/sessions" data-submit-once="create-busy">{{ template "page-token" .PageToken }}<div class="field">
@@ -175,23 +175,38 @@
   What replaces it is not designed yet and deliberately not invented here
   (Principle II). Removing the question is this milestone's; answering it is not.
 */}}{{/*
-  The start-command chooser (#38, #39), rendered only when the operator has
-  configured more than one. A select with a single option is a control that
-  cannot change anything, so a daemon configuring nothing shows the form it
-  showed before this existed.
+  Remote control as a mode, which is FR-026 finally rendered
+  (contracts/remote-control-toggle.md). What stood here was a `<select>` of the
+  operator's configured command *names*, and it is the reason milestone 4 shipped
+  three green tasks for a requirement about what an operator sees: an operator
+  picking "rc" out of a list is choosing a command by name, which is the thing
+  FR-026 said not to do, and no assertion read this file.
 
-  The options are names, never command lines. What each name runs is the
-  operator's own configuration and belongs on a settings view (#49), not in a
-  select an operator picks from mid-task — and a page that carried the command
-  lines would be a page that could be made to carry any command line.
+  A real `<input type="checkbox">`, styled as a switch. The native control is the
+  accessible core and only its presentation changes: it takes a keyboard, toggles
+  with Space, is announced as a checkbox with its label, and needs no script to
+  do any of it — the same argument research.md R4 made for the plain form post
+  around it.
 
-  No default is marked selected. An absent value means the daemon's default by
-  the same rule the API applies, so the first option being "default" is the
-  browser's ordinary behaviour rather than a second place that decides.
-*/}}{{ if gt (len .StartCommands) 1 }}<div class="field">
-<label class="field-label" for="create-start-command">Start command</label>
-<select class="field-input" id="create-start-command" name="start_command">{{ range .StartCommands }}<option value="{{ . }}">{{ . }}</option>{{ end }}</select>
-</div>{{ end }}
+  Two states and no third. A ticked box posts `remote_control=on` and an unticked
+  one posts nothing at all, so the field a lost or stripped submission carries is
+  the *less* privileged mode rather than the more. Anything else is the uniform
+  refusal, which is T004's, and it refuses a real configured name along with
+  everything else — the field carries a mode, and a mode is not a name.
+
+  No name and no command line, in either direction (FR-002, FR-004). Which
+  configured command each mode runs is read from configuration, exactly as the
+  card's mode toggle already reads it, and the view behind this form no longer
+  carries the names at all.
+
+  The label follows the box rather than preceding it, which is the one place this
+  tree departs from docs/components.md's Form sketch: a checkbox is read as
+  "control, then what it controls", and `for` binds them whichever order they sit
+  in.
+*/}}<div class="field field-switch">
+<input class="switch-input" id="create-remote" type="checkbox" name="remote_control" value="on">
+<label class="switch-label" for="create-remote">Remote control</label>
+</div>
 <button class="button button-primary" type="submit">Start session</button>
 </form>
 <p class="create-note" id="create-busy" hidden>Starting a session. This page reloads with the fleet when the host answers.</p>
