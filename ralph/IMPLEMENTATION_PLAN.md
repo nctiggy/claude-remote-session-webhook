@@ -113,7 +113,7 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
 
 ### US5 — Stop asking a question nobody can answer (first, because it deletes)
 
-- [ ] T001 Remove the resume field and the `Conversations` view data
+- [x] T001 Remove the resume field and the `Conversations` view data
 - [ ] T002 Delete `internal/session/conversation.go`; record the SHA in #95
 
 ### US1 — Remote control at create time (the milestone-4 miss)
