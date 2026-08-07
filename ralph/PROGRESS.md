@@ -2147,3 +2147,111 @@ must be an addition to a control that already works, never the thing that makes 
   prescribes. One mutation was run rather than reasoned about (above), reverted by reverse `Edit`
   across two production files; `git diff --stat` afterwards showed the commit touching
   `actions_test.go` alone, 195 insertions against 0 deletions.
+
+---
+
+## Iteration 25 — 2026-08-07 08:01
+
+**Did:** T025. FR-045's announcement: the working-directory field names a live region
+(`data-workdir-note="create-workdir-subset"`), the region carries the page's own sentence
+(`data-workdir-subset="Showing {n} of {all} suggested directories."`) present and empty, and a new
+IIFE in `web/static/crswd.js` counts the rendered options and writes it when the count is short of
+the whole — silent when nothing is filtered. `TestSubsetAnnounced` in
+`internal/httpapi/stylesheet_test.go`.
+
+**Learned:**
+
+- **The announcement's "must fail when" is testable as a sweep for ownership, not for a
+  sentence.** Go cannot execute the script, so "an addition rather than the thing that makes the
+  control work" is held by four patterns the file must *not* carry: `datalist` (case-insensitive),
+  `createElement(`/`new Option(`, `.value =`, and `(set|remove)Attribute(`. Each is the picker
+  being taken over rather than commented on, and none is used anywhere else in the file today —
+  `getAttribute` is (line ~785), which is why the attribute sweep names the two mutating spellings
+  rather than `Attribute(`.
+- **A live region needed no new class and no CSS change.** `.field-hint` is `display: grid` with
+  no padding and no margin, so an empty `<div class="field-hint">` is a zero-height grid box and
+  costs the field only its parent's `--s1` gap. That is why there is no `:empty` rule for it —
+  unlike `.fleet-note:empty { display: none }`, which is the same problem solved the other way and
+  is arguably wrong (see findings).
+- **`TestTheStylesheetAndTheMarkupNameTheSameThings` is bidirectional**, so a new class in a
+  template needs a rule and a new rule needs a template. Reusing `.field-hint` sidesteps both;
+  inventing `.field-note` would have meant editing `crswd.css`, which is the design system's file.
+- **RE2 `\b` after a quoted attribute value does not match.** `id="create-workdir-subset"\b` never
+  fires — `"` and ` ` are both non-word — and the first run of the new test failed on exactly
+  that. Drop the trailing `\b`; the `[^>]*>` that follows is the real bound.
+- **The count is an approximation and says so.** The browser's filtered popup is not in the
+  document and no event reports it, so the script counts by the rule the engines filter by
+  (case-insensitive substring of the option value). Owning the list is the only way to be exact,
+  and owning the list is the thing being avoided.
+- **The write is debounced 400ms.** `aria-live="polite"` queues rather than interrupts, so a note
+  rewritten per keystroke hands a reader a backlog of counts to speak after the operator has
+  stopped typing, each already stale.
+- **The region is deliberately absent from `aria-describedby`.** A description is read on focus, a
+  live region on change; naming it in both says the count twice for every filter.
+
+**Left:** T026–T035. Next is **T026** (US6) — carry the card split forward from
+`claude/issue-issue-60-20260806-0406` into `web/templates/partials/session-card.html`, reconciling
+with the toast and anchor work that landed on `main` after it.
+
+**Findings:**
+
+- **`.fleet-note:empty { display: none }` contradicts `docs/components.md`'s own accessibility
+  floor.** That document says a live region must be in the accessibility tree before its text
+  arrives; `display: none` takes it out of the tree, so `#fleet-changed` is exactly the
+  revealed-and-written-in-one-go case the floor warns about. The new subset region avoids it by
+  being zero-height rather than `display: none`. Not fixed here — it is `crswd.css` and
+  `dashboard.html`, both outside T025 (AR-008). **Fix lane, one line:** give `.fleet-note` the same
+  treatment or drop the `:empty` rule.
+- **Nothing renders a suggestion in the shipped default, so the new region never appears either**
+  (22-25). `discover_roots` is off by default and `workdir_suggestions` still has no owning task,
+  so `Suggestions` is empty on every real render and the whole picker — datalist, hook and
+  announcement — is markup no operator has met yet. SC-008/SC-009 still cannot be demonstrated
+  without configuration.
+- **The walk's cap is still silent** (23-25): `maxDiscoveredWorkDirs = 200`. There is now a place
+  to say it — the subset region — but the template cannot know the list was cut short, so it needs
+  a field on the view and is not T025's.
+- **`contracts/directory-picker.md` line 12 still spells the input `name="workdir"`** where the
+  daemon's field is `work_dir` (22-25). Fix the contract, not the template.
+- **Nothing posts to `/dashboard/sessions/{id}/mode`** (19-25). Seventh iteration carrying it;
+  still the finding most likely to end the milestone with a feature the operator cannot use.
+- **NEEDS CLARIFICATION (not blocking, iteration 20): a start command that ignores SIGINT would
+  receive the new command line as a prompt.** Still the operator's call.
+- **The mode toggle redirects to the fleet where the contract says the session page** (19-25).
+  **`session.mode` puts a browser-door action in the API's `session.*` namespace** (19-25).
+  **`contracts/session-mode.md` and `data-model.md` still spell `Mode()` with no parameter and
+  still describe `remote_start_commands`** (18-25). **`contracts/card-layout.md` names T021's test
+  `TestModeShownTextually` where two other files say `TestCardShowsMode`** (21-25).
+- **Two `TestParseSessions` fixtures still pass for the wrong reason** (17-25): the stray `\n` in
+  `"creation time is not a number"` and `"creation time missing entirely"` in
+  `internal/tmuxctl/exec_test.go`. **Fix-lane commit:** drop the `\n`, pad to six fields.
+- **`specs/001-crswd-daemon-core/contracts/tmuxctl.md` is stale by three fields** (17-25): line
+  163's `list-sessions` format string and lines 81-82's two `set-option` calls against five.
+- **`contracts/actions.md` (milestone 3's) is still stale in nine places** — iterations 14-25.
+- **`TestBrowserCreateStartsTheSessionAndAnswersWithItsCard` and
+  `TestRenameRelabelsTheRecordAndAnswersWithItsCard` are still misnamed** (14-25).
+- **`internal/httpapi` still carries the data race in its own fixture** (13-25):
+  `newAuditedServerWith` sets `s.report` unsynchronised (`middleware_test.go:215`). Thirteenth
+  iteration logging it.
+- **`docs/components.md`'s Form section still says there is "deliberately no hint on the working
+  directory"** (22-25) — false since T014 and false twice since T022. Its accessibility floor is
+  also now one announcement out of date: it lists the fleet's shape change as the only thing
+  announced besides the severed-fleet note, and there are two.
+- **Still open from iterations 5-25:** the three red `-tags quickstart` tests
+  (`CRSW_DESTROY_ON_SHUTDOWN` has no loader — the oldest unfixed finding here; not run this
+  iteration, the live daemon still holds `127.0.0.1:8765`, though `go vet -tags quickstart ./...`
+  is green); `contracts/settings-page.md`'s `TestNoMutatingVerbRegistered` row still saying 405,
+  and its worked example showing values no loader would produce; three `ReadFile` refusals missing
+  from `contracts/config-file.md`'s table; the `version < 1` row; the contract's "yields exactly
+  eight keys" against nine; a dangling symlink reading as absent; `f.values` having no enumerator;
+  `os.Open` on a FIFO blocking startup with no message; `--config <path>` still unbuilt;
+  `README.md` and `deploy/README.md` silent on the config file (T034/T035).
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean, `go build`, `go vet`, `go test -count=1 ./...` all green; `go vet` green under `-tags
+  tmux`, `-tags quickstart` and `-tags dev`; `go.sum` still absent. This task touches no tmux and
+  no `cmd/crswd`, so neither tagged suite was run — the vets are the cheap check `AGENTS.md`
+  prescribes. Three mutations were run rather than reasoned about: the script composing the
+  datalist and setting `list` on the field (red on all four ownership sweeps, and **the only test
+  in the whole suite** that noticed — `go test ./...` was otherwise green, which is the isolation
+  claim); `{all}` left unfilled (red on the placeholder assertion); and the region rendered
+  `hidden` (red on the accessibility-tree assertion). Each reverted by reverse `Edit`;
+  `git diff --stat` afterwards showed 229 insertions against 2 deletions across three files.

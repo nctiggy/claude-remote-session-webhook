@@ -159,7 +159,7 @@ under `NEEDS CLARIFICATION` and stop.
 - [x] T022 Replace the field with `<input list>` + `<datalist>`
 - [x] T023 Carry the discovery walk forward; one level, off by default
 - [x] T024 🔒 A suggested path outside the allowlist is refused identically
-- [ ] T025 Announce a filtered subset
+- [x] T025 Announce a filtered subset
 
 ### US6 — The card's two halves (P6)
 
