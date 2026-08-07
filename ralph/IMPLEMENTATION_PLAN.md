@@ -128,7 +128,7 @@ under `NEEDS CLARIFICATION` and stop.
 - [x] T003 Carry forward the parser from `claude/issue-issue-65-...0112`; grammar only
 - [x] T004 The file-level refusals, none of which ever names the value
 - [x] T005 🔒 The mode refusal, gated on the file containing a secret
-- [ ] T006 A missing file is not an error; the parser never writes
+- [x] T006 A missing file is not an error; the parser never writes
 - [ ] T007 🔒 Wire the file as a fallback `getenv` — **the keystone**
 - [ ] T008 Record provenance in the same shim
 - [ ] T009 `crswd config check` and `crswd config migrate`, plus `config.bak` fallback

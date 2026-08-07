@@ -399,3 +399,63 @@ is now a two-line change to `ReadFile`'s `os.Open` branch plus its tests.
   — but the full v2 linter set is still unproven (#26). `gofmt -l .` clean, `go build`, `go vet`,
   `go test ./...` green, `go vet` green under `-tags tmux`, `-tags quickstart` and `-tags dev`,
   `go.sum` still absent. The v2 install was not retried; the sandbox denial has not changed.
+
+---
+
+## Iteration 6 — 2026-08-07 03:20
+
+**Did:** T006. `ReadFile` returns `nil, nil` when `errors.Is(err, os.ErrNotExist)` — every lookup
+answers "not set", so each value falls through to the environment and then to today's default
+(FR-003, SC-002). `file_test.go` gains `TestMissingFileIsNotAnError`, `TestParserNeverWrites` and
+`TestAnUnreadableFileIsStillARefusal`, plus a `snapshot` helper and the `longAgo` fixture time.
+
+**Learned:**
+
+- **A nil `*File` is the "no file" answer, not an empty one**, and the reason is T012: the settings
+  page says `Read from %s` or `No configuration file was read.`, and an empty `*File` carrying its
+  path would name a file that does not exist. `Path()` and `Lookup()` were already nil-safe, so this
+  costs nothing. **T007 and T012 can both take `*File` and never nil-check.**
+- **`errors.Is(err, os.ErrNotExist)`, not every open error.** A file the operator wrote and this
+  account cannot open — wrong owner, wrong mode — is still a refusal; collapsing the two branches
+  starts a daemon on none of the bounds they wrote, silently. `TestAnUnreadableFileIsStillARefusal`
+  pins it using a plain file where a directory belongs on the path (ENOTDIR), which is the one
+  unreadable case reachable without changing owners in a test.
+- **An mtime assertion on a freshly written file cannot fail.** The kernel stamps mtime from a
+  *coarse* clock (jiffies granularity, ~1–4 ms), so a fixture written and then rewritten inside the
+  same test keeps the same mtime **to the nanosecond** — mutation 5 (an in-place normaliser) was
+  green on four of five cases until the fixture was backdated with `os.Chtimes` to 2020. Any test in
+  this repo asserting "nothing touched this file" needs the same trick.
+- **Five mutations run, not reasoned about:** absence back to a refusal, every open error treated as
+  absence, an empty `&File{path: path}` on absence, a `config.bak` write beside the file, and an
+  in-place normaliser. Each was caught by a named test; `git diff` was checked back to the intended
+  state before the gate ran.
+- **The directory listing is the assertion bytes-and-mtime miss.** A backup or a `.tmp` alongside
+  leaves the file itself untouched; `writeConfig` gives each fixture its own `t.TempDir()`, so
+  anything else in that directory is new. This is the shape T009 will have to keep honest when
+  `config migrate` becomes the one thing that *is* allowed to write.
+
+**Left:** T007–T035. Next is **T007 🔒 (the precedence shim)** — the keystone, and the first task
+where the parser gets a caller at all.
+
+**Findings:**
+
+- **`NEEDS CLARIFICATION` for T007 — nothing decides *which* path is read.** Restated from iteration
+  5 because T007 is now next and cannot avoid it: `data-model.md` names `$XDG_CONFIG_HOME/crswd/config`,
+  `~/.config/crswd/config`, `--config` and `CRSW_CONFIG_FILE`, and **no task owns them**. T007's text
+  is "wire the file as a fallback `getenv`" and its five named tests all take an already-parsed
+  `*File`. The abandoned branch has `DefaultPath(getenv)` ready to carry. Either T007 carries it
+  (and grows past its named tests) or the daemon has a parser with no path to read — the exact
+  no-caller failure the plan's anti-requirement names. **This is the largest gap left in US1.**
+- **A dangling symlink reads as absent**, because `os.Open` on one fails ENOENT. That is arguably
+  right — the file genuinely is not there — but it means `~/.config/crswd/config -> /mnt/secrets/config`
+  on an unmounted volume starts the daemon on defaults rather than refusing. Worth a row in
+  `contracts/config-file.md` either way; not fixed here, since T006's contract line is unambiguous
+  that absence is not an error.
+- **Still open from iteration 5, none of it addressed here:** three `ReadFile` refusals missing from
+  the contract's table (cannot be opened, cannot be inspected, past the size bound); the `version < 1`
+  row; the contract's "yields exactly eight keys" which is now six settings plus a version; `f.values`
+  having no enumerator (T012 needs one); and `os.Open` on a FIFO blocking startup with no message.
+- **Lint unchanged from iteration 5:** `golangci-lint run` clean but the binary on PATH is v1.62.2
+  against a v2 config (#26), so only the linters it happens to understand ran — gosec demonstrably
+  does. `gofmt -l .` clean, `go build`, `go vet`, `go test ./...` green, `go vet` green under
+  `-tags tmux`, `-tags quickstart` and `-tags dev`, `go.sum` still absent. CI is the gate.
