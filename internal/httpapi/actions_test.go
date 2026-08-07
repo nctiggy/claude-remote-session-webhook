@@ -1949,6 +1949,201 @@ func TestWorkDirRefusalsAreOneMessage(t *testing.T) {
 	}
 }
 
+// suggestedWorkDir is one arrangement in which the create form offers a path the
+// allowlist behind the create route will not accept, and what makes it so.
+//
+// Both rows are the same sentence — a path present in the datalist and outside
+// the allowlist — reached the two ways this daemon can reach it: the page and the
+// check reading different configuration, and the host changing between the render
+// and the submission. Only the first of them can still be offered at the moment
+// the create is checked, which is why the test's mutation note names it.
+type suggestedWorkDir struct {
+	name string
+
+	// offer arranges the suggestion and returns the path the rendered form must
+	// carry. The test asserts the markup really holds it before submitting it, so
+	// a row that quietly stopped being offered fails on the render rather than
+	// going on to make a claim about a suggestion nobody was given.
+	offer func(t *testing.T, c *creator) string
+
+	// moved runs between the render and the submission, for the row whose host
+	// changes underneath a page the operator is still looking at. nil for the row
+	// that needs no change.
+	moved func(t *testing.T, path string)
+}
+
+func suggestedWorkDirs() []suggestedWorkDir {
+	return []suggestedWorkDir{
+		{
+			// The row that carries the claim. The page's suggestions and the
+			// manager's allowlist are read from different places — the walk from
+			// the Config the server holds, the check from the roots the manager
+			// was built on — and pointing them at different directories is the
+			// only way to observe a handler consulting the first. The divergence
+			// is the instrument; that the handler reaches the same allowlist
+			// whatever the page offered is the claim.
+			//
+			// It is also the shape the *explicit* suggestion source has.
+			// contracts/directory-picker.md names two, and `workdir_suggestions`
+			// is an operator's own list of paths — nothing constrains one of them
+			// to sit under an approved root, so a page offering a directory this
+			// daemon will refuse is that source working exactly as specified.
+			name: "a suggestion source the allowlist does not share",
+			offer: func(t *testing.T, c *creator) string {
+				t.Helper()
+
+				elsewhere, err := filepath.EvalSymlinks(t.TempDir())
+				if err != nil {
+					t.Fatalf("resolve a directory outside the approved root: %v", err)
+				}
+				offered := filepath.Join(elsewhere, "not-allowlisted")
+				if err := os.Mkdir(offered, 0o750); err != nil {
+					t.Fatalf("create %s: %v", offered, err)
+				}
+				c.cfg.Roots = []config.ApprovedRoot{{Path: elsewhere}}
+				c.cfg.DiscoverRoots = true
+				return offered
+			},
+		},
+		{
+			// The row that is a fact about time rather than about configuration:
+			// a datalist is a snapshot of the host as it was at the render, and
+			// an operator may submit it minutes later. The suggestion was inside
+			// the root when the page was drawn and resolves out of it when the
+			// create is checked, which is the same escape the typed symlink row
+			// of workDirRefusals sends — and it must be refused in the same words,
+			// because a page this daemon rendered is not evidence about a
+			// filesystem it no longer describes.
+			name: "a suggestion the host moved out from under the page",
+			offer: func(t *testing.T, c *creator) string {
+				t.Helper()
+
+				c.cfg.Roots = []config.ApprovedRoot{{Path: c.fixture.root}}
+				c.cfg.DiscoverRoots = true
+				return c.fixture.repo
+			},
+			moved: func(t *testing.T, path string) {
+				t.Helper()
+
+				outside, err := filepath.EvalSymlinks(t.TempDir())
+				if err != nil {
+					t.Fatalf("resolve a directory outside the approved root: %v", err)
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatalf("remove the offered directory %s: %v", path, err)
+				}
+				if err := os.Symlink(outside, path); err != nil {
+					t.Fatalf("link %s out of the approved root: %v", path, err)
+				}
+			},
+		},
+	}
+}
+
+// TestChosenPathValidatedIdentically is FR-042, and it is the one real
+// vulnerability the picker could introduce: a suggestion is never an
+// authorisation.
+//
+// **Must fail when** the handler trusts a value because it was suggested — a
+// membership test against the offered list, a flag on the form saying the path
+// came from the datalist, anything that reaches a decision. The first row is what
+// catches it: its suggestion is still on the list at the moment the create is
+// checked, so a handler consulting the list accepts a directory outside the
+// allowlist and starts an unsandboxed shell in it. The second row would survive
+// that mutation, because by then the walk no longer offers the path either; what
+// it pins is the other half — a page is a snapshot, and one rendered before the
+// host changed grants nothing after it.
+//
+// The refusal is compared against a *typed* one byte for byte rather than merely
+// asserted to be a refusal. "Refused as well" is a weaker claim than "refused
+// identically": a route that told the two apart at all — a different outcome
+// code, a different status, a record naming the suggestion — would be a route
+// where being on the list is a fact the daemon acts on, and the difference is
+// readable from outside. The record is compared too, because that is the half a
+// caller cannot see and the operator can.
+//
+// Nothing is created on either row, asserted in the store and on the host both. A
+// refusal that started a session before refusing would be this test passing over
+// the exact failure it exists to prevent.
+func TestChosenPathValidatedIdentically(t *testing.T) {
+	t.Parallel()
+
+	// The control, reached by typing a path the form never offered. It is built
+	// first so the rows below have something to be identical *to*; asserting each
+	// row is a 303 on its own would be satisfied by a second answer that merely
+	// happened to also be one.
+	typed := newCreator(t)
+	control := typed.post(t, typed.asked(t, "refactor-auth", filepath.Dir(typed.fixture.root)))
+	wantOutcome(t, control, wantCreateBadWorkDirOutcome)
+	controlReason := typed.only(t)["reason"]
+	if want := session.ErrWorkDirOutsideRoots.Error(); controlReason != want {
+		t.Fatalf("the typed control was refused for %v; want %v — the rows below are compared against it", controlReason, want)
+	}
+
+	for _, row := range suggestedWorkDirs() {
+		c := newCreator(t)
+		offered := row.offer(t, c)
+
+		// The render, which is what makes this a claim about a path the operator
+		// was handed rather than about any path at all.
+		page := c.page(t)
+		if page.Code != http.StatusOK {
+			t.Fatalf("%s: the fleet = %d (%s); want %d", row.name, page.Code, page.Body.String(), http.StatusOK)
+		}
+		create := sectionOf(t, page.Body.String(), "create")
+		if suggestion := `<option value="` + offered + `">`; !strings.Contains(create, suggestion) {
+			t.Fatalf("%s: the create form offers no %s, so submitting it proves nothing about a suggested path:\n%s",
+				row.name, offered, create)
+		}
+
+		if row.moved != nil {
+			row.moved(t, offered)
+		}
+
+		w := c.post(t, c.asked(t, "refactor-auth", offered))
+
+		if w.Code != control.Code {
+			t.Errorf("%s answered %d; the typed path answered %d — a suggested path is told apart from a typed one",
+				row.name, w.Code, control.Code)
+		}
+		if got, want := w.Body.String(), control.Body.String(); got != want {
+			t.Errorf("%s answered\n%s\nthe typed path answered\n%s\nthe two are distinguishable", row.name, got, want)
+		}
+		if got, want := w.Header().Get(headerLocation), control.Header().Get(headerLocation); got != want {
+			t.Errorf("%s answered %s: %q; the typed path answered %q — being on the list changed the answer",
+				row.name, headerLocation, got, want)
+		}
+
+		if owned := c.owned(); len(owned) != 0 {
+			t.Errorf("%s: the store holds %d records; want none — a suggestion outside the allowlist creates nothing",
+				row.name, len(owned))
+		}
+		if got := c.started(); got != 0 {
+			t.Errorf("%s: the host was asked to start %d sessions; want 0 — a suggested path outside the roots is a shell that must not run",
+				row.name, got)
+		}
+
+		// The trail, which is the half a caller does not get. Two records: the
+		// render's own dashboard.view, then the refused create — one per request,
+		// which is FR-041 asserted across both.
+		recs := c.records(t)
+		if len(recs) != 2 {
+			t.Fatalf("%s: the render and the create emitted %d records (%v); want one each", row.name, len(recs), recs)
+		}
+		rec := recs[1]
+		if got, want := rec["action"], string(audit.ActionDashboardCreate); got != want {
+			t.Errorf("%s: action = %v; want %v — a refused create is still a create", row.name, got, want)
+		}
+		if got, want := rec["decision"], string(audit.Deny); got != want {
+			t.Errorf("%s: decision = %v; want %v", row.name, got, want)
+		}
+		if got := rec["reason"]; got != controlReason {
+			t.Errorf("%s: reason = %v; the typed path was recorded as %v — the record says which path the operator picked it from",
+				row.name, got, controlReason)
+		}
+	}
+}
+
 // TestBrowserCreateRefusesAnUnusableName is the other 400, and the half of it that
 // matters: the answer names the field and says nothing whatever about the host.
 //
