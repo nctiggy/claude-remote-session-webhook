@@ -1,7 +1,9 @@
 // Command crswd is the claude-remote-session-webhook daemon.
 //
-// Configuration is environment-only (CRSW_*), so no flags are defined here yet;
-// flag.Parse still runs so -h reports usage rather than an unknown-flag error.
+// There is one flag, --config, and it names the configuration file. Everything
+// else is a setting, and a setting belongs in that file or in the environment
+// variable that overrides it — a flag for each one would be a third spelling of
+// every bound, in the place an operator is least likely to look for it.
 package main
 
 import (
@@ -12,6 +14,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 )
 
 // shutdownBudget is how long the daemon gives itself between a termination
@@ -23,6 +27,27 @@ import (
 // service manager, so the daemon must be finished — or have said loudly that it
 // could not finish — before that escalation is due.
 const shutdownBudget = 30 * time.Second
+
+// configPath is --config (#65). Unset, the daemon reads
+// $XDG_CONFIG_HOME/crswd/config, defaulting to ~/.config/crswd/config, and an
+// absent file there is simply a deployment configured by environment variables.
+// Named explicitly, an absent file is a startup failure: the operator said which
+// bounds they meant.
+//
+// Go's flag package accepts one dash or two for the same name, so the documented
+// --config and this declaration are the same flag.
+var configPath = flag.String("config", "",
+	"path to the configuration file (default $XDG_CONFIG_HOME/crswd/config, else ~/.config/crswd/config)")
+
+// configOptions turns --config into a load option, and is shared by both halves
+// of the bypass seam so the flag means the same thing in the build that ships
+// and the build that does not.
+func configOptions() []config.Option {
+	if *configPath == "" {
+		return nil
+	}
+	return []config.Option{config.WithFile(*configPath)}
+}
 
 func main() {
 	flag.Parse()

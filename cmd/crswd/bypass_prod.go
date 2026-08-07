@@ -21,6 +21,6 @@ import (
 	"github.com/nctiggy/claude-remote-session-webhook/internal/httpapi"
 )
 
-func loadConfig() (*config.Config, error) { return config.Load() }
+func loadConfig() (*config.Config, error) { return config.Load(configOptions()...) }
 
 func newDaemon(cfg *config.Config) (*httpapi.Server, error) { return httpapi.New(cfg) }

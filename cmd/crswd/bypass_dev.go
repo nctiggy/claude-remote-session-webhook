@@ -41,9 +41,9 @@ var devAuthBypass = flag.Bool("dev-auth-bypass", false,
 // licence to widen them than any other.
 func loadConfig() (*config.Config, error) {
 	if *devAuthBypass {
-		return config.Load(config.WithAccessBypassActive())
+		return config.Load(append(configOptions(), config.WithAccessBypassActive())...)
 	}
-	return config.Load()
+	return config.Load(configOptions()...)
 }
 
 // newDaemon builds the server with the bypass in place of layer 1 when it was
