@@ -814,3 +814,90 @@ the one page holding every secret at render time.
   config (#26). `gofmt -l .` clean, `go build`, `go vet`, `go test ./...` green, `go vet` green
   under `-tags tmux`, `-tags quickstart` and `-tags dev`, `go test -tags dev ./internal/access
   ./internal/config ./internal/httpapi` green, `go.sum` still absent. CI is the gate.
+
+## Iteration 11 — 2026-08-07 04:36
+
+**Did:** T011 🔒, the secret cell. `settingsOf` in `internal/httpapi/settings.go` walks
+`config.Vars()`, gates on `config.IsSecret`, and hands the template a `settingRow` whose `Value`
+is `present` or `absent` and nothing else; `web/templates/settings.html` grew the table those rows
+render into, and `crswd.css` the rules for it. Four tests: the three the contract names plus
+`TestEverySecretKeyReportsItsPresence`.
+
+**Learned:**
+
+- **T011 renders the secret keys and only those, on purpose.** T012 owns "one row per key with
+  columns key, value, source", so the value column for the other sixteen is its task, not this
+  one — and putting it here would have made the 🔒 diff a review of sixteen value spellings
+  instead of one security property. **T012 is a filter widened and a column added**, not a
+  rewrite: drop the `if !config.IsSecret(key) { continue }`, give the non-secret branch a value,
+  add `Source` to `settingRow`.
+- **`secretConfigured` returns a second `known` bool and that is the whole drift guard.**
+  `IsSecret` is the classifier, so a third secret key added there is kept *out* of the value
+  column automatically — the safe half is free. What is not free is the sentence the page then
+  writes about it: unknown reads as `absent` forever, which is the page lying about a configured
+  credential rather than leaking one. `TestEverySecretKeyReportsItsPresence` makes the branch
+  unreachable, and it fails within a second of adding a key to `IsSecret` (verified by mutation).
+- **Five mutations run, all caught.** (1) the value rendered raw — all three contract tests;
+  (2) a `qx7v… (49 characters)` mask — caught by the prefix sweep *and* the length sweep, which
+  is the pair that matters, since a test searching only for the whole value passes it; (3) a mask
+  disclosing eight characters of entropy; (4) `IsSecret` narrowed to `shared_secret` — the
+  allowlist row disappears rather than leaking, so the row lookup is what catches it;
+  (5) a third key added to `IsSecret`.
+- **The default fixture cannot be used for any of these**, and this is iteration 10's predicted
+  collision arriving early. `testConfig`'s allowlist is `operator@example.com`, which the header
+  renders on **every page in the product** — so a sweep for "the allowlisted address" finds the
+  identity layer 1 verified rather than the daemon's copy of the list, and fails on correct code.
+  `settingsOn(t, adjust)` adjusts `f.cfg` after construction (the shape `watchingUnserved` uses
+  for the stream cap; nothing has served a request yet and the fixture's Config is its own).
+  **T013's sweep needs exactly this fixture** — the finding is now solved, not just logged.
+- **A canary in a test file has to announce itself or the pre-commit hook stops the commit.**
+  `gitleaks` flagged the 49-character gibberish secret; `.gitleaks.toml` allows `test-only-*` by
+  construction ("the prefix is the claim"), so the canaries carry that prefix and the sweeps
+  search the *body* instead. That is not a workaround: **the fixture's `access_aud` is
+  `test-only-audience-tag`, so a sweep for `test` would have started failing the moment T012
+  rendered the value column.**
+- **`golangci-lint` v1.62.2 on this v2 config does *not* run zero linters.** It caught G101 on the
+  canary before CI would have. The session-start hook says a pre-v2 binary "runs zero linters and
+  exits 0"; that is wrong, or at least not wholly right — v1 evidently reads `linters.enable`.
+  A clean local run still proves less than the pinned v2.12.2 does, but it is not nothing, and
+  the hook's wording sends a future iteration past a finding it could have fixed locally.
+
+**Left:** T012–T035. Next is **T012** (one row per key with its source, and the file that was
+read). Read iteration 10's findings first: it needs two things that still do not exist.
+
+**Findings:**
+
+- **T012's two prerequisites are still unbuilt** (logged in iterations 8 and 10, unaddressed
+  here): nothing records a source for `destroy_on_shutdown`, so the page will render it as
+  `default` whatever the operator wrote — the settings page lying about provenance, which is the
+  one thing US2 exists to prevent — and `Config` carries no path for the file that was read,
+  which FR-018's `Read from %s` line needs. **Neither is part of T012 and both block it.**
+- **T012 has a value-spelling decision to make and it is not obvious.** `start_command` and
+  `start_commands` are not secret by `IsSecret`, so the value column renders their command
+  *lines*. But `StartCommands.String()` deliberately names commands and never spells one — "the
+  closest thing this daemon has to an executable payload… the names travel and the bodies stay
+  where they were configured" — and `Config.String()` follows it. That rationale is about *log
+  lines*, and this page is an audited, identity-gated disclosure to the operator who wrote the
+  value; a second redaction rule outside `IsSecret` is also exactly what T001 forbids. **I read
+  it as "render the command lines" and did not have to decide it here. T012 does. It is worth a
+  reviewer's eye rather than an iteration's judgement.**
+- **The contract's worked example shows values no loader would produce** — `listen 0.0.0.0:9000`
+  is refused by `loadListen`, `idle_timeout -1` by `validateLifetimes`. Illustrative, not a
+  fixture, but T012 should not copy them into a test expecting them to load.
+- **`contracts/settings-page.md`'s `TestNoMutatingVerbRegistered` row still says 405** and should
+  say "answered as a path nothing claims, with no `Allow` header" (iteration 10). Unchanged.
+- **`go test -tags quickstart ./cmd/crswd` is still red on the same three tests** —
+  `TestDashboardQuickstartStory1Adopted`, `TestQuickstartStory4Restart`, `TestQuickstartStory5Cap`
+  — for iteration 7's `CRSW_DESTROY_ON_SHUTDOWN`-has-no-loader reason. Not run this iteration
+  (T011 touches no `cmd/crswd` file and the port is held by the live daemon); `go vet -tags
+  quickstart ./...` is green. **Still the oldest unfixed finding in this notebook. It wants an
+  issue and a fix-lane commit.**
+- **Still open from iterations 5–10:** three `ReadFile` refusals missing from
+  `contracts/config-file.md`'s table; the `version < 1` row; the contract's "yields exactly eight
+  keys" against seven; a dangling symlink reading as absent; `f.values` having no enumerator;
+  `os.Open` on a FIFO blocking startup with no message; `--config <path>` still unbuilt;
+  `README.md` and `deploy/README.md` silent on the config file (T034/T035).
+- **Lint:** `golangci-lint run` clean (see the note above about what that is worth). `gofmt -l .`
+  clean, `go build`, `go vet`, `go test -count=1 ./...` green, `go vet` green under `-tags tmux`,
+  `-tags quickstart` and `-tags dev`, `go test -tags dev ./internal/access ./internal/config
+  ./internal/httpapi` green, `go.sum` still absent. CI is the gate.

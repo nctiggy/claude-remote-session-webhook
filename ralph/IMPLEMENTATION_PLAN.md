@@ -136,7 +136,7 @@ under `NEEDS CLARIFICATION` and stop.
 ### US2 — See what it is configured to do (P2)
 
 - [x] T010 The read-only `/settings` route, `GET` only, `settings.view`
-- [ ] T011 🔒 Secrets render `present` / `absent`, never a value
+- [x] T011 🔒 Secrets render `present` / `absent`, never a value
 - [ ] T012 One row per key with its source; name the file that was read
 - [ ] T013 Sweep every route and assert no secret appears anywhere (SC-005)
 
