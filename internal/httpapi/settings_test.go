@@ -7,19 +7,24 @@
 package httpapi
 
 import (
+	"bytes"
 	"html"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
+	"github.com/nctiggy/claude-remote-session-webhook/web"
 )
 
 // settingsPath is derived from the pattern the server registers rather than
@@ -296,6 +301,38 @@ const (
 	canaryAllowed  = canaryAnnounce + "zq8t-kd4p-mn7v@vb6n-xw3r.hj9c"
 )
 
+// shortestRunWorthHaving is where a run of a secret starts being a disclosure.
+// Four, because three characters of a credential is not a run and a page of
+// markup carries plenty of them by accident.
+const shortestRunWorthHaving = 4
+
+// leakedRun reports the first run of a canary's entropy that appears in text,
+// and which end of the value it was cut from.
+//
+// It is one function because it is the search both secret sweeps in this file
+// make — of one page, and of every response the daemon has — and two copies of
+// it would be two answers to "what counts as a disclosure", free to be loosened
+// one at a time. That is T001's argument about IsSecret, made about the test
+// that checks it.
+//
+// The *body* is searched rather than the whole value, for the reason
+// canaryAnnounce gives: the `test-only-` prefix is an announcement to the secret
+// scanner and not secret material, and a page that printed it alone would have
+// disclosed nothing. Any masked form long enough to give away four characters of
+// the entropy contains a run this finds, whichever end it was cut from.
+func leakedRun(text, secret string) (run, cut string) {
+	body := strings.TrimPrefix(secret, canaryAnnounce)
+	for n := shortestRunWorthHaving; n < len(body); n++ {
+		if prefix := body[:n]; strings.Contains(text, prefix) {
+			return prefix, "the first"
+		}
+		if suffix := body[len(body)-n:]; strings.Contains(text, suffix) {
+			return suffix, "the last"
+		}
+	}
+	return "", ""
+}
+
 // settingsOn is a fleet whose Config the caller has adjusted before anything has
 // read it, which is how every claim below is made about a configured daemon
 // rather than about the fixture's defaults.
@@ -364,11 +401,6 @@ func TestSettingsNeverRendersSecretValue(t *testing.T) {
 	})
 	page := settingsBody(t, f)
 
-	// Four, because three characters of a credential is not a run and a page of
-	// markup carries plenty of them by accident. Four is where a prefix starts
-	// being worth having.
-	const shortestRunWorthHaving = 4
-
 	for _, secret := range []struct {
 		what  string
 		value string
@@ -379,21 +411,8 @@ func TestSettingsNeverRendersSecretValue(t *testing.T) {
 		if strings.Contains(page, secret.value) {
 			t.Errorf("the settings page renders %s verbatim:\n%s", secret.what, page)
 		}
-		// The body rather than the whole value, for the reason canaryAnnounce
-		// gives. Any masked form long enough to disclose four characters of the
-		// entropy contains a run this finds, whichever end it was cut from.
-		body := strings.TrimPrefix(secret.value, canaryAnnounce)
-		for n := shortestRunWorthHaving; n < len(body); n++ {
-			if prefix := body[:n]; strings.Contains(page, prefix) {
-				t.Errorf("the settings page carries %q, the first %d characters of %s; a masked value is still a disclosure", prefix, n, secret.what)
-				break
-			}
-		}
-		for n := shortestRunWorthHaving; n < len(body); n++ {
-			if suffix := body[len(body)-n:]; strings.Contains(page, suffix) {
-				t.Errorf("the settings page carries %q, the last %d characters of %s; a masked value is still a disclosure", suffix, n, secret.what)
-				break
-			}
+		if run, cut := leakedRun(page, secret.value); run != "" {
+			t.Errorf("the settings page carries %q, %s %d characters of %s; a masked value is still a disclosure", run, cut, len(run), secret.what)
 		}
 		// The length, which is what "shorter than the required 32 bytes" is
 		// careful never to measure in a startup error either (loadSecret).
@@ -758,5 +777,440 @@ func TestSettingsStatesTheValueOfEveryNonSecretKey(t *testing.T) {
 		if want := "<td>" + html.EscapeString(tc.want) + "</td>"; !strings.Contains(row, want) {
 			t.Errorf("the %s row is %q; want a value cell holding exactly %q", tc.key, row, want)
 		}
+	}
+}
+
+// --- T013: the whole route table, searched (SC-005) --------------------------
+//
+// TestSettingsNeverRendersSecretValue holds the one page that composes every
+// secret at render time. SC-005 is the requirement that page cannot satisfy on
+// its own: no secret value appears in *any* response or *any* record — which is
+// a claim nobody can make by reading the handler they happen to be editing, and
+// which fails silently, since a leak on some other route breaks no test anybody
+// wrote for that route.
+//
+// So the sweep below exercises every route this daemon registers — the API's six
+// operations, the pages, the two embedded assets, the two streams, the four
+// actions, the paths nothing claims, and each door's refusals — and searches
+// everything that came back, together with the whole audit trail, for either
+// configured secret.
+
+// sweptAnswer is one exercised route: what was asked for, and everything the
+// daemon answered with.
+//
+// The headers are kept beside the body because a response is both. A value that
+// reached a caller through a Location, an entity tag or a header some later
+// middleware adds is disclosed exactly as far as one printed in the markup, and
+// a search that read only bodies would be looking at the half nobody has ever
+// leaked a secret through by accident.
+type sweptAnswer struct {
+	what string
+	text string
+}
+
+// sweep is one daemon with both secrets configured, its whole route table
+// driven, and everything it answered kept for a single search.
+type sweep struct {
+	*fleet
+
+	answers []sweptAnswer
+
+	// router carries this daemon's own patterns on a mux of the test's own, so
+	// that each request below can be asked which route it reached.
+	//
+	// net/http will not enumerate a ServeMux, so the daemon's registrations
+	// cannot be read back off it and a table like registeredPatterns' is the
+	// nearest thing to evidence there is. What it buys is real all the same: it
+	// catches the likelier mistake by far — a target in the sweep that quietly
+	// falls to the catch-all instead of the route it names, which would leave a
+	// route swept in name only.
+	router *http.ServeMux
+
+	// reached is every pattern registeredPatterns names, against whether some
+	// request below actually drove it.
+	reached map[string]bool
+}
+
+// registeredPatterns is every pattern newServer hands the mux.
+//
+// The API's six and their method-less twins are read off the contract's own
+// table, and the assets off the embedded tree, so neither can drift from what
+// the daemon registers. The browser door's nine are listed here because there is
+// nowhere to read them from — but they are the *constants* newServer registers,
+// so a renamed route moves this sweep with it. A tenth would have to be added
+// here by hand, and that is the one gap this arrangement cannot close.
+func registeredPatterns(t *testing.T) []string {
+	t.Helper()
+
+	patterns := []string{
+		patternFleet,
+		patternSessionView,
+		patternSessionStream,
+		patternFleetStream,
+		patternSettings,
+		patternDashboardCreate,
+		patternDashboardDestroy,
+		patternDashboardRename,
+		patternDashboardCompact,
+		// handleUnrouted's catch-all, which is a registered route like any other:
+		// it is what answers a path nothing claims, from behind the browser door.
+		"/",
+	}
+	// Each operation, and the method-less pattern handleUnrouted registers beside
+	// it so that a wrong method on a contract path is answered as a path nothing
+	// claims rather than as a 405 naming the route table.
+	for _, r := range routes {
+		patterns = append(patterns, r.String(), r.Pattern)
+	}
+	for _, a := range sweptAssets(t) {
+		patterns = append(patterns, a.pattern)
+	}
+	return patterns
+}
+
+// sweptAssets is the embedded asset tree resolved into the routes newServer
+// registers for it, so a third file added under web/static/ is swept without
+// anybody remembering to add it here.
+func sweptAssets(t *testing.T) []asset {
+	t.Helper()
+
+	assets, err := loadAssets(web.Static)
+	if err != nil {
+		t.Fatalf("loadAssets(web.Static) = _, %v; want the routes this daemon serves its assets on", err)
+	}
+	return assets
+}
+
+// newSweep is the daemon this sweep drives: the fleet's, with both secret
+// settings configured to values that appear nowhere else in this repository.
+//
+// The Config is adjusted after construction, in settingsOn's shape, and that is
+// worth stating plainly because it means the Authenticator behind the API door
+// is holding testSecret rather than the canary. It does not weaken the claim:
+// auth.NewWithClock copies the key into an unexported field and hands it back
+// through no method, so cfg.SharedSecret is the only copy of it a handler can
+// reach at all. `s.cfg` is read in exactly four places — the two body limits,
+// the create form's command names, and the settings page — and every one of them
+// is driven below. The key layer 2 really checks against is swept for as well,
+// at the foot of the test, so a response that echoed *that* would still be found.
+func newSweep(t *testing.T) *sweep {
+	t.Helper()
+
+	s := &sweep{
+		fleet: settingsOn(t, func(cfg *config.Config) {
+			cfg.SharedSecret = []byte(canarySecret)
+			cfg.AccessAllowedEmails = []string{canaryAllowed}
+		}),
+		router:  http.NewServeMux(),
+		reached: map[string]bool{},
+	}
+	for _, pattern := range registeredPatterns(t) {
+		// routes names two of its paths twice over, and a mux panics on the
+		// second registration of a pattern — which is why handleUnrouted dedupes
+		// too.
+		if _, registered := s.reached[pattern]; registered {
+			continue
+		}
+		s.reached[pattern] = false
+		s.router.HandleFunc(pattern, func(http.ResponseWriter, *http.Request) {})
+	}
+	return s
+}
+
+// drive serves one request, notes which registered route it reached, and keeps
+// what came back.
+func (s *sweep) drive(t *testing.T, what string, r *http.Request) *httptest.ResponseRecorder {
+	t.Helper()
+
+	if _, pattern := s.router.Handler(r); pattern != "" {
+		s.reached[pattern] = true
+	}
+
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+
+	answer := &strings.Builder{}
+	for _, name := range slices.Sorted(maps.Keys(w.Header())) {
+		answer.WriteString(name + ": " + strings.Join(w.Header()[name], ", ") + "\n")
+	}
+	answer.WriteString(w.Body.String())
+
+	s.answers = append(s.answers, sweptAnswer{what: what, text: answer.String()})
+	return w
+}
+
+// signed builds the API door's request for one route: the contract's own path,
+// the body that route takes, a signature over both, and — for a route naming a
+// session — the credential issued for it.
+func (s *sweep) signed(t *testing.T, route Route, id, credential string, at time.Time) *http.Request {
+	t.Helper()
+
+	body := bodyFor(s.fixture, route)
+	r := httptest.NewRequest(route.Method, strings.ReplaceAll(route.Pattern, "{"+pathValueID+"}", id), bytes.NewReader(body))
+	signRequest(t, r, body, at)
+	if credential != "" {
+		// After signing, because the signature covers the timestamp and the body
+		// and nothing else — layer 3 is a separate credential, not part of one.
+		r.Header.Set(headerAuthorization, bearerScheme+credential)
+	}
+	return r
+}
+
+// asOperator builds the browser door's request as the verified operator's
+// browser makes it: the identity assertion, the fetch-metadata header a real
+// navigation carries, a form when there is one, and no signature anywhere.
+//
+// Sec-Fetch-Site goes on every row rather than on the four that need it, because
+// a browser sends it on every navigation and the reads ignore it. A sweep whose
+// reads and writes differed in a header would be two sweeps.
+func (s *sweep) asOperator(t *testing.T, method, target string, form url.Values) *http.Request {
+	t.Helper()
+
+	var r *http.Request
+	if form == nil {
+		r = httptest.NewRequest(method, target, nil)
+	} else {
+		r = httptest.NewRequest(method, target, strings.NewReader(form.Encode()))
+		r.Header.Set(headerContentType, contentTypeForm)
+	}
+	r.Header.Set(headerAccessAssertion, s.keys.mint(t, s.keys.claims()))
+	r.Header.Set(headerSecFetchSite, secFetchSiteSameOrigin)
+	return r
+}
+
+// answerFor is what one named request came back with, so a claim about a single
+// response can be made of the same bytes the search below reads.
+func (s *sweep) answerFor(t *testing.T, what string) string {
+	t.Helper()
+
+	for _, answer := range s.answers {
+		if answer.what == what {
+			return answer.text
+		}
+	}
+	t.Fatalf("the sweep kept no answer for %q, so nothing it drove was that request", what)
+	return ""
+}
+
+// TestFullRouteSweepLeaksNoSecret is SC-005, and it is the test that catches a
+// leak nobody thought to look for.
+//
+// Every route is driven at its handler rather than at a refusal in front of it —
+// that is what the per-row status assertions are for — because a sweep of eleven
+// uniform 401s would search eleven copies of the same fixed body and find
+// nothing, whatever the pages behind them print.
+//
+// The refusals are then driven deliberately, at the end, because "any page or
+// error path" is the requirement and an error path is exactly where a value
+// nobody meant to print gets printed: it is the branch with no screenshot, no
+// design review, and usually no reader.
+//
+// **Must fail when** any page or error path prints either configured secret —
+// verbatim, or as a run of four characters of it from either end.
+func TestFullRouteSweepLeaksNoSecret(t *testing.T) {
+	t.Parallel()
+
+	s := newSweep(t)
+
+	// Two sessions of the operator's own, so that every route naming one is
+	// answered by its handler rather than by the uniform 404 an identifier
+	// nothing matches gets.
+	api, credential := s.fixture.plant(t, session.Session{Name: "swept-through-the-api", WorkDir: s.fixture.repo})
+	browser, _ := s.fixture.plant(t, session.Session{Name: "swept-through-the-browser", WorkDir: s.fixture.repo})
+
+	// The API door's six operations, read off the router rather than listed here
+	// — a seventh is swept the day it is registered — and each signed at its own
+	// instant, because the replay cache counts a signature twice presented.
+	at := testTime
+	for _, route := range s.Routes() {
+		at = at.Add(-time.Second)
+
+		id, bearer := "", ""
+		switch {
+		case route.Method == http.MethodDelete:
+			// A session of its own: this route ends the one it names, and the
+			// operations after it in the table still need theirs standing.
+			doomed, issued := s.fixture.plant(t, session.Session{Name: "swept-and-torn-down", WorkDir: s.fixture.repo})
+			id, bearer = doomed.ID, issued
+		case route.SessionScoped():
+			id, bearer = api.ID, credential
+		}
+
+		w := s.drive(t, route.String(), s.signed(t, route, id, bearer, at))
+		if want := reachedStatus[route]; w.Code != want {
+			t.Errorf("%s = %d (%s); want %d — this sweep is only a claim about a route whose handler it reached",
+				route, w.Code, w.Body.String(), want)
+		}
+	}
+
+	// The forms the browser door's four actions submit. Each carries the page
+	// token a rendered page would have carried, since an action refused by the
+	// gate is an action whose handler never ran.
+	token := func() url.Values {
+		form := url.Values{}
+		form.Set(fieldPageToken, mustMint(t, s.pageKey, testOperatorEmail, testTime))
+		return form
+	}
+	create, rename, compact, destroy := token(), token(), token(), token()
+	create.Set(fieldName, "swept-into-existence")
+	create.Set(fieldWorkDir, s.fixture.repo)
+	rename.Set(fieldName, "swept-and-renamed")
+	destroy.Set(fieldConfirm, confirmYes)
+
+	// The browser door's whole surface. The destroy comes last of the four
+	// actions because it ends the session the three above it name.
+	for _, row := range []struct {
+		what   string
+		method string
+		target string
+		form   url.Values
+		want   int
+	}{
+		{"the fleet", http.MethodGet, "/", nil, http.StatusOK},
+		{"the settings page", http.MethodGet, settingsPath, nil, http.StatusOK},
+		{"the page a card links to", http.MethodGet, "/sessions/" + browser.ID + "/view", nil, http.StatusOK},
+		// A recorder cannot lift a write deadline, so an open that got past
+		// identity, the cross-site check, the ownership lookup and the cap answers
+		// 500 — which is what askToWatch documents, and what makes these two rows
+		// claims about the open sequence rather than about the transport.
+		//
+		// What this sweep therefore does not read is a *delivered* stream, and the
+		// reason that is not a hole is that neither stream handler reads the
+		// Config at all: the four places `s.cfg` is read are the two body limits,
+		// the create form's command names and the settings page, and all four are
+		// driven here.
+		{"a session's live stream", http.MethodGet, "/sessions/" + browser.ID + "/stream", nil, http.StatusInternalServerError},
+		{"the fleet stream", http.MethodGet, fleetStreamPath, nil, http.StatusInternalServerError},
+		{"a create from the browser", http.MethodPost, "/dashboard/sessions", create, http.StatusOK},
+		{"a rename from the browser", http.MethodPost, "/dashboard/sessions/" + browser.ID + "/rename", rename, http.StatusOK},
+		{"a compact from the browser", http.MethodPost, "/dashboard/sessions/" + browser.ID + "/compact", compact, http.StatusAccepted},
+		{"a destroy from the browser", http.MethodPost, "/dashboard/sessions/" + browser.ID + "/destroy", destroy, http.StatusOK},
+		{"a path nothing claims", http.MethodGet, "/not-a-route", nil, http.StatusNotFound},
+		{"a mutating verb at the settings page", http.MethodPost, settingsPath, nil, http.StatusNotFound},
+		// Refused by ServeHTTP ahead of the router, which is a path of its own:
+		// it is answered before any pattern matches, so it is the one request here
+		// no route table entry accounts for.
+		{"a path no router would clean", http.MethodGet, "/static/../templates/dashboard.html", nil, http.StatusNotFound},
+	} {
+		w := s.drive(t, row.what, s.asOperator(t, row.method, row.target, row.form))
+		if w.Code != row.want {
+			t.Errorf("%s: %s %s = %d (%s); want %d", row.what, row.method, row.target, w.Code, w.Body.String(), row.want)
+		}
+	}
+
+	// The embedded assets, on their own routes.
+	for _, a := range sweptAssets(t) {
+		target := strings.TrimPrefix(a.pattern, http.MethodGet+" ")
+		if w := s.drive(t, target, s.asOperator(t, http.MethodGet, target, nil)); w.Code != http.StatusOK {
+			t.Errorf("GET %s = %d (%s); want %d", target, w.Code, w.Body.String(), http.StatusOK)
+		}
+	}
+
+	// handleUnrouted's other half: one wrong-method request per contract path, so
+	// the method-less patterns are swept as well as the operations they sit
+	// beside. PUT, because no route on this daemon serves it.
+	asked := map[string]bool{}
+	for _, route := range routes {
+		if asked[route.Pattern] {
+			continue
+		}
+		asked[route.Pattern] = true
+
+		target := strings.ReplaceAll(route.Pattern, "{"+pathValueID+"}", api.ID)
+		if w := s.drive(t, "PUT "+route.Pattern, s.asOperator(t, http.MethodPut, target, nil)); w.Code != http.StatusNotFound {
+			t.Errorf("PUT %s = %d (%s); want %d — a method no route answers is a path nothing claims",
+				target, w.Code, w.Body.String(), http.StatusNotFound)
+		}
+	}
+
+	// The refusals, one per door plus the action gate's.
+	for _, refused := range []struct {
+		what string
+		want int
+		req  *http.Request
+	}{
+		{"the fleet with no assertion at all", http.StatusUnauthorized, httptest.NewRequest(http.MethodGet, "/", nil)},
+		{"the settings page with no assertion at all", http.StatusUnauthorized, httptest.NewRequest(http.MethodGet, settingsPath, nil)},
+		{"an API request nothing signed", http.StatusUnauthorized, httptest.NewRequest(http.MethodGet, "/sessions", nil)},
+		{"an action carrying no page token", http.StatusForbidden, s.asOperator(t, http.MethodPost, "/dashboard/sessions/"+api.ID+"/compact", url.Values{})},
+	} {
+		if w := s.drive(t, refused.what, refused.req); w.Code != refused.want {
+			t.Errorf("%s = %d (%s); want %d", refused.what, w.Code, w.Body.String(), refused.want)
+		}
+	}
+
+	// Nothing below is a claim about a route this sweep never drove.
+	for pattern, exercised := range s.reached {
+		if !exercised {
+			t.Errorf("%s is registered on this daemon and nothing above drove it, so the search below says nothing about it", pattern)
+		}
+	}
+	if len(s.answers) == 0 {
+		t.Fatal("the sweep drove no route at all, so the search below would pass vacuously")
+	}
+
+	// The search itself: every response, and the whole trail behind them.
+	//
+	// The length check TestSettingsNeverRendersSecretValue makes stays with that
+	// page rather than being repeated here. A bare number is a disclosure where a
+	// page is describing a secret and is nothing at all elsewhere, and a sweep of
+	// every response that refused any body carrying "59" would be a test somebody
+	// has to argue with about a timestamp.
+	trail := s.sink.String()
+	for _, secret := range []struct {
+		what  string
+		value string
+	}{
+		{"the shared secret", canarySecret},
+		{"the allowlisted addresses", canaryAllowed},
+	} {
+		for _, answer := range s.answers {
+			if strings.Contains(answer.text, secret.value) {
+				t.Errorf("%s answered with %s verbatim:\n%s", answer.what, secret.what, answer.text)
+				continue
+			}
+			if run, cut := leakedRun(answer.text, secret.value); run != "" {
+				t.Errorf("%s answered with %q, %s %d characters of %s; a masked value is still a disclosure:\n%s",
+					answer.what, run, cut, len(run), secret.what, answer.text)
+			}
+		}
+		if strings.Contains(trail, secret.value) {
+			t.Errorf("the audit trail carries %s verbatim:\n%s", secret.what, trail)
+			continue
+		}
+		if run, cut := leakedRun(trail, secret.value); run != "" {
+			t.Errorf("the audit trail carries %q, %s %d characters of %s:\n%s", run, cut, len(run), secret.what, trail)
+		}
+	}
+
+	// The key layer 2 is really checking signatures against, which is not the
+	// canary above — see newSweep. Whole rather than in runs: it is spelled in
+	// words rather than in entropy, and it shares its `test-only-` announcement
+	// with the fixture's Access audience, which the settings page renders.
+	for _, answer := range append(slices.Clone(s.answers), sweptAnswer{what: "the audit trail", text: trail}) {
+		if strings.Contains(answer.text, string(testSecret())) {
+			t.Errorf("%s carries the key layer 2 checks every signature against:\n%s", answer.what, answer.text)
+		}
+	}
+
+	// And the daemon really was holding both secrets while it answered. A fixture
+	// that had lost them would sweep an unconfigured daemon and find nothing,
+	// which is the one way this test passes while proving nothing at all.
+	//
+	// It is asked *after* the search rather than before it, and reported rather
+	// than fatal, because the two failures overlap: a page rendering the value
+	// instead of the word fails this as well as leaking, and a precondition that
+	// stopped the test first would report the leak as a broken fixture.
+	page := s.answerFor(t, "the settings page")
+	for _, key := range []string{"shared_secret", "access_allowed_emails"} {
+		if row := settingsRowFor(t, page, key); !strings.Contains(row, "<td>"+secretPresent+"</td>") {
+			t.Errorf("the swept daemon reports %s as %q; this is a claim about a daemon that has both secrets configured", key, row)
+		}
+	}
+
+	// The trail really was written to. Searching an empty string finds nothing in
+	// it, and FR-041 puts one record behind every request above.
+	if records := s.records(t); len(records) < len(s.answers) {
+		t.Errorf("%d requests left %d audit records; the trail this searched is missing some of them", len(s.answers), len(records))
 	}
 }
