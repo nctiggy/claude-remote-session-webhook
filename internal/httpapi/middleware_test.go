@@ -279,6 +279,39 @@ func (s *testServer) only(t *testing.T) map[string]any {
 	return got[0]
 }
 
+// onlyOpened is only's counterpart for a route that has not finished when the
+// caller regains control.
+//
+// A stream's response headers arrive while its handler is still running, so a
+// single read of the buffer races the record the handler writes at the open. On
+// a fast machine the write always wins and the race is invisible; on a loaded CI
+// runner it does not, and the symptom is "emitted 0 audit records" — which reads
+// as flakiness rather than as a test that asserted too early. It failed once
+// locally during milestone 4's gate and was put down to contention; CI found it
+// independently, which is the argument for running the tagged suites there.
+//
+// Waiting does not weaken FR-041's claim. This half asserts the open record
+// arrives and is the only one so far; the "no second record ever" half is
+// asserted after Shutdown, where the handler has certainly unwound and a
+// deferred emit has certainly run. A second record arriving inside this window
+// still fails here, immediately.
+func (s *testServer) onlyOpened(t *testing.T, within time.Duration) map[string]any {
+	t.Helper()
+
+	deadline := time.Now().Add(within)
+	for {
+		switch got := s.records(t); {
+		case len(got) == 1:
+			return got[0]
+		case len(got) > 1:
+			t.Fatalf("the open emitted %d audit records (%v); FR-041 requires exactly one", len(got), got)
+		case time.Now().After(deadline):
+			t.Fatalf("no audit record %s after the stream opened; FR-041 requires exactly one", within)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // pathFor fills the {id} wildcard with something ID-shaped. No session exists,
 // which is fine for a request that is meant to be refused before anything looks
 // one up.
