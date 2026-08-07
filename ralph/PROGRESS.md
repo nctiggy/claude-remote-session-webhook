@@ -139,3 +139,58 @@ T013 remains BLOCKED-ON-HUMAN; T014 and after wait on it.
    assert the route reports `buildinfo.Version` — that it holds no copy of its own — rather than
    inventing a `cmd/crswd` import that `internal/httpapi` must not have.
 3. **No ad-hoc defects observed** in the code touched.
+
+---
+
+## Iteration 3 — 2026-08-07 22:51
+
+**Did:** T003. `GET /dashboard/version` in `internal/httpapi/version.go`, on `handleBrowser` under
+the new `audit.ActionDashboardVersion` (`dashboard.version`), answering
+`{"version":"…"}` from `buildinfo.Version` read inside the handler. Tests in
+`version_test.go`. Gate green: build, vet, `go test ./...`, `golangci-lint run` (2.12.2, 0 issues),
+plus `-tags quickstart ./cmd/crswd` (30s) and `-tags dev ./...`, since the route changes
+`newServer`, which both of those build.
+
+**Learned:**
+
+- **The route answers JSON, not a page, and the contract is the reason.**
+  `contracts/version.md`'s **Files** line names `internal/httpapi/version.go` and no template;
+  `contracts/settings-page.md` named both its handler *and* `web/templates/settings.html`. So the
+  omission is a decision, not a gap — that comparison is the cheapest way to settle "page or
+  payload?" for any future route here. It also kept `docs/design-system.md` out of this task
+  entirely. The body reuses `s.writeJSON` (`sessions.go:750`).
+- **`versionResponse` has one field on purpose.** The contract's table says the route reports the
+  version "plus the latest available"; that second half needs the fetch **T018** builds, so it is
+  US4's and not a gap in T003. Adding it later is a field on the struct, not a change of shape —
+  which is why the answer is an object rather than a bare string. **Whoever takes T018/T019 should
+  add `latest` here rather than inventing a second route.**
+- **Both mutations were run, and the construction-copy one is the subtle one.**
+  `var ownCopy = buildinfo.Version` at package scope compiles, keeps the import, and is exactly
+  the "route has its own copy" defect — `TestFlagAndRouteAgree` catches it *only* because it
+  changes the variable **after** `newFleet` and asks a second time. A test that stamped before
+  building the server would pass against it. The second mutation, `s.mux.Handle(patternVersion,
+  http.HandlerFunc(s.version))`, is answered 200 with the version to a caller carrying no
+  assertion at all, and emits zero audit records.
+- **A new browser route costs three edits outside its own file**, and two of them fail loudly if
+  forgotten: `registeredPatterns` and the driven-request table in `settings_test.go`
+  (`TestFullRouteSweepLeaksNoSecret` errors with "is registered on this daemon and nothing above
+  drove it"), plus the action-name table in `internal/audit/audit_test.go`. Budget for them.
+- The audit action is `dashboard.version` — named for its door, because there is no second way to
+  ask a *running* daemon this and the command-line reader emits no record at all.
+
+**Left:** T004–T021. **US1 is complete**; T004 (the release workflow) is next and unblocked.
+T004 must stamp with the literal `theStampedSymbol` from `cmd/crswd/version_test.go` rather than a
+fresh ldflags path typed into YAML — Iteration 2 proved a mistyped symbol fails silently.
+T013 remains BLOCKED-ON-HUMAN; T014 and after wait on it.
+
+**Findings:**
+
+1. **`internal/audit/audit_test.go`'s action table is not the exhaustive list its comment claims.**
+   The comment says listing *every* action makes two constants sharing a spelling a compile error,
+   but `audit.ActionSessionMode` (`session.mode`, milestone 5) was never added — so a new action
+   colliding with it would compile. `dashboard.version` is in the table; `session.mode` still is
+   not. Not fixed: it is one line in a file outside this task (AR-008), and it is a fix-lane
+   one-liner.
+2. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands** — the `127.0.0.1:8765`
+   warning is stale. The suite passed again here with the deployed daemon holding that port.
+3. **No ad-hoc defects observed** in the code touched.
