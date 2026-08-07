@@ -156,7 +156,7 @@ under `NEEDS CLARIFICATION` and stop.
 
 ### US5 — Pick a working directory (P5)
 
-- [ ] T022 Replace the field with `<input list>` + `<datalist>`
+- [x] T022 Replace the field with `<input list>` + `<datalist>`
 - [ ] T023 Carry the discovery walk forward; one level, off by default
 - [ ] T024 🔒 A suggested path outside the allowlist is refused identically
 - [ ] T025 Announce a filtered subset

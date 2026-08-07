@@ -1835,3 +1835,106 @@ that branch, and only the discovery walk.
   `live.Mode(remoteCommand)` weakened to `live.Mode("")` (red: the projection reports `local` for
   an `rc` session) — each reverted by reverse `Edit`, with `git diff --stat` afterwards showing
   129 insertions against 5 deletions.
+
+---
+
+## Iteration 22 — 2026-08-07 07:26
+
+**Did:** T022. The working-directory field is the platform's picker. The input gains
+`list="workdir-suggestions"` and a sibling `<datalist id="workdir-suggestions">` of
+`<option value="…">`, both conditional on a new `createFormView.Suggestions []string`. The
+abandoned branch's combobox was **not** carried, per the task. Three tests in `partials_test.go`:
+`TestPickerWorksWithoutScript`, `TestAnyPathStillTypeable`, `TestNoSuggestionsRendersPlainField`.
+
+**Learned:**
+
+- **`Suggestions` is empty in every production render, and will stay that way until something
+  fills it.** This is the "done when something calls it" gap, and it is the plan's own ordering —
+  the dependency graph reads T022 (datalist) → T023 (discovery), so the markup precedes its
+  source by one iteration. **T023 is not finished when `internal/config/discover.go` exists and
+  its three config tests pass**: its task text names only that file, so an iteration that stops
+  there leaves the picker rendering nothing forever. The wiring is two lines —
+  `Suggestions:` in `fleetPage`'s `createFormView{…}` literal (`dashboard.go:275`), fed by a
+  projection beside `rootPaths()`.
+- **The contract's example markup says `name="workdir"`; the daemon's field is `work_dir` and
+  must stay so.** `contracts/directory-picker.md` line 12 and T022's own task text both spell the
+  input `name="workdir"`, which is not the field `actions.go` reads (`fieldWorkDir = "work_dir"`)
+  and not what `TestTheCreateFormPostsWhatTheRouteReads` pins. Renaming it would have broken every
+  create while leaving the form rendering perfectly — the exact failure that test exists for — and
+  the handler is outside this task's named files (AR-008). The snippet is illustrative; `work_dir`
+  is the wire name. **Do not "fix" the template to match the contract; fix the contract.**
+- **The `list` attribute is conditional too, not just the element.** A `list` pointing at a
+  datalist that was not rendered is inert in a browser but is an attribute an operator cannot act
+  on, and it is the half a reader checks last. `TestPickerWorksWithoutScript` therefore reads the
+  id *out of the field* and looks for that element, rather than matching the literal id twice —
+  the two spellings drifting apart is what leaves a form looking correct in review.
+- **No CSS, again.** A `<datalist>` renders nothing and the input keeps `.field-input`, so this
+  task touched no token and no `crswd.css` — the same outcome as T021's mode row. The picker's
+  entire appearance is the browser's.
+- **`docs/components.md`'s Form section still says there is "deliberately no hint on the working
+  directory".** That sentence was already false at T014 (the roots hint) and is now false twice.
+  It belongs in the same docs commit as everything below.
+
+**Left:** T023–T035. Next is **T023** (carry the discovery walk into `internal/config/discover.go`,
+one level, off by default) — and see the first bullet above: finish it by wiring
+`createFormView.Suggestions`, or the datalist this iteration added stays empty in production.
+
+**Findings:**
+
+- **No task in the plan owns `workdir_suggestions`, the contract's *explicit* suggestion source.**
+  `contracts/directory-picker.md` names two sources — `workdir_suggestions` (explicit, default
+  empty) and `discover_roots` (T023, off by default) — and only the second has a task. Adding the
+  first is a new `CRSW_WORKDIR_SUGGESTIONS` in `config.Vars()`, a `settingValue` case, and a
+  `config.example` row for T034's `TestConfigExampleParsesAndCoversEveryKey`; it was deliberately
+  **not** invented here (constitution II). If the operator wants an explicit list, it is a task.
+  Without it, discovery is the only source and `discover_roots` is off by default — so the shipped
+  default renders a plain field, which is FR-043-compliant but means SC-008/SC-009 cannot be
+  demonstrated without configuration.
+- **FR-045's announcement (T025) has no element to announce into yet.** T025's test is named in
+  `stylesheet_test.go`, the announcement belongs in `crswd.js`, and this iteration added no live
+  region to the create form — the page-level one from `TestEveryActionablePageCarriesTheLiveRegion`
+  is what T025 should reuse rather than adding a second.
+- **Everything below is unchanged from iteration 21** and still open. The standing one first:
+  **nothing posts to `/dashboard/sessions/{id}/mode`** (iterations 19-22) — the route is reachable,
+  gated, functional and referenced by no page, and no task in the plan adds the control. Fourth
+  iteration carrying it; **this is still the finding most likely to end the milestone with a
+  feature the operator cannot use.**
+- **NEEDS CLARIFICATION (not blocking, iteration 20): a start command that ignores SIGINT would
+  receive the new command line as a prompt.** Still the operator's call.
+- **The mode toggle redirects to the fleet where the contract says the session page** (19-22);
+  closing it means teaching `sessionPage` an `Outcome` field. **`session.mode` puts a browser-door
+  action in the API's `session.*` namespace** (19-22). **`contracts/session-mode.md` and
+  `data-model.md` still spell `Mode()` with no parameter and still describe `remote_start_commands`**
+  (18-22). **`contracts/card-layout.md` names T021's test `TestModeShownTextually` where two other
+  files say `TestCardShowsMode`** (21-22).
+- **Two `TestParseSessions` fixtures still pass for the wrong reason** (17-22): the stray `\n` in
+  `"creation time is not a number"` and `"creation time missing entirely"` in
+  `internal/tmuxctl/exec_test.go`. **Fix-lane commit:** drop the `\n`, pad to six fields.
+- **`specs/001-crswd-daemon-core/contracts/tmuxctl.md` is stale by three fields** (17-22): line
+  163's `list-sessions` format string and lines 81-82's two `set-option` calls against five.
+- **`contracts/actions.md` (milestone 3's) is still stale in nine places** — iterations 14-22.
+  Ninth iteration logging it.
+- **`TestBrowserCreateStartsTheSessionAndAnswersWithItsCard` and
+  `TestRenameRelabelsTheRecordAndAnswersWithItsCard` are still misnamed** (14-22).
+- **`internal/httpapi` still carries the data race in its own fixture** (13-22):
+  `newAuditedServerWith` sets `s.report` unsynchronised (`middleware_test.go:215`). Tenth
+  iteration logging it.
+- **Still open from iterations 5-22:** the three red `-tags quickstart` tests
+  (`CRSW_DESTROY_ON_SHUTDOWN` has no loader — the oldest unfixed finding here; not run this
+  iteration, the live daemon still holds `127.0.0.1:8765`, though `go vet -tags quickstart ./...`
+  is green); `contracts/settings-page.md`'s `TestNoMutatingVerbRegistered` row still saying 405,
+  and its worked example showing values no loader would produce; three `ReadFile` refusals missing
+  from `contracts/config-file.md`'s table; the `version < 1` row; the contract's "yields exactly
+  eight keys" against seven; a dangling symlink reading as absent; `f.values` having no
+  enumerator; `os.Open` on a FIFO blocking startup with no message; `--config <path>` still
+  unbuilt; `README.md` and `deploy/README.md` silent on the config file (T034/T035).
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean, `go build`, `go vet`, `go test -count=1 ./...` all green; `go vet` green under `-tags
+  tmux`, `-tags quickstart` and `-tags dev`; `go.sum` still absent. This task touches no tmux and
+  no `cmd/crswd`, so neither tagged suite was run — the vets are the cheap check `AGENTS.md`
+  prescribes when the environment is not free. Three mutations were run rather than reasoned about
+  — the `<datalist>` emitted unconditionally (red: `TestNoSuggestionsRendersPlainField`), the
+  `list` attribute dropped while keeping the element (red: `TestPickerWorksWithoutScript`, on the
+  field pointing at nothing), and the input replaced by a `<select name="work_dir">` (red in all
+  three, both `TestAnyPathStillTypeable` subtests included) — each reverted by reverse `Edit`,
+  with `git diff --stat` afterwards showing 192 insertions against 2 deletions.
