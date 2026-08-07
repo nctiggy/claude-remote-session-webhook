@@ -25,7 +25,9 @@ package release_test
 import (
 	"crypto/sha256"
 	"debug/elf"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -346,6 +348,230 @@ func TestEveryAssetHasAChecksum(t *testing.T) {
 	check.Dir = dist
 	if out, err := check.CombinedOutput(); err != nil {
 		t.Errorf("`sha256sum -c SHA256SUMS` beside the assets: %v\n%s", err, out)
+	}
+}
+
+// stepAt returns where a step's `- name:` line appears in the workflow, so two
+// steps can be placed against each other. Order is the one thing a replay
+// cannot see: a step is replayed on its own, and every assertion about what it
+// does still holds when it runs at the wrong point in the job.
+func stepAt(t *testing.T, wf, step string) int {
+	t.Helper()
+
+	i := strings.Index(wf, "- name: "+step)
+	if i < 0 {
+		t.Fatalf("%s has no step named %q", workflowPath, step)
+	}
+	return i
+}
+
+// tagRange returns v0.<lo> … v0.<hi>, ascending — the order `gh release list`
+// is least likely to answer in, so a step that keeps the first twenty it is
+// handed fails here rather than by deleting the ten newest releases.
+func tagRange(lo, hi int) []string {
+	tags := make([]string, 0, hi-lo+1)
+	for n := lo; n <= hi; n++ {
+		tags = append(tags, fmt.Sprintf("v0.%d", n))
+	}
+	return tags
+}
+
+// without returns tags minus drop: "everything past the limit except the one a
+// pointer is holding".
+func without(tags []string, drop string) []string {
+	kept := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if tag != drop {
+			kept = append(kept, tag)
+		}
+	}
+	return kept
+}
+
+// ghStub is a bash function that shadows gh(1) for the replay. The step calls
+// gh as a plain command, so a function of that name is what it reaches, and
+// nothing has to be put on PATH or made executable.
+//
+// It answers the step's two reads the way gh answers them — one tag per line
+// for the list, the tag the `latest` pointer resolves to for the view, and an
+// error when there is no such pointer — and decides nothing else. Filtering
+// here instead would move the rules under test into the stub, where a step that
+// had stopped applying them would go on passing.
+func ghStub(dir string, tags []string, latest string) string {
+	// What `gh release view` does against a repository with no release at all,
+	// which is why the step tolerates a failure from it.
+	view := "    echo 'release not found' >&2\n    return 1"
+	if latest != "" {
+		view = fmt.Sprintf("    printf '%%s\\n' '%s'", latest)
+	}
+
+	quoted := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		quoted = append(quoted, "'"+tag+"'")
+	}
+
+	return fmt.Sprintf(`gh() {
+  case "$1 $2" in
+  "release view")
+%s
+    ;;
+  "release list")
+    printf '%%s\n' %s
+    ;;
+  "release delete")
+    printf '%%s\n' "$3" >> %q
+    ;;
+  *)
+    echo "the step called gh in a way this stub does not answer: gh $*" >&2
+    return 1
+    ;;
+  esac
+}
+`, view, strings.Join(quoted, " "), filepath.Join(dir, "deleted"))
+}
+
+// TestRetentionKeepsTwentyAndNeverTheNewestTwo replays the prune step against a
+// stubbed gh and reads back which releases it asked to delete.
+//
+// Pruning by age alone is the version of this that looks finished. It bounds
+// the list, which is the requirement as stated, and it deletes whatever
+// `latest` resolves to on any day that pointer is not the newest release — a
+// prerelease, a draft, or one marked by hand moves it. The result is an
+// install URL that 404s, which to the person running the installer is
+// indistinguishable from the project being broken.
+//
+// Ranking is the same failure in a quieter form. The version is the commit
+// count, so the number in the tag is the ordering; ranking by date puts a
+// re-published old release at the top, and ranking as text puts v0.9 above
+// v0.30.
+func TestRetentionKeepsTwentyAndNeverTheNewestTwo(t *testing.T) {
+	t.Parallel()
+
+	wf := readWorkflow(t)
+
+	const pruneStep = "Prune old releases"
+
+	// Pruning before publishing counts a list the new release is not in yet, so
+	// it prunes one release too many — and if the publish then fails, it has
+	// made room for a release that does not exist.
+	if stepAt(t, wf, pruneStep) < stepAt(t, wf, "Publish") {
+		t.Fatalf("%s prunes before it publishes, so it prunes to twenty and then makes it twenty-one, and a publish that fails afterwards has already cost a release", workflowPath)
+	}
+
+	keep := find(t, wf, "`KEEP` declaration", regexp.MustCompile(`(?m)^\s*KEEP:\s*"?(\d+)"?\s*$`))
+	if keep != "20" {
+		t.Errorf("%s keeps the last %s releases; contracts/release.md fixes the limit at 20", workflowPath, keep)
+	}
+
+	script := stepScript(t, wf, pruneStep)
+
+	tests := []struct {
+		name    string
+		tags    []string
+		latest  string
+		keep    string
+		deleted []string
+	}{
+		{
+			// Thirty releases, the pointer where it usually is. Ten go.
+			name:    "prunes to the limit, oldest first",
+			tags:    tagRange(1, 30),
+			latest:  "v0.30",
+			keep:    keep,
+			deleted: tagRange(1, 10),
+		},
+		{
+			// The same list with the pointer somewhere it is allowed to be.
+			// v0.4 is past the limit and stays, because deleting it is what
+			// turns "install with one command" into a 404.
+			name:    "never what the latest pointer resolves to",
+			tags:    tagRange(1, 30),
+			latest:  "v0.4",
+			keep:    keep,
+			deleted: without(tagRange(1, 10), "v0.4"),
+		},
+		{
+			name:   "nothing to prune at the limit",
+			tags:   tagRange(1, 20),
+			latest: "v0.20",
+			keep:   keep,
+		},
+		{
+			// The floor, which is only visible below the limit. A retention
+			// number is exactly the knob somebody turns down in a hurry, and
+			// rolling back needs something to roll back to.
+			name:    "the newest two survive a lowered limit",
+			tags:    tagRange(1, 5),
+			latest:  "v0.5",
+			keep:    "0",
+			deleted: tagRange(1, 3),
+		},
+		{
+			// This workflow publishes v0.<count> and prunes v0.<count>.
+			// Anything else in the list arrived another way and is not this
+			// step's to delete.
+			name:    "leaves tags this workflow did not publish",
+			tags:    append(tagRange(1, 5), "nightly", "v1.0.0"),
+			latest:  "v0.5",
+			keep:    "0",
+			deleted: tagRange(1, 3),
+		},
+		{
+			name:    "no pointer at all",
+			tags:    tagRange(1, 25),
+			latest:  "",
+			keep:    keep,
+			deleted: tagRange(1, 5),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+
+			// `bash -e`, the flags GitHub runs a `run:` block with when the step
+			// names no shell, with the stub prepended so `gh` is a function
+			// rather than the real client.
+			replay := exec.Command("bash", "-e", "-c", ghStub(dir, tt.tags, tt.latest)+"\n"+script) //nolint:gosec // G204: the script is this repository's own committed workflow.
+			replay.Dir = dir
+			// KEEP is step-level `env:` in the workflow, which the replayed
+			// `run:` body does not carry with it.
+			replay.Env = append(os.Environ(), "KEEP="+tt.keep)
+			out, err := replay.CombinedOutput()
+			if err != nil {
+				t.Fatalf("replay of the %q step: %v\n%s", pruneStep, err, out)
+			}
+
+			raw, err := os.ReadFile(filepath.Join(dir, "deleted")) //nolint:gosec // G304: dir is this test's own t.TempDir.
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("read what the step deleted: %v", err)
+			}
+
+			got := map[string]bool{}
+			for _, tag := range strings.Fields(string(raw)) {
+				got[tag] = true
+			}
+			want := map[string]bool{}
+			for _, tag := range tt.deleted {
+				want[tag] = true
+			}
+
+			for tag := range want {
+				if !got[tag] {
+					t.Errorf("the step left %s in place. With %d releases and KEEP=%s it is past the limit and no rule holds it, so the list only grows", tag, len(tt.tags), tt.keep)
+				}
+			}
+			for tag := range got {
+				if !want[tag] {
+					t.Errorf("the step deleted %s.\nWhat is kept past the limit is not a nicety: `latest` is the URL the installer downloads through, the newest two are what a rollback has to land on, and a tag this workflow did not publish is not this workflow's to remove", tag)
+				}
+			}
+			if t.Failed() {
+				t.Logf("the step deleted %v and said:\n%s", strings.Fields(string(raw)), out)
+			}
+		})
 	}
 }
 

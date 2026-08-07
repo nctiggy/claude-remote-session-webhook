@@ -138,3 +138,62 @@ jobs:
             "dist/cloudflared.example.yml" \
             "dist/crswd-api" \
             "dist/SHA256SUMS"
+
+      - name: Prune old releases
+        # Bounded history, minus two refusals that pruning by age alone gets
+        # wrong.
+        #
+        # The pointer is the one that matters. An installer downloads through
+        # /releases/latest/download/<asset>, and `latest` is normally the newest
+        # release but is not required to be — a prerelease, a draft, or a
+        # release marked by hand moves it. A `latest` that 404s is worse than an
+        # unbounded list: nothing is installable at all, and the person it
+        # happens to has no way to tell that from the project being broken.
+        #
+        # Only what this workflow publishes is prunable: v0.<count>, the version
+        # research.md R2 settled on. A tag in any other shape came from
+        # somewhere else and is left where it is.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Declared here rather than written into the script below, so the
+          # floor is provable: a test that cannot lower this cannot show that
+          # the two most recent survive it being lowered.
+          KEEP: "20"
+        run: |
+          # What the pointer resolves to, asked of GitHub rather than assumed to
+          # be the highest number. `|| true` because a repository with no
+          # release answers with an error, which is not a reason to fail.
+          latest=$(gh release view --json tagName --jq '.tagName' || true)
+          echo "latest resolves to ${latest:-nothing}"
+
+          # Newest first by the number in the tag, not by the order the API
+          # happens to answer in and not by date: the version is the commit
+          # count, so the number is the ranking, and a re-published older
+          # release carries today's date with yesterday's rank. Sorting the tags
+          # as text is the same mistake mirrored — v0.9 outranks v0.30.
+          tags=$(gh release list --limit 1000 --json tagName --jq '.[].tagName')
+          ordered=$(printf '%s\n' "$tags" | grep -E '^v0\.[0-9]+$' | sort -t. -k2,2nr || true)
+
+          n=0
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+            n=$((n + 1))
+
+            # The two most recent survive whatever KEEP says. Redundant while it
+            # is 20, and it is the rule that has to hold when somebody lowers it
+            # in a hurry — a retention limit is exactly the knob that gets
+            # turned down under pressure, and rolling back needs somewhere to
+            # roll back to.
+            if [ "$n" -le 2 ] || [ "$n" -le "$KEEP" ]; then
+              continue
+            fi
+            if [ "$tag" = "$latest" ]; then
+              echo "keeping $tag: the latest pointer still resolves to it"
+              continue
+            fi
+
+            echo "pruning $tag"
+            # The release, not the tag: --cleanup-tag would also delete the only
+            # remaining record of which commit that version named.
+            gh release delete "$tag" --yes
+          done <<< "$ordered"
