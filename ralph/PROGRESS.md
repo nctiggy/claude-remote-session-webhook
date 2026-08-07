@@ -2255,3 +2255,117 @@ with the toast and anchor work that landed on `main` after it.
   claim); `{all}` left unfilled (red on the placeholder assertion); and the region rendered
   `hidden` (red on the accessibility-tree assertion). Each reverted by reverse `Edit`;
   `git diff --stat` afterwards showed 229 insertions against 2 deletions across three files.
+
+---
+
+## Iteration 26 — 2026-08-07 08:15
+
+**Did:** T026. The card's anchor is now the whole readable half — `<div class="card-read">` wraps
+one `<a class="card-link" draggable="false">`, which holds the heading, the pill, the identifier,
+the start-command label and the meta list (mode, working directory, age); the action row is its
+sibling below a `border-block-start` drawn from `--edge` with `padding-block-start: var(--s3)`.
+Tests `TestAnchorCoversReadableBlock` (renamed from `TestTheCardLinksTheNameAndNotOnlyTheIdentifier`,
+whose #16 claim it subsumes), `TestNoControlInsideAnchor` (split out of `TestCardHasExactlyOneAnchor`,
+which keeps the count), and `TestBoundaryIsNotColourAlone` in `stylesheet_test.go`.
+
+**Learned:**
+
+- **The branch's card is T026 *and* T027 in one commit.** `claude/issue-issue-60-20260806-0406`
+  (`49bf3b0` feat, `4d2fe3b` test) moves rename into a `<details>` behind a new `sessionView.Rename`
+  field and a `cardSurface` type in `dashboard.go`, adds the toast to `session.html`, and strips
+  `details.card-rename` in `crswd.js` because **the fleet's live half re-fetches a session *page***
+  and lifts the card out of it. None of that is T026 — it is T027, and its four tests
+  (`TestTheRenameIsRevealedAndOnlyOnTheSessionsOwnPage`, `TestTheFleetTakesNoRenameFromTheCardItRefetches`,
+  the `renameableCard()` fixture, the `dashboard_test.go` call-site assertions) are already written
+  on that branch. **Read `git show 49bf3b0` and `4d2fe3b` before starting T027; most of it is done.**
+- **Wrapping the block in an anchor costs the card its gaps.** The heading, pill, id, mode line and
+  `<dl>` were direct grid items of `.card`, so `gap: var(--s3)` spaced them. Inside an `<a>` they are
+  not, and the card collapses into a run-on block unless the anchor becomes a grid with the same gap.
+  Both `.card-read` and `.card-link` therefore carry `grid-template-columns: minmax(0, 1fr)` as well —
+  the branch left the column implicit (`auto`), which sizes to min-content and would stop `.card-name`
+  and `.card-path` truncating on a long name or path. `.pill`'s `justify-self: start` still applies,
+  because the anchor is still a grid.
+- **The underline had to move with the anchor.** It was on `.card-link`; on a block link it would
+  underline the identifier, the path and the age — four lines of decoration, none of them the word
+  the card is about. It is now on `.card-heading`, and the hover is `.card-link:hover .card-heading`.
+  The `.brand-link` comment naming `.card-link`'s underline was updated with it, or it would have been
+  false the moment it was read (#56's reasoning is unchanged, only the class it cites).
+- **`docs/components.md` said "exactly one `<a>` — the heading".** That sentence is the thing this
+  task falsifies, so it was updated in the same commit; the doc is binding, and a binding doc
+  describing the previous card is worse than none. AR-008 did not apply — it is the rule being
+  changed, not adjacent code.
+- **The template comments cite FR-027 and the milestone-4 spec cites FR-046/FR-047 for one rule.**
+  Both are true (`specs/003-.../spec.md:170` is the same sentence). New prose cites the new numbers
+  and the action-row comment now says so explicitly, so the file does not read as two rules.
+- **`sessionView.Mode` is `session.Mode`, not `string`** — a test asserting it appears in the
+  anchor's text needs `string(card.Mode)`, and `ownedCard()` leaves it empty (the template renders an
+  empty `<dd>`), so a test about the mode has to set it.
+
+**Left:** T027–T035. Next is **T027** (US6) — move rename off the fleet and onto the session's own
+page as a `<details>` disclosure, which is the second half of the branch above.
+
+**Findings:**
+
+- **The `aria-describedby` on the card's link is now redundant.** The identifier is *inside* the
+  anchor, so it is already part of the link's accessible name; describing the link by the same
+  element makes a screen reader say the hex twice. It was load-bearing when the anchor was the name
+  alone (`TestTheLinkOnACardWithNoNameIsStillToldApartFromEveryOther` pins it), so removing it is a
+  decision about that test rather than a cleanup — not T026's, and it needs the accessibility check
+  #17 defers to a human with a browser.
+- **The rename form still sits in the fleet's action row** — deliberately, since T027 owns the move.
+  Until then FR-049 is unmet and the card carries three forms; `TestTheCardsDestroyFormCarriesWhatTheRouteRequires`
+  still asserts three, and T027 changes it to two.
+- **`crswd.js` does not yet strip anything from a re-fetched card** (see the branch note above). The
+  moment T027 lands the disclosure, every card the fleet stream refreshes acquires a rename control
+  the fleet renders on no card of its own. It renders correctly on load and breaks on the first state
+  change, which is the worst shape a bug can have.
+- **Nothing posts to `/dashboard/sessions/{id}/mode`** (19-26). Eighth iteration carrying it; still
+  the finding most likely to end the milestone with a feature the operator cannot use.
+- **`.fleet-note:empty { display: none }` still contradicts `docs/components.md`'s accessibility
+  floor** (25-26). Fix lane, one line.
+- **Nothing renders a directory suggestion in the shipped default** (22-26): `discover_roots` is off
+  and `workdir_suggestions` has no owning task, so the picker, its hook and its announcement are
+  markup no operator has met. **The walk's cap is still silent** (23-26).
+- **`contracts/directory-picker.md` line 12 still spells the input `name="workdir"`** where the
+  daemon's field is `work_dir` (22-26).
+- **NEEDS CLARIFICATION (not blocking, iteration 20): a start command that ignores SIGINT would
+  receive the new command line as a prompt.** Still the operator's call.
+- **The mode toggle redirects to the fleet where the contract says the session page** (19-26).
+  **`session.mode` puts a browser-door action in the API's `session.*` namespace** (19-26).
+  **`contracts/session-mode.md` and `data-model.md` still spell `Mode()` with no parameter and still
+  describe `remote_start_commands`** (18-26). **`contracts/card-layout.md` names T021's test
+  `TestModeShownTextually` where two other files say `TestCardShowsMode`** (21-26) — and its own
+  table names three more tests this milestone has no task for
+  (`TestNothingAnimatesUnderReducedMotion`, `TestFocusRingVisibleOnEveryControl`), both of which are
+  already covered under other names (`TestReducedMotionStopsEveryTransition`, `TestTheFocusRingSurvives`).
+- **Two `TestParseSessions` fixtures still pass for the wrong reason** (17-26): the stray `\n` in
+  `internal/tmuxctl/exec_test.go`. **`specs/001-crswd-daemon-core/contracts/tmuxctl.md` is stale by
+  three fields** (17-26). **`contracts/actions.md` is stale in nine places** (14-26).
+  **`TestBrowserCreateStartsTheSessionAndAnswersWithItsCard` and
+  `TestRenameRelabelsTheRecordAndAnswersWithItsCard` are still misnamed** (14-26).
+  **`internal/httpapi` still carries the data race in its own fixture** (13-26):
+  `newAuditedServerWith` sets `s.report` unsynchronised (`middleware_test.go:215`).
+  **`docs/components.md`'s Form section still says there is "deliberately no hint on the working
+  directory"** (22-26), and its accessibility floor is one announcement out of date.
+- **Still open from iterations 5-26:** the three red `-tags quickstart` tests
+  (`CRSW_DESTROY_ON_SHUTDOWN` has no loader — the oldest unfixed finding here; not run this
+  iteration, the live daemon still holds `127.0.0.1:8765`, though `go vet -tags quickstart ./...` is
+  green); `contracts/settings-page.md`'s `TestNoMutatingVerbRegistered` row still saying 405, and its
+  worked example showing values no loader would produce; three `ReadFile` refusals missing from
+  `contracts/config-file.md`'s table; the `version < 1` row; the contract's "yields exactly eight
+  keys" against nine; a dangling symlink reading as absent; `f.values` having no enumerator;
+  `os.Open` on a FIFO blocking startup with no message; `--config <path>` still unbuilt; `README.md`
+  and `deploy/README.md` silent on the config file (T034/T035).
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean, `go build`, `go vet`, `go test -count=1 ./...` all green; `go vet` green under `-tags tmux`,
+  `-tags quickstart` and `-tags dev`; `go.sum` still absent. This task touches no tmux and no
+  `cmd/crswd`, so neither tagged suite was run — the vets are the cheap check `AGENTS.md` prescribes.
+  Five mutations were run rather than reasoned about, each reverted by reverse `Edit`: the anchor put
+  back around the name alone (red on six of `TestAnchorCoversReadableBlock`'s seven values and on the
+  heading assertion); a compact form moved inside the anchor (red on `TestNoControlInsideAnchor`, and
+  **the count test stayed green**, which is why the two are separate); `.card-read` deleted (red on
+  `TestBoundaryIsNotColourAlone` *and* on `TestTheStylesheetAndTheMarkupNameTheSameThings`, which
+  catches an orphaned rule from the other direction); the row's padding and then its border dropped
+  in turn (red on each clause of `TestBoundaryIsNotColourAlone`); and a second link added to the
+  action row (red on all three anchor tests). `git diff --stat` after the reverts showed 265
+  insertions against 68 deletions across five files.

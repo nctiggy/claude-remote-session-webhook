@@ -163,7 +163,7 @@ under `NEEDS CLARIFICATION` and stop.
 
 ### US6 — The card's two halves (P6)
 
-- [ ] T026 Carry forward the card split from `claude/issue-issue-60-...0406`
+- [x] T026 Carry forward the card split from `claude/issue-issue-60-...0406`
 - [ ] T027 Rename moves to the session page as a disclosure
 - [ ] T028 A text selection inside the anchor does not navigate
 
