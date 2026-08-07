@@ -545,3 +545,74 @@ described above plus the `Config` field and its three tests.
   config (#26). `gofmt -l .` clean, `go build`, `go vet`, `go test ./...` green, `go vet` green
   under `-tags tmux`, `-tags quickstart` and `-tags dev`, `go test -tags dev ./internal/access`
   green, `go.sum` still absent. CI is the gate.
+
+## Iteration 8 — 2026-08-07 03:45
+
+**Did:** T008, provenance in the same shim. `withFile(getenv, *File, map[string]Source)` now writes
+`SourceEnv` / `SourceFile` / `SourceDefault` for every name it is asked about, as it decides;
+`LoadFrom` makes the map, hands it in, and returns it on the new `Config.Sources` field.
+`source_test.go` gains `TestSourceRecordedForEveryKey`, `TestSourceIsNotInferred` and
+`TestSecretNeverInProvenanceLog`. The whole change to non-test code is three assignments, one
+parameter and one field — the shape iteration 7 left it in.
+
+**Learned:**
+
+- **`TestSourceRecordedForEveryKey` fails on `CRSW_DESTROY_ON_SHUTDOWN`, and that is the test
+  working.** Iteration 7 found the variable has a constant, a `Config.DestroyOnShutdown` field and
+  a consumer at `internal/httpapi/server.go:955`, and no loader. Provenance makes that visible for
+  the first time: `LoadFrom` never asks the shim for it, so it is the one declared `CRSW_` variable
+  with no recorded source. **It is exempted in the test as `varWithNoLoader`, named, with the
+  reason, and pinned in both directions** — the exemption itself fails the day the variable gets a
+  loader, and the fix is to delete one line. Fixing the loader was deliberately *not* done here:
+  it is a milestone-3 defect and a behaviour change (a variable that has never taken effect would
+  start to), so it wants the fix lane and its own commit, not a commit titled "record provenance".
+- **The map is keyed by variable name and records every lookup, including `HOME`.** `defaultRoot`
+  reads `HOME` through the layered `getenv`, so `Sources["HOME"]` exists whenever `allowed_roots`
+  is unset. That is truthful and harmless: T012 walks `Vars()` and asks the map about each, so it
+  renders settings and only settings. A filter in the shim would be a second rule about what
+  counts as a setting, which is the thing this package keeps to one place.
+- **`Config.Sources` is a map field and does not break `TestNoFileMatchesTodayExactly`'s
+  `reflect.DeepEqual`.** Maps compare by content, and the reference load and the three no-file
+  loads record identical keys with identical layers. Worth knowing before adding a second field:
+  one that differed per load (a file path, which T012 needs) *would* break that test.
+- **Four mutations run, not reasoned about.** (1) provenance inferred after the load from what the
+  file sets → `TestSourceIsNotInferred`, with the message naming the equal-in-both case. (2) no
+  record when nothing supplied it → `TestSourceIsNotInferred` and nine rows of
+  `TestSourceRecordedForEveryKey`. (3) a debug line printing the resolved secret to `warn` →
+  `TestSecretNeverInProvenanceLog`. (4) a lookup for `CRSW_DESTROY_ON_SHUTDOWN` added → the
+  exemption fails and says to delete itself. Each reverted; `git diff` read back in full before
+  the gate.
+
+**Left:** T009–T035. Next is **T009** (`crswd config check` / `config migrate`, plus the
+`config.bak` fallback) — read iteration 7's `--config` / `CRSW_CONFIG_FILE` finding first, which
+is still unanswered and lands squarely in T009.
+
+**Findings:**
+
+- **`TestSecretNeverInProvenanceLog` can only see the sink `LoadFrom` was handed.** Mutation 3 was
+  run twice: written to `warn` it is caught, written to `os.Stderr` directly it is **not**, because
+  a parallel test cannot capture the process's stderr. Every message this package emits goes
+  through `warn` precisely so tests can see it, so the hole is narrow — but a future `fmt.Fprintf(
+  os.Stderr, ...)` anywhere in `internal/config` would leak into the journal with nothing failing.
+  If that is worth closing it is an AST assertion in the style of `secret_test.go`'s walk, and it
+  is a task of its own, not a line in T008.
+- **T012 will render `destroy_on_shutdown` as `default` whatever the operator wrote**, because
+  nothing records a source for it. That is the settings page lying about provenance, which is the
+  one thing US2 exists to prevent — so the missing loader should be fixed **before** T012, not
+  after. It is the fourth instance of this repo's signature bug and it now has two tasks depending
+  on it.
+- **T012 also needs the path of the file that was read** (`Read from %s` / `No configuration file
+  was read.`). `File.Path()` exists but `LoadFrom` drops the `*File` after layering it; nothing
+  carries the path onto `Config`. Adding it was out of T008's scope. Note it is the field that
+  *would* break `TestNoFileMatchesTodayExactly`'s `DeepEqual` if it were ever non-empty in one of
+  those loads — it is empty in all four, so it is safe, but check that when adding it.
+- **Still open from iterations 5, 6 and 7, none of it addressed here:** nothing owns `--config
+  <path>` or `CRSW_CONFIG_FILE`; three `ReadFile` refusals missing from `contracts/config-file.md`'s
+  table; the `version < 1` row; the contract's "yields exactly eight keys" against seven; a dangling
+  symlink reading as absent; `f.values` having no enumerator (T012 needs one); `os.Open` on a FIFO
+  blocking startup with no message; and `go test -tags quickstart ./cmd/crswd` red on `HEAD` for
+  the `DestroyOnShutdown` reason above.
+- **Lint unchanged:** `golangci-lint run` clean, but the binary on PATH is v1.62.2 against a v2
+  config (#26), so it proves nothing. `gofmt -l .` clean, `go build`, `go vet`, `go test ./...`
+  green, `go vet` green under `-tags tmux`, `-tags quickstart` and `-tags dev`, `go test -tags dev
+  ./internal/access ./internal/config` green, `go.sum` still absent. CI is the gate.
