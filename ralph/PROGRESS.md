@@ -1609,3 +1609,120 @@ thing that makes this route do anything.
   (`TestToggleRequiresConfirm` red on all six), and the route re-registered with `handleBrowser`
   (`TestToggleCrossSiteBothHalves` red on all four, each answering 303 where 403 was wanted) — and
   each reverted by reverse `Edit`, with `git diff --stat` afterwards showing additions only.
+
+## Iteration 20 — 2026-08-07 07:10
+
+**Did:** T020. `Manager.SetMode` in `internal/session/manager.go`: two sends and an option write —
+`C-c C-c` to the pane, then the other configured command with `--continue` and `Enter`, then
+`@crswd-start` — plus `commandForMode` (remote → `Config.RemoteControlCommand`, local →
+`DefaultStartCommandName`), `SetRemoteControlCommand`, three sentinels (`ErrModeUnavailable`,
+`ErrModeUnchanged`, `ErrUnknownMode`) and `Store.SetStartCommand`. Wired end to end: `server.go`
+passes `cfg.RemoteControlCommand` to the manager, and `modeFromBrowser`'s two-line dead end is now
+the real call plus `refuseBrowserMode`, answering the new `outcomeModeChanged`. Tests: the three the
+task names in `mode_test.go` (`-tags tmux`), five fake-based ones in `manager_test.go` that CI
+actually runs, the toggle's success and a two-case rewrite of `TestToggleSaysSoWhenItCannotAct` in
+`actions_test.go`, and the route's fifth row in `mutatingRoutes()`.
+
+**Learned:**
+
+- **`respawn-pane -k` wipes the scrollback. Measured, not reasoned about.** It was the obvious
+  mechanism — deterministic where a signal is a request — and a throwaway `-tags tmux` probe showed
+  the pane comes back empty: the marker echoed before it was gone, and `send-keys C-c` left the
+  whole history intact. That is SC-007's one requirement, so the transition signals through the
+  terminal and resets nothing. **Do not "fix" the interrupt into a respawn.**
+- **The interrupt is sent twice in one `SendKeys` call, and cannot be verified.** A TUI that catches
+  SIGINT reads the first as cancel and only the second as exit; at a bare shell prompt both are
+  no-ops on an empty line. tmux offers no way to ask whether the process took it, so `SetMode`
+  claims only that the keys reached the pane — Compact's own limit (FR-016a). See the finding below:
+  a process that ignores SIGINT would receive the command line as *input*.
+- **`#{session_id}` is a worthless witness on these fixtures, and the mutation is what showed it.**
+  Each `modeFixture` holds one session on a private `-L` server: killing it stops the server, and
+  the session made next is numbered `$0` again — so a destroy-and-recreate passed the check. The
+  test compares `#{pane_pid}` now, which does not restart and also catches `respawn-pane`, since
+  that hands the pane a new shell. The first version also read both ends *after* the transition,
+  comparing a value with itself; `toggleRun` exists to carry the reading taken before it.
+- **A scrollback test needs something that has actually scrolled.** The local command is
+  `seq -f crswd-local-%g 1 200` into a 24-row window, and the fixture asserts `crswd-local-1` is
+  *off* the visible screen before toggling — otherwise the test would only be proving a screen was
+  not cleared. Match whole lines when doing this: `strings.Contains(page, "crswd-local-1")` is true
+  of `crswd-local-179`, which is how the first run passed for the wrong reason.
+- **The remote command in the tmux fixture must tolerate a trailing `--continue`.** The transition
+  appends the flag to whatever it restarts, so a command that parses its arguments (`seq`) fails and
+  prints nothing, and the test waits for output a correct implementation never produces. `echo` is
+  why the remote side is an echo.
+- **Banner sentences may not contain an apostrophe.** The template escapes it, so `statesOutcome`
+  compares `&#39;` against `'` and the row fails on punctuation. The other four sentences have none,
+  which is not a coincidence anyone had written down until now.
+- **`ErrModeUnchanged` is a refusal on purpose.** Carrying out a toggle to the mode a session is
+  already in would interrupt the process the operator is watching to leave it where it was; a stale
+  card and a double submission both arrive that way. It is compared as *modes* rather than names, so
+  a session started under some third configured command is correctly already local.
+- **`mutatingRoutes()` is five now**, which is what put the toggle's success under the no-script and
+  caller-text sweeps. `newRefuser` had to configure the daemon for modes — the only one of the five
+  whose success depends on configuration rather than on the request — and
+  `TestAllFourActionsUsableWithoutScript` became `TestEveryActionIsUsableWithoutScript`.
+
+**Left:** T021–T035. Next is **T021** (show the mode on the card, textually), which is the first
+thing that renders what this iteration writes. It needs the remote-control name inside
+`internal/httpapi` to call `Session.Mode(...)`; `s.cfg.RemoteControlCommand` is already there.
+
+**Findings:**
+
+- **NEEDS CLARIFICATION (not blocking): a start command that ignores SIGINT would receive the new
+  command line as a prompt.** The daemon cannot observe whether the interrupt took, so on a process
+  that catches SIGINT and stays up, `SendKeys(command + " --continue", Enter)` lands in *that
+  process's input* rather than in the shell — which is prompt text arriving from a browser, the
+  surface `spec.md` puts out of scope, and a mode change that reports success while nothing moved.
+  Closing it needs one of: a Claude-specific exit sequence (FR-015 forbids hardcoding `claude`), or
+  a new read-only verb in `internal/tmuxctl` — `#{pane_current_command}` or `#{pane_pid}` — to
+  confirm the pane is back at its shell before typing. **That is a real task, not a line**, and it
+  is outside T020's named file. The operator should decide whether it belongs in this milestone.
+- **No task in the plan adds the control that posts to `/dashboard/sessions/{id}/mode`.** T021 shows
+  the mode textually; nothing renders a form. The route is reachable, gated and now functional, and
+  the dashboard offers no way to reach it — carried forward from iteration 19, still true.
+- **The contract says the toggle redirects to the *session page*; it still redirects to the fleet**
+  (iteration 19). `redirectOutcome` goes to `/`, which is the only page that renders a banner —
+  `dashboard.html` executes the outcome template and `session.html` does not — so redirecting to the
+  session page today would silently drop what the operator is told. **Decided for now: the fleet**,
+  because the alternative is a success nobody is told about. Closing it properly means teaching
+  `sessionPage` an `Outcome` field, which belongs with whichever task adds the control.
+- **`session.mode` puts a browser-door action in the API's `session.*` namespace** (iteration 19,
+  unchanged). One-line change in three places plus two spec files if the operator wants
+  `dashboard.mode`.
+- **`contracts/session-mode.md` and `data-model.md` still spell `Mode()` with no parameter and still
+  describe `remote_start_commands`, a plural key this daemon does not have** (iteration 18). Both
+  want one docs commit, and this iteration adds a third line to it: the contract's transition
+  section should say the process is signalled rather than the pane respawned, and say why.
+- **Two `TestParseSessions` fixtures still pass for the wrong reason** (iterations 17-19): the stray
+  `\n` in `"creation time is not a number"` and `"creation time missing entirely"` in
+  `internal/tmuxctl/exec_test.go`. **Fix-lane commit:** drop the `\n`, pad to six fields.
+- **`specs/001-crswd-daemon-core/contracts/tmuxctl.md` is stale by three fields** (iterations
+  17-19): line 163's `list-sessions` format string and lines 81-82's two `set-option` calls against
+  five.
+- **`contracts/actions.md` (milestone 3's) is still stale in nine places** — iterations 14-19. Every
+  route it documents as 200/202/400/409/429/500 is a `303` today, and it describes four action
+  routes where the daemon registers five. Seventh iteration logging it.
+- **`TestBrowserCreateStartsTheSessionAndAnswersWithItsCard` and
+  `TestRenameRelabelsTheRecordAndAnswersWithItsCard` are still misnamed** (iterations 14-19).
+- **`internal/httpapi` still carries the data race in its own fixture** (iterations 13-19):
+  `newAuditedServerWith` sets `s.report` unsynchronised (`middleware_test.go:215`). Eighth iteration
+  logging it.
+- **Still open from iterations 5-19:** the three red `-tags quickstart` tests
+  (`CRSW_DESTROY_ON_SHUTDOWN` has no loader — the oldest unfixed finding here; not run this
+  iteration, the port is held by the live daemon, though `go vet -tags quickstart ./...` is green);
+  `contracts/settings-page.md`'s `TestNoMutatingVerbRegistered` row still saying 405, and its worked
+  example showing values no loader would produce; three `ReadFile` refusals missing from
+  `contracts/config-file.md`'s table; the `version < 1` row; the contract's "yields exactly eight
+  keys" against seven; a dangling symlink reading as absent; `f.values` having no enumerator;
+  `os.Open` on a FIFO blocking startup with no message; `--config <path>` still unbuilt;
+  `README.md` and `deploy/README.md` silent on the config file (T034/T035).
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean, `go build`, `go vet`, `go test -count=1 ./...` green; `go test -count=1 -tags tmux ./...`
+  green and the three new tmux tests ran rather than skipped; `go vet` green under `-tags tmux`,
+  `-tags quickstart` and `-tags dev`; `go test -tags dev ./internal/access ./internal/config
+  ./internal/httpapi` green; `go.sum` still absent. Four mutations were run, not reasoned about —
+  `--continue` dropped (three tests red across both suites and httpapi), the transition replaced by
+  `Kill` + `New` (the pane-pid and scrollback assertions red, and the argv one), the
+  already-in-that-mode guard short-circuited (red in both packages), and the `@crswd-start` write
+  removed (two red) — each reverted by reverse `Edit`, with `git diff --stat` afterwards showing
+  additions only.

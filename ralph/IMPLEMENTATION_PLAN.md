@@ -151,7 +151,7 @@ under `NEEDS CLARIFICATION` and stop.
 - [x] T017 Persist the start-command name as `@crswd-start`, the fifth tmux option
 - [x] T018 `Session.Mode()`, derived; refuse a mode naming an unconfigured command
 - [x] T019 🔒 `POST /dashboard/sessions/{id}/mode`, fields `mode` and `confirm`
-- [ ] T020 Restart the process in place, with `--continue`, preserving scrollback
+- [x] T020 Restart the process in place, with `--continue`, preserving scrollback
 - [ ] T021 Show the mode on the card, textually
 
 ### US5 — Pick a working directory (P5)
