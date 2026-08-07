@@ -1,5 +1,9 @@
-// Package config loads the daemon's whole configuration from the process
-// environment, once, before anything binds or spawns.
+// Package config loads the daemon's whole configuration once, before anything
+// binds or spawns: from the process environment, and behind it from the
+// operator's file (file.go), which answers for every setting the environment
+// does not. Everything below withFile reads one getenv and cannot tell the two
+// apart, which is the point — the file is a second *source*, never a second set
+// of rules.
 //
 // Every check here is fail-closed on purpose. Sessions run with
 // --dangerously-skip-permissions, so the allowlisted roots, the loopback bind,
@@ -26,8 +30,11 @@ import (
 	"unicode"
 )
 
-// The environment is the only configuration surface (FR-001). Named as
-// constants so an error message and the variable it blames cannot drift.
+// Every setting the daemon has, named as constants so an error message and the
+// variable it blames cannot drift. Each is also a configuration-file key — the
+// same name lower-cased without its CRSW_ prefix (KeyForVar in file.go) — so
+// there is one list of settings rather than two that can disagree about which
+// exist.
 //
 // gosec G101 fires on EnvSharedSecret because the identifier says "secret" and
 // the value is a string literal. The value is the *name* of an environment
@@ -370,8 +377,9 @@ func WithAccessBypassActive() Option {
 	return func(o *loadOptions) { o.accessBypassed = true }
 }
 
-// Load reads the configuration from the real environment, writing any startup
-// warning to stderr. It is the only form cmd/crswd needs.
+// Load reads the configuration from the real environment and the file at
+// DefaultPath, writing any startup warning to stderr. It is the only form
+// cmd/crswd needs.
 func Load(opts ...Option) (*Config, error) { return LoadFrom(os.Getenv, os.Stderr, opts...) }
 
 // LoadFrom is Load with the environment and the warning sink injected, so tests
@@ -389,6 +397,24 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 		// thing it may never be.
 		warn = os.Stderr
 	}
+
+	// The file is a source *behind* this seam and never a system beside it. Every
+	// loader below reads through getenv exactly as it did before there was a
+	// file, so a value the operator wrote in one is bounded by the same check,
+	// defaulted by the same fallback and blamed in the same message as one they
+	// put in a unit. A file layer with validation of its own would be a second
+	// set of rules for the first to disagree with, and the disagreement would
+	// surface as a bound that means one thing in a test and another in
+	// production.
+	var file *File
+	if path := DefaultPath(getenv); path != "" {
+		f, err := ReadFile(path, warn)
+		if err != nil {
+			return nil, err
+		}
+		file = f
+	}
+	getenv = withFile(getenv, file)
 
 	secret, err := loadSecret(getenv)
 	if err != nil {
@@ -486,6 +512,44 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 
 		RemoteControlCommand: remoteControl,
 	}, nil
+}
+
+// withFile answers from the environment first and the file second. That is the
+// whole of the precedence chain (contracts/config-precedence.md), and its size
+// is the design: precedence has one implementation, and no bound, default or
+// refusal is written a second time behind it.
+//
+//	flag > environment > file > default
+//
+// There is no flag layer yet. When there is, it goes in front of this one and
+// nothing underneath has to learn about it.
+//
+// The environment beats the file so a container or a test can change one value
+// without writing one (FR-004). Reversed, a stale file on a host would silently
+// override the environment a container was deployed with — which is why this is
+// four lines that are read rather than a merge that is trusted. The file beats
+// only the built-in default, which is what makes a daemon with no file behave
+// exactly as it does today (FR-003, SC-002).
+//
+// Non-emptiness rather than presence, because non-emptiness is the whole of what
+// a getenv can see — and because `CRSW_LISTEN=` in a unit is an operator
+// clearing a variable rather than setting it to something the loader could use.
+// It falls through to the file and then to the default, which is what an unset
+// variable has always done.
+//
+// A nil *File is the deployment with no file at all: every lookup misses and
+// every value falls through, and this shim still runs for every key rather than
+// being skipped, so there is one code path and not two.
+func withFile(getenv func(string) string, f *File) func(string) string {
+	return func(name string) string {
+		if v := getenv(name); v != "" {
+			return v
+		}
+		if v, ok := f.Lookup(name); ok {
+			return v
+		}
+		return ""
+	}
 }
 
 // loadRemoteControlCommand decides what the dashboard's remote-control switch

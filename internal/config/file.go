@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -44,6 +45,14 @@ import (
 const (
 	// envPrefix is what a file key is an environment variable name without.
 	envPrefix = "CRSW_"
+
+	// Where the file lives, in the ordinary Linux arrangement this daemon is
+	// deployed in: the binary under ~/.local/bin, its unit under
+	// ~/.config/systemd/user, and this beside them under ~/.config/crswd.
+	xdgConfigHomeVar  = "XDG_CONFIG_HOME"
+	defaultConfigHome = ".config"
+	configDirName     = "crswd"
+	configFileName    = "config"
 
 	commentPrefix     = "#"
 	keyValueSeparator = "="
@@ -176,6 +185,33 @@ func KeyForVar(name string) string {
 
 // VarForKey maps a file key back to its environment variable name.
 func VarForKey(key string) string { return envPrefix + strings.ToUpper(key) }
+
+// DefaultPath is the file this daemon reads (FR-001): $XDG_CONFIG_HOME/crswd/config,
+// falling back to ~/.config/crswd/config.
+//
+// It returns "" when neither variable gives an absolute directory to start
+// from, which means "there is no default file to look for" rather than being an
+// error. A container with no HOME is configured entirely by environment
+// variables, and that is a deployment this daemon supports and always has.
+//
+// A relative directory is ignored rather than joined to whatever the process
+// happens to have been started in. Which file supplies the allowlist a session
+// runs inside may not depend on somebody's working directory at the moment they
+// ran systemctl.
+//
+// It is asked of the *process* environment and never of the layered one. A file
+// able to name the file read next would be a configuration whose meaning depends
+// on what it says about itself, and an operator's first question about it would
+// be which of the two won.
+func DefaultPath(getenv func(string) string) string {
+	if dir := strings.TrimSpace(getenv(xdgConfigHomeVar)); filepath.IsAbs(dir) {
+		return filepath.Join(dir, configDirName, configFileName)
+	}
+	if home := strings.TrimSpace(getenv(envHome)); filepath.IsAbs(home) {
+		return filepath.Join(home, defaultConfigHome, configDirName, configFileName)
+	}
+	return ""
+}
 
 // ReadFile reads the configuration file at path, parses it, and refuses a file
 // that holds a secret and is reachable by another account on this host (FR-007).

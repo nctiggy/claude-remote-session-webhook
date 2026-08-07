@@ -11,8 +11,14 @@ package config_test
 import (
 	"go/ast"
 	"go/token"
+	"io"
+	"maps"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 )
@@ -139,3 +145,460 @@ func sourceConstants(files map[string]*ast.File) []sourceConst {
 	}
 	return found
 }
+
+// The precedence shim (T007). Ordering is the security property here: reversed,
+// a file left on a host silently overrides the environment a container was
+// deployed with, and every test below still passes on the way to the wrong
+// value. So each layer is asserted against the one beneath it by loading a real
+// daemon configuration twice and changing exactly one thing.
+
+// plantConfig writes a configuration file where the daemon looks for one:
+// <configHome>/crswd/config, which is $XDG_CONFIG_HOME/crswd/config or
+// ~/.config/crswd/config depending on which directory it is handed.
+//
+// The path is spelled out here rather than taken from config.DefaultPath. A
+// fixture that asks the code under test where to write agrees with it by
+// construction — including on the day it agrees about the wrong directory.
+func plantConfig(t *testing.T, configHome, contents string) string {
+	t.Helper()
+
+	dir := filepath.Join(configHome, "crswd")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create the fixture configuration directory: %v", err)
+	}
+	path := filepath.Join(dir, "config")
+	// 0600, because these fixtures hold a secret and FR-007 refuses one that
+	// another account could read.
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write the fixture configuration file: %v", err)
+	}
+	return path
+}
+
+// homeWith is a HOME whose ~/.config/crswd/config holds contents.
+func homeWith(t *testing.T, contents string) string {
+	t.Helper()
+
+	home := t.TempDir()
+	plantConfig(t, filepath.Join(home, defaultConfigHomeName), contents)
+	return home
+}
+
+// defaultConfigHomeName is ~/.config, restated rather than imported: the
+// fallback location is what these tests are checking, so reading it out of the
+// package under test would make every assertion about it vacuous.
+const defaultConfigHomeName = ".config"
+
+// fileLines is a whole configuration written in the file's own spelling, so a
+// test can hand the daemon everything in a file and nothing in the environment.
+func fileLines(root string, extra ...string) string {
+	lines := []string{
+		"shared_secret = " + goodSecret,
+		"allowed_roots = " + root,
+		"access_team_domain = " + goodTeamDomain,
+		"access_aud = " + goodAUD,
+		"access_allowed_emails = " + goodEmail,
+	}
+	return strings.Join(append(lines, append(extra, "")...), "\n")
+}
+
+// A value in the file is used, which is the assertion that fails when the parser
+// has no caller — the exact bug left on the abandoned branch, and the one the
+// plan says to watch for here. Every value below comes from the file and differs
+// from the built-in default, so a daemon that never opened the file answers with
+// the default and is caught.
+func TestFileBeatsDefault(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	home := homeWith(t, fileLines(root,
+		"listen = 127.0.0.1:9999",
+		"max_sessions = 3",
+		"max_streams = 4",
+		"create_rate_per_min = 2",
+		"max_body_bytes = 4096",
+		"idle_timeout = 17m",
+		"session_lifetime = 3h",
+		"start_commands = rc=claude remote-control --name {name}",
+	))
+
+	cfg, err := config.LoadFrom(env(map[string]string{"HOME": home}), io.Discard)
+	if err != nil {
+		t.Fatalf("LoadFrom() with the whole configuration in a file: %v", err)
+	}
+
+	// The secret and the allowlist first: a daemon that read neither from the
+	// file could not have started at all, so these two are what prove the file
+	// is the source and not a decoration on one.
+	if string(cfg.SharedSecret) != goodSecret {
+		t.Errorf("the shared secret did not come from the file")
+	}
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve the fixture root: %v", err)
+	}
+	if len(cfg.Roots) != 1 || cfg.Roots[0].Path != resolved {
+		t.Errorf("Roots = %v, want the one root the file names (%s)", cfg.Roots, resolved)
+	}
+	if cfg.Roots[0].IsDefault {
+		t.Errorf("a root the file names is reported as the built-in default, so FR-004's warning fires at an operator who did set one")
+	}
+
+	for _, tc := range []struct {
+		key       string
+		got, want any
+		builtIn   any
+	}{
+		{"listen", cfg.Listen, "127.0.0.1:9999", config.DefaultListen},
+		{"max_sessions", cfg.MaxSessions, 3, config.DefaultMaxSessions},
+		{"max_streams", cfg.MaxStreams, 4, config.DefaultMaxStreams},
+		{"create_rate_per_min", cfg.CreateRatePerMin, 2, config.DefaultCreateRatePerMin},
+		{"max_body_bytes", cfg.MaxBodyBytes, int64(4096), int64(config.DefaultMaxBodyBytes)},
+		{"idle_timeout", cfg.IdleTimeout, 17 * time.Minute, time.Hour},
+		{"session_lifetime", cfg.SessionLifetime, 3 * time.Hour, 24 * time.Hour},
+		{"access_aud", cfg.AccessAUD, goodAUD, ""},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %v, want %v from the file", tc.key, tc.got, tc.want)
+		}
+		// Restated so the failure says which of the two ways it went wrong: a
+		// value equal to the built-in default is a file that was never read,
+		// which is a different defect from a file that was read wrongly.
+		if tc.want == tc.builtIn {
+			t.Errorf("%s: the fixture value equals the built-in default, so this row cannot tell a file that was read from one that was not", tc.key)
+		}
+	}
+
+	// A named start command from a file reaches the set a create chooses from,
+	// which is the value with the longest journey: it is parsed on the first `=`,
+	// validated by loadStartCommands, and refused by it if it carried a ";".
+	if cmd, ok := cfg.StartCommands.Command("rc"); !ok || cmd != "claude remote-control --name {name}" {
+		t.Errorf("StartCommands.Command(%q) = %q, %v; want the command line the file gives it", "rc", cmd, ok)
+	}
+	if cfg.RemoteControlCommand != "rc" {
+		t.Errorf("RemoteControlCommand = %q, want %q: the switch resolves against the set the file configured", cfg.RemoteControlCommand, "rc")
+	}
+}
+
+// The environment beats the file, so a container or a test can change one value
+// without writing one (FR-004). Reversed, a stale file silently overrides the
+// environment a deployment was configured with.
+func TestEnvBeatsFile(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	home := homeWith(t, fileLines(root,
+		"listen = 127.0.0.1:9999",
+		"max_sessions = 3",
+		"idle_timeout = 17m",
+	))
+
+	cfg, err := config.LoadFrom(env(map[string]string{
+		"HOME":                 home,
+		config.EnvListen:       "127.0.0.1:8888",
+		config.EnvMaxSessions:  "7",
+		config.EnvSharedSecret: goodSecret + "-from-the-environment",
+		config.EnvAccessAUD:    "audience-from-the-environment",
+	}), io.Discard)
+	if err != nil {
+		t.Fatalf("LoadFrom() with a file and an environment: %v", err)
+	}
+
+	for _, tc := range []struct {
+		what      string
+		got, want any
+		inFile    any
+	}{
+		{"listen", cfg.Listen, "127.0.0.1:8888", "127.0.0.1:9999"},
+		{"max_sessions", cfg.MaxSessions, 7, 3},
+		{"shared_secret", string(cfg.SharedSecret), goodSecret + "-from-the-environment", goodSecret},
+		{"access_aud", cfg.AccessAUD, "audience-from-the-environment", goodAUD},
+	} {
+		if tc.got != tc.want {
+			if tc.got == tc.inFile {
+				t.Errorf("%s = %v: the file overrode the environment, so a stale file on a host beats the environment a container was deployed with", tc.what, tc.got)
+				continue
+			}
+			t.Errorf("%s = %v, want %v", tc.what, tc.got, tc.want)
+		}
+	}
+
+	// The layers are per key and not all-or-nothing: an environment that names
+	// one setting must not switch the file off for the rest.
+	if cfg.IdleTimeout != 17*time.Minute {
+		t.Errorf("IdleTimeout = %s, want 17m: an environment naming other keys stopped the file answering for this one", cfg.IdleTimeout)
+	}
+}
+
+// An empty variable falls through to the file. `CRSW_LISTEN=` in a unit is an
+// operator clearing a variable, not setting it to a value the loader could use —
+// and a shim that returned it anyway would answer with the built-in default
+// while the operator's file sat there saying otherwise.
+func TestEmptyEnvValueDoesNotBeatFile(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	home := homeWith(t, fileLines(root, "listen = 127.0.0.1:9999", "max_sessions = 3"))
+
+	cfg, err := config.LoadFrom(env(map[string]string{
+		"HOME": home,
+		// Present and empty. A getenv cannot tell this from unset, which is
+		// exactly why the shim tests the value and not its presence.
+		config.EnvListen:      "",
+		config.EnvMaxSessions: "",
+	}), io.Discard)
+	if err != nil {
+		t.Fatalf("LoadFrom() with empty variables over a file: %v", err)
+	}
+
+	if cfg.Listen != "127.0.0.1:9999" {
+		t.Errorf("Listen = %q, want the file's %q: an empty variable took precedence and the daemon fell to %q", cfg.Listen, "127.0.0.1:9999", config.DefaultListen)
+	}
+	if cfg.MaxSessions != 3 {
+		t.Errorf("MaxSessions = %d, want the file's 3: an empty variable took precedence", cfg.MaxSessions)
+	}
+}
+
+// A value from a file is refused by the same check, with the same message, as
+// the same value from a variable. The file is a second *source* and never a
+// second set of rules: a file layer with validation of its own is a bound that
+// means one thing in a unit test and another in production.
+func TestFileValueIsValidatedIdentically(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{"a listen host that is a name", "listen", "localhost:8765"},
+		{"a listen host that is not loopback", "listen", "0.0.0.0:8765"},
+		{"a session cap that is not a number", "max_sessions", "several"},
+		{"a session cap below one", "max_sessions", "0"},
+		{"an idle timeout that is not a duration", "idle_timeout", "soon"},
+		{"a negative lifetime", "session_lifetime", "-1h"},
+		// The one where identical validation is the security property rather
+		// than a convenience: tmux's parser eats a trailing ";" before the line
+		// is typed, so a start command carrying one is refused at startup. A
+		// file that skipped that check would deliver a truncated command line to
+		// an unsandboxed shell.
+		{"a start command carrying a semicolon", "start_commands", "rc=claude; rm -rf /"},
+		{"a start command with an unknown placeholder", "start_commands", "rc=claude --dir {working_dir}"},
+		{"an allowed root that is not absolute", "allowed_roots", "relative/path"},
+		{"an allowed address with whitespace in it", "access_allowed_emails", "one@example.com two@example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fromEnv, _ := baseEnv(t)
+			fromEnv[config.VarForKey(tc.key)] = tc.value
+			// No HOME, so DefaultPath finds nothing to read: this is the
+			// pre-milestone path through the loader.
+			_, envErr := config.LoadFrom(env(fromEnv), io.Discard)
+
+			fromFile, _ := baseEnv(t)
+			// The variable has to go, or the environment answers first and the
+			// file's value is never validated at all — which is a green test
+			// that proves the opposite of what it says.
+			delete(fromFile, config.VarForKey(tc.key))
+			fromFile["HOME"] = homeWith(t, tc.key+" = "+tc.value+"\n")
+			_, fileErr := config.LoadFrom(env(fromFile), io.Discard)
+
+			if envErr == nil {
+				t.Fatalf("the environment accepted %s = %q, so this case proves nothing about the file", config.VarForKey(tc.key), tc.value)
+			}
+			if fileErr == nil {
+				t.Fatalf("the file was allowed to set %s = %q, which the environment refuses", tc.key, tc.value)
+			}
+			if envErr.Error() != fileErr.Error() {
+				t.Errorf("the file is validated by rules of its own:\n  from the environment: %v\n  from the file:        %v", envErr, fileErr)
+			}
+		})
+	}
+}
+
+// SC-002: a daemon with no configuration file starts and behaves exactly as it
+// did before there was one to have. Every deployment of this daemon is that
+// daemon, so this is the assertion an upgrade rests on.
+func TestNoFileMatchesTodayExactly(t *testing.T) {
+	t.Parallel()
+
+	// Four ways to have no file, including the two an upgrade actually meets:
+	// nobody has ever run this with a file, so neither ~/.config/crswd nor the
+	// file inside it exists.
+	empty := t.TempDir()
+	withConfigDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(withConfigDir, defaultConfigHomeName, "crswd"), 0o700); err != nil {
+		t.Fatalf("create an empty configuration directory: %v", err)
+	}
+
+	homes := []struct {
+		name string
+		home string
+	}{
+		{"no HOME at all", ""},
+		{"a HOME with nothing in it", empty},
+		{"a HOME with an empty configuration directory", withConfigDir},
+	}
+
+	// The reference is the loader with no HOME, which is the environment every
+	// unit test in this package has always used.
+	reference, _ := baseEnv(t)
+	want, err := config.LoadFrom(env(reference), io.Discard)
+	if err != nil {
+		t.Fatalf("LoadFrom() on a plain environment: %v", err)
+	}
+
+	// Restated as literals so this fails on the day absence changes a default,
+	// not merely on the day the three loads disagree with each other.
+	for _, tc := range []struct {
+		what      string
+		got, want any
+	}{
+		{"listen", want.Listen, config.DefaultListen},
+		{"max_sessions", want.MaxSessions, config.DefaultMaxSessions},
+		{"max_streams", want.MaxStreams, config.DefaultMaxStreams},
+		{"create_rate_per_min", want.CreateRatePerMin, config.DefaultCreateRatePerMin},
+		{"max_body_bytes", want.MaxBodyBytes, int64(config.DefaultMaxBodyBytes)},
+		{"session_lifetime", want.SessionLifetime, 24 * time.Hour},
+		{"idle_timeout", want.IdleTimeout, time.Hour},
+		{"remote_control_command", want.RemoteControlCommand, ""},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("with no file, %s = %v, want the built-in %v", tc.what, tc.got, tc.want)
+		}
+	}
+	if cmd, ok := want.StartCommands.Command(""); !ok || cmd != config.DefaultStartCommand {
+		t.Errorf("with no file, the default start command = %q, %v; want the one this daemon has always typed", cmd, ok)
+	}
+
+	for _, home := range homes {
+		t.Run(home.name, func(t *testing.T) {
+			t.Parallel()
+
+			pairs, _ := baseEnv(t)
+			// The same roots as the reference, so the only difference between
+			// the two loads is where the loader went looking for a file.
+			pairs[config.EnvAllowedRoots] = reference[config.EnvAllowedRoots]
+			if home.home != "" {
+				pairs["HOME"] = home.home
+			}
+
+			got, err := config.LoadFrom(env(pairs), io.Discard)
+			if err != nil {
+				t.Fatalf("LoadFrom() with no configuration file: %v", err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("a daemon with no configuration file loaded a different configuration:\n got %v\nwant %v", got, want)
+			}
+
+			// And the errors too. A refusal that changed shape would break every
+			// acceptance suite SC-002 is verified against.
+			bad := maps.Clone(pairs)
+			bad[config.EnvListen] = "0.0.0.0:8765"
+			_, gotErr := config.LoadFrom(env(bad), io.Discard)
+
+			badReference := maps.Clone(reference)
+			badReference[config.EnvListen] = "0.0.0.0:8765"
+			_, wantErr := config.LoadFrom(env(badReference), io.Discard)
+
+			if gotErr == nil || wantErr == nil {
+				t.Fatalf("a non-loopback listen address was accepted: %v, %v", gotErr, wantErr)
+			}
+			if gotErr.Error() != wantErr.Error() {
+				t.Errorf("looking for a file changed a refusal:\n got %v\nwant %v", gotErr, wantErr)
+			}
+		})
+	}
+}
+
+// Where the daemon looks (FR-001). The file it reads has to be the file the
+// operator edited, and an operator who is told "~/.config/crswd/config" and
+// whose XDG_CONFIG_HOME points elsewhere is editing the wrong one either way
+// round — so which wins is asserted, not assumed.
+func TestTheFileIsReadFromTheOperatorsConfigDirectory(t *testing.T) {
+	t.Parallel()
+
+	t.Run("XDG_CONFIG_HOME wins over HOME", func(t *testing.T) {
+		t.Parallel()
+
+		root := t.TempDir()
+		home := homeWith(t, fileLines(root, "listen = 127.0.0.1:1111"))
+		xdg := t.TempDir()
+		plantConfig(t, xdg, fileLines(root, "listen = 127.0.0.1:2222"))
+
+		cfg, err := config.LoadFrom(env(map[string]string{
+			"HOME":           home,
+			xdgConfigHomeVar: xdg,
+		}), io.Discard)
+		if err != nil {
+			t.Fatalf("LoadFrom(): %v", err)
+		}
+		if cfg.Listen != "127.0.0.1:2222" {
+			t.Errorf("Listen = %q, want the file under XDG_CONFIG_HOME", cfg.Listen)
+		}
+	})
+
+	t.Run("HOME is the fallback", func(t *testing.T) {
+		t.Parallel()
+
+		root := t.TempDir()
+		home := homeWith(t, fileLines(root, "listen = 127.0.0.1:1111"))
+
+		cfg, err := config.LoadFrom(env(map[string]string{"HOME": home}), io.Discard)
+		if err != nil {
+			t.Fatalf("LoadFrom(): %v", err)
+		}
+		if cfg.Listen != "127.0.0.1:1111" {
+			t.Errorf("Listen = %q, want the file under ~/.config/crswd", cfg.Listen)
+		}
+	})
+
+	t.Run("a relative directory names no file", func(t *testing.T) {
+		t.Parallel()
+
+		// Joined to whatever the process was started in, this would make the
+		// allowlist a session runs inside depend on somebody's shell.
+		for _, pairs := range []map[string]string{
+			{"HOME": "home/operator"},
+			{xdgConfigHomeVar: ".config"},
+		} {
+			if path := config.DefaultPath(env(pairs)); path != "" {
+				t.Errorf("DefaultPath(%v) = %q, want no file at all", pairs, path)
+			}
+		}
+	})
+
+	t.Run("no HOME names no file", func(t *testing.T) {
+		t.Parallel()
+
+		// The container deployment: configured entirely by variables, and a
+		// daemon that refused to start without a HOME would break it.
+		if path := config.DefaultPath(env(nil)); path != "" {
+			t.Errorf("DefaultPath() = %q, want no file at all", path)
+		}
+	})
+
+	t.Run("a defect in the file it found refuses at startup", func(t *testing.T) {
+		t.Parallel()
+
+		// The wiring assertion: a refusal that belongs to file.go can only reach
+		// an operator if LoadFrom actually opened the file. A parser with no
+		// caller passes every test in file_test.go and this one alone.
+		pairs, _ := baseEnv(t)
+		pairs["HOME"] = homeWith(t, "alowed_roots = /tmp\n")
+
+		_, err := config.LoadFrom(env(pairs), io.Discard)
+		if err == nil {
+			t.Fatal("LoadFrom() started on a file with a misspelled key, so a containment boundary an operator believes they set does nothing")
+		}
+		if !strings.Contains(err.Error(), "alowed_roots") {
+			t.Errorf("LoadFrom() = %v, want the misspelled key named", err)
+		}
+	})
+}
+
+// xdgConfigHomeVar is restated rather than exported from the package: these
+// tests are what pin the two variables the daemon looks at, and a name read out
+// of the answer agrees with the answer by construction.
+const xdgConfigHomeVar = "XDG_CONFIG_HOME"
