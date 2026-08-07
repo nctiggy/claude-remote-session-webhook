@@ -141,7 +141,13 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
     entry and an empty one. A path outside the roots loads and is offered, exactly as
     `contracts/directory-suggestions.md` requires; the create refuses it. Duplicates
     *within* the list survive on purpose: dedup belongs to T006 and is stated once.
-- [ ] T006 Union the three sources in `internal/config/suggestions.go`
+- [x] T006 Union the three sources in `internal/config/suggestions.go`
+  - `Config.SuggestedWorkDirs()`, read by `dashboard.go:254`. **A `<datalist>` now renders
+    on every real page**, so `TestTheRenderedFleetOffersWhatDiscoveryFound`'s "discovery off
+    means no list at all" half was rewritten to "offers the root, not the root's child" —
+    that was the task, not collateral. The walk's silent `maxDiscoveredWorkDirs = 200` no
+    longer bounds what a page can carry, since the roots and the explicit list are added on
+    top of it; see `PROGRESS.md` iteration 6, **T016** or a `NEEDS CLARIFICATION`.
 - [ ] T007 🔒 A suggested path outside the roots is refused identically to a typed one
 
 ### US4 — Controls that belong to this interface

@@ -422,3 +422,81 @@ purpose — dedup is T006's, and two rules about it would be two answers.
    (`rootListSeparator`, fixed at colon on purpose). The contract is right about everything
    that matters and wrong in the one place an operator would copy from. Spec files are not
    this milestone's to edit, but it is worth a line in T016's docs pass.
+
+---
+
+## Iteration 6 — 2026-08-07 16:59
+
+**Did:** T006, in commit `c71ef89`. `internal/config/suggestions.go` adds
+`Config.SuggestedWorkDirs()` — the union of the approved roots (always), `WorkdirSuggestions`
+(explicit), and `DiscoveredWorkDirs()` (only when `DiscoverRoots` is on), sorted and
+deduplicated with `slices.Sort` + `slices.Compact`. `dashboard.go:254` now calls it. Five tests
+in `internal/config/suggestions_test.go` and `TestDefaultInstallRendersOptions` in
+`partials_test.go`. **The picker is no longer empty on a default install.**
+
+**Learned:**
+
+- **The method is `SuggestedWorkDirs`, not `WorkDirSuggestions`.** The field beside it is
+  `Config.WorkdirSuggestions` (lowercase `d`), and Go would happily compile a method whose name
+  differs from a field's by the case of one letter. `SuggestedWorkDirs` also reads as a sibling
+  of `DiscoveredWorkDirs`, which is what it unions.
+- **T006 breaks an existing test, and that is the task rather than collateral.**
+  `TestTheRenderedFleetOffersWhatDiscoveryFound` (`dashboard_test.go:606`) asserted that with
+  discovery off the page renders **no `<datalist>` at all** — true when discovery was the only
+  source, false the moment roots became one. Rewritten to the new claim: with discovery off the
+  form offers the root and not the root's child. Its doc comment's "wired to anything constant —
+  the roots, a literal" example was corrected for the same reason.
+- **The five config tests do not catch a union with no caller.** Under the mutant where
+  `SuggestedWorkDirs` is correct and `dashboard.go` still calls `DiscoveredWorkDirs`, the whole
+  `internal/config` suite passes and only `TestDefaultInstallRendersOptions` and the fleet's own
+  render fail. That is this repo's four-times-shipped failure reproduced exactly, and it is the
+  argument for the markup assertion rather than a nice-to-have.
+- **Mutation-verified five ways, each reverted:** (a) discovery as the only source, the shipped
+  defect — all five config tests and both markup tests fail; (b) deduped but unsorted — the
+  sorted test and the union test fail; (c) sorted but not deduped — the union test alone fails;
+  (d) the `DiscoverRoots` gate dropped inside the union — `TestDiscoveryStillOffByDefault`
+  **and both markup tests** fail, so "the fix for emptiness turns discovery on" is caught in the
+  rendered page and not only in a unit test; (e) the caller left on the old walk — see above.
+- **`newDiscoveryFixture` in `discover_test.go` is reusable** — same `config_test` package — and
+  it is the only fixture in the tree where all three sources can be live at once: two roots on a
+  real filesystem, a child under each, symlinks that escape. `TestSourcesAreUnionedAndDeduped`
+  uses it rather than building a second one.
+- **A `<datalist>` now renders on every real page.** `TestNoSuggestionsRendersPlainField` still
+  passes and still should: it hands the *component* an empty view, which is a state the running
+  daemon no longer reaches because a daemon with no root refuses to start. `view.go`'s comment
+  on `Suggestions` was corrected to say so — it claimed "no task in this milestone builds" the
+  explicit source, which this commit falsified.
+- Linter confirmed v2 before trusting the green: `golangci-lint 2.12.2`, 0 issues. `go vet`
+  compiles all three tagged suites, and the quickstart acceptance suite ran uncached (28s) and
+  passed. No `go.sum`.
+
+**Left:** T007–T016. **T007 is next** and it is security-relevant: `TestSuggestedPathOutsideRootsRefused`
+in `actions_test.go`, asserting a path that appears in the rendered `<datalist>` but is not under
+an approved root is refused with the same response and the same audit record as a typed one. It
+is a test-only task — the refusal already exists — and it is now genuinely reachable, because
+`workdir_suggestions` loads a path outside the roots on purpose and this iteration made it
+render. The create-form chain's last link is T008 (`T001 → T003 → T006 → T008`), and
+`create-form.html` was **not touched this iteration**: the union changed what the template is
+handed, never the template. The ordering is intact.
+
+**Findings:**
+
+1. **The union has no cap, and `DiscoveredWorkDirs` has one it does not announce.** The walk
+   stops at `maxDiscoveredWorkDirs = 200` (silent, noted in milestone 4 iterations 23–25); the
+   union then adds the roots and the explicit list on top, so a daemon can render more than 200
+   options and no bound describes the total. Nothing is wrong today — the extra entries are
+   paths the operator typed into their own configuration — but "200" no longer describes what a
+   page can carry, and `discover.go`'s comment says the bound is about markup as well as work.
+   Not fixed: it is a decision about a number nothing in the spec names, and inventing one is
+   Principle II. **Worth a line in T016**, or a `NEEDS CLARIFICATION` if a later task wants the
+   markup bounded.
+2. **`specs/004-configure-and-operate/quickstart.md:116` is now describable as stale**: "Open
+   the create form **with JavaScript disabled** | The field offers suggestions and filters as
+   you type". That was aspirational when written (the field offered nothing on the shipped
+   default) and is true for the first time as of this commit. No action — recording it because
+   it is the one manual step in the milestone-4 quickstart that could not have passed before,
+   and someone re-running that checklist should know it now can.
+3. The three stale-prose findings from iteration 5 (`config.example:157`, `README.md`'s
+   `CRSW_DESTROY_ON_SHUTDOWN` row, `settings.go:114-118`) and iteration 4's
+   `outcomeBadStartCommand` comment are all still open and all still **T016's**. Nothing this
+   iteration touched them.
