@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"go/ast"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,6 +31,12 @@ import (
 // hostTools is a host, described by what is installed on it: it answers the
 // probe and records every name it was asked about, which is the half of the
 // behaviour no message can show.
+//
+// It is two environments and not one (T014, #96). `installed` is what this
+// daemon's own process can see, which under the deployed unit is the systemd
+// user manager's PATH; `loginPATH` is the directory list a session's login shell
+// hands the command it is actually going to run. A host where the two agree is
+// the easy case and is not the one that shipped.
 type hostTools struct {
 	installed map[string]bool
 	asked     []string
@@ -38,10 +45,28 @@ type hostTools struct {
 	// command leaves it nil, because the platform is not what they are
 	// describing and the file the real machine has is not theirs to read.
 	identification []byte
+
+	// loginPATH is a real directory, because the check resolves a name against
+	// this list itself: a fake that answered "installed" would agree with
+	// whatever the caller believed and skip the resolution entirely. It starts
+	// empty, so by default this is a login shell that finds nothing.
+	loginPATH string
+	// loginErr is a login shell that could not be asked at all — no shell, a
+	// profile that hung, a shell that printed nothing. FR-023c's case.
+	loginErr error
+	// loginAsks counts the profile executions this check causes. Zero is a
+	// claim: a daemon whose commands are all present has no business running
+	// the operator's profile at startup.
+	loginAsks int
 }
 
-func newHostTools(installed ...string) *hostTools {
-	h := &hostTools{installed: make(map[string]bool, len(installed))}
+func newHostTools(t *testing.T, installed ...string) *hostTools {
+	t.Helper()
+
+	h := &hostTools{
+		installed: make(map[string]bool, len(installed)),
+		loginPATH: t.TempDir(),
+	}
 	for _, name := range installed {
 		h.installed[name] = true
 	}
@@ -56,6 +81,36 @@ func (h *hostTools) lookPath(name string) (string, error) {
 		return "", fmt.Errorf("exec: %q: executable file not found in $PATH", name)
 	}
 	return "/usr/bin/" + name, nil
+}
+
+// loginShellPATH is what a session's shell answers, and counting the calls is
+// the point as much as the answer is.
+func (h *hostTools) loginShellPATH() (string, error) {
+	h.loginAsks++
+	if h.loginErr != nil {
+		return "", h.loginErr
+	}
+	return h.loginPATH, nil
+}
+
+// loginShellFinds puts a real executable on the login shell's PATH — the shape
+// of #96 on the live host, where claude is a symlink in ~/.local/bin that the
+// service manager's PATH has never included.
+func (h *hostTools) loginShellFinds(t *testing.T, names ...string) {
+	t.Helper()
+
+	for _, name := range names {
+		path := filepath.Join(h.loginPATH, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o600); err != nil {
+			t.Fatalf("write the command this host has: %v", err)
+		}
+		// The execute bit is the property the probe reads, so the fixture has
+		// to really carry it.
+		//nolint:gosec // G302: a mode with no execute bit is not the file this case is describing.
+		if err := os.Chmod(path, 0o700); err != nil {
+			t.Fatalf("make %s executable, which is the whole of what the probe looks for: %v", name, err)
+		}
+	}
 }
 
 // warnBuffer is the warning sink. It is a type rather than a bytes.Buffer so
@@ -81,12 +136,12 @@ func configWith(commands map[string]string, filePath string) config.Config {
 func TestMissingTmuxRefusesToStart(t *testing.T) {
 	t.Parallel()
 
-	host := newHostTools("claude")
+	host := newHostTools(t, "claude")
 	var warn warnBuffer
 
 	err := config.CheckDependenciesWith(
 		configWith(map[string]string{"default": "claude --dangerously-skip-permissions"}, ""),
-		host.lookPath, host.osRelease, &warn)
+		host.lookPath, host.loginShellPATH, host.osRelease, &warn)
 
 	if err == nil {
 		t.Fatalf("a host with no tmux started; warnings were:\n%s", warn.String())
@@ -111,7 +166,7 @@ func TestMissingTmuxRefusesToStart(t *testing.T) {
 func TestMissingStartCommandWarnsOnly(t *testing.T) {
 	t.Parallel()
 
-	host := newHostTools("tmux")
+	host := newHostTools(t, "tmux")
 	var warn warnBuffer
 
 	err := config.CheckDependenciesWith(
@@ -119,7 +174,7 @@ func TestMissingStartCommandWarnsOnly(t *testing.T) {
 			"default": "claude --dangerously-skip-permissions",
 			"rc":      "claude remote-control --name {name}",
 		}, "/home/operator/.config/crswd/config"),
-		host.lookPath, host.osRelease, &warn)
+		host.lookPath, host.loginShellPATH, host.osRelease, &warn)
 
 	if err != nil {
 		t.Fatalf("a missing start command refused the start: %v", err)
@@ -140,7 +195,7 @@ func TestMissingStartCommandWarnsOnly(t *testing.T) {
 func TestChecksConfiguredCommandNotClaude(t *testing.T) {
 	t.Parallel()
 
-	host := newHostTools("tmux", "claude")
+	host := newHostTools(t, "tmux", "claude")
 	var warn warnBuffer
 
 	err := config.CheckDependenciesWith(
@@ -148,7 +203,7 @@ func TestChecksConfiguredCommandNotClaude(t *testing.T) {
 			"default": "claude --dangerously-skip-permissions",
 			"x":       "frobnicate",
 		}, ""),
-		host.lookPath, host.osRelease, &warn)
+		host.lookPath, host.loginShellPATH, host.osRelease, &warn)
 
 	if err != nil {
 		t.Fatalf("a missing start command refused the start: %v", err)
@@ -185,12 +240,12 @@ func TestProbesFirstWordOnly(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			host := newHostTools("tmux", tc.want)
+			host := newHostTools(t, "tmux", tc.want)
 			var warn warnBuffer
 
 			err := config.CheckDependenciesWith(
 				configWith(map[string]string{"default": tc.command}, ""),
-				host.lookPath, host.osRelease, &warn)
+				host.lookPath, host.loginShellPATH, host.osRelease, &warn)
 
 			if err != nil {
 				t.Fatalf("refused the start: %v", err)
@@ -204,9 +259,248 @@ func TestProbesFirstWordOnly(t *testing.T) {
 			if len(host.asked) != 2 || host.asked[0] != "tmux" || host.asked[1] != tc.want {
 				t.Errorf("probed %q, want [tmux %s]", host.asked, tc.want)
 			}
+			// Asking the login shell means running the operator's profile. A
+			// host where everything is already present has given this daemon no
+			// reason to cause that.
+			if host.loginAsks != 0 {
+				t.Errorf("a host with the command on its own PATH ran the operator's profile %d times", host.loginAsks)
+			}
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The environment the command actually runs in (T014, FR-023b, FR-023c, #96)
+// ---------------------------------------------------------------------------
+
+// TestProbeResolvesThroughLoginShell is the shipped defect. The live daemon
+// warned on every start that "claude" was missing while sessions using it
+// worked: the probe asked the systemd user manager's PATH, and the command is
+// typed into a login shell inside a tmux pane, which has ~/.local/bin.
+//
+// Must fail when the probe keeps asking this daemon's own PATH — the host below
+// is exactly the deployed one, and a check that reads a single environment
+// cannot tell it from a broken host.
+func TestProbeResolvesThroughLoginShell(t *testing.T) {
+	t.Parallel()
+
+	host := newHostTools(t, "tmux")
+	host.loginShellFinds(t, "claude")
+	var warn warnBuffer
+
+	err := config.CheckDependenciesWith(
+		configWith(map[string]string{
+			"default": "claude --dangerously-skip-permissions",
+			"rc":      "claude remote-control --name {name}",
+		}, ""),
+		host.lookPath, host.loginShellPATH, host.osRelease, &warn)
+
+	if err != nil {
+		t.Fatalf("refused the start: %v", err)
+	}
+	if got := warn.String(); got != "" {
+		t.Errorf("a command a session will find was reported anyway:\n%s", got)
+	}
+	// One profile execution per start, not one per command. Two commands here
+	// for that reason: the answer is a property of the shell, and asking twice
+	// runs an operator's ~/.profile twice on the way to the same PATH.
+	if host.loginAsks != 1 {
+		t.Errorf("the login shell was asked %d times for two commands; it answers once for the host", host.loginAsks)
+	}
+}
+
+// TestGenuinelyMissingCommandStillWarns is the other direction, and it is what
+// stops the fix above from being a way to stop hearing about anything: a command
+// on neither PATH is a command that really is not there.
+//
+// Must fail when the fix silences the check entirely.
+func TestGenuinelyMissingCommandStillWarns(t *testing.T) {
+	t.Parallel()
+
+	// The login shell answers, and what it answers is a directory with nothing
+	// in it. That is the distinction this test rests on: the question was asked
+	// and the answer was no.
+	host := newHostTools(t, "tmux")
+	var warn warnBuffer
+
+	err := config.CheckDependenciesWith(
+		configWith(map[string]string{"default": "frobnicate --flag"}, ""),
+		host.lookPath, host.loginShellPATH, host.osRelease, &warn)
+
+	if err != nil {
+		t.Fatalf("a missing start command refused the start: %v", err)
+	}
+
+	got := warn.String()
+	for _, want := range []string{`"frobnicate"`, "not on PATH", "starting anyway"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the warning does not say %q:\n%s", want, got)
+		}
+	}
+	if host.loginAsks != 1 {
+		t.Errorf("the login shell was asked %d times before this daemon called a command missing; the answer needs both", host.loginAsks)
+	}
+}
+
+// TestProbeNamesWhatItChecked is FR-023c. "Not on PATH" is a claim about an
+// environment, and this daemon has two — so a message that does not say which
+// one it looked in cannot be told apart from a probe looking in the wrong place.
+// That is what an operator was left with for a whole milestone.
+//
+// The second case is the one the requirement is really for: the login shell
+// could not be asked at all, and the honest answer is what was checked rather
+// than an assertion that the command is absent.
+func TestProbeNamesWhatItChecked(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		loginErr error
+		want     []string
+		// absent is the vocabulary of a daemon claiming the command is not
+		// there. The note must not use it: nothing was found missing, a
+		// question went unanswered.
+		absent []string
+	}{
+		"both environments were asked": {
+			want: []string{"checked:", "own PATH", "login shell"},
+		},
+		"the login shell could not be asked": {
+			loginErr: errors.New("no login shell on this host"),
+			want: []string{
+				"checked:", "own PATH", "and nothing else",
+				"may still find it", "no login shell on this host",
+			},
+			absent: []string{"will fail", "starting anyway"},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			host := newHostTools(t, "tmux")
+			host.loginErr = tc.loginErr
+			var warn warnBuffer
+
+			if err := config.CheckDependenciesWith(
+				configWith(map[string]string{"rc": "frobnicate"}, ""),
+				host.lookPath, host.loginShellPATH, host.osRelease, &warn); err != nil {
+				t.Fatalf("refused the start: %v", err)
+			}
+
+			got := warn.String()
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("the message does not say %q:\n%s", want, got)
+				}
+			}
+			for _, absent := range tc.absent {
+				if strings.Contains(got, absent) {
+					t.Errorf("a message about a question nobody answered says %q, which is a claim about the command:\n%s", absent, got)
+				}
+			}
+		})
+	}
+}
+
+// TestMissingTmuxStillFatal is the probe that does not change. The daemon execs
+// tmux itself, so its own PATH is the right environment to ask about it, and
+// without tmux there is no session to have a PATH problem in.
+//
+// Must fail when the tmux probe is loosened along with the other one — which is
+// what the second case describes: a host whose login shell has tmux and whose
+// daemon cannot see it is a daemon that cannot start a session.
+func TestMissingTmuxStillFatal(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no tmux anywhere refuses, and says what to type", func(t *testing.T) {
+		t.Parallel()
+
+		host := newHostTools(t)
+		host.identification = []byte("ID=debian\n")
+		var warn warnBuffer
+
+		err := config.CheckDependenciesWith(
+			configWith(map[string]string{"default": "claude"}, ""),
+			host.lookPath, host.loginShellPATH, host.osRelease, &warn)
+
+		if err == nil {
+			t.Fatalf("a host with no tmux started; warnings were:\n%s", warn.String())
+		}
+		for _, want := range []string{"tmux", "refusing to start", "sudo apt install tmux"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal does not mention %q: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("a login shell that has tmux does not rescue it", func(t *testing.T) {
+		t.Parallel()
+
+		host := newHostTools(t)
+		host.loginShellFinds(t, "tmux")
+		var warn warnBuffer
+
+		err := config.CheckDependenciesWith(
+			configWith(map[string]string{"default": "claude"}, ""),
+			host.lookPath, host.loginShellPATH, host.osRelease, &warn)
+
+		if err == nil {
+			t.Fatal("tmux on a session's PATH started a daemon that cannot exec it; this daemon runs tmux itself, not in a pane")
+		}
+		if host.loginAsks != 0 {
+			t.Errorf("the tmux probe asked the login shell %d times; the question is about this process", host.loginAsks)
+		}
+	})
+}
+
+// TestTheProbeReallyAsksALoginShell is the one claim no injected fixture can
+// make, and it is this repository's recurring failure written as a test: every
+// case above hands the check a directory list, so a probe that started the wrong
+// shell, passed the wrong flag, or read the wrong stream would leave all of them
+// green while the live daemon went on warning about a command that works.
+//
+// It runs a real shell against a real profile. That is the only way to assert
+// that a *login* shell is what gets asked: an ordinary one never reads
+// ~/.profile, which is where the PATH in #96 comes from.
+func TestTheProbeReallyAsksALoginShell(t *testing.T) {
+	// Named here rather than exported from the package under test: $SHELL is set
+	// below, so this is the shell this case asks for and not the one the daemon
+	// falls back to. It is the shell every host that can run tmux has.
+	const shell = "/bin/sh"
+
+	// Not parallel: t.Setenv, and the two variables below are the process's.
+	if _, err := os.Stat(shell); err != nil {
+		t.Skipf("this host has no %s to ask, which is not a claim about the daemon: %v", shell, err)
+	}
+
+	home := t.TempDir()
+	// The directory a profile adds — the shape of ~/.local/bin, which is the
+	// whole of #96.
+	bin := filepath.Join(home, "profile-only-bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatalf("make the directory this host's profile adds: %v", err)
+	}
+	profile := "PATH=\"$PATH:" + bin + "\"\nexport PATH\n"
+	if err := os.WriteFile(filepath.Join(home, ".profile"), []byte(profile), 0o600); err != nil {
+		t.Fatalf("write the profile: %v", err)
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", shell)
+
+	got, err := config.LoginShellPATH()
+	if err != nil {
+		t.Fatalf("the login shell could not be asked on a host that has one: %v", err)
+	}
+	if !slices.Contains(filepath.SplitList(got), bin) {
+		t.Errorf("the PATH this daemon read is %q, and the directory ~/.profile adds is not in it — so the shell it asked was not a login shell", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The message (T029, FR-012)
+// ---------------------------------------------------------------------------
 
 // TestMessageNamesConfigFile is the "and where" half of the warning. An operator
 // told that a command is missing and not told which file names it is an operator
@@ -242,11 +536,11 @@ func TestMessageNamesConfigFile(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			host := newHostTools("tmux", "claude")
+			host := newHostTools(t, "tmux", "claude")
 			var warn warnBuffer
 
 			if err := config.CheckDependenciesWith(
-				configWith(tc.commands, tc.filePath), host.lookPath, host.osRelease, &warn); err != nil {
+				configWith(tc.commands, tc.filePath), host.lookPath, host.loginShellPATH, host.osRelease, &warn); err != nil {
 				t.Fatalf("refused the start: %v", err)
 			}
 
@@ -260,9 +554,9 @@ func TestMessageNamesConfigFile(t *testing.T) {
 	}
 }
 
-// TestNoSecretInAnyDiagnostic is FR-043 at the one message this daemon writes
-// before it has a trail to write to, and it is the reason the warning quotes the
-// binary rather than the command line it was cut from.
+// TestNoSecretInAnyDiagnostic is FR-043 at the messages this daemon writes
+// before it has a trail to write to, and it is the reason each quotes the binary
+// rather than the command line it was cut from.
 //
 // A start command is a whole command line an operator wrote, and its arguments
 // take whatever the program takes — an API key or a token among them. This
@@ -297,23 +591,41 @@ func TestNoSecretInAnyDiagnostic(t *testing.T) {
 		FilePath: "/home/operator/.config/crswd/config",
 	}
 
+	// Every diagnostic this package can write, because the rule is about the
+	// journal and not about any one sentence. T014 added the third: a message
+	// written on the path where the login shell could not be asked is still a
+	// message about a command line an operator wrote.
 	cases := map[string]struct {
-		host *hostTools
+		host func(*testing.T) *hostTools
 		// fatal is the tmux refusal, whose sentence is an error rather than a
 		// line on the warning stream. Both are diagnostics and the rule is the
 		// same for each.
 		fatal bool
 	}{
-		"the warning about a missing start command": {host: newHostTools("tmux")},
-		"the refusal to start without tmux":         {host: newHostTools(), fatal: true},
+		"the warning about a missing start command": {
+			host: func(t *testing.T) *hostTools { t.Helper(); return newHostTools(t, "tmux") },
+		},
+		"the note about a login shell that could not be asked": {
+			host: func(t *testing.T) *hostTools {
+				t.Helper()
+				host := newHostTools(t, "tmux")
+				host.loginErr = errors.New("no login shell on this host")
+				return host
+			},
+		},
+		"the refusal to start without tmux": {
+			host:  func(t *testing.T) *hostTools { t.Helper(); return newHostTools(t) },
+			fatal: true,
+		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
+			host := tc.host(t)
 			var warn warnBuffer
-			err := config.CheckDependenciesWith(marked, tc.host.lookPath, tc.host.osRelease, &warn)
+			err := config.CheckDependenciesWith(marked, host.lookPath, host.loginShellPATH, host.osRelease, &warn)
 
 			said := warn.String()
 			if tc.fatal {
@@ -435,13 +747,13 @@ func TestInstallCommandFromOsRelease(t *testing.T) {
 	t.Run("the refusal is where an operator reads it", func(t *testing.T) {
 		t.Parallel()
 
-		host := newHostTools("claude")
+		host := newHostTools(t, "claude")
 		host.identification = []byte("ID=debian\n")
 		var warn warnBuffer
 
 		err := config.CheckDependenciesWith(
 			configWith(map[string]string{"default": "claude"}, ""),
-			host.lookPath, host.osRelease, &warn)
+			host.lookPath, host.loginShellPATH, host.osRelease, &warn)
 
 		if err == nil {
 			t.Fatal("a host with no tmux started")
@@ -496,13 +808,13 @@ func TestUnknownPlatformSaysSo(t *testing.T) {
 	t.Run("the refusal carries the sentence", func(t *testing.T) {
 		t.Parallel()
 
-		host := newHostTools("claude")
+		host := newHostTools(t, "claude")
 		host.identification = []byte("ID=plan9\n")
 		var warn warnBuffer
 
 		err := config.CheckDependenciesWith(
 			configWith(map[string]string{"default": "claude"}, ""),
-			host.lookPath, host.osRelease, &warn)
+			host.lookPath, host.loginShellPATH, host.osRelease, &warn)
 
 		if err == nil {
 			t.Fatal("a host with no tmux started")
@@ -556,13 +868,22 @@ func TestReadsTheSystemsOwnIdentification(t *testing.T) {
 // convenience is added as a helpfulness, and every existing case here stays
 // green while a daemon that can be made to install software ships.
 //
-// os/exec is reachable from this package for exactly one reason — asking PATH
-// whether a name resolves — and LookPath is the only member of it that runs
-// nothing.
+// os/exec is reachable from this package for exactly two reasons, and neither of
+// them runs anything this daemon was told about. LookPath asks PATH whether a
+// name resolves. CommandContext starts one program — the operator's own login
+// shell, to ask what PATH it has (T014) — and the check below is that its argv
+// is written in this file rather than assembled from anything: a configured
+// command line that reached a subprocess would be the shell string
+// docs/security.md §2 forbids, arriving by the back door.
 func TestNeverExecutesInstall(t *testing.T) {
 	t.Parallel()
 
-	const probe = "LookPath"
+	// The login shell's argv, which is the reason CommandContext is allowed:
+	// everything past the program name is written here, and the program name is
+	// $SHELL. Nothing configured, and nothing from a request, can appear.
+	const startsALoginShell = "CommandContext"
+
+	probes := map[string]bool{"LookPath": true, startsALoginShell: true}
 
 	fset, files := packageFiles(t)
 
@@ -575,16 +896,20 @@ func TestNeverExecutesInstall(t *testing.T) {
 				continue
 			}
 			if imp.Name != nil {
-				t.Errorf("%s: %s imports os/exec as %q; the walk below looks for exec.%s and would not see a call made through another name",
-					fset.Position(imp.Pos()), name, imp.Name.Name, probe)
+				t.Errorf("%s: %s imports os/exec as %q; the walk below looks for exec.LookPath and exec.%s and would not see a call made through another name",
+					fset.Position(imp.Pos()), name, imp.Name.Name, startsALoginShell)
 			}
 		}
 	}
 
-	var probes int
+	var reached, shells int
 	for name, file := range files {
 		ast.Inspect(file, func(n ast.Node) bool {
-			sel, ok := n.(*ast.SelectorExpr)
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
 			if !ok {
 				return true
 			}
@@ -592,16 +917,73 @@ func TestNeverExecutesInstall(t *testing.T) {
 			if !ok || pkg.Name != "exec" {
 				return true
 			}
-			probes++
-			if sel.Sel.Name != probe {
-				t.Errorf("%s: %s reaches os/exec for %s; this package may ask PATH whether a name resolves and nothing else. It names the install command and the operator runs it — a daemon that installs software is a daemon that can be made to install software",
+
+			reached++
+			if !probes[sel.Sel.Name] {
+				t.Errorf("%s: %s reaches os/exec for %s; this package may ask PATH whether a name resolves and start a login shell to ask the same of it, and nothing else. It names the install command and the operator runs it — a daemon that installs software is a daemon that can be made to install software",
 					fset.Position(sel.Pos()), name, sel.Sel.Name)
+				return true
+			}
+			if sel.Sel.Name != startsALoginShell {
+				return true
+			}
+
+			// Everything past the context and the program is written here, in
+			// source. An argument built from a start command would put an
+			// operator's command line — API key and all — on a subprocess's
+			// argv, which is the shell string this repository does not build.
+			shells++
+			for i, arg := range call.Args[min(2, len(call.Args)):] {
+				if _, ok := arg.(*ast.BasicLit); !ok {
+					t.Errorf("%s: %s passes argument %d of the login shell as %T rather than a literal; the only thing this daemon may ask that shell is what PATH it has",
+						fset.Position(arg.Pos()), name, i+2, arg)
+				}
 			}
 			return true
 		})
 	}
 
-	if probes == 0 {
+	if reached == 0 {
 		t.Fatalf("nothing in this package reaches os/exec, so the dependency probe has gone and this test is checking an empty walk")
+	}
+	if shells != 1 {
+		t.Errorf("this package starts %d subprocesses; there is one, and it is the login shell whose PATH a session's command is resolved against", shells)
+	}
+}
+
+// TestTheLoginShellIsAskedNothingAboutTheCommand is the other half of the rule
+// above, and it is a signature rather than a sweep: loginShellPATH takes no
+// arguments, so there is nothing about a start command for it to pass on.
+//
+// The distinction matters because `sh -lc "command -v $binary"` would resolve
+// exactly as correctly and would be a shell string built from configuration —
+// forbidden outright by docs/security.md §2. Asking the shell for its PATH and
+// resolving the name here in Go is what keeps that impossible rather than merely
+// avoided, and a parameter added to this function is the first step back.
+//
+// Must fail when the probe starts taking the thing it is looking for.
+func TestTheLoginShellIsAskedNothingAboutTheCommand(t *testing.T) {
+	t.Parallel()
+
+	const probe = "loginShellPATH"
+
+	_, files := packageFiles(t)
+
+	var found bool
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != probe || fn.Recv != nil {
+				continue
+			}
+			found = true
+			if n := fn.Type.Params.NumFields(); n != 0 {
+				t.Errorf("%s takes %d parameters; a probe that can be told what to look for can be told to look for it in a command line", probe, n)
+			}
+		}
+	}
+
+	if !found {
+		t.Fatalf("this package declares no %s, so the login-shell probe has gone and #96 is back", probe)
 	}
 }

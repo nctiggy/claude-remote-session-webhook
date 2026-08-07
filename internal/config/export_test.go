@@ -36,9 +36,10 @@ func MigrateWithRenames(path string, data []byte, renames map[string]string, war
 // stops being oversize.
 const MaxConfigFileBytes = maxConfigFileBytes
 
-// CheckDependenciesWith is Config.CheckDependencies with the PATH probe and the
-// host's own identification injected (T029, T030), so a test can describe a
-// Debian host with no tmux on it.
+// CheckDependenciesWith is Config.CheckDependencies with the PATH probe, the
+// login shell a session's command is resolved in (T014), and the host's own
+// identification injected (T029, T030), so a test can describe a Debian host
+// with no tmux on it.
 //
 // The alternative is emptying the process's own PATH, which is one variable
 // shared by every test in this binary: the case would have to run alone, and the
@@ -46,9 +47,24 @@ const MaxConfigFileBytes = maxConfigFileBytes
 // instead of the described one. /etc/os-release is worse again — it is the
 // machine the suite is running on, so the refusal's install command would be
 // whatever the developer or the CI runner happens to be.
-func CheckDependenciesWith(c Config, lookPath func(string) (string, error), osRelease func() []byte, warn io.Writer) error {
-	return c.checkDependencies(lookPath, osRelease, warn)
+//
+// The login shell is injected as the PATH it answers with rather than as a
+// resolver, so every case still exercises the daemon's own resolution of a name
+// against a directory list — which is the half of #96's fix that a fake
+// answering "yes, installed" would skip over.
+func CheckDependenciesWith(c Config, lookPath func(string) (string, error), loginPATH func() (string, error), osRelease func() []byte, warn io.Writer) error {
+	return c.checkDependencies(lookPath, loginPATH, osRelease, warn)
 }
+
+// LoginShellPATH is the production probe: what a session's login shell says its
+// PATH is.
+//
+// Exported for the one claim no injected fixture can make — that this daemon
+// really starts a login shell and really reads a profile. Every case above hands
+// the check a list, so a probe that asked the wrong shell, passed the wrong
+// flag, or read the wrong stream would leave all of them green while the live
+// daemon went on warning about a command that works, which is #96 exactly.
+func LoginShellPATH() (string, error) { return loginShellPATH() }
 
 // InstallAdviceFor is the install clause the tmux refusal carries, derived from
 // the bytes of an /etc/os-release and a GOOS (T030).
