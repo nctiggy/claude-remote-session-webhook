@@ -171,20 +171,28 @@ func newHost(t *testing.T) *host {
 	h.writeShim()
 	h.build()
 
-	home := os.Getenv("HOME")
-	if home == "" {
-		t.Fatal("HOME is unset, so quickstart.md's $HOME/code root cannot be formed")
-	}
-	h.roots = filepath.Join(home, "code")
-	if _, err := os.Stat(h.roots); err != nil {
-		t.Fatalf("quickstart.md's approved root %s: %v", h.roots, err)
-	}
-
 	repo, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatalf("locate the repo: %v", err)
 	}
 	h.workDir = repo
+
+	// The approved root is the directory the checkout sits in, which is the
+	// property quickstart.md's `$HOME/code` was standing in for: the working
+	// directory these stories use is this repo, and it has to be under a root
+	// or every create is refused for the wrong reason.
+	//
+	// It used to be `$HOME/code` literally, with a Stat that failed the suite if
+	// it was absent. That held on a machine where the checkout happens to live
+	// there and nowhere else — which is why this suite passed for one person and
+	// could not run in CI at all (#87). A test that requires the developer's
+	// directory layout is a test that only that developer can run, and it is
+	// indistinguishable from a passing test until somebody else tries.
+	//
+	// Derived rather than assumed, so it is correct on both: on a workstation
+	// with the checkout in ~/code this is still exactly ~/code, and on a runner
+	// it is whatever the workspace parent happens to be.
+	h.roots = filepath.Dir(repo)
 
 	// Isolation is asserted before anything is started, not hoped for. If the
 	// daemon's environment ever stops redirecting it, this fails one test rather
