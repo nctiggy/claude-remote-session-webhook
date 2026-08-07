@@ -7,14 +7,17 @@ a `*.example.com` hostname. Each session runs in a tmux window with
 `--dangerously-skip-permissions`. Two clients: a browser UI behind Cloudflare Access
 (Google identity), and a companion Claude skill authenticating by HMAC signature.
 
-> **Status: milestones 1 and 2 complete.** The daemon core — config, `tmuxctl`,
-> session CRUD, HMAC auth, the audit log, and the reaper — ships alongside
-> daemon-side Cloudflare Access validation and a read-only dashboard with live
-> session output. Both doors are real: a browser is admitted by Google identity and
-> then re-verified by the daemon, and the API client is admitted by an Access
-> service token and then checked by signature, timestamp, replay and per-session
-> token. Create, destroy, rename and compact from the browser are milestone 3; the
-> device-code login relay is milestone 4.
+> **Status: milestones 1, 2 and 3 are complete and deployed; milestone 4 is
+> landing.** The daemon core — config, `tmuxctl`, session CRUD, HMAC auth, the
+> audit log, and the reaper — ships alongside daemon-side Cloudflare Access
+> validation and a dashboard that reads, streams **and acts**: create, destroy,
+> rename and compact, each a plain form post that works with scripting switched
+> off. Both doors are real: a browser is admitted by Google identity and then
+> re-verified by the daemon, and the API client is admitted by an Access service
+> token and then checked by signature, timestamp, replay and per-session token.
+> Milestone 4 adds the configuration file, the read-only `/settings` page that
+> says where every value came from, and the startup dependency probes. The
+> device-code login relay and the companion Claude skill are still ahead of it.
 
 ---
 
@@ -65,7 +68,10 @@ one loop for the lot.
 | 1 | Daemon core | config, `tmuxctl`, session CRUD, HMAC auth, audit log, reaper. No UI. |
 | 2 | Read-only dashboard | Access JWT validation, session list, live pane via SSE |
 | 3 | Dashboard actions | create, destroy, rename, compact |
-| 4 | Claude login relay | detect device-code prompt, surface URL, relay code back |
+| 4 | Configure and operate | config file, read-only `/settings`, dependency probes, a dashboard that works without script |
+
+The device-code login relay and the companion Claude skill follow milestone 4;
+they are not in it.
 
 ## Working in this repo
 
@@ -110,25 +116,40 @@ what it does. Wrap it in the loop only once the behaviour is boring.
 
 ## Configuration
 
-The daemon is configured **only** by the environment, read once at startup before
-it binds or spawns anything. There are no flags and no config file; `-h` reports
-usage and nothing else. [`.env.example`](.env.example) carries the same list with
-longer descriptions, and names only — never a value.
+The daemon is configured by the environment and, optionally, by one file. Both are
+read once at startup, before it binds or spawns anything, and nothing here can be
+changed while it runs. There are no flags; `-h` reports usage and nothing else.
 
 Anything that would weaken a bound is a **startup failure, not a warning**.
-Sessions run with `--dangerously-skip-permissions`, so these variables are what
+Sessions run with `--dangerously-skip-permissions`, so these settings are what
 stands in for the permission prompt that is gone.
 
-| Variable | Required | Default | Refuses to start when |
+| Variable | Required | Default | Bounds |
 |---|---|---|---|
-| `CRSW_SHARED_SECRET` | **yes** | — | unset, or shorter than 32 bytes |
-| `CRSW_ALLOWED_ROOTS` | no | `$HOME/code`, with a loud banner | an entry is empty, relative, missing, unresolvable, or not a directory |
-| `CRSW_LISTEN` | no | `127.0.0.1:8765` | the host is not a loopback IP literal, or the port is out of range |
-| `CRSW_MAX_SESSIONS` | no | `5` | not a whole number, or below 1 |
-| `CRSW_CREATE_RATE_PER_MIN` | no | `6` | not a whole number, or below 1 |
-| `CRSW_MAX_BODY_BYTES` | no | `65536` | not a whole number, or below 1 |
-| `CRSW_START_COMMAND` | no | `claude --dangerously-skip-permissions` | empty, or carrying a `;` or a control character |
-| `CRSW_START_COMMANDS` | no | empty — only `default` | an entry is empty, is not `name=command`, names a name twice, names a name outside `[a-z0-9-]`, re-defines `default` alongside `CRSW_START_COMMAND`, or carries a command the rule above refuses |
+| `CRSW_SHARED_SECRET` | **yes** | — | The HMAC secret the API client signs with. Unset, or shorter than 32 bytes, refuses to start |
+| `CRSW_ALLOWED_ROOTS` | no | `$HOME/code`, with a loud banner | Colon-separated absolute directories a session may run in. An entry that is empty, relative, missing, unresolvable, or not a directory refuses |
+| `CRSW_DISCOVER_ROOTS` | no | `false` | Offer each approved root's immediate subdirectories as working-directory suggestions. Anything but a boolean refuses |
+| `CRSW_LISTEN` | no | `127.0.0.1:8765` | The listener. A host that is not a loopback IP literal, or a port out of range, refuses |
+| `CRSW_MAX_SESSIONS` | no | `5` | How many sessions may exist at once. Below 1 refuses |
+| `CRSW_DESTROY_ON_SHUTDOWN` | no | `false` | Tear every session down when the daemon stops. **This build parses the key and does not act on it** — sessions survive a clean stop whatever it says |
+| `CRSW_SESSION_LIFETIME` | no | `24h` | How long a session may live from creation. Zero or negative refuses; there is no "never" |
+| `CRSW_SESSION_LIFETIME_MAX` | no | `CRSW_SESSION_LIFETIME` | The ceiling a per-session lifetime override may not exceed. Below the default refuses |
+| `CRSW_IDLE_TIMEOUT` | no | `60m` | How long a session may sit without a request before the reaper takes it. Longer than the lifetime refuses |
+| `CRSW_IDLE_TIMEOUT_MAX` | no | `CRSW_IDLE_TIMEOUT` | The ceiling for a per-session idle override. Below the default refuses |
+| `CRSW_CREATE_RATE_PER_MIN` | no | `6` | Creates per minute per caller. Below 1 refuses |
+| `CRSW_MAX_BODY_BYTES` | no | `65536` | The largest request body read. Below 1 refuses |
+| `CRSW_ACCESS_TEAM_DOMAIN` | all three, or none | none — the dashboard admits nobody | The Cloudflare Access team domain the assertion's issuer and key set are both derived from |
+| `CRSW_ACCESS_AUD` | all three, or none | none | The Access application's AUD tag, compared for equality and never parsed |
+| `CRSW_ACCESS_ALLOWED_EMAILS` | all three, or none | none | Comma-separated addresses admitted to the dashboard. An entry that is empty or carries a space refuses. **Treated as a secret** |
+| `CRSW_MAX_STREAMS` | no | `10` | Live output streams open at once. Below 1 refuses |
+| `CRSW_PANE_BOUND` | no | `200` | The largest screen a pane capture may return, in lines. A capture past it is refused, never shortened |
+| `CRSW_START_COMMAND` | no | `claude --dangerously-skip-permissions` | The command line bound to the name `default`. Empty, or carrying a `;` or a control character, refuses |
+| `CRSW_START_COMMANDS` | no | empty — only `default` | The named set a create may choose from, `name=command` pairs separated by commas. An entry that is empty, is not `name=command`, repeats a name, names one outside `[a-z0-9-]`, re-defines `default` alongside `CRSW_START_COMMAND`, or carries a command the rule above refuses, refuses |
+| `CRSW_REMOTE_CONTROL_COMMAND` | no | `rc`, when a command by that name exists | Which entry of that set the dashboard's remote-control switch means. A name the set does not have refuses |
+
+The three Access variables are **all three or none of them**. None means a daemon
+that serves the API and admits nobody to the dashboard, which it says loudly at
+every start; some of them is a half-configured door and a startup failure.
 
 Generate the secret with `openssl rand -hex 32`. It is never logged, never put in
 an error string, and never echoed back — not even its length. Formatting a
@@ -156,15 +177,99 @@ Notes worth having before you set these:
 - **`HOME` matters only when `CRSW_ALLOWED_ROOTS` is unset**, and must then be an
   absolute path or startup fails.
 
-Three limits are **constants in the code, not variables**: the idle timeout (60m),
-the absolute session lifetime (24h, which is the session token's lifetime by
-construction so the two cannot diverge), and the signed-request timestamp window
-(300s in both directions). They bound the host; an environment file that could
-widen them could unbound it.
+One limit is still a **constant in the code, not a setting**: the signed-request
+timestamp window, 300s in both directions. The session lifetime and the idle
+timeout are settings now, and what bounds them is the `_MAX` ceiling beside each
+rather than their being unwritable.
 
-This is milestone 1. Milestone 2 adds the Cloudflare Access variables — the AUD
-tag, the team domain, and the allowed-email list — which the daemon does not read
-yet.
+### The configuration file
+
+Everything in the table can be written in a file instead.
+[`config.example`](config.example) is the annotated copy to start from — every
+setting commented out at its default, so a copy with nothing uncommented is a
+daemon that behaves exactly as one with no file at all.
+[`.env.example`](.env.example) documents the same settings as the environment
+variables a systemd unit sets, and carries names only — never a value.
+
+```
+$CRSW_CONFIG_FILE, if it is set — it names the file outright
+else $XDG_CONFIG_HOME/crswd/config
+else ~/.config/crswd/config
+```
+
+A missing file is never an error: no file is the configuration every deployment
+before milestone 4 had. A file that *is* there and cannot be read is an error,
+because starting on the environment instead would ignore every bound written in
+it.
+
+The format is `key = value` with `#` comments, and three rules carry the weight:
+
+- **`#` is a comment marker at the start of a line and nowhere else.** A shared
+  secret may legitimately contain a `#`, and stripping from the first one would
+  truncate that secret into a daemon that starts, looks healthy, and rejects every
+  request.
+- **The separator is the first `=`.** `start_commands` always carries one inside
+  its value.
+- **A key is its variable minus `CRSW_`, lower-cased** — `allowed_roots` is
+  `CRSW_ALLOWED_ROOTS`. That is a rule rather than a table, so every variable above
+  is a key and the reverse. A misspelled key is refused, never skipped, and so is a
+  key set twice.
+
+The one key that is not a setting is `version`, the schema the file was written
+against. Absent means 1, which is what every hand-written file is; a number higher
+than the daemon understands is refused rather than read optimistically.
+
+**Precedence is flag, then environment, then file, then default**, decided in one
+shim behind `config.LoadFrom` so no bound, default or refusal is written twice.
+(The daemon defines no flags today — the slot is the order the shim decides in, not
+a promise that one is coming.) A container or a unit can therefore override one
+value without writing a file, and a stale file on a host cannot silently override
+the environment a deployment was configured with.
+
+**A file that sets `shared_secret` or `access_allowed_emails` must be mode 0600**,
+and the daemon refuses to start from one any other account can read. That refusal
+fires only on a file that actually holds one of the two: refusing over the mode of
+a file holding nothing but `allowed_roots` would demand a change that protects
+nothing.
+
+```bash
+crswd config check [path]      # report on a file without starting anything
+crswd config migrate [path]    # rewrite one into the current schema, keeping config.bak
+```
+
+`config migrate` is the only code in this repository that writes a configuration
+file. If the file stops loading, the daemon starts from the `config.bak` beside it
+instead — loudly, naming both files, because it is then running on the older one.
+
+### Seeing what it is configured to do
+
+`GET /settings` is the read-only account of how this daemon was configured: one
+row per key, the effective value, and **which layer supplied it**. Provenance is
+recorded by the precedence shim as it decides rather than inferred by comparison —
+a file and an environment holding the same bytes are indistinguishable by
+comparison, and that is exactly the case an operator is on the page to ask about.
+Above the table is the file those values were read from, or the sentence saying
+none was.
+
+A secret's value column reads `present` or `absent` and nothing else — not a
+length, not a prefix, not a hash. **No mutating verb is registered on `/settings`
+at all**: editing the operator's file from a browser is the highest-consequence
+surface in the product, and a route that does not exist cannot be exploited.
+
+### What it checks before it binds
+
+At startup the daemon probes what it shells out to, and the two dependencies fail
+differently on purpose:
+
+- **`tmux` missing is fatal.** Without it there is nothing this daemon can do, so
+  starting would only defer the failure to the operator's first create.
+- **A start command's binary missing is a warning.** It can still serve the
+  dashboard, adopt the sessions already on the host, and say what is wrong.
+
+The second probe reads the *configured* commands, not a fixed `claude`, and the
+install line it suggests comes from `/etc/os-release` rather than being guessed
+from `GOOS`. Nothing installs anything and nothing runs what it found: the probe's
+only contact with the host is `exec.LookPath`.
 
 ---
 

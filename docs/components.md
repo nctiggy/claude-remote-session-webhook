@@ -53,6 +53,18 @@ template set is parsed with no function map**, so there is no `dict` to call —
 partial takes the dot, and a value it needs is a field on the view the handler
 built. A new partial follows that, not the sketch.
 
+### The settings page has no component of its own
+
+`web/templates/settings.html` is the header partial and a plain `<table>` — one
+row per configuration key, with the layer that supplied it beside the value. It
+introduces no primitive, and it deliberately carries **none** of the three things
+every actionable page in this tree carries: no page token, no action row, no live
+region. `GET /settings` is the only verb registered on that path, so a form
+rendered there would be a form the daemon has no route to receive — the one shape
+of dead control this design system cannot show an operator is dead. No rain sits
+behind it either: the effect is permitted behind the header and in the empty state
+and nowhere else, and a table of values is content being read.
+
 ## Button
 
 There is no Button partial. A control is a `<button class="button" …>` inside

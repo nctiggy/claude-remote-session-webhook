@@ -111,8 +111,24 @@ Specific to this daemon:
   a name containing `:` or `.` addresses a different window.
 
 ### 3. Secret hygiene
-- Secrets come from the environment or 1Password. Never a source file.
-- `.env` is gitignored; `.env.example` documents the *names* only.
+- Secrets come from the environment, from 1Password, or from the operator's
+  configuration file. Never a source file in this repository.
+- `.env` is gitignored; `.env.example` and `config.example` document the *names*
+  only. `config.example` ships with every setting commented out, which is also what
+  keeps a copy of it from being a file that holds a secret.
+- **Which keys are secret is one predicate — `config.IsSecret`** — and it is
+  `shared_secret` and `access_allowed_emails`. The allowlist is not a credential,
+  but it names *who* may reach a daemon that runs unsandboxed code on this host. A
+  second list would let the 0600 refusal and the settings page disagree about what
+  a secret is, and that disagreement surfaces as a credential in a browser rather
+  than as a failure.
+- **A configuration file that sets either is refused unless it is mode 0600.** The
+  refusal fires on the file's *contents*, not on its name: refusing over the mode of
+  a file holding nothing but `allowed_roots` would demand a change that protects
+  nothing, and an operator who cannot act on a refusal learns to work around it.
+- **No refusal about the file ever names the value it refused over.** The file's
+  path, the offending key, and the line number are the whole of what an error may
+  carry.
 - **Session output is secret.** Captured pane content can contain anything on the
   host — keys, tokens, customer data. Never log it, never ship it to telemetry,
   never include it in an error message.
@@ -132,10 +148,68 @@ if cfg.SharedSecret == "" {
 
 A daemon that starts with auth disabled is worse than one that does not start.
 
+The same rule decides the startup dependency probe, and it is why the two
+dependencies fail differently. **`tmux` missing is fatal** — without it there is
+nothing this daemon can do, so starting would defer the failure to the operator's
+first create rather than prevent it. **A start command's binary missing is a
+warning** — the daemon can still serve the dashboard, adopt what is already on the
+host, and say what is wrong, and refusing there would take away the one thing that
+could tell them. The probe reads the *configured* commands rather than a fixed
+`claude`, **installs nothing, and runs nothing it finds**: its only contact with
+the host is `exec.LookPath`. A daemon that installs software is a daemon that can
+be made to install software, and one that executed a probed binary to see whether
+it works would be running an operator's command line at startup with no session to
+run it in.
+
 ### 5. Dependencies
 - Dependabot is enabled. Security updates merge promptly, not eventually.
 - A new dependency needs justification: what does it do that stdlib cannot?
   The HTTP server, HMAC, and JSON handling are all stdlib. Keep it that way.
+- **`go.sum` must not exist**, and that is asserted by a test in the default build
+  rather than remembered. It is the reason the configuration file is `key = value`
+  hand-parsed: YAML and TOML have no standard-library parser, neither is safe to
+  hand-roll, and a dependency for either would create the file this rule forbids.
+
+## Configuration, and the page that shows it
+
+The configuration file is a second **source** for the values the loader already
+validates, and deliberately not a second set of rules. Everything it supplies goes
+through exactly the loader an environment variable goes through, so no bound,
+default or refusal is written twice and a value cannot mean one thing in a unit and
+another in a file.
+
+**Precedence is flag → environment → file → default**, decided in one shim. The
+order is the security property: reversed, a stale file on a host silently overrides
+the environment a container was configured with. A daemon with no file therefore
+behaves exactly as one built before the file existed, which is what makes the
+change safe to deploy at all.
+
+**Nothing in the daemon writes the operator's file.** `crswd config migrate` is the
+only code in this repository that writes a configuration file, and it is a command
+the operator runs.
+
+`GET /settings` renders that resolved configuration, and it is the one page holding
+every secret at render time:
+
+- **A secret's value is `present` or `absent` and nothing else.** Not a length, not
+  a prefix, not a suffix, not a hash. A masked value is still a disclosure, and the
+  four characters of a credential a page is willing to print are four an attacker
+  no longer has to guess. The word is chosen in Go by `config.IsSecret` and reaches
+  the template already decided, so there is no raw value beside it for a later
+  render to reach for.
+- **The source column is recorded, never inferred.** The shim writes it as it
+  decides. A file and an environment holding the same bytes are indistinguishable
+  by comparison, and that is exactly the case an operator is on the page to ask
+  about.
+- **No mutating verb is registered on `/settings` at all.** Not a route that
+  refuses — no route. Writing the operator's configuration file from a browser is
+  the highest-consequence surface in the product; a route that does not exist
+  cannot be exploited, mis-gated, or reached by a refactor that forgets which door
+  it is on.
+
+**Sweep every route for secrets, do not reason about it.** The check that matters
+is the absence of a value across every registered path on both doors, asserted the
+way the `Access-Control-Allow-*` absence below is.
 
 ## Transport & exposure
 
@@ -268,6 +342,9 @@ web page it fetched — reaches the dashboard. **All of it is untrusted.**
 - [ ] Auth failures are uniform and leak no detail about which check failed
 - [ ] No session output, prompt, or token in any log line
 - [ ] Listener still bound to loopback
-- [ ] No new dependency without justification
+- [ ] A new setting a secret could be written into is classified by `config.IsSecret`,
+      so the 0600 refusal and the settings page cannot disagree about it
+- [ ] No secret value on any rendered page — swept across every route, not reasoned about
+- [ ] No new dependency without justification, and `go.sum` still absent
 - [ ] No `Access-Control-Allow-*` on any route, either door — swept, not assumed
 - [ ] Browser-door responses all carry the header set above, refusals included
