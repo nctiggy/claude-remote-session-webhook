@@ -23,7 +23,7 @@ import (
 // map agrees with itself, and would go on passing through an edit that dropped a
 // code a route still chooses.
 var spelledOutcomes = []outcome{
-	"created", "destroyed", "renamed", "compacted",
+	"created", "destroyed", "renamed", "compacted", "mode-changed",
 	"bad-name", "bad-work-dir", "bad-start-command", "bad-mode", "limited", "unconfirmed",
 	"mode-unconfirmed",
 	"teardown-unverified",

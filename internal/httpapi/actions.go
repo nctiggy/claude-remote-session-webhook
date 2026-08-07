@@ -749,23 +749,30 @@ const patternDashboardMode = "POST /dashboard/sessions/{" + pathValueID + "}/mod
 // widest thing this field can say is one of two words.
 const fieldMode = "mode"
 
-// offersMode reports whether the submitted value is one of the two modes this
-// daemon has, and it is an allowlist rather than a conversion.
+// offersMode is the mode this daemon has for the submitted value, and whether it
+// had one at all. It is an allowlist rather than a conversion.
 //
 // `session.Mode(value)` would compile, would be shorter, and would turn
 // `claude --dangerously-skip-permissions` into a Mode carrying that spelling —
 // which is FR-030 gone, arriving as a one-word edit that reads like a
-// simplification. Two literals, matched, or nothing: the value never becomes a
-// Mode at all unless it already was one.
+// simplification. What it returns instead is one of internal/session's own two
+// constants, so the value the caller sent is compared and then dropped: no byte
+// of it travels on into the transition.
 //
 // The literals are internal/session's own vocabulary rather than two strings
 // spelled here, so what a form posts and what a card derives cannot come to mean
 // different things. Which configured command each of them names is deliberately
-// not decided here — that is the transition's question (T020), asked where the
-// answer is used, and a copy of it on this door would be a second place free to
-// disagree about what "remote" runs.
-func offersMode(value string) bool {
-	return value == string(session.ModeLocal) || value == string(session.ModeRemote)
+// not decided here — that is the transition's question, asked in
+// Manager.SetMode where the answer is used, and a copy of it on this door would
+// be a second place free to disagree about what "remote" runs.
+func offersMode(value string) (session.Mode, bool) {
+	switch value {
+	case string(session.ModeLocal):
+		return session.ModeLocal, true
+	case string(session.ModeRemote):
+		return session.ModeRemote, true
+	}
+	return "", false
 }
 
 // The three reasons a toggle can be turned away, each a sentinel authored here
@@ -783,16 +790,29 @@ var (
 	// door is: what tells one action's records from another's is this.
 	errModeUnconfirmed = errors.New("a browser mode change arrived without the confirming step")
 
-	// errModeUnavailable is the transition this daemon cannot yet carry out.
+	// errModeUnavailable is a mode this daemon has no command for: remote where
+	// no remote-control command is configured, and local where the configured one
+	// *is* the default (session.ErrModeUnavailable).
 	//
-	// Ending and restarting the process inside the pane is T020's work, in
-	// internal/session/manager.go, and until it exists there is nothing behind
-	// this door that could change a session's mode. Saying so is the honest
-	// answer: an operator told their session is now remote-controlled, on a
-	// session still running the local command, has been told the one thing this
-	// route must never get wrong — and a success nobody performed is exactly how
-	// that happens.
-	errModeUnavailable = errors.New("this daemon cannot yet change a session's mode")
+	// It is a refusal about the daemon rather than about the request, so it
+	// discloses nothing an operator could not read off their own settings page —
+	// and it is the honest answer rather than a success: an operator told their
+	// session is now remote-controlled, on a session still running the local
+	// command, has been told the one thing this route must never get wrong.
+	errModeUnavailable = errors.New("this daemon configures no command for the mode a browser asked for")
+
+	// errModeUnchanged is a toggle to the mode the session is already in
+	// (session.ErrModeUnchanged). A stale card and a double submission both
+	// arrive here, and the transition refuses both rather than interrupting a
+	// process to leave it in the state it was already in.
+	errModeUnchanged = errors.New("a browser mode change named the mode the session is already in")
+
+	// errModeRefused is the transition that failed for a reason nothing here
+	// classified — tmux would not take the keys, or would not record the name.
+	// It carries no detail, for the reason the compact's refusal does not: what
+	// went wrong is the operator's question to take to the journal, where the
+	// manager's own wrapped error was reported.
+	errModeRefused = errors.New("a browser mode change could not be carried out")
 )
 
 // modeFromBrowser is POST /dashboard/sessions/{id}/mode (US4,
@@ -843,7 +863,8 @@ func (s *Server) modeFromBrowser(w http.ResponseWriter, r *http.Request) {
 	// helpful "unknown mode: <value>" would be caller-authored text on its way
 	// back out through a page, and the values this check exists to turn away are
 	// exactly the ones nobody should be handed back.
-	if !offersMode(r.PostForm.Get(fieldMode)) {
+	mode, offered := offersMode(r.PostForm.Get(fieldMode))
+	if !offered {
 		AuditFrom(r.Context()).Deny(errModeNotOffered.Error())
 		s.redirectOutcome(w, r, outcomeBadMode)
 		return
@@ -880,13 +901,53 @@ func (s *Server) modeFromBrowser(w http.ResponseWriter, r *http.Request) {
 	// the trail under the session it failed against.
 	AuditFrom(r.Context()).SetSessionID(live.ID)
 
-	// The transition is T020's, in internal/session/manager.go: ending and
-	// restarting the process inside the pane with `--continue`, without ending
-	// the session, its window or its scrollback. This route is the door in front
-	// of it and is finished; what is behind it is not built, and this is the arm
-	// that will carry a transition that failed once there is one to fail.
-	AuditFrom(r.Context()).Deny(errModeUnavailable.Error())
-	s.redirectOutcome(w, r, outcomeModeFailed)
+	// The transition, in internal/session/manager.go: the process inside the pane
+	// is interrupted and restarted with `--continue`, and the session, its window
+	// and its scrollback are not touched at all (T020, SC-007). The mode goes in
+	// as one of this package's own two constants and the submitted bytes stop at
+	// the check above — which is what keeps FR-030 true in the direction that
+	// matters: nothing a browser sent reaches a command line.
+	if _, err := s.sessions.SetMode(r.Context(), live, mode); err != nil {
+		s.refuseBrowserMode(w, r, err)
+		return
+	}
+
+	// The fleet, where the card now carries the new mode (T021), for the reason
+	// every other action returns there: it is the page that already reflects what
+	// the action did, and the only one this daemon renders a banner on.
+	s.redirectOutcome(w, r, outcomeModeChanged)
+}
+
+// refuseBrowserMode is what a failed transition answers, and it is the destroy's
+// and the compact's shape: the causes an operator can act on are named, and
+// everything else is one refusal.
+//
+// The two configuration refusals are told apart in the trail and answered
+// identically on the page, because there is one thing to say to the operator —
+// the session is running what it was running — and two things to say to whoever
+// reads the journal. Neither is a fact about the session, so neither is a
+// disclosure: both are answers about how this daemon is configured, which is the
+// operator's own settings page.
+//
+// A session that vanished between View and the transition answers as an unknown
+// id does, exactly as the compact's does (FR-017, SC-009), so a record that was
+// there for one read and gone for the next cannot be told from one that was never
+// the caller's.
+func (s *Server) refuseBrowserMode(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, session.ErrSessionNotFound), errors.Is(err, session.ErrSessionDead):
+		AuditFrom(r.Context()).Deny(resolveReason(err).Error())
+		s.notFoundAction(w)
+	case errors.Is(err, session.ErrModeUnavailable):
+		AuditFrom(r.Context()).Deny(errModeUnavailable.Error())
+		s.redirectOutcome(w, r, outcomeModeFailed)
+	case errors.Is(err, session.ErrModeUnchanged):
+		AuditFrom(r.Context()).Deny(errModeUnchanged.Error())
+		s.redirectOutcome(w, r, outcomeModeFailed)
+	default:
+		AuditFrom(r.Context()).Deny(errModeRefused.Error())
+		s.redirectOutcome(w, r, outcomeModeFailed)
+	}
 }
 
 // routableID reports whether the path value is the shape every identifier this

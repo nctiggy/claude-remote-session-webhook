@@ -4072,19 +4072,19 @@ func TestACompactIsNoRouteOnAnyOtherMethod(t *testing.T) {
 //
 // T014 made every action's *answer* a 303 to the fleet. What it deliberately
 // left where it was is a refusal (FR-025), and this section is where that
-// exclusion is asserted — across all four registered routes at once, which is
+// exclusion is asserted — across every registered action route at once, which is
 // the only place the claim can be made. Every test above sweeps one route; a
 // redirecting refusal added to the compact alone would be invisible to all of
 // them.
 
-// refuser is the four registered action routes with everything a refusal turns
+// refuser is every registered action route with everything a refusal turns
 // on under the test's control: the assertion the edge forwarded, the initiator
 // the browser reported, the identity the form's token was minted for, and the
 // session the path names.
 //
-// It is a fixture of its own rather than a fifth method on destroyer, creator,
-// renamer and compactor, because what varies here is the *route* — and holding
-// the route fixed is exactly what those four are for.
+// It is a fixture of its own rather than another method on destroyer, creator,
+// renamer, compactor and toggler, because what varies here is the *route* — and
+// holding the route fixed is exactly what those are for.
 type refuser struct {
 	*testServer
 	keys *keyServer
@@ -4094,7 +4094,12 @@ func newRefuser(t *testing.T) *refuser {
 	t.Helper()
 
 	keys := newKeyServer(t)
-	return &refuser{testServer: newAuditedServerWith(t, keys.validator(t)), keys: keys}
+	r := &refuser{testServer: newAuditedServerWith(t, keys.validator(t)), keys: keys}
+	// The mode route is the only one of the five whose success depends on how the
+	// daemon is configured rather than on the request alone, and every case here
+	// needs a request that would have worked to vary from.
+	r.offersRemoteControl()
+	return r
 }
 
 // mine plants a running session of this operator's own — the session every case
@@ -4143,7 +4148,7 @@ func (r *refuser) wellFormed(t *testing.T, id string) attempt {
 }
 
 // send drives one attempt at one route through the **registered** mux, which is
-// load-bearing rather than convenient: the claim is about what the four routes
+// load-bearing rather than convenient: the claim is about what the routes
 // contracts/actions.md fixes actually answer, and a fixture handler of this
 // test's own making could not notice one of them wired to redirect its refusals.
 func (r *refuser) send(t *testing.T, route mutatingRoute, a attempt) *httptest.ResponseRecorder {
@@ -4189,9 +4194,11 @@ type callerText struct {
 	states string
 }
 
-// mutatingRoute is one of the four routes contracts/actions.md registers, in the
-// parts a refusal case needs: where to post, whether the path names a session at
-// all, and what a request that would have *worked* carries beyond the page token.
+// mutatingRoute is one of the routes that changes something — the four
+// contracts/actions.md registers and the mode toggle
+// contracts/session-mode.md adds — in the parts a refusal case needs: where to
+// post, whether the path names a session at all, and what a request that would
+// have *worked* carries beyond the page token.
 //
 // That last part is what keeps each case below refusing for the reason it is
 // named for and nothing else. A destroy posted without the confirming step is
@@ -4309,6 +4316,36 @@ func mutatingRoutes() []mutatingRoute {
 			states:   "Compact delivered. The session decides what to do with it.",
 			// No chosen field, for the reason there are no fields: a route that
 			// reads nothing cannot be told anything.
+		},
+		{
+			// The fifth, added with the transition behind it (T020). It was left out
+			// while the route could only refuse: every row here rests on a request
+			// nothing refuses being answered with a success, and there was none to
+			// name.
+			name:          "POST /dashboard/sessions/{id}/mode",
+			path:          func(id string) string { return "/dashboard/sessions/" + id + "/mode" },
+			namesASession: true,
+			fields: func(t *testing.T, _ *refuser) url.Values {
+				t.Helper()
+
+				form := url.Values{}
+				form.Set(fieldConfirm, confirmYes)
+				// The session refuser.mine plants names no start command, so it is
+				// local and remote is the mode it can actually be moved to.
+				form.Set(fieldMode, modeRemote)
+				return form
+			},
+			succeeds: wantModeChangedOutcome,
+			states:   "Mode changed. The process in the pane was restarted where it left off, and the session, its window and its scrollback are as they were.",
+			// The one field on this door that could name something to run, which is
+			// what makes it the row worth having here: whatever a caller writes in
+			// it, the sentence they are sent to is the daemon's own and carries none
+			// of it (FR-030, FR-042).
+			chosen: callerText{
+				field:  fieldMode,
+				yields: wantBadModeOutcome,
+				states: "That is not a mode this daemon offers. Nothing was changed.",
+			},
 		},
 	}
 }
@@ -4456,7 +4493,7 @@ func refusalShapes() []refusalShape {
 // grew a redirecting refusal fails with the sentence above rather than with a
 // status mismatch that reads like a typo.
 //
-// Every case is driven at all four registered routes, because FR-025 is a
+// Every case is driven at every registered action route, because FR-025 is a
 // property of the door rather than of any one handler. The two lookup cases
 // cannot reach the create, which names no session — noted on the case rather
 // than silently skipped.
@@ -4468,7 +4505,7 @@ func refusalShapes() []refusalShape {
 //
 // The last block is the non-vacuity and it is not decoration: every assertion
 // above is satisfied by a daemon that refuses everything and redirects nowhere.
-// It makes the opposite claim on the same four routes through the same fixture —
+// It makes the opposite claim on the same routes through the same fixture —
 // a request nothing refuses *is* answered with a 303 — which is what makes the
 // rows above an exclusion rather than a description of a door that never works.
 func TestRefusalIsNotARedirect(t *testing.T) {
@@ -4527,7 +4564,7 @@ func TestRefusalIsNotARedirect(t *testing.T) {
 	}
 }
 
-// --- US3: all four actions with no script at all (T016) ---------------------
+// --- US3: every action with no script at all (T016) -------------------------
 //
 // SC-006, per action, and the claim US3 exists for. T014 made every action
 // answer a 303 and T015 fixed what deliberately does not; neither follows the
@@ -4544,15 +4581,15 @@ func TestRefusalIsNotARedirect(t *testing.T) {
 // either have to run before the page is opened — where it duplicates theirs — or
 // be a count of two requests, which is not what FR-041 claims about either.
 
-// withoutScript is the four registered routes driven the way a browser with no
-// script drives them: the post refuser already builds, and then the GET of
+// withoutScript is every registered action route driven the way a browser with
+// no script drives them: the post refuser already builds, and then the GET of
 // whatever Location came back.
 //
 // It embeds that fixture rather than replacing it because what varies here is
 // still the route — the thing refuser and mutatingRoutes exist for — and a
 // fixture of this section's own would be a second way to build the one request
-// these four doors take. What it adds is the second half of the interaction,
-// which is the half US3 is about.
+// these doors take. What it adds is the second half of the interaction, which is
+// the half US3 is about.
 type withoutScript struct{ *refuser }
 
 // wholePage is what tells the page an action returns to from the fragment
@@ -4641,10 +4678,15 @@ func carriesNothingOfTheCallers(t *testing.T, page string) {
 	}
 }
 
-// TestAllFourActionsUsableWithoutScript is SC-006 and FR-021 together, for each
-// of create, destroy, rename and compact: the action answers 303, and the page
-// the browser then asks for is a whole, usable fleet stating what happened in
-// words from outcome.go's fixed vocabulary.
+// TestEveryActionIsUsableWithoutScript is SC-006 and FR-021 together, for each
+// of create, destroy, rename, compact and the mode toggle: the action answers
+// 303, and the page the browser then asks for is a whole, usable fleet stating
+// what happened in words from outcome.go's fixed vocabulary.
+//
+// The toggle joined the sweep with the transition behind it (T020). It was named
+// for four while the fifth route could only refuse — a row here needs a success
+// to drive, and answering one this daemon had not performed is the defect that
+// route's own tests are about.
 //
 // **Must fail when** an outcome is built from caller-supplied text (FR-022). It
 // fails three ways, because there are three ways to write that defect. A handler
@@ -4663,7 +4705,7 @@ func carriesNothingOfTheCallers(t *testing.T, page string) {
 // each, correctly, and the operator with no script was left on a fragment — so a
 // test that stopped at the 303 would have passed against the defect this story
 // was written for.
-func TestAllFourActionsUsableWithoutScript(t *testing.T) {
+func TestEveryActionIsUsableWithoutScript(t *testing.T) {
 	t.Parallel()
 
 	for _, route := range mutatingRoutes() {
@@ -4758,6 +4800,7 @@ const (
 	wantBadModeOutcome         = outcome("bad-mode")
 	wantModeUnconfirmedOutcome = outcome("mode-unconfirmed")
 	wantModeFailedOutcome      = outcome("mode-failed")
+	wantModeChangedOutcome     = outcome("mode-changed")
 
 	wantModeAction = "session.mode"
 )
@@ -4775,6 +4818,23 @@ const (
 // what "the mode is unchanged" means on a record: there is deliberately no mode
 // field to read, so the name is the whole of the state a toggle can move.
 const plantedStartCommand = "rc"
+
+// offersRemoteControl configures this daemon the way an operator who wants the
+// toggle configures theirs: a named set with something other than the default in
+// it, and which of those names means remote (#58).
+//
+// It is a method on the server fixture rather than on either of the two that use
+// it, because both need it for the same reason — a transition resolves the mode
+// against this configuration, so a manager nobody told has no remote mode to
+// move to and refuses every toggle. Nothing here runs: the fake executes
+// nothing, so the command lines are spelled to be recognisable in an argv.
+func (s *testServer) offersRemoteControl() {
+	s.fixture.mgr.SetStartCommands(config.NewStartCommands(map[string]string{
+		config.DefaultStartCommandName: "local-command",
+		plantedStartCommand:            "remote-command",
+	}))
+	s.fixture.mgr.SetRemoteControlCommand(plantedStartCommand)
+}
 
 // toggler is the registered mode route with everything behind it readable: the
 // store, the fake host, and the trail.
@@ -5272,33 +5332,120 @@ func TestToggleAgainstASessionThatIsNotTheOperatorsIsUniform(t *testing.T) {
 	}
 }
 
-// TestToggleSaysSoWhenItCannotAct is the honest half of T019: the door is built
-// and the transition behind it is not, so a toggle this daemon admits is told it
-// did not happen.
+// TestToggleSaysSoWhenItCannotAct is the honest half of the route, now that the
+// transition behind it exists (T020): a toggle this daemon admits but cannot
+// carry out is told it did not happen, and the two reasons it cannot are told
+// apart in the trail.
 //
-// **Must fail when** this route answers a success it did not perform. Ending and
-// restarting the process inside the pane is T020's work; until it exists, an
-// operator told their session is now remote-controlled would be reading a card
-// describing a session that is still local — the one claim this route must never
-// get wrong, and the reason a stub that answered `mode-changed` would be worse
-// than no route at all. When the transition lands this test is what has to
-// change, and having to change it deliberately is the point.
+// **Must fail when** this route answers a success it did not perform. An
+// operator told their session is now remote-controlled, on a daemon that has no
+// remote-control command to run, would be reading a card describing a session
+// that is still local — the one claim this route must never get wrong, and it is
+// the reason both arms below assert the record as well as the answer.
+//
+// Neither refusal is a fact about the session. One says this daemon configures
+// no such command and the other says the session is already there, and both are
+// answers an operator can read off their own settings page — which is what makes
+// them safe to distinguish in the journal while the page says the same sentence
+// for each.
 func TestToggleSaysSoWhenItCannotAct(t *testing.T) {
 	t.Parallel()
 
+	cases := map[string]struct {
+		// configure is what this daemon was told about modes. The zero fixture is
+		// a daemon that configures no remote control at all, which is the first
+		// case and needs no setup.
+		configure func(g *toggler)
+		mode      string
+		reason    error
+	}{
+		"remote, on a daemon configuring no remote-control command": {
+			configure: func(*toggler) {},
+			mode:      modeRemote,
+			reason:    errModeUnavailable,
+		},
+		"the mode the session is already in": {
+			configure: (*toggler).offersRemoteControl,
+			// The planted session runs plantedStartCommand, which is the name this
+			// daemon has just been told means remote.
+			mode:   modeRemote,
+			reason: errModeUnchanged,
+		},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			g := newToggler(t)
+			c.configure(g)
+			live := g.live(t)
+
+			w := g.post(t, live.ID, g.asked(t, c.mode))
+
+			wantOutcome(t, w, wantModeFailedOutcome)
+			g.untouched(t, live)
+
+			rec := g.only(t)
+			if got, want := rec["decision"], string(audit.Deny); got != want {
+				t.Errorf("decision = %v; want %v — a mode this daemon did not change is not an allowed action", got, want)
+			}
+			if got, want := rec["reason"], c.reason.Error(); got != want {
+				t.Errorf("reason = %v; want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestToggleRestartsTheSessionUnderTheOtherCommand is the route's success, and
+// the non-vacuity every refusal above rests on: a daemon configured for both
+// modes carries the transition out, says so in the fixed vocabulary, and leaves
+// the record naming the command the session is now running.
+//
+// **Must fail when** the route answers `mode-changed` without the transition
+// having happened. The host calls are the direct claim — the two sends and the
+// option write Manager.SetMode is made of — because an answer alone is exactly
+// what a stub produces, and this daemon's whole job on this route is that the
+// word on the card and the process in the pane agree.
+func TestToggleRestartsTheSessionUnderTheOtherCommand(t *testing.T) {
+	t.Parallel()
+
 	g := newToggler(t)
+	g.offersRemoteControl()
 	live := g.live(t)
 
-	w := g.post(t, live.ID, g.asked(t, modeRemote))
+	w := g.post(t, live.ID, g.asked(t, modeLocal))
 
-	wantOutcome(t, w, wantModeFailedOutcome)
-	g.untouched(t, live)
+	wantOutcome(t, w, wantModeChangedOutcome)
+
+	if got := g.runs(t, live); got != config.DefaultStartCommandName {
+		t.Errorf("the record runs %q; want %q — the mode a card derives comes from this name", got, config.DefaultStartCommandName)
+	}
+	// The pane was restarted rather than the record merely relabelled. Asserted as
+	// a count of what reached the host and the flag on the line that was typed,
+	// which is the whole of what the daemon claims to have done.
+	calls := g.fixture.tmux.Calls()
+	if len(calls) == 0 {
+		t.Fatal("the toggle reached the host 0 times; a mode the daemon only wrote down is a card that does not describe its session")
+	}
+	var restarted bool
+	for _, call := range calls {
+		if slices.ContainsFunc(call.Argv, func(arg string) bool { return strings.Contains(arg, "--continue") }) {
+			restarted = true
+		}
+		if call.Op == tmuxctl.OpNew || call.Op == tmuxctl.OpKill {
+			t.Errorf("the toggle ran %s (%q); the session and its scrollback are the things it must not touch", call.Op, call.Argv)
+		}
+	}
+	if !restarted {
+		t.Errorf("nothing typed into the pane carried --continue, so the conversation did not survive the toggle: %v", calls)
+	}
 
 	rec := g.only(t)
-	if got, want := rec["decision"], string(audit.Deny); got != want {
-		t.Errorf("decision = %v; want %v — a mode this daemon did not change is not an allowed action", got, want)
+	if got, want := rec["decision"], string(audit.Allow); got != want {
+		t.Errorf("decision = %v; want %v", got, want)
 	}
-	if got, want := rec["reason"], errModeUnavailable.Error(); got != want {
-		t.Errorf("reason = %v; want %v", got, want)
+	if got := rec["session_id"]; got != live.ID {
+		t.Errorf("session_id = %v; want %q", got, live.ID)
 	}
 }

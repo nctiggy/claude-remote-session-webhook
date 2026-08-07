@@ -65,6 +65,13 @@ const (
 	outcomeRenamed   outcome = "renamed"
 	outcomeCompacted outcome = "compacted"
 
+	// outcomeModeChanged is the toggle's success, and the fifth thing an action
+	// on this door can answer (T020). It is its own code rather than a reuse of
+	// outcomeRenamed's shape for the reason every code here is per-action: what
+	// this one has to say is that a process was restarted, which none of the other
+	// four sentences would tell an operator.
+	outcomeModeChanged outcome = "mode-changed"
+
 	outcomeBadName         outcome = "bad-name"
 	outcomeBadWorkDir      outcome = "bad-work-dir"
 	outcomeBadStartCommand outcome = "bad-start-command"
@@ -141,6 +148,18 @@ var banners = map[outcome]outcomeView{
 		// what the assistant is carrying, so a sentence claiming the compaction
 		// happened would assert a fact no part of this daemon looked at.
 		Message: "Compact delivered. The session decides what to do with it.",
+	},
+	outcomeModeChanged: {
+		// Claims the restart and the resumption, which are the two things this
+		// daemon did, and stops there. It does not say the session *is* now being
+		// driven from anywhere — whether the assistant on the other end picks the
+		// conversation up is not a fact this process observed, and outcomeCompacted's
+		// sentence is careful in the same place and for the same reason (FR-016a).
+		//
+		// No apostrophe, like the other four: the template escapes one, so a
+		// sentence carrying it reads correctly on the page and matches nothing a
+		// test quotes from here.
+		Message: "Mode changed. The process in the pane was restarted where it left off, and the session, its window and its scrollback are as they were.",
 	},
 
 	outcomeBadName: {

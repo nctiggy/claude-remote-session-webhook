@@ -336,6 +336,11 @@ func newWithLayer1(
 	// has now shipped three times, and the reason the setter exists rather than
 	// the manager reading the environment itself.
 	sessions.SetStartCommands(cfg.StartCommands)
+	// Which of those names means remote reaches the manager here, and nowhere
+	// else (#58). Without this line the toggle would refuse every request on a
+	// correctly configured daemon — the transition resolves the mode against this
+	// name, so a manager nobody told is one with no remote mode to switch to.
+	sessions.SetRemoteControlCommand(cfg.RemoteControlCommand)
 	// The configured lifetimes reach the manager here, and nowhere else (#37).
 	sessions.SetLifetimes(cfg.SessionLifetime, cfg.SessionLifetimeMax, cfg.IdleTimeout, cfg.IdleTimeoutMax)
 	creates, err := newLimiter(cfg.CreateRatePerMin, systemClock{})

@@ -35,6 +35,34 @@ const claudeStartCommand = "claude --dangerously-skip-permissions"
 // arguments in order, so one exec both types the line and runs it.
 const enterKey = "Enter"
 
+// interruptKey is tmux's name for Ctrl-C, which the pane's line discipline turns
+// into SIGINT for whatever holds the terminal. It is how a mode change ends the
+// running process **without** ending the session (FR-028).
+//
+// The alternative was respawn-pane -k, which is deterministic where this is a
+// request — and it was measured rather than argued about: respawn-pane restarts
+// the pane's command with an empty screen, so the conversation an operator was
+// reading is gone. That is the one thing SC-007 asks this transition to keep, and
+// it is why the process is signalled through the terminal instead: nothing here
+// resets the pane, so its history is untouched by construction.
+//
+// It is sent twice in one call, and the second one is the load-bearing half. An
+// assistant that catches SIGINT reads the first as "cancel what you are doing"
+// and only a second as "leave"; at a bare shell prompt both are the same no-op on
+// an empty line. What neither can do is guarantee the process is gone — see
+// SetMode, which says what this daemon may and may not claim about that.
+const interruptKey = "C-c"
+
+// continueFlag is what makes a mode change a change of mode rather than a new
+// conversation (SC-007). The restarted command resumes what the pane was already
+// holding, which is the whole reason the session, its window and its scrollback
+// are preserved either side of it: a toggle that started fresh would have thrown
+// away the work the operator is toggling in order to keep driving.
+//
+// It is daemon-authored and carries no ";" for tmux's parser to eat, so it
+// travels the way the start command does rather than through Paste.
+const continueFlag = "--continue"
+
 // compactCommand is Claude Code's own /compact and the newline that submits it
 // (FR-016, research D2). Nine bytes, every one of them delivered as data.
 //
@@ -84,6 +112,29 @@ var (
 	// rollback and Destroy.
 	ErrOrphanedSession = errors.New("the tmux session could not be confirmed gone and may still be running")
 
+	// ErrModeUnavailable refuses a mode this daemon has no command for: remote
+	// on a daemon configuring no remote-control command, and local on one whose
+	// remote-control command *is* the default, where there is nothing to return
+	// to. Both are configuration rather than request, so the refusal is the same
+	// whoever asks and no session is touched by it.
+	ErrModeUnavailable = errors.New("this daemon configures no command for that mode")
+
+	// ErrModeUnchanged refuses a toggle to the mode the session is already in.
+	//
+	// It is a refusal rather than a silent success because of what carrying it out
+	// would cost: the transition interrupts the process the operator is watching
+	// and starts another in its place, which is not a no-op merely because the
+	// mode either side of it is the same word. A stale card and a double
+	// submission both arrive here, and both are better answered than acted on.
+	ErrModeUnchanged = errors.New("the session is already in that mode")
+
+	// ErrUnknownMode is a Mode value that is neither of the two. It is not
+	// reachable through the dashboard — that door matches the two literals before
+	// anything is looked up — and exists so a future caller handing this method a
+	// mode built from a request fails closed rather than resolving it to a
+	// command.
+	ErrUnknownMode = errors.New("no such session mode")
+
 	// ErrEmptyPrompt refuses a prompt with no text in it. The contract makes
 	// text required and non-empty, and the refusal lives here rather than in the
 	// handler for the reason ValidateName does: the rule about what may reach a
@@ -114,6 +165,13 @@ type Manager struct {
 	// this feature means.
 	startCommands config.StartCommands
 
+	// remoteControlCommand is the one name in that set which means remote
+	// (#58, contracts/session-mode.md). Empty means this daemon configures no
+	// remote control at all, so every session it runs is local and there is no
+	// mode to switch to — which is the zero value, and the daemon that shipped
+	// before the toggle existed.
+	remoteControlCommand string
+
 	tmux  tmuxctl.Controller
 	store *Store
 	roots []config.ApprovedRoot
@@ -141,6 +199,20 @@ type Manager struct {
 // forbids. A manager that was never given a set starts sessions with
 // claudeStartCommand, which is exactly what it did before this existed.
 func (m *Manager) SetStartCommands(cmds config.StartCommands) { m.startCommands = cmds }
+
+// SetRemoteControlCommand names which configured command means remote (#58).
+//
+// A setter for the reason SetStartCommands is one, and it takes the name
+// config.Config already resolved rather than reading the environment: the loader
+// has checked that name against the configured set and refused at startup if it
+// was not there, so a name arriving here is one this daemon runs. A manager
+// nobody told is a daemon with no remote control, which is what every caller
+// predating the toggle means.
+//
+// The name lives here rather than on each record because which name means remote
+// is startup configuration, and a copy on a record would be free to disagree with
+// it after a restart — the second source of truth research R5 rejected.
+func (m *Manager) SetRemoteControlCommand(name string) { m.remoteControlCommand = name }
 
 // SetLifetimes gives the manager the operator's configured defaults and
 // ceilings (#37). A setter for the reason SetStartCommands is one: every
@@ -922,6 +994,157 @@ func (m *Manager) Compact(ctx context.Context, s Session) error {
 		return fmt.Errorf("deliver the compact command to session %s: %w", s.ID, err)
 	}
 	return nil
+}
+
+// commandForMode is which configured name each mode runs, decided in one place
+// because it is the mapping the whole toggle turns on (contracts/session-mode.md).
+//
+// It lives beside the transition that uses it rather than on the route that
+// admits a mode, so there is no second copy free to disagree about what "remote"
+// runs. Neither branch can produce anything but a name the operator configured:
+// one is the name the loader resolved, the other is the daemon's own default, and
+// a Mode that is neither of the two words is refused rather than resolved.
+//
+// The two refusals are the same fact from opposite ends — this daemon has no
+// command for the mode asked for — and both are configuration rather than
+// request, which is why they are refused before any session is read.
+func (m *Manager) commandForMode(mode Mode) (string, error) {
+	switch mode {
+	case ModeRemote:
+		if m.remoteControlCommand == "" {
+			return "", fmt.Errorf("%w: no remote-control command is configured", ErrModeUnavailable)
+		}
+		return m.remoteControlCommand, nil
+	case ModeLocal:
+		// The operator pointed remote control at the default command, so the two
+		// modes name one command and there is nowhere for local to go. Refused
+		// rather than restarting the session under the command it is already
+		// running, which would be an interruption bought for no change at all.
+		if m.remoteControlCommand == config.DefaultStartCommandName {
+			return "", fmt.Errorf("%w: the remote-control command is this daemon's default", ErrModeUnavailable)
+		}
+		return config.DefaultStartCommandName, nil
+	default:
+		// Never the value. It is not caller text today — the dashboard matches the
+		// two literals before anything reaches here — and an error that printed it
+		// would be the one place a future caller's bytes could enter the trail
+		// (FR-042).
+		return "", fmt.Errorf("%w", ErrUnknownMode)
+	}
+}
+
+// SetMode moves a live session between local and remote by restarting the
+// process inside its pane, and it is the whole of US4's transition (FR-026 …
+// FR-031, SC-007).
+//
+// What it must not disturb is the definition. The tmux session, its window and
+// its scrollback all survive, because nothing here creates, kills or respawns
+// anything: two sends reach the pane the session already had. The identifier, the
+// credential and both deadlines are untouched for the same reason — this is one
+// record being described differently, not a new one. There is no mode field to
+// write: the name the mode derives from is the single thing that moves, on the
+// record and on the host (research R5).
+//
+// The order is what a failure is allowed to leave behind. Everything that can
+// refuse refuses first, so a toggle this daemon would not carry out costs no tmux
+// command at all; the interrupt goes before the new command line, because the
+// pane is a terminal and the order the bytes arrive in is the order they are
+// read; and the host is written before the record, so a daemon that stopped
+// between the two comes back describing the session by what its pane is actually
+// running.
+//
+// **What this may not claim.** The interrupt is a signal, not an acknowledgement,
+// and nothing in tmux's vocabulary reports whether the process took it — so a nil
+// error means the keys reached the pane and means exactly that, the way Compact's
+// does (FR-016a). A process that ignores SIGINT would receive the new command
+// line as input instead of the shell running it. The daemon cannot see the
+// difference, and it is written down here rather than asserted away.
+//
+// The record is the one View returned, for the reason Rename and Compact take
+// one: ownership is already settled, the target derives from the ID alone
+// (FR-034), and there is no second lookup here to disagree with the first.
+func (m *Manager) SetMode(ctx context.Context, s Session, mode Mode) (Session, error) {
+	// Prompt's two guards, refused for Prompt's reasons: an empty ID would build
+	// the bare prefix as a target, and a dead session's window is already gone.
+	// Neither is reachable behind View.
+	if s.ID == "" {
+		return Session{}, fmt.Errorf("change session mode: %w", ErrSessionNotFound)
+	}
+	if s.State == StateDead {
+		return Session{}, fmt.Errorf("change the mode of session %s: %w", s.ID, ErrSessionDead)
+	}
+
+	target, err := m.commandForMode(mode)
+	if err != nil {
+		return Session{}, fmt.Errorf("change the mode of session %s: %w", s.ID, err)
+	}
+	// Compared as modes rather than as names, so a session started under some
+	// third configured command is correctly already local and is not restarted to
+	// be told so.
+	if s.Mode(m.remoteControlCommand) == mode {
+		return Session{}, fmt.Errorf("change the mode of session %s: %w", s.ID, ErrModeUnchanged)
+	}
+
+	// Resolved before anything is sent, the way Create resolves before anything is
+	// built: a mode naming a command this daemon cannot render must leave the pane
+	// exactly as it was, rather than interrupting a session and then discovering
+	// there is nothing to start in its place.
+	template, err := m.resolveStartCommand(target)
+	if err != nil {
+		return Session{}, fmt.Errorf("resolve the start command for session %s: %w", s.ID, err)
+	}
+	command, err := config.RenderStartCommand(template, s.Name)
+	if err != nil {
+		return Session{}, fmt.Errorf("render the start command for session %s: %w", s.ID, err)
+	}
+
+	// Compact's touch, first and for Compact's reasons: a mode change drives the
+	// session, so it defers the idle deadline as a prompt does, and Touch is the
+	// store's own answer — under the store's lock — to whether this record is still
+	// there and still live. A record the reaper collected between the caller's View
+	// and this call is refused here, before the pane is interrupted.
+	now := m.clock.Now()
+	if err := m.store.Touch(s.ID, now); err != nil {
+		return Session{}, fmt.Errorf("change the mode of session %s: %w", s.ID, err)
+	}
+	s.LastActivity = now
+
+	name := s.TmuxName()
+	if err := m.tmux.SendKeys(ctx, name, interruptKey, interruptKey); err != nil {
+		return Session{}, fmt.Errorf("interrupt the process in session %s: %w", s.ID, err)
+	}
+	// One call for the line and the Return, exactly as start sends it: tmux
+	// consumes the arguments in order, so a single exec both types the command and
+	// runs it. The flag is appended by the daemon rather than configured, because
+	// resuming is a property of this transition and not of the operator's command
+	// — a configured --continue would also be there on every create, which is a
+	// session that never starts fresh.
+	if err := m.tmux.SendKeys(ctx, name, command+" "+continueFlag, enterKey); err != nil {
+		return Session{}, fmt.Errorf("restart the process in session %s: %w", s.ID, err)
+	}
+
+	// The fifth option, rewritten (T017). Adoption reads it, so a mode change that
+	// moved the pane and left the option would come back as the old mode after the
+	// next restart — the silent reversal contracts/session-mode.md exists to
+	// prevent — and it is written before the record for that reason: the host is
+	// what a restarted daemon believes.
+	if err := m.tmux.SetOption(ctx, name, tmuxctl.OptionStart, target); err != nil {
+		return Session{}, fmt.Errorf("record the session start command: %w", err)
+	}
+	if err := m.store.SetStartCommand(s.ID, target); err != nil {
+		return Session{}, fmt.Errorf("change the mode of session %s: %w", s.ID, err)
+	}
+	// The caller's copy carries the field this call just wrote, the way Rename's
+	// does: re-reading the store would cost a second lock for the one field this
+	// method is the writer of.
+	s.StartCommand = target
+
+	// Beside the store mutation rather than in the handler that asked for one,
+	// like every other emit here. No record entered or left, and the card an open
+	// page is drawing is wrong all the same — it names the mode this session is no
+	// longer in, which is a fleet change by the only definition that matters.
+	m.emit(FleetChanged, s)
+	return s, nil
 }
 
 // Capture is one reading of a session's pane, taken by Output.

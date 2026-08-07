@@ -696,6 +696,40 @@ func (st *Store) SetName(id, name string) error {
 	return nil
 }
 
+// SetStartCommand replaces the configured start-command *name* a record carries,
+// and writes no other field. It is what a mode change moves (FR-031), and the
+// only writer of the field after Add.
+//
+// What it cannot reach is the point, as it is in SetName. There is no mode
+// parameter here and no mode field to write, so "the mode is derived" stays a
+// property of the store rather than a convention the next writer has to observe —
+// and the name and the mode cannot come to disagree, because there is only one of
+// them.
+//
+// The name is not validated here. Manager.SetMode resolves it through
+// resolveStartCommand before anything is sent, which is the same check Create
+// makes, so there is one place deciding what a configured name is rather than two
+// free to differ.
+//
+// A dead session is refused, as SetName and Touch refuse one: its record is
+// waiting to be collected, and a mode written onto it would be a card the
+// dashboard is about to stop drawing, described by a command nothing is running.
+func (st *Store) SetStartCommand(id, name string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	s, ok := st.byID[id]
+	if !ok {
+		return fmt.Errorf("set start command: %w", ErrSessionNotFound)
+	}
+	if s.State == StateDead {
+		return fmt.Errorf("set start command: %w", ErrSessionDead)
+	}
+	s.StartCommand = name
+	st.byID[id] = s
+	return nil
+}
+
 // Delete drops a record and its token hash (FR-020).
 //
 // The record is overwritten before it is removed so the hash bytes do not sit in
