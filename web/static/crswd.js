@@ -912,3 +912,61 @@
     announceSubset(field);
   }
 })();
+
+/*
+ * A click that ends a text selection is not a click on a link (T028, FR-051).
+ *
+ * The card's readable half is one anchor now (#60), so the 32 characters a card
+ * renders precisely so they can be copied sit *inside* a link. Dragging across
+ * them already yields a selection rather than a link drag — that is what
+ * draggable="false" on the anchor buys (session-card.html) — but releasing at
+ * the end of that drag is still a click on a link, so the browser navigates and
+ * the operator is on another page holding text they cannot see the source of.
+ *
+ * This is a papercut and the fix stays one. It is a single preventDefault on the
+ * click that *ends* a selection, and that is the whole of what this block does:
+ * nothing here navigates. With this file absent the anchor is exactly the link
+ * the template rendered and a click on it opens the session — which is the
+ * property to keep rather than the behaviour. A card that needed a script to be
+ * clickable would have turned FR-051's convenience into a dependency, on the one
+ * page US3 spent a milestone making work with nothing running.
+ *
+ * Delegated from the document rather than attached per anchor, for the reason
+ * the toast above is: the fleet's live half replaces a card whenever the stream
+ * says that session changed, and a replaced card is a new anchor that never had
+ * a listener. Every card on this page is one of those after its first update.
+ *
+ * The selection has to be inside *this* anchor. A collapsed one is an ordinary
+ * click — a mousedown collapses whatever was selected before it, so a plain
+ * click on a card arrives here with nothing selected — and a selection anywhere
+ * else on the page is somebody's earlier reading rather than the drag that just
+ * ended here. Both navigate, because both are what an operator asked for.
+ *
+ * `detail` is the keyboard's exemption, and it is not politeness. Enter on a
+ * focused link fires a click with no pointer behind it (detail === 0). A
+ * selection sitting inside the anchor — left by Shift+arrow, or by a drag that
+ * ended a moment ago — would otherwise make that card unreachable by keyboard
+ * until something collapsed it, trading a papercut for the accessibility floor
+ * docs/components.md sets.
+ */
+(() => {
+  'use strict';
+
+  document.addEventListener('click', (event) => {
+    if (event.detail === 0) {
+      return;
+    }
+    const link = event.target instanceof Element ? event.target.closest('a.card-link') : null;
+    if (!link) {
+      return;
+    }
+
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+      return;
+    }
+    if (link.contains(selection.getRangeAt(0).commonAncestorContainer)) {
+      event.preventDefault();
+    }
+  });
+})();

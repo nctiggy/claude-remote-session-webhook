@@ -10,6 +10,7 @@ package httpapi
 import (
 	"io/fs"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -997,6 +998,100 @@ func TestSubsetAnnounced(t *testing.T) {
 	}
 	if !strings.Contains(region, `role="status"`) || !strings.Contains(region, `aria-live="polite"`) {
 		t.Errorf("the subset region is not a polite live region (%s), so the one thing FR-045 asks be said is said to nobody who cannot see it", region)
+	}
+}
+
+// TestSelectionDoesNotNavigate is FR-051, and it is as much about what this file
+// is not allowed to become as about the one call that satisfies it.
+//
+// The card's readable half is one anchor (FR-046), so the identifier a card
+// renders precisely so it can be copied is now inside a link. Dragging across it
+// gives a selection rather than a link drag — draggable="false" buys that in the
+// markup — but the release that ends the drag is still a click on a link, and
+// the browser navigates away from the page the operator was reading.
+//
+// **Must fail when** this becomes a functional dependency rather than a papercut
+// fix. That is the direction it is likeliest to be lost in by improvement rather
+// than by mistake: a block that read the destination off the card and went there
+// itself would look like the same feature, work identically in a browser running
+// it, and leave a card that does nothing at all in one that is not — which is the
+// floor US3 spent a milestone putting under every other control on this page. So
+// the sweep is for every way of navigating rather than for a spelling, and the
+// markup half below holds the destination where a browser can reach it with this
+// file absent.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed
+// — the same footing every other script assertion in this file stands on.
+func TestSelectionDoesNotNavigate(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	// Something calls it, and on the document rather than on each anchor: the
+	// fleet's live half replaces a card whenever the stream says that session
+	// changed, so a listener attached at load is one no card on the page has
+	// after its first update — the defect the toast was rewritten for.
+	if !regexp.MustCompile(`document\.addEventListener\(\s*['"]click['"]`).MatchString(source) {
+		t.Error("crswd.js listens for no click on the document, so either nothing implements FR-051 or it is bound per card and lost the moment the fleet replaces one")
+	}
+	if regexp.MustCompile(`closest\(\s*['"][^'"]*card-link[^'"]*['"]\s*\)`).FindString(source) == "" {
+		t.Error("crswd.js never looks for the card's anchor from the clicked element, so a click on the identifier inside it is not recognised as a click on the link")
+	}
+
+	for want, why := range map[string]string{
+		"getSelection": "what tells a drag that ended from a click is the platform's own selection, not a position remembered here",
+		"isCollapsed":  "a plain click arrives with the selection collapsed, and that click has to navigate — the requirement is about the one that does not",
+		"event.detail": "Enter on a focused link is a click with no pointer behind it, and swallowing it would make a card unreachable by keyboard for as long as a selection sat inside it",
+	} {
+		if !strings.Contains(source, want) {
+			t.Errorf("crswd.js does not carry %q: %s", want, why)
+		}
+	}
+
+	// The refusal itself, and it is asserted *after* the anchor lookup rather
+	// than anywhere in the file. This is the second preventDefault here — the
+	// toast calls one on every action form — so a bare Contains would be answered
+	// by a block that has nothing to do with a card and would stay green with
+	// this one deleted.
+	if lookup := strings.Index(source, "card-link"); lookup >= 0 && !strings.Contains(source[lookup:], "preventDefault()") {
+		t.Error("crswd.js finds the card's anchor and never refuses the click on it; the whole of the fix is declining this one navigation, and anything more is this file owning the link")
+	}
+
+	// The navigation sweep. Each of these is this file taking the destination
+	// over rather than declining one click of it, and every one of them leaves a
+	// card that opens nothing with scripting off.
+	for _, forbidden := range []struct {
+		pattern *regexp.Regexp
+		what    string
+		why     string
+	}{
+		{regexp.MustCompile(`location\.(href|assign|replace)`), "navigates the page itself", "the anchor's href is what opens a session, and a script that went there instead is the one thing standing between a card and its page"},
+		{regexp.MustCompile(`window\.open\(`), "opens a window", "same destination, same dependency, and a popup blocker away from doing nothing at all"},
+		{regexp.MustCompile(`\.href\s*=[^=]`), "assigns an href", "a destination written here is a destination absent from the markup a browser running no script is handed"},
+		{regexp.MustCompile(`\.click\(\)`), "clicks an element for the operator", "synthesising the activation this block just refused is the papercut fix reimplementing the browser"},
+	} {
+		if match := forbidden.pattern.FindString(source); match != "" {
+			t.Errorf("crswd.js %s (%q): %s", forbidden.what, match, forbidden.why)
+		}
+	}
+
+	// And the markup half, which is what the sweep is protecting. The card is a
+	// link with a real destination in it, and it carries no hook for this block:
+	// the anchor is found by the class the stylesheet already gives it, so the
+	// card a browser is handed is the same markup whether or not this file runs.
+	// A card that had acquired a data- attribute for the selection fix would be a
+	// card whose behaviour had moved out of the template.
+	got := renderComponent(t, "session-card", actionableCard())
+
+	anchors := cardAnchor.FindAllStringSubmatch(got, -1)
+	if len(anchors) != 1 {
+		t.Fatalf("the card renders %d links, so there is no one anchor a selection could be inside of:\n%s", len(anchors), got)
+	}
+	if target := `href="/sessions/`; !strings.Contains(anchors[0][1], target) {
+		t.Errorf("the card's anchor carries no %s, so the session it opens is somewhere other than the markup and a browser running no script cannot reach it:\n%s", target, got)
+	}
+	if hooks := regexp.MustCompile(`data-[a-z-]+`).FindAllString(got, -1); !slices.Equal(hooks, []string{"data-session"}) {
+		t.Errorf("the card renders %v; data-session is the one hook it has, and a second means the selection fix asked the template for something rather than reading what was already there:\n%s", hooks, got)
 	}
 }
 
