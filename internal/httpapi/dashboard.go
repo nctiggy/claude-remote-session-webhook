@@ -247,11 +247,12 @@ func (s *Server) pageTokenFor(w http.ResponseWriter, r *http.Request, operator *
 func (s *Server) fleet(operator *access.VerifiedOperator, token string, outcome *outcomeView) fleetView {
 	now := s.clock.Now()
 
-	// One walk per render, and now for one reader: the working-directory field's
-	// own suggestions. It is read here rather than inside the projection below so
-	// that the render has one answer to "what is on this host" — a second walk
-	// could disagree with the first about which directories exist.
-	suggestions := s.cfg.DiscoveredWorkDirs()
+	// One read per render, and for one reader: the working-directory field's own
+	// suggestions. It is read here rather than inside the projection below so
+	// that the render has one answer to "what is on this host" — a second read
+	// could disagree with the first about which directories exist, and on a
+	// daemon whose operator asked for discovery it is a second walk as well.
+	suggestions := s.cfg.SuggestedWorkDirs()
 
 	owned := s.sessions.List(operator.Owner)
 	views := make([]sessionView, 0, len(owned))
@@ -279,12 +280,13 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string, outcome 
 		// createFormView.Roots for why naming them discloses nothing the uniform
 		// working-directory refusal is protecting.
 		//
-		// The suggestions are the discovery walk (T023), and they are read here
-		// on every render rather than once at startup because what is on the host
-		// is a question with one honest reading and it is the one taken now. On a
+		// The suggestions are the union of the three sources config settles
+		// (T006): the approved roots always, the operator's explicit list, and
+		// the discovery walk only when they asked for it. They are read here on
+		// every render rather than once at startup because what is on the host is
+		// a question with one honest reading and it is the one taken now. On a
 		// daemon whose operator did not ask for discovery — the shipped default —
-		// the walk touches no filesystem and the field renders exactly as it did
-		// before the picker existed.
+		// the roots are still offered and no filesystem is touched to offer them.
 		//
 		// Nothing here asks the host what conversations it has recorded (US5). The
 		// form no longer carries the question, so the walk above is the only thing

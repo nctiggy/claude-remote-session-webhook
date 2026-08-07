@@ -11,7 +11,9 @@ package httpapi
 
 import (
 	"io/fs"
+	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
@@ -21,6 +23,7 @@ import (
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 	"github.com/nctiggy/claude-remote-session-webhook/web"
@@ -2149,6 +2152,71 @@ func TestNoSuggestionsRendersPlainField(t *testing.T) {
 	}
 	if list, ok := attributeValue(t, input, "list"); ok {
 		t.Errorf("the field points at the datalist %q and none is rendered (%s); the field with nothing to suggest is the field that shipped before this existed", list, input)
+	}
+}
+
+// TestDefaultInstallRendersOptions is T006 read at the layer this milestone
+// exists for. Every assertion behind the picker was about a walk or a view, and
+// the operator met a plain text field: discovery was the only source and it is
+// off unless asked for, so a default install rendered a control with nothing in
+// it. A union with three passing unit tests is the same shipped defect one layer
+// down if the page never passes it on.
+//
+// It drives the server's own projection rather than handing the component a
+// literal — a form fed a fixture list would render options on a daemon that
+// offers none. The configuration is the plainest one that exists: one approved
+// root, no explicit list, no discovery.
+//
+// **Must fail when** discovery is the only source again, and when the fix for
+// emptiness is to turn discovery on — the child below is on the real filesystem
+// so that a walk reaching past the gate would put it in the markup.
+func TestDefaultInstallRendersOptions(t *testing.T) {
+	t.Parallel()
+
+	// Resolved, because that is what config.Load hands the daemon and what the
+	// walk compares against. On a host whose temp directory is itself a symlink,
+	// an unresolved root would leave the child assertion below passing for a
+	// reason that has nothing to do with the gate it is about.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve the temp dir: %v", err)
+	}
+	child := filepath.Join(root, "repo")
+	if err := os.Mkdir(child, 0o750); err != nil {
+		t.Fatalf("create a discoverable directory: %v", err)
+	}
+
+	s := newTestServer(t, loopbackListen)
+	s.cfg.Roots = []config.ApprovedRoot{{Path: root}}
+
+	view := s.fleet(&access.VerifiedOperator{Email: testOperatorEmail, Owner: auth.CallerOperator}, testCardToken, nil)
+	out := renderComponent(t, "create-form", view.Create)
+
+	if !strings.Contains(out, `<option value="`) {
+		t.Fatalf("a daemon configured with an approved root and nothing else rendered a picker with no options in it, which is the field an operator reported as missing:\n%s", out)
+	}
+	if !strings.Contains(out, `<option value="`+root+`">`) {
+		t.Errorf("the create form offers no %q, and it is this daemon's one approved root:\n%s", root, out)
+	}
+	// The field has to point at the list for a browser or a screen reader to
+	// reach it: options nothing points at are markup neither one reads.
+	input := workdirInput.FindString(out)
+	if input == "" {
+		t.Fatalf("the create form renders no work_dir field at all:\n%s", out)
+	}
+	list, ok := attributeValue(t, input, "list")
+	if !ok {
+		t.Fatalf("the working-directory field points at no list (%s), so the options above are markup the browser never reads:\n%s", input, out)
+	}
+	if !strings.Contains(out, `<datalist id="`+list+`">`) {
+		t.Errorf("the field points at the datalist %q and no such element is rendered:\n%s", list, out)
+	}
+
+	// The half that keeps the fix from becoming a disclosure. What is *inside* a
+	// root is read from the host, and this operator did not ask for that.
+	if strings.Contains(out, `<option value="`+child+`">`) {
+		t.Errorf("the create form names %q with %s unset; the roots are offered because the operator configured them, and their children are the thing they have to ask for:\n%s",
+			child, config.EnvDiscoverRoots, out)
 	}
 }
 

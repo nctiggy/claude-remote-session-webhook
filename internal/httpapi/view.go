@@ -224,11 +224,12 @@ type createFormView struct {
 	// reaching no decision at all.
 	//
 	// Empty renders no datalist and no `list` attribute — the field as it
-	// shipped before the picker existed (FR-043), and what a daemon whose
-	// operator did not ask for discovery renders. It is filled by
-	// config.Config.DiscoveredWorkDirs (T023), which is off unless
-	// CRSW_DISCOVER_ROOTS says otherwise. The contract names a second source, an
-	// explicit list, and no task in this milestone builds one.
+	// shipped before the picker existed (FR-043). That is a state a running
+	// daemon no longer reaches: it is filled by config.Config.SuggestedWorkDirs
+	// (T006), which unions the approved roots in on every render, and a daemon
+	// with no root refuses to start. The component keeps the branch all the same,
+	// because FR-018a's rule is that a component states an absence rather than
+	// rendering something shaped like a value.
 	Suggestions []string
 
 	// There is no StartCommands field either, and its absence is the requirement

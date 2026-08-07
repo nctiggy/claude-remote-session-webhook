@@ -569,9 +569,11 @@ func TestTheRenderedFleetOffersTheCreateForm(t *testing.T) {
 // repository has shipped code nothing called three times.
 //
 // The pair of cases is what makes it an assertion about the *configuration*
-// rather than about the markup. Suggestions wired to anything constant — the
-// roots, a literal, the walk with its gate dropped — passes the first case and
-// fails the second.
+// rather than about the markup, and both halves are about the discovered
+// *child*: a union wired to anything constant — a literal, the roots alone —
+// fails the first case, and one with the gate dropped fails the second. From
+// T006 the roots are a source of their own, so the second case asserts that they
+// are offered rather than that nothing is.
 func TestTheRenderedFleetOffersWhatDiscoveryFound(t *testing.T) {
 	t.Parallel()
 
@@ -606,8 +608,14 @@ func TestTheRenderedFleetOffersWhatDiscoveryFound(t *testing.T) {
 			if strings.Contains(create, suggestion) {
 				t.Errorf("discovery is off and the create form names %s anyway; the host is read only when an operator asks:\n%s", f.fixture.repo, create)
 			}
-			if strings.Contains(create, "<datalist") {
-				t.Errorf("discovery is off and the create form renders a datalist; with nothing to suggest the field is the one that shipped before the picker:\n%s", create)
+			// The list itself is still rendered, and from T006 that is the
+			// requirement rather than a leak: the approved roots are a source of
+			// their own and they are always offered, so "discovery is off" means
+			// this daemon offers no path it had to read the host to learn — not
+			// that it offers nothing. What the operator configured is above; what
+			// is inside it is what the gate above holds back.
+			if root := `<option value="` + f.fixture.root + `">`; !strings.Contains(create, root) {
+				t.Errorf("discovery is off and the create form offers no %s either, so a default install meets a picker with nothing in it:\n%s", f.fixture.root, create)
 			}
 		})
 	}
