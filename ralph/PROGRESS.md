@@ -500,3 +500,67 @@ handed, never the template. The ordering is intact.
    `CRSW_DESTROY_ON_SHUTDOWN` row, `settings.go:114-118`) and iteration 4's
    `outcomeBadStartCommand` comment are all still open and all still **T016's**. Nothing this
    iteration touched them.
+
+---
+
+## Iteration 7 — 2026-08-07 17:06
+
+**Did:** T007, in commit `db1d57c`. `TestSuggestedPathOutsideRootsRefused` in `actions_test.go`:
+a daemon whose `workdir_suggestions` names a real directory outside its roots offers that path
+in the rendered `<datalist>` and refuses it on submit with the same response and the same audit
+record as a typed path — status, body, `Location`, `action`, `decision`, `reason`. **Test-only;
+the refusal already existed.** US2 is complete.
+
+**Learned:**
+
+- **The milestone-4 test it sits beside is not the same test, and the difference is which
+  daemon it describes.** `TestChosenPathValidatedIdentically` (378e9a8, FR-042) reaches an
+  offered-yet-unacceptable path by setting `c.cfg.Roots` to one directory while the fixture's
+  manager stands on another — `server.go:332` builds the manager from `cfg.Roots`, so no
+  deployed daemon has that divergence. T005/T006 made the arrangement ordinary: an explicit
+  suggestion list is unconstrained by the roots *by contract*, so one configuration produces
+  it. The new test therefore sets `c.cfg.Roots = fixture.root` deliberately — making the page
+  and the allowlist agree is the point, not an oversight.
+- **The default `internal/httpapi` fixture is that divergence.** `testConfig` carries
+  `Roots: {testRoot}` = `/nonexistent-crswd-test-root` while `newSessionFixture` builds the
+  manager on a real `t.TempDir()`. Since T006 that means **every fleet page in this package
+  now renders `<option value="/nonexistent-crswd-test-root">`** — harmless, but it is why a
+  test that wants a coherent daemon has to say so, and why an assertion of the form "the
+  datalist holds exactly what the allowlist admits" would fail across the suite.
+- **Mutation-verified twice, both reverted:** (a) a `refuseBrowserCreate` branch that answers
+  an offered path with `outcomeCreateFailed` — the new test fails on **both** halves, the
+  `Location` and the record's reason, and so does `TestChosenPathValidatedIdentically`;
+  (b) `WorkdirSuggestions` dropped from the union in `suggestions.go` — the new test fails at
+  the *render* assertion, which is what keeps it a claim about a **suggested** path rather
+  than about any path outside the roots. `TestChosenPathValidatedIdentically` survives (b),
+  because its source is the walk.
+- **Comparing against a typed control needs a second `newCreator`.** One server would spend
+  a second create from the same per-caller budget and would interleave the two requests'
+  records; the control is built first so `only(t)` reads its one record before anything else
+  is written, exactly as the milestone-4 test does it.
+- Linter confirmed v2 before trusting the green: `golangci-lint 2.12.2`, 0 issues. `go vet`
+  compiles all three tagged suites; `go.sum` still absent. `go test ./...` green in 5.7s.
+
+**Left:** T008–T016. **T008 is next** and it is the last link in the create-form chain
+(`T001 → T003 → T006 → T008`): the `.combo` wrapper, the `<ul class="combo-list">`, the
+`role="status"` region — **behaviour unchanged, and no ARIA in the template**. This iteration
+touched no template at all, so the ordering is intact. T012–T015 remain independent and are
+what to pick up if the chain ever blocks.
+
+**Findings:**
+
+1. **Nothing pins the wiring the new test's argument rests on.** The test proves the *handler*
+   does not consult the suggestion list. It cannot see a change to `server.go:332` that fed
+   `cfg.SuggestedWorkDirs()` into `session.NewManager`'s roots — which would make every
+   suggestion an authorisation, the exact thing FR-009 forbids — because **every fixture in
+   `internal/httpapi` injects `fixture.mgr`, built on its own root, rather than letting `New`
+   build one from the Config.** The quickstart suite does build a real daemon and does refuse
+   `/etc` (`quickstart_test.go:973`), but it configures no `workdir_suggestions`, so that
+   mutation survives it too. Not fixed: writing the missing test is not T007's task and AR-008
+   is load-bearing. **Worth a line in T016**, or a task in milestone 6 — the assertion wanted
+   is "a daemon built by `New` refuses a path that is in its own `SuggestedWorkDirs`".
+2. The stale-prose findings from iterations 4–6 are all still open and all still **T016's**:
+   `outcome.go`'s `outcomeBadStartCommand` comment, `config.example:157`, `README.md`'s
+   `CRSW_DESTROY_ON_SHUTDOWN` row, `settings.go:114-118`, and
+   `contracts/directory-suggestions.md:62`'s comma-spelled `allowed_roots`. Iteration 6's
+   uncapped-union note is also still open and still unowned.

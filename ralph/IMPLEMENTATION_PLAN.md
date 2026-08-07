@@ -148,7 +148,14 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
     that was the task, not collateral. The walk's silent `maxDiscoveredWorkDirs = 200` no
     longer bounds what a page can carry, since the roots and the explicit list are added on
     top of it; see `PROGRESS.md` iteration 6, **T016** or a `NEEDS CLARIFICATION`.
-- [ ] T007 🔒 A suggested path outside the roots is refused identically to a typed one
+- [x] T007 🔒 A suggested path outside the roots is refused identically to a typed one
+  - `TestSuggestedPathOutsideRootsRefused` in `actions_test.go`, on **one coherent
+    configuration** rather than milestone 4's page/allowlist divergence: `workdir_suggestions`
+    is unconstrained by the roots by contract, so a real daemon offers the path. Test-only —
+    the refusal already existed. **What it pins is the handler, not the wiring**: every
+    `internal/httpapi` fixture injects `fixture.mgr`, so a `server.go:332` that fed
+    `SuggestedWorkDirs()` into the manager's roots would go unnoticed here *and* in quickstart.
+    See `PROGRESS.md` iteration 7 — **T016** or milestone 6.
 
 ### US4 — Controls that belong to this interface
 
