@@ -1406,3 +1406,96 @@ first exist — see the first finding below.
   green **and the two new tests ran rather than skipped** (`-v` confirms); `go vet` green under
   `-tags tmux`, `-tags quickstart` and `-tags dev`; `go test -tags dev ./internal/access
   ./internal/config ./internal/httpapi` green; `go.sum` still absent.
+
+## Iteration 18 — 2026-08-07 06:27
+
+**Did:** T018. `session.Mode` (`ModeLocal`/`ModeRemote`) and `func (s Session) Mode(remoteCommand
+string) Mode` in `internal/session/session.go`, derived from `StartCommand` and stored nowhere.
+Seven-case table `TestModeDerivedFromStartCommand` and reflect-walk `TestSessionStoresNoModeField`
+in the **untagged** `session_test.go`; `TestModeNotInStartCommandsRefusedAtStartup` in
+`internal/config/config_test.go`; and the two `-tags tmux` tests strengthened to assert the mode
+itself, which is what iteration 17 left positioned for this task.
+
+**Learned:**
+
+- **The startup refusal T018 asks for already shipped with #58.** `loadRemoteControlCommand`
+  refuses a `CRSW_REMOTE_CONTROL_COMMAND` naming a command `CRSW_START_COMMANDS` does not
+  configure, and the refusals table in `config_test.go` already had it as one row. The new test is
+  that behaviour under the name `contracts/session-mode.md` gives it, so the contract row is
+  traceable to a test — not new behaviour. It was still mutation-checked (return `"", nil` instead
+  of the error → red).
+- **`Mode()` takes a parameter, and the contract's signature says it takes none.** A `Session` is a
+  record; which name means remote is startup configuration, and the only zero-argument spellings
+  are a package-level variable set at startup (global mutable state, unparallelisable tests) or a
+  field on the record (the second source of truth research R5 rejects). `DisplayState(now)` is the
+  in-repo precedent: a derived value takes the thing the record cannot know. **The deviation is
+  deliberate** — see the first finding.
+- **Empty `StartCommand` must be normalised to `config.DefaultStartCommandName` before comparing.**
+  `StartCommands.Command` reads an empty name that way, so a create that asked for nothing runs the
+  default command; if the operator pointed `CRSW_REMOTE_CONTROL_COMMAND` at `default`, those
+  sessions genuinely *are* remote. Dropping the normalisation passes six of the seven table cases —
+  only `start="" remote="default"` reds. That case is the whole reason the normalisation is there.
+- **Pure derivation tests do not go in `mode_test.go`.** That file is `//go:build tmux`, so CI never
+  reaches it (`AGENTS.md`: a tagged suite reports nothing to `go test ./...`). The contract names it
+  as the file for these tests; putting them there would have hidden the only test of the new method
+  from every CI run. They went in the untagged `session_test.go`, and only the two assertions that
+  genuinely need a real tmux round trip were added to `mode_test.go`.
+- **`internal/session/session.go` now imports `internal/config`.** No cycle — `manager.go` in the
+  same package already did, and `config` deliberately restates `maxSessionNameLen` rather than
+  importing back. goimports added the line unprompted after the edit.
+
+**Left:** T019–T035. Next is **T019** (🔒 `POST /dashboard/sessions/{id}/mode`), which is the first
+caller of `Mode()`: today nothing outside tests calls it, which is the repo's recurring failure
+mode, and the plan's own ordering is what defers it by one task.
+
+**Findings:**
+
+- **NEEDS CLARIFICATION (not blocking): `remote_start_commands` does not exist, and this iteration
+  did not create it.** `tasks.md` T018, `contracts/session-mode.md` and `data-model.md` all derive
+  the mode against "`remote_start_commands`, a **list** of names". The shipping daemon has the
+  singular `CRSW_REMOTE_CONTROL_COMMAND` → `Config.RemoteControlCommand` (#58), with exactly the
+  startup refusal the task asks for, a `remote_control_command` row already in the settings page
+  and `deploy/crswd.example.service`. Adding a plural key would put **two** places on this daemon
+  saying which names mean remote — the duplication this whole milestone argues against — and no
+  FR in `spec.md` asks for a list. A list is also incoherent with T019's own contract: `mode` is
+  the literal `local` or `remote`, so a set of remote names gives `mode=remote` nothing to pick
+  from. So `Mode()` takes the one configured name, and is a one-line change to a set if the
+  operator wants one. **If the plural key is actually wanted, T018 and the three spec files want
+  amending together, and this is the iteration to say so.**
+- **The contract's signature is `func (s Session) Mode() Mode` and the shipped one is
+  `Mode(remoteCommand string)`.** Reasons in the second bullet above. `contracts/session-mode.md`
+  line 12 and `data-model.md` line 95 both want the parameter added when someone reconciles the
+  `remote_start_commands` question — one docs commit, both files.
+- **Two `TestParseSessions` fixtures still pass for the wrong reason** (iteration 17, untouched):
+  `"creation time is not a number"` and `"creation time missing entirely"` in
+  `internal/tmuxctl/exec_test.go` carry a stray `\n`, so each is two rows and the first fails on
+  separator count before `ParseInt` is reached. **Fix-lane commit:** drop the `\n`, pad to six
+  fields.
+- **`specs/001-crswd-daemon-core/contracts/tmuxctl.md` is stale by three fields** (iteration 17):
+  line 163's `list-sessions` format string and lines 81-82's two `set-option` calls against five.
+  **Wants a docs commit** alongside the `contracts/actions.md` one.
+- **`contracts/actions.md` (milestone 3's) is still stale in nine places** — iterations 14-17,
+  unchanged. Every route it documents as 200/202/400/409/429/500 is a `303` today. Fifth iteration
+  logging it.
+- **`TestBrowserCreateStartsTheSessionAndAnswersWithItsCard` and
+  `TestRenameRelabelsTheRecordAndAnswersWithItsCard` are still misnamed** (iterations 14-17).
+  Neither answers with a card. Fix-lane or nothing.
+- **`internal/httpapi` still carries the data race in its own fixture** (iterations 13-17):
+  `newAuditedServerWith` sets `s.report` unsynchronised (`middleware_test.go:215`). Sixth iteration
+  logging it; still wants the lock `syncSink` already has.
+- **Still open from iterations 5-17:** the three red `-tags quickstart` tests
+  (`CRSW_DESTROY_ON_SHUTDOWN` has no loader — the oldest unfixed finding here; not run this
+  iteration, the port is held by the live daemon, though `go vet -tags quickstart ./...` is green);
+  `contracts/settings-page.md`'s `TestNoMutatingVerbRegistered` row still saying 405, and its worked
+  example showing values no loader would produce; three `ReadFile` refusals missing from
+  `contracts/config-file.md`'s table; the `version < 1` row; the contract's "yields exactly eight
+  keys" against seven; a dangling symlink reading as absent; `f.values` having no enumerator;
+  `os.Open` on a FIFO blocking startup with no message; `--config <path>` still unbuilt;
+  `README.md` and `deploy/README.md` silent on the config file (T034/T035).
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean, `go build`, `go vet`, `go test -count=1 ./...` green; `go test -count=1 -tags tmux ./...`
+  green and the two strengthened tests ran rather than skipped (`-v` confirms); `go vet` green under
+  `-tags tmux`, `-tags quickstart` and `-tags dev`; `go test -tags dev ./internal/access
+  ./internal/config ./internal/httpapi` green; `go.sum` still absent. All three mutations were run,
+  not reasoned about, and reverted by reverse `Edit` (`git diff --stat` afterwards shows additions
+  only).
