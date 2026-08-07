@@ -58,7 +58,7 @@ environment where they cannot fail.
 
 - [x] T004 [US2] Create `.github/workflows/release.yml` triggered on merge to `main`, computing the version as `v0.$(git rev-list --count HEAD)` and building `linux/amd64` and `linux/arm64` with `CGO_ENABLED=0`, arm64 **cross-compiled on the same runner** via `GOARCH=arm64`. Assets named exactly `crswd_<version>_linux_amd64.tar.gz` and `crswd_<version>_linux_arm64.tar.gz`. Test `TestBinaryIsStaticallyLinked` in `internal/release/assets_test.go`. **Must fail when** `CGO_ENABLED=0` is dropped — it still works on the builder, and fails only on someone else's host.
 
-- [ ] T005 [US2] Attach the deployment assets to the release in `.github/workflows/release.yml`: `crswd.service` from `deploy/crswd.example.service`, `cloudflared.example.yml`, and `crswd-api`. Test `TestReleaseCarriesEveryAsset`. **Must fail when** the deployment files are dropped as "not the real artifact" — an operator with only a binary still has to write a unit by hand, which is the state this milestone exists to end.
+- [x] T005 [US2] Attach the deployment assets to the release in `.github/workflows/release.yml`: `crswd.service` from `deploy/crswd.example.service`, `cloudflared.example.yml`, and `crswd-api`. Test `TestReleaseCarriesEveryAsset`. **Must fail when** the deployment files are dropped as "not the real artifact" — an operator with only a binary still has to write a unit by hand, which is the state this milestone exists to end.
 
 - [ ] T006 [US2] Generate `SHA256SUMS` covering **every** asset in `.github/workflows/release.yml`. Test `TestEveryAssetHasAChecksum`. **Must fail when** only the binaries are summed.
 

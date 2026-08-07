@@ -265,3 +265,63 @@ in `internal/release/assets_test.go`. T013 remains BLOCKED-ON-HUMAN; T014 and af
    `audit.ActionSessionMode` is still absent from the list its comment calls exhaustive.
 4. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
 5. **No ad-hoc defects observed** in the code touched.
+
+---
+
+## Iteration 5 — 2026-08-07 23:10
+
+**Did:** T005. A `Stage the deployment files` step in `release.yml` copies
+`deploy/crswd.example.service` → `dist/crswd.service`, plus `cloudflared.example.yml` and
+`crswd-api`, and `gh release create` uploads all three beside the two tarballs.
+`TestReleaseCarriesEveryAsset` in `internal/release/assets_test.go`. Gate green: build, vet,
+`go test ./...`, `golangci-lint run` (2.12.2, 0 issues), `gofmt -l` empty.
+
+**Learned:**
+
+- **The asset set is asserted in *both* directions, and that is a deliberate handover to T006
+  and T014.** `TestReleaseCarriesEveryAsset` fails on an upload it does not recognise as loudly
+  as on one that went missing, and the message names those two tasks: **whoever adds
+  `SHA256SUMS` (T006) or `SHA256SUMS.sig` (T014) to the workflow must add the name to the
+  `want` set in that test, or the run goes red.** That is the point — "every asset" is a claim
+  about the whole list and stops being true the moment the list grows behind the test's back.
+  The seven-name list in `contracts/release.md` is the authority; five of the seven exist now.
+- **`uploadedAssets` reads only the `gh release create` command, not the file**, matching a
+  backslash-continued run of lines and stopping at the first that does not continue. **This was
+  proven against a fake `verify-install` job appended below `Publish`** — the shape T012 adds —
+  and the test still passes. Reading to end-of-file would have made T005 and T012 collide.
+  Assets are recognised as *quoted arguments containing a slash*, so `--generate-notes` and
+  `"$VERSION"` are skipped, and an asset uploaded straight from `deploy/` (no rename) is caught
+  by name rather than silently missed.
+- **The unit is renamed on the way out and the test pins the mapping**, `crswd.service` ←
+  `deploy/crswd.example.service`. It is published under the name it is installed as; an asset
+  called `crswd.example.service` invites carrying the word "example" into
+  `~/.config/systemd/user`. **T009/T010's installer should ask the release for `crswd.service`.**
+- **All four mutations were run and each fails with the right message**: the three deployment
+  files dropped from the upload list; the unit uploaded from `deploy/` without the rename (fires
+  in *both* directions at once — missing `crswd.service`, unexpected `crswd.example.service`);
+  `touch dist/crswd.service` in place of the copy, i.e. the right name over an empty file; and
+  a copy from `deploy/crswd.service`, the path that would exist if someone renamed the example
+  — caught both as the wrong source and as a file absent from the working tree, which is a
+  failure that would otherwise appear only in CI *after* a successful build.
+- **No tagged suite was needed.** Nothing here is behind a build tag: `internal/release` is a
+  test-only package in the default build, and although `cmd/crswd`'s quickstart suite does read
+  `deploy/crswd.example.service` (`quickstart_test.go:1687`), this task did not modify that file.
+  **T008 does modify it** — `Restart=always` — so T008 must run `-tags quickstart ./cmd/crswd`.
+
+**Left:** T006–T021. T006 (`SHA256SUMS` over every asset) is next and unblocked; it edits the
+same publish step and **must add `SHA256SUMS` to `want` in `TestReleaseCarriesEveryAsset`**.
+Run `go test ./internal/release` after any edit to `release.yml`. T013 remains
+BLOCKED-ON-HUMAN; T014 and after wait on it.
+
+**Findings:**
+
+1. **A release asset carries no file mode, so `crswd-api` arrives non-executable.** It is `0755`
+   in the repository and `deploy/README.md` installs it with `install -m 0755`; a GitHub release
+   asset is just bytes, so an operator who downloads it directly gets a file they must `chmod`.
+   Not fixed and not a defect in T005 — the fix belongs wherever the download is documented
+   (**T021's README**), and shipping it inside a tarball instead would change the asset list
+   `contracts/release.md` fixes. Worth one line in the rollback/install prose.
+2. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
+3. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
+4. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
+5. **No ad-hoc defects observed** in the code touched.
