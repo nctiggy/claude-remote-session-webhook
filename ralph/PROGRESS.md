@@ -52,3 +52,39 @@ remember here any more.
    verification to a GitHub-hosted runner with a fresh `HOME`. It is not optional polish.
 4. **US4 cannot start before US1.** T017 execs the staged binary and requires `--version` to
    print the expected string; without T002 there is nothing to ask.
+
+---
+
+## Iteration 1 — 2026-08-07 22:36
+
+**Did:** T001. Added `internal/buildinfo` with the single exported `var Version = "dev"` and
+`TestDefaultVersionIsDev`. Gate green: build, vet, `go test ./...`, `golangci-lint run` (0 issues).
+
+**Learned:**
+
+- **The linter here is 2.12.2 — the v2 the config expects.** Verified before trusting the green,
+  per the plan's warning (#26). No need to re-check unless the toolchain moves.
+- **`go test -ldflags "-X …/internal/buildinfo.Version=v0.42" ./internal/buildinfo` is how you
+  prove `TestDefaultVersionIsDev` can fail** without editing the file under test. It reports
+  `v0.42, want "dev"`. Keep that trick for T002's `TestStampedVersionIsReported`, which needs the
+  same ldflags path but asserts the opposite — and note the exact flag string is now proven to
+  reach the variable, so a T002 failure there is T002's own bug, not a wrong symbol path.
+- The test is `package buildinfo_test` (external) deliberately: the two real readers, `cmd/crswd`
+  and `internal/httpapi`, see the package from outside too.
+- `.golangci.yml` enables only bodyclose, errcheck, gosec, govet, staticcheck, ineffassign,
+  unused, with `check-blank: true` on errcheck — so `_ = f()` is a lint failure, not a shortcut.
+  No `gochecknoglobals`, which is why the exported `var` passes.
+
+**Left:** T002–T021. T002 (`--version`, `-tags quickstart`) and T003 (`GET /dashboard/version`)
+are both unblocked now and can go in either order — the plan lists T003 as parallel with T002.
+T013 remains BLOCKED-ON-HUMAN; T014 and after wait on it.
+
+**Findings:**
+
+1. **T003's `TestFlagAndRouteAgree` cannot be written as a pure unit test in
+   `internal/httpapi`.** The flag lives in `cmd/crswd`, which `internal/httpapi` must not import
+   (and the reverse import is the real direction). The honest form is to assert the route reports
+   `buildinfo.Version` — i.e. that the route holds no copy of its own — and leave the flag half
+   to T002's quickstart test, which already execs a real binary. Whoever takes T003 should write
+   it that way rather than inventing a cross-package import to satisfy the test's name.
+2. **No ad-hoc defects observed.** The tree was clean going in and `go.sum` is still absent.

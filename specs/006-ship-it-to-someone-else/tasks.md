@@ -46,7 +46,7 @@ environment where they cannot fail.
 
 ## Phase 1: US1 — Know what is running (P1) 🎯 everything depends on this
 
-- [ ] T001 [US1] Create `internal/buildinfo/buildinfo.go` with exactly one exported variable, `var Version = "dev"`, and a comment explaining that `"dev"` is the **default** so a build that skipped the ldflags cannot claim to be a release. Test `TestDefaultVersionIsDev` in `internal/buildinfo/buildinfo_test.go`. **Must fail when** the default is changed to a version-shaped string, so a local build claims to be a release.
+- [x] T001 [US1] Create `internal/buildinfo/buildinfo.go` with exactly one exported variable, `var Version = "dev"`, and a comment explaining that `"dev"` is the **default** so a build that skipped the ldflags cannot claim to be a release. Test `TestDefaultVersionIsDev` in `internal/buildinfo/buildinfo_test.go`. **Must fail when** the default is changed to a version-shaped string, so a local build claims to be a release.
 
 - [ ] T002 [US1] Add `--version` to `cmd/crswd/main.go`, beside the existing `flag.Parse()`. It prints `crswd v0.42` when stamped and `crswd dev (not a release)` when not, then exits 0 without starting the daemon. Tests in `cmd/crswd/version_test.go` (`-tags quickstart`): `TestUnreleasedBuildSaysSo`, `TestStampedVersionIsReported` (build with `-ldflags "-X github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo.Version=v0.42"` and assert the output). **Must fail when** the ldflags path is wrong — that fails silently, because the default is itself a valid string.
 
