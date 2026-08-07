@@ -1024,6 +1024,248 @@ func TestParserNeverWrites(t *testing.T) {
 	}
 }
 
+// The path override (T009). Until now the daemon read one file, in one place,
+// and a deployment that keeps its configuration anywhere else — a container
+// mount, a second daemon on one host, a fixture in a test — had no way to say
+// so. CRSW_CONFIG_FILE names the file outright.
+//
+// It is a variable and not a key, and that is the assertion the second subtest
+// is about: resolved through the precedence shim it would be a key that
+// configures which file it is read from, and the first question anybody asked
+// about it would be which of the two files won.
+func TestConfigFileEnvOverridesDefaultPath(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a file at neither default location is read when it is named", func(t *testing.T) {
+		t.Parallel()
+
+		// Both default locations hold a *loadable* file naming a different
+		// listener, so a daemon that read either of them answers with a value
+		// this test can name rather than failing for some unrelated reason.
+		root := t.TempDir()
+		home := homeWith(t, fileLines(root, "listen = 127.0.0.1:1111"))
+		xdg := t.TempDir()
+		plantConfig(t, xdg, fileLines(root, "listen = 127.0.0.1:2222"))
+
+		named := filepath.Join(t.TempDir(), "somewhere-else")
+		if err := os.WriteFile(named, []byte(fileLines(root, "listen = 127.0.0.1:3333")), 0o600); err != nil {
+			t.Fatalf("write the named configuration file: %v", err)
+		}
+
+		cfg, err := config.LoadFrom(env(map[string]string{
+			"HOME":            home,
+			xdgConfigHomeVar:  xdg,
+			configFileEnvName: named,
+		}), io.Discard)
+		if err != nil {
+			t.Fatalf("LoadFrom() with %s naming a file: %v", configFileEnvName, err)
+		}
+		if cfg.Listen != "127.0.0.1:3333" {
+			t.Errorf("Listen = %q, want the file %s names; 1111 is HOME and 2222 is XDG_CONFIG_HOME, and either means the override was not honoured",
+				cfg.Listen, configFileEnvName)
+		}
+	})
+
+	t.Run("a file cannot name the file read after it", func(t *testing.T) {
+		t.Parallel()
+
+		// The override is resolved before anything is parsed, so it is not a
+		// setting, so `config_file` is not a key. This is what fails the day
+		// somebody adds it to Vars() to be helpful: the daemon would read one
+		// file to find out which file to read, and a file naming itself would
+		// have to be refused by a rule that does not exist.
+		root := t.TempDir()
+		other := filepath.Join(t.TempDir(), "other")
+		home := homeWith(t, fileLines(root, "config_file = "+other))
+
+		_, err := config.LoadFrom(env(map[string]string{"HOME": home}), io.Discard)
+		if err == nil {
+			t.Fatal("LoadFrom() accepted a config file naming the file to read next")
+		}
+		if !strings.Contains(err.Error(), "config_file") || !strings.Contains(err.Error(), "unknown key") {
+			t.Errorf("LoadFrom() = %v, want config_file refused as an unknown key", err)
+		}
+	})
+
+	t.Run("the named file is read as written, relative included", func(t *testing.T) {
+		t.Parallel()
+
+		// Taken exactly as the operator wrote it. Ignoring a relative path and
+		// quietly reading the XDG file instead is the silently-wrong-file
+		// failure the rest of this package refuses everywhere, and `crswd config
+		// check ./config` has to mean the same file the daemon would read.
+		for _, named := range []string{"/etc/crswd/config", "./config", "config"} {
+			if got := config.DefaultPath(env(map[string]string{
+				configFileEnvName: named,
+				xdgConfigHomeVar:  "/xdg",
+				"HOME":            "/home/operator",
+			})); got != named {
+				t.Errorf("DefaultPath() = %q, want %q exactly", got, named)
+			}
+		}
+	})
+}
+
+// configFileEnvName is restated rather than exported from the package, for the
+// reason xdgConfigHomeVar is: a test that asks the code under test which
+// variable it reads agrees with it by construction, including on the day it
+// agrees about the wrong one.
+const configFileEnvName = "CRSW_CONFIG_FILE"
+
+// FR-010, the recovery that needs no shell access. The operator edits the file
+// through whatever they have to hand, gets it wrong, and the daemon they would
+// use to fix it is the daemon that will not start. The last known-good copy
+// beside it is the way back, and it is only a way back if it is announced —
+// otherwise the daemon is running on a configuration nobody wrote, and the next
+// surprise is unexplainable.
+func TestBackupIsConsultedWhenTheFileWillNotLoad(t *testing.T) {
+	t.Parallel()
+
+	// broken is a *file* defect: a line that is not a comment, not blank, and
+	// not a pair. The backup beside it is a whole working configuration.
+	setup := func(t *testing.T, live string) (string, string) {
+		t.Helper()
+
+		root := t.TempDir()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config")
+		if err := os.WriteFile(path, []byte(live), 0o600); err != nil {
+			t.Fatalf("write the live configuration file: %v", err)
+		}
+		if err := os.WriteFile(config.BackupPath(path), []byte(fileLines(root, "listen = 127.0.0.1:8888")), 0o600); err != nil {
+			t.Fatalf("write the backup configuration file: %v", err)
+		}
+		return path, config.BackupPath(path)
+	}
+
+	t.Run("a file that will not parse", func(t *testing.T) {
+		t.Parallel()
+
+		path, backup := setup(t, "listen 127.0.0.1:9999\n")
+
+		var warn bytes.Buffer
+		cfg, err := config.LoadFrom(env(map[string]string{configFileEnvName: path}), &warn)
+		if err != nil {
+			t.Fatalf("LoadFrom() refused rather than falling back to %s: %v", backup, err)
+		}
+		if cfg.Listen != "127.0.0.1:8888" {
+			t.Errorf("Listen = %q, want the backup's value", cfg.Listen)
+		}
+
+		// Loud, and specific about both files: the daemon is up on the older one
+		// and the newer one is still there with the defect still in it.
+		said := warn.String()
+		for _, want := range []string{path, backup, "NOT in effect"} {
+			if !strings.Contains(said, want) {
+				t.Errorf("the startup warning does not mention %q:\n%s", want, said)
+			}
+		}
+	})
+
+	t.Run("a file that parses and will not load", func(t *testing.T) {
+		t.Parallel()
+
+		// The other half of "will not load": the grammar is fine and a *value*
+		// is refused. It is the same recovery — the operator still cannot start
+		// the daemon they would use to fix it.
+		root := t.TempDir()
+		path, _ := setup(t, fileLines(root, "listen = 0.0.0.0:8080"))
+
+		cfg, err := config.LoadFrom(env(map[string]string{configFileEnvName: path}), io.Discard)
+		if err != nil {
+			t.Fatalf("LoadFrom() refused rather than falling back: %v", err)
+		}
+		if cfg.Listen != "127.0.0.1:8888" {
+			t.Errorf("Listen = %q, want the backup's value", cfg.Listen)
+		}
+	})
+
+	t.Run("no backup is the operator's own refusal", func(t *testing.T) {
+		t.Parallel()
+
+		path, backup := setup(t, "listen 127.0.0.1:9999\n")
+		if err := os.Remove(backup); err != nil {
+			t.Fatalf("remove the backup: %v", err)
+		}
+
+		_, err := config.LoadFrom(env(map[string]string{configFileEnvName: path}), io.Discard)
+		if err == nil {
+			t.Fatal("LoadFrom() started with no backup to start from")
+		}
+		if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), ":1") {
+			t.Errorf("LoadFrom() = %v, want the live file and its line named — that is the defect the operator can act on", err)
+		}
+	})
+
+	t.Run("a backup that will not load either is not a start", func(t *testing.T) {
+		t.Parallel()
+
+		// A backup is accepted only if it loads *completely*, through the same
+		// loadWith the live file goes through — so the two cases here are the
+		// two halves of "will not load", and neither is a start. A backup
+		// exempted from a bound would make this the one path on which a value
+		// skipped its check.
+		root := t.TempDir()
+		for name, contents := range map[string]string{
+			"the backup does not parse":    "also not a pair\n",
+			"the backup breaks a bound":    fileLines(root, "listen = 0.0.0.0:8080"),
+			"the backup is short a secret": "allowed_roots = " + root + "\n",
+		} {
+			path, backup := setup(t, "listen 127.0.0.1:9999\n")
+			if err := os.WriteFile(backup, []byte(contents), 0o600); err != nil {
+				t.Fatalf("%s: write the backup: %v", name, err)
+			}
+
+			var warn bytes.Buffer
+			_, err := config.LoadFrom(env(map[string]string{configFileEnvName: path}), &warn)
+			if err == nil {
+				t.Errorf("%s: LoadFrom() started on a backup that does not load", name)
+				continue
+			}
+			// The live file's refusal, not the backup's: the operator wrote one
+			// of those two files, and it is not the one this daemon copied.
+			if !strings.Contains(err.Error(), path+":1") {
+				t.Errorf("%s: LoadFrom() = %v, want the live file's refusal", name, err)
+			}
+			// And nothing announced a fallback that did not happen. A daemon
+			// that says it started from the backup and then refuses to start
+			// sends its operator to the wrong file.
+			if strings.Contains(warn.String(), backup) {
+				t.Errorf("%s: the daemon announced a fallback it did not make:\n%s", name, warn.String())
+			}
+		}
+	})
+
+	t.Run("a backup is not consulted when no file was read", func(t *testing.T) {
+		t.Parallel()
+
+		// The deployment with no configuration file at all, and a stale
+		// config.bak left beside where one used to be. Deleting a configuration
+		// is a thing an operator does on purpose, and a daemon that answered by
+		// reading the copy it kept would be running on the bounds they deleted.
+		//
+		// The environment here is short of exactly one thing the backup
+		// supplies, so a fallback that fired would start rather than refuse —
+		// which is the only version of this case that can fail.
+		path, _ := setup(t, "")
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("remove the live file: %v", err)
+		}
+
+		pairs, _ := baseEnv(t)
+		pairs[configFileEnvName] = path
+		delete(pairs, config.EnvSharedSecret)
+
+		_, err := config.LoadFrom(env(pairs), io.Discard)
+		if err == nil {
+			t.Fatal("LoadFrom() started on the backup of a file that is not there, so a deleted configuration is still in force")
+		}
+		if !strings.Contains(err.Error(), config.EnvSharedSecret) {
+			t.Errorf("LoadFrom() = %v, want the environment's own refusal", err)
+		}
+	})
+}
+
 // longAgo is far enough back that any write at all moves the mtime by years
 // rather than by whatever the clock's granularity happens to be.
 var longAgo = time.Date(2020, time.January, 2, 3, 4, 5, 0, time.UTC)

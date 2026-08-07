@@ -42,9 +42,36 @@ import (
 	"strings"
 )
 
+// ErrConfigFile is what every refusal about the *file* wraps: its grammar, the
+// keys it sets, the schema it declares, and the mode it sits on disk in.
+//
+// It exists for FR-010. "Your file is wrong" and "your configuration is wrong"
+// are different failures with different recoveries — the first is repaired by
+// reading the last known-good file beside it, and the second is not, because
+// the environment and the defaults that produced it are the same either way.
+// LoadFrom is the caller that branches on it, and it is the only one; a sentinel
+// nothing branches on would be decoration.
+//
+// Its text is the first two words of every message that wraps it, so
+// fmt.Errorf("%w %s:%d …") reads as the one sentence contracts/config-file.md
+// specifies rather than as a prefix bolted onto it.
+var ErrConfigFile = errors.New("config file")
+
 const (
 	// envPrefix is what a file key is an environment variable name without.
 	envPrefix = "CRSW_"
+
+	// configFileVar names the file outright, above the two directory variables
+	// below it (FR-001).
+	//
+	// It is declared here rather than beside the CRSW_ constants in config.go on
+	// purpose, and TestVarsNamesEveryDeclaredVariable is what enforces the
+	// difference: everything declared there is a *setting*, and therefore a key
+	// a configuration file may set. This is not a setting. A file that could
+	// name the file read next would be a configuration whose meaning depends on
+	// what it says about itself, so it is resolved before anything is parsed and
+	// never through the precedence shim.
+	configFileVar = "CRSW_CONFIG_FILE"
 
 	// Where the file lives, in the ordinary Linux arrangement this daemon is
 	// deployed in: the binary under ~/.local/bin, its unit under
@@ -53,6 +80,11 @@ const (
 	defaultConfigHome = ".config"
 	configDirName     = "crswd"
 	configFileName    = "config"
+
+	// backupSuffix makes the default file's backup the `config.bak` the data
+	// model names, and keeps a file named anything else beside its own copy
+	// under a name that says which file it is a copy of.
+	backupSuffix = ".bak"
 
 	commentPrefix     = "#"
 	keyValueSeparator = "="
@@ -186,8 +218,9 @@ func KeyForVar(name string) string {
 // VarForKey maps a file key back to its environment variable name.
 func VarForKey(key string) string { return envPrefix + strings.ToUpper(key) }
 
-// DefaultPath is the file this daemon reads (FR-001): $XDG_CONFIG_HOME/crswd/config,
-// falling back to ~/.config/crswd/config.
+// DefaultPath is the file this daemon reads (FR-001): CRSW_CONFIG_FILE if the
+// operator named one, else $XDG_CONFIG_HOME/crswd/config, falling back to
+// ~/.config/crswd/config.
 //
 // It returns "" when neither variable gives an absolute directory to start
 // from, which means "there is no default file to look for" rather than being an
@@ -204,6 +237,16 @@ func VarForKey(key string) string { return envPrefix + strings.ToUpper(key) }
 // on what it says about itself, and an operator's first question about it would
 // be which of the two won.
 func DefaultPath(getenv func(string) string) string {
+	// The override, and the only one of the three that names a file rather than
+	// a directory to join a known layout onto. It is taken exactly as written,
+	// a relative path included: nobody sets this variable by accident, `crswd
+	// config check ./config` has to mean the same file the daemon would read, and
+	// the alternative — ignoring what it says and quietly reading the XDG path
+	// instead — is the silently-wrong-file failure every other refusal in this
+	// package exists to prevent.
+	if named := strings.TrimSpace(getenv(configFileVar)); named != "" {
+		return named
+	}
 	if dir := strings.TrimSpace(getenv(xdgConfigHomeVar)); filepath.IsAbs(dir) {
 		return filepath.Join(dir, configDirName, configFileName)
 	}
@@ -212,6 +255,14 @@ func DefaultPath(getenv func(string) string) string {
 	}
 	return ""
 }
+
+// BackupPath is where the last known-good copy of path lives (FR-010): the
+// file's own name with .bak after it, in the same directory.
+//
+// It is a rule rather than a constant so the two halves cannot drift apart:
+// `crswd config migrate` writes exactly the file LoadFrom reads when the live
+// one stops loading, whatever the live one is called.
+func BackupPath(path string) string { return path + backupSuffix }
 
 // ReadFile reads the configuration file at path, parses it, and refuses a file
 // that holds a secret and is reachable by another account on this host (FR-007).
@@ -244,21 +295,21 @@ func ReadFile(path string, warn io.Writer) (*File, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("config file %s cannot be opened; refusing to start: %w", path, err)
+		return nil, fmt.Errorf("%w %s cannot be opened; refusing to start: %w", ErrConfigFile, path, err)
 	}
 	defer func() { _ = handle.Close() }()
 
 	info, err := handle.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("config file %s cannot be inspected; refusing to start: %w", path, err)
+		return nil, fmt.Errorf("%w %s cannot be inspected; refusing to start: %w", ErrConfigFile, path, err)
 	}
 
 	data, err := io.ReadAll(io.LimitReader(handle, maxConfigFileBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("config file %s cannot be read; refusing to start: %w", path, err)
+		return nil, fmt.Errorf("%w %s cannot be read; refusing to start: %w", ErrConfigFile, path, err)
 	}
 	if len(data) > maxConfigFileBytes {
-		return nil, fmt.Errorf("config file %s is larger than %d bytes; refusing to start", path, maxConfigFileBytes)
+		return nil, fmt.Errorf("%w %s is larger than %d bytes; refusing to start", ErrConfigFile, path, maxConfigFileBytes)
 	}
 
 	f, err := ParseFile(path, data, warn)
@@ -277,8 +328,8 @@ func ReadFile(path string, warn io.Writer) (*File, error) {
 	// a number nothing here can know; and 0o077 also catches the write bits,
 	// where the exposure is not the secret leaving but a command line arriving.
 	if perm := info.Mode().Perm(); perm&0o077 != 0 && f.holdsSecret() {
-		return nil, fmt.Errorf("config file %s is mode %04o, so it is readable by other accounts on this host and may hold the shared secret; run chmod 600 %s",
-			path, perm, path)
+		return nil, fmt.Errorf("%w %s is mode %04o, so it is readable by other accounts on this host and may hold the shared secret; run chmod 600 %s",
+			ErrConfigFile, path, perm, path)
 	}
 
 	return f, nil
@@ -355,7 +406,7 @@ func parseFile(path string, data []byte, renames map[string]string, warn io.Writ
 		// configuration.
 		rawKey, rawValue, found := strings.Cut(text, keyValueSeparator)
 		if !found {
-			return nil, fmt.Errorf("config file %s:%d is not a comment, blank, or key=value; refusing to start", path, line)
+			return nil, fmt.Errorf("%w %s:%d is not a comment, blank, or key=value; refusing to start", ErrConfigFile, path, line)
 		}
 
 		key := strings.TrimSpace(rawKey)
@@ -376,7 +427,7 @@ func parseFile(path string, data []byte, renames map[string]string, warn io.Writ
 		}
 
 		if first, dup := seen[key]; dup {
-			return nil, fmt.Errorf("config file %s:%d repeats key %q, first set on line %d; refusing to start", path, line, key, first)
+			return nil, fmt.Errorf("%w %s:%d repeats key %q, first set on line %d; refusing to start", ErrConfigFile, path, line, key, first)
 		}
 		seen[key] = line
 
@@ -400,7 +451,7 @@ func parseFile(path string, data []byte, renames map[string]string, warn io.Writ
 		// `alowed_roots` that quietly did nothing is how a containment boundary
 		// ends up unset on a daemon whose operator believes they set it.
 		if !known[key] {
-			return nil, fmt.Errorf("config file %s:%d has unknown key %q; refusing to start", path, line, key)
+			return nil, fmt.Errorf("%w %s:%d has unknown key %q; refusing to start", ErrConfigFile, path, line, key)
 		}
 
 		f.values[key] = value
@@ -433,19 +484,19 @@ func knownKeys() map[string]bool {
 // answer that leaves each setting exactly one spelling.
 func validateKey(path string, line int, key string) error {
 	if key == "" {
-		return fmt.Errorf("config file %s:%d has no key before the %q; refusing to start", path, line, keyValueSeparator)
+		return fmt.Errorf("%w %s:%d has no key before the %q; refusing to start", ErrConfigFile, path, line, keyValueSeparator)
 	}
 	// Refused before anything quotes it. Everything past this point names the
 	// key in its message, and a 64-character run of hex inside [a-z0-9_] is a
 	// secret pasted where a key belongs far more often than it is a key.
 	if len(key) > maxKeyLen {
-		return fmt.Errorf("config file %s:%d has a key longer than %d characters, so no key this daemon has could be meant; refusing to start",
-			path, line, maxKeyLen)
+		return fmt.Errorf("%w %s:%d has a key longer than %d characters, so no key this daemon has could be meant; refusing to start",
+			ErrConfigFile, path, line, maxKeyLen)
 	}
 	for _, c := range key {
 		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
-			return fmt.Errorf("config file %s:%d has a key outside [a-z0-9_]; keys are lower-case, and are the environment variable without its %s prefix; refusing to start",
-				path, line, envPrefix)
+			return fmt.Errorf("%w %s:%d has a key outside [a-z0-9_]; keys are lower-case, and are the environment variable without its %s prefix; refusing to start",
+				ErrConfigFile, path, line, envPrefix)
 		}
 	}
 	return nil
@@ -464,13 +515,13 @@ func validateKey(path string, line int, key string) error {
 func checkSchemaVersion(path string, line int, value string) error {
 	n, err := strconv.Atoi(value)
 	if err != nil {
-		return fmt.Errorf("config file %s:%d has a version that is not a whole number; refusing to start", path, line)
+		return fmt.Errorf("%w %s:%d has a version that is not a whole number; refusing to start", ErrConfigFile, path, line)
 	}
 	if n < 1 {
-		return fmt.Errorf("config file %s:%d has version %d; the first schema is 1; refusing to start", path, line, n)
+		return fmt.Errorf("%w %s:%d has version %d; the first schema is 1; refusing to start", ErrConfigFile, path, line, n)
 	}
 	if n > SchemaVersion {
-		return fmt.Errorf("config file %s:%d has version %d; this daemon understands %d; refusing to start", path, line, n, SchemaVersion)
+		return fmt.Errorf("%w %s:%d has version %d; this daemon understands %d; refusing to start", ErrConfigFile, path, line, n, SchemaVersion)
 	}
 	return nil
 }

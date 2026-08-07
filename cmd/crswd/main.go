@@ -1,7 +1,9 @@
 // Command crswd is the claude-remote-session-webhook daemon.
 //
-// Configuration is environment-only (CRSW_*), so no flags are defined here yet;
-// flag.Parse still runs so -h reports usage rather than an unknown-flag error.
+// Every setting is a variable or a line in the configuration file (CRSW_*), so
+// no flags are defined here; flag.Parse still runs so -h reports usage rather
+// than an unknown-flag error. There are two subcommands, `config check` and
+// `config migrate`, and they are in config_cmd.go.
 package main
 
 import (
@@ -9,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"log"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -26,6 +29,14 @@ const shutdownBudget = 30 * time.Second
 
 func main() {
 	flag.Parse()
+
+	// A subcommand runs *instead* of the daemon and never beside it. `config
+	// check` exists to be run on a host that is already serving, and a program
+	// that answered the question and then started would bind the port the
+	// running daemon is on and reconcile its sessions onto a second process.
+	if args := flag.Args(); len(args) > 0 {
+		os.Exit(runConfigCommand(os.Stdout, os.Stderr, args))
+	}
 
 	// log rather than the audit trail: the trail is stdout and belongs to
 	// requests, and this is what is left when there is no daemon yet to audit.

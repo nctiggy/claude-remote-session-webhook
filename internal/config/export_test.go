@@ -22,6 +22,14 @@ func ParseFileWithRenames(path string, data []byte, renames map[string]string, w
 // table is still empty without being able to add to it.
 func RenamedKeys() int { return len(renamedKeys) }
 
+// MigrateWithRenames is migrate with the rename table injected, for the same
+// reason: the half of `crswd config migrate` that rewrites a former spelling
+// has nothing to rewrite until a rename ships, and a migration first run by the
+// release that needs it is run against the operator's only copy.
+func MigrateWithRenames(path string, data []byte, renames map[string]string, warn io.Writer) ([]byte, bool, error) {
+	return migrate(path, data, renames, warn)
+}
+
 // MaxConfigFileBytes is the read bound, exposed so the test that proves a file
 // past it is refused builds its fixture from the same number the check uses. A
 // test carrying its own copy passes the day the bound changes and the fixture

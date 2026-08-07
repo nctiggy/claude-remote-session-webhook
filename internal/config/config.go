@@ -421,14 +421,58 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 	// set of rules for the first to disagree with, and the disagreement would
 	// surface as a bound that means one thing in a test and another in
 	// production.
+	path := DefaultPath(getenv)
 	var file *File
-	if path := DefaultPath(getenv); path != "" {
-		f, err := ReadFile(path, warn)
-		if err != nil {
-			return nil, err
-		}
-		file = f
+	var err error
+	if path != "" {
+		file, err = ReadFile(path, warn)
 	}
+	if err == nil {
+		cfg, loadErr := loadWith(getenv, file, warn, o)
+		if loadErr == nil {
+			return cfg, nil
+		}
+		// A file that was never there cannot be the reason this failed, and the
+		// backup of one is not the recovery: the environment and the defaults
+		// that produced the refusal are the same with the backup layered in. The
+		// deployment with no file at all keeps refusing exactly as it does today.
+		if file == nil {
+			return nil, loadErr
+		}
+		err = loadErr
+	}
+
+	// FR-010. The operator's file will not load; the last known-good one is
+	// beside it, and reading it is the only recovery that does not need shell
+	// access on this host.
+	cfg, announceErr := loadBackup(getenv, path, warn, o, err)
+	switch {
+	case announceErr != nil:
+		// A fallback nobody was told about is a daemon running on a
+		// configuration its operator did not write, so a warning that could not
+		// be emitted refuses the start instead of proceeding quietly.
+		return nil, announceErr
+	case cfg != nil:
+		return cfg, nil
+	default:
+		// No usable backup: the operator's own file is the problem, and its
+		// refusal is the one they can act on. The backup's is not — they never
+		// wrote it.
+		return nil, err
+	}
+}
+
+// loadWith is the load itself, with the file already resolved: it layers that
+// file behind the environment, reads every setting through the one seam, and
+// builds the Config.
+//
+// It is separate from LoadFrom because FR-010 runs it twice — once on the
+// operator's file, and, when that will not load, once on the backup beside it.
+// Both attempts go through exactly this code, so a value recovered from a
+// backup is bounded, defaulted and refused identically to one read live. The
+// cost is that a warning the first attempt emitted is emitted again by the
+// second; the announcement between them says why the same line appears twice.
+func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOptions) (*Config, error) {
 	// Provenance is recorded by the shim as it answers, because the shim is the
 	// only code that knows which layer won. The map is handed in rather than
 	// returned so that the recording is the same statement as the decision — a
@@ -534,6 +578,65 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 		RemoteControlCommand: remoteControl,
 		Sources:              sources,
 	}, nil
+}
+
+// loadBackup answers with the configuration the last known-good file makes, or
+// with nil when there is no usable one (FR-010).
+//
+// The recovery this exists for is the operator who edited the file from
+// somewhere that is not a terminal on this host — the daemon is how they reach
+// it, and a daemon that refuses to start is a daemon they cannot reach to fix.
+// A copy of the file that worked, read loudly, is the only way back that does
+// not need shell access.
+//
+// The failed file is never touched. It is what they will fix, the announcement
+// says where it is, and nothing in this package has a write path to it anyway.
+//
+// The backup is accepted only if it loads *completely*: it goes through the
+// same loadWith as the live file, so a stale backup that no longer satisfies a
+// bound is not a start either. Anything less would make this the one path where
+// a value skipped its check.
+//
+// The error returned is the announcement's, never the load's: a caller reading
+// nil, nil is being told there is nothing here, and the refusal it reports is
+// the operator's own file, which is the one they can act on.
+func loadBackup(getenv func(string) string, path string, warn io.Writer, o loadOptions, cause error) (*Config, error) {
+	if path == "" {
+		return nil, nil
+	}
+	backup := BackupPath(path)
+	f, err := ReadFile(backup, warn)
+	if err != nil || f == nil {
+		return nil, nil
+	}
+	cfg, err := loadWith(getenv, f, warn, o)
+	if err != nil {
+		return nil, nil
+	}
+	if err := warnLoadedFromBackup(warn, path, backup, cause); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// warnLoadedFromBackup says, loudly and on every start, that this daemon is not
+// running on the file its operator most recently wrote.
+//
+// It names both files, because the recovery is a two-step one: the daemon is up
+// on the older configuration, and the newer one is still there with the defect
+// still in it. It carries the refusal that caused it, which is built in this
+// repository and names a path and a line and never a value — the same error
+// main.go would have printed on the way to exiting.
+func warnLoadedFromBackup(warn io.Writer, path, backup string, cause error) error {
+	banner := fmt.Sprintf(
+		"crswd: the configuration at %s will not load (%v); started from the backup at %s instead. "+
+			"This daemon is running on the older file: %s is unchanged, and every setting written into it since the backup was taken is NOT in effect. Fix it and restart.\n",
+		path, cause, backup, path)
+
+	if _, err := io.WriteString(warn, banner); err != nil {
+		return fmt.Errorf("emit the warning that the configuration was read from %s: %w", backup, err)
+	}
+	return nil
 }
 
 // withFile answers from the environment first and the file second, and records
