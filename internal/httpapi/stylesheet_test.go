@@ -891,6 +891,115 @@ func TestTheFleetUpdatesInPlaceRatherThanReloading(t *testing.T) {
 	}
 }
 
+// TestSubsetAnnounced is FR-045, and it is as much about what this file does
+// *not* do to the working-directory picker as about the sentence it adds.
+//
+// The control is markup (contracts/directory-picker.md): `<input list>` and a
+// `<datalist>` filter as the operator types, take a keyboard, announce their
+// options and leave any path typeable in full, with nothing running. Five of the
+// six picker requirements are the browser's own. The sixth — saying that the
+// list has been narrowed — is the one a browser does not say out loud, and it is
+// an addition to a control that already works.
+//
+// **Must fail when** the announcement becomes the thing that makes the control
+// function. That is the direction this task is most likely to be lost in by
+// improvement rather than by mistake: a file that builds the options, sets the
+// field's value or attaches the `list` attribute has reimplemented the combobox
+// the abandoned branch was rejected for — 225 lines that degrade to nothing with
+// scripting off. So the middle section is a sweep for every operation that would
+// make this file load-bearing, and the last one holds the picker's markup where
+// it is, in the template, where an operator running no script still gets it.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed
+// — the same footing every other script assertion in this file stands on.
+func TestSubsetAnnounced(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	// Something calls it. A query naming the attribute the field renders is as
+	// close to that as a language Go cannot execute allows, and it is the
+	// direction this whole task can be lost in silently — an announcement that is
+	// written, correct, and attached to nothing.
+	query := regexp.MustCompile(`querySelectorAll\(\s*['"][^'"]*data-workdir-note[^'"]*['"]\s*\)`)
+	if query.FindString(source) == "" {
+		t.Error("crswd.js never queries the document for a field naming its subset note, so nothing is ever announced and FR-045 is markup nobody reads")
+	}
+	for want, why := range map[string]string{
+		"dataset.workdirNote":   "the field names the region to write into, so the script does not carry an id the template could rename out from under it",
+		"dataset.workdirSubset": "the sentence is the template's; a script that authored its own prose would be a second place to look for it",
+		".options":              "the count comes off the options the daemon rendered rather than a tally this file keeps — the rule the summary row already follows",
+	} {
+		if !strings.Contains(source, want) {
+			t.Errorf("crswd.js does not carry %q: %s", want, why)
+		}
+	}
+	// Both halves of the sentence are filled. A count with no total is a number an
+	// operator cannot tell "narrowed to three" from "all three" by, which is the
+	// one distinction FR-045 exists to make.
+	for _, placeholder := range []string{"{n}", "{all}"} {
+		if !regexp.MustCompile(`replace\(\s*['"]` + regexp.QuoteMeta(placeholder) + `['"]`).MatchString(source) {
+			t.Errorf("crswd.js never fills the %s the page's sentence leaves for it", placeholder)
+		}
+	}
+
+	// The addition sweep. Each of these is this file taking ownership of the
+	// control rather than commenting on it, and every one of them takes the
+	// picker away from a browser running no script.
+	for _, forbidden := range []struct {
+		pattern *regexp.Regexp
+		what    string
+		why     string
+	}{
+		{regexp.MustCompile(`(?i)datalist`), "names the datalist element", "the list is composed by the template; a file that composes one has a picker that exists only while it runs"},
+		{regexp.MustCompile(`(?i)\bnew Option\(|createElement\(`), "builds an element", "an option built here is an offer the daemon never made, and one that is gone with scripting off"},
+		{regexp.MustCompile(`\.value\s*=[^=]`), "assigns a value", "choosing the operator's path for them is the combobox this control was chosen instead of (FR-040)"},
+		{regexp.MustCompile(`\b(set|remove)Attribute\(`), "moves an attribute", "the field is joined to its list in the markup; an attribute added here is a picker that only exists when this file runs (FR-043)"},
+	} {
+		if match := forbidden.pattern.FindString(source); match != "" {
+			t.Errorf("crswd.js %s (%q): %s", forbidden.what, match, forbidden.why)
+		}
+	}
+
+	// And the markup half, which is what the sweep above is protecting. The
+	// spellings are a joint between two trees — the hook the field renders and the
+	// id the script looks up — so they are asserted together here, because nothing
+	// else holds them.
+	form, err := fs.ReadFile(web.Templates, "templates/partials/create-form.html")
+	if err != nil {
+		t.Fatalf("read the embedded create form: %v", err)
+	}
+	markup := templateComment.ReplaceAllString(string(form), "")
+
+	for want, why := range map[string]string{
+		`data-workdir-note="create-workdir-subset"`:  "the field names the region, and this is the spelling crswd.js reads back",
+		`id="create-workdir-subset"`:                 "the region the field names has to be the region that is rendered",
+		`<option value="{{ . }}">`:                   "the suggestions are the template's, so the list is there for an operator running no script (FR-043)",
+		`list="workdir-suggestions"`:                 "the field is joined to its list in the markup, by the same rule",
+		`data-workdir-subset="Showing {n} of {all} `: "the sentence is the page's own copy, with both halves left for the script to fill",
+	} {
+		if !strings.Contains(markup, want) {
+			t.Errorf("the create form does not carry %q: %s", want, why)
+		}
+	}
+
+	// Present and empty rather than hidden. docs/components.md's accessibility
+	// floor is explicit about the difference: a live region has to be in the
+	// accessibility tree before its text arrives for the announcement to happen at
+	// all, and a region revealed and written in one go is one some readers never
+	// announce.
+	region := regexp.MustCompile(`<div\b[^>]*\bid="create-workdir-subset"[^>]*>\s*</div>`).FindString(markup)
+	if region == "" {
+		t.Fatalf("the create form renders no empty subset region; a region composed at announcement time is one a reader may never hear:\n%s", markup)
+	}
+	if strings.Contains(region, " hidden") {
+		t.Errorf("the subset region is rendered hidden (%s); it is empty markup that costs the field nothing, and hiding it keeps it out of the accessibility tree until the moment it has something to say", region)
+	}
+	if !strings.Contains(region, `role="status"`) || !strings.Contains(region, `aria-live="polite"`) {
+		t.Errorf("the subset region is not a polite live region (%s), so the one thing FR-045 asks be said is said to nobody who cannot see it", region)
+	}
+}
+
 // blockFor returns the body of the first block whose prelude contains marker,
 // so a test can assert about one rule rather than about the whole file. Braces
 // are counted, because a media query holds rules of its own.

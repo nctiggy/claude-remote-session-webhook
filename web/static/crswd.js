@@ -824,3 +824,91 @@
     }
   });
 })();
+
+/*
+ * The working-directory picker's one addition (T025, FR-045).
+ *
+ * The control itself is markup and stays markup: `<input list>` and a
+ * `<datalist>` filter as the operator types, take a keyboard, announce their
+ * options to a screen reader and leave any path typeable in full, with nothing
+ * running at all (contracts/directory-picker.md). Five of the six picker
+ * requirements are the browser's own. The sixth is the one a browser does not
+ * say out loud — that the list is showing a subset — and it is the whole of
+ * what this block does.
+ *
+ * So it is additive by construction, and that is the property to keep rather
+ * than the sentence. Nothing here sets the field's value, builds or removes an
+ * option, or touches the `list` attribute that joins the two: with this file
+ * absent the picker is exactly the control the template rendered, minus one
+ * sentence. The abandoned branch got this backwards — 225 lines reimplementing
+ * filtering, focus and ARIA roles the platform already has, degrading to nothing
+ * with scripting off.
+ *
+ * The count is this file's own arithmetic, and has to be: the filtered popup is
+ * not in the document and no event reports it, so the only alternative to
+ * counting is owning the list, which is the thing being avoided. What is counted
+ * is the rule the engines filter by — a case-insensitive substring of the
+ * option's value — so the number approximates what is on screen rather than
+ * reading it. That is an acceptable cost for a sentence nothing depends on, and
+ * would not be for anything the operator had to act on; the list, the field and
+ * the allowlist behind it are all untouched by it either way.
+ *
+ * The sentence is the template's, filled here, for the reason every other
+ * sentence this interface says is.
+ */
+(() => {
+  'use strict';
+
+  /*
+   * How long the typing has to stop before the note is rewritten. A polite live
+   * region queues rather than interrupts, so a note written on every keystroke
+   * hands a screen reader a backlog of counts to read out after the operator has
+   * finished — each one already wrong by the time it is spoken.
+   */
+  const SETTLE_MS = 400;
+
+  const announceSubset = (field) => {
+    const note = document.getElementById(field.dataset.workdirNote);
+    const suggestions = field.list;
+    if (!note || !suggestions || !note.dataset.workdirSubset) {
+      return;
+    }
+
+    /*
+     * Counted off the options the daemon rendered, never off a tally kept here —
+     * the rule the summary row already follows. A number this file carried would
+     * be a second source of truth about a list it does not own.
+     */
+    const say = () => {
+      const typed = field.value.trim().toLowerCase();
+      const offered = suggestions.options.length;
+      let showing = offered;
+      if (typed !== '') {
+        showing = 0;
+        for (const option of suggestions.options) {
+          if (option.value.toLowerCase().includes(typed)) {
+            showing += 1;
+          }
+        }
+      }
+
+      // Silent while nothing is filtered. FR-045 is about a list showing a
+      // subset; a region that also said "showing all of them" would be narrating
+      // the operator's own typing back at them, which is the noise
+      // docs/components.md keeps off the grid and the pane.
+      note.textContent = showing === offered
+        ? ''
+        : note.dataset.workdirSubset.replace('{n}', showing).replace('{all}', offered);
+    };
+
+    let settling;
+    field.addEventListener('input', () => {
+      clearTimeout(settling);
+      settling = setTimeout(say, SETTLE_MS);
+    });
+  };
+
+  for (const field of document.querySelectorAll('input[data-workdir-note]')) {
+    announceSubset(field);
+  }
+})();
