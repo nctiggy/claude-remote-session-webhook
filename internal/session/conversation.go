@@ -203,6 +203,25 @@ func listConversations(workDir string, roots []config.ApprovedRoot, store string
 // the operator is offered nothing. That is the direction this must fail in: the
 // alternative to a missing suggestion is a list belonging to some other
 // directory.
+// It is also what makes the ReadDir above safe in a way a reviewer can check
+// rather than trust, and CodeQL raised go/path-injection on that line because it
+// models neither of the two protections.
+//
+// The first is ordering: ResolveWorkDir has already refused anything not under an
+// approved root, so the value is validated before it is used. The second is this
+// function, and it is the stronger of the two, because it removes the *means* of
+// traversal rather than checking for its presence. Every separator becomes "-",
+// so what reaches filepath.Join contains none and can only name one entry
+// directly under the store.
+//
+// Verified rather than reasoned about, because "it should be fine" is how this
+// class of bug survives review:
+//
+//	"../../etc"              ->  /store/..-..-etc
+//	"/a/../../../etc/passwd" ->  /store/-a-..-..-..-etc-passwd
+//
+// Both are ordinary directory names that happen to contain dots. Neither escapes,
+// because after the replacement there is no separator left to escape with.
 func storeDirName(workDir string) string {
 	return strings.ReplaceAll(workDir, pathSeparator, "-")
 }
