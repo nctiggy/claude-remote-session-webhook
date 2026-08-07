@@ -120,8 +120,42 @@
   native browser bubble this daemon never wrote — which is the same reason this
   is not a `<select>`: a path absent from the list must still be typeable in
   full.
-*/}}
-<input class="field-input" id="create-work-dir" type="text" name="work_dir"{{ if .Suggestions }} list="workdir-suggestions" data-workdir-note="create-workdir-subset"{{ end }} required autocomplete="off" spellcheck="false" aria-describedby="create-roots">{{ with .Suggestions }}<datalist id="workdir-suggestions">{{ range . }}<option value="{{ . }}"></option>{{ end }}</datalist>{{ end }}{{/*
+*/}}{{/*
+  The wrapper the theme is applied over (T008, contracts/themed-combobox.md),
+  and structure is the whole of what it is. The field inside it behaves exactly
+  as it did before this div existed — the native control works first, and the
+  theme is an enhancement over something that already functions, which is the
+  rule that governs every part of that contract.
+
+  So what this markup does today is nothing. `.combo-list` is hidden and empty,
+  `.combo-status` is empty, and the control an operator meets is still the
+  platform's own `<input list>` and `<datalist>` described above. The three
+  additions exist so that the enhancement has somewhere to write, and they are
+  in the template rather than built by the script for two separate reasons: a
+  live region has to be in the accessibility tree before its text arrives for
+  the announcement to happen at all (docs/components.md's accessibility floor,
+  the same rule the subset note below already follows), and a class no template
+  renders is a rule stylesheet_test.go's sweep reads as dead.
+
+  **No ARIA attribute here, deliberately.** No role, no aria-expanded, no
+  aria-controls, no aria-activedescendant. With no script there is no combobox
+  to expand and no listbox to control, and markup that describes a control that
+  is not there is worse for a screen reader than markup describing the plain
+  field that is. Those attributes are added by the script that makes them true.
+
+  The `<datalist>` stays inside the wrapper and stays the one source of the
+  options. The enhancement filters what the daemon rendered rather than keeping
+  a second copy of it that could disagree.
+
+  Unconditional, where the `list` attribute and the `<datalist>` are not. Those
+  two are an offer, and an offer with nothing behind it is the markup FR-018a
+  refuses; these are the boxes an enhancement writes into, and a box that is
+  empty says nothing either way.
+*/}}<div class="combo" data-combo>
+<input class="field-input" id="create-work-dir" type="text" name="work_dir"{{ if .Suggestions }} list="workdir-suggestions" data-workdir-note="create-workdir-subset"{{ end }} required autocomplete="off" spellcheck="false" aria-describedby="create-roots">{{ with .Suggestions }}<datalist id="workdir-suggestions">{{ range . }}<option value="{{ . }}"></option>{{ end }}</datalist>{{ end }}
+<ul class="combo-list" id="workdir-listbox" hidden></ul>
+<p class="combo-status" role="status" aria-live="polite"></p>
+</div>{{/*
   The whole hint is one element carrying one id, so aria-describedby on the input
   reaches the sentence and the list together. A daemon configured with no root at
   all cannot start — config.Load refuses it — so the `with` here is the zero

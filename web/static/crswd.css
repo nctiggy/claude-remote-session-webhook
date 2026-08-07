@@ -559,6 +559,38 @@ body {
   font: var(--fs-body)/var(--lh-body) var(--mono);
 }
 
+/* The working-directory picker's wrapper (T008). This is the minimum
+   TestTheStylesheetAndTheMarkupNameTheSameThings demands of a class a template
+   renders, and deliberately not a presentation: the themed listbox is T009's,
+   and a wrapper styled before the thing it wraps exists would be a second
+   component nobody rendered.
+
+   `display: grid` is not decoration here. An <input> is inline-block, so a
+   plain block wrapper would size the field to its default character width; as a
+   grid the input stretches exactly as it did when it was .field's own item,
+   which is what "behaviour unchanged" means for a task that only adds a box. */
+.combo {
+  display: grid;
+  gap: var(--s1);
+}
+
+/* Set as .field-hint-list is, and for the same reason: a marker column beside a
+   monospace path reads as two columns. It renders hidden until the enhancement
+   shows it, so [hidden] at the end of this file outranks anything here. */
+.combo-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Empty until the enhancement writes the subset sentence into it (T010).
+   Present and empty rather than hidden, per docs/components.md's accessibility
+   floor — with no margin it is a grid box with no child, and costs the field
+   nothing until it speaks. */
+.combo-status {
+  margin: 0;
+}
+
 /* What a field says about what it will accept — today, the roots a working
    directory has to be under (T014). Dim sans, because it is an aside beside the
    control rather than an answer to something the operator did: that is the

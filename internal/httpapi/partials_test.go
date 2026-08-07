@@ -2220,6 +2220,198 @@ func TestDefaultInstallRendersOptions(t *testing.T) {
 	}
 }
 
+// The themed picker's three additions, and the shape each one has to keep
+// (T008, contracts/themed-combobox.md). The wrapper is matched non-greedily to
+// the first close: it holds an input, a datalist, a list and a status region and
+// no nested div, so the first `</div>` after it is its own — and a wrapper that
+// grew one would be a structure this task did not build.
+var (
+	comboWrapper = regexp.MustCompile(`(?s)<div\b[^>]*\bclass="combo"[^>]*>(.*?)</div>`)
+	comboListbox = regexp.MustCompile(`<ul\b[^>]*\bclass="combo-list"[^>]*>\s*</ul>`)
+	comboStatus  = regexp.MustCompile(`<p\b[^>]*\bclass="combo-status"[^>]*>\s*</p>`)
+)
+
+// comboViews is the two states the wrapper has to render in. The second is the
+// one the enhancement can never help: a form with nothing to suggest still has
+// to be the plain field that shipped before any of this existed.
+func comboViews() map[string]createFormView {
+	return map[string]createFormView{
+		"offering suggestions": {PageToken: testCardToken, Suggestions: workdirSuggestions},
+		"offering none":        {PageToken: testCardToken},
+	}
+}
+
+// combo returns what the wrapper holds, failing if the form renders no wrapper
+// at all.
+func combo(t *testing.T, out string) string {
+	t.Helper()
+
+	match := comboWrapper.FindStringSubmatch(out)
+	if match == nil {
+		t.Fatalf("the create form renders no .combo wrapper around the working-directory field:\n%s", out)
+	}
+	return match[1]
+}
+
+// TestComboRendersWithoutAriaRoles is the rule the whole themed-combobox
+// contract turns on, read at the only layer that can hold it. The native
+// control works first and the theme is an enhancement over something that
+// already functions, so the roles that describe the enhancement are added by
+// the script that makes them true.
+//
+// **Must fail when** the roles are moved into the template. That is the shape
+// this task is likeliest to be lost in by improvement rather than by mistake:
+// markup carrying role="combobox" and aria-expanded="false" looks finished, and
+// in a browser running no script it announces a control that does not exist and
+// a popup that can never open. Markup that lies to a screen reader is worse
+// than markup describing the plain field that is really there.
+//
+// role="status" and aria-live on the status region are not in the sweep and are
+// required by the test below: a live region has to be in the accessibility tree
+// before its text arrives, which is a fact about the region rather than a claim
+// about a control.
+func TestComboRendersWithoutAriaRoles(t *testing.T) {
+	t.Parallel()
+
+	for name, view := range comboViews() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			out := renderComponent(t, "create-form", view)
+			held := combo(t, out)
+			if !strings.Contains(held, `name="work_dir"`) {
+				t.Errorf("the .combo wrapper does not hold the working-directory field (%s):\n%s", held, out)
+			}
+
+			for _, aria := range []string{
+				`role="combobox"`,
+				`role="listbox"`,
+				`role="option"`,
+				"aria-expanded",
+				"aria-controls",
+				"aria-autocomplete",
+				"aria-activedescendant",
+			} {
+				if strings.Contains(out, aria) {
+					t.Errorf("the create form carries %s with no script to make it true; without one there is no combobox to expand and nothing to control, and a reader is told about a control that is not there:\n%s", aria, out)
+				}
+			}
+		})
+	}
+}
+
+// TestComboRendersListAndDatalist holds the two joints this structure adds, and
+// both of them lose silently. The field is joined to its options by a `list`
+// attribute naming a `<datalist>` id, and the enhancement will be joined to its
+// listbox by an aria-controls naming a `<ul>` id — three spellings in two trees,
+// none of which any compiler checks.
+//
+// **Must fail when** the ids drift apart. The symptom is the one that survives
+// review: a picker that renders perfectly, in the right place, with the right
+// styling, and offers nothing at all.
+func TestComboRendersListAndDatalist(t *testing.T) {
+	t.Parallel()
+
+	out := renderComponent(t, "create-form", createFormView{PageToken: testCardToken, Suggestions: workdirSuggestions})
+	held := combo(t, out)
+
+	input := workdirInput.FindString(held)
+	if input == "" {
+		t.Fatalf("the .combo wrapper holds no work_dir field:\n%s", out)
+	}
+	list, ok := attributeValue(t, input, "list")
+	if !ok {
+		t.Fatalf("the working-directory field points at no list (%s):\n%s", input, out)
+	}
+	if !strings.Contains(held, `<datalist id="`+list+`">`) {
+		t.Errorf("the field points at the datalist %q and the wrapper holds no such element; the options are markup the browser never reads:\n%s", list, out)
+	}
+	for _, path := range workdirSuggestions {
+		if !strings.Contains(held, `<option value="`+path+`">`) {
+			t.Errorf("the wrapper's datalist omits the suggestion %q, so the enhancement's one data source is missing it too:\n%s", path, out)
+		}
+	}
+
+	// The listbox the script will name. It is empty markup today and its id is
+	// the whole of what T010 has to point aria-controls at.
+	listbox := comboListbox.FindString(held)
+	if listbox == "" {
+		t.Fatalf("the wrapper holds no empty .combo-list; a listbox composed at enhancement time is a class the stylesheet sweep reads as a dead rule:\n%s", out)
+	}
+	if id, ok := attributeValue(t, listbox, "id"); !ok || id != "workdir-listbox" {
+		t.Errorf("the listbox is id=%q and the enhancement controls %q; the two spellings are a joint between two trees and nothing else holds them", id, "workdir-listbox")
+	}
+	if !strings.Contains(listbox, " hidden") {
+		t.Errorf("the listbox renders visible (%s); with no script it can never be filled, and an empty box below the field is a control that reads as broken", listbox)
+	}
+}
+
+// TestComboRendersPlainFieldWithNoSuggestions is FR-043 and FR-018a applied to
+// the wrapper: a daemon with nothing to suggest renders the field exactly as it
+// shipped before any picker existed, now inside a box that changes none of it.
+//
+// **Must fail when** an empty `<datalist>` is emitted, or the `list` attribute
+// survives the element it names, or the listbox is filled with something. All
+// three are markup that reads like an offer and makes none.
+func TestComboRendersPlainFieldWithNoSuggestions(t *testing.T) {
+	t.Parallel()
+
+	out := renderComponent(t, "create-form", createForm())
+	held := combo(t, out)
+
+	if strings.Contains(held, "<datalist") {
+		t.Errorf("a form with nothing to suggest renders a datalist anyway:\n%s", out)
+	}
+	input := workdirInput.FindString(held)
+	if input == "" {
+		t.Fatalf("the .combo wrapper holds no work_dir field:\n%s", out)
+	}
+	if list, ok := attributeValue(t, input, "list"); ok {
+		t.Errorf("the field points at the datalist %q and none is rendered (%s)", list, input)
+	}
+	if comboListbox.FindString(held) == "" {
+		t.Errorf("the listbox is missing or is not empty; with nothing to suggest there is nothing it could ever hold:\n%s", held)
+	}
+	if comboStatus.FindString(held) == "" {
+		t.Errorf("the status region is missing or is not empty:\n%s", held)
+	}
+}
+
+// TestComboStatusRegionIsInTheTemplate is docs/components.md's accessibility
+// floor applied to the region the enhancement announces through: a live region
+// has to be in the accessibility tree before its text arrives for the
+// announcement to happen at all, which is the same rule the fleet's own notes
+// and the subset note beside this field already follow.
+//
+// **Must fail when** it is created by script — the first announcement is then
+// made into a region a reader has never seen, and the stylesheet sweep reads
+// .combo-status as a rule no template renders, which is how a second component
+// starts.
+//
+// Empty rather than hidden, for the same reason: a region revealed and written
+// in one go is one some readers never announce.
+func TestComboStatusRegionIsInTheTemplate(t *testing.T) {
+	t.Parallel()
+
+	for name, view := range comboViews() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			held := combo(t, renderComponent(t, "create-form", view))
+			region := comboStatus.FindString(held)
+			if region == "" {
+				t.Fatalf("the wrapper holds no empty .combo-status:\n%s", held)
+			}
+			if strings.Contains(region, " hidden") {
+				t.Errorf("the status region is rendered hidden (%s); it is empty markup that costs the field nothing, and hiding it keeps it out of the accessibility tree until the moment it has something to say", region)
+			}
+			if !strings.Contains(region, `role="status"`) || !strings.Contains(region, `aria-live="polite"`) {
+				t.Errorf("the status region is not a polite live region (%s), so what the enhancement says about a narrowed list is said to nobody who cannot see it", region)
+			}
+		})
+	}
+}
+
 // TestCreateFormHasNoResumeField is US5 in the markup: the form no longer asks
 // for a conversation identifier, and asking is the whole of what was wrong with
 // it. The offer beside the field could only ever list the conversations of a
