@@ -111,7 +111,7 @@ re-litigate these** — if one looks wrong, write it in `PROGRESS.md` under
 ### US1 — Know what is running (everything depends on this)
 
 - [x] T001 `internal/buildinfo.Version`, default `"dev"` — the default is the sentinel
-- [ ] T002 `--version` on the command line, honest about unreleased builds
+- [x] T002 `--version` on the command line, honest about unreleased builds
 - [ ] T003 `GET /dashboard/version`, reading the same variable
 
 ### US2 — Releases exist
