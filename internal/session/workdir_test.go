@@ -2,8 +2,10 @@ package session
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -392,5 +394,136 @@ func TestResolveWorkDirKeepsThePathOutOfTheError(t *testing.T) {
 		if strings.Contains(err.Error(), canary) {
 			t.Errorf("ResolveWorkDir(%q) error %q echoes the path it refused", in, err)
 		}
+	}
+}
+
+// TestWorkDirChoicesOffersOnlyWhatACreateWouldAccept is the security claim of
+// the picker (#59), and the fixture is what makes it worth asserting: the root
+// holds a symlink pointing out of it, a dangling one, and a regular file, beside
+// the directory that is genuinely inside.
+//
+// The escaping link is the case the issue names. It sits inside an approved root
+// and points outside one, so a list built from directory *entries* would render
+// it as though it were inside — a page offering a path the create route is
+// certain to refuse, and naming a directory above the roots to do it. Resolving
+// before deciding is what makes that impossible rather than unlikely.
+func TestWorkDirChoicesOffersOnlyWhatACreateWouldAccept(t *testing.T) {
+	t.Parallel()
+
+	f := newWorkDirFixture(t)
+	choices, truncated := WorkDirChoices(nil, true, f.roots())
+
+	if truncated {
+		t.Errorf("a fixture with a handful of directories reported a truncated list: %v", choices)
+	}
+	want := []string{filepath.Join(f.root, "repo"), filepath.Join(f.second, "repo")}
+	if len(choices) != len(want) {
+		t.Fatalf("WorkDirChoices() = %v, want %v", choices, want)
+	}
+	for i, path := range want {
+		if choices[i] != path {
+			t.Errorf("choice %d = %q, want %q", i, choices[i], path)
+		}
+	}
+
+	// Every one of these is inside a root as a directory entry, and none of them
+	// is a working directory a create would accept. The escaping link is the one
+	// that matters: what must not appear is the link's own path, which reads as
+	// though it were inside the root it sits in.
+	for _, refused := range []string{f.escapeLink(), f.danglingLink(), f.file(), f.outside} {
+		if slices.Contains(choices, refused) {
+			t.Errorf("WorkDirChoices() offered %q; the picker may only offer what ResolveWorkDir accepts:\n%v", refused, choices)
+		}
+	}
+
+	// And each choice really survives the route's own check rather than
+	// resembling one that would. This is the property the whole feature rests on:
+	// a path that arrives from the list is validated exactly as one that was
+	// typed.
+	for _, choice := range choices {
+		if _, err := ResolveWorkDir(choice, f.roots()); err != nil {
+			t.Errorf("WorkDirChoices() offered %q and ResolveWorkDir refuses it: %v", choice, err)
+		}
+	}
+}
+
+// TestWorkDirChoicesDiscoversNothingUnlessAskedTo is the feature flag, and it is
+// the difference between a dashboard that reads the filesystem on every render
+// and one that does not.
+func TestWorkDirChoicesDiscoversNothingUnlessAskedTo(t *testing.T) {
+	t.Parallel()
+
+	f := newWorkDirFixture(t)
+	if choices, _ := WorkDirChoices(nil, false, f.roots()); len(choices) != 0 {
+		t.Errorf("WorkDirChoices() listed %v with discovery off; the roots are read only when the operator asks", choices)
+	}
+}
+
+// TestWorkDirChoicesKeepsTheConfiguredListFirstAndFiltersIt holds both halves of
+// what "an explicit list, always available" means.
+//
+// Available: a configured directory is offered whether or not discovery is on,
+// and it comes before whatever discovery found, so the cap can never push the
+// operator's own entries off the end. Filtered all the same: the allowlist is
+// the control, so an entry outside the roots is dropped here exactly as it would
+// be refused on create — a picker cannot become the way around the one bound
+// standing in for the permission prompt.
+func TestWorkDirChoicesKeepsTheConfiguredListFirstAndFiltersIt(t *testing.T) {
+	t.Parallel()
+
+	f := newWorkDirFixture(t)
+	// A directory only discovery can find, named so that it is last in the one
+	// order this list has: without it the configured entries and the discovered
+	// ones are the same two paths, and nothing about the order would be visible.
+	undiscovered := filepath.Join(f.root, "zzz-late")
+	if err := os.Mkdir(undiscovered, 0o750); err != nil {
+		t.Fatalf("create a discovered directory: %v", err)
+	}
+
+	configured := []string{
+		filepath.Join(f.second, "repo"),
+		filepath.Join(f.outside, "repo"), // outside every root
+		f.insideLink(),                   // a link inside a root, pointing inside it
+	}
+
+	// The operator's two usable entries, sorted, then what discovery added. The
+	// link resolving onto a directory discovery also finds is what proves the
+	// dedup: the same path twice is a picker where the operator cannot tell which
+	// of the two they chose.
+	want := []string{filepath.Join(f.root, "repo"), filepath.Join(f.second, "repo"), undiscovered}
+	choices, _ := WorkDirChoices(configured, true, f.roots())
+	if len(choices) != len(want) {
+		t.Fatalf("WorkDirChoices() = %v, want %v", choices, want)
+	}
+	for i, path := range want {
+		if choices[i] != path {
+			t.Errorf("choice %d = %q, want %q; the operator's own entries come before anything discovery found", i, choices[i], path)
+		}
+	}
+	if slices.Contains(choices, filepath.Join(f.outside, "repo")) {
+		t.Errorf("WorkDirChoices() offered a configured directory outside every approved root:\n%v", choices)
+	}
+}
+
+// TestWorkDirChoicesIsCappedAndSaysSo is the bound, and the announcement is the
+// half that is not merely hygiene: a list silently cut short is one an operator
+// reads as complete, and the directory they were looking for is simply not there
+// with nothing to say why.
+func TestWorkDirChoicesIsCappedAndSaysSo(t *testing.T) {
+	t.Parallel()
+
+	f := newWorkDirFixture(t)
+	for i := range MaxWorkDirChoices + 10 {
+		if err := os.Mkdir(filepath.Join(f.root, fmt.Sprintf("repo-%03d", i)), 0o750); err != nil {
+			t.Fatalf("create a discovered directory: %v", err)
+		}
+	}
+
+	choices, truncated := WorkDirChoices(nil, true, f.roots())
+	if len(choices) != MaxWorkDirChoices {
+		t.Errorf("WorkDirChoices() offered %d directories; the cap is %d, and it bounds the markup and the filesystem calls alike", len(choices), MaxWorkDirChoices)
+	}
+	if !truncated {
+		t.Error("WorkDirChoices() cut the list short and said nothing; a truncated list an operator believes is complete is worse than a long one")
 	}
 }

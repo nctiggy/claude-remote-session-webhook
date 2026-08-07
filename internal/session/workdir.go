@@ -3,8 +3,10 @@ package session
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
@@ -98,6 +100,107 @@ func ResolveWorkDir(path string, roots []config.ApprovedRoot) (string, error) {
 	}
 
 	return resolved, nil
+}
+
+// MaxWorkDirChoices bounds what WorkDirChoices puts in a page.
+//
+// It is a bound on markup and on work, not a taste: every choice costs a
+// symlink resolution and a stat on the request path, and every choice reaches
+// the browser as an element. A root with a thousand directories under it must
+// not turn one dashboard render into a thousand filesystem calls, and an
+// operator whose list is cut short is told so rather than left to believe the
+// page showed them everything.
+const MaxWorkDirChoices = 200
+
+// WorkDirChoices is the list of working directories the create form offers, and
+// it is a convenience laid over a control that has not moved (#59).
+//
+// Every path it returns has been through ResolveWorkDir, so it is absolute,
+// cleaned, symlink-resolved, under an approved root, and a directory — the same
+// five things a create is held to. That is what makes the two constraints in
+// issue #59 hold at once: a directory the operator can pick is one they could
+// already have typed, and a symlink sitting inside a root that points outside it
+// resolves to somewhere outside and is dropped rather than rendered as though it
+// were inside. Nothing here can name a path above a root, because containment is
+// tested on the resolved answer and not on the spelling that produced it.
+//
+// It is deliberately not authorisation and grants nothing. The create route
+// calls ResolveWorkDir on whatever is submitted, whether it came from this list
+// or was typed over it — a list rendered five minutes ago is not evidence about
+// the filesystem now, and re-checking is the only thing that can be.
+//
+// Order is the operator's own entries first, then whatever discovery found,
+// each group sorted. Configured entries come first because the operator named
+// them and because the cap must not be able to push them off the end; sorted
+// within a group so two renders of an unchanged host produce the same page.
+//
+// Discovery is one level deep under each root and reads nothing else. It is
+// per-render rather than cached at startup for the same reason ResolveWorkDir
+// does not re-resolve its roots: what is on the host is a question with one
+// honest reading, and it is the one taken now.
+func WorkDirChoices(configured []string, discover bool, roots []config.ApprovedRoot) (paths []string, truncated bool) {
+	seen := make(map[string]bool, len(configured))
+	add := func(path string) bool {
+		resolved, err := ResolveWorkDir(path, roots)
+		if err != nil {
+			// Dropped in silence, and it has to be: a picker that explained why a
+			// directory is missing would be a page reporting on paths outside the
+			// allowlist, which is the one thing this list may not describe. The
+			// operator's answer is the settings view (#49), which reads the
+			// configuration rather than the filesystem.
+			return false
+		}
+		if seen[resolved] {
+			return false
+		}
+		seen[resolved] = true
+		paths = append(paths, resolved)
+		return true
+	}
+
+	for _, path := range sorted(configured) {
+		if len(paths) == MaxWorkDirChoices {
+			return paths, true
+		}
+		add(path)
+	}
+	if !discover {
+		return paths, false
+	}
+
+	for _, root := range roots {
+		// Errors are dropped rather than reported: a root that cannot be listed is
+		// a fact about the host, and the create form is not where an operator finds
+		// out about it. It costs them the discovered half of a convenience, never
+		// the field itself.
+		entries, err := os.ReadDir(root.Path)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			// Neither a directory nor a symlink cannot resolve to a directory, so
+			// the stat is skipped rather than spent. A symlink is kept as a
+			// candidate precisely because it may point out of the root, which is
+			// what ResolveWorkDir is here to notice.
+			if !entry.IsDir() && entry.Type()&fs.ModeSymlink == 0 {
+				continue
+			}
+			if len(paths) == MaxWorkDirChoices {
+				return paths, true
+			}
+			add(filepath.Join(root.Path, entry.Name()))
+		}
+	}
+	return paths, false
+}
+
+// sorted is a copy in order, so WorkDirChoices cannot reorder the slice its
+// caller handed it — that slice is the operator's configuration, loaded once,
+// and shared by every render.
+func sorted(paths []string) []string {
+	out := slices.Clone(paths)
+	slices.Sort(out)
+	return out
 }
 
 // underAnyRoot reports whether an already-resolved path is inside the
