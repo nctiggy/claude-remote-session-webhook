@@ -67,6 +67,12 @@ Environment=CRSW_ALLOWED_ROOTS=%h/code
 # one to opt into. It widens nothing: the roots are still the control, and a
 # suggested path is checked against them on create exactly as a typed one is.
 Environment=CRSW_DISCOVER_ROOTS=
+
+# Extra directories the create form offers, comma-separated and absolute, on top
+# of the roots above — which are always offered. Default: empty. It reads no
+# filesystem, and a path listed here that is outside the roots is refused on
+# create exactly as a typed one is.
+Environment=CRSW_WORKDIR_SUGGESTIONS=
 Environment=CRSW_LISTEN=127.0.0.1:8765
 Environment=CRSW_MAX_SESSIONS=5
 

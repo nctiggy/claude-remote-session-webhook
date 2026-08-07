@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -123,6 +124,47 @@ func TestLoadFromAcceptsEveryOptionalOverride(t *testing.T) {
 	}
 	if cfg.MaxStreams != 2 {
 		t.Errorf("MaxStreams = %d, want 2", cfg.MaxStreams)
+	}
+}
+
+// TestWorkdirSuggestionsIsRead is the loader assertion this repository keeps
+// having to make (T005). CRSW_DESTROY_ON_SHUTDOWN had a constant, a field, a
+// settings row and a consumer, and no loader — so it was false on every daemon
+// that ever ran and nothing said so. A key whose value never reaches Config is
+// exactly that again, and the union in suggestions.go would union an empty list
+// forever while every test around it passed.
+//
+// It asserts the whole trip: unset is nothing, a configured list arrives in the
+// operator's own order, and the shim recorded where it came from — the settings
+// page reads that record, and it is the page that caught the last one.
+func TestWorkdirSuggestionsIsRead(t *testing.T) {
+	t.Parallel()
+
+	pairs, _ := baseEnv(t)
+	if got := mustLoad(t, pairs).WorkdirSuggestions; len(got) != 0 {
+		t.Errorf("WorkdirSuggestions = %v with %s unset, want nothing offered that the operator did not configure",
+			got, config.EnvWorkdirSuggestions)
+	}
+
+	// Not under the temp root on purpose, and neither path exists: this list is
+	// presentation, so nothing about it reads the filesystem or the allowlist.
+	// A path here that is refused on create is the contract working
+	// (contracts/directory-suggestions.md), and asserting it loads is what says
+	// the check lives at create time rather than here.
+	//
+	// The surrounding spaces are the second half: an operator writes `a, b`, and
+	// an entry that kept its space would be a suggestion no create could resolve.
+	pairs[config.EnvWorkdirSuggestions] = "/srv/scratch, /srv/second"
+
+	cfg := mustLoad(t, pairs)
+	want := []string{"/srv/scratch", "/srv/second"}
+	if got := cfg.WorkdirSuggestions; !slices.Equal(got, want) {
+		t.Fatalf("WorkdirSuggestions = %v, want %v; %s is declared and nothing reads it, so the picker offers what the operator wrote nowhere",
+			got, want, config.EnvWorkdirSuggestions)
+	}
+	if src := cfg.Sources[config.EnvWorkdirSuggestions]; src != config.SourceEnv {
+		t.Errorf("Sources[%s] = %v, want %v; a key read outside the shim has no provenance, and /settings answers \"why did my edit do nothing?\" from that record",
+			config.EnvWorkdirSuggestions, src, config.SourceEnv)
 	}
 }
 
@@ -544,6 +586,23 @@ func TestLoadFromRejects(t *testing.T) {
 				p["HOME"] = root // no "code" directory under it
 			},
 			wantIn: config.EnvAllowedRoots,
+		},
+		{
+			// A suggestion outside the roots is deliberately *not* here — the
+			// create refuses it, which is the contract. These two are the
+			// entries no configuration could ever make usable.
+			name: "workdir suggestion is relative",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvWorkdirSuggestions] = "code"
+			},
+			wantIn: "absolute",
+		},
+		{
+			name: "workdir suggestions have a trailing empty entry",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvWorkdirSuggestions] = "/srv/scratch,"
+			},
+			wantIn: "empty entry",
 		},
 		{
 			name:   "listen host is a wildcard",

@@ -165,6 +165,12 @@ func settingText(cfg *config.Config, name, key string) string {
 const (
 	rootsSeparator         = ", "
 	startCommandsSeparator = ","
+
+	// The suggestion list keeps its own grammar for the start-command set's
+	// reason and not the root list's: these paths are the operator's own,
+	// unresolved and unread, so the cell is the line they wrote and stays one
+	// they could paste back.
+	workdirSuggestionsSeparator = ","
 )
 
 // settingValue is the effective value of one non-secret setting, and whether
@@ -202,6 +208,8 @@ func settingValue(cfg *config.Config, name string) (value string, known bool) {
 		return strings.Join(paths, rootsSeparator), true
 	case config.EnvDiscoverRoots:
 		return strconv.FormatBool(cfg.DiscoverRoots), true
+	case config.EnvWorkdirSuggestions:
+		return strings.Join(cfg.WorkdirSuggestions, workdirSuggestionsSeparator), true
 	case config.EnvListen:
 		return cfg.Listen, true
 	case config.EnvMaxSessions:

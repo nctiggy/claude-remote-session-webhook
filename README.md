@@ -129,6 +129,7 @@ stands in for the permission prompt that is gone.
 | `CRSW_SHARED_SECRET` | **yes** | — | The HMAC secret the API client signs with. Unset, or shorter than 32 bytes, refuses to start |
 | `CRSW_ALLOWED_ROOTS` | no | `$HOME/code`, with a loud banner | Colon-separated absolute directories a session may run in. An entry that is empty, relative, missing, unresolvable, or not a directory refuses |
 | `CRSW_DISCOVER_ROOTS` | no | `false` | Offer each approved root's immediate subdirectories as working-directory suggestions. Anything but a boolean refuses |
+| `CRSW_WORKDIR_SUGGESTIONS` | no | empty | Comma-separated absolute directories offered on the create form beside the roots. An entry that is empty or relative refuses; one outside the roots is offered and refused on create, because the list is a convenience and `CRSW_ALLOWED_ROOTS` is the control |
 | `CRSW_LISTEN` | no | `127.0.0.1:8765` | The listener. A host that is not a loopback IP literal, or a port out of range, refuses |
 | `CRSW_MAX_SESSIONS` | no | `5` | How many sessions may exist at once. Below 1 refuses |
 | `CRSW_DESTROY_ON_SHUTDOWN` | no | `false` | Tear every session down when the daemon stops. **This build parses the key and does not act on it** — sessions survive a clean stop whatever it says |
