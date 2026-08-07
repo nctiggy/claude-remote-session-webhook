@@ -17,6 +17,25 @@
   symbol alone. The tagline stays outside the anchor: it names the product, it is
   not part of the mark, and it is hidden entirely under 780px.
 
+  The settings link is the route to /settings (#91), which shipped with nothing
+  pointing at it and could only be reached by typing the address. It is here
+  because this is the one component every page carries, and it is one anchor
+  rather than a list: two would be a nav bar, and a header with a nav bar in it
+  is a different component than the one docs/components.md defines.
+
+  It does not compete with the wordmark. The mark keeps the phosphor and the
+  glow; this is the dim eyebrow the tagline beside it already uses, and it keeps
+  the underline the mark deliberately drops — a word in the header is not the
+  product's own name, which is the distinction .card-heading is underlined for.
+  It is rendered on /settings too, pointing at the page already open, for the
+  reason the wordmark is rendered on the fleet: an affordance that appears and
+  disappears is worse than one that is occasionally redundant.
+
+  It sits before the address rather than after it. The address stays the last
+  thing on the bar because the design system's second non-negotiable is about
+  the corner and not merely about presence, and a link is the one kind of
+  neighbour that could be mistaken for it.
+
   The address is escaped like every other text node anyway. It arrived inside a
   signature the edge wrote rather than from a caller, so escaping it is defence
   in depth — but it is the primary defence for everything else this dashboard
@@ -25,6 +44,9 @@
 {{ template "rain" }}
 <div class="masthead-bar">
 <h1 class="brand"><a class="brand-link" href="/">crswd</a> <span class="brand-tag">session control</span></h1>
+<div class="masthead-aside">
+<a class="masthead-link" href="/settings">settings</a>
 <p class="operator" title="{{ .Email }}">{{ .Email }}</p>
+</div>
 </div>
 </header>

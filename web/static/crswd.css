@@ -197,6 +197,43 @@ body {
   text-shadow: none; /* the eyebrow beside the brand does not glow with it */
 }
 
+/* The bar's right half: the one route out of the fleet, then whose credentials
+   these are. It exists so that the link travels with the identity instead of
+   becoming a third thing space-between spreads into the middle of the bar — a
+   word floating between the mark and the address is where a nav bar starts.
+
+   min-inline-size: 0 so a long address still truncates inside it. .operator's
+   own overflow already gives it a zero automatic minimum; this gives the group
+   around it the same one, which is what keeps a long address off the brand. */
+.masthead-aside {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s4);
+  min-inline-size: 0;
+}
+
+/* The route to the settings page (#91). Dim eyebrow rather than phosphor: the
+   wordmark is the mark on this bar and a second glowing word beside it would be
+   two marks. It keeps the browser's underline, which .brand-link drops — that
+   argument is about a wordmark being its own affordance, and this is an ordinary
+   word. The hover cue is the same lift .card-heading uses, not a glow.
+
+   flex: none because it is one short fixed word; the address beside it is the
+   thing that should give way when the bar runs out of room. */
+.masthead-link {
+  flex: none;
+  color: var(--dim);
+  font-size: var(--fs-eyebrow);
+  font-weight: 600;
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+  transition: color var(--transition);
+}
+
+.masthead-link:hover {
+  color: var(--text);
+}
+
 /* Whose credentials are driving sessions on this host. Long addresses truncate
    rather than push the brand off the bar; the title attribute carries the rest. */
 .operator {

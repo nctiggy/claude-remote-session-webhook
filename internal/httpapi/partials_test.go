@@ -1091,6 +1091,75 @@ func TestTheHeaderIsTheRouteBackToTheFleet(t *testing.T) {
 	}
 }
 
+// TestTheHeaderIsTheRouteToSettings is issue #91.
+//
+// /settings shipped in milestone 4 with nothing pointing at it. The header's one
+// anchor was the wordmark and it goes to the fleet, so typing the address was the
+// whole of the navigation to a page an operator reaches when something is already
+// confusing them.
+//
+// The settings page is asserted alongside the other two, and it is not the
+// redundant one: it is the same argument #48 made about the wordmark on the
+// fleet. A link that vanishes on the page it points at is an affordance an
+// operator has to learn the shape of.
+//
+// The last two claims are the constraint the header already carried. Two anchors
+// is a mark and a link; a third is a nav bar, and this component is not one. The
+// address stays the last thing on the bar, because the design system's second
+// non-negotiable is about the top-right corner and this is the one kind of
+// neighbour that could take it.
+//
+// **Must fail when** the anchor is dropped, when it is spelled as a glyph, when a
+// third link is added beside it, or when it is placed after the address.
+func TestTheHeaderIsTheRouteToSettings(t *testing.T) {
+	t.Parallel()
+
+	card := actionableCard()
+	operator := &access.VerifiedOperator{Email: "operator@example.com"}
+	pages := map[string]string{
+		"the fleet page": renderedFleet(t),
+		"the single-session page": renderComponent(t, "session", sessionPageView{
+			Operator: operator,
+			Session:  card,
+			Pane:     paneView{ID: card.ID, Text: "$ go test ./..."},
+		}),
+		"the settings page itself": renderComponent(t, "settings", settingsView{
+			Operator: operator,
+			Settings: []settingRow{{Key: "pane_bound", Value: "200", Source: "default"}},
+		}),
+	}
+
+	for name, page := range pages {
+		masthead := mastheadElement.FindStringSubmatch(page)
+		if masthead == nil {
+			t.Fatalf("%s renders no masthead, so this asserted nothing about its header:\n%s", name, page)
+		}
+
+		anchors := cardAnchor.FindAllStringSubmatch(masthead[1], -1)
+		var link []string
+		for _, anchor := range anchors {
+			if strings.Contains(anchor[1], `href="/settings"`) {
+				link = anchor
+			}
+		}
+		if link == nil {
+			t.Errorf("%s renders no header link to /settings; typing the address is the only way to the page:\n%s", name, masthead[0])
+			continue
+		}
+
+		// The same rule the wordmark is held to (FR-030): never by symbol alone.
+		if !strings.Contains(link[2], "settings") {
+			t.Errorf("%s spells the route to the settings page as %q; a control with no word is a symbol on its own:\n%s", name, strings.TrimSpace(link[2]), masthead[0])
+		}
+		if len(anchors) != 2 {
+			t.Errorf("%s renders %d links in its header; the mark and this one are the two it carries, and the next one makes it a nav bar:\n%s", name, len(anchors), masthead[0])
+		}
+		if strings.Index(masthead[1], link[0]) > strings.Index(masthead[1], `class="operator"`) {
+			t.Errorf("%s puts the settings link after the operator's address; the top-right is identity:\n%s", name, masthead[0])
+		}
+	}
+}
+
 // TestTheRainCarriesNoInformationAndStaysOffReadingContent holds the design
 // system's two rules for the effect: it is hidden from assistive technology
 // because it says nothing, and it appears behind the header and the empty state
