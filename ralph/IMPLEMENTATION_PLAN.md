@@ -125,7 +125,7 @@ under `NEEDS CLARIFICATION` and stop.
 
 ### US1 — Configure the daemon in a file (P1, MVP)
 
-- [ ] T003 Carry forward the parser from `claude/issue-issue-65-...0112`; grammar only
+- [x] T003 Carry forward the parser from `claude/issue-issue-65-...0112`; grammar only
 - [ ] T004 The file-level refusals, none of which ever names the value
 - [ ] T005 🔒 The mode refusal, gated on the file containing a secret
 - [ ] T006 A missing file is not an error; the parser never writes

@@ -167,3 +167,82 @@ of the package's non-test files for any `Source` constant the list does not acco
   variable minus `CRSW_`, lower-cased — but no code owns it yet. T003 derives keys by that same
   rule for the parser, so **T003 is the natural home for one exported conversion**, and T012
   reading the map should not re-derive it a second time.
+
+---
+
+## Iteration 3 — 2026-08-07 02:53
+
+**Did:** T003. `internal/config/file.go` carries the grammar forward from
+`origin/claude/issue-issue-65-20260807-0112` and nothing else: `ParseFile(path, data)` →
+`*File`, whole-line `#` comments, `strings.Cut` on the first `=`, both ends trimmed and the
+inside of a value left alone, keys held to `[a-z0-9_]`. `KeyForVar`/`VarForKey` are the one
+exported statement of the derivation rule that iteration 2 asked T003 to own, and `File.Lookup`
+takes an **environment variable name** while the map is keyed by the **file spelling**, so the
+conversion happens in exactly one place. `file_test.go` carries the five contract tests plus a
+round-trip of the rule over every variable `config.go` declares, the no-quoting-the-line
+refusal, and the mixed-case-key case.
+
+**Learned:**
+
+- **Seven mutations were run, not reasoned about**, per iteration 1's rule: split on the last
+  `=`, strip a trailing `#`, fold a mixed-case key to lower case, quote the malformed line back
+  in the refusal, treat a `#` anywhere as a comment, collapse whitespace inside a value, and skip
+  a malformed line silently. Each failed; each was reverted and both files checked by `sha256sum`
+  against their pre-mutation digests before the gate.
+- **`git checkout`/`git checkout-index`/`cp` to `/tmp` are all denied by this sandbox**, so the
+  revert-after-mutation loop cannot use them. What works: `git add` the file first, then revert
+  by hand with the Edit tool and confirm with `sha256sum`. Budget for that when mutating T005,
+  T007, T011 and T019.
+- **Deliberately left on the branch, for the tasks that own them.** Read them there rather than
+  reinventing: `git show origin/claude/issue-issue-65-20260807-0112:internal/config/file.go`.
+  `ErrConfigFile`, `Vars()`, `renamedKeys`, `maxKeyLen`, `versionKey`/`SchemaVersion` and
+  `checkSchemaVersion` → **T004**. `readConfigFile`'s open/stat/mode/size handling and
+  `maxConfigFileBytes` → **T005/T006**. `DefaultPath` and `layeredEnv` → **T007**. The branch's
+  `file_test.go` (~15 end-to-end tests driving `config.LoadFrom`) is the test material for
+  T004–T007 and should be carried, not rewritten.
+- **T004 must carry `maxKeyLen` (32) and its comment when it starts quoting keys.** T003 quotes
+  nothing, so it does not need the bound. T004's message shape is `has unknown key %q`, and
+  `openssl rand -hex 32` produces 64 characters that are *all* inside `[a-z0-9_]` — a secret
+  pasted onto a line without its key parses as a perfectly valid key and would be quoted into
+  stderr and the journal. The bound is the only thing standing between that and a leak.
+- **`version` currently parses as an ordinary key.** `Lookup(VarForKey("version"))` answers
+  `"1"`. Nothing asks for `CRSW_VERSION` so it is inert today, but T004 owns the version key and
+  must consume it out of `values` — left in, T012 renders a `version` row for a setting that is
+  not one.
+- **A repeated key is last-wins in the parser right now**, and it is commented as such. T004's
+  `TestRepeatedKeyRefuses` is what fixes it; the grammar's job is what a line *means*, not which
+  of two lines wins.
+- The T003 tests reuse `declaredVars(t)` from `envexample_test.go`, which parses `config.go` for
+  `CRSW_` constants. So a variable added to `config.go` whose name does not round-trip through
+  the key rule fails T003's suite, not just T004's.
+
+**Left:** T004–T035. Next is T004 (the file-level refusals), which is the other half of what the
+abandoned branch already wrote.
+
+**Findings:**
+
+- **`contracts/config-file.md` says the worked example "yields exactly eight keys" and the
+  example beneath it sets seven** — `version`, `listen`, `allowed_roots`, `start_commands`,
+  `session_lifetime`, `idle_timeout`, `shared_secret`. I did **not** invent an eighth: the
+  example itself is unambiguous about what parses to what, so `TestParseAcceptsWorkedExample`
+  asserts those seven pairs exactly and the prose count is what is wrong. Worth correcting in the
+  contract, by whoever owns it, before T034 writes `config.example` against the same text.
+- **The branch's `layeredEnv` is not the contract's `withFile`, and T007 must not carry it
+  verbatim.** `layeredEnv` returns `getenv` *unchanged* when the file is empty. Under T008 the
+  same shim also records provenance, so that short-circuit would leave the `map[string]Source`
+  empty for every no-file deployment — and `TestSourceRecordedForEveryKey` asserts every key has
+  a `Source` after `Load`. The shim has to run on every lookup even when there is no file.
+- **`.env.example` still exists and `envexample_test.go` (172 lines) pins it.** The abandoned
+  branch *renamed* it to `config.example` and updated `.gitignore`, `.gitleaks.toml`, `README.md`,
+  `deploy/README.md` and `cmd/crswd/quickstart_test.go` in the same commit. T034 says only
+  "write `config.example` at the repository root" and says nothing about the old file — so T034
+  has to decide whether it is a rename (and carry those five edits, including the gitleaks rule
+  that teaches the scanner the file spelling of the two secret-bearing settings) or a second
+  example beside the first. Two example files disagreeing is the failure mode.
+- **`envPrefix = "CRSW_"` is now declared twice** — `file.go` in `package config` and
+  `envexample_test.go` in `package config_test`. Legal today because they are different packages.
+  It would collide the moment a test file in this package moves to the internal form.
+- **Lint remains UNVERIFIED locally** (v1.62.2 on PATH, #26). `golangci-lint run` was silent,
+  `gofmt -l .` clean, `go vet` green untagged and under `-tags tmux`, `-tags quickstart` and
+  `-tags dev`, and `go.sum` is still absent. `go install golangci-lint/v2@v2.12.2` was not
+  retried; the sandbox denial from iteration 1 has not changed. CI is the gate.
