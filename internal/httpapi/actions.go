@@ -719,6 +719,176 @@ func (s *Server) refuseBrowserCompact(w http.ResponseWriter, r *http.Request, er
 	}
 }
 
+// --- Mode ------------------------------------------------------------------
+//
+// The fifth route on this door that changes something, and the only one of the
+// five that takes a value naming *what a session runs* (US4, T019,
+// contracts/session-mode.md).
+//
+// That is what makes it the dangerous one. The other four read a name, a
+// working directory, a confirmation, or nothing at all; this one reads the
+// choice between two things the operator configured to be executed. FR-030 is
+// the rule it exists under, and it cuts both ways: no command line reaches the
+// browser, and none arrives from it.
+
+// patternDashboardMode is the toggle route, from contracts/session-mode.md's
+// table.
+//
+// It is spelled the other four's way and for their reasons: under /dashboard/
+// so milestone 1's surface is untouched (FR-005) and a grep for the prefix
+// finds every browser-initiated change, the wildcard through pathValueID so the
+// name in the pattern and the name read back cannot drift apart, and the method
+// inside the pattern so a GET here falls to handleUnrouted's `/` and is answered
+// as a path nothing claims rather than as a 405 with an Allow header (FR-033).
+const patternDashboardMode = "POST /dashboard/sessions/{" + pathValueID + "}/mode"
+
+// fieldMode is the mode the operator asked for (contracts/session-mode.md).
+//
+// It carries a *mode* and never a command line. Which command each mode runs is
+// the operator's configuration, read at startup and never from a request, so the
+// widest thing this field can say is one of two words.
+const fieldMode = "mode"
+
+// offersMode reports whether the submitted value is one of the two modes this
+// daemon has, and it is an allowlist rather than a conversion.
+//
+// `session.Mode(value)` would compile, would be shorter, and would turn
+// `claude --dangerously-skip-permissions` into a Mode carrying that spelling —
+// which is FR-030 gone, arriving as a one-word edit that reads like a
+// simplification. Two literals, matched, or nothing: the value never becomes a
+// Mode at all unless it already was one.
+//
+// The literals are internal/session's own vocabulary rather than two strings
+// spelled here, so what a form posts and what a card derives cannot come to mean
+// different things. Which configured command each of them names is deliberately
+// not decided here — that is the transition's question (T020), asked where the
+// answer is used, and a copy of it on this door would be a second place free to
+// disagree about what "remote" runs.
+func offersMode(value string) bool {
+	return value == string(session.ModeLocal) || value == string(session.ModeRemote)
+}
+
+// The three reasons a toggle can be turned away, each a sentinel authored here
+// so a record can never carry a byte the caller chose (FR-042).
+var (
+	// errModeNotOffered is a `mode` field this daemon has no mode for. It names
+	// neither the value nor its length: the whole point of the check is that
+	// what arrived may be a command line, and a trail that echoed one would put
+	// it in the operator's journal — the one place FR-042 keeps caller text out
+	// of.
+	errModeNotOffered = errors.New("a browser mode change named a mode this daemon does not offer")
+
+	// errModeUnconfirmed is a toggle without `confirm=yes` (FR-029). It is its
+	// own sentinel rather than the destroy's, for the reason every reason on this
+	// door is: what tells one action's records from another's is this.
+	errModeUnconfirmed = errors.New("a browser mode change arrived without the confirming step")
+
+	// errModeUnavailable is the transition this daemon cannot yet carry out.
+	//
+	// Ending and restarting the process inside the pane is T020's work, in
+	// internal/session/manager.go, and until it exists there is nothing behind
+	// this door that could change a session's mode. Saying so is the honest
+	// answer: an operator told their session is now remote-controlled, on a
+	// session still running the local command, has been told the one thing this
+	// route must never get wrong — and a success nobody performed is exactly how
+	// that happens.
+	errModeUnavailable = errors.New("this daemon cannot yet change a session's mode")
+)
+
+// modeFromBrowser is POST /dashboard/sessions/{id}/mode (US4,
+// contracts/session-mode.md).
+//
+// Everything that authorises it has already run: handleAction wrapped this
+// handler in the gate, so layer 1 has verified an identity, the browser has said
+// the request came from this page, and the form has carried a token minted for
+// that identity. What is left is the value, the confirming step, the ownership
+// check, and the transition.
+//
+// The order is the destroy's with one step moved in front of it. The value is
+// read first — ahead of the confirming step and ahead of any lookup — because it
+// is the one field on this door that could name something to run, and an
+// operator reading the journal is owed the fact that something posted a command
+// line at this daemon whether or not the same request also forgot to confirm.
+// Both checks still run before the store is read, so a request that was never
+// going to be carried out costs no lookup and no tmux command.
+func (s *Server) modeFromBrowser(w http.ResponseWriter, r *http.Request) {
+	operator, ok := OperatorFrom(r.Context())
+	if !ok {
+		// Fail closed on the path that should not happen, the way every other
+		// handler on this door does: the gate in front puts the operator in the
+		// context, so a false here is a route wired without one.
+		AuditFrom(r.Context()).Deny(errDashboardNoOperator.Error())
+		s.refuseBrowser(w)
+		return
+	}
+
+	// The shape check the other three session-scoped actions run, ahead of the
+	// lookup and for their reason: an identifier off the 32-lowercase-hex
+	// alphabet cannot name a session this daemon minted, so it is a path nothing
+	// claims rather than a session that is not there.
+	id := r.PathValue(pathValueID)
+	if !routableID(id) {
+		AuditFrom(r.Context()).Deny(errScopeNoRoute.Error())
+		s.renderNotFound(w, r, operator)
+		return
+	}
+
+	// Read from PostForm and never Form, for the reason the gate reads the token
+	// that way: a mode change this daemon would accept from a query string is a
+	// restarted assistant that a link can cause. The form itself was parsed by the
+	// gate, under the configured body limit.
+	//
+	// The refusal is uniform across every value that is not one of the two, and
+	// deliberately does not say which value arrived or how it was wrong. A
+	// helpful "unknown mode: <value>" would be caller-authored text on its way
+	// back out through a page, and the values this check exists to turn away are
+	// exactly the ones nobody should be handed back.
+	if !offersMode(r.PostForm.Get(fieldMode)) {
+		AuditFrom(r.Context()).Deny(errModeNotOffered.Error())
+		s.redirectOutcome(w, r, outcomeBadMode)
+		return
+	}
+
+	// The confirming step, compared rather than parsed, exactly as the destroy
+	// compares it (FR-029). A mode change ends the process the operator is
+	// watching and starts another in its place; `on`, `true`, `1` and an empty
+	// value are all things a stray checkbox or a hand-built request produces, and
+	// none of them is the deliberate act this asks for.
+	if r.PostForm.Get(fieldConfirm) != confirmYes {
+		AuditFrom(r.Context()).Deny(errModeUnconfirmed.Error())
+		s.redirectOutcome(w, r, outcomeModeUnconfirmed)
+		return
+	}
+
+	// Manager.View, which is what a browser gets: it settles ownership without a
+	// per-session credential, because a browser holds none and must not be given
+	// one (FR-034a). An id that never existed, one another operator owns, and one
+	// whose session is already gone are one answer to the caller (FR-017, SC-009)
+	// and three sentinels on the record.
+	live, err := s.sessions.View(id, operator.Owner)
+	if err != nil {
+		// resolveReason rather than a reason of this route's own, for the reason
+		// the other three use it: the trail already has a vocabulary for these,
+		// and never the wrapped error, which would carry the caller's spelling of
+		// the id (FR-042).
+		AuditFrom(r.Context()).Deny(resolveReason(err).Error())
+		s.notFoundAction(w)
+		return
+	}
+	// The id off the daemon's own record, never the bytes in the path. It is
+	// stamped before the transition, so a mode change that failed is findable in
+	// the trail under the session it failed against.
+	AuditFrom(r.Context()).SetSessionID(live.ID)
+
+	// The transition is T020's, in internal/session/manager.go: ending and
+	// restarting the process inside the pane with `--continue`, without ending
+	// the session, its window or its scrollback. This route is the door in front
+	// of it and is finished; what is behind it is not built, and this is the arm
+	// that will carry a transition that failed once there is one to fail.
+	AuditFrom(r.Context()).Deny(errModeUnavailable.Error())
+	s.redirectOutcome(w, r, outcomeModeFailed)
+}
+
 // routableID reports whether the path value is the shape every identifier this
 // daemon mints has: 32 lowercase hex characters (session.NewID).
 //

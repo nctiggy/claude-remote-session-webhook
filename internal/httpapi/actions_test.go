@@ -4738,3 +4738,567 @@ func TestAllFourActionsUsableWithoutScript(t *testing.T) {
 		})
 	}
 }
+
+// --- US4: the mode toggle (T019) ---------------------------------------------
+//
+// The fifth action route, and the only one that reads a value naming what a
+// session runs. Everything below drives the **registered** route through
+// Server.ServeHTTP, for the reason the destroy's cases do: a toggle wired with
+// handleBrowser instead of handleAction would leave the cross-site defence
+// absent from the one route that can restart an unsandboxed assistant under a
+// different command, and every case that drove the handler directly would still
+// be green.
+
+// The toggle's own answers, and the action its records carry. Each is written
+// out here rather than read from the constant the code writes, which is the
+// discipline every literal in this file follows: a test asserting against
+// outcomeBadMode would prove only that the code agrees with itself, and
+// contracts/session-mode.md is what fixes `session.mode`.
+const (
+	wantBadModeOutcome         = outcome("bad-mode")
+	wantModeUnconfirmedOutcome = outcome("mode-unconfirmed")
+	wantModeFailedOutcome      = outcome("mode-failed")
+
+	wantModeAction = "session.mode"
+)
+
+// The two words this route accepts, spelled as a form carries them.
+const (
+	modeLocal  = "local"
+	modeRemote = "remote"
+)
+
+// plantedStartCommand is the command *name* every session below is started
+// under, and the field the mode is derived from (T018).
+//
+// Every refusal here asserts the record still carries it afterwards, and that is
+// what "the mode is unchanged" means on a record: there is deliberately no mode
+// field to read, so the name is the whole of the state a toggle can move.
+const plantedStartCommand = "rc"
+
+// toggler is the registered mode route with everything behind it readable: the
+// store, the fake host, and the trail.
+type toggler struct {
+	*testServer
+	keys *keyServer
+}
+
+func newToggler(t *testing.T) *toggler {
+	t.Helper()
+
+	keys := newKeyServer(t)
+	return &toggler{testServer: newAuditedServerWith(t, keys.validator(t)), keys: keys}
+}
+
+// live plants a running session of this operator's own, started under a
+// configured command name.
+func (g *toggler) live(t *testing.T) session.Session {
+	t.Helper()
+
+	planted, _ := g.fixture.plant(t, session.Session{
+		Name:         "to-be-toggled",
+		WorkDir:      g.fixture.repo,
+		StartCommand: plantedStartCommand,
+	})
+	return planted
+}
+
+// asked is the form a rendered control submits: the page token, the confirming
+// step FR-029 requires, and the mode.
+func (g *toggler) asked(t *testing.T, mode string) url.Values {
+	t.Helper()
+
+	form := url.Values{}
+	form.Set(fieldPageToken, mustMint(t, g.pageKey, testOperatorEmail, testTime))
+	form.Set(fieldConfirm, confirmYes)
+	form.Set(fieldMode, mode)
+	return form
+}
+
+// post submits one form at the mode route, as the browser this daemon rendered
+// the page for.
+func (g *toggler) post(t *testing.T, id string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+
+	return g.send(t, "/dashboard/sessions/"+id+"/mode", secFetchSiteSameOrigin, form)
+}
+
+// send is post with the browser's own account of where the request came from
+// chosen by the caller — the one thing the cross-site cases have to vary and a
+// rendered control never does.
+//
+// post is expressed through it rather than beside it so that a varied case
+// differs from the ordinary one in exactly the field it means to vary. An
+// initiator of absent sends no Sec-Fetch-Site header at all, which is a
+// different shape from sending an empty one and is its own cause on a route that
+// changes something.
+func (g *toggler) send(t *testing.T, path, site string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	r.Header.Set(headerContentType, contentTypeForm)
+	r.Header.Set(headerAccessAssertion, g.keys.mint(t, g.keys.claims()))
+	if site != absent {
+		r.Header.Set(headerSecFetchSite, site)
+	}
+
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, r)
+	return w
+}
+
+// runs is the command name the daemon's own record still carries, read back out
+// of the store rather than off the copy the test planted.
+func (g *toggler) runs(t *testing.T, s session.Session) string {
+	t.Helper()
+
+	live, err := g.fixture.store.Get(s.ID, auth.CallerOperator)
+	if err != nil {
+		t.Fatalf("read the store for session %s: %v", s.ID, err)
+	}
+	return live.StartCommand
+}
+
+// untouched is the assertion every refusal below shares: the record still names
+// the command it named, and nothing reached the host at all.
+//
+// The second half is what the first cannot see. A toggle that restarted the pane
+// and then failed to write the record would leave the store looking exactly like
+// a request refused before it ran, and the difference between those two is a
+// process the operator did not ask for, running unsandboxed.
+func (g *toggler) untouched(t *testing.T, s session.Session) {
+	t.Helper()
+
+	if got := g.runs(t, s); got != plantedStartCommand {
+		t.Errorf("the record runs %q; want %q — a refused toggle changes nothing", got, plantedStartCommand)
+	}
+	if calls := g.fixture.tmux.Calls(); len(calls) != 0 {
+		t.Errorf("a refused toggle reached the host %d times (%v); want 0 — nothing is restarted by a request this daemon would not carry out",
+			len(calls), calls)
+	}
+}
+
+// answered is the Location and the body together, which is the whole of what a
+// caller gets back from an action: a 303 answering a POST carries no body, so
+// anything of theirs that survived is in the one header that varies.
+//
+// The security headers are deliberately not searched. `script-src` contains the
+// two letters of a command name the table below submits, and a test that read
+// them would fail on the content-security policy rather than on a disclosure.
+func answered(w *httptest.ResponseRecorder) string {
+	return w.Header().Get(headerLocation) + "\n" + w.Body.String()
+}
+
+// TestArbitraryModeValueRefused is FR-030 in the direction that matters most: a
+// `mode` field naming anything other than the two words this daemon has is
+// refused, uniformly, and nothing runs.
+//
+// **Must fail when** the value is passed through as a command. The host-call
+// count is the direct claim — a handler that took the field as something to run
+// would have reached tmux — and the answer and the trail are the two places the
+// value could otherwise surface.
+//
+// The table is the shapes a hostile or careless value arrives in. The first is
+// the attack proper, spelled as contracts/session-mode.md spells it. The second
+// is subtler and is the one a well-meaning edit produces: `rc` is a real
+// start-command *name* on this daemon, and a route accepting names rather than
+// modes would be the browser choosing which configured command to run — a wider
+// surface than the two-word toggle FR-030 permits, and one nothing here would
+// catch if the check were a lookup instead of a comparison. The rest are
+// near-misses — case, whitespace, both modes at once — because the check is a
+// comparison rather than a parse, and each is what a hand-built request or a
+// helpful client sends.
+//
+// The last stanza is the non-vacuity: a real mode is answered differently.
+// Without it every case here is satisfied by a route that refuses everyone.
+func TestArbitraryModeValueRefused(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"a command line":                   "claude --dangerously-skip-permissions",
+		"a configured start-command name":  plantedStartCommand,
+		"the default start command's name": "default",
+		"the field is absent":              absent,
+		"the field is empty":               "",
+		"the value is not lowercase":       "Local",
+		"the value carries whitespace":     " remote ",
+		"both modes at once":               "local,remote",
+		"a mode with something after it":   "local; claude --dangerously-skip-permissions",
+		"a path to something on this host": "/usr/local/bin/claude",
+	}
+
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			g := newToggler(t)
+			live := g.live(t)
+
+			form := g.asked(t, modeLocal)
+			if value == absent {
+				form.Del(fieldMode)
+			} else {
+				form.Set(fieldMode, value)
+			}
+
+			w := g.post(t, live.ID, form)
+
+			wantOutcome(t, w, wantBadModeOutcome)
+			g.untouched(t, live)
+
+			// Only the values long enough that a match is a disclosure rather than
+			// a coincidence. Two of the entries above are shorter than the fixed
+			// strings a redirect and a reason are built from, and asserting on
+			// those would be asserting about the alphabet.
+			if len(value) >= 4 {
+				if got := answered(w); strings.Contains(got, value) {
+					t.Errorf("the answer carried the submitted value back:\n%s", got)
+				}
+				if got := g.sink.String(); strings.Contains(got, value) {
+					t.Errorf("the trail carried the submitted value:\n%s", got)
+				}
+			}
+
+			rec := g.only(t)
+			if got, want := rec["action"], wantModeAction; got != want {
+				t.Errorf("action = %v; want %v — the gate admitted this request; the value is what refused it", got, want)
+			}
+			if got, want := rec["decision"], string(audit.Deny); got != want {
+				t.Errorf("decision = %v; want %v", got, want)
+			}
+			if got, want := rec["reason"], errModeNotOffered.Error(); got != want {
+				t.Errorf("reason = %v; want %v — the reason names the check and never the value (FR-042)", got, want)
+			}
+		})
+	}
+
+	offered := newToggler(t)
+	live := offered.live(t)
+	if w := offered.post(t, live.ID, offered.asked(t, modeRemote)); w.Header().Get(headerLocation) == "/?outcome="+string(wantBadModeOutcome) {
+		t.Fatalf("a toggle naming %q was refused as a mode this daemon does not offer; every case above is satisfied by a route that refuses everyone", modeRemote)
+	}
+}
+
+// TestToggleRequiresConfirm is FR-029 on the toggle: a mode change without the
+// confirming step is refused, and the session goes on running what it was
+// running.
+//
+// **Must fail when** the confirm check is removed — every case below then reaches
+// the transition and answers something other than the unconfirmed outcome.
+//
+// The near-misses are the destroy's, for the destroy's reason: `on`, `true` and
+// an upper-case `YES` are what a stray checkbox, a hand-built request and a
+// helpful client produce, and none of them is the deliberate act FR-029 asks
+// for. What a toggle ends is the process the operator is watching, and the
+// conversation inside it survives only because the transition asks for it to —
+// so a mode change nobody meant to make is not a refusal worth softening.
+func TestToggleRequiresConfirm(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"the field is absent":        absent,
+		"the field is empty":         "",
+		"the operator said no":       "no",
+		"a checkbox said on":         "on",
+		"a client said true":         "true",
+		"the value is not lowercase": "YES",
+	}
+
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			g := newToggler(t)
+			live := g.live(t)
+
+			form := g.asked(t, modeRemote)
+			if value == absent {
+				form.Del(fieldConfirm)
+			} else {
+				form.Set(fieldConfirm, value)
+			}
+
+			w := g.post(t, live.ID, form)
+
+			wantOutcome(t, w, wantModeUnconfirmedOutcome)
+			g.untouched(t, live)
+
+			rec := g.only(t)
+			if got, want := rec["action"], wantModeAction; got != want {
+				t.Errorf("action = %v; want %v — the gate admitted this request; the confirming step is what refused it", got, want)
+			}
+			if got, want := rec["decision"], string(audit.Deny); got != want {
+				t.Errorf("decision = %v; want %v", got, want)
+			}
+			if got, want := rec["reason"], errModeUnconfirmed.Error(); got != want {
+				t.Errorf("reason = %v; want %v", got, want)
+			}
+		})
+	}
+
+	confirmed := newToggler(t)
+	live := confirmed.live(t)
+	if w := confirmed.post(t, live.ID, confirmed.asked(t, modeRemote)); w.Header().Get(headerLocation) == "/?outcome="+string(wantModeUnconfirmedOutcome) {
+		t.Fatal("a confirmed toggle was answered as unconfirmed; every refusal above is satisfied by a route that refuses everyone")
+	}
+}
+
+// TestToggleEmitsExactlyOneAuditRecord is FR-041 on the fifth route: one
+// request, one record, under the action contracts/session-mode.md names.
+//
+// **Must fail when** the transition emits records of its own. A toggle ends one
+// process and starts another, and the shape this is written against is the
+// obvious one — a destroy-like record for the stop and a create-like record for
+// the start — which would leave an operator counting two events for a thing they
+// did once, on the route where "how many times did this happen" matters most.
+//
+// Every shape a request can take is driven rather than only the accepted one,
+// because the count is what FR-041 claims about *requests* and not about
+// successes: a refusal recorded twice is the same defect. The decision is
+// deliberately not asserted here — what this holds is the count and the name,
+// and both stay true whichever way the transition behind the door goes.
+func TestToggleEmitsExactlyOneAuditRecord(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		vary       func(form url.Values)
+		namesTheID bool
+	}{
+		"a toggle this daemon admits": {
+			vary:       func(url.Values) {},
+			namesTheID: true,
+		},
+		"a toggle naming no mode this daemon has": {
+			vary: func(form url.Values) { form.Set(fieldMode, "claude --dangerously-skip-permissions") },
+		},
+		"a toggle nobody confirmed": {
+			vary: func(form url.Values) { form.Del(fieldConfirm) },
+		},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			g := newToggler(t)
+			live := g.live(t)
+
+			form := g.asked(t, modeRemote)
+			c.vary(form)
+			g.post(t, live.ID, form)
+
+			rec := g.only(t)
+			if got, want := rec["action"], wantModeAction; got != want {
+				t.Errorf("action = %v; want %v", got, want)
+			}
+			if !c.namesTheID {
+				return
+			}
+			// Stamped from the daemon's own record, and only once the ownership
+			// check has matched it to this operator: it is what makes a toggle
+			// findable in the trail under the session it was against.
+			if got := rec["session_id"]; got != live.ID {
+				t.Errorf("session_id = %v; want %q", got, live.ID)
+			}
+		})
+	}
+}
+
+// TestToggleCrossSiteBothHalves is AR-005 on the newest action route: each half
+// of the cross-site defence refuses on its own, with the other satisfied.
+//
+// **Must fail when** the route is registered with handleBrowser rather than
+// handleAction, and when a case satisfies neither half — which is why each one
+// below sends a *valid* page token or a *real* same-origin header for the half it
+// is not varying. Nothing here disables a check: a build tag or a flag that
+// turned one off is the exact defect this gate exists to prevent, and it would
+// leave every case passing against a daemon with no defence at all.
+//
+// The absent header is a case of its own rather than a variant of the wrong one.
+// A stream tolerates it — non-browser clients send no fetch metadata — and a
+// route that changes something does not, because the only legitimate caller here
+// is a form this daemon rendered, and a browser sends the header on every one.
+//
+// The record is asserted as dashboard.reject rather than session.mode, which is
+// the distinction research R5 draws: an identity that got in and *then* failed
+// the cross-site check is a more alarming event than one that never got in, and
+// an operator counting toggles must not be counting these with them.
+func TestToggleCrossSiteBothHalves(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		site string
+		vary func(form url.Values)
+	}{
+		"the form carried no page token": {
+			site: secFetchSiteSameOrigin,
+			vary: func(form url.Values) { form.Del(fieldPageToken) },
+		},
+		"the form carried a page token this daemon never minted": {
+			site: secFetchSiteSameOrigin,
+			vary: func(form url.Values) { form.Set(fieldPageToken, "not-a-token-this-daemon-minted") },
+		},
+		"the browser said the request came from another site": {
+			site: "cross-site",
+			vary: func(url.Values) {},
+		},
+		"the browser said nothing about where the request came from": {
+			site: absent,
+			vary: func(url.Values) {},
+		},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			g := newToggler(t)
+			live := g.live(t)
+
+			form := g.asked(t, modeRemote)
+			c.vary(form)
+
+			w := g.send(t, "/dashboard/sessions/"+live.ID+"/mode", c.site, form)
+
+			if w.Code != wantActionStatus {
+				t.Fatalf("status = %d (%s); want %d — the mode route is not behind the gate",
+					w.Code, w.Body.String(), wantActionStatus)
+			}
+			if got := w.Body.String(); got != wantActionBody {
+				t.Errorf("body\n%s\nwant the gate's uniform refusal\n%s", got, wantActionBody)
+			}
+			g.untouched(t, live)
+
+			if got, want := g.only(t)["action"], string(audit.ActionDashboardReject); got != want {
+				t.Errorf("action = %v; want %v", got, want)
+			}
+		})
+	}
+
+	admitted := newToggler(t)
+	live := admitted.live(t)
+	if w := admitted.post(t, live.ID, admitted.asked(t, modeRemote)); w.Code == wantActionStatus {
+		t.Fatalf("a toggle satisfying both halves was answered %d; every case above is satisfied by a route that refuses everyone", w.Code)
+	}
+}
+
+// TestToggleAgainstASessionThatIsNotTheOperatorsIsUniform is the ownership half
+// of the security checklist on the newest route: a toggle naming a session this
+// operator may not act on is the uniform not-found, whichever of the three
+// causes applied (FR-017, SC-009).
+//
+// **Must fail when** the refusal becomes a redirect. FR-025 keeps a refusal off
+// the outcome path — sending an unauthorised caller to a page is telling them
+// their request was processed — and the three causes are told apart on the
+// record alone, which is what stops this route being an oracle for which
+// identifiers on this host are real.
+//
+// There is deliberately no mutation that removes the ownership check here,
+// because there is nothing to remove: Manager.View cannot be called without an
+// owner, so a handler that skipped the check would have to reach past the
+// manager into the store. What this holds is the answer's shape.
+func TestToggleAgainstASessionThatIsNotTheOperatorsIsUniform(t *testing.T) {
+	t.Parallel()
+
+	// Not on the allowlist and not this operator's owner: a second operator whose
+	// sessions this one must not be able to detect the existence of.
+	const stranger auth.CallerID = "a-second-operator"
+
+	cases := []struct {
+		name   string
+		target func(t *testing.T, g *toggler) session.Session
+		reason error
+	}{
+		{
+			name: "an identifier no session on this host ever had",
+			target: func(*testing.T, *toggler) session.Session {
+				return session.Session{ID: strings.Repeat("d", session.IDLen)}
+			},
+			reason: session.ErrSessionNotFound,
+		},
+		{
+			name: "a session another operator owns",
+			target: func(t *testing.T, g *toggler) session.Session {
+				t.Helper()
+				theirs, _ := g.fixture.plant(t, session.Session{
+					Owner: stranger, Name: "not-this-operators", WorkDir: g.fixture.repo,
+					StartCommand: plantedStartCommand,
+				})
+				return theirs
+			},
+			reason: session.ErrSessionNotFound,
+		},
+		{
+			name: "a session of the operator's own that is no longer there",
+			target: func(t *testing.T, g *toggler) session.Session {
+				t.Helper()
+				gone, _ := g.fixture.plant(t, session.Session{
+					Name: "already-gone", WorkDir: g.fixture.repo, State: session.StateDead,
+					StartCommand: plantedStartCommand,
+				})
+				return gone
+			},
+			reason: session.ErrSessionDead,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := newToggler(t)
+			target := tc.target(t, g)
+
+			w := g.post(t, target.ID, g.asked(t, modeRemote))
+
+			if w.Code != wantNotFoundStatus {
+				t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), wantNotFoundStatus)
+			}
+			if got := w.Body.String(); got != wantNotFoundBody {
+				t.Errorf("body\n%s\nwant\n%s", got, wantNotFoundBody)
+			}
+			if calls := g.fixture.tmux.Calls(); len(calls) != 0 {
+				t.Errorf("the host was reached %d times (%v) for a session that is not this operator's to act on", len(calls), calls)
+			}
+
+			rec := g.only(t)
+			if got, want := rec["reason"], tc.reason.Error(); got != want {
+				t.Errorf("reason = %v; want %v — the record is the only place the cause is named", got, want)
+			}
+			if strings.Contains(w.Body.String(), tc.reason.Error()) {
+				t.Errorf("the response quotes the reason back:\n%s", w.Body.String())
+			}
+		})
+	}
+}
+
+// TestToggleSaysSoWhenItCannotAct is the honest half of T019: the door is built
+// and the transition behind it is not, so a toggle this daemon admits is told it
+// did not happen.
+//
+// **Must fail when** this route answers a success it did not perform. Ending and
+// restarting the process inside the pane is T020's work; until it exists, an
+// operator told their session is now remote-controlled would be reading a card
+// describing a session that is still local — the one claim this route must never
+// get wrong, and the reason a stub that answered `mode-changed` would be worse
+// than no route at all. When the transition lands this test is what has to
+// change, and having to change it deliberately is the point.
+func TestToggleSaysSoWhenItCannotAct(t *testing.T) {
+	t.Parallel()
+
+	g := newToggler(t)
+	live := g.live(t)
+
+	w := g.post(t, live.ID, g.asked(t, modeRemote))
+
+	wantOutcome(t, w, wantModeFailedOutcome)
+	g.untouched(t, live)
+
+	rec := g.only(t)
+	if got, want := rec["decision"], string(audit.Deny); got != want {
+		t.Errorf("decision = %v; want %v — a mode this daemon did not change is not an allowed action", got, want)
+	}
+	if got, want := rec["reason"], errModeUnavailable.Error(); got != want {
+		t.Errorf("reason = %v; want %v", got, want)
+	}
+}

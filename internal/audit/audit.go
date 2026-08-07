@@ -140,6 +140,22 @@ const (
 	// verb is registered on it — so there is no settings.* write to tell apart
 	// from this, and if one is ever added it will need its own name here.
 	ActionSettingsView Action = "settings.view"
+
+	// ActionSessionMode is a session's mode changed, or refused, from the
+	// dashboard (T019, contracts/session-mode.md).
+	//
+	// The contract spells it session.mode rather than dashboard.mode, and that is
+	// the spelling here: what the record is about is a fact of the session — what
+	// it is running — and there is no API operation of this name for an operator
+	// to be counting it with. settings.view is already the precedent for a
+	// browser-door action named for its subject rather than for its door.
+	//
+	// It never carries what the session was switched to run. The record says the
+	// mode was changed and against which session; which command line either mode
+	// names is the operator's configuration, and FR-030 keeps it out of every
+	// request and every response — a trail that printed it would be the one copy
+	// of it that left the daemon.
+	ActionSessionMode Action = "session.mode"
 )
 
 // Decision is the allow/deny outcome, and unlike Action it is closed: two

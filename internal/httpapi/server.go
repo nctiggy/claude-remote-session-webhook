@@ -542,6 +542,15 @@ func newServer(
 	// doing, and the operator watching a pane has no way to tell that from the
 	// assistant's own decision.
 	s.handleAction(patternDashboardCompact, audit.ActionDashboardCompact, s.compactFromBrowser)
+	// The fifth, and the only one that takes a value naming what a session runs
+	// (T019). It goes through handleAction like the four above, and it is the one
+	// of the five where the gate's second half earns its keep twice over: a
+	// third-party page that could reach this route could restart every session on
+	// this host under whichever of the operator's configured commands it named.
+	// What it may name is two words, checked against internal/session's own
+	// vocabulary before anything is looked up — no command line arrives from a
+	// browser, in either direction (FR-030).
+	s.handleAction(patternDashboardMode, audit.ActionSessionMode, s.modeFromBrowser)
 	// One route per embedded asset, so `/static/` names exactly the files the
 	// binary carries and a path that is not one of them is a path nothing claims
 	// (contracts/dashboard.md's route table; see loadAssets for why a wildcard is

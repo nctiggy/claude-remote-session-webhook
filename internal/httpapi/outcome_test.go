@@ -24,9 +24,10 @@ import (
 // code a route still chooses.
 var spelledOutcomes = []outcome{
 	"created", "destroyed", "renamed", "compacted",
-	"bad-name", "bad-work-dir", "bad-start-command", "limited", "unconfirmed",
+	"bad-name", "bad-work-dir", "bad-start-command", "bad-mode", "limited", "unconfirmed",
+	"mode-unconfirmed",
 	"teardown-unverified",
-	"create-failed", "destroy-failed", "rename-failed", "compact-failed",
+	"create-failed", "destroy-failed", "rename-failed", "compact-failed", "mode-failed",
 }
 
 // TestEveryOutcomeThisPackageSpellsHasASentence is the other half of FR-022: the

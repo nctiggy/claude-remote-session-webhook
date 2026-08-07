@@ -835,10 +835,10 @@ type sweep struct {
 //
 // The API's six and their method-less twins are read off the contract's own
 // table, and the assets off the embedded tree, so neither can drift from what
-// the daemon registers. The browser door's nine are listed here because there is
+// the daemon registers. The browser door's ten are listed here because there is
 // nowhere to read them from — but they are the *constants* newServer registers,
-// so a renamed route moves this sweep with it. A tenth would have to be added
-// here by hand, and that is the one gap this arrangement cannot close.
+// so a renamed route moves this sweep with it. An eleventh would have to be
+// added here by hand, and that is the one gap this arrangement cannot close.
 func registeredPatterns(t *testing.T) []string {
 	t.Helper()
 
@@ -852,6 +852,7 @@ func registeredPatterns(t *testing.T) []string {
 		patternDashboardDestroy,
 		patternDashboardRename,
 		patternDashboardCompact,
+		patternDashboardMode,
 		// handleUnrouted's catch-all, which is a registered route like any other:
 		// it is what answers a path nothing claims, from behind the browser door.
 		"/",
@@ -1051,10 +1052,16 @@ func TestFullRouteSweepLeaksNoSecret(t *testing.T) {
 		form.Set(fieldPageToken, mustMint(t, s.pageKey, testOperatorEmail, testTime))
 		return form
 	}
-	create, rename, compact, destroy := token(), token(), token(), token()
+	create, rename, compact, mode, destroy := token(), token(), token(), token(), token()
 	create.Set(fieldName, "swept-into-existence")
 	create.Set(fieldWorkDir, s.fixture.repo)
 	rename.Set(fieldName, "swept-and-renamed")
+	// The toggle carries both its fields, so the sweep reads what the route
+	// answers rather than what it refuses a malformed request with: a refusal
+	// before the lookup is a shorter path through the handler, and the point here
+	// is to drive the long one.
+	mode.Set(fieldMode, string(session.ModeLocal))
+	mode.Set(fieldConfirm, confirmYes)
 	destroy.Set(fieldConfirm, confirmYes)
 
 	// The browser door's whole surface. The destroy comes last of the four
@@ -1088,6 +1095,7 @@ func TestFullRouteSweepLeaksNoSecret(t *testing.T) {
 		{"a create from the browser", http.MethodPost, "/dashboard/sessions", create, http.StatusSeeOther},
 		{"a rename from the browser", http.MethodPost, "/dashboard/sessions/" + browser.ID + "/rename", rename, http.StatusSeeOther},
 		{"a compact from the browser", http.MethodPost, "/dashboard/sessions/" + browser.ID + "/compact", compact, http.StatusSeeOther},
+		{"a mode change from the browser", http.MethodPost, "/dashboard/sessions/" + browser.ID + "/mode", mode, http.StatusSeeOther},
 		{"a destroy from the browser", http.MethodPost, "/dashboard/sessions/" + browser.ID + "/destroy", destroy, http.StatusSeeOther},
 		{"a path nothing claims", http.MethodGet, "/not-a-route", nil, http.StatusNotFound},
 		{"a mutating verb at the settings page", http.MethodPost, settingsPath, nil, http.StatusNotFound},

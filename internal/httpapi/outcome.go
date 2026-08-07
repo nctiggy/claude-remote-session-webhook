@@ -68,8 +68,15 @@ const (
 	outcomeBadName         outcome = "bad-name"
 	outcomeBadWorkDir      outcome = "bad-work-dir"
 	outcomeBadStartCommand outcome = "bad-start-command"
+	outcomeBadMode         outcome = "bad-mode"
 	outcomeLimited         outcome = "limited"
 	outcomeUnconfirmed     outcome = "unconfirmed"
+
+	// outcomeModeUnconfirmed is the toggle's own unconfirmed, and not
+	// outcomeUnconfirmed (T019). That code's sentence says nothing was torn
+	// down, which is true of a destroy and meaningless about a mode change —
+	// the per-action failures below are separate for the same reason.
+	outcomeModeUnconfirmed outcome = "mode-unconfirmed"
 
 	outcomeTeardownUnverified outcome = "teardown-unverified"
 
@@ -77,6 +84,7 @@ const (
 	outcomeDestroyFailed outcome = "destroy-failed"
 	outcomeRenameFailed  outcome = "rename-failed"
 	outcomeCompactFailed outcome = "compact-failed"
+	outcomeModeFailed    outcome = "mode-failed"
 )
 
 // queryOutcome is the query parameter the fleet reads its banner from, spelled
@@ -160,11 +168,25 @@ var banners = map[outcome]outcomeView{
 		// refused for a nameable reason must keep saying which.
 		Message: "That start command is not one this daemon is configured with.",
 	},
+	outcomeBadMode: {
+		// Says the mode is not on offer and never what was asked for. The values
+		// this refusal exists to turn away are the ones that name something to
+		// run (FR-030), and a sentence that quoted one would print it on the
+		// operator's own page — which is caller-authored text reaching the
+		// document, the thing the closed vocabulary above exists to prevent.
+		Message: "That is not a mode this daemon offers. Nothing was changed.",
+	},
 	outcomeLimited: {
 		Message: "No session was started: this host is at its limit for now. Destroy one, or try again shortly.",
 	},
 	outcomeUnconfirmed: {
 		Message: "This destroy was not confirmed, so nothing was torn down.",
+	},
+	outcomeModeUnconfirmed: {
+		// The destroy's sentence with the fact it states replaced rather than
+		// its shape: a mode change tears nothing down, and telling an operator
+		// that nothing was torn down would be true and about something else.
+		Message: "This mode change was not confirmed, so nothing was changed.",
 	},
 
 	outcomeTeardownUnverified: {
@@ -198,6 +220,12 @@ var banners = map[outcome]outcomeView{
 		// and hold no secret, but a failure that quoted its payload is the shape of
 		// the leak AR-007 closes.
 		Message: "The compact could not be delivered.",
+	},
+	outcomeModeFailed: {
+		// Says the session is as it was, because that is the fact an operator
+		// needs from a failed toggle: the process they are watching is the one
+		// they were already watching, and the mode on its card is still true.
+		Message: "The session's mode could not be changed. It is running what it was running.",
 	},
 }
 
