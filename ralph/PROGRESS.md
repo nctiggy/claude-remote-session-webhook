@@ -2747,3 +2747,106 @@ only under an approved root.
   imported as `xexec` (red on both halves of that test — the aliased import *and* the empty walk);
   the darwin row keyed on `solaris` (red on the macOS row); and `/etc/os-relase` (red on
   `TestReadsTheSystemsOwnIdentification` alone, green everywhere else).
+
+---
+
+## Iteration 31 — 2026-08-07 09:18
+
+**Did:** T031. New `internal/session/conversation.go`: `ListConversations(workDir, roots)` lists
+Claude Code's own store — `~/.claude/projects/<path-with-separators-as-hyphens>/<id>.jsonl` — and
+returns `Conversation{ID, Modified}` and nothing else. It resolves and allowlists the working
+directory through `ResolveWorkDir` **before** the store is consulted, opens no file, sorts newest
+first with an identifier tiebreak, and caps at 200. An absent, unlistable or home-less store offers
+nothing and is not an error. Tests: the task's four plus `TestStoreIsClaudeCodesOwnLayout`.
+
+**Learned:**
+
+- **The store's layout is a fact about the host, and this iteration could only verify one half of
+  it.** `/` → `-` is confirmed: this repo's own conversations live in
+  `~/.claude/projects/-home-nctiggy-code-claude-remote-session-webhook`. Whether Claude Code also
+  folds `.` or `_` could not be checked — listing anything under `$HOME` outside the repo needs a
+  permission this loop does not have. See the finding below; the direction it fails in is safe.
+- **The fixture restates the mapping rather than calling `storeDirName`.** A helper that encoded the
+  path by calling the code under test would write its fixture into whatever directory a typo
+  produced and agree with it. With the restatement, mutating `-` to `_` went red on
+  `TestListsIdAndTimeOnly` and `TestNeverOpensAFile` as well as on the literal.
+- **`TestNeverOpensAFile` needs both halves and neither is redundant.** A "helpful" preview field
+  that *ignores* its read error is invisible to the runtime case — the 0000 transcript is still
+  listed, just with an empty preview — and only the AST walk catches it. A preview that *skips* on
+  a read error is caught by both. The walk allowlists `os.ReadDir` and `os.UserHomeDir`, fails on an
+  aliased `os` import, fails on importing `bufio`/`io`/`encoding/json`/`os/exec`, and fails when it
+  finds no `os.ReadDir` at all.
+- **Name order and time order must disagree in the fixture.** `os.ReadDir` returns entries sorted by
+  name, so the first draft's `9f8e…-new`/`b0a1…-old` pair came back in the expected order with no
+  sort at all. Renamed so the newest sorts last; removing the modification-time comparison is now
+  red.
+- **A panicking parallel subtest tears down its parent's `t.TempDir` while its siblings are still
+  running.** A `nil` error dereferenced in one case produced "the path does not exist or cannot be
+  resolved" in three unrelated cases, which reads exactly like a fixture bug in those cases. The
+  guard before `err.Error()` is a `t.Fatalf`, not a `t.Errorf`, for that reason.
+- **`errcheck` here has `check-blank: true`**, so `_ = os.Chmod(...)` inside a `t.Cleanup` is an
+  issue and not the usual escape hatch. And **gosec G302 reads `os.Chmod(dir, 0o750)` as a file
+  mode** — restoring a directory's own mode needs a `//nolint:gosec` with the reason.
+
+**Left:** T032–T035. Next is **T032**: offer these conversations in
+`web/templates/partials/create-form.html`, fresh by default, a new session record either way, and a
+refusal rather than a guess where the choice is ambiguous.
+
+**Findings:**
+
+- **The store-directory mapping is verified for `/` only.** `storeDirName` turns separators into
+  hyphens and touches nothing else, so a working directory whose name contains a `.` or a `_` will
+  find no store if Claude Code folds those characters too — the operator is offered nothing, which
+  is indistinguishable from a directory with no conversations. That is the safe direction (the
+  alternative is offering another directory's list), but it is a silent hole worth closing with one
+  `ls ~/.claude/projects` by whoever has the shell. Not a `NEEDS CLARIFICATION`: the spec already
+  settles that the layout is Claude Code's to define and that an unmatched directory offers nothing.
+- **`ListConversations` has no caller yet** — T032 is the wiring, exactly as the dependency graph
+  has it. It is the failure mode the plan names three times, so it is worth saying out loud that
+  this iteration ends with the code existing and nothing calling it.
+- **The 200 cap is silent**, like `DiscoveredWorkDirs`'s. It drops the *oldest* because the sort
+  runs first, so an operator past the cap loses the tail rather than the thing they were about to
+  resume — but nothing tells them the list was cut.
+- **Every entry costs an `lstat`** (`DirEntry.Info`), on top of the `ReadDir`. That is the price of
+  a modification time and it is the same order of work as the directory walk already on the render
+  path; it is worth remembering when T032 decides how often this runs.
+- **Renaming from the session page with scripting on still leaves the card above showing the old
+  name** (27-31). **Every action still redirects to the fleet** (19-31). **The `aria-describedby` on
+  the card's link is still redundant** (26-31). **Nothing posts to
+  `/dashboard/sessions/{id}/mode`** (19-31) — thirteenth iteration carrying it, and still the
+  finding most likely to end the milestone with a feature the operator cannot use.
+- **`crswd config check` still probes nothing** (29-31). **A start command with a leading
+  environment assignment (`FOO=bar claude`) probes `FOO=bar`** (29-31).
+  **`docs/components.md:14`'s "draws rain, reads panes and follows the fleet stream"** is still four
+  behaviours short (28-31), and its action table still says the rename answers "`200` and the
+  renamed card". **`contracts/dependency-check.md`'s worked example is three `crswd: ` lines against
+  a one-line refusal** (30-31). T035 owns the doc sweep.
+- **Still open from iterations 5-30:** the three red `-tags quickstart` tests
+  (`TestDashboardQuickstartStory1Adopted`, `TestQuickstartStory4Restart`, `TestQuickstartStory5Cap` —
+  `CRSW_DESTROY_ON_SHUTDOWN` has no loader); `.fleet-note:empty { display: none }` against the
+  accessibility floor; nothing rendering a directory suggestion in the shipped default and the walk's
+  silent cap; `contracts/directory-picker.md`'s `name="workdir"`; `contracts/settings-page.md`'s 405
+  row and its worked example; three `ReadFile` refusals missing from `contracts/config-file.md`; the
+  `version < 1` row; "exactly eight keys" against nine; a dangling symlink reading as absent;
+  `f.values` having no enumerator; `os.Open` on a FIFO blocking startup; `--config <path>` unbuilt;
+  `README.md` and `deploy/README.md` silent on the config file (T034/T035); the misnamed
+  `Test*AndAnswersWithItsCard` pair; the unsynchronised `s.report` in `newAuditedServerWith`; the two
+  `TestParseSessions` fixtures passing for the wrong reason; `contracts/tmuxctl.md` stale by three
+  fields; `contracts/actions.md` stale in nine places; `contracts/card-layout.md` naming three tests
+  this milestone has no task for; the NEEDS CLARIFICATION from iteration 20 about a start command
+  that ignores SIGINT.
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean; `go build`, `go vet`, `go test -count=1 ./...` all green, and `./internal/session` green
+  under `-count=5` and `-race`; `go vet` green under `-tags tmux`, `-tags quickstart` and
+  `-tags dev`; `go test -tags dev ./internal/session` green; `go.sum` still absent. This task adds
+  one file to `internal/session` and touches nothing tagged, so the tmux and quickstart suites were
+  vetted rather than run. Eight mutations were run and reverted by reverse `Edit`, each checked
+  against the whole package: `underAnyRoot` returning true (red on `TestRefusesOutsideApprovedRoot`
+  **returning the refused directory's conversations** — the ordering assertion — and on
+  `TestStoreIsClaudeCodesOwnLayout`'s wiring case); `storeDirName` joining with `_` (red on three
+  tests); `Modified: time.Now()` (red on every row's time and on the order); a `Preview` field read
+  with `os.ReadFile` (red on the field count and the AST walk); the same preview *skipping* on a
+  read error (red on the unreadable-transcript case too); the `ReadDir` error returned rather than
+  swallowed (red on three of the four absent-store cases); the sort reduced to the identifier
+  tiebreak (red on the order); and `conversationStoreDir = "project"` (red on
+  `TestStoreIsClaudeCodesOwnLayout` **alone** — the typo no fixture can see).
