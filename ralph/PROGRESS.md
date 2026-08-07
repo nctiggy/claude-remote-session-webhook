@@ -828,3 +828,91 @@ two. `TestSubsetAnnounced` rewritten and `TestTheThemedPickerEnhancesTheNativeOn
    `CRSW_DESTROY_ON_SHUTDOWN` row, `settings.go:114-118`, and
    `contracts/directory-suggestions.md:62`'s comma-spelled `allowed_roots`. Iteration 6's
    uncapped-union note and iteration 7's missing wiring test are also still open and unowned.
+
+---
+
+## Iteration 11 — 2026-08-07 17:51
+
+**Did:** T011, in commit `ce36a79`. The picker's listbox is now operable: `↓`/`↑` move an
+active option (wrapping, reopening a list Escape closed), `Enter` accepts it into the field
+and closes, `Escape` and `Tab` close and leave what was typed alone. `draw()` gives every
+`<li>` an id built from `listbox.id` and clears the active one on every rebuild; `activate()`
+sets `aria-selected="true"` — the selector T009's ring was keyed on and nothing wore — plus
+`aria-activedescendant` on the field, and scrolls the option into the bounded list.
+`TestComboKeyboardOperable` in `stylesheet_test.go`.
+
+**Learned:**
+
+- **The floor FR-008 needs is the field's own value, counted.** "Typing is never intercepted"
+  cannot be asserted directly in Go, but every way of breaking it writes `field.value` — an
+  inline completion on input, an Escape that reverts, a blur that normalises. So the test
+  counts `.value =` across the whole file: **exactly one**, it reads an option's own
+  `textContent`, and it sits after the `'Enter'` literal. That single count is what caught the
+  must-fail mutation, and it is worth keeping whole-file rather than block-scoped.
+- **Most other claims had to be scoped to the picker's block**, because the words they turn on
+  are ordinary: `hidden = true` is what the toast does when it expires, and `preventDefault`
+  is called by the toast and by the card's selection fix. The block is
+  `source[index("SETTLE_MS"):index("data-combo")]` — the picker's one constant to the query
+  that applies it. Both markers are asserted before the slice is taken.
+- **A whole-block "aria-activedescendant is cleared" assertion is satisfied by the close path
+  and misses the redraw.** Verified: deleting the clear in `draw()` left the test green,
+  because `activate(-1)` clears it too. The ids are **positional**
+  (`${listbox.id}-option-${index}`), so a stale attribute does not dangle — it names whichever
+  path now sits in that position, announced as active while the ring is on nothing. The
+  assertion is now positional, between `replaceChildren` and the first `addEventListener`.
+- **Enter with nothing active is deliberately not touched.** It is the submit this form has
+  always had, so a path typed in full is sent by the same key whether or not the script ran.
+  Only the accept is claimed, and only when there is something to accept.
+- **`Tab` is never `preventDefault`ed** and the test slices from `'Tab'` to the end of the
+  block to say so — which holds because Tab is last in the branch order, as it is last in the
+  contract's own table. A swallowed Tab is focus trapped in a text field.
+- **`close()` also clears `.combo-status` and the pending settle timer.** The close path is
+  new with this task, and without that a count written 400ms later describes a list that is no
+  longer on screen. It is the close being honest rather than new prose — the sentence itself
+  is still the template's.
+- **Mutation-verified six ways, each reverted:** (a) `preventDefault()` added to the Tab
+  branch — the Tab slice fails; (b) an inline completion writing the single match into the
+  field on input — the `.value =` count fails, which is this task's named must-fail;
+  (c) `aria-selected` swapped for a class — the ARIA assertion fails and the ring is worn by
+  nothing; (d) the option id replaced with `dataset.at` — the id assertion fails; (e) the
+  accept assembled from `matching()[active]` rather than the option's text — the `textContent`
+  assertion fails; (f) the clear dropped from `draw()` — **green until the assertion was made
+  positional**, see above.
+- Linter confirmed v2 before trusting the green: `golangci-lint 2.12.2`, 0 issues.
+  `go test ./...` green; `gofmt -l` clean; `go vet` compiles all three tagged suites. No
+  `go.sum`. **`-tags quickstart` was not run: `127.0.0.1:8765` is held by the deployed daemon**
+  (as in iterations 9 and 10). This task touches no `cmd/crswd` code and no Go outside one
+  test file.
+
+**Left:** T012–T016. **T012 is next** and is independent of everything above: the settings
+link in `web/templates/partials/header.html`, inside `.masthead-bar`, after `<p class="operator">`
+and outside `<h1 class="brand">`, with six tests in `partials_test.go` — including
+`TestSettingsStillHasNoMutatingVerb`, which is the security half: reachability is not
+permission to add editing.
+
+**Findings:**
+
+1. **Nothing selects an option with the pointer, and it is now the picker's one remaining
+   hole** (iteration 10's finding 1, still open). T011's scope is the keyboard and the task
+   text names four keys; a click handler is outside it and AR-008 is load-bearing, so it was
+   not added. The accept path now exists (`activate` + the assignment in `Enter`), so the fix
+   is small: a `mousedown` on an option — **mousedown, not click**, since a blur-close would
+   otherwise fire first — that activates it and runs the same accept. `.combo-list li` still
+   carries `cursor: pointer` from T009, so the affordance is drawn and does nothing.
+   **Milestone 6, or T016 if it is willing to touch behaviour.**
+2. **The list has no blur close.** Tab closes it, but a pointer click elsewhere on the page
+   leaves it open over the form. Same owner as finding 1 and the same ordering trap — the two
+   should be written together or the blur will eat the click that selects.
+3. Iteration 9's reduced-motion hole is still open and still **T016's or milestone 6's**:
+   nothing in `crswd.css` stops an `animation` under `prefers-reduced-motion`, only a
+   `transition`.
+4. `docs/components.md` still documents no `.combo`, `.combo-list`, `.combo-status` or
+   `.switch-*` entry (iterations 8–10, still open, still **T016's**). T011 adds the last piece
+   worth writing down: **the active option is `aria-selected="true"` and the field keeps
+   focus**, so the ring is a rule rather than inheritance, and the ids the listbox builds are
+   positional and cleared on every redraw.
+5. The stale-prose findings from iterations 4–7 are all still open and all still **T016's**:
+   `outcome.go`'s `outcomeBadStartCommand` comment, `config.example:157`, `README.md`'s
+   `CRSW_DESTROY_ON_SHUTDOWN` row, `settings.go:114-118`, and
+   `contracts/directory-suggestions.md:62`'s comma-spelled `allowed_roots`. Iteration 6's
+   uncapped-union note and iteration 7's missing wiring test are also still open and unowned.

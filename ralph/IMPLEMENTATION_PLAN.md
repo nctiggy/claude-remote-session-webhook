@@ -185,7 +185,17 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
     `aria-activedescendant`, and add the close path — T010 closes the list only when nothing
     matches. **Nothing selects an option with the pointer and no task owns that**; see
     `PROGRESS.md` iteration 10, finding 1.
-- [ ] T011 Keyboard: arrows, Enter, Escape, Tab, `aria-activedescendant`
+- [x] T011 Keyboard: arrows, Enter, Escape, Tab, `aria-activedescendant`
+  - FR-008 is held by **counting `.value =` across the whole file**: exactly one, reading an
+    option's own `textContent`, after the `'Enter'` literal. Every way of intercepting typing
+    writes that property, and the count is what caught the must-fail. The other claims are
+    scoped to the picker's block, because `hidden = true` and `preventDefault` are words the
+    toast and the card's selection fix also use. **A whole-block "the descendant is cleared"
+    assertion is green with the clear deleted from `draw()`** — `activate(-1)` satisfies it —
+    so that one is positional; the ids are positional too, and a stale one names a *different*
+    path rather than nothing. **Nothing still selects an option with the pointer** and the list
+    has no blur close: both are outside T011's four keys, both are now small, see
+    `PROGRESS.md` iteration 11, findings 1 and 2.
 
 ### US3 — Reaching the settings page (independent)
 
