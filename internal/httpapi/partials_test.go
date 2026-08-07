@@ -1195,6 +1195,14 @@ func TestRenameAbsentFromFleet(t *testing.T) {
 	fleetless := map[string]string{
 		"the fleet page":     renderedFleet(t),
 		"the card component": renderComponent(t, "session-card", card),
+		// The third is the one that would not be caught by reading either of the
+		// two above. The fleet's live half re-fetches a session's *page* and lifts
+		// the <article> out of it (crswd.js), so a rename rendered inside the card
+		// on that page is a rename the fleet grows on its first state change —
+		// correct on load, wrong the moment anything happens, which is the worst
+		// shape a bug has. It is outside the card here, which is what makes that
+		// impossible rather than stripped afterwards.
+		"the card the fleet lifts from the session page": cardFor(t, renderedSessionPage(t, card), card.ID),
 	}
 	for name, markup := range fleetless {
 		if _, _, found := formPostingTo(cardForm.FindAllStringSubmatch(markup, -1), rename); found {
@@ -1202,16 +1210,18 @@ func TestRenameAbsentFromFleet(t *testing.T) {
 		}
 	}
 
-	// The controls that stayed, so the absence above cannot be satisfied by a
-	// fleet that offers nothing.
-	fleet := renderedFleet(t)
+	// The controls that stayed, asserted on the same three surfaces, so none of
+	// the absences above can be satisfied by markup that offers nothing at all —
+	// an empty string lifted out of a page included.
 	for what, pattern := range map[string]string{
 		"destroy": patternDashboardDestroy,
 		"compact": patternDashboardCompact,
 	} {
 		target := strings.Replace(strings.TrimPrefix(pattern, "POST "), "{"+pathValueID+"}", card.ID, 1)
-		if _, _, ok := formPostingTo(cardForm.FindAllStringSubmatch(fleet, -1), target); !ok {
-			t.Errorf("the fleet offers no %s either (%q); this test would then be passing on a page with no controls on it at all:\n%s", what, target, fleet)
+		for name, markup := range fleetless {
+			if _, _, ok := formPostingTo(cardForm.FindAllStringSubmatch(markup, -1), target); !ok {
+				t.Errorf("%s offers no %s either (%q); this test would then be passing on markup with no controls in it at all:\n%s", name, what, target, markup)
+			}
 		}
 	}
 }

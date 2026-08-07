@@ -2369,3 +2369,95 @@ page as a `<details>` disclosure, which is the second half of the branch above.
   in turn (red on each clause of `TestBoundaryIsNotColourAlone`); and a second link added to the
   action row (red on all three anchor tests). `git diff --stat` after the reverts showed 265
   insertions against 68 deletions across five files.
+
+## Iteration 27 — 2026-08-07 08:35
+
+**Did:** T027. The rename form is off the card and on the session's own page, inside
+`<details class="rename">` rendered closed with a `<summary>` that says "Rename this session"
+(`web/templates/session.html`). The card partial keeps the destroy and the compact; `.card-rename`
+became `.rename` / `.rename-summary` / `.rename-form` in `crswd.css`, moved next to `.pane-note`
+because it is the session page's furniture now. Tests `TestRenameAbsentFromFleet` and
+`TestRenameOnSessionPageIsDisclosure`; `TestTheCardsRenameFormCarriesWhatTheRouteRequires` became
+`TestTheRenameFormCarriesWhatTheRouteRequires` and reads the session page rather than the card, with
+every assertion it made intact. `docs/components.md` updated in the same commit — it said the rename
+was "on the card" in three places, and a binding doc describing the previous arrangement is worse
+than none (the same call iteration 26 made).
+
+**Learned:**
+
+- **Putting the disclosure *outside* the `<article>` deletes the branch's hardest problem.**
+  `claude/issue-issue-60-20260806-0406` put it inside the card behind a new `cardSurface` parameter
+  and a `sessionView.Rename` field, which forced `crswd.js` to `remove()` `details.card-rename` from
+  every card the fleet re-fetches — because `shell.dataset.fleetCard` fetches the session *page* and
+  `querySelector('article.card[data-session=…]')` lifts the card out of it (crswd.js:571). A sibling
+  of the article is never lifted, so the fleet cannot acquire the control by construction rather than
+  by a strip that has to keep working. **No Go changed at all this iteration** — no view field, no
+  handler decision, no second call site. Iteration 26's finding "every card the fleet stream
+  refreshes acquires a rename control" is therefore closed, not carried.
+- **That lift is now asserted, not reasoned about.** `TestRenameAbsentFromFleet` runs its claim over
+  three surfaces — the fleet page, the card component, and `cardFor(t, renderedSessionPage(…), id)`,
+  which is exactly the substring the live half imports. The third is the only one that would catch a
+  future edit moving the disclosure inside the card. All three also assert the destroy and the compact
+  are present, so an empty string lifted out of a page cannot pass as an absence.
+- **`renderedSessionPage(t, card)` now sits beside `renderedFleet(t)`** in `partials_test.go`. Two
+  existing call sites still spell the `sessionPageView` literal inline (`TestTheHeaderIsTheRouteBackToTheFleet`,
+  `TestTheFleetNamesTheStreamAndTheCardItRefetches`); they were left alone under AR-008.
+- **`<details>` needs nothing from the stylesheet to be a disclosure**, which is the whole reason it
+  was chosen over a div with a class: focusable summary, keyboard operation, screen-reader
+  announcement, and it opens with scripting off. `open` is the one attribute the test reads, because
+  "closed until asked for" is a property of the element and no rule about appearance can stand in for
+  it. `cursor: pointer` is the only thing `<summary>` does not get from the platform.
+- **The card's action row now puts Destroy and Compact on one line.** The rename's `inline-size: 100%`
+  was what forced the wrap; with it gone the flex row does what it was written to do. The template
+  comment that claimed the compact was kept "off the line the destroy sits on" was rewritten rather
+  than left to be false — the two are told apart by their labels first and the danger variant second.
+- **Two conveniences from the branch were deliberately not carried** (`git show 49bf3b0` — read it
+  before adding either): a `toggle`-capture listener calling `field.select()` when the disclosure
+  opens, and `form.closest('details[open]')?.removeAttribute('open')` after a successful apply. Both
+  are script-only polish on a control that works without script, neither is named by FR-049/FR-050,
+  and T028 is the next thing to touch `crswd.js`.
+
+**Left:** T028–T035. Next is **T028** (US6) — stop a text selection inside the card's anchor from
+navigating, in `web/static/crswd.js`; it must stay a papercut fix, not a functional dependency.
+
+**Findings:**
+
+- **Renaming from the session page with scripting on leaves the card above showing the old name.**
+  The delegated handler fetches the 303, follows it, and writes the banner sentence into the toast
+  without re-rendering anything, and the session page carries no fleet stream by design — so the
+  heading is stale until a reload, while the toast says "Session renamed." Pre-existing (the card's
+  own rename behaved identically on this page), but the rename now lives *only* here, so it is the
+  only experience of it. With scripting off the browser follows the redirect and the fleet renders
+  the renamed card, which is correct. A fix is a decision — re-fetch the card, or reload — not a
+  papercut, so it is logged rather than taken.
+- **Every action still redirects to the fleet** (`redirectOutcome`, `pathFleet`), so a rename or a
+  compact begun on a session page ends on the dashboard when scripting is off. That is the same
+  finding as "the mode toggle redirects to the fleet where the contract says the session page"
+  (19-26), now true of one more control.
+- **`docs/components.md`'s action table still says the rename answers "`200` and the renamed card"**
+  and the destroy "`200` and a sentence" — stale for all four rows since T014 made them 303s. Not
+  T027's to fix; T035 owns the doc sweep.
+- **The `aria-describedby` on the card's link is still redundant** (26-27), and **nothing posts to
+  `/dashboard/sessions/{id}/mode`** (19-27) — ninth iteration carrying the second one.
+- **Still open from iterations 5-26:** the three red `-tags quickstart` tests
+  (`CRSW_DESTROY_ON_SHUTDOWN` has no loader); `.fleet-note:empty { display: none }` against the
+  accessibility floor; nothing rendering a directory suggestion in the shipped default and the walk's
+  silent cap; `contracts/directory-picker.md`'s `name="workdir"`; `contracts/settings-page.md`'s 405
+  row and its worked example; three `ReadFile` refusals missing from `contracts/config-file.md`; the
+  `version < 1` row; "exactly eight keys" against nine; a dangling symlink reading as absent;
+  `f.values` having no enumerator; `os.Open` on a FIFO blocking startup; `--config <path>` unbuilt;
+  `README.md` and `deploy/README.md` silent on the config file (T034/T035); the misnamed
+  `Test*AndAnswersWithItsCard` pair; the unsynchronised `s.report` in `newAuditedServerWith`; the two
+  `TestParseSessions` fixtures passing for the wrong reason; `contracts/tmuxctl.md` stale by three
+  fields; `contracts/actions.md` stale in nine places; the NEEDS CLARIFICATION from iteration 20
+  about a start command that ignores SIGINT.
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean; `go build`, `go vet`, `go test -count=1 ./...` all green; `go vet` green under `-tags tmux`,
+  `-tags quickstart` and `-tags dev`; `go.sum` still absent. This task touches no tmux and no
+  `cmd/crswd`, so neither tagged suite was run. Four mutations were run and reverted by reverse
+  `Edit`: `<details open>` (red on `TestRenameOnSessionPageIsDisclosure`'s open clause); the
+  `<details>`/`<summary>` replaced by a `<div>` (red on "sits outside every `<details>`"); the
+  `<summary>` deleted (red on that test *and* on `TestTheStylesheetAndTheMarkupNameTheSameThings`,
+  which caught the orphaned `.rename-summary` rule); and the rename form put back on the card (red on
+  `TestRenameAbsentFromFleet` for the fleet page and the component, and on
+  `TestTheCardsDestroyFormCarriesWhatTheRouteRequires`'s count of two).
