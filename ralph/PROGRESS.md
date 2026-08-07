@@ -2850,3 +2850,108 @@ refusal rather than a guess where the choice is ambiguous.
   swallowed (red on three of the four absent-store cases); the sort reduced to the identifier
   tiebreak (red on the order); and `conversationStoreDir = "project"` (red on
   `TestStoreIsClaudeCodesOwnLayout` **alone** — the typo no fixture can see).
+
+---
+
+## Iteration 32 — 2026-08-07 09:45
+
+**Did:** T032. The create form now offers a prior conversation beside the working directory:
+`resume`, a free-text field with a `<datalist>` of what the discovery walk's directories have
+recorded (`conversationOffer{ID, WorkDir, Age}`, built in `fleet()` from T031's
+`ListConversations`). Empty is the default and empty is fresh. `CreateRequest.Resume` goes through
+`resumableConversation`, which requires the identifier to name exactly one of the **resolved**
+working directory's conversations and refuses everything else as `ErrUnknownConversation` —
+never the most recent (FR-032). A resume appends `--resume <id>` to the command typed into the
+pane and is otherwise an ordinary create: new record, new credential, new lifetime. New outcome
+`bad-conversation`. Tests: the task's three plus
+`TestAnIdentifierThatCouldReachAShellIsNeitherOfferedNorResumed`,
+`TestBrowserCreateReadsTheConversationField` and `TestTheRenderedFleetOffersPriorConversations`.
+
+**Learned:**
+
+- **The identifier is the one value the store puts on a command line, and the alphabet is not the
+  whole guard.** `resumableID` admits letters, digits, `-` and `_` — and a test written before the
+  code went red on `--dangerously-skip-permissions`, a perfectly ordinary file name that produced
+  `claude … --resume --dangerously-skip-permissions`. Argument injection needs no metacharacter.
+  The first byte must now be a letter or a digit; a UUID always is.
+- **One predicate at both ends.** `resumableID` filters `listConversations` as well, so a name the
+  create would refuse is never offered. Mutating the filter out went red on the listing half of the
+  hostile test, which is the half that would otherwise be a page an operator cannot act on.
+- **The form cannot know which directory the operator will choose**, so each offer carries its own
+  working directory in the option's label and the route checks the pairing. That is why the offer is
+  a `<datalist>` rather than a `<select>`: a chooser could not express "fresh" without a second
+  spelling of the default, and free text is what makes this usable at all on the shipped default,
+  where `discover_roots` is off and there is nothing to offer.
+- **`Manager.conversationStore` is resolved once in `NewManagerWithClock`** from `os.UserHomeDir`.
+  Tests set the unexported field directly (same package), which keeps them parallel — `t.Setenv`
+  would have serialised the whole file. The one test that *must* move `HOME` is the fleet's
+  call-site test, and it is the only serial test in `dashboard_test.go`.
+- **`TestTheCreateFormNamesTheConfiguredRoots/no roots renders no hint` asserted on the
+  `field-hint` class**, which stopped distinguishing the moment a second field grew a hint. Retargeted
+  at `id="create-roots"`; the "must fail when" is unchanged.
+- **A `t.Fatalf` on the parent's `t` inside a parallel subtest's arrange function panics the run**
+  (`panic(nil)` from `Goexit`), exactly as iteration 31 recorded for `t.TempDir`. The case table
+  takes the subtest's own `t`.
+
+**Left:** T033 (bound the captured pane, `pane_bound`), T034 (`config.example`), T035 (docs).
+
+**Findings:**
+
+- **The offer is dark on the deployed daemon.** It rides on `DiscoveredWorkDirs`, which is off
+  unless `CRSW_DISCOVER_ROOTS` says otherwise, so today's operator sees the field and no list. The
+  field still works — an identifier from Claude Code's own `--resume` list is pasted in full — but
+  FR-033's "see prior conversations" is only satisfied with discovery on. Not a
+  `NEEDS CLARIFICATION`: the spec settles that the suggestion source is behind that flag. Worth a
+  line in T035's docs.
+- **The mode toggle still restarts with `--continue`**, which is the ambiguous reading FR-032 is
+  about (`contracts/session-mode.md` puts `TestAmbiguousResumeRefuses` under the toggle). A session
+  created with `--resume X` and then toggled continues *the directory's most recent* conversation,
+  which is X only if nothing else wrote since. Closing it means carrying the resumed identifier on
+  the record, which T032 deliberately did not do — the conversation is an input to a create, and a
+  field would be a second thing adoption has to carry. Flagged, not fixed: no task owns it.
+- **`conversationOffers` costs one `ReadDir` plus an `lstat` per entry per suggested directory, on
+  every render.** Bounded at 200 offers total, and the walk it rides on is bounded at 200
+  directories — but a host with 200 discovered directories now pays 200 `ReadDir`s per dashboard
+  render. The bound drops the tail silently, like the other two.
+- **`contracts/actions.md` has no `resume` row and `contracts/session-mode.md`'s
+  `TestAmbiguousResumeRefuses` row now lives in `internal/session/conversation_test.go`** rather
+  than in `actions_test.go` where that table says it is. T035 owns the sweep.
+- **Renaming from the session page with scripting on still leaves the card above showing the old
+  name** (27-32). **Every action still redirects to the fleet** (19-32). **The `aria-describedby` on
+  the card's link is still redundant** (26-32). **Nothing posts to
+  `/dashboard/sessions/{id}/mode`** (19-32) — fourteenth iteration carrying it, and still the
+  finding most likely to end the milestone with a feature the operator cannot use.
+- **`crswd config check` still probes nothing** (29-32). **A start command with a leading
+  environment assignment (`FOO=bar claude`) probes `FOO=bar`** (29-32). **The store-directory
+  mapping is verified for `/` only** (31-32). **`docs/components.md:14`'s "draws rain, reads panes
+  and follows the fleet stream"** is still four behaviours short (28-32), and its Form section now
+  names two forms on a create form carrying four fields.
+- **Still open from iterations 5-31:** the three red `-tags quickstart` tests
+  (`TestDashboardQuickstartStory1Adopted`, `TestQuickstartStory4Restart`, `TestQuickstartStory5Cap` —
+  `CRSW_DESTROY_ON_SHUTDOWN` has no loader); `.fleet-note:empty { display: none }` against the
+  accessibility floor; nothing rendering a directory suggestion in the shipped default and the walk's
+  silent cap; `contracts/directory-picker.md`'s `name="workdir"`; `contracts/settings-page.md`'s 405
+  row and its worked example; three `ReadFile` refusals missing from `contracts/config-file.md`; the
+  `version < 1` row; "exactly eight keys" against nine; a dangling symlink reading as absent;
+  `f.values` having no enumerator; `os.Open` on a FIFO blocking startup; `--config <path>` unbuilt;
+  `README.md` and `deploy/README.md` silent on the config file (T034/T035); the misnamed
+  `Test*AndAnswersWithItsCard` pair; the unsynchronised `s.report` in `newAuditedServerWith`; the two
+  `TestParseSessions` fixtures passing for the wrong reason; `contracts/tmuxctl.md` stale by three
+  fields; `contracts/actions.md` stale in nine places; `contracts/card-layout.md` naming three tests
+  this milestone has no task for; the NEEDS CLARIFICATION from iteration 20 about a start command
+  that ignores SIGINT.
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean; `go build`, `go vet`, `go test -count=1 ./...` all green; `./internal/session` green under
+  `-count=5 -race` and `./internal/httpapi` under `-count=2 -race`; `go vet` green under `-tags tmux`,
+  `-tags quickstart` and `-tags dev`; `go test -tags dev ./internal/session ./internal/httpapi`
+  green; `go.sum` still absent. `go test -tags quickstart ./cmd/crswd` fails on exactly the three
+  tests iterations 5-31 recorded and nothing else. `internal/tmuxctl` is untouched, so the tmux
+  suite was vetted rather than run. Nine mutations were run and reverted by reverse `Edit`: the
+  unmatched identifier resolved to the newest (red on three `TestAmbiguousResumeRefuses` cases); an
+  *empty* one resolved to the newest (red on the fresh case alone); the `--resume` append dropped
+  (red on `TestResumeStillMintsNewRecord`); the listing's alphabet filter reverted to `id == ""`
+  (red on the hostile listing); a leading `-` admitted (red on all three halves of the hostile test);
+  the form field misspelled (red on the route's refusal case); read from `r.Form` rather than
+  `r.PostForm` (red on the query-string case **alone**); `Conversations: nil` at the call site (red
+  on the fleet's recorded case); and a template preselecting the first offer while dropping the
+  directory from the label (red on `TestFreshIsDefault` and on the offer test, separately).
