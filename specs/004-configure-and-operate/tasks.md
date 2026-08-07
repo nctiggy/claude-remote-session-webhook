@@ -173,7 +173,7 @@ still be typed.
 
 ## Phase 11: Polish
 
-- [ ] T034 [P] Write `config.example` at the repository root, carrying the commentary that justified choosing a commented format over JSON. Test `TestConfigExampleParsesAndCoversEveryKey` in `internal/config/file_test.go`. **Must fail when** a key exists in `config.go` and not in the example.
+- [x] T034 [P] Write `config.example` at the repository root, carrying the commentary that justified choosing a commented format over JSON. Test `TestConfigExampleParsesAndCoversEveryKey` in `internal/config/file_test.go`. **Must fail when** a key exists in `config.go` and not in the example.
 
 - [ ] T035 [P] Update `docs/` and `README.md` for the config file, the settings page and the dependency check. Assert `go.sum` is still absent (SC-012).
 

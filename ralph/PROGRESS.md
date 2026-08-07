@@ -3054,3 +3054,100 @@ the wiring assertion.
   oversized cases, the disclosure half); `httpapi.New` passing `config.DefaultPaneBound` instead of
   `cfg.PaneBound` (red on the wiring case **alone**); and the loader reading `EnvMaxStreams` (red on
   `TestSourceRecordedForEveryKey`).
+
+---
+
+## Iteration 34 — 2026-08-07 10:14
+
+**Did:** T034. `config.example` at the repository root: every setting commented out at its default,
+in `config.Vars()` order, under the commentary that justified this format over JSON — plus the
+grammar an operator needs (the `#` that is only a comment at the start of a line, the *first* `=`,
+the key/variable rule, precedence, and the two refusals for a misspelled or repeated key). The one
+live line is `version = 1`, which is not a setting. `TestConfigExampleParsesAndCoversEveryKey` in
+`internal/config/file_test.go` pins it: the keys come from `config.go`'s own declarations via
+`declaredVars` (reused from `envexample_test.go`, same test package), the order is `config.Vars()`,
+each key appears exactly once, the file sets nothing, and every shown line is parsed once
+uncommented. `.env.example` gains a pointer to the new file.
+
+**Learned:**
+
+- **Settled iteration 3's open question: this is a second file beside `.env.example`, not a rename
+  of it.** The abandoned branch renamed it and carried five edits. `.env.example` documents the
+  *environment*, which is still how the deployed unit is configured (`EnvironmentFile=`), and
+  `envexample_test.go`, `deploy/README.md` and `deployexample_test.go` all lean on it — renaming
+  would delete a live document to avoid a drift that is already unrepresentable: both example files
+  are pinned to the same `config.go` constants by the same AST walk. The cross-reference in each
+  direction is the cheap half; the tests are the load-bearing half.
+- **Commented-out beats live-with-empty-values, and the reason is provenance rather than taste.** A
+  file carrying `listen =` sets that key to the empty string, and `File.Lookup` reports it
+  *present* — so `withFile` records `SourceFile` and the loader then defaults the value anyway. The
+  settings page would say "file" for every row of a file that said nothing, which is the inverse of
+  the question provenance exists to answer. Commenting every line out also keeps `holdsSecret()`
+  false, so an operator's 0644 copy is not refused over a secret it does not hold.
+- **The test's "parses to what it reads" loop is falsifiable only through the *parser*.** An edit to
+  the example can hardly make the two disagree — both cut on the first `=` — so the mutation that
+  proves it is `parseFile` splitting on the *last* one, which turns it red on the `start_commands`
+  line **alone**. That is the line whose value carries an `=`, and the claim the file makes about
+  its own grammar; the loop is what stops the file documenting a parser this daemon no longer has.
+
+**Left:** T035 (`docs/` and `README.md` for the config file, the settings page and the dependency
+check; assert `go.sum` is still absent). It is the last task in the plan.
+
+**Findings:**
+
+- **`contracts/config-file.md`'s worked example spells `allowed_roots` with commas and the loader
+  splits on `:`.** `rootListSeparator = ":"`, so `/home/nctiggy/code,/home/nctiggy/work` resolves as
+  one path that is not a directory and the daemon refuses to start — a daemon started on the
+  contract's own example does not come up. `TestParseAcceptsWorkedExample` cannot see this: it
+  asserts the *parse* and never loads. `config.example` uses `:`. Third defect logged against that
+  one example, after "exactly eight keys" (iterations 3 and 5) and the one below.
+- **`idle_timeout = 0` does not disable idle reaping, and `config.go` says it does.**
+  `validateLifetimes` refuses a negative with "use 0 to disable idle reaping", but zero flows to
+  `Manager.defaultIdle`, then to `Session.Idle`, where `orDefault` reads zero as *unset* and applies
+  the built-in 60m. Nothing in the file layer can switch idle reaping off; a create-time override
+  can. The contract's worked example has `idle_timeout = -1` with the comment "-1 disables idle
+  reaping", which the loader refuses outright. `config.example` states the truth; the error message
+  is the thing to fix, and it is a one-line change nobody's task owns.
+- **`config.example` documents `destroy_on_shutdown` as a key this build does not read.** That
+  sentence is honest today and should be deleted the moment the loader grows its case — it is the
+  same missing loader as the three red `-tags quickstart` tests, so whoever fixes those should grep
+  the example.
+- **Renaming from the session page with scripting on still leaves the card above showing the old
+  name** (27-33). **Every action still redirects to the fleet** (19-33). **The `aria-describedby` on
+  the card's link is still redundant** (26-33). **Nothing posts to
+  `/dashboard/sessions/{id}/mode`** (19-34) — sixteenth iteration carrying it, and still the finding
+  most likely to end the milestone with a feature the operator cannot use.
+- **`crswd config check` still probes nothing** (29-33). **A start command with a leading
+  environment assignment (`FOO=bar claude`) probes `FOO=bar`** (29-33). **The store-directory
+  mapping is verified for `/` only** (31-33). **The conversation offer is dark unless
+  `CRSW_DISCOVER_ROOTS` is on** (32-33). **`docs/components.md:14`** is still four behaviours short
+  (28-33). **`internal/httpapi/stream.go:180-196` states a second, looser bound** whose comment is
+  stale by one sentence (33). T035 owns the doc sweep.
+- **Still open from iterations 5-33:** the three red `-tags quickstart` tests
+  (`TestDashboardQuickstartStory1Adopted`, `TestQuickstartStory4Restart`, `TestQuickstartStory5Cap` —
+  `CRSW_DESTROY_ON_SHUTDOWN` has no loader); `.fleet-note:empty { display: none }` against the
+  accessibility floor; nothing rendering a directory suggestion in the shipped default and the walk's
+  silent cap; `contracts/directory-picker.md`'s `name="workdir"`; `contracts/settings-page.md`'s 405
+  row and its worked example; three `ReadFile` refusals missing from `contracts/config-file.md`; the
+  `version < 1` row; "exactly eight keys" against ten now; a dangling symlink reading as absent;
+  `f.values` having no enumerator; `os.Open` on a FIFO blocking startup; `--config <path>` unbuilt;
+  `README.md` and `deploy/README.md` silent on the config file (T035); a refused capture reading to
+  the operator as "not just now" (33); the misnamed `Test*AndAnswersWithItsCard` pair; the
+  unsynchronised `s.report` in `newAuditedServerWith`; the two `TestParseSessions` fixtures passing
+  for the wrong reason; `contracts/tmuxctl.md` stale by four fields; `contracts/actions.md` stale in
+  nine places and with no `resume` row; `contracts/card-layout.md` naming three tests this milestone
+  has no task for; the NEEDS CLARIFICATION from iteration 20 about a start command that ignores
+  SIGINT.
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean; `go build`, `go vet`, `go test -count=1 ./...` all green; `go vet` green under `-tags tmux`,
+  `-tags quickstart` and `-tags dev`; `go test -tags tmux ./internal/tmuxctl ./internal/session` and
+  `go test -tags dev ./...` both green; `go.sum` still absent. `go test -tags quickstart ./cmd/crswd`
+  fails on exactly the three tests iterations 5-33 recorded and nothing else. Six mutations were run
+  and reverted by reverse `Edit`: `pane_bound` deleted from the example (red — the task's "must fail
+  when"); a `CRSW_MUTATION_PROBE` constant added to `config.go` and nowhere else (red, which is that
+  same condition from the source side and the reason the keys come from an AST walk rather than from
+  `Vars()`); `listen` uncommented into a live assignment (red on the sets-nothing check **and** on
+  coverage, with no value quoted back); `max_streams` and `pane_bound` swapped (red on the order
+  check, twice); a second `# listen = ...` line (red on exactly-once — while `# For example, listen =
+  ... moves the port.` inside a sentence is correctly *not* a second occurrence); and `parseFile`
+  splitting on the last `=` (red on the `start_commands` line alone).

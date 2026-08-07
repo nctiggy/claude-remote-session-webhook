@@ -177,7 +177,7 @@ under `NEEDS CLARIFICATION` and stop.
 
 ### Ship it
 
-- [ ] T034 `config.example`, carrying the commentary that justified the format
+- [x] T034 `config.example`, carrying the commentary that justified the format
 - [ ] T035 Docs, and assert `go.sum` is still absent
 
 ---
