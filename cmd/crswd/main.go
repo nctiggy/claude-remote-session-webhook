@@ -9,9 +9,12 @@ import (
 	"errors"
 	"flag"
 	"log"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/preflight"
 )
 
 // shutdownBudget is how long the daemon gives itself between a termination
@@ -77,6 +80,14 @@ func run(ctx context.Context) error {
 	// build tag and never a flag on the artifact that ships.
 	cfg, err := loadConfig()
 	if err != nil {
+		return err
+	}
+
+	// Before anything binds or execs, and with the configuration in hand because
+	// the start command is the operator's rather than a name this daemon knows
+	// (#71). A host without tmux is refused here; a start command that is not
+	// installed is a warning, since the dashboard and the reaper still work.
+	if err := preflight.Check(cfg.StartCommands, os.Stderr); err != nil {
 		return err
 	}
 
