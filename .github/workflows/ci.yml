@@ -176,6 +176,7 @@ jobs:
         if: steps.stack.outputs.present == 'true'
         run: go mod download
 
+
       - name: Lint
         if: steps.stack.outputs.present == 'true'
         # Pinned to a commit SHA, not a tag: a tag can be moved, which is what
@@ -195,6 +196,24 @@ jobs:
       - name: Test
         if: steps.stack.outputs.present == 'true'
         run: go test ./...
+
+      # The two tagged suites (#87). Until now CI ran only the untagged tests,
+      # so these two ran nowhere but on a developer's machine — and they rotted
+      # there unseen: three cases were still asserting the pre-#63 world, where
+      # a session did not survive the daemon that started it. A suite nothing
+      # runs is worse than no suite, because it reads as coverage.
+      #
+      # They need a real tmux and a real binary, which is what they are for and
+      # why they are tagged. The self-hosted runners have tmux; the `has` probe
+      # in tmuxctl is what turns its absence into a skip rather than a failure,
+      # so a runner without one reports honestly instead of going red.
+      - name: Test (tmux)
+        if: steps.stack.outputs.present == 'true'
+        run: go test -tags tmux ./...
+
+      - name: Test (quickstart)
+        if: steps.stack.outputs.present == 'true'
+        run: go test -tags quickstart ./...
 
       - name: Build
         if: steps.stack.outputs.present == 'true'
