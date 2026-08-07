@@ -2652,3 +2652,98 @@ lines and this iteration shipped one of them.
   `TestMessageNamesConfigFile`); and the `CheckDependencies` call deleted from `main.go` (**green**
   against the first draft's `Contains("tmux")`, red once the assertion became the probe's own
   sentence plus the absence of `reconcile` — the mutation that changed the test).
+
+## Iteration 30 — 2026-08-07 09:00
+
+**Did:** T030. `internal/config/depcheck.go` now derives the install command from `/etc/os-release`
+and `runtime.GOOS` and carries it inside the tmux refusal: `tmux is not installed, and this daemon
+cannot manage a session without it; install it with: sudo apt install tmux; refusing to start`.
+The table is the contract's — `ID`/`ID_LIKE` `debian` → apt, `ID_LIKE` `rhel`/`fedora` → dnf, `ID`
+`arch` → pacman, `ID` `alpine` → apk, `GOOS` `darwin` → brew, anything else → `install tmux using
+your platform's package manager`. Tests: the contract's three (`TestInstallCommandFromOsRelease`,
+`TestUnknownPlatformSaysSo`, `TestNeverExecutesInstall`) plus `TestReadsTheSystemsOwnIdentification`.
+
+**Learned:**
+
+- **The seam grew rather than doubled.** `checkDependencies` now takes `osRelease func() []byte`
+  beside `lookPath`, and `CheckDependenciesWith` in `export_test.go` passes both, so all five
+  existing call sites in `depcheck_test.go` changed by four words. A second exported seam that left
+  the old one reading the *real* `/etc/os-release` would have made the refusal's install command
+  whatever the developer's laptop or the CI runner happened to be.
+- **The derivation is exercised through `config.InstallAdviceFor(osRelease, goos)`, not through the
+  check.** Seven platforms, one binary, one GOOS: the pure function is the only way to describe
+  Alpine from an Ubuntu machine. The check is then asserted *twice* — once that a Debian host's
+  refusal carries `sudo apt install tmux`, once that an unidentified one carries the generic
+  sentence — which is the wiring half, and both went red when the advice was cut from the message.
+- **`readOsRelease` is the one line no fixture can reach**, so `TestReadsTheSystemsOwnIdentification`
+  compares it against `os.ReadFile` of a **restated** `/etc/os-release` literal. A test that read the
+  path out of the package agrees with a typo; `/etc/os-relase` was the mutation, and it is invisible
+  to every other case in the file — it just quietly unidentifies every Linux host there is.
+- **`TestNeverExecutesInstall` checks the import as well as the selector.** A walk looking for
+  `exec.X` sees nothing at all when the package writes `xexec "os/exec"`, so the test also fails on
+  an aliased import and fails when the walk finds *zero* `exec.` references — a green from an empty
+  walk is what a deleted probe would produce.
+- **`goimports` (the format hook) deletes an import the moment nothing references it**, which ate the
+  aliased-import mutation on the way in: edit the import and the call site in either order and the
+  hook rewrites the file between them. Add the reference first, or restore the import afterwards.
+- **`os.Open` on a constant path raises no gosec G304**, so the reader needed no `//nolint` — unlike
+  `ReadFile` in `file.go`, whose path is a variable.
+
+**Left:** T031–T035. Next is **T031** (`internal/session/conversation.go`): list prior conversations
+as a directory listing returning identifier and modification time only, never opening a file, and
+only under an approved root.
+
+**Findings:**
+
+- **Fedora itself gets the generic sentence.** The contract's row keys the dnf answer on `ID_LIKE`
+  alone, and Fedora sets `ID=fedora` with no `ID_LIKE` at all, so a Fedora host is told to use its
+  platform's package manager rather than dnf. Implemented as written and commented in place rather
+  than widened — widening is a decision about which wrong commands become possible, and it belongs to
+  whoever owns `contracts/dependency-check.md`. The same applies to Manjaro (`ID_LIKE=arch`) and to
+  Alpine derivatives.
+- **The contract's worked example is three `crswd: `-prefixed lines and the refusal is one.** It goes
+  through `log.Fatalf("crswd: %v", err)` in `main.go`, which prefixes the first line only, so a
+  multi-line error would print two unprefixed lines. The three clauses are semicolon-separated on one
+  line instead. `contracts/dependency-check.md`'s example block is stale in that shape — T035's doc
+  sweep, or a contract edit.
+- **`crswd config check` still probes nothing** (29-30), and it is now the second thing that would
+  benefit: an operator asking whether this configuration works on this host gets no answer about
+  either dependency, let alone the install command.
+- **Renaming from the session page with scripting on still leaves the card above showing the old
+  name** (27-30). **Every action still redirects to the fleet** (19-30). **The `aria-describedby` on
+  the card's link is still redundant** (26-30). **Nothing posts to
+  `/dashboard/sessions/{id}/mode`** (19-30) — twelfth iteration carrying it, and still the finding
+  most likely to end the milestone with a feature the operator cannot use.
+- **A start command with a leading environment assignment (`FOO=bar claude`) probes `FOO=bar`** (29-30).
+- **`docs/components.md:14`'s "draws rain, reads panes and follows the fleet stream"** is still four
+  behaviours short (28-30), and its action table still says the rename answers "`200` and the renamed
+  card" — stale for all four rows since T014. T035 owns the doc sweep.
+- **Still open from iterations 5-29:** the three red `-tags quickstart` tests
+  (`TestDashboardQuickstartStory1Adopted`, `TestQuickstartStory4Restart`, `TestQuickstartStory5Cap` —
+  `CRSW_DESTROY_ON_SHUTDOWN` has no loader); `.fleet-note:empty { display: none }` against the
+  accessibility floor; nothing rendering a directory suggestion in the shipped default and the walk's
+  silent cap; `contracts/directory-picker.md`'s `name="workdir"`; `contracts/settings-page.md`'s 405
+  row and its worked example; three `ReadFile` refusals missing from `contracts/config-file.md`; the
+  `version < 1` row; "exactly eight keys" against nine; a dangling symlink reading as absent;
+  `f.values` having no enumerator; `os.Open` on a FIFO blocking startup; `--config <path>` unbuilt;
+  `README.md` and `deploy/README.md` silent on the config file (T034/T035); the misnamed
+  `Test*AndAnswersWithItsCard` pair; the unsynchronised `s.report` in `newAuditedServerWith`; the two
+  `TestParseSessions` fixtures passing for the wrong reason; `contracts/tmuxctl.md` stale by three
+  fields; `contracts/actions.md` stale in nine places; `contracts/card-layout.md` naming three tests
+  this milestone has no task for; the NEEDS CLARIFICATION from iteration 20 about a start command
+  that ignores SIGINT.
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean; `go build`, `go vet`, `go test -count=1 ./...` all green; `go vet` green under `-tags tmux`,
+  `-tags quickstart` and `-tags dev`; `go test -tags dev ./cmd/crswd ./internal/access
+  ./internal/config` green; `go.sum` still absent. This task touches only `internal/config`, so the
+  tagged suites were vetted rather than run — except `TestQuickstartRefusesWithoutTmux`, which reads
+  the sentence this task rewrote and was run alone under `-tags quickstart`: green. Eight mutations
+  were run and reverted by reverse `Edit`: the command chosen from `GOOS` alone (red on the arch,
+  alpine and both rhel rows, and on three unknown-platform cases); the unknown fallback returning apt
+  (red on all five unknown rows and on the refusal case); the os-release key matched by suffix (red
+  on `a longer key that starts the same way`); the advice cut from the refusal message (red on both
+  wiring subtests and nothing else — the assertion that the derivation has a caller); an unused
+  `installTmuxForOperator` calling `exec.Command` (red on `TestNeverExecutesInstall`); `os/exec`
+  imported as `xexec` (red on both halves of that test — the aliased import *and* the empty walk);
+  the darwin row keyed on `solaris` (red on the macOS row); and `/etc/os-relase` (red on
+  `TestReadsTheSystemsOwnIdentification` alone, green everywhere else).

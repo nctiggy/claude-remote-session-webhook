@@ -170,7 +170,7 @@ under `NEEDS CLARIFICATION` and stop.
 ### Independent of the stories
 
 - [x] T029 Startup dependency probes — tmux fatal, start command warning
-- [ ] T030 Install command from `/etc/os-release`, never guessed
+- [x] T030 Install command from `/etc/os-release`, never guessed
 - [ ] T031 List prior conversations — identifier and time only, never contents
 - [ ] T032 Offer them at create time, fresh by default; refuse when ambiguous
 - [ ] T033 Bound the captured pane explicitly; refuse past it rather than truncate
