@@ -138,7 +138,7 @@ under `NEEDS CLARIFICATION` and stop.
 - [x] T010 The read-only `/settings` route, `GET` only, `settings.view`
 - [x] T011 🔒 Secrets render `present` / `absent`, never a value
 - [x] T012 One row per key with its source; name the file that was read
-- [ ] T013 Sweep every route and assert no secret appears anywhere (SC-005)
+- [x] T013 Sweep every route and assert no secret appears anywhere (SC-005)
 
 ### US3 — The dashboard behaves without script (P3)
 

@@ -993,3 +993,84 @@ header on every page.
   `go test -count=1 ./...` green, `go vet` green under `-tags tmux`, `-tags quickstart` and
   `-tags dev`, `go test -tags dev ./internal/access ./internal/config ./internal/httpapi` green,
   `go.sum` still absent.
+
+## Iteration 13 — 2026-08-07 05:14
+
+**Did:** T013. `TestFullRouteSweepLeaksNoSecret` drives **every** registered route against a
+daemon holding two canary secrets and searches every response — headers *and* body — plus the
+whole audit trail for either value or any four-character run of its entropy. The routes: the
+API's six read off `s.Routes()`, the fleet, the settings page, the page a card links to, both
+streams, the two embedded assets, the four actions, `handleUnrouted`'s catch-all and its
+method-less twin per contract path, a path no router would clean, and four refusals. The run
+search moved into `leakedRun`, shared with `TestSettingsNeverRendersSecretValue`. `tasks.md`'s
+ticks are also brought into line with the plan's (iteration 12's finding).
+
+**Learned:**
+
+- **The fixture puts the canary in the Config and not in the Authenticator, and that is not a
+  hole.** `settingsOn` adjusts `f.cfg` after construction, so layer 2 still checks signatures
+  against `testSecret`. `auth.NewWithClock` copies the key into an unexported field and hands it
+  back through no method, so **`cfg.SharedSecret` is the only copy a handler can reach at all** —
+  and `s.cfg` is read in exactly four places (`decode.go`'s body limit, `browser.go`'s body limit,
+  the create form's command names, the settings page), every one of them driven by the sweep. The
+  daemon's real key is swept for separately, whole rather than in runs: it shares its `test-only-`
+  announcement with the fixture's `access_aud`, which T012 renders.
+- **Route coverage is checked rather than claimed.** net/http will not enumerate a `ServeMux`, so
+  the sweep registers the daemon's own pattern constants on a mux of its own and asks
+  `Handler(r)` which route each request reached. That catches the mistake that actually happens —
+  a target that quietly falls to the catch-all instead of the route it names — which I proved by
+  typo'ing the compact path. A **new** browser route still has to be added to
+  `registeredPatterns` by hand; that gap is stated in the comment rather than papered over.
+- **Put the vacuity guard after the search.** The first mutation (raw values on the settings page)
+  failed on the "both secrets are configured" precondition, which `t.Fatalf`'d before the search
+  ran and reported a real leak as a broken fixture. The guard now runs last and reports.
+- **The session cap is 5 and a route sweep spends it.** Every `plant` counts against
+  `Manager.Create`, so the API's DELETE gets a session of its own and the browser's destroy runs
+  last of the four actions; peak is four. A sweep that planted per session-scoped route would hit
+  the cap and silently turn both creates into refusals.
+- **The streams are driven through a recorder**, which answers 500 once the open sequence has
+  admitted the request, so what is swept is the open and its record and not a delivered stream.
+  Also not a hole: neither stream handler reads the Config at all, and the 500 path returns
+  *before* `panes.attach`, so a recorder-driven open leaks no goroutine either.
+- **Five mutations run, all caught.** (1) raw values for both secret keys on the settings page;
+  (2) a `present (test-only-qx7v…)` mask — caught by the four-character prefix run; (3) the
+  allowlist in a response **header** on `GET /sessions`, i.e. the *other door*, reported by route
+  — the thing a page test cannot do; (4) the shared secret in the action gate's audit reason,
+  caught in the trail; (5) a route dropped from the sweep, caught by the coverage check, which
+  named it.
+
+**Left:** T014–T035. Next is **T014** (carry post-redirect-get forward from
+`claude/issue-issue-42-...1832`; a rebase-and-reconcile, not a rewrite).
+
+**Findings:**
+
+- **`internal/httpapi` carries a data race in its own fixture, and CI can hit it.**
+  `newAuditedServerWith` sets `s.report = func(err error) { ts.failed = append(ts.failed, err) }`
+  (`middleware_test.go:215`); two live streams on a bound fleet call it concurrently from
+  net/http's own goroutines, and the append is unsynchronised. It reproduces on demand with
+  `go test -race -count=2 -parallel 32 ./internal/httpapi` (twice out of two) and appeared once at
+  default parallelism; ~14 further runs at default parallelism were clean, with this change and at
+  `HEAD` alike, so it predates this task. `failed` wants the lock `syncSink` already has. **Not
+  fixed here (AR-008) — it wants a fix-lane commit.**
+- **`specs/004-configure-and-operate/tasks.md` was ticked to match the plan this iteration.** It
+  had drifted to one checked task out of thirteen finished ones, which a fresh context reading it
+  first would have read as "almost nothing is built" (iteration 12's finding). Bookkeeping, not a
+  second task — but it is the file the plan names as the single source of truth, and future
+  iterations should keep both in step.
+- **A four-character run is a probabilistic search over base64url.** The sweep reads page tokens
+  and bearer credentials, so a canary's four-character prefix could in principle appear in one by
+  chance — order 1e-5 per run, and zero for the hex-shaped values, since none of the runs is hex.
+  Worth knowing before anyone debugs a one-off red build.
+- **Still open from iterations 5–12:** the three red `-tags quickstart` tests
+  (`CRSW_DESTROY_ON_SHUTDOWN` has no loader — the oldest unfixed finding here, and still wanting
+  an issue and a fix-lane commit); `contracts/settings-page.md`'s `TestNoMutatingVerbRegistered`
+  row still saying 405, and its worked example showing values no loader would produce; three
+  `ReadFile` refusals missing from `contracts/config-file.md`'s table; the `version < 1` row; the
+  contract's "yields exactly eight keys" against seven; a dangling symlink reading as absent;
+  `f.values` having no enumerator; `os.Open` on a FIFO blocking startup with no message;
+  `--config <path>` still unbuilt; `README.md` and `deploy/README.md` silent on the config file
+  (T034/T035).
+- **Lint:** `golangci-lint run` clean (v1.62.2 on a v2 config; CI's pinned v2.12.2 is the gate).
+  `gofmt -l .` clean, `go build`, `go vet`, `go test -count=1 ./...` green, `go vet` green under
+  `-tags tmux`, `-tags quickstart` and `-tags dev`, `go test -tags dev ./internal/access
+  ./internal/config ./internal/httpapi` green, `go.sum` still absent.
