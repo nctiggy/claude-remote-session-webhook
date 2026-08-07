@@ -1231,3 +1231,85 @@ audit block has to run before the page fetch or `only(t)` fails.
   is the gate). `gofmt -l .` clean, `go build`, `go vet`, `go test -count=1 ./...` green, `go vet`
   green under `-tags tmux`, `-tags quickstart` and `-tags dev`, `go test -tags dev
   ./internal/access ./internal/config ./internal/httpapi` green, `go.sum` still absent.
+
+## Iteration 16 — 2026-08-07 06:09
+
+**Did:** T016, and US3 with it. `TestAllFourActionsUsableWithoutScript` drives create, destroy,
+rename and compact through the registered mux, **follows the `Location` each one answers with**,
+and asserts the page that comes back is a whole fleet the operator can act from again — doctype,
+`<html lang="en">`, `<main class="shell">`, and the create form with a freshly minted token —
+stating the outcome in `outcome.go`'s own words. Three subtests per route (two on the compact)
+carry FR-022.
+
+**Learned:**
+
+- **Every action test in this package stopped at the 303, so nothing followed one.** T014 wrote
+  the redirect and T015 asserted what deliberately is not one; both end at the first response.
+  Milestone 3's defect was that the *second* request landed on a fragment, so US3's own claim was
+  the one thing 4,400 lines of `actions_test.go` could not see. `compactor.landed` came closest
+  and rebuilds the URL by hand rather than reading the header. **The new `follows` takes the
+  address off the response**, which is the difference between proving the fleet renders a code
+  the test chose and proving it renders the one the daemon wrote.
+- **Three mutations, run rather than reasoned about, and each fails a different subtest.**
+  `redirectOutcome(w, r, outcome(r.PostForm.Get(fieldName)))` on the create's success → a code no
+  vocabulary spells → the page renders no banner (case 1 red). A `code = outcome(form["outcome"])`
+  line at the top of `redirectOutcome` → all four routes redirect to `teardown-unverified` and the
+  page renders the alarm block (case 2 red on all four). And the create's bad-name arm redirecting
+  to `…&name=<caller text>` with `dashboard` appending it to `banner.Message` → case 3 names the
+  reflected fragment. **The third is the one a well-meaning hand actually writes** — "that name is
+  not usable" reads better with the name in it.
+- **`git checkout -- <file>` needs approval in this loop and did not get it.** Reverting a
+  mutation has to be a reverse `Edit`. That works, but note the `format-and-lint` hook runs
+  `goimports` on every write: mutation 3 added `net/url` to `actions.go` and the hook **removed it
+  again** on the reverting edit, so the second reverse edit failed with "string not found" — which
+  is the hook being right, not a problem. `git status --porcelain` afterwards is the check that
+  matters, and it showed only `actions_test.go`.
+- **The local `golangci-lint` is now v2.12.2**, the version CI pins. Iterations 5–15 all recorded
+  v1.62.2 reading a v2 config, which runs zero linters and exits 0 (#26). Whatever the loop is
+  running on has been upgraded; `0 issues` this iteration is a real green, and the session-start
+  hook's warning is silent.
+- **`refuser` and `mutatingRoutes()` are the right seam for anything that sweeps the four action
+  routes**, and reusing them beat a sixth fixture: `attempt` gained one field (`smuggled`, merged
+  over the route's fields and before the page token) and `mutatingRoute` gained two (`states`, and
+  the `chosen` field a caller can fill in). The name `refuser` reads oddly in a success test —
+  `withoutScript` embeds it rather than renaming it, because renaming a type T015 owns is the
+  refactor AR-008 forbids.
+
+**Left:** T017–T035. Next is **T017** (persist the start-command name as `@crswd-start`), which
+is the first US4 task and the first in a while that touches tmux — it needs `-tags tmux` as well
+as the default gate.
+
+**Findings:**
+
+- **A comment inserted above an existing type silently becomes that type's doc comment.** Adding
+  `callerText` between `mutatingRoute`'s doc block and its `type` line left the route's whole
+  explanation attached to the new struct, and `gofmt`, `go vet` and `golangci-lint` were all
+  green on it. Caught by reading the diff. In a file where the comments *are* the documentation,
+  the diff read is not optional.
+- **`contracts/actions.md` (milestone 3's) is still stale in nine places** — iterations 14 and 15,
+  unchanged, and now with a third test resting on the current behaviour. It fixes the four routes'
+  statuses (200/202/400/409/429/500) and quotes two bodies byte for byte; every one is a `303`
+  today. **It wants a docs commit.** Third iteration logging it.
+- **`TestBrowserCreateStartsTheSessionAndAnswersWithItsCard` and
+  `TestRenameRelabelsTheRecordAndAnswersWithItsCard` are still misnamed** (iterations 14, 15).
+  Neither answers with a card. T016 did not rename them either — AR-008 keeps a task inside its
+  named work, and T016's is a new test — so iteration 15's "last natural chance" has passed. It
+  is now a fix-lane commit or nothing.
+- **`internal/httpapi` still carries the data race in its own fixture** (iterations 13–15):
+  `newAuditedServerWith` sets `s.report = func(err error) { ts.failed = append(ts.failed, err) }`
+  unsynchronised (`middleware_test.go:215`). Untouched; fourth iteration logging it; still wants
+  the lock `syncSink` already has.
+- **Still open from iterations 5–15:** the three red `-tags quickstart` tests
+  (`CRSW_DESTROY_ON_SHUTDOWN` has no loader — the oldest unfixed finding here; not run this
+  iteration, the port is held by the live daemon and T016 touches no `cmd/crswd` file);
+  `contracts/settings-page.md`'s `TestNoMutatingVerbRegistered` row still saying 405, and its
+  worked example showing values no loader would produce; three `ReadFile` refusals missing from
+  `contracts/config-file.md`'s table; the `version < 1` row; the contract's "yields exactly eight
+  keys" against seven; a dangling symlink reading as absent; `f.values` having no enumerator;
+  `os.Open` on a FIFO blocking startup with no message; `--config <path>` still unbuilt;
+  `README.md` and `deploy/README.md` silent on the config file (T034/T035).
+- **Lint:** `golangci-lint run` reports `0 issues`, and this time on **v2.12.2** — CI's own pinned
+  version, so the green means what it says. `gofmt -l .` clean, `go build`, `go vet`, `go test
+  -count=1 ./...` and `go test -count=2 ./internal/httpapi` green, `go vet` green under
+  `-tags tmux`, `-tags quickstart` and `-tags dev`, `go test -tags dev ./internal/access
+  ./internal/config ./internal/httpapi` green, `go.sum` still absent.

@@ -101,7 +101,7 @@ disabled. This is the white-page bug that made the milestone necessary.
 
 - [x] T015 [US3] Finish the ~19 tests in `internal/httpapi/` that still assert the old fragment responses, updating each to assert `303` plus the redirect target. Add `TestRefusalIsNotARedirect` asserting an unauthorised action gets the uniform refusal. **Must fail when** a refusal is answered with a redirect — sending an unauthorised caller somewhere tells them their request was processed (FR-025).
 
-- [ ] T016 [US3] Add `TestAllFourActionsUsableWithoutScript` to `internal/httpapi/actions_test.go`, asserting each of create, destroy, compact and rename answers `303` to a page that renders the outcome in words from `outcome.go`'s fixed vocabulary. **Must fail when** an outcome is built from caller-supplied text (FR-022).
+- [x] T016 [US3] Add `TestAllFourActionsUsableWithoutScript` to `internal/httpapi/actions_test.go`, asserting each of create, destroy, compact and rename answers `303` to a page that renders the outcome in words from `outcome.go`'s fixed vocabulary. **Must fail when** an outcome is built from caller-supplied text (FR-022).
 
 ---
 

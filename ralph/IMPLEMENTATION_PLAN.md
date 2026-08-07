@@ -144,7 +144,7 @@ under `NEEDS CLARIFICATION` and stop.
 
 - [x] T014 Carry forward post-redirect-get from `claude/issue-issue-42-...1832`
 - [x] T015 Finish the ~19 tests still asserting fragment responses
-- [ ] T016 All four actions usable with scripting disabled
+- [x] T016 All four actions usable with scripting disabled
 
 ### US4 — Turn remote control on and off (P4)
 
