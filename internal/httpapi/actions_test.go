@@ -4067,3 +4067,390 @@ func TestACompactIsNoRouteOnAnyOtherMethod(t *testing.T) {
 		})
 	}
 }
+
+// --- US3: a refusal is not a redirect (T015) --------------------------------
+//
+// T014 made every action's *answer* a 303 to the fleet. What it deliberately
+// left where it was is a refusal (FR-025), and this section is where that
+// exclusion is asserted — across all four registered routes at once, which is
+// the only place the claim can be made. Every test above sweeps one route; a
+// redirecting refusal added to the compact alone would be invisible to all of
+// them.
+
+// refuser is the four registered action routes with everything a refusal turns
+// on under the test's control: the assertion the edge forwarded, the initiator
+// the browser reported, the identity the form's token was minted for, and the
+// session the path names.
+//
+// It is a fixture of its own rather than a fifth method on destroyer, creator,
+// renamer and compactor, because what varies here is the *route* — and holding
+// the route fixed is exactly what those four are for.
+type refuser struct {
+	*testServer
+	keys *keyServer
+}
+
+func newRefuser(t *testing.T) *refuser {
+	t.Helper()
+
+	keys := newKeyServer(t)
+	return &refuser{testServer: newAuditedServerWith(t, keys.validator(t)), keys: keys}
+}
+
+// mine plants a running session of this operator's own — the session every case
+// below starts by naming, so that whatever refuses is the case's own doing and
+// never an identifier that happened not to resolve.
+func (r *refuser) mine(t *testing.T) session.Session {
+	t.Helper()
+
+	planted, _ := r.fixture.plant(t, session.Session{Name: "under-refusal", WorkDir: r.fixture.repo})
+	return planted
+}
+
+// attempt is one request at an action route, in the four parts the cases below
+// vary. Each of the first three may be absent, which is a different shape from
+// present-and-empty: an absent Sec-Fetch-Site and an absent token are causes of
+// their own.
+type attempt struct {
+	assertion string
+	site      string
+	token     string
+	id        string
+}
+
+// wellFormed is the attempt every case varies from — everything the door asks
+// for, satisfied — so that each one differs from a request that would have
+// worked by exactly the thing it is named for.
+func (r *refuser) wellFormed(t *testing.T, id string) attempt {
+	t.Helper()
+
+	return attempt{
+		assertion: r.keys.mint(t, r.keys.claims()),
+		site:      secFetchSiteSameOrigin,
+		token:     mustMint(t, r.pageKey, testOperatorEmail, testTime),
+		id:        id,
+	}
+}
+
+// send drives one attempt at one route through the **registered** mux, which is
+// load-bearing rather than convenient: the claim is about what the four routes
+// contracts/actions.md fixes actually answer, and a fixture handler of this
+// test's own making could not notice one of them wired to redirect its refusals.
+func (r *refuser) send(t *testing.T, route mutatingRoute, a attempt) *httptest.ResponseRecorder {
+	t.Helper()
+
+	form := route.fields(t, r)
+	if a.token != absent {
+		form.Set(fieldPageToken, a.token)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, route.path(a.id), strings.NewReader(form.Encode()))
+	req.Header.Set(headerContentType, contentTypeForm)
+	if a.assertion != absent {
+		req.Header.Set(headerAccessAssertion, a.assertion)
+	}
+	if a.site != absent {
+		req.Header.Set(headerSecFetchSite, a.site)
+	}
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// mutatingRoute is one of the four routes contracts/actions.md registers, in the
+// parts a refusal case needs: where to post, whether the path names a session at
+// all, and what a request that would have *worked* carries beyond the page token.
+//
+// That last part is what keeps each case below refusing for the reason it is
+// named for and nothing else. A destroy posted without the confirming step is
+// refused by FR-029 before the case's own variation is ever reached — and FR-029
+// answers with a redirect, because the operator who sent it was authorised.
+// Every row here would then be red for a reason it did not mean.
+type mutatingRoute struct {
+	name string
+
+	// path takes the identifier the attempt chose. The create ignores it: it
+	// names no session, which is why the two lookup refusals cannot reach it.
+	path func(id string) string
+
+	// namesASession is false for the create alone.
+	namesASession bool
+
+	// fields is everything the route needs beyond the page token, which the
+	// attempt owns because it is what two of the cases vary.
+	fields func(t *testing.T, r *refuser) url.Values
+
+	// succeeds is the code the route redirects with when nothing refuses it —
+	// the non-vacuity every case below rests on.
+	succeeds outcome
+}
+
+func mutatingRoutes() []mutatingRoute {
+	return []mutatingRoute{
+		{
+			name:          "POST /dashboard/sessions/{id}/destroy",
+			path:          func(id string) string { return "/dashboard/sessions/" + id + "/destroy" },
+			namesASession: true,
+			fields: func(t *testing.T, _ *refuser) url.Values {
+				t.Helper()
+
+				form := url.Values{}
+				form.Set(fieldConfirm, confirmYes)
+				return form
+			},
+			succeeds: wantDestroyedOutcome,
+		},
+		{
+			name:          "POST /dashboard/sessions",
+			path:          func(string) string { return createPath },
+			namesASession: false,
+			fields: func(t *testing.T, r *refuser) url.Values {
+				t.Helper()
+
+				form := url.Values{}
+				form.Set(fieldName, "refused-or-started")
+				form.Set(fieldWorkDir, r.fixture.repo)
+				return form
+			},
+			succeeds: wantCreatedOutcome,
+		},
+		{
+			name:          "POST /dashboard/sessions/{id}/rename",
+			path:          func(id string) string { return "/dashboard/sessions/" + id + "/rename" },
+			namesASession: true,
+			fields: func(t *testing.T, _ *refuser) url.Values {
+				t.Helper()
+
+				form := url.Values{}
+				form.Set(fieldName, "renamed-after-all")
+				return form
+			},
+			succeeds: wantRenamedOutcome,
+		},
+		{
+			name:          "POST /dashboard/sessions/{id}/compact",
+			path:          func(id string) string { return "/dashboard/sessions/" + id + "/compact" },
+			namesASession: true,
+			// The one route that reads no field of its own (FR-016): what is
+			// delivered is a constant in the manager, so there is nothing here for a
+			// caller to choose.
+			fields:   func(*testing.T, *refuser) url.Values { return url.Values{} },
+			succeeds: wantCompactedOutcome,
+		},
+	}
+}
+
+// refusalShape is one way an action route can refuse, and the uniform answer it
+// must give.
+//
+// Three answers rather than one, because they are three different facts: layer 1
+// refused the identity, the gate refused the request, or the lookup found
+// nothing this operator may act on. What FR-025 says about all three is the same
+// — none of them is a redirect.
+type refusalShape struct {
+	name string
+
+	// namesASession marks the cases that can only be posed to a route carrying an
+	// {id}. Skipping them on the create is not a gap: what they assert is the
+	// lookup's answer, and a route that looks nothing up has none to give.
+	namesASession bool
+
+	// vary turns the well-formed attempt into the one this case is named for. It
+	// takes the fixture because two of the cases have to mint or plant first.
+	vary func(t *testing.T, r *refuser, a attempt) attempt
+
+	status int
+	body   string
+}
+
+func refusalShapes() []refusalShape {
+	// Not on the allowlist and not testOperatorEmail's owner: a second operator
+	// whose sessions this one must not be able to act on or detect.
+	const stranger auth.CallerID = "a-second-operator"
+
+	return []refusalShape{
+		{
+			name: "the edge forwarded no assertion at all",
+			vary: func(_ *testing.T, _ *refuser, a attempt) attempt {
+				a.assertion = absent
+				return a
+			},
+			status: http.StatusUnauthorized,
+			// Layer 1's refusal is compared against the constant and not a literal,
+			// which is the one departure from this file's rule and is
+			// TestActionGateOrder's own: those bytes are contracts/dashboard.md's,
+			// not contracts/actions.md's, and what this row claims is "layer 1's own
+			// refusal, whichever bytes those are, rather than a redirect".
+			body: string(bodyBrowserRefused),
+		},
+		{
+			name: "the assertion names an address that is not on the allowlist",
+			vary: func(t *testing.T, r *refuser, a attempt) attempt {
+				t.Helper()
+
+				// Genuine, signed by the published key, inside its validity, for this
+				// audience. The only thing wrong with it is who it names — which is
+				// the refusal an operator is most likely to meet and the one a
+				// redirect would be most useful to an attacker on.
+				claims := r.keys.claims()
+				claims["email"] = testStrangerEmail
+				a.assertion = r.keys.mint(t, claims)
+				return a
+			},
+			status: http.StatusUnauthorized,
+			body:   string(bodyBrowserRefused),
+		},
+		{
+			name: "the browser said the request came from another site",
+			vary: func(_ *testing.T, _ *refuser, a attempt) attempt {
+				a.site = "cross-site"
+				return a
+			},
+			status: wantActionStatus,
+			body:   wantActionBody,
+		},
+		{
+			name: "the browser sent no Sec-Fetch-Site at all",
+			vary: func(_ *testing.T, _ *refuser, a attempt) attempt {
+				a.site = absent
+				return a
+			},
+			status: wantActionStatus,
+			body:   wantActionBody,
+		},
+		{
+			name: "the form carried no page token",
+			vary: func(_ *testing.T, _ *refuser, a attempt) attempt {
+				a.token = absent
+				return a
+			},
+			status: wantActionStatus,
+			body:   wantActionBody,
+		},
+		{
+			name: "the token was minted for another identity",
+			vary: func(t *testing.T, r *refuser, a attempt) attempt {
+				t.Helper()
+
+				a.token = mustMint(t, r.pageKey, testStrangerEmail, testTime)
+				return a
+			},
+			status: wantActionStatus,
+			body:   wantActionBody,
+		},
+		{
+			name:          "the path names no session this host ever had",
+			namesASession: true,
+			vary: func(_ *testing.T, _ *refuser, a attempt) attempt {
+				// Well-formed — 32 lowercase hex — so the route matches it and what
+				// refuses is the lookup rather than the shape check in front of it.
+				a.id = strings.Repeat("c", session.IDLen)
+				return a
+			},
+			status: wantNotFoundStatus,
+			body:   wantNotFoundBody,
+		},
+		{
+			name:          "the path names a session another operator owns",
+			namesASession: true,
+			vary: func(t *testing.T, r *refuser, a attempt) attempt {
+				t.Helper()
+
+				theirs, _ := r.fixture.plant(t, session.Session{
+					Owner: stranger, Name: "not-yours", WorkDir: r.fixture.repo,
+				})
+				a.id = theirs.ID
+				return a
+			},
+			status: wantNotFoundStatus,
+			body:   wantNotFoundBody,
+		},
+	}
+}
+
+// TestRefusalIsNotARedirect is FR-025, and the half of T014 that is an exclusion
+// rather than a change: every action answers with a 303, and no refusal does.
+//
+// **Must fail when** a refusal is answered with a redirect. Sending an
+// unauthorised caller somewhere tells them their request was processed — they
+// follow the Location, land on the fleet, and read a banner about an action this
+// daemon refused to take. It is worse than misleading: the answers milestone 3
+// made uniform stop being uniform the moment one of them carries a Location, and
+// a caller probing this door learns which of their forgeries got far enough to
+// be redirected.
+//
+// The redirect claim is asserted first and on its own, so that a route which
+// grew a redirecting refusal fails with the sentence above rather than with a
+// status mismatch that reads like a typo.
+//
+// Every case is driven at all four registered routes, because FR-025 is a
+// property of the door rather than of any one handler. The two lookup cases
+// cannot reach the create, which names no session — noted on the case rather
+// than silently skipped.
+//
+// What is deliberately **not** here is the unconfirmed destroy. That one does
+// redirect, and must: the operator was verified, the gate admitted them, and
+// what they are told is that nothing was torn down (FR-029). FR-025 is about a
+// caller this daemon would not act for at all, which is what every row below is.
+//
+// The last block is the non-vacuity and it is not decoration: every assertion
+// above is satisfied by a daemon that refuses everything and redirects nowhere.
+// It makes the opposite claim on the same four routes through the same fixture —
+// a request nothing refuses *is* answered with a 303 — which is what makes the
+// rows above an exclusion rather than a description of a door that never works.
+func TestRefusalIsNotARedirect(t *testing.T) {
+	t.Parallel()
+
+	for _, route := range mutatingRoutes() {
+		t.Run(route.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, c := range refusalShapes() {
+				if c.namesASession && !route.namesASession {
+					continue
+				}
+
+				t.Run(c.name, func(t *testing.T) {
+					t.Parallel()
+
+					r := newRefuser(t)
+					w := r.send(t, route, c.vary(t, r, r.wellFormed(t, r.mine(t).ID)))
+
+					// The claim, stated on its own. The status is what a browser acts
+					// on and the Location is what it acts on it with, so both are
+					// asserted: a 303 with no Location strands the caller, and a
+					// Location on a 403 is a header the next well-meaning edit turns
+					// into a redirect.
+					if w.Code >= http.StatusMultipleChoices && w.Code < http.StatusBadRequest {
+						t.Fatalf("the refusal was answered %d to %q; a refusal is never a redirect (FR-025) — "+
+							"sending an unauthorised caller somewhere tells them their request was processed",
+							w.Code, w.Header().Get(headerLocation))
+					}
+					if got := w.Header().Get(headerLocation); got != "" {
+						t.Errorf("the refusal carried %s: %q; want no such header", headerLocation, got)
+					}
+
+					// And it is still the uniform answer it was before T014. A refusal
+					// that stopped redirecting by answering something new of its own
+					// would satisfy both claims above and lose what FR-004 and FR-017
+					// are for.
+					if w.Code != c.status {
+						t.Fatalf("status = %d (%s); want %d — the uniform answer this refusal had before the redirect",
+							w.Code, w.Body.String(), c.status)
+					}
+					if got := w.Body.String(); got != c.body {
+						t.Errorf("body\n%s\nwant the uniform answer\n%s", got, c.body)
+					}
+				})
+			}
+
+			t.Run("a request nothing refuses is answered with a redirect", func(t *testing.T) {
+				t.Parallel()
+
+				r := newRefuser(t)
+				wantOutcome(t, r.send(t, route, r.wellFormed(t, r.mine(t).ID)), route.succeeds)
+			})
+		})
+	}
+}
