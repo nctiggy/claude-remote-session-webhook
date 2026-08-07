@@ -821,6 +821,11 @@ func TestQuickstartPrerequisites(t *testing.T) {
 		{name: "go", args: []string{"version"}, required: true},
 		{name: "tmux", args: []string{"-V"}, required: true},
 		{name: "golangci-lint", args: []string{"--version"}, required: true},
+		// Required because TestDocumentedCommandParses runs the unit file's
+		// audit-trail command as written, and that command ends in jq. A host
+		// without it cannot check the documentation, which is a thing to be told
+		// rather than to pass quietly.
+		{name: "jq", args: []string{"--version"}, required: true},
 		{name: "goimports"},
 	} {
 		path, err := exec.LookPath(tool.name)
@@ -1674,6 +1679,179 @@ func TestQuickstartStory6Audit(t *testing.T) {
 	if strings.Contains(trail, "bad:name") {
 		t.Error("the refused session name is in the trail, which is caller-supplied text")
 	}
+}
+
+// unitPath is the deployment example. internal/config's deployexample_test.go
+// holds its *directives* to what config.go reads; this file is about a line in
+// one of its comments, which is the part of it an operator types.
+const unitPath = "../../deploy/crswd.example.service"
+
+// absentBinary is a start command no host has, so that the daemon under test
+// writes the dependency probe's banner and the stream really does carry both
+// kinds of line. It is never run: this case creates no session.
+const absentBinary = "crswd-quickstart-no-such-binary"
+
+// TestDocumentedCommandParses is #88's other half (SC-008). The audit trail is
+// only readable if the command an operator is *told* to read it with works, and
+// the one the unit file shipped did not — it failed on the daemon's own
+// diagnostics, which systemd interleaves into the same journal.
+//
+// The command is taken out of the unit file rather than restated here, because a
+// restated one is two documents drifting independently, which is what #88 was.
+// Only the producer is substituted: `journalctl --user -u crswd -o cat` prints a
+// unit's stdout and stderr merged, and this daemon's stdout and stderr merged is
+// the file the harness already captures — so every stage after the first runs
+// verbatim, over the bytes journald would have handed it.
+//
+// Two claims, and the second is why the first is not enough. The command must
+// yield the whole trail as JSON; it must also *reject* a line that only looks
+// like a record. A documented filter that merely selects lines would satisfy the
+// first while passing a truncated record through to whatever the operator pipes
+// it into, and "every line on stdout is a record" is the invariant this daemon
+// asks them to rely on (main.go, "The two streams").
+func TestDocumentedCommandParses(t *testing.T) {
+	h := newHost(t)
+	d := h.start(map[string]string{"CRSW_START_COMMAND": absentBinary + " --dangerously-skip-permissions"})
+
+	// One allow and one deny, because FR-041 counts an unauthenticated request
+	// like any other and both shapes have to survive the filter.
+	d.call(http.MethodGet, "/sessions", "", "")
+	d.do(mustRequest(t, http.MethodGet, "http://"+d.addr+"/sessions"))
+
+	// The trail is written before the response is, but that is two processes.
+	const wantRecords = 2
+	deadline := time.Now().Add(waitBudget)
+	for time.Now().Before(deadline) && len(d.records()) < wantRecords {
+		time.Sleep(20 * time.Millisecond)
+	}
+	records := d.records()
+	if len(records) < wantRecords {
+		t.Fatalf("the trail holds %d records, want %d:\n%s", len(records), wantRecords, d.readTrail())
+	}
+
+	// A daemon that logged records alone would pass every assertion below with
+	// no filter at all, which is the shape of the bug rather than a check of it.
+	if !strings.Contains(d.readTrail(), "crswd: ") {
+		t.Fatalf("nothing in this daemon's stream is a diagnostic, so the filter is not being asked anything:\n%s", d.readTrail())
+	}
+
+	filter := documentedFilter(t)
+	out, stderr, err := runFilter(t, filter, d.trail)
+	if err != nil {
+		t.Fatalf("the command documented in %s fails on a daemon that has logged records and diagnostics: %v\n%s\n--- the stream it was given\n%s",
+			unitPath, err, stderr, d.readTrail())
+	}
+
+	// Every record, not merely some: a filter that dropped one would still emit
+	// valid JSON, and a trail missing a request is the failure the trail exists
+	// to prevent.
+	var parsed []auditRecord
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for {
+		var rec auditRecord
+		switch err := dec.Decode(&rec); {
+		case err == io.EOF:
+			if got := len(parsed); got != len(records) {
+				t.Errorf("the documented command yields %d records out of the %d in the stream", got, len(records))
+			}
+			for _, rec := range parsed {
+				if rec.Action == "" {
+					t.Errorf("the command yields %+v, which parsed but is not an audit record", rec)
+				}
+			}
+			assertRejectsAMalformedRecord(t, h, filter, d.readTrail())
+			return
+		case err != nil:
+			t.Fatalf("the documented command's output is not JSON: %v\n%s", err, out)
+		}
+		parsed = append(parsed, rec)
+	}
+}
+
+// assertRejectsAMalformedRecord is the second claim: the same command, over the
+// same stream with one truncated record appended.
+//
+// `{` is the whole of what the filter selects on, so a line that begins with one
+// and is not a record is the case a selecting-but-not-parsing command would hand
+// on silently. An operator whose next stage is `jq -r '.action'` would read a
+// shorter list of actions than the journal holds and have nothing to tell them.
+func assertRejectsAMalformedRecord(t *testing.T, h *host, filter, stream string) {
+	t.Helper()
+
+	path := filepath.Join(h.dir, "trail-with-a-truncated-record")
+	if err := os.WriteFile(path, []byte(stream+`{"action":`+"\n"), 0o600); err != nil {
+		t.Fatalf("write the malformed stream: %v", err)
+	}
+
+	if _, _, err := runFilter(t, filter, path); err == nil {
+		t.Errorf("the command documented in %s passes a truncated record through; it selects lines without parsing them, so a corrupt trail reads as a shorter one", unitPath)
+	}
+}
+
+// documentedFilter is the stages of the unit file's audit-trail command after
+// the journalctl that produces the stream.
+func documentedFilter(t *testing.T) string {
+	t.Helper()
+
+	raw, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", unitPath, err)
+	}
+
+	// Exactly one, so a second copy in the same file cannot drift from it — the
+	// two-documents failure, one document down.
+	var documented []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		text := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "#"))
+		if strings.HasPrefix(text, "journalctl") {
+			documented = append(documented, text)
+		}
+	}
+	if len(documented) != 1 {
+		t.Fatalf("%s documents %d commands beginning with journalctl, want exactly one: %q", unitPath, len(documented), documented)
+	}
+
+	producer, filter, piped := strings.Cut(documented[0], "|")
+	if !piped {
+		t.Fatalf("%s documents %q, which reads the journal and does not filter it; the daemon's own diagnostics are in that stream (#88)", unitPath, documented[0])
+	}
+	// The producer is the one stage this test substitutes, so it has to be the
+	// one this test believes it is substituting.
+	for _, want := range []string{"journalctl", "--user", "-u crswd", "-o cat"} {
+		if !strings.Contains(producer, want) {
+			t.Fatalf("%s reads the trail with %q, which does not name %q; this test replaces it with the captured stream and would be checking a different command", unitPath, producer, want)
+		}
+	}
+
+	// Named here rather than assumed, because the failure is otherwise an exit
+	// status of 127 reported as "the documentation is wrong".
+	for _, stage := range strings.Split(filter, "|") {
+		tool, _, _ := strings.Cut(strings.TrimSpace(stage), " ")
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Fatalf("the documented command pipes through %q, which is not installed, so the documentation cannot be checked on this host: %v", tool, err)
+		}
+	}
+	return filter
+}
+
+// runFilter runs the documented stages over a captured stream, as written.
+func runFilter(t *testing.T, filter, stream string) ([]byte, string, error) {
+	t.Helper()
+
+	f, err := os.Open(stream) //nolint:gosec // G304: the path is a capture this suite wrote into t.TempDir().
+	if err != nil {
+		t.Fatalf("open the captured stream: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	var out, errs bytes.Buffer
+	//nolint:gosec // G204: the argument is documentation this repository commits, run as written, which is the whole assertion.
+	cmd := exec.Command("sh", "-c", filter)
+	cmd.Stdin = f
+	cmd.Stdout = &out
+	cmd.Stderr = &errs
+	err = cmd.Run()
+	return out.Bytes(), errs.String(), err
 }
 
 // TestQuickstartRefusesWithoutTmux is SC-011, and it is here rather than only in
