@@ -1938,3 +1938,112 @@ one level, off by default) — and see the first bullet above: finish it by wiri
   field pointing at nothing), and the input replaced by a `<select name="work_dir">` (red in all
   three, both `TestAnyPathStillTypeable` subtests included) — each reverted by reverse `Edit`,
   with `git diff --stat` afterwards showing 192 insertions against 2 deletions.
+
+---
+
+## Iteration 23 — 2026-08-07 07:39
+
+**Did:** T023. The discovery walk, carried from `claude/issue-issue-59-20260807-0055` into
+`internal/config/discover.go` as `Config.DiscoveredWorkDirs()`: subdirectories one level below
+each approved root, behind the new `CRSW_DISCOVER_ROOTS` / `discover_roots`, **off by default**.
+Three tests in `discover_test.go` (`TestDiscoveryOffByDefault`, `TestDiscoveryListsOneLevel`,
+`TestDiscoveryNeverLeavesRoots`) — and, because a walk no page calls is this repo's signature
+defect, the wiring: `Suggestions: s.cfg.DiscoveredWorkDirs()` in `fleetPage`, pinned by
+`TestTheRenderedFleetOffersWhatDiscoveryFound` in `dashboard_test.go`.
+
+**Learned:**
+
+- **`internal/config` cannot use the containment rule that decides a create.** `underRoot` is
+  unexported in `internal/session`, and `session` imports `config`, so the walk could only have
+  duplicated the separator-boundary rule — two copies of a boundary is exactly what T001's
+  reasoning forbids. It does not need one: for a **one-level** walk, "under this root" and "a
+  direct child of this root" are the same question, so `childOf` resolves the entry and compares
+  `filepath.Dir(resolved)` against the root. That is *stricter* than `ResolveWorkDir`, which is
+  the safe direction — a link in root A pointing into approved root B is dropped, and the operator
+  types it. Whoever adds a deeper walk or a second suggestion source has to revisit this, and the
+  honest fix then is `ApprovedRoot.Contains(path)` exported from `config` with `session` calling
+  it, not a copy.
+- **The branch spells these variables `CRSW_WORK_DIRS` and `CRSW_WORK_DIRS_DISCOVER`; milestone 4
+  spells one of them `discover_roots`.** `KeyForVar` is mechanical (`CRSW_` + upper), so the
+  contract's key fixes the variable at `CRSW_DISCOVER_ROOTS` and the branch's name was not
+  carried. The branch's `CRSW_WORK_DIRS` is the explicit list that **still has no task** — see the
+  finding below, unchanged from iteration 22.
+- **Adding one key to `Vars()` touches five places, and four of them are tests that tell you.**
+  `Vars()` in `file.go`, a constant in **`config.go` specifically** (`declaredVars` AST-parses that
+  one file), `.env.example` with a comment line immediately above it, a `settingValue` case in
+  `httpapi/settings.go`, and `deploy/crswd.example.service` —
+  `TestUnitSetsOnlyVariablesTheDaemonReads` fails on the unit, which is the only one of the five
+  that is easy to forget because nothing in `internal/` mentions it.
+- **`loadBool` now exists** (`config.go`, beside `loadInt`) and refuses anything
+  `strconv.ParseBool` refuses rather than defaulting to off. It is deliberately **not** wired to
+  `CRSW_DESTROY_ON_SHUTDOWN`, which still has no loader (AR-008, and `varWithNoLoader` in
+  `source_test.go` pins that absence in both directions) — but the fix for that finding is now
+  three lines rather than a new loader.
+- **The `fleet` fixture can be pointed at a real filesystem without a new helper.** `f.cfg` is the
+  server's own `*config.Config` and `f.fixture.root`/`.repo` are a resolved temp dir with one
+  subdirectory in it, so a page test sets `f.cfg.Roots` and `f.cfg.DiscoverRoots` before the first
+  render and asserts on the served markup. The two-case shape is what makes it an assertion about
+  the *configuration*: `Suggestions` wired to anything constant passes the "on" case and fails the
+  "off" one.
+
+**Left:** T024–T035. Next is **T024** (🔒 `TestChosenPathValidatedIdentically` in
+`internal/httpapi/actions_test.go`) — and it is now a test with something real to assert, because
+a suggested path is finally something a page can produce.
+
+**Findings:**
+
+- **The walk's cap is silent.** `maxDiscoveredWorkDirs = 200` bounds the markup and the filesystem
+  calls, and nothing tells an operator their list was cut short — the abandoned branch returned a
+  `truncated bool` and said so. It was dropped rather than carried because nothing renders it and
+  a dead second return is the shape of code with no caller; the field stays free text, so a
+  directory past the cap is typed. If T025's announcement grows a place to say "showing a subset",
+  truncation belongs in the same sentence.
+- **Still no task owns `workdir_suggestions`** (iteration 22, unchanged): `contracts/directory-
+  picker.md` names two suggestion sources and only discovery has one. Discovery is now the only
+  source, and it is off by default, so the **shipped default still renders a plain field** —
+  FR-043-compliant, but SC-008/SC-009 cannot be demonstrated without configuration.
+- **`contracts/directory-picker.md` line 12 still spells the input `name="workdir"`** where the
+  daemon's field is `work_dir` (iteration 22). Fix the contract, not the template.
+- **Nothing posts to `/dashboard/sessions/{id}/mode`** (iterations 19-23). Fifth iteration
+  carrying it; still the finding most likely to end the milestone with a feature the operator
+  cannot use.
+- **NEEDS CLARIFICATION (not blocking, iteration 20): a start command that ignores SIGINT would
+  receive the new command line as a prompt.** Still the operator's call.
+- **The mode toggle redirects to the fleet where the contract says the session page** (19-23).
+  **`session.mode` puts a browser-door action in the API's `session.*` namespace** (19-23).
+  **`contracts/session-mode.md` and `data-model.md` still spell `Mode()` with no parameter and
+  still describe `remote_start_commands`** (18-23). **`contracts/card-layout.md` names T021's test
+  `TestModeShownTextually` where two other files say `TestCardShowsMode`** (21-23).
+- **Two `TestParseSessions` fixtures still pass for the wrong reason** (17-23): the stray `\n` in
+  `"creation time is not a number"` and `"creation time missing entirely"` in
+  `internal/tmuxctl/exec_test.go`. **Fix-lane commit:** drop the `\n`, pad to six fields.
+- **`specs/001-crswd-daemon-core/contracts/tmuxctl.md` is stale by three fields** (17-23): line
+  163's `list-sessions` format string and lines 81-82's two `set-option` calls against five.
+- **`contracts/actions.md` (milestone 3's) is still stale in nine places** — iterations 14-23.
+- **`TestBrowserCreateStartsTheSessionAndAnswersWithItsCard` and
+  `TestRenameRelabelsTheRecordAndAnswersWithItsCard` are still misnamed** (14-23).
+- **`internal/httpapi` still carries the data race in its own fixture** (13-23):
+  `newAuditedServerWith` sets `s.report` unsynchronised (`middleware_test.go:215`). Eleventh
+  iteration logging it.
+- **`docs/components.md`'s Form section still says there is "deliberately no hint on the working
+  directory"** (iteration 22) — false since T014 and false twice since T022.
+- **Still open from iterations 5-23:** the three red `-tags quickstart` tests
+  (`CRSW_DESTROY_ON_SHUTDOWN` has no loader — the oldest unfixed finding here; not run this
+  iteration, the live daemon still holds `127.0.0.1:8765`, though `go vet -tags quickstart ./...`
+  is green); `contracts/settings-page.md`'s `TestNoMutatingVerbRegistered` row still saying 405,
+  and its worked example showing values no loader would produce; three `ReadFile` refusals missing
+  from `contracts/config-file.md`'s table; the `version < 1` row; the contract's "yields exactly
+  eight keys" against seven — now **nine** keys, so that number is wrong in a second direction; a
+  dangling symlink reading as absent; `f.values` having no enumerator; `os.Open` on a FIFO
+  blocking startup with no message; `--config <path>` still unbuilt; `README.md` and
+  `deploy/README.md` silent on the config file (T034/T035).
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean, `go build`, `go vet`, `go test -count=1 ./...` all green; `go vet` green under `-tags
+  tmux`, `-tags quickstart` and `-tags dev`; `go.sum` still absent. Four mutations were run rather
+  than reasoned about — `loadBool` defaulting to `true` (red: `TestDiscoveryOffByDefault`, both
+  halves), the walk appending each child's own children (red: `TestDiscoveryListsOneLevel` on
+  `repo/nested`, and `TestDiscoveryNeverLeavesRoots` on the count), containment checked on the
+  entry's spelling instead of its resolution (red: both, with `base/outside` — the escaping link's
+  target — offered on the page), and `Suggestions` wired to `s.rootPaths()` (red: the "asked for
+  discovery" case). Each reverted by reverse `Edit`; `git diff --stat` afterwards showed 138
+  insertions against 3 deletions across eight files, plus the two new ones.
