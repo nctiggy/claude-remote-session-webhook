@@ -67,6 +67,41 @@ one loop for the lot.
 | 3 | Dashboard actions | create, destroy, rename, compact |
 | 4 | Claude login relay | detect device-code prompt, surface URL, relay code back |
 
+## Prerequisites
+
+Two things must be on the daemon's `PATH` before it can do anything, and it
+checks both at startup rather than at the first request.
+
+| | | Missing |
+|---|---|---|
+| `tmux` | Every session is a tmux session | **The daemon refuses to start.** Nothing works without it |
+| The start command | `claude` unless `CRSW_START_COMMAND` or `CRSW_START_COMMANDS` says otherwise — so check what *you* configured | A loud warning. The dashboard and the reaper still work; every create fails |
+
+Installing tmux, by platform. The daemon prints the line for the host it is on,
+reading `ID` and `ID_LIKE` from `/etc/os-release` — so Mint gets the Debian
+advice and Rocky the RHEL one. It never runs the install itself: that would need
+privileges it has no other use for, and you may want a tmux this line would not
+give you.
+
+| Platform | |
+|---|---|
+| Debian, Ubuntu, and derivatives | `sudo apt install tmux` |
+| RHEL, Fedora, CentOS, Rocky, Alma | `sudo dnf install tmux` |
+| Arch | `sudo pacman -S tmux` |
+| Alpine | `sudo apk add tmux` |
+| macOS | `brew install tmux` |
+| anything else | your package manager |
+
+The start command is whatever you configured. Left at the default it is Claude
+Code, installed per
+[Anthropic's setup instructions](https://docs.claude.com/en/docs/claude-code/setup);
+a daemon configured to run something else needs that instead, and needs it on
+the `PATH` the daemon itself runs with — a systemd unit does not inherit your
+shell's.
+
+Building from source additionally needs Go (see [`go.mod`](go.mod) for the
+version).
+
 ## Working in this repo
 
 Read [`AGENTS.md`](AGENTS.md) first — it is the contract for humans and agents
