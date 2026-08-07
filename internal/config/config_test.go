@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -219,6 +220,190 @@ func TestConfigFormattingNeverSpellsAStartCommand(t *testing.T) {
 			t.Errorf("Sprintf(%q) = %s, want the configured names named", verb, got)
 		}
 	}
+}
+
+// TestLoadFromResolvesTheRemoteControlCommand is what the dashboard's switch
+// means on this daemon (#58): a name the operator can read out of their own
+// configuration, never a command line the page decided on.
+func TestLoadFromResolvesTheRemoteControlCommand(t *testing.T) {
+	t.Parallel()
+
+	const rc = "claude remote-control --permission-mode bypassPermissions --name {name}"
+
+	// The whole point of naming a default: an operator who spells their command
+	// `rc` gets a working switch without configuring a second thing.
+	t.Run("rc by default when the operator configured one", func(t *testing.T) {
+		t.Parallel()
+
+		pairs, _ := baseEnv(t)
+		pairs[config.EnvStartCommands] = "rc=" + rc
+		cfg := mustLoad(t, pairs)
+
+		if got := cfg.RemoteControlCommand; got != config.DefaultRemoteControlCommandName {
+			t.Errorf("RemoteControlCommand = %q, want %q", got, config.DefaultRemoteControlCommandName)
+		}
+	})
+
+	// A daemon that configures no remote control has no switch to offer, and
+	// offering one whose only outcome is a refusal is worse than offering none.
+	t.Run("empty when no such command is configured", func(t *testing.T) {
+		t.Parallel()
+
+		pairs, _ := baseEnv(t)
+		pairs[config.EnvStartCommands] = ""
+		cfg := mustLoad(t, pairs)
+
+		if got := cfg.RemoteControlCommand; got != "" {
+			t.Errorf("RemoteControlCommand = %q, want empty; nothing configured means no switch", got)
+		}
+	})
+
+	// A daemon that spells it differently still works, which is the reason this
+	// is configuration rather than a constant.
+	t.Run("the operator's own name", func(t *testing.T) {
+		t.Parallel()
+
+		pairs, _ := baseEnv(t)
+		pairs[config.EnvStartCommands] = "remote=" + rc
+		pairs[config.EnvRemoteControlCommand] = "remote"
+		cfg := mustLoad(t, pairs)
+
+		if got := cfg.RemoteControlCommand; got != "remote" {
+			t.Errorf("RemoteControlCommand = %q, want %q", got, "remote")
+		}
+		if cmd, ok := cfg.StartCommands.Command(cfg.RemoteControlCommand); !ok || cmd != rc {
+			t.Errorf("the switch's name resolves to %q (ok=%t), want %q", cmd, ok, rc)
+		}
+	})
+}
+
+// TestRenderStartCommand pins the one substitution this daemon performs, and the
+// boundary of what it will substitute.
+//
+// The whole safety argument for interpolating a value into a line typed at an
+// unsandboxed shell is that a session name is ^[a-zA-Z0-9-]{1,64}$ and therefore
+// cannot change the shape of that line. This is where that argument is checked
+// rather than assumed — including with names no caller can actually reach here,
+// because the day the two alphabets disagree is the day the substitution must
+// refuse rather than proceed.
+func TestRenderStartCommand(t *testing.T) {
+	t.Parallel()
+
+	const rc = "claude remote-control --permission-mode bypassPermissions --spawn=same-dir --name {name}"
+
+	t.Run("substituted", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name    string
+			command string
+			session string
+			want    string
+		}{
+			{
+				name:    "no placeholder is untouched",
+				command: config.DefaultStartCommand,
+				session: "refactor-auth",
+				want:    config.DefaultStartCommand,
+			},
+			{
+				name:    "no placeholder and no name is still untouched",
+				command: config.DefaultStartCommand,
+				want:    config.DefaultStartCommand,
+			},
+			{
+				name:    "the remote-control line",
+				command: rc,
+				session: "refactor-auth",
+				want:    "claude remote-control --permission-mode bypassPermissions --spawn=same-dir --name refactor-auth",
+			},
+			{
+				name:    "one character",
+				command: rc,
+				session: "a",
+				want:    "claude remote-control --permission-mode bypassPermissions --spawn=same-dir --name a",
+			},
+			{
+				name:    "the longest name there is",
+				command: rc,
+				session: strings.Repeat("z", 64),
+				want:    "claude remote-control --permission-mode bypassPermissions --spawn=same-dir --name " + strings.Repeat("z", 64),
+			},
+			{
+				name:    "all hyphens",
+				command: rc,
+				session: "---",
+				want:    "claude remote-control --permission-mode bypassPermissions --spawn=same-dir --name ---",
+			},
+			{
+				name:    "every placeholder is replaced",
+				command: "claude --name {name} --tag {name}",
+				session: "x-1",
+				want:    "claude --name x-1 --tag x-1",
+			},
+			{
+				// The shell's own braces are the shell's business. This daemon
+				// never interprets them, so it never substitutes into them either.
+				name:    "a shell expansion is left alone",
+				command: "claude --dir ${HOME} --name {name}",
+				session: "abc",
+				want:    "claude --dir ${HOME} --name abc",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				got, err := config.RenderStartCommand(tt.command, tt.session)
+				if err != nil {
+					t.Fatalf("RenderStartCommand(%q, %q) = %v", tt.command, tt.session, err)
+				}
+				if got != tt.want {
+					t.Errorf("RenderStartCommand(%q, %q)\n got %q\nwant %q", tt.command, tt.session, got, tt.want)
+				}
+			})
+		}
+	})
+
+	t.Run("refused", func(t *testing.T) {
+		t.Parallel()
+
+		// Each of these would change the shape of the command line, which is
+		// exactly what the licence to substitute at all depends on being
+		// impossible. None can reach here through Create — ValidateName refuses
+		// them first — and each is refused here anyway.
+		names := []string{
+			"",
+			"a b",
+			"a;rm -rf /",
+			"a`id`",
+			"a$(id)",
+			"a'b",
+			`a"b`,
+			"a\nb",
+			"a|b",
+			"a&b",
+			"a>b",
+			"a:b",
+			"a.b",
+			"a/b",
+			strings.Repeat("z", 65),
+		}
+		for _, name := range names {
+			t.Run(strconv.Quote(name), func(t *testing.T) {
+				t.Parallel()
+
+				got, err := config.RenderStartCommand(rc, name)
+				if !errors.Is(err, config.ErrStartCommandName) {
+					t.Fatalf("RenderStartCommand(_, %q) = %q, %v; want %v", name, got, err, config.ErrStartCommandName)
+				}
+				if got != "" {
+					t.Errorf("a refused substitution returned %q; want no command line at all", got)
+				}
+			})
+		}
+	})
 }
 
 // TestLoadFromRejects is the table the task calls for: every missing, short, or
@@ -632,6 +817,50 @@ func TestLoadFromRejects(t *testing.T) {
 				p[config.EnvStartCommands] = config.DefaultStartCommandName + "=claude --print"
 			},
 			wantIn: config.EnvStartCommand,
+		},
+		{
+			// A typo is refused, and the refusal names the token. Typed through as
+			// a literal it would be a brace expansion at a shell, and the operator
+			// who wrote it believes a value is being substituted (#58).
+			name: "a start command carries a misspelled placeholder",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvStartCommands] = "rc=claude remote-control --dir {worrking_dir}"
+			},
+			wantIn: "{worrking_dir}",
+		},
+		{
+			name: "the default start command carries an unknown placeholder",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvStartCommand] = "claude --session {id}"
+			},
+			wantIn: "{id}",
+		},
+		{
+			// The placeholder set is case-sensitive: a near miss is a miss, because
+			// "close enough" is how a value silently stops being substituted.
+			name: "a placeholder differs only in case",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvStartCommands] = "rc=claude remote-control --name {Name}"
+			},
+			wantIn: "{Name}",
+		},
+		{
+			// An operator who spelled their command differently has said which one
+			// they mean; a switch that quietly started plain sessions instead is
+			// the failure an unknown create name is refused to avoid.
+			name: "the remote-control command names nothing configured",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvStartCommands] = "rc=claude remote-control"
+				p[config.EnvRemoteControlCommand] = "remote"
+			},
+			wantIn: config.EnvRemoteControlCommand,
+		},
+		{
+			name: "the remote-control command name is outside the alphabet",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				p[config.EnvRemoteControlCommand] = "Remote Control"
+			},
+			wantIn: "[a-z0-9-]",
 		},
 	}
 

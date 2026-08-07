@@ -2845,6 +2845,120 @@ func TestTheStartCommandIsTheConfiguredOne(t *testing.T) {
 	})
 }
 
+// TestTheStartCommandCarriesTheSessionName is #58's second half: the name the
+// operator gave a session here is the name that shows up on the other side.
+//
+// The assertions are byte-for-byte on the argv send-keys was handed, because
+// that string is what gets typed at an unsandboxed shell. A test that only
+// checked the name appeared *somewhere* in the line would pass for a command
+// whose shape the name had changed, which is the one failure the substitution's
+// licence rests on being impossible.
+func TestTheStartCommandCarriesTheSessionName(t *testing.T) {
+	t.Parallel()
+
+	const rc = "claude remote-control --permission-mode bypassPermissions --spawn=same-dir --name {name}"
+
+	t.Run("the rendered line carries this session's own name", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		f.mgr.SetStartCommands(config.NewStartCommands(map[string]string{
+			"default": "claude --dangerously-skip-permissions",
+			"rc":      rc,
+		}))
+
+		req := f.request()
+		req.StartCommand = "rc"
+		if _, _, err := f.mgr.Create(context.Background(), req); err != nil {
+			t.Fatalf("Create() = %v", err)
+		}
+		assertTypedIntoTheShell(t,
+			f.tmux,
+			"claude remote-control --permission-mode bypassPermissions --spawn=same-dir --name refactor-auth")
+	})
+
+	// Every boundary of ValidateName's ^[a-zA-Z0-9-]{1,64}$, each one producing a
+	// command line with exactly the expected shape. These are the names that
+	// would break the substitution if it were unsafe — and none of them can,
+	// which is the property being pinned rather than assumed.
+	t.Run("a name at every boundary renders exactly one argument", func(t *testing.T) {
+		t.Parallel()
+
+		names := []string{
+			"a",
+			"A",
+			"0",
+			"-",
+			"---",
+			"a-b-c",
+			"0000000000",
+			strings.Repeat("x", MaxNameLen),
+			strings.Repeat("-", MaxNameLen),
+			"UPPER-lower-0123456789",
+		}
+		for _, name := range names {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				f := newManagerFixture(t)
+				f.mgr.SetStartCommands(config.NewStartCommands(map[string]string{
+					"default": "claude --dangerously-skip-permissions",
+					"rc":      rc,
+				}))
+
+				req := f.request()
+				req.StartCommand = "rc"
+				req.Name = name
+				if _, _, err := f.mgr.Create(context.Background(), req); err != nil {
+					t.Fatalf("Create(%q) = %v", name, err)
+				}
+				assertTypedIntoTheShell(t, f.tmux,
+					"claude remote-control --permission-mode bypassPermissions --spawn=same-dir --name "+name)
+			})
+		}
+	})
+
+	// A command without the placeholder is typed byte for byte, so the daemon an
+	// operator had before #58 is the daemon they still have.
+	t.Run("a command with no placeholder is untouched", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		f.mgr.SetStartCommands(config.NewStartCommands(map[string]string{
+			"default": "claude --dangerously-skip-permissions",
+		}))
+		if _, _, err := f.mgr.Create(context.Background(), f.request()); err != nil {
+			t.Fatalf("Create() = %v", err)
+		}
+		assertTypedIntoTheShell(t, f.tmux, "claude --dangerously-skip-permissions")
+	})
+
+	// A session with no name cannot supply one, and the refusal must leave
+	// nothing behind — an empty --name would start a session the operator then
+	// cannot find under the label they chose.
+	t.Run("no name to substitute creates nothing", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		f.mgr.SetStartCommands(config.NewStartCommands(map[string]string{
+			"default": rc,
+		}))
+
+		req := f.request()
+		req.Name = ""
+
+		_, _, err := f.mgr.Create(context.Background(), req)
+		if !errors.Is(err, ErrInvalidName) {
+			t.Fatalf("Create(no name) = %v; want %v", err, ErrInvalidName)
+		}
+		for _, call := range f.tmux.Calls() {
+			if call.Op == tmuxctl.OpNew {
+				t.Error("a refused create started a tmux session")
+			}
+		}
+	})
+}
+
 // assertTypedIntoTheShell finds the send-keys the start performed and checks the
 // line it carried.
 func assertTypedIntoTheShell(t *testing.T, fake *tmuxctl.Fake, want string) {
