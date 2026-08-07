@@ -730,3 +730,87 @@ unowned. `ErrConfigFile` landed here with the caller T004 said to wait for.
   config (#26). `gofmt -l .` clean, `go build`, `go vet`, `go test ./...` green, `go vet` green
   under `-tags tmux`, `-tags quickstart` and `-tags dev`, `go test -tags dev ./internal/access
   ./internal/config` green, `go.sum` still absent. CI is the gate.
+
+## Iteration 10 — 2026-08-07 04:19
+
+**Did:** T010, US2's first task and the first work this milestone in `internal/httpapi`.
+`GET /settings` in new `internal/httpapi/settings.go`, registered through `handleBrowser` so it
+is behind layer 1 by construction; `audit.ActionSettingsView` (`settings.view`) added to
+`internal/audit`; a minimal `web/templates/settings.html` — header and an empty `main.shell` —
+for T011 and T012 to fill. No page token is minted and no mutating verb is registered.
+
+**Learned:**
+
+- **The contract's `TestNoMutatingVerbRegistered` asks for 405 and this repo cannot produce one
+  — deliberately.** `handleUnrouted` registers `/` as a *method-less* subtree pattern, so every
+  request matches something and ServeMux never reaches its own 405 branch; and FR-033 (milestone
+  3) forbids weakening the uniform response, which an `Allow` header naming GET plainly does.
+  The same question has been settled the same way four times already — destroy, rename, compact,
+  fleet stream, each with a `…IsNoRouteOnAnyOtherMethod` test asserting 404-with-no-Allow and
+  saying "never a 405" in its comment. **The test is named as the contract names it and asserts
+  the unknown-route answer instead**, comparing the whole response against a genuinely unclaimed
+  path. See the finding below: the contract row wants correcting, not the code.
+- **Five mutations run, all caught, and two of them by more than the assertion aimed at them.**
+  (1) registering through `s.mux.Handle` instead of `handleBrowser` — caught by the *headers*
+  as well as by the missing record, because `setBrowserSecurityHeaders` lives in the middleware,
+  so the refusal came back with only a Content-Type; (2) `ActionDashboardView` instead of
+  `ActionSettingsView`; (3) `handleAction("POST /settings", …)` — caught even though that route
+  *refuses* with 403, which is exactly the "absence of a POST is the safeguard, not a POST that
+  refuses" claim; (4) a second `trail.Emit` in the handler, i.e. auditing per row; (5) the
+  registration deleted entirely.
+- **A refusal-uniformity assertion needs the whole response, not the status.** Mutation 1 answers
+  401 with the identical body — only `maps.EqualFunc` over the header set told it apart. A test
+  that had checked `w.Code` and `bodyBrowserRefused` would have passed a route with no security
+  headers, no cache directive and no audit trail.
+- **The handler's `OperatorFrom` fail-closed branch is unreachable through `newServer`**, as
+  `dashboard`'s is. It is not a testable behaviour and deleting it fails nothing; it is there
+  because a wiring mistake deserves a reason in the trail rather than a page rendered for nobody.
+- **A new page in `web/templates/` inherits four sweeps nobody points at it.** It must load
+  `/static/crswd.js` (`TestEveryPageLoadsTheLoopThatDrivesItsRain`, because the header renders a
+  rain canvas), carry no colour/size/font/inline-style/external-origin
+  (`TestNoTemplateCarriesAValueThatBelongsInATokenOrAnOrigin`), render only classes the
+  stylesheet has rules for **and no class it does not render**
+  (`TestTheStylesheetAndTheMarkupNameTheSameThings`, which fails in *both* directions), and — if
+  it carries `method="post"` or an action row — a live region. That last one is a hard-coded
+  two-page list, so a future actionable page is not covered by it. **T011/T012 will need a CSS
+  rule for every class they add to this page, in the same commit.**
+
+**Left:** T011–T035. Next is **T011** (secrets render `present`/`absent`), which is 🔒 and is
+the one page holding every secret at render time.
+
+**Findings:**
+
+- **`contracts/settings-page.md`'s `TestNoMutatingVerbRegistered` row says 405 and should say
+  "answered as a path nothing claims, with no `Allow` header".** It contradicts FR-033 and four
+  existing precedents, and the router shape makes it unreachable. The test written here is
+  correct; **the contract line wants a one-word fix** and it is the sort of thing a reviewer will
+  otherwise read as the code being wrong.
+- **T013 (`TestFullRouteSweepLeaksNoSecret`) has a collision waiting for it, and it is not a
+  bug.** `config.IsSecret` classifies `access_allowed_emails` as secret; the fixture's allowlist
+  is `["operator@example.com"]`; and the **header partial renders the verified operator's own
+  address on every page in the product**. A sweep that searches every response body for "the
+  configured secret value" will therefore hit `operator@example.com` on the fleet, the session
+  view, the not-found page and this one. They are two different things wearing one string — the
+  identity layer 1 verified, versus the daemon's copy of the allowlist — so T013 needs a fixture
+  whose allowlist holds an address the operator does not use, or the test will fail on correct
+  code. **Decide that in T013, not by widening the fixture later.**
+- **T012 wants two things that do not exist yet**, both logged in iteration 8 and neither
+  addressed here: nothing records a source for `destroy_on_shutdown` (so the page will render it
+  as `default` whatever the operator wrote — the settings page lying about provenance, which is
+  the one thing US2 exists to prevent), and `Config` carries no path for the file that was read,
+  which FR-018's `Read from %s` line needs. **Both are prerequisites for T012, not part of it.**
+- **`go test -tags quickstart ./cmd/crswd` is still red on the same three tests** —
+  `TestDashboardQuickstartStory1Adopted`, `TestQuickstartStory4Restart`, `TestQuickstartStory5Cap`
+  — for iteration 7's `CRSW_DESTROY_ON_SHUTDOWN`-has-no-loader reason. Not run this iteration
+  (T010 touches no `cmd/crswd` file and the port is held by the live daemon); `go vet -tags
+  quickstart ./...` is green. **Still the oldest unfixed finding in this notebook, and it now
+  blocks two milestone-4 tasks. It wants an issue and a fix-lane commit.**
+- **Still open from iterations 5–9:** three `ReadFile` refusals missing from
+  `contracts/config-file.md`'s table; the `version < 1` row; the contract's "yields exactly eight
+  keys" against seven; a dangling symlink reading as absent; `f.values` having no enumerator
+  (T012 needs one); `os.Open` on a FIFO blocking startup with no message; `--config <path>` still
+  unbuilt; `README.md` and `deploy/README.md` silent on the config file (T034/T035).
+- **Lint unchanged:** `golangci-lint run` clean, but the binary on PATH is v1.62.2 against a v2
+  config (#26). `gofmt -l .` clean, `go build`, `go vet`, `go test ./...` green, `go vet` green
+  under `-tags tmux`, `-tags quickstart` and `-tags dev`, `go test -tags dev ./internal/access
+  ./internal/config ./internal/httpapi` green, `go.sum` still absent. CI is the gate.
