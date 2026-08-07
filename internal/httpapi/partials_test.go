@@ -1872,11 +1872,16 @@ func TestTheCreateFormNamesTheConfiguredRoots(t *testing.T) {
 	// It renders no hint rather than an empty list, which is FR-018a's discipline
 	// about absent values: state the absence, never render something that reads
 	// like a value.
+	//
+	// Asserted against this hint's own id rather than against the field-hint
+	// class, which stopped distinguishing when the conversation field grew a hint
+	// of its own (T032). That one is unconditional and says what an empty field
+	// does, so it is not the absent value this case is about.
 	t.Run("no roots renders no hint", func(t *testing.T) {
 		t.Parallel()
 
 		out := renderComponent(t, "create-form", createFormView{PageToken: "t"})
-		if strings.Contains(out, "field-hint") {
+		if strings.Contains(out, `id="create-roots"`) {
 			t.Errorf("a form rendered without roots offers an empty hint:\n%s", out)
 		}
 	})
@@ -2012,6 +2017,156 @@ func TestNoSuggestionsRendersPlainField(t *testing.T) {
 	if list, ok := attributeValue(t, input, "list"); ok {
 		t.Errorf("the field points at the datalist %q and none is rendered (%s); the field with nothing to suggest is the field that shipped before this existed", list, input)
 	}
+}
+
+// The conversation offer's fixture and the element it hangs off. Two entries
+// under different working directories, because the directory is what makes an
+// identifier legible and a list of one could not show that it renders.
+var (
+	conversationOffers = []conversationOffer{
+		{ID: "8f14e45f-ceea-467a-9b3d-0f2fc9de5b21", WorkDir: "/home/operator/code/crswd", Age: "2 hours"},
+		{ID: "c9f0f895-fb98-4b9d-8c1e-a34dbb8bb7a1", WorkDir: "/home/operator/code/notes", Age: "3 days"},
+	}
+	resumeInput = regexp.MustCompile(`<input\b[^>]*\bname="resume"[^>]*>`)
+)
+
+// TestFreshIsDefault is FR-037 in the markup, and the whole of what makes a
+// resume something the operator chose: this form asks for a conversation without
+// ever proposing one.
+//
+// **Must fail when** the field arrives pre-filled — a `value`, a `selected`
+// option, a `checked` box — or when it becomes a control that cannot express
+// "fresh" at all. A default of "carry on from the last conversation" is the one
+// setting here an operator would not notice until a session came back knowing
+// things they never told it.
+//
+// It is asserted with an offer present, which is the state the mistake would be
+// made in: a form with nothing to offer is trivially fresh, and a list of
+// conversations beside an empty field is exactly the arrangement that invites
+// preselecting the first one.
+func TestFreshIsDefault(t *testing.T) {
+	t.Parallel()
+
+	for name, view := range map[string]createFormView{
+		"offering conversations": {PageToken: "t", Conversations: conversationOffers},
+		"offering none":          {PageToken: "t"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			out := renderComponent(t, "create-form", view)
+
+			field := resumeInput.FindString(out)
+			if field == "" {
+				t.Fatalf("the create form asks for no conversation at all:\n%s", out)
+			}
+			if value, ok := attributeValue(t, field, "value"); ok {
+				t.Errorf("the conversation field arrives holding %q; fresh is the default and a default is what an empty field means (%s)", value, field)
+			}
+			if _, ok := attributeValue(t, field, "checked"); ok {
+				t.Errorf("the conversation field arrives ticked (%s)", field)
+			}
+			if _, ok := attributeValue(t, field, "required"); ok {
+				t.Errorf("the conversation field is required, so no submission can start fresh (%s)", field)
+			}
+			if strings.Contains(out, "selected") {
+				t.Errorf("the create form preselects an option:\n%s", out)
+			}
+			// A chooser could not express "fresh" without an option meaning it,
+			// which is a second spelling of the default the handler already reads
+			// as an empty field.
+			if chooser := regexp.MustCompile(`<select\b[^>]*\bname="resume"`).FindString(out); chooser != "" {
+				t.Errorf("the conversation became a chooser (%s):\n%s", chooser, out)
+			}
+			// The operator has to be told what an empty field does. A default
+			// nothing says out loud is one an operator discovers by losing work.
+			if !strings.Contains(out, `id="create-resume-hint"`) || !strings.Contains(out, "empty") {
+				t.Errorf("nothing on the form says what leaving the conversation empty does:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestTheCreateFormOffersPriorConversations is FR-033's half of the offer: an
+// operator can only choose a conversation the page shows them.
+//
+// **Must fail when** the offer stops carrying the directory each conversation
+// belongs to. Two fields are submitted together and the route checks the pairing,
+// so a list of bare identifiers is one an operator cannot use — every entry looks
+// equally plausible beside whichever directory they typed.
+//
+// The absent case is the picker's rule applied here: no datalist and no `list`
+// attribute, leaving a field an identifier can still be pasted into. That is what
+// keeps this usable on the shipped default, where the directory walk is off and
+// there is nothing to offer.
+func TestTheCreateFormOffersPriorConversations(t *testing.T) {
+	t.Parallel()
+
+	t.Run("what the daemon found", func(t *testing.T) {
+		t.Parallel()
+
+		out := renderComponent(t, "create-form", createFormView{PageToken: "t", Conversations: conversationOffers})
+
+		field := resumeInput.FindString(out)
+		list, ok := attributeValue(t, field, "list")
+		if !ok {
+			t.Fatalf("the conversation field points at no list (%s), so the offer below it is markup the browser never reads:\n%s", field, out)
+		}
+		if !strings.Contains(out, `<datalist id="`+list+`">`) {
+			t.Errorf("the field points at the datalist %q and no such element is rendered:\n%s", list, out)
+		}
+		for _, offer := range conversationOffers {
+			if !strings.Contains(out, `<option value="`+offer.ID+`">`) {
+				t.Errorf("the offer omits the conversation %q:\n%s", offer.ID, out)
+			}
+			if !strings.Contains(out, offer.WorkDir) {
+				t.Errorf("the offer does not say which directory %q belongs to:\n%s", offer.ID, out)
+			}
+			if !strings.Contains(out, offer.Age) {
+				t.Errorf("the offer does not say how old %q is:\n%s", offer.ID, out)
+			}
+		}
+
+		// Nothing runs for any of that to be true, and nothing may: this control
+		// is the platform's own for the reason the directory picker is.
+		for _, scripted := range scriptedMarkup {
+			if strings.Contains(out, scripted) {
+				t.Errorf("the conversation offer carries %q:\n%s", scripted, out)
+			}
+		}
+	})
+
+	t.Run("nothing to offer", func(t *testing.T) {
+		t.Parallel()
+
+		out := renderComponent(t, "create-form", createForm())
+
+		field := resumeInput.FindString(out)
+		if field == "" {
+			t.Fatalf("a form with nothing to offer asks for no conversation at all:\n%s", out)
+		}
+		if list, ok := attributeValue(t, field, "list"); ok {
+			t.Errorf("the field points at the datalist %q and none is rendered (%s)", list, field)
+		}
+		if kind, _ := attributeValue(t, field, "type"); kind != "text" {
+			t.Errorf("the conversation field is type %q; free text is what lets an operator paste an identifier this daemon never offered (%s)", kind, field)
+		}
+	})
+
+	// An identifier is a directory entry's name off the host, and the directory
+	// beside it is a path. Neither may close the attribute it is rendered into.
+	t.Run("a hostile offer escapes nothing", func(t *testing.T) {
+		t.Parallel()
+
+		out := renderComponent(t, "create-form", createFormView{PageToken: "t", Conversations: []conversationOffer{
+			{ID: `" onfocus="stealFocus`, WorkDir: `/srv/work/"><script>`, Age: "1 hour"},
+		}})
+		for _, leak := range []string{`" onfocus="stealFocus`, `"><script>`} {
+			if strings.Contains(out, leak) {
+				t.Errorf("an offer escaped its attribute:\n%s", out)
+			}
+		}
+	})
 }
 
 // TestTheCardSaysWhatItIsRunning covers the other half: two sessions are

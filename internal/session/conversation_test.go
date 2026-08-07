@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"go/ast"
 	"go/parser"
@@ -13,6 +14,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 )
 
 // conversationFixture is the working-directory fixture with a conversation store
@@ -409,6 +413,274 @@ func assertOffersNothing(t *testing.T, f conversationFixture, workDir, store str
 	}
 	if len(got) != 0 {
 		t.Fatalf("listConversations() = %v, want nothing offered", ids(got))
+	}
+}
+
+// resumeFixture is the manager fixture with a conversation store beside it: a
+// host Claude Code has already been run on, driven by a Manager whose creates
+// can reach what it recorded.
+//
+// The store is set on the manager directly rather than through the environment.
+// os.UserHomeDir reads a process-wide variable, so a fixture that moved HOME
+// would make every case here serial — and would be describing the test binary's
+// host rather than the one the case is about.
+type resumeFixture struct {
+	managerFixture
+	conversations conversationFixture
+}
+
+func newResumeFixture(t *testing.T) resumeFixture {
+	t.Helper()
+
+	m := newManagerFixture(t)
+	c := conversationFixture{workDirFixture: m.workDirFixture, store: filepath.Join(m.base, "store")}
+	if err := os.MkdirAll(c.store, 0o750); err != nil {
+		t.Fatalf("create the conversation store: %v", err)
+	}
+	m.mgr.conversationStore = c.store
+
+	return resumeFixture{managerFixture: m, conversations: c}
+}
+
+// startedCommand is the command line the create typed into the new session's
+// shell, which is the only place a resumed conversation is observable: the
+// record deliberately does not carry one.
+func startedCommand(t *testing.T, f resumeFixture) string {
+	t.Helper()
+
+	for _, c := range f.tmux.Calls() {
+		if c.Op == tmuxctl.OpSendKeys {
+			// argv is ["tmux", "send-keys", "-t", target, "--", command, "Enter"].
+			if len(c.Argv) < 2 {
+				t.Fatalf("send-keys ran with %q", c.Argv)
+			}
+			return c.Argv[len(c.Argv)-2]
+		}
+	}
+	t.Fatal("the create sent no command into the pane at all")
+	return ""
+}
+
+// TestResumeStillMintsNewRecord is FR-036 and the create half of FR-033: a
+// resumed conversation is an *input* to starting a session, never an alternative
+// to starting one.
+//
+// **Must fail when** a resume produces anything but a new record — the same
+// identifier twice, a shared credential, a lifetime inherited from whatever the
+// conversation belonged to before. A resume that adopted a session would be a
+// second way into a record that ownership, the cap, and both deadlines are all
+// keyed to, and none of those three would apply to it.
+//
+// The fresh case is here rather than in a test of its own because it is the same
+// assertion from the other side: what a create adds for a resume is one flag and
+// one word, so a create that asks for nothing must type exactly the line the
+// operator configured.
+func TestResumeStillMintsNewRecord(t *testing.T) {
+	t.Parallel()
+
+	const conversation = "8f14e45f-ceea-467a-9b3d-0f2fc9de5b21"
+
+	t.Run("a create that says nothing starts fresh", func(t *testing.T) {
+		t.Parallel()
+
+		f := newResumeFixture(t)
+		f.conversations.record(t, f.repo(), conversation+".jsonl", conversationTime)
+
+		mustCreate(t, f.managerFixture, f.request())
+
+		if got := startedCommand(t, f); got != claudeStartCommand {
+			t.Errorf("a create that asked for no conversation typed %q, want %q — starting fresh is the default (FR-037)", got, claudeStartCommand)
+		}
+	})
+
+	t.Run("a resumed conversation is a new session", func(t *testing.T) {
+		t.Parallel()
+
+		f := newResumeFixture(t)
+		f.conversations.record(t, f.repo(), conversation+".jsonl", conversationTime)
+
+		req := f.request()
+		req.Resume = conversation
+		first, firstToken := mustCreate(t, f.managerFixture, req)
+
+		if want := claudeStartCommand + " --resume " + conversation; startedCommand(t, f) != want {
+			t.Errorf("Create() typed %q, want %q", startedCommand(t, f), want)
+		}
+		if !idShape.MatchString(first.ID) {
+			t.Errorf("a resumed session carries the id %q, which is not one this daemon minted", first.ID)
+		}
+		if !tokenShape.MatchString(firstToken) || !first.TokenMatches(firstToken) {
+			t.Error("a resumed session was not handed a credential of its own")
+		}
+		if first.Lifetime != f.request().Lifetime || first.CreatedAt != f.now {
+			t.Errorf("a resumed session carries lifetime %s from %s, want this daemon's own defaults as of %s",
+				first.Lifetime, first.CreatedAt, f.now)
+		}
+
+		// The same conversation twice. Two records, two credentials — a resume that
+		// returned the existing session would be a create that started nothing and
+		// handed back something the caller already had.
+		second, secondToken := mustCreate(t, f.managerFixture, req)
+		if second.ID == first.ID {
+			t.Error("resuming the same conversation twice produced one record; a conversation is an input to a session, not a session")
+		}
+		if secondToken == firstToken || second.TokenMatches(firstToken) {
+			t.Error("the second session accepts the first one's credential")
+		}
+		if got := len(f.store.List(auth.CallerOperator)); got != 2 {
+			t.Errorf("the store holds %d records after two creates, want 2", got)
+		}
+	})
+}
+
+// TestAmbiguousResumeRefuses is FR-032, and the one requirement in this task
+// whose failure mode is a *success*: every wrong answer here starts a session
+// that looks entirely correct and is carrying on from somebody else's work.
+//
+// **Must fail when** the daemon resolves a name it cannot match to the most
+// recent conversation in the directory. Every case below is set in a directory
+// holding two, and the newest one's identifier is asserted to have reached no
+// command line — so a fallback to "the last conversation in this directory"
+// fails here whichever of the cases it is reached through.
+//
+// The cases are the ways a name can fail to identify exactly one conversation in
+// the directory this create actually named. They are one refusal for the reason
+// the working-directory refusals are one: a caller who could tell them apart
+// could ask this daemon which conversations exist where.
+func TestAmbiguousResumeRefuses(t *testing.T) {
+	t.Parallel()
+
+	const (
+		older = "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
+		newer = "f9e8d7c6-b5a4-3928-1706-f5e4d3c2b1a0"
+	)
+
+	// Written as functions of the fixture, because two of them are about a
+	// conversation somewhere else on the host and one is about a store there is
+	// none of. Each takes the subtest's own t: a Fatalf on the parent's would tear
+	// down the temp directory its siblings are still reading, and every one of them
+	// would report a fixture that is not there.
+	cases := map[string]func(t *testing.T, f resumeFixture) string{
+		"an identifier this directory does not hold": func(*testing.T, resumeFixture) string {
+			return "11111111-2222-3333-4444-555555555555"
+		},
+		"a conversation belonging to another approved directory": func(t *testing.T, f resumeFixture) string {
+			const elsewhere = "c0ffee00-dead-beef-cafe-0123456789ab"
+			f.conversations.record(t, filepath.Join(f.second, "repo"), elsewhere+".jsonl", conversationTime)
+			return elsewhere
+		},
+		"an identifier differing only in case": func(*testing.T, resumeFixture) string {
+			return strings.ToUpper(newer)
+		},
+		"a name that would close the command line": func(t *testing.T, f resumeFixture) string {
+			const hostile = "x; touch pwned"
+			f.conversations.record(t, f.repo(), hostile+".jsonl", conversationTime.Add(time.Hour))
+			return hostile
+		},
+		"a store this host does not have": func(_ *testing.T, f resumeFixture) string {
+			f.mgr.conversationStore = ""
+			return newer
+		},
+	}
+
+	for name, arrange := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newResumeFixture(t)
+			// Two conversations, so "the most recent" is an answer this daemon
+			// could give and must not.
+			f.conversations.record(t, f.repo(), older+".jsonl", conversationTime)
+			f.conversations.record(t, f.repo(), newer+".jsonl", conversationTime.Add(time.Minute))
+
+			req := f.request()
+			req.Resume = arrange(t, f)
+
+			s, token, err := f.mgr.Create(context.Background(), req)
+			if !errors.Is(err, ErrUnknownConversation) {
+				t.Fatalf("Create() = %v, %v; want the refusal %v", s, err, ErrUnknownConversation)
+			}
+			if s != nil || token != "" {
+				t.Error("a refused create handed back a session or a credential")
+			}
+			if got := len(f.store.List(auth.CallerOperator)); got != 0 {
+				t.Errorf("a refused create left %d records; a create refused before anything is built builds nothing", got)
+			}
+			// The refusal costs no tmux command at all, which is what makes it a
+			// refusal rather than a teardown.
+			if calls := f.tmux.Calls(); len(calls) != 0 {
+				t.Errorf("a refused create ran %d tmux commands: %v", len(calls), calls)
+			}
+			// FR-032 itself. Nothing reached a pane, so this asserts the newest
+			// identifier is absent from the whole trail of commands rather than
+			// from one of them — the fallback would appear wherever it were added.
+			for _, c := range f.tmux.Calls() {
+				for _, arg := range c.Argv {
+					if strings.Contains(arg, newer) {
+						t.Errorf("the refusal resolved to the most recent conversation instead: %q", c.Argv)
+					}
+				}
+			}
+			// Never the name that was refused. It is caller text, and an error is
+			// what the audit trail carries (docs/security.md).
+			if strings.Contains(err.Error(), req.Resume) {
+				t.Errorf("Create() error %q carries the identifier the caller sent", err)
+			}
+		})
+	}
+}
+
+// TestAnIdentifierThatCouldReachAShellIsNeitherOfferedNorResumed is the alphabet
+// at both ends, and it is one test because the two ends must agree: a listing
+// that offered a name the create refuses is a page an operator cannot act on,
+// and a create that accepted a name the listing would not offer is a command
+// line nobody wrote.
+//
+// **Must fail when** the identifier stops being checked in either place. What is
+// at stake is not markup: a resumed identifier is appended to the command line
+// this daemon types into an unsandboxed shell, and every entry here is a file
+// name anyone able to write under the daemon's home can create.
+func TestAnIdentifierThatCouldReachAShellIsNeitherOfferedNorResumed(t *testing.T) {
+	t.Parallel()
+
+	// Every one of these is a name a single directory entry can carry, which is
+	// the point: they are files anyone able to write under the daemon's home can
+	// create, not strings only a caller could invent.
+	hostile := []string{
+		"x; touch pwned",
+		"$(id)",
+		"`id`",
+		"a b",
+		"--dangerously-skip-permissions",
+		"'",
+		strings.Repeat("a", maxConversationID+1),
+	}
+	// Refused as a request and impossible as an entry, so they are asked for
+	// without being written: a directory holds no entry named with a separator.
+	requested := append([]string{"../../etc/passwd", "x; touch /tmp/pwned"}, hostile...)
+
+	f := newResumeFixture(t)
+	for i, name := range hostile {
+		f.conversations.record(t, f.repo(), name+".jsonl", conversationTime.Add(time.Duration(i)*time.Minute))
+	}
+
+	offered, err := listConversations(f.repo(), f.roots(), f.conversations.store)
+	if err != nil {
+		t.Fatalf("listConversations() = %v, want the ordinary listing", err)
+	}
+	if len(offered) != 0 {
+		t.Errorf("listConversations() offers %v; none of these is a name this daemon may put on a command line", ids(offered))
+	}
+
+	for _, name := range requested {
+		req := f.request()
+		req.Resume = name
+		if _, _, err := f.mgr.Create(context.Background(), req); !errors.Is(err, ErrUnknownConversation) {
+			t.Errorf("Create(resume %q) = %v, want %v", name, err, ErrUnknownConversation)
+		}
+	}
+	if calls := f.tmux.Calls(); len(calls) != 0 {
+		t.Errorf("a refused create ran %d tmux commands: %v", len(calls), calls)
 	}
 }
 

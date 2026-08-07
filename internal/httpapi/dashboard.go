@@ -247,6 +247,12 @@ func (s *Server) pageTokenFor(w http.ResponseWriter, r *http.Request, operator *
 func (s *Server) fleet(operator *access.VerifiedOperator, token string, outcome *outcomeView) fleetView {
 	now := s.clock.Now()
 
+	// One walk per render, read once and used twice: the field's own suggestions
+	// and the conversations offered for them are two views of the same answer to
+	// "what is on this host", and a second walk could disagree with the first
+	// about which directories exist.
+	suggestions := s.cfg.DiscoveredWorkDirs()
+
 	owned := s.sessions.List(operator.Owner)
 	views := make([]sessionView, 0, len(owned))
 	for _, live := range owned {
@@ -279,11 +285,19 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string, outcome 
 		// daemon whose operator did not ask for discovery — the shipped default —
 		// the walk touches no filesystem and the field renders exactly as it did
 		// before the picker existed.
+		//
+		// The conversations are the same walk's directories asked what Claude Code
+		// has already recorded in them (T032). They ride on the suggestions rather
+		// than on a source of their own because a directory this daemon will not
+		// suggest is one the form has no row to attach a conversation to — and
+		// because that keeps the shipped default, where the walk runs at all, the
+		// one place any of this touches the filesystem.
 		Create: createFormView{
 			PageToken:     token,
 			StartCommands: s.cfg.StartCommands.Names(),
 			Roots:         s.rootPaths(),
-			Suggestions:   s.cfg.DiscoveredWorkDirs(),
+			Suggestions:   suggestions,
+			Conversations: s.conversationOffers(suggestions, now),
 		},
 		Outcome: outcome,
 	}
@@ -299,6 +313,59 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string, outcome 
 //
 // The order is config.Load's own, kept rather than sorted, so the hint lists the
 // roots in the order the operator wrote them in CRSW_ALLOWED_ROOTS.
+// maxOfferedConversations bounds one create form's offer, for the reason
+// config's own walk is bounded: this runs on the render path, so a host that has
+// been driven for months must not turn one dashboard into thousands of options a
+// browser has to lay out and filter.
+//
+// The bound is affordable because the field stays free text. What an operator
+// loses past the cap is a suggestion, never the ability to resume — an
+// identifier they hold is typed in full and meets the same check a chosen one
+// does (FR-040's argument, applied to the conversation).
+const maxOfferedConversations = 200
+
+// conversationOffers is what the create form offers for resume: every suggested
+// working directory asked what Claude Code has already recorded in it (T032).
+//
+// It is bounded twice over, and the outer bound is here rather than inside
+// session.ListConversations because that function answers about one directory
+// and this one runs it across many: a hundred directories each under their own
+// cap is still a page nobody can use.
+//
+// A directory that cannot be asked about contributes nothing, in silence. The
+// listing already treats an absent store that way — it is the ordinary state of
+// a directory Claude Code has never run in — and the error this drops is the
+// other case, a suggested path the allowlist would refuse, which is a
+// disagreement between the walk and ResolveWorkDir rather than anything an
+// operator filling in this form can act on. It costs them a suggestion, never
+// the field.
+//
+// Nothing here reads a transcript, because there is nothing in the type it
+// builds from that could be read out of one (FR-034, FR-035).
+func (s *Server) conversationOffers(dirs []string, now time.Time) []conversationOffer {
+	var offers []conversationOffer
+	for _, dir := range dirs {
+		if len(offers) >= maxOfferedConversations {
+			return offers
+		}
+		found, err := session.ListConversations(dir, s.cfg.Roots)
+		if err != nil {
+			continue
+		}
+		for _, conversation := range found {
+			if len(offers) == maxOfferedConversations {
+				return offers
+			}
+			offers = append(offers, conversationOffer{
+				ID:      conversation.ID,
+				WorkDir: dir,
+				Age:     formatAge(now.Sub(conversation.Modified)),
+			})
+		}
+	}
+	return offers
+}
+
 func (s *Server) rootPaths() []string {
 	paths := make([]string, 0, len(s.cfg.Roots))
 	for _, root := range s.cfg.Roots {

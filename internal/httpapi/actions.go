@@ -279,6 +279,17 @@ const (
 	// type into the new session's shell (#38). It carries a name; the command
 	// line it maps to never leaves the daemon's configuration.
 	fieldStartCommand = "start_command"
+
+	// fieldResume names a prior conversation to carry on from (T032, FR-033).
+	// Absent or empty starts fresh, which is what a form the operator did not
+	// fill in submits — the default is a property of the field being empty
+	// rather than a value this handler substitutes (FR-037).
+	//
+	// What it carries is an identifier, checked by Manager.Create against the
+	// listing of the working directory this same submission named. A form that
+	// could name a conversation in some other directory names one this daemon
+	// refuses, which is the point: the offer on the page reaches no decision.
+	fieldResume = "resume"
 )
 
 // What a create answers is an outcome code, exactly as a destroy's is (T014).
@@ -357,6 +368,12 @@ func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
 		Name:         r.PostForm.Get(fieldName),
 		WorkDir:      r.PostForm.Get(fieldWorkDir),
 		StartCommand: r.PostForm.Get(fieldStartCommand),
+		// Passed on rather than interpreted. Whether this names a conversation
+		// this daemon may resume is a question about the working directory beside
+		// it and about a store on the host, and both belong to the manager — a
+		// handler that answered it would be a second place deciding what a resume
+		// is, free to disagree with the one that types the command line.
+		Resume: r.PostForm.Get(fieldResume),
 	})
 	if err != nil {
 		s.refuseBrowserCreate(w, r, err)
@@ -415,6 +432,17 @@ func (s *Server) refuseBrowserCreate(w http.ResponseWriter, r *http.Request, err
 		// plain session has no way to discover that is what happened.
 		AuditFrom(r.Context()).Deny(createReason(err).Error())
 		s.redirectOutcome(w, r, outcomeBadStartCommand)
+	case errors.Is(err, session.ErrUnknownConversation):
+		// An outcome of its own for outcomeBadStartCommand's reason, and a sharper
+		// one: the operator asked to carry on from somewhere, and a create that
+		// quietly started fresh instead would give them a session that looks right
+		// and has forgotten everything. It is refused rather than resolved to the
+		// most recent conversation in the directory, which is the whole of FR-032.
+		//
+		// The sentinel is what reaches the trail, never the identifier: it is
+		// caller text, and every reason on the record is one this codebase wrote.
+		AuditFrom(r.Context()).Deny(createReason(err).Error())
+		s.redirectOutcome(w, r, outcomeBadConversation)
 	case errors.Is(err, session.ErrTooManySessions):
 		// A full fleet and a spent create budget are one outcome for the reason
 		// they were one body: nothing the operator sent is wrong, and the only fix

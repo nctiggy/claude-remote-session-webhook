@@ -14,6 +14,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -606,6 +608,75 @@ func TestTheRenderedFleetOffersWhatDiscoveryFound(t *testing.T) {
 			}
 			if strings.Contains(create, "<datalist") {
 				t.Errorf("discovery is off and the create form renders a datalist; with nothing to suggest the field is the one that shipped before the picker:\n%s", create)
+			}
+		})
+	}
+}
+
+// TestTheRenderedFleetOffersPriorConversations is T032 at the call site, and the
+// half three passing component tests cannot see: session.ListConversations
+// shipped one task before anything called it, which is the shape of failure this
+// repository has shipped three times.
+//
+// **Must fail when** the offer is wired to anything but the store — a constant, a
+// list built from the directories alone, a walk with its gate dropped. The pair
+// of cases is what makes it an assertion about the *host*: an offer that ignored
+// the store passes the first case and fails the second.
+//
+// It is serial, alone in this file, because it describes a home directory. The
+// store's location comes from the environment Claude Code itself reads, and there
+// is no way to say "this host has recorded a conversation" without saying where
+// this host keeps them.
+func TestTheRenderedFleetOffersPriorConversations(t *testing.T) {
+	const conversation = "8f14e45f-ceea-467a-9b3d-0f2fc9de5b21"
+
+	for name, recorded := range map[string]bool{
+		"a directory Claude Code has been run in": true,
+		"a directory it has not":                  false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFleet(t)
+			f.cfg.Roots = []config.ApprovedRoot{{Path: f.fixture.root}}
+			f.cfg.DiscoverRoots = true
+
+			// The daemon's own home, which is where Claude Code keeps the store
+			// and therefore the only place this daemon looks. A test that pointed
+			// the code somewhere else would be asserting against a layout no host
+			// has.
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			if recorded {
+				dir := filepath.Join(home, ".claude", "projects", strings.ReplaceAll(f.fixture.repo, "/", "-"))
+				if err := os.MkdirAll(dir, 0o750); err != nil {
+					t.Fatalf("create the conversation store: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, conversation+".jsonl"), []byte("{}\n"), 0o600); err != nil {
+					t.Fatalf("record a conversation: %v", err)
+				}
+			}
+
+			create := sectionOf(t, f.view(t).Body.String(), "create")
+			offer := `<option value="` + conversation + `">`
+
+			if recorded {
+				if !strings.Contains(create, offer) {
+					t.Errorf("this host has a conversation for %s and the create form offers none:\n%s", f.fixture.repo, create)
+				}
+				if !strings.Contains(create, `list="conversation-suggestions"`) {
+					t.Errorf("the create form offers conversations the field does not point at:\n%s", create)
+				}
+				// The identifier and a time, and nothing that could only come from
+				// inside the transcript (FR-034).
+				if strings.Contains(create, "{}") {
+					t.Errorf("the create form carries transcript contents:\n%s", create)
+				}
+				return
+			}
+			if strings.Contains(create, offer) {
+				t.Errorf("the create form offers a conversation this host has not recorded:\n%s", create)
+			}
+			if strings.Contains(create, `list="conversation-suggestions"`) {
+				t.Errorf("the field points at an offer that was not rendered:\n%s", create)
 			}
 		})
 	}

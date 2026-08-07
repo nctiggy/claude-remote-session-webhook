@@ -24,7 +24,7 @@ import (
 // code a route still chooses.
 var spelledOutcomes = []outcome{
 	"created", "destroyed", "renamed", "compacted", "mode-changed",
-	"bad-name", "bad-work-dir", "bad-start-command", "bad-mode", "limited", "unconfirmed",
+	"bad-name", "bad-work-dir", "bad-start-command", "bad-conversation", "bad-mode", "limited", "unconfirmed",
 	"mode-unconfirmed",
 	"teardown-unverified",
 	"create-failed", "destroy-failed", "rename-failed", "compact-failed", "mode-failed",

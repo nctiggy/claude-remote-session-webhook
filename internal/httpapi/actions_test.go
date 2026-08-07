@@ -1519,11 +1519,12 @@ func TestEitherHalfOfTheDefenceRefusesAlone(t *testing.T) {
 // other literal in this file is: a test asserting against the variable proves
 // only that the code agrees with itself.
 const (
-	wantCreatedOutcome          = outcome("created")
-	wantCreateBadNameOutcome    = outcome("bad-name")
-	wantCreateBadWorkDirOutcome = outcome("bad-work-dir")
-	wantCreateLimitedOutcome    = outcome("limited")
-	wantCreateFailedOutcome     = outcome("create-failed")
+	wantCreatedOutcome               = outcome("created")
+	wantCreateBadNameOutcome         = outcome("bad-name")
+	wantCreateBadWorkDirOutcome      = outcome("bad-work-dir")
+	wantCreateBadConversationOutcome = outcome("bad-conversation")
+	wantCreateLimitedOutcome         = outcome("limited")
+	wantCreateFailedOutcome          = outcome("create-failed")
 )
 
 // createPath is the route from contracts/actions.md's table, written out rather
@@ -2194,6 +2195,75 @@ func TestBrowserCreateRefusesAnUnusableName(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBrowserCreateReadsTheConversationField is T032 at the route, which is the
+// half a refusal with passing unit tests can still be missing: a handler that
+// never reads the field would start a fresh session, answer "created", and leave
+// an operator with a session that has quietly forgotten everything they asked it
+// to carry on from.
+//
+// **Must fail when** the field is not read, spelled differently here than in the
+// markup, or read from the query string — a create this daemon would accept from
+// a URL is a session a link can start.
+//
+// The identifier is one no store on any host holds, which is what makes the
+// assertion safe to make against a fixture with no conversations of its own: it
+// is refused because it names nothing, and a handler that ignored it would answer
+// with a session instead. The named conversation is never resolved to whatever
+// this directory's most recent one happens to be (FR-032).
+func TestBrowserCreateReadsTheConversationField(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a conversation this daemon cannot resume", func(t *testing.T) {
+		t.Parallel()
+
+		c := newCreator(t)
+		form := c.wellFormed(t)
+		form.Set("resume", "11111111-2222-3333-4444-555555555555")
+
+		w := c.post(t, form)
+
+		wantOutcome(t, w, wantCreateBadConversationOutcome)
+		if owned := c.owned(); len(owned) != 0 {
+			t.Errorf("the store holds %d records after a refused create; want none", len(owned))
+		}
+		if got := c.started(); got != 0 {
+			t.Errorf("the host was asked to start %d sessions; want 0 — the conversation is answered before anything runs", got)
+		}
+		if got, want := c.only(t)["reason"], session.ErrUnknownConversation.Error(); got != want {
+			t.Errorf("reason = %v; want %v", got, want)
+		}
+	})
+
+	// The default arrives by the field being empty rather than by the handler
+	// substituting anything, so the ordinary create — which sends no such field at
+	// all — must still start a session (FR-037).
+	t.Run("a create that sends no conversation starts one", func(t *testing.T) {
+		t.Parallel()
+
+		c := newCreator(t)
+
+		wantOutcome(t, c.post(t, c.wellFormed(t)), wantCreatedOutcome)
+		if got := len(c.owned()); got != 1 {
+			t.Errorf("the store holds %d records; want the session that was asked for", got)
+		}
+	})
+
+	// Nothing this route accepts may arrive on a URL. The gate reads the token
+	// from PostForm and so does every field, which is what keeps a create out of
+	// reach of a link the operator followed.
+	t.Run("a conversation in the query string is not read", func(t *testing.T) {
+		t.Parallel()
+
+		c := newCreator(t)
+		form := c.wellFormed(t)
+
+		w := c.send(t, http.MethodPost, createPath+"?resume=11111111-2222-3333-4444-555555555555",
+			secFetchSiteSameOrigin, form)
+
+		wantOutcome(t, w, wantCreatedOutcome)
+	})
 }
 
 // TestBrowserCreateRefusesPastTheBoundsWithoutStartingAnything is the 429, in both
