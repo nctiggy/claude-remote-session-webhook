@@ -3,13 +3,15 @@ package config_test
 // The two claims the repository's own README makes about configuration, checked
 // here rather than left to review (Constitution Principle V).
 //
-// The first is SC-012: this daemon has no third-party dependency, and go.sum
+// The first is SC-012, which milestone 5 restates as SC-010 and which is the
+// same claim either time: this daemon has no third-party dependency, and go.sum
 // does not exist. That property is why the configuration file is `key = value`
 // hand-parsed rather than YAML or TOML, so a go.sum appearing would not merely
 // add a dependency — it would remove the reason the format is what it is. It was
 // asserted once already, in cmd/crswd's quickstart suite, which is behind a build
-// tag CI does not run: an assertion nothing runs is an assertion that has stopped
-// being made.
+// tag CI did not run at the time: an assertion nothing runs is an assertion that
+// has stopped being made. (CI runs that suite as of #87; this one is still the
+// assertion `go test ./...` makes, which is what every iteration runs.)
 //
 // The second is the variable table. README.md is where an operator who has not
 // opened .env.example or config.example learns what this daemon reads, and a

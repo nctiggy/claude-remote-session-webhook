@@ -179,13 +179,27 @@ Audit records are structured JSON on stdout, so systemd's journal is the whole
 storage design — there is no file mode, no rotation, and no disk to fill.
 
 ```bash
-journalctl --user -u crswd -f -o cat | jq .          # follow, one record per line
-journalctl --user -u crswd -o cat | jq 'select(.action == "auth.reject")'
-journalctl --user -u crswd --since "1 hour ago" -o cat | jq -r '.action' | sort | uniq -c
+journalctl --user -u crswd -f -o cat | grep '^{' | jq .   # follow, one record per line
+journalctl --user -u crswd -o cat | grep '^{' | jq 'select(.action == "auth.reject")'
+journalctl --user -u crswd --since "1 hour ago" -o cat | grep '^{' | jq -r '.action' | sort | uniq -c
 ```
 
 `-o cat` is what makes this work: it prints the message alone, without the syslog
 prefix systemd would otherwise put in front of the JSON.
+
+**The `grep '^{'` is not optional, and the third command is why.** Audit records
+go to stdout and the daemon's own diagnostics go to stderr, but **systemd merges
+both file descriptors into one journal** — so `journalctl` returns them
+interleaved no matter how cleanly the daemon separated them. Without the filter
+the first two fail outright on a `jq: parse error`, and the third would have
+silently under-counted every action it was asked to tally. `_COMM=crswd` does not
+help: the non-JSON lines are the daemon's own, which is how #88's cause was
+identified.
+
+The same command is in `crswd.example.service`, and the quickstart suite runs
+**every** `journalctl` line this repository documents — that unit and both
+READMEs — against a real captured stream carrying real diagnostics. A command
+here that stopped working stops the build rather than an operator's afternoon.
 
 No record carries prompt text, pane output, a token, a token hash, or the shared
 secret — `internal/audit/leak_test.go` asserts that across every operation. The
@@ -212,6 +226,35 @@ The hardening that *is* there protects the host from the daemon. It does not
 sandbox a session: sessions run `claude --dangerously-skip-permissions` as you,
 so anything the daemon can reach, a session can reach. `CRSW_ALLOWED_ROOTS` is the
 real control.
+
+### The unit's PATH is not the session's, and the daemon knows it
+
+A start command is typed into a login shell inside a tmux pane, so it is resolved
+against the `PATH` **your profile** builds — not against the one systemd hands
+the unit. `claude` installed at `~/.local/bin/claude` is on the first and absent
+from the second, which is why the startup probe used to warn that a working
+command was missing.
+
+The probe now asks the login shell. If a configured start command is not on the
+daemon's own `PATH`, it runs `$SHELL -l` **once per start**, gives it one
+constant line on stdin (`printf '%s\n' "$PATH"`), and resolves the binary against
+what comes back. It never names the command to the shell.
+
+Two consequences for a deployment:
+
+- **Your `~/.profile` runs at daemon startup**, before anything binds, on a host
+  where a command is already missing from the unit's `PATH`. It is bounded by a
+  5s timeout and a 1s wait delay, so a profile that blocks costs a start five
+  seconds and cannot hang one. A profile with a side effect you would not want on
+  every `systemctl --user restart crswd` is worth knowing about.
+- **A shell that cannot be asked is a note, not a warning.** The daemon says what
+  it checked and what it could not, and never that the command is absent —
+  because a check that is wrong about a working host teaches an operator to stop
+  reading it.
+
+Setting `Environment=PATH=` in the unit to include `~/.local/bin` is a reasonable
+thing to do and changes only what the probe finds first. It does not change what
+a session resolves, which is the login shell's answer either way.
 
 ## Verifying the exposure model
 

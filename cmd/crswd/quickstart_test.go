@@ -1788,18 +1788,18 @@ func assertRejectsAMalformedRecord(t *testing.T, h *host, filter, stream string)
 	}
 }
 
-// documentedFilter is the stages of the unit file's audit-trail command after
-// the journalctl that produces the stream.
-func documentedFilter(t *testing.T) string {
+// trailCommands is every command in a file that begins `journalctl`. A leading
+// `#` is stripped so a unit file's comment and a README's fenced block are read
+// the same way, and nothing else about the line is interpreted: what an operator
+// types is the whole line, trailing shell comment included.
+func trailCommands(t *testing.T, path string) []string {
 	t.Helper()
 
-	raw, err := os.ReadFile(unitPath)
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read %s: %v", unitPath, err)
+		t.Fatalf("read %s: %v", path, err)
 	}
 
-	// Exactly one, so a second copy in the same file cannot drift from it — the
-	// two-documents failure, one document down.
 	var documented []string
 	for _, line := range strings.Split(string(raw), "\n") {
 		text := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "#"))
@@ -1807,19 +1807,23 @@ func documentedFilter(t *testing.T) string {
 			documented = append(documented, text)
 		}
 	}
-	if len(documented) != 1 {
-		t.Fatalf("%s documents %d commands beginning with journalctl, want exactly one: %q", unitPath, len(documented), documented)
-	}
+	return documented
+}
 
-	producer, filter, piped := strings.Cut(documented[0], "|")
+// filterOf is the stages of one documented command after the journalctl that
+// produces the stream — the part this suite runs verbatim.
+func filterOf(t *testing.T, path, command string) string {
+	t.Helper()
+
+	producer, filter, piped := strings.Cut(command, "|")
 	if !piped {
-		t.Fatalf("%s documents %q, which reads the journal and does not filter it; the daemon's own diagnostics are in that stream (#88)", unitPath, documented[0])
+		t.Fatalf("%s documents %q, which reads the journal and does not filter it; the daemon's own diagnostics are in that stream (#88)", path, command)
 	}
 	// The producer is the one stage this test substitutes, so it has to be the
 	// one this test believes it is substituting.
 	for _, want := range []string{"journalctl", "--user", "-u crswd", "-o cat"} {
 		if !strings.Contains(producer, want) {
-			t.Fatalf("%s reads the trail with %q, which does not name %q; this test replaces it with the captured stream and would be checking a different command", unitPath, producer, want)
+			t.Fatalf("%s reads the trail with %q, which does not name %q; this test replaces it with the captured stream and would be checking a different command", path, producer, want)
 		}
 	}
 
@@ -1832,6 +1836,98 @@ func documentedFilter(t *testing.T) string {
 		}
 	}
 	return filter
+}
+
+// documentedFilter is the unit file's one audit-trail command.
+//
+// Exactly one, so a second copy in the same file cannot drift from it — the
+// two-documents failure, one document down.
+func documentedFilter(t *testing.T) string {
+	t.Helper()
+
+	documented := trailCommands(t, unitPath)
+	if len(documented) != 1 {
+		t.Fatalf("%s documents %d commands beginning with journalctl, want exactly one: %q", unitPath, len(documented), documented)
+	}
+	return filterOf(t, unitPath, documented[0])
+}
+
+// trailDocPaths is every file in this repository that tells an operator how to
+// read the audit trail. The unit is checked in full by the test above; these are
+// the two an operator is far likelier to be reading, and until T016 both printed
+// the command #88 was about.
+var trailDocPaths = []string{"../../README.md", "../../deploy/README.md"}
+
+// TestEveryDocumentedTrailCommandSurvivesTheStream is the sweep the unit's own
+// test could not be: T015 corrected one file and read one file, so the two
+// READMEs went on documenting the broken command with nothing to notice.
+//
+// What is claimed here is weaker than TestDocumentedCommandParses on purpose,
+// and it has to be. These commands do different jobs — one follows, one selects
+// a single action, one counts actions and emits no JSON at all — so "yields the
+// whole trail" is not true of all of them and asserting it would mean this file
+// deciding what a README is allowed to show an operator.
+//
+// What every one of them must do is survive the stream journald really hands
+// back, which is where all three failed: the daemon's diagnostics are merged
+// into it, and a `jq` with nothing filtering ahead of it stops on the first
+// banner. Clean means exit 0 *and* nothing on stderr, because a pipeline's exit
+// status is its last stage's — the counting command would report success while
+// `jq` was failing in the middle of it, which is precisely how a trail comes
+// back under-counted with nothing to say so.
+//
+// **Must fail when** a documented command drops the filter, and when it selects
+// lines without parsing them.
+func TestEveryDocumentedTrailCommandSurvivesTheStream(t *testing.T) {
+	h := newHost(t)
+	d := h.start(map[string]string{"CRSW_START_COMMAND": absentBinary + " --dangerously-skip-permissions"})
+
+	d.call(http.MethodGet, "/sessions", "", "")
+	d.do(mustRequest(t, http.MethodGet, "http://"+d.addr+"/sessions"))
+
+	const wantRecords = 2
+	deadline := time.Now().Add(waitBudget)
+	for time.Now().Before(deadline) && len(d.records()) < wantRecords {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := len(d.records()); got < wantRecords {
+		t.Fatalf("the trail holds %d records, want %d:\n%s", got, wantRecords, d.readTrail())
+	}
+	if !strings.Contains(d.readTrail(), "crswd: ") {
+		t.Fatalf("nothing in this daemon's stream is a diagnostic, so these filters are not being asked anything:\n%s", d.readTrail())
+	}
+
+	// The same stream with one truncated record on the end, written once and
+	// reused: a line that begins with `{` and is not a record is what a command
+	// that selects without parsing hands on silently.
+	corrupt := filepath.Join(h.dir, "trail-with-a-truncated-record-for-every-doc")
+	if err := os.WriteFile(corrupt, []byte(d.readTrail()+`{"action":`+"\n"), 0o600); err != nil {
+		t.Fatalf("write the malformed stream: %v", err)
+	}
+
+	for _, path := range trailDocPaths {
+		commands := trailCommands(t, path)
+		if len(commands) == 0 {
+			t.Fatalf("%s documents no command beginning with journalctl; this file is in the sweep because it tells an operator how to read the trail", path)
+		}
+		for _, command := range commands {
+			filter := filterOf(t, path, command)
+
+			out, stderr, err := runFilter(t, filter, d.trail)
+			if err != nil || stderr != "" {
+				t.Errorf("%s documents %q, which does not survive a stream carrying the daemon's own diagnostics (#88): %v\n%s\n--- it produced\n%s",
+					path, command, err, stderr, out)
+			}
+			// Judged by the same predicate as the clean run, and for the reason
+			// the comment above gives: `… | jq -r '.action' | sort | uniq -c`
+			// exits 0 whatever jq did, so an exit status alone would read a
+			// silently under-counted trail as a rejection.
+			if _, stderr, err := runFilter(t, filter, corrupt); err == nil && stderr == "" {
+				t.Errorf("%s documents %q, which passes a truncated record through; it selects lines without parsing them, so a corrupt trail reads as a shorter one",
+					path, command)
+			}
+		}
+	}
 }
 
 // runFilter runs the documented stages over a captured stream, as written.

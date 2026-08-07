@@ -107,6 +107,12 @@ Specific to this daemon:
 - **Working directories are allowlisted**, resolved with `filepath.Clean` +
   `filepath.EvalSymlinks`, then checked to be under an approved root. A caller
   does not get to name an arbitrary path.
+- **A suggestion is never an authorisation.** The create form offers directories
+  — the approved roots, the operator's own list, and discovered children — and
+  the field still submits an ordinary string, so the handler cannot tell a chosen
+  path from a typed one and does not try. Both meet the same resolution, the same
+  refusal and the same audit record. A path may legitimately be offered and
+  refused: the list is presentation, the roots are the control.
 - **Session names are `^[a-zA-Z0-9-]{1,64}$`.** They become tmux target strings;
   a name containing `:` or `.` addresses a different window.
 
@@ -155,11 +161,34 @@ first create rather than prevent it. **A start command's binary missing is a
 warning** — the daemon can still serve the dashboard, adopt what is already on the
 host, and say what is wrong, and refusing there would take away the one thing that
 could tell them. The probe reads the *configured* commands rather than a fixed
-`claude`, **installs nothing, and runs nothing it finds**: its only contact with
-the host is `exec.LookPath`. A daemon that installs software is a daemon that can
-be made to install software, and one that executed a probed binary to see whether
-it works would be running an operator's command line at startup with no session to
-run it in.
+`claude`, **installs nothing, and never runs what it found**. A daemon that
+installs software is a daemon that can be made to install software, and one that
+executed a probed binary to see whether it works would be running an operator's
+command line at startup with no session to run it in.
+
+It does run **one** thing, and the bounds on it are the whole of why that is
+allowed. A start command is resolved inside a tmux pane's login shell, so a probe
+asking only this process's `PATH` warns about commands that work — and a check
+that is wrong about a healthy host trains an operator to ignore it. So the probe
+asks the login shell what `PATH` it has:
+
+- **A constant script on stdin**, `printf '%s\n' "$PATH"`, and the binary is
+  resolved against the answer in Go. The command name is never named to the
+  shell: `sh -lc "command -v $binary"` resolves identically and is exactly the
+  shell string rule 2 forbids, built out of a configured value.
+- **`exec.CommandContext(ctx, shell, "-l")`** — argv, no `sh -c`, and every
+  element past the program is a literal in the source.
+- **At most once per start, and only after this daemon's own `PATH` has already
+  failed** to resolve a command. A host where everything is present never runs
+  the operator's profile at all.
+- **Bounded**: a 5s timeout and a 1s wait delay, so a profile that blocks costs a
+  start five seconds rather than hanging it.
+- **A shell that cannot be asked is a note, not a claim.** The probe says what it
+  checked and what it could not, and never that the command is absent.
+
+The trade this takes is real and named here rather than buried: the daemon now
+executes a file it does not own (`~/.profile`) at startup. It is taken because
+the alternative was a check that lies, and it is bounded by every line above.
 
 ### 5. Dependencies
 - Dependabot is enabled. Security updates merge promptly, not eventually.

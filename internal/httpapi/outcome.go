@@ -180,12 +180,15 @@ var banners = map[outcome]outcomeView{
 		Message: "This daemon may not start a session in that working directory.",
 	},
 	outcomeBadStartCommand: {
-		// Names the field rather than the value: the operator picked from a list
-		// this page rendered, so a mismatch means the list and the daemon disagree,
-		// which is worth saying plainly rather than blaming the choice. It arrived
-		// on main after #42's branch was abandoned (#38, #39) and joins the
-		// vocabulary rather than falling back to the generic failure — a create
-		// refused for a nameable reason must keep saying which.
+		// Names the field rather than the value, and since T003 deleted the list of
+		// command names no browser can reach this at all: the name that door submits
+		// is resolved from the configuration the manager was built with, so a
+		// mismatch is two objects disagreeing rather than an operator choosing
+		// badly. That is what the sentence still says, and it is why it does not
+		// blame the choice. It arrived on main after #42's branch was abandoned
+		// (#38, #39) and joins the vocabulary rather than falling back to the
+		// generic failure — a create refused for a nameable reason must keep saying
+		// which, and the API door still submits names.
 		Message: "That start command is not one this daemon is configured with.",
 	},
 	outcomeBadMode: {

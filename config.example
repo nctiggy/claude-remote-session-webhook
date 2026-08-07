@@ -172,9 +172,11 @@ version = 1
 # overwhelmingly the common case, destroying a fleet to redeploy a binary is a
 # cost nobody asked for, and startup adoption reclaims what a restart left.
 #
-# This build does not read the key. It parses, and /settings renders it, but
-# the loader has no case for it yet — so sessions survive a clean stop whatever
-# is written here.
+# Set it true for a host being decommissioned rather than updated. A crash
+# leaves every session running whatever this says — that is what startup
+# adoption exists to reclaim — so this only ever covers the graceful stop.
+#
+# Default: false.
 # destroy_on_shutdown = false
 
 # How long a session may live from creation, whatever it is doing. Go duration

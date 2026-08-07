@@ -22,11 +22,11 @@ These exist. Use them.
 
 | Component | Path | Use for |
 |---|---|---|
-| Header | `partials/header.html` | Product identity left, operator identity right; ambient rain canvas |
+| Header | `partials/header.html` | Product identity left, operator identity right, the settings link after it; ambient rain canvas |
 | Session card | `partials/session-card.html` | One session in the list, with its action row |
 | Status pill | `partials/status-pill.html` | Session state, everywhere it appears |
 | Pane viewer | `partials/pane.html` | Live terminal output |
-| Create form | `partials/create-form.html` | The one control that starts a session |
+| Create form | `partials/create-form.html` | The one control that starts a session — name, the working-directory picker, the remote-control switch |
 | Page token | `partials/page-token.html` | The hidden field **every** mutating form carries |
 | Empty state | `partials/empty.html` | Full-strength rain field + one sans-serif explanation |
 | Rain canvas | `partials/rain.html` | `<canvas class="rain">` — header and empty state only |
@@ -64,6 +64,38 @@ rendered there would be a form the daemon has no route to receive — the one sh
 of dead control this design system cannot show an operator is dead. No rain sits
 behind it either: the effect is permitted behind the header and in the empty state
 and nowhere else, and a table of values is content being read.
+
+## Header
+
+Every page carries it, which is what makes the design system's second
+non-negotiable hold: it is never ambiguous whose credentials are driving sessions
+on this host.
+
+| Class | What it is |
+|---|---|
+| `.masthead` | The band, and the only place besides the empty state a rain canvas may sit |
+| `.masthead-bar` | The row inside it: brand, operator, settings link |
+| `.brand` | The page's one `<h1>`, holding the wordmark link and the tagline |
+| `.operator` | The verified identity layer 1 built for this request |
+| `.masthead-link` | A link to another page of this daemon. Today there is exactly one, `/settings` |
+
+Rules:
+- **The settings link is in the bar, after the operator, and outside the
+  heading.** The wordmark is the route home and it lives inside the page's one
+  first-level heading; a second anchor in there would compete for that role, and
+  a heading holding two links is a heading that has become a menu.
+- **One link is not a navigation bar.** If a third element ever wants a place
+  here, that is the moment to reconsider the shape rather than to keep appending.
+- **`.operator` carries `margin-inline-start: auto`, and it is load-bearing.**
+  The bar is `space-between`; a third child without it puts the identity in the
+  centre, which is a different component from the one this document describes.
+  Nothing in the markup can see that, so it is written down here.
+- The link is a link to a page and nothing more. `GET /settings` is the only verb
+  registered on that path, so reaching it from every page adds a route to read
+  and no way to write — see "The settings page has no component of its own".
+- The header renders from the verified operator, never from the request. No
+  request-supplied value is in scope in that template, so there is nothing for a
+  future edit to reach for by accident.
 
 ## Button
 
@@ -302,6 +334,94 @@ Rules:
   in the markup.
 - Disable submit while in flight where a double submit is a real event — see
   Button.
+
+### Working-directory picker
+
+The create form's second field. It is a **native control with a theme over it**,
+not a widget: `<input list>` plus a `<datalist>` filter as the operator types,
+take a keyboard, announce their options and leave any path typeable in full with
+nothing running at all. `crswd.js` adds the one thing no stylesheet can reach — a
+datalist popup is drawn by the browser and no CSS in any engine styles it.
+
+| Class | What it is |
+|---|---|
+| `.combo` | The wrapper, marked `data-combo`, which is what the script finds |
+| `.combo-list` | The themed listbox. Rendered empty and `hidden`; filled by the script |
+| `.combo-status` | The field's one live region, `role="status"` |
+
+Rules:
+- **The native control works first.** With the script absent an operator meets
+  the field the daemon rendered, and nothing the script does narrows what may be
+  typed or submitted. Enhance; never replace.
+- **The ARIA is added by the script, never by the template.** With no script
+  there is no combobox to expand and no listbox to control, and markup that
+  describes a control which is not there is worse for a screen reader than markup
+  describing the plain field that is.
+- **`.combo` sets `display: grid` and `position: relative`, and both are
+  load-bearing.** An `<input>` is inline-block, so a block wrapper shrinks the
+  field; and in the flow the listbox would push the hint and the submit button
+  down as an operator typed, moving the control they were aiming at. No test can
+  see either, which is why they are here.
+- **One live region, and its sentence is the template's.** `.combo-status`
+  carries FR-045's "showing n of all" copy in a `data-` attribute and the script
+  fills it, on a settle timer — a polite region rewritten on every keystroke
+  hands a screen reader a backlog of counts that are wrong by the time they are
+  spoken. What the interface says to a person belongs to a template.
+- **The options are `<li role="option">` with ids, not buttons.** Focus stays in
+  the input for as long as the control is open and `aria-activedescendant` points
+  at the active option; a focusable option would take focus out of the field
+  being typed in. What makes them operable without a pointer is the keyboard, and
+  that is what the accessibility floor is about.
+- **The active option's ring is keyed on `[aria-selected="true"]`.**
+  `:focus-visible` can never reach an option, so without that rule a keyboard
+  operator moves an invisible cursor.
+- **Pointer selection binds `mousedown`, never `click`.** Leaving the field
+  closes the list, and a blur lands *between* a press and the click that would
+  have followed it — a `click` handler here selects an option only when it wins
+  that race, which reads as flakiness rather than as a bug. The press is refused
+  for every position inside the list, not only on an option, so dragging the
+  scroll bar cannot blur the field and shut the list under the pointer.
+- **One accept, two triggers.** Enter and the pointer call the same helper, and
+  the field's value is written in exactly one place in the whole script. A second
+  assignment is a second answer to what the operator chose, on the one field
+  where any path has to stay typeable in full.
+- **A suggestion is never an authorisation.** The field submits an ordinary
+  string, so the handler cannot tell a chosen path from a typed one — both meet
+  the same allowlist check, the same refusal, and the same audit record. The list
+  is presentation; the approved roots are the control. See `security.md`.
+- Suggestions are written with `textContent`, never `innerHTML`: they are
+  directory names off a filesystem walk, which is the same rule the pane follows.
+
+### Switch
+
+One `<input type="checkbox">`, themed. Today there is exactly one on the
+dashboard: remote control on the create form.
+
+| Class | What it is |
+|---|---|
+| `.field-switch` | The row. The one field whose label sits beside its input rather than above it |
+| `.switch-input` | The native checkbox, `name="remote_control"`, `value="on"` |
+| `.switch-label` | Its label, in the design system's label role |
+
+Rules:
+- **It carries a mode, never a name.** The browser neither sees nor sends a
+  command name; which configured command each mode runs is read from
+  configuration server-side. A control offering command names is the defect this
+  replaced.
+- **Two states and no third.** A ticked box posts `on` and an unticked one posts
+  nothing at all, so a lost or stripped field yields the *less* privileged mode.
+  Anything else is the uniform refusal, including a real configured command name.
+- **The native control is the accessible core; only its presentation changes.**
+  `accent-color` paints the platform's own checkbox and there is deliberately no
+  `appearance: none` — what an operator reads is the tick, a shape, and the
+  colour is reinforcement. Take the appearance away and the only thing telling
+  the two states apart is a hue.
+- The label follows the box, which is the one place this tree departs from the
+  Form sketch above: a checkbox is read as "control, then what it controls", and
+  `for` binds them whichever order they sit in.
+- The pointer is on the label as well as the box. They are one control, and a
+  checkbox is a small target for what starts an unsandboxed shell in the more
+  privileged mode.
 
 ## Modal
 

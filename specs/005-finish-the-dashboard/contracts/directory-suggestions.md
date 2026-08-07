@@ -59,10 +59,15 @@ acceptable if typed (FR-008).
 ## Worked example
 
 ```
-allowed_roots       = /home/nctiggy/code,/home/nctiggy/work
+allowed_roots       = /home/nctiggy/code:/home/nctiggy/work
 workdir_suggestions = /srv/scratch
 discover_roots      = false
 ```
+
+The two separators differ and neither is a typo: `allowed_roots` is
+colon-separated like `PATH`, and `workdir_suggestions` is comma-separated. (This
+example spelled the roots with a comma until T016; a copied one would have
+refused to start.)
 
 Offered: `/home/nctiggy/code`, `/home/nctiggy/work`, `/srv/scratch`.
 

@@ -9,6 +9,7 @@ package httpapi
 
 import (
 	"io/fs"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -457,6 +458,79 @@ func TestTheStylesheetAndTheMarkupNameTheSameThings(t *testing.T) {
 			continue
 		}
 		t.Errorf("crswd.css styles %q and no template renders it; a rule for markup that does not exist is how a second component starts", name)
+	}
+}
+
+// componentsDocPath is docs/components.md, which AGENTS.md names as the file to
+// load before touching a control and Principle VII makes binding.
+const componentsDocPath = "../../docs/components.md"
+
+// documentedComponentClass is the classes that document is answerable for *by
+// name*: the working-directory picker, the switch, and the header the settings
+// link sits in — the three controls milestone 5 built or changed. Matched by
+// prefix on the class itself, so a rule added for any of them is swept without
+// this expression being edited.
+//
+// It is a near-twin of comboSelector and deliberately not the same variable.
+// That one is the set of rules T009 is answerable for the *styling* of, and
+// widening it to carry the masthead would quietly widen four assertions about
+// colour and focus that were written about a picker.
+var documentedComponentClass = regexp.MustCompile(`\.(combo|switch|masthead)[\w-]*`)
+
+// TestTheComponentsDocumentNamesThePickerTheSwitchAndTheHeader is the third
+// direction of the sweep above, and it exists because the first two cannot see
+// this one. A class can be rendered and styled and still be undocumented, which
+// is how a second version of a control gets built: the next person writes the
+// markup they need because the vocabulary they were told to reuse does not
+// mention the one that is already there.
+//
+// Both directions, for the same reasons the markup sweep gives. A class the
+// document omits is a control someone reimplements; a class it invents is a
+// spelling someone copies into a template, where it renders unstyled.
+//
+// The picker is the case this was written for. It carries decisions no test can
+// see — `display: grid` and `position: relative` on the wrapper, a pointer bound
+// to mousedown rather than click, one accept shared by two triggers — and every
+// one of them is a bug the next themed control over a native one would otherwise
+// ship.
+//
+// **Must fail when** a `.combo*`, `.switch*` or `.masthead*` rule exists that
+// docs/components.md never names, or the reverse.
+func TestTheComponentsDocumentNamesThePickerTheSwitchAndTheHeader(t *testing.T) {
+	t.Parallel()
+
+	// Comments stripped first, unlike cssRules' own reading: a class named in a
+	// rule's commentary is prose about the stylesheet, and requiring the document
+	// to carry every spelling a comment mentions would hold it to a different
+	// claim than the one it makes.
+	styled := make(map[string]bool)
+	for _, rule := range cssRules(cssComment.ReplaceAllString(stylesheet(t), "")) {
+		for _, class := range documentedComponentClass.FindAllString(rule.selector, -1) {
+			styled[class] = true
+		}
+	}
+	if len(styled) == 0 {
+		t.Fatal("crswd.css styles no picker, switch or masthead class at all, so this test is checking nothing")
+	}
+
+	raw, err := os.ReadFile(componentsDocPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", componentsDocPath, err)
+	}
+	named := make(map[string]bool)
+	for _, class := range documentedComponentClass.FindAllString(string(raw), -1) {
+		named[class] = true
+	}
+
+	for class := range styled {
+		if !named[class] {
+			t.Errorf("crswd.css styles %s and %s never names it; the next person told to reuse the vocabulary is not told this exists", class, componentsDocPath)
+		}
+	}
+	for class := range named {
+		if !styled[class] {
+			t.Errorf("%s names %s and crswd.css styles nothing by that name; a spelling copied out of the design system renders unstyled", componentsDocPath, class)
+		}
 	}
 }
 

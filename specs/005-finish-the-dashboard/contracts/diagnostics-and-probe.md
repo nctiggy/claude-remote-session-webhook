@@ -16,11 +16,15 @@ suite that now runs in CI.
 
 ## Part 1 — The audit trail cannot be read as documented (#88)
 
-`deploy/crswd.example.service` documents:
+`deploy/crswd.example.service` documented, before T015:
 
 ```
 journalctl --user -u crswd -o cat | jq .
 ```
+
+**Corrected as of T015**, and this section is kept as the record of why. The unit
+and both READMEs now document the `grep '^{'` form below, and the quickstart
+suite runs every `journalctl` line this repository commits against a real stream.
 
 Measured on the live daemon:
 
