@@ -277,6 +277,43 @@ func TestLoadFromResolvesTheRemoteControlCommand(t *testing.T) {
 	})
 }
 
+// A session's mode is derived from its start-command name against the name the
+// operator configured as remote control (research R5), so a remote-control name
+// the set does not carry is a mode no session could ever be in and a toggle
+// whose only outcome is a refusal.
+//
+// contracts/session-mode.md puts that mismatch at startup rather than at the
+// toggle: the operator is reading the daemon's output when it starts, and a
+// refusal they meet hours later — on a running session, from a browser — tells
+// them nothing about which of the two names they misspelled. This is the same
+// refusal the table above exercises as one row among many, named for the
+// contract it satisfies.
+func TestModeNotInStartCommandsRefusedAtStartup(t *testing.T) {
+	t.Parallel()
+
+	pairs, _ := baseEnv(t)
+	pairs[config.EnvStartCommands] = "rc=claude remote-control --name {name}"
+	pairs[config.EnvRemoteControlCommand] = "remote"
+
+	cfg, err := config.LoadFrom(env(pairs), io.Discard)
+	if err == nil {
+		t.Fatalf("LoadFrom() started a daemon whose remote-control name it configures no command for: %v", cfg)
+	}
+	if cfg != nil {
+		t.Errorf("LoadFrom() returned a config alongside the refusal: %v", cfg)
+	}
+
+	// Both variables and the name that is in one and not the other: the operator
+	// has two places they could have meant to spell it, and the refusal is only
+	// actionable if it says which name it looked for and where it looked.
+	for _, want := range []string{config.EnvRemoteControlCommand, config.EnvStartCommands, "remote"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not mention %q, so the operator is not told what to fix", err, want)
+		}
+	}
+	assertNoSecret(t, err.Error(), pairs[config.EnvSharedSecret])
+}
+
 // TestRenderStartCommand pins the one substitution this daemon performs, and the
 // boundary of what it will substitute.
 //

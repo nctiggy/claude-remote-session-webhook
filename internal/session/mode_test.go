@@ -154,6 +154,13 @@ func TestStartCommandSurvivesRestart(t *testing.T) {
 		t.Errorf("restored StartCommand = %q, want %q — @crswd-start did not survive the restart",
 			restored.StartCommand, modeRemoteName)
 	}
+
+	// What the surviving name is for: the mode is derived from it, so a restart
+	// that kept the option but lost the reading would be the same outcome to an
+	// operator looking at the card.
+	if got := restored.Mode(modeRemoteName); got != ModeRemote {
+		t.Errorf("restored Mode() = %q, want %q", got, ModeRemote)
+	}
 }
 
 // A session started before @crswd-start existed carries no such option, and
@@ -195,5 +202,8 @@ func TestRestoredSessionWithoutOptionIsLocal(t *testing.T) {
 	}
 	if got := adopted[0].Session.StartCommand; got != "" {
 		t.Errorf("restored StartCommand = %q, want %q — an absent option was read as a value", got, "")
+	}
+	if got := adopted[0].Session.Mode(modeRemoteName); got != ModeLocal {
+		t.Errorf("restored Mode() = %q, want %q — a session from before this option is local, not an error", got, ModeLocal)
 	}
 }

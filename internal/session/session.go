@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 )
 
@@ -83,6 +84,25 @@ const (
 	// alive — the reaper sweeps every SweepInterval rather than continuously —
 	// and this label is what tells an operator it is about to stop being.
 	DisplayIdle DisplayState = "idle"
+)
+
+// Mode is where a session is driven from: the operator's own dashboard, or
+// claude.ai through a remote-control command (FR-026, FR-031).
+//
+// It is a second derived vocabulary for the reason DisplayState is one, and it
+// is derived from the same record rather than stored beside it — see Mode.
+type Mode string
+
+const (
+	// ModeLocal is a session running any command other than the operator's
+	// configured remote-control one. It is what every session started before
+	// remote control existed is, and what a daemon configuring no remote-control
+	// command runs exclusively.
+	ModeLocal Mode = "local"
+
+	// ModeRemote is a session started under the name the operator configured as
+	// their remote-control command, and so reachable from claude.ai.
+	ModeRemote Mode = "remote"
 )
 
 // Session is the daemon's record of one live Claude Code session, held in memory
@@ -243,6 +263,51 @@ func (s Session) DisplayState(now time.Time) DisplayState {
 		return DisplayIdle
 	}
 	return DisplayRunning
+}
+
+// Mode is which mode this session is in, derived from StartCommand and stored
+// nowhere (research R5, FR-031).
+//
+// remoteCommand is the operator's configured remote-control command *name* —
+// config.Config.RemoteControlCommand, which the loader has already resolved
+// against the configured set, so a name that reaches here is one this daemon
+// runs. Empty means the daemon configures no remote control at all, and a daemon
+// with nothing to switch on has no remote sessions to report.
+//
+// It is a parameter for the reason DisplayState takes a clock: which name means
+// remote is startup configuration and not a property of a record, so passing it
+// keeps one answer in one place. A record carrying its own copy would be the
+// second source of truth research R5 rejected — free to disagree with the
+// operator's configuration after a rename, a restart, or a toggle that half
+// succeeded. There is deliberately no Mode field and no RemoteControl bool: the
+// name that determines the mode is the one thing persisted (@crswd-start), and
+// carrying it is the whole of FR-031.
+//
+// A name is never a command line, in either direction (FR-030). This compares
+// two configured names and can reach nothing else, which is what lets the mode a
+// browser reads and the mode a browser sets be the same word.
+//
+// An empty StartCommand is DefaultStartCommandName, exactly as
+// config.StartCommands.Command reads one — a session created naming no command
+// runs the default. So an operator whose remote-control command *is* the default
+// gets ModeRemote for it, rather than a mode that depends on whether the create
+// happened to spell the name it resolved to.
+func (s Session) Mode(remoteCommand string) Mode {
+	// Stated rather than left to fall out of the comparison below: no configured
+	// remote command means nothing this daemon runs is remote, and that is the
+	// case worth being unable to get wrong.
+	if remoteCommand == "" {
+		return ModeLocal
+	}
+
+	name := s.StartCommand
+	if name == "" {
+		name = config.DefaultStartCommandName
+	}
+	if name == remoteCommand {
+		return ModeRemote
+	}
+	return ModeLocal
 }
 
 // TokenExpiry is when the bearer token stops being accepted (FR-015).
