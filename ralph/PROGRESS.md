@@ -730,3 +730,101 @@ on the active option, which is the selector the ring T009 shipped is keyed on.
    `CRSW_DESTROY_ON_SHUTDOWN` row, `settings.go:114-118`, and
    `contracts/directory-suggestions.md:62`'s comma-spelled `allowed_roots`. Iteration 6's
    uncapped-union note and iteration 7's missing wiring test are also still open and unowned.
+
+---
+
+## Iteration 10 — 2026-08-07 17:41
+
+**Did:** T010, in commit `ab560e4`. `crswd.js` now enhances the working-directory field:
+guarded on `[data-combo]`, it reads `field.list` **first**, cuts the `list` attribute, adds
+`role="combobox"`/`aria-expanded`/`aria-autocomplete`/`aria-controls` to the input and
+`role="listbox"` to the `<ul>`, and on every keystroke draws the matching options as
+`<li role="option">` with `textContent`. FR-045's sentence moved out of
+`#create-workdir-subset` — **deleted, as iterations 8 and 9 required** — onto
+`.combo-status` as `data-workdir-subset`, so the field carries one live region rather than
+two. `TestSubsetAnnounced` rewritten and `TestTheThemedPickerEnhancesTheNativeOne` added in
+`stylesheet_test.go`. The five T008/T009 tests pass untouched.
+
+**Learned:**
+
+- **`field.list` is null the instant `removeAttribute("list")` runs**, which is why the
+  contract puts the read first and why the order is asserted positionally rather than by
+  mention. Get it backwards and every test above it still passes: the picker announces
+  "showing 0 of 0", the themed box is empty for good, and nothing in Go can see it. That
+  positional assertion is the one this task most needed.
+- **The old addition sweep could not be kept and could not simply be dropped.** It forbade
+  `datalist`, `createElement(`, `setAttribute(` and `.value =` — the exact four operations
+  T010 mandates — because it was written about a control that was markup-only. What it was
+  protecting is that the picker is still the daemon's with this file absent, so that is what
+  the new sweep asserts: no second handle on the options (the `datalist` literal and
+  `new Option(` stay forbidden, the list is reached only through `field.list`), no id spelled
+  here that the template owns, and the markup half re-checked. **`.value =` is deliberately no
+  longer forbidden** — T011's Enter has to assign it — and FR-008/FR-040 are held instead by
+  `TestAnyPathStillTypeable`, which reads the markup and is where that claim belongs.
+- **A regex cannot name the variable holding the datalist, so the removal is counted.**
+  `offered.remove()` after copying the options into an array is the exact must-fail this task
+  was given, it reads as tidying, and `\.list\.remove\(` misses it. `strings.Count(source,
+  ".remove()") != 1` catches it — one removal in the file, the fleet's departed card.
+- **`aria-controls` is set from `listbox.id`, not from the literal.** The script now carries no
+  id the template owns, and the sweep forbids `workdir-listbox`, `create-work-dir` and
+  `workdir-suggestions` outright — the principle the old test stated about the subset note,
+  applied to the two joints T010 adds.
+- **The debounce is on the sentence only.** The list is drawn on the keystroke; only
+  `.combo-status` waits `SETTLE_MS`. A list lagging typing by 400ms feels broken to the
+  operator it is fastest for, while a polite region written per keystroke hands a reader a
+  backlog of counts already wrong when spoken.
+- **The enhancement bails when there is no `<datalist>`**, so a daemon with nothing to suggest
+  keeps the plain field and gains no roles. That is FR-018a rather than defensiveness: a
+  combobox over no options announces a control with nothing behind it.
+- **Mutation-verified six ways, each reverted:** (a) the read and the cut swapped — the
+  positional assertion fails naming both offsets; (b) the options copied into an array and
+  `offered.remove()` — the removal count fails; (c) `aria-controls` spelled
+  `'workdir-listbox'` — the `.id` assertion **and** the id sweep fail together; (d)
+  `role="option"` dropped from the built `<li>` — the ARIA table fails; (e)
+  `#create-workdir-subset` restored in the template — both new region assertions fail;
+  (f) the datalist reached by `combo.querySelector('datalist')`, which *works* at runtime —
+  the `datalist` sweep and the `field.list` assertion fail.
+- Linter confirmed v2 before trusting the green: `golangci-lint 2.12.2`, 0 issues.
+  `go test ./...` green; `gofmt -l` clean; `go vet` compiles all three tagged suites. No
+  `go.sum`. **`-tags quickstart` was not run: `127.0.0.1:8765` is held by the deployed daemon**
+  (as in iteration 9). This task touches no `cmd/crswd` code and the quickstart suite names
+  nothing in the picker.
+
+**Left:** T011–T016. **T011 is next.** Three things it inherits, in the order they bite:
+
+1. **It must set `aria-selected="true"`** on the active option — T009's ring is keyed on that
+   selector and nothing wears it yet.
+2. **The options carry no ids.** `aria-activedescendant` names an element by id, so T011 has
+   to give each `<li>` one as it is built (in `draw()`), which is its own requirement rather
+   than something T010 left half-done.
+3. **The listbox has no close path.** T010 opens it whenever something matches and closes it
+   only when nothing does; Escape, Tab and Enter are all T011's, and until they exist the list
+   stays open once typed into.
+
+**Findings:**
+
+1. **Nothing selects an option with the pointer, and no task owns that.** T010's scope is
+   suppress/ARIA/filter/announce and T011's is the keyboard; neither mentions a click. So the
+   themed listbox is display-only today, and `.combo-list li` already carries
+   `cursor: pointer` (T009) — an affordance that does nothing. The native popup this replaces
+   *was* clickable, so this is the one place the enhancement currently costs behaviour rather
+   than adding to it. Not fixed: it is outside both task texts and AR-008 is load-bearing.
+   **T011 should take it** (its Enter already has to assign the value, so the accept path
+   exists) — otherwise milestone 6. Note the ordering trap when it does: a `blur` handler that
+   closes the list fires before a `mousedown` on an option lands, which is the classic version
+   of this bug.
+2. Iteration 9's reduced-motion hole is still open and still **T016's or milestone 6's**:
+   nothing in `crswd.css` stops an `animation` under `prefers-reduced-motion`, only a
+   `transition`. T010 adds no animation, and `TestComboDoesNotAnimateUnderReducedMotion`
+   forbids the property in picker rules outright, so the picker is covered and every other
+   component is not.
+3. `docs/components.md` still documents no `.combo`, `.combo-list`, `.combo-status` or
+   `.switch-*` entry (iterations 8 and 9, still open, still **T016's**). T010 adds the part
+   most worth writing down: **which ARIA the script adds and why none of it is in the
+   template**, plus the read-then-cut order. A future themed control over a native one will
+   otherwise re-derive both.
+4. The stale-prose findings from iterations 4–7 are all still open and all still **T016's**:
+   `outcome.go`'s `outcomeBadStartCommand` comment, `config.example:157`, `README.md`'s
+   `CRSW_DESTROY_ON_SHUTDOWN` row, `settings.go:114-118`, and
+   `contracts/directory-suggestions.md:62`'s comma-spelled `allowed_roots`. Iteration 6's
+   uncapped-union note and iteration 7's missing wiring test are also still open and unowned.

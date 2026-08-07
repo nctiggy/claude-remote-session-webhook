@@ -175,7 +175,16 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
     `animation`**: verified green with an `animation` on the listbox, so the picker's own
     test forbids the property outright and every other component in the file is still
     uncovered — **T016** or milestone 6. See `PROGRESS.md` iteration 9.
-- [ ] T010 Enhancement: suppress the native popup, add the ARIA, filter, announce the subset
+- [x] T010 Enhancement: suppress the native popup, add the ARIA, filter, announce the subset
+  - `field.list` is read **before** `removeAttribute("list")` cuts it, and the order is
+    asserted positionally: reversed, the picker offers nothing and every other assertion
+    stays green. `#create-workdir-subset` is **deleted** and FR-045's sentence now sits on
+    `.combo-status`, so the field has one live region. `aria-controls` is read off
+    `listbox.id`; the script carries no id the template owns. **T011 must set
+    `aria-selected="true"`** (T009's ring is keyed on it), **give each `<li>` an id** for
+    `aria-activedescendant`, and add the close path — T010 closes the list only when nothing
+    matches. **Nothing selects an option with the pointer and no task owns that**; see
+    `PROGRESS.md` iteration 10, finding 1.
 - [ ] T011 Keyboard: arrows, Enter, Escape, Tab, `aria-activedescendant`
 
 ### US3 — Reaching the settings page (independent)
