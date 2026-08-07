@@ -53,6 +53,10 @@ func main() {
 // address, or an unresolvable root is a startup failure and not a warning
 // (docs/security.md §4) — nothing below runs on a Config that failed to load.
 //
+// Then the dependency probe, which is the same choice one layer out: a host
+// without tmux is a host this daemon can do nothing on, and starting there would
+// only move the failure to the first create.
+//
 // Then reconciliation, before anything binds (FR-021). A tmux session this
 // daemon started and then lost is a live shell running with
 // --dangerously-skip-permissions and no owner, no idle deadline, and no ceiling;
@@ -88,6 +92,15 @@ func run(ctx context.Context) error {
 	// build tag and never a flag on the artifact that ships.
 	cfg, err := loadConfig()
 	if err != nil {
+		return err
+	}
+
+	// After the configuration because the probe reads it — the start commands it
+	// checks are the ones this operator configured, never a fixed name (FR-015)
+	// — and before anything else because a host with no tmux cannot manage a
+	// session, so every line below it would be work done on the way to failing
+	// the operator's first request instead of their restart (FR-012).
+	if err := cfg.CheckDependencies(os.Stderr); err != nil {
 		return err
 	}
 

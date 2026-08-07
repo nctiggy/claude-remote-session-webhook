@@ -1638,6 +1638,45 @@ func TestQuickstartStory6Audit(t *testing.T) {
 	}
 }
 
+// TestQuickstartRefusesWithoutTmux is SC-011, and it is here rather than only in
+// internal/config because the unit tests prove the probe is right and this
+// proves it is *reached*: a dependency check nothing calls is the failure this
+// repo has shipped three times.
+//
+// PATH is the shim directory alone, so the daemon can see the claude stand-in
+// and no tmux at all — which is the host the check exists for, and which
+// otherwise only exists on a machine nobody has installed tmux on.
+func TestQuickstartRefusesWithoutTmux(t *testing.T) {
+	h := newHost(t)
+	addr := freePort(t)
+
+	out, code := h.run(map[string]string{"CRSW_LISTEN": addr, "PATH": h.shimDir})
+	if code == 0 {
+		t.Fatalf("started with no tmux on PATH:\n%s", out)
+	}
+	// The probe's own sentence, not merely the word "tmux": a daemon with no
+	// check at all also exits non-zero here, because reconciliation shells out
+	// to tmux and reports the exec failure — which is the failure deferred to
+	// the first thing that needs the host rather than a startup probe, and is
+	// exactly what this test would otherwise pass on.
+	for _, want := range []string{"tmux", "cannot manage a session without it"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the refusal does not say %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "reconcile") {
+		t.Errorf("the host was asked about its sessions before the probe refused:\n%s", out)
+	}
+
+	// Nothing bound: a refusal that had already taken the port would be a
+	// refusal the operator has to notice before their next start works.
+	if ln, err := net.Listen("tcp", addr); err != nil {
+		t.Errorf("%s is still held after the refusal: %v", addr, err)
+	} else {
+		_ = ln.Close()
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Definition of done
 // ---------------------------------------------------------------------------

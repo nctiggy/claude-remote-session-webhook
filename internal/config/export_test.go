@@ -35,3 +35,14 @@ func MigrateWithRenames(path string, data []byte, renames map[string]string, war
 // test carrying its own copy passes the day the bound changes and the fixture
 // stops being oversize.
 const MaxConfigFileBytes = maxConfigFileBytes
+
+// CheckDependenciesWith is Config.CheckDependencies with the PATH probe
+// injected (T029), so a test can describe a host with no tmux on it.
+//
+// The alternative is emptying the process's own PATH, which is one variable
+// shared by every test in this binary: the case would have to run alone, and the
+// suite it ran alone in would be one os.Setenv away from probing the real host
+// instead of the described one.
+func CheckDependenciesWith(c Config, lookPath func(string) (string, error), warn io.Writer) error {
+	return c.checkDependencies(lookPath, warn)
+}
