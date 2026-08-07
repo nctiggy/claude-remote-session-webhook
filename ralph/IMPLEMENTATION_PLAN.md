@@ -123,8 +123,13 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
 
 ### US1 — Remote control at create time (the milestone-4 miss)
 
-- [ ] T003 Replace the start-command `<select>` with the `remote_control` switch
+- [x] T003 Replace the start-command `<select>` with the `remote_control` switch
 - [ ] T004 🔒 Accept `on` or absent; refuse everything else, including a real command name
+  - ⚠️ **Two open questions T003 could not answer without inventing a requirement**, both
+    written out in `PROGRESS.md` iteration 3 under `NEEDS CLARIFICATION`: what the switch
+    means on a daemon configuring no remote command (the switch renders unconditionally
+    today, and `config.go:212` says it should not), and who owns `data-model.md`'s
+    `RemoteDefault bool`, which no task creates.
 
 ### US2 — Suggestions that exist on a default install
 
