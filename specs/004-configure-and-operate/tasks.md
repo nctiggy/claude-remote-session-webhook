@@ -99,7 +99,7 @@ disabled. This is the white-page bug that made the milestone necessary.
 
 - [x] T014 [US3] Carry forward the post-redirect-get work from branch `claude/issue-issue-42-20260805-1832` and rebase onto current `main`: the four routes answering `303`, `internal/httpapi/outcome.go`'s fixed outcome vocabulary, the banner partial, and the create form's configured roots. **This is a rebase-and-reconcile, not a rewrite** — the handler work is done and correct. Reconcile against the toast and delegated-submit work that landed on `main` afterwards.
 
-- [ ] T015 [US3] Finish the ~19 tests in `internal/httpapi/` that still assert the old fragment responses, updating each to assert `303` plus the redirect target. Add `TestRefusalIsNotARedirect` asserting an unauthorised action gets the uniform refusal. **Must fail when** a refusal is answered with a redirect — sending an unauthorised caller somewhere tells them their request was processed (FR-025).
+- [x] T015 [US3] Finish the ~19 tests in `internal/httpapi/` that still assert the old fragment responses, updating each to assert `303` plus the redirect target. Add `TestRefusalIsNotARedirect` asserting an unauthorised action gets the uniform refusal. **Must fail when** a refusal is answered with a redirect — sending an unauthorised caller somewhere tells them their request was processed (FR-025).
 
 - [ ] T016 [US3] Add `TestAllFourActionsUsableWithoutScript` to `internal/httpapi/actions_test.go`, asserting each of create, destroy, compact and rename answers `303` to a page that renders the outcome in words from `outcome.go`'s fixed vocabulary. **Must fail when** an outcome is built from caller-supplied text (FR-022).
 

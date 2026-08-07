@@ -1147,3 +1147,87 @@ first bullet above).
   `gofmt -l .` clean, `go build`, `go vet`, `go test -count=1 ./...` green, `go vet` green under
   `-tags tmux`, `-tags quickstart` and `-tags dev`, `go test -tags dev ./internal/access
   ./internal/config ./internal/httpapi` green, `go.sum` still absent.
+
+## Iteration 15 — 2026-08-07 05:55
+
+**Did:** T015. `TestRefusalIsNotARedirect` in `internal/httpapi/actions_test.go` drives all
+eight refusal shapes — layer 1's two, the gate's four, the lookup's two — at all four
+**registered** action routes, asserting no 3xx and no `Location` before it asserts the uniform
+answer each one had before T014. A fifth subtest per route makes the opposite claim. The
+"~19 tests still asserting fragments" half of the task was already done by iteration 14
+(it could not commit T014 without them); an audit pass over `internal/httpapi`,
+`internal/audit/leak_test.go` and `settings_test.go` found **zero** stragglers.
+
+**Learned:**
+
+- **The audit half of T015 was already finished and the plan line is misleading.** Iteration
+  14's first bullet says so; this iteration confirmed it by grep rather than by trust —
+  `dashboard/sessions` across every test file in the repo, plus every non-303 status assertion
+  in `actions_test.go`. Everything already asserts `303`, including `internal/audit/leak_test.go`
+  (four `r.act(t, http.StatusSeeOther, …)` calls) and `settings_test.go`'s four route rows.
+  **A plan line saying "~19 tests" can describe work a previous iteration folded into its own
+  commit.** Read the last iteration's Learned section before sizing the task.
+- **The `Location`-only mutation is the one that justifies the second assertion.** Adding
+  `w.Header().Set(headerLocation, pathFleet)` to `refuseAction` while leaving the 403 alone is
+  caught by 16 subtests and by **nothing else in the suite** — `TestRefusalIsByteIdentical`
+  compares header maps between refusals, so a header added to *all* of them stays uniform and
+  passes. A status-only assertion would have missed it, and a `Location` sitting on a 403 is one
+  well-meaning edit from being a redirect.
+- **Five mutations run, not reasoned about** (iteration 1's rule): `refuseAction` answering 303
+  (16 rows), `notFoundAction` answering 303 (6), `refuseBrowser` answering 303 (8), a `Location`
+  on an otherwise-untouched 403 (16), and `redirectOutcome` writing 200 with no `Location` — the
+  pre-T014 shape — which failed **only** the four non-vacuity rows and left every refusal row
+  green, which is what a non-vacuity block is for. All four touched files were checked by
+  `sha256sum` against their pre-mutation digests before the gate.
+- **The unconfirmed destroy is deliberately not in the table, and the comment says why.** It
+  *does* redirect and must: the operator was verified and the gate admitted them, so FR-029 tells
+  them nothing was torn down via a banner. FR-025 is about a caller this daemon would not act for
+  at all. Getting this wrong in either direction is a red suite for a reason it did not mean —
+  which is also why each route's fixture supplies the fields a request that *would* have worked
+  carries (the destroy's `confirm`, the create's two), so every row refuses for the one thing it
+  is named for.
+- **The session cap is 5, so the fixture is per-subtest.** `fixture.plant` uses `store.Add`
+  rather than `Manager.Create`, but the store enforces the cap itself; one shared `refuser` across
+  nine cases would have hit it. 34 subtests × a fresh `newAuditedServerWith` costs 0.7s because
+  `testKeys` is a `sync.OnceValues` — the RSA pair is generated once per package, not once per
+  key server.
+- **`PROGRESS.md`'s iteration 13 and 14 entries end with byte-identical lint bullets**, so an
+  `Edit` anchored on one matches both and the append silently lands in the wrong place. Anchor on
+  the *preceding* line, whose wrapping differs. The same trap will exist for iteration 15 and 16.
+
+**Left:** T016–T035. Next is **T016** (`TestAllFourActionsUsableWithoutScript`). It needs the
+outcome *sentence* rendered on the page the redirect lands on, and iteration 14's warning applies
+to it directly: opening the fleet inside a test costs a second `dashboard.view` record, so any
+audit block has to run before the page fetch or `only(t)` fails.
+
+**Findings:**
+
+- **`contracts/actions.md` (milestone 3's) is still stale in nine places** — iteration 14's
+  finding, unchanged and now with a second test resting on the current behaviour. It fixes the
+  four routes' statuses (200/202/400/409/429/500) and quotes two bodies byte for byte; every one
+  of those is a `303` today. **It wants a docs commit**, and milestone 4 has no actions contract
+  of its own to supersede it. Second iteration logging it.
+- **`TestBrowserCreateStartsTheSessionAndAnswersWithItsCard` and
+  `TestRenameRelabelsTheRecordAndAnswersWithItsCard` are still misnamed** (iteration 14). Neither
+  answers with a card. T015 did not rename them: AR-008 keeps a task inside its named work, and
+  T015's named work is a new test rather than a sweep of old names. **T016 is in the same file
+  and is the last natural chance** before the names outlive everyone who remembers why.
+- **`internal/httpapi` still carries the data race in its own fixture** (iterations 13, 14):
+  `newAuditedServerWith` sets `s.report = func(err error) { ts.failed = append(ts.failed, err) }`
+  unsynchronised (`middleware_test.go:215`). `go test -race -count=2 -run TestRefusalIsNotARedirect`
+  is clean — this test opens no stream, so nothing calls `report` concurrently — but the race is
+  untouched. Third iteration logging it; still wants a fix-lane commit and the lock `syncSink`
+  already has.
+- **Still open from iterations 5–14:** the three red `-tags quickstart` tests
+  (`CRSW_DESTROY_ON_SHUTDOWN` has no loader — the oldest unfixed finding here; not run this
+  iteration, the port is held by the live daemon and T015 touches no `cmd/crswd` file);
+  `contracts/settings-page.md`'s `TestNoMutatingVerbRegistered` row still saying 405, and its
+  worked example showing values no loader would produce; three `ReadFile` refusals missing from
+  `contracts/config-file.md`'s table; the `version < 1` row; the contract's "yields exactly eight
+  keys" against seven; a dangling symlink reading as absent; `f.values` having no enumerator;
+  `os.Open` on a FIFO blocking startup with no message; `--config <path>` still unbuilt;
+  `README.md` and `deploy/README.md` silent on the config file (T034/T035).
+- **Lint:** `golangci-lint run` reports `0 issues` (v1.62.2 on a v2 config; CI's pinned v2.12.2
+  is the gate). `gofmt -l .` clean, `go build`, `go vet`, `go test -count=1 ./...` green, `go vet`
+  green under `-tags tmux`, `-tags quickstart` and `-tags dev`, `go test -tags dev
+  ./internal/access ./internal/config ./internal/httpapi` green, `go.sum` still absent.
