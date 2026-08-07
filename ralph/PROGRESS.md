@@ -1074,3 +1074,76 @@ ticks are also brought into line with the plan's (iteration 12's finding).
   `gofmt -l .` clean, `go build`, `go vet`, `go test -count=1 ./...` green, `go vet` green under
   `-tags tmux`, `-tags quickstart` and `-tags dev`, `go test -tags dev ./internal/access
   ./internal/config ./internal/httpapi` green, `go.sum` still absent.
+
+## Iteration 14 — 2026-08-07 05:45
+
+**Did:** T014. The four dashboard actions answer `303` to `/?outcome=<code>`; `outcome.go` holds
+the closed vocabulary and the copy; `partials/outcome.html` renders the banner, with the
+unverified teardown as a titled block; the create form names the configured roots. Carried from
+`claude/issue-issue-42-...1832` and reconciled: `outcomeBadStartCommand` added for the
+`ErrUnknownStartCommand` arm that landed after the branch, and the action toast rewired to read
+`.outcome` / `.outcome-alarm` off the page the redirect lands on.
+
+**Learned:**
+
+- **T014 could not be committed without doing the bulk of T015.** Removing the eight fragment
+  bodies breaks 21 top-level tests at once, and `PROMPT.md` step 6 plus the plan's "every task
+  ends green" forbid committing that. So every test asserting a fragment status/body was moved to
+  `303` + `Location` here. **What is left for T015 is `TestRefusalIsNotARedirect` and an audit
+  pass** — not nineteen rewrites. Whoever takes T015 should read this before planning a day's work.
+- **The fetch-following-the-redirect is what saves the toast.** `fetch` defaults to
+  `redirect: 'follow'`, so the script's POST comes back with the whole fleet page; `sentence()`
+  now pulls the banner out of it. `redirect: 'manual'` would have been a dead end — a same-origin
+  manual redirect is an opaque response with no readable `Location`. The sessionStorage carry-over
+  is untouched and still needed: the fleet's live half still reloads on a shape change.
+- **Opening the fleet inside a test costs an audit record.** Four tests now follow the redirect to
+  assert the card or the sentence, and `only(t)` fails the moment a second `dashboard.view` lands.
+  The audit block has to run *before* the page fetch. This will bite T015 and T016 the same way.
+- **`http.Redirect` writes no body for a POST** (it writes one for GET only), so `wantOutcome`'s
+  empty-body assertion is free rather than something the handler has to arrange.
+- **The FR-016a claim moved from the response to the page.** "Delivered, never compacted" is now
+  asserted on the banner the fleet renders, reached through `compactor.landed`. The code alone
+  would go on passing through an edit to the copy, which is exactly what contracts/actions.md
+  pinned bytes against — so both halves are asserted, in the two places they now live.
+- **`stylesheet_test.go`'s `actionFragments` is down to one entry** (the uniform not-found), and
+  its `found == 0` vacuity guard had to go: the only body composed in Go now carries no class, so
+  a guard demanding one asserted something this door no longer does. The fold-in stays for the
+  next route that writes markup without a template.
+
+**Left:** T015–T035. Next is **T015** (`TestRefusalIsNotARedirect` plus the audit pass — see the
+first bullet above).
+
+**Findings:**
+
+- **`contracts/actions.md` (milestone 3's) is now stale in nine places.** It fixes the four
+  routes' statuses (200/202/400/409/429/500) and quotes two bodies byte for byte; every one of
+  those is a `303` now. Not touched here — it is milestone 3's contract and AR-008 keeps this task
+  inside its named files — but a fresh context reading it would implement the wrong thing. **It
+  wants a docs commit.** Milestone 4 has no actions contract of its own, so there is nothing in
+  `specs/004-*/contracts/` that supersedes it.
+- **`TestBrowserCreateStartsTheSessionAndAnswersWithItsCard` and
+  `TestRenameRelabelsTheRecordAndAnswersWithItsCard` are now misnamed** — neither answers with a
+  card; both assert the card on the fleet the redirect lands on. Left alone deliberately (renaming
+  a test is churn outside the task), but T015 or T016 should rename them while it is in the file.
+- **The `dashboard.view` record the toast's fetch now causes is real, not just a test artefact.**
+  Every scripted action produces two records where it produced one: the action, then the fleet the
+  script fetched. FR-041 is about one record *per request* and each request still leaves exactly
+  one, so this is not a violation — but an operator counting `dashboard.view` in the journal will
+  see one per action from now on, and nothing in the docs says so.
+- **`internal/httpapi` still carries the data race in its own fixture** (iteration 13):
+  `newAuditedServerWith` appends to `ts.failed` unsynchronised from net/http's goroutines
+  (`middleware_test.go:215`). Reproduces with `go test -race -count=2 -parallel 32
+  ./internal/httpapi`. Still unfixed; still wants a fix-lane commit.
+- **Still open from iterations 5–13:** the three red `-tags quickstart` tests
+  (`CRSW_DESTROY_ON_SHUTDOWN` has no loader — the oldest unfixed finding here; the quickstart
+  suite drives none of the four action routes, so T014 neither helped nor hurt it);
+  `contracts/settings-page.md`'s `TestNoMutatingVerbRegistered` row still saying 405, and its
+  worked example showing values no loader would produce; three `ReadFile` refusals missing from
+  `contracts/config-file.md`'s table; the `version < 1` row; the contract's "yields exactly eight
+  keys" against seven; a dangling symlink reading as absent; `f.values` having no enumerator;
+  `os.Open` on a FIFO blocking startup with no message; `--config <path>` still unbuilt;
+  `README.md` and `deploy/README.md` silent on the config file (T034/T035).
+- **Lint:** `golangci-lint run` clean (v1.62.2 on a v2 config; CI's pinned v2.12.2 is the gate).
+  `gofmt -l .` clean, `go build`, `go vet`, `go test -count=1 ./...` green, `go vet` green under
+  `-tags tmux`, `-tags quickstart` and `-tags dev`, `go test -tags dev ./internal/access
+  ./internal/config ./internal/httpapi` green, `go.sum` still absent.

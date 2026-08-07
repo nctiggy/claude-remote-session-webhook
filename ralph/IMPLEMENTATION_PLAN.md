@@ -142,7 +142,7 @@ under `NEEDS CLARIFICATION` and stop.
 
 ### US3 — The dashboard behaves without script (P3)
 
-- [ ] T014 Carry forward post-redirect-get from `claude/issue-issue-42-...1832`
+- [x] T014 Carry forward post-redirect-get from `claude/issue-issue-42-...1832`
 - [ ] T015 Finish the ~19 tests still asserting fragment responses
 - [ ] T016 All four actions usable with scripting disabled
 
