@@ -2955,3 +2955,102 @@ pane and is otherwise an ordinary create: new record, new credential, new lifeti
   `r.PostForm` (red on the query-string case **alone**); `Conversations: nil` at the call site (red
   on the fleet's recorded case); and a template preselecting the first offer while dropping the
   directory from the label (red on `TestFreshIsDefault` and on the offer test, separately).
+
+---
+
+## Iteration 33 — 2026-08-07 10:01
+
+**Did:** T033. `tmuxctl.Exec` now carries a `paneBound` in **lines**: `NewExec(socket, paneBound)`
+refuses a bound below 1 (`ErrNoPaneBound`), and `CapturePane` refuses a capture past it
+(`ErrPaneTooLarge`) with an empty string rather than shortening one — half a screen is a wrong
+screen (FR-052, FR-053). The bound is the operator's: new `CRSW_PANE_BOUND` / `pane_bound` key,
+`DefaultPaneBound = 200`, `Config.PaneBound`, a `Vars()` entry, a settings row, and the value handed
+to `NewExec` in `httpapi.New` and `NewWithBypass`. Tests: `TestCaptureRefusesPastBound`, plus
+`TestExecWithoutAPaneBoundCapturesNothing` and a `TestNewRefusesMissingDependencies` case that is
+the wiring assertion.
+
+**Learned:**
+
+- **The unit is not written down anywhere, and 200 only makes sense as lines.** `data-model.md`
+  says integer, `contracts/settings-page.md`'s worked example says `pane_bound 200 default`, and
+  nothing names a unit. Bytes is out (200 bytes is nonsense); KiB is out by this repo's own
+  arithmetic — `stream.go:81` puts a very large terminal at "a few hundred" KiB, so a 200 KiB bound
+  would fire on a real pane. Lines it is: 24 for the detached default, ~120 for the tallest real
+  terminal, 2000 for tmux's `history-limit`, so the bound sits between "full pane" and "somebody
+  added `-S`". The naming settles it too — a byte-valued key in this repo is spelled
+  `max_body_bytes`. Recorded as an interpretation, not a `NEEDS CLARIFICATION`: both readings
+  satisfy the FRs and the number came from the contract.
+- **The bound had to be required rather than defaulted, or nothing would have caught the wiring.**
+  A `NewExec` that fell back to 200 on a zero would have let `httpapi.New` pass a constant forever
+  and no test could tell. Refusing a zero is what makes `PaneBound: 0` a *fixture* that proves
+  `cfg.PaneBound` reaches the driver — mutating the call site to `config.DefaultPaneBound` goes red
+  on that one case and nothing else.
+- **`countLines` must count the unterminated last line.** Counting `"\n"` alone lets exactly one
+  screenful past the bound, and that mutation is invisible to every other case in the table.
+- **The real-tmux fixture needs its own bound.** `exec_tmux_test.go` first got the stub suite's 24,
+  which is exactly tmux's default height — it passed here and would be a coin-flip on any host whose
+  tmux has a different `default-size`. It now uses 1000: nothing in that file is about the bound.
+- **Three fixtures had to learn the field**: `httpapi`'s `testConfig`, `session/mode_test.go`'s
+  tmux-tagged `newModeFixture`, and `tmuxctl`'s two `Exec` literals. A new `Env*` constant also
+  costs three files by test: `.env.example` (named *and* described), `Vars()`, and
+  `deploy/crswd.example.service` — plus a row in `TestUnitInlineValuesAreTheDaemonDefaults`, which
+  is what stops the unit's `200` drifting from `DefaultPaneBound`.
+
+**Left:** T034 (`config.example`), T035 (docs, and assert `go.sum` is still absent).
+
+**Findings:**
+
+- **`internal/httpapi/stream.go:180-196` now states a second, looser bound.** Its 8 MiB
+  `maxScreenBytes` check and its comment ("bounded, but only by argv") are one layer below a
+  `CapturePane` that already refuses at 200 lines, so the byte check can no longer fire in
+  production. It is not wrong — it guards the *encoded* screen at the frame — but the comment
+  describing the argv bound as the only one is now stale by one sentence. T035's sweep, or a
+  one-line fix; AR-008 kept it out of this task.
+- **A refused capture reads to the operator as "not just now".** `session.Manager.Output` sends any
+  capture error through `unreadable`, which asks tmux whether the session is gone; it is not, so the
+  record stands and the page renders the honest placeholder. Correct and fail-closed, but nothing
+  distinguishes "the screen is past the bound" from "tmux would not answer" on the page or in the
+  trail — an operator whose pane is genuinely oversized has no way to learn that from the daemon.
+  Worth a sentence in T035's docs.
+- **`config.example` (T034) must carry `pane_bound`** or `TestConfigExampleParsesAndCoversEveryKey`
+  fails on it — the key count is now ten.
+- **Renaming from the session page with scripting on still leaves the card above showing the old
+  name** (27-33). **Every action still redirects to the fleet** (19-33). **The `aria-describedby` on
+  the card's link is still redundant** (26-33). **Nothing posts to
+  `/dashboard/sessions/{id}/mode`** (19-33) — fifteenth iteration carrying it, and still the finding
+  most likely to end the milestone with a feature the operator cannot use.
+- **`crswd config check` still probes nothing** (29-33). **A start command with a leading
+  environment assignment (`FOO=bar claude`) probes `FOO=bar`** (29-33). **The store-directory
+  mapping is verified for `/` only** (31-33). **The conversation offer is dark unless
+  `CRSW_DISCOVER_ROOTS` is on** (32-33). **`docs/components.md:14`** is still four behaviours short
+  (28-33). T035 owns the doc sweep.
+- **Still open from iterations 5-32:** the three red `-tags quickstart` tests
+  (`TestDashboardQuickstartStory1Adopted`, `TestQuickstartStory4Restart`, `TestQuickstartStory5Cap` —
+  `CRSW_DESTROY_ON_SHUTDOWN` has no loader); `.fleet-note:empty { display: none }` against the
+  accessibility floor; nothing rendering a directory suggestion in the shipped default and the walk's
+  silent cap; `contracts/directory-picker.md`'s `name="workdir"`; `contracts/settings-page.md`'s 405
+  row and its worked example; three `ReadFile` refusals missing from `contracts/config-file.md`; the
+  `version < 1` row; "exactly eight keys" against ten now; a dangling symlink reading as absent;
+  `f.values` having no enumerator; `os.Open` on a FIFO blocking startup; `--config <path>` unbuilt;
+  `README.md` and `deploy/README.md` silent on the config file (T034/T035); the misnamed
+  `Test*AndAnswersWithItsCard` pair; the unsynchronised `s.report` in `newAuditedServerWith`; the two
+  `TestParseSessions` fixtures passing for the wrong reason; `contracts/tmuxctl.md` stale by three
+  fields, and now by `NewExec`'s second parameter; `contracts/actions.md` stale in nine places and
+  with no `resume` row; `contracts/card-layout.md` naming three tests this milestone has no task for;
+  the NEEDS CLARIFICATION from iteration 20 about a start command that ignores SIGINT.
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean; `go build`, `go vet`, `go test -count=1 ./...` all green, and `./internal/tmuxctl` and
+  `./internal/httpapi` green under `-race`; `go vet` green under `-tags tmux`, `-tags quickstart`
+  and `-tags dev`; `go test -tags tmux ./internal/tmuxctl ./internal/session` and
+  `go test -tags dev ./...` both green (tmux **is** installed on this host, so the tagged suite was
+  run rather than vetted); `go.sum` still absent. `go test -tags quickstart ./cmd/crswd` fails on
+  exactly the three tests iterations 5-32 recorded and nothing else. Eight mutations were run and
+  reverted by reverse `Edit`: the oversized capture truncated to the bound (red on all three
+  oversized cases — the task's "must fail when"); `countLines` counting newlines alone (red on the
+  unterminated-tail case **alone**); `>=` for `>` (red on the at-the-bound case alone); `NewExec`
+  admitting a bound below 1 (red in `tmuxctl` *and* on the `httpapi` wiring case); `CapturePane`
+  trusting its field instead of guarding it (red on the unbounded-Exec case — it still refuses, but
+  only after running `capture-pane`); the refusal appending the screen it refused (red on all three
+  oversized cases, the disclosure half); `httpapi.New` passing `config.DefaultPaneBound` instead of
+  `cfg.PaneBound` (red on the wiring case **alone**); and the loader reading `EnvMaxStreams` (red on
+  `TestSourceRecordedForEveryKey`).

@@ -167,7 +167,7 @@ still be typed.
 
 ## Phase 10: Pane bound (#41)
 
-- [ ] T033 [P] Bound the captured pane size explicitly with a `pane_bound` config key in `internal/tmuxctl/exec.go`, stated where it is relied upon, refusing a capture past the bound rather than truncating. Tests in `internal/tmuxctl/exec_test.go`: `TestCaptureRefusesPastBound`. **Must fail when** an oversized capture is truncated — half a screen is a wrong screen, not a smaller one (FR-053).
+- [x] T033 [P] Bound the captured pane size explicitly with a `pane_bound` config key in `internal/tmuxctl/exec.go`, stated where it is relied upon, refusing a capture past the bound rather than truncating. Tests in `internal/tmuxctl/exec_test.go`: `TestCaptureRefusesPastBound`. **Must fail when** an oversized capture is truncated — half a screen is a wrong screen, not a smaller one (FR-053).
 
 ---
 
