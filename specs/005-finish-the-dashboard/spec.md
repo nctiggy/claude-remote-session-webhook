@@ -214,10 +214,22 @@ Creating a session still works.
 - **FR-021**: Starting fresh MUST remain what a create does.
 - **FR-022**: No caller-supplied conversation identifier may reach a command line.
 
-### Documentation
+### Diagnostics and the audit trail
+
+Both of these were found by running the daemon rather than by reading it, which is
+why neither appears in the issues this milestone was scoped from.
 
 - **FR-023**: The documented way to read the audit trail MUST work as written on a
   running daemon.
+- **FR-023a**: Human diagnostics and audit records MUST be separable. They share
+  one stream today, which is *why* FR-023 fails: the documented command feeds
+  everything the daemon says to a parser that accepts only records.
+- **FR-023b**: The startup dependency check MUST resolve a start command the way
+  the session will actually resolve it, or it MUST NOT claim the command is
+  missing. It currently probes the daemon's own environment while the command runs
+  in a login shell inside tmux, so it warns falsely on a working daemon.
+- **FR-023c**: A dependency warning MUST state what it checked, so an operator can
+  tell a real absence from a probe looking in the wrong place.
 
 ### Carried forward
 
@@ -253,6 +265,10 @@ sees is not met until something reads the markup and says so.
   and typography from tokens, with no literal colour value in any template.
 - **SC-008**: The documented audit-trail command runs clean against a daemon that
   has been up long enough to have logged both its own records and systemd's.
+- **SC-008a**: A daemon whose configured start command is reachable by a session
+  emits no warning saying it is missing — verified on a host where the command is
+  on the login shell's path and not on the service manager's, which is the
+  ordinary case for a tool installed under the operator's home.
 - **SC-009**: Every route still produces exactly one audit record per request.
 - **SC-010**: `go.sum` remains absent.
 
