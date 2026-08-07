@@ -1342,3 +1342,124 @@ func TestAccessIsOptional(t *testing.T) {
 		})
 	}
 }
+
+// TestWorkDirsDefaultToNothing is the picker's off state (#59). Neither variable
+// set is the create form the dashboard had before this existed — a plain text
+// box — so the default has to be an empty list and discovery off, not a list
+// somebody has to turn off.
+func TestWorkDirsDefaultToNothing(t *testing.T) {
+	t.Parallel()
+
+	pairs, _ := baseEnv(t)
+	cfg := mustLoad(t, pairs)
+
+	if len(cfg.WorkDirs) != 0 {
+		t.Errorf("WorkDirs = %v with %s unset; want none", cfg.WorkDirs, config.EnvWorkDirs)
+	}
+	if cfg.WorkDirsDiscover {
+		t.Errorf("WorkDirsDiscover is on with %s unset; an unfiltered list of everything under a root is worse than no list", config.EnvWorkDirsDiscover)
+	}
+}
+
+// TestWorkDirsAreCleanedAndDeduplicated holds what a *list* has to be true of.
+//
+// Two spellings of one directory collapse for the reason the roots do: a
+// duplicate is a second entry in a picker that acts identically to the first,
+// and the operator cannot tell which one they chose.
+func TestWorkDirsAreCleanedAndDeduplicated(t *testing.T) {
+	t.Parallel()
+
+	pairs, root := baseEnv(t)
+	pairs[config.EnvWorkDirs] = strings.Join([]string{
+		filepath.Join(root, "one"),
+		filepath.Join(root, "two") + "/",
+		filepath.Join(root, "one", "..", "one"),
+	}, ":")
+
+	cfg := mustLoad(t, pairs)
+	want := []string{filepath.Join(root, "one"), filepath.Join(root, "two")}
+	if len(cfg.WorkDirs) != len(want) {
+		t.Fatalf("WorkDirs = %v, want %v", cfg.WorkDirs, want)
+	}
+	for i, path := range want {
+		if cfg.WorkDirs[i] != path {
+			t.Errorf("WorkDirs[%d] = %q, want %q", i, cfg.WorkDirs[i], path)
+		}
+	}
+}
+
+// TestWorkDirsNeedNotExist is the difference between this list and the
+// allowlist, and it is the whole reason the two are separate loaders.
+//
+// A root that cannot be resolved is a startup failure, because the allowlist is
+// the blast-radius control and one that means nothing is worse than none. A
+// picker entry is a suggestion: a repository the operator has not cloned yet
+// must not be a daemon that refuses to start, and the entry is refused by
+// ResolveWorkDir on the create like any other path if it is typed anyway.
+func TestWorkDirsNeedNotExist(t *testing.T) {
+	t.Parallel()
+
+	pairs, root := baseEnv(t)
+	pairs[config.EnvWorkDirs] = filepath.Join(root, "not-cloned-yet")
+
+	cfg := mustLoad(t, pairs)
+	if len(cfg.WorkDirs) != 1 {
+		t.Fatalf("WorkDirs = %v; a directory that is not there yet is a suggestion, not a startup failure", cfg.WorkDirs)
+	}
+}
+
+// TestWorkDirsRefuseWhatCannotBeAPath is the pair of defects a list can carry
+// that no amount of filtering downstream makes sensible: an entry that is not a
+// path at all, and a separator typed twice.
+func TestWorkDirsRefuseWhatCannotBeAPath(t *testing.T) {
+	t.Parallel()
+
+	for name, value := range map[string]string{
+		"a relative entry": "code/crswd",
+		"an empty entry":   "/tmp::/var",
+		"a bare separator": ":",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			pairs, _ := baseEnv(t)
+			pairs[config.EnvWorkDirs] = value
+			if _, err := config.LoadFrom(env(pairs), io.Discard); err == nil {
+				t.Fatalf("LoadFrom() accepted %s = %q; want a refusal", config.EnvWorkDirs, value)
+			}
+		})
+	}
+}
+
+// TestWorkDirsDiscoverIsRefusedRatherThanGuessed is the failure mode a bool
+// loader has that a number does not: every wrong value looks like "off".
+//
+// An operator who wrote `yes` asked for discovery. Reading that as false gives
+// them a daemon running without the feature they configured, with nothing said
+// about it — which is the silent-wrong outcome every loader in this package is
+// written against.
+func TestWorkDirsDiscoverIsRefusedRatherThanGuessed(t *testing.T) {
+	t.Parallel()
+
+	for _, on := range []string{"true", "TRUE", "1", "t"} {
+		pairs, _ := baseEnv(t)
+		pairs[config.EnvWorkDirsDiscover] = on
+		if cfg := mustLoad(t, pairs); !cfg.WorkDirsDiscover {
+			t.Errorf("%s = %q did not turn discovery on", config.EnvWorkDirsDiscover, on)
+		}
+	}
+	for _, off := range []string{"false", "0", "F"} {
+		pairs, _ := baseEnv(t)
+		pairs[config.EnvWorkDirsDiscover] = off
+		if cfg := mustLoad(t, pairs); cfg.WorkDirsDiscover {
+			t.Errorf("%s = %q did not turn discovery off", config.EnvWorkDirsDiscover, off)
+		}
+	}
+	for _, neither := range []string{"yes", "on", "2", "maybe"} {
+		pairs, _ := baseEnv(t)
+		pairs[config.EnvWorkDirsDiscover] = neither
+		if _, err := config.LoadFrom(env(pairs), io.Discard); err == nil {
+			t.Errorf("LoadFrom() accepted %s = %q; an operator who wrote it meant one of the two answers and would have got the other", config.EnvWorkDirsDiscover, neither)
+		}
+	}
+}

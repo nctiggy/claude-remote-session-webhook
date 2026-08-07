@@ -91,6 +91,29 @@ const (
 	// started plain sessions instead would be worse than no switch.
 	EnvRemoteControlCommand = "CRSW_REMOTE_CONTROL_COMMAND"
 
+	// EnvWorkDirs is the operator's own list of working directories the create
+	// form offers as a picker (#59), colon-separated like EnvAllowedRoots and
+	// for the same reason: the spec fixes that separator, and one that changed
+	// with the build platform would change what a list means.
+	//
+	// It is a convenience and never a permission. Nothing here widens what a
+	// session may run in — every entry is checked against EnvAllowedRoots where
+	// it is offered and again by session.ResolveWorkDir on the create it is
+	// typed into, because a list rendered five minutes ago is not evidence about
+	// the filesystem now.
+	EnvWorkDirs = "CRSW_WORK_DIRS"
+
+	// EnvWorkDirsDiscover adds the immediate subdirectories of each approved
+	// root to that list. Off by default, and deliberately: an operator whose
+	// ~/code holds sixty repositories is worse served by an unfiltered list than
+	// by none, so discovery is something they turn on knowing they get the
+	// filter with it.
+	//
+	// It lists directories under EnvAllowedRoots and nowhere else, one level
+	// deep. See session.WorkDirChoices for what that costs and what it may not
+	// reveal.
+	EnvWorkDirsDiscover = "CRSW_WORK_DIRS_DISCOVER"
+
 	envHome = "HOME"
 
 	// rootListSeparator is fixed at ":" rather than os.PathListSeparator: the
@@ -286,6 +309,23 @@ type Config struct {
 	Listen      string
 	MaxSessions int
 
+	// WorkDirs is the operator's own list of working directories the create form
+	// offers, absolute and cleaned but deliberately neither resolved nor checked
+	// against Roots here (#59).
+	//
+	// Both omissions are the point. A picker entry is a suggestion, so an
+	// operator whose directory is not there yet has no reason to be met with a
+	// daemon that refuses to start — and a check made at startup would be a
+	// check made against a filesystem that has since changed. The list is
+	// filtered against the allowlist where it is rendered, and every path it
+	// yields goes through session.ResolveWorkDir on the create like any other.
+	WorkDirs []string
+
+	// WorkDirsDiscover adds the immediate subdirectories of each approved root
+	// to that list. Off unless the operator asked for it, because an unfiltered
+	// list of everything under ~/code is worse than no list at all.
+	WorkDirsDiscover bool
+
 	// DestroyOnShutdown tears every session down on a clean stop. Off by
 	// default: a graceful restart is overwhelmingly the common case, and
 	// destroying a fleet to redeploy a binary is a cost nobody asked for.
@@ -458,6 +498,14 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 			return nil, err
 		}
 	}
+	workDirs, err := loadWorkDirs(getenv)
+	if err != nil {
+		return nil, err
+	}
+	discover, err := loadBool(getenv, EnvWorkDirsDiscover)
+	if err != nil {
+		return nil, err
+	}
 	startCommands, err := loadStartCommands(getenv)
 	if err != nil {
 		return nil, err
@@ -482,6 +530,8 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 		SessionLifetimeMax:  lifetimeMax,
 		IdleTimeout:         idle,
 		IdleTimeoutMax:      idleMax,
+		WorkDirs:            workDirs,
+		WorkDirsDiscover:    discover,
 		StartCommands:       startCommands,
 
 		RemoteControlCommand: remoteControl,
@@ -864,6 +914,64 @@ func resolveRoot(path string) (ApprovedRoot, error) {
 	}
 
 	return ApprovedRoot{Path: resolved}, nil
+}
+
+// loadWorkDirs reads the operator's own list of working directories for the
+// create form's picker (#59).
+//
+// It checks only what a *list* has to be true of: absolute, non-empty, and
+// spelled once. It deliberately does not resolve an entry, stat it, or test it
+// against the allowlist — the three things loadRoots does — because this list is
+// not an allowlist and a startup failure here would be the daemon refusing to
+// run over a convenience. An entry that is outside the roots, or gone, simply
+// does not render, and one that is typed anyway is refused by ResolveWorkDir
+// exactly as it was before this variable existed.
+//
+// Cleaned here so that two spellings of one directory collapse before anything
+// downstream compares them, which is the same reason loadRoots keeps a set.
+func loadWorkDirs(getenv func(string) string) ([]string, error) {
+	raw := strings.TrimSpace(getenv(EnvWorkDirs))
+	if raw == "" {
+		return nil, nil
+	}
+
+	parts := strings.Split(raw, rootListSeparator)
+	dirs := make([]string, 0, len(parts))
+	seen := make(map[string]bool, len(parts))
+	for _, part := range parts {
+		path := strings.TrimSpace(part)
+		if path == "" {
+			return nil, fmt.Errorf("%s contains an empty entry; refusing to start", EnvWorkDirs)
+		}
+		if !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("%s entry %q is not an absolute path; refusing to start", EnvWorkDirs, path)
+		}
+		path = filepath.Clean(path)
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		dirs = append(dirs, path)
+	}
+	return dirs, nil
+}
+
+// loadBool reads an on/off variable, defaulting to off when unset.
+//
+// A value that is neither is a startup failure rather than a false. An operator
+// who wrote `yes` meant on, and a daemon that read that as off would run with
+// the feature they asked for silently absent — the failure mode every loader in
+// this file is written against.
+func loadBool(getenv func(string) string, name string) (bool, error) {
+	v := strings.TrimSpace(getenv(name))
+	if v == "" {
+		return false, nil
+	}
+	on, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("%s %q is not true or false; refusing to start", name, v)
+	}
+	return on, nil
 }
 
 // loadListen enforces the loopback bind (FR-005). Reachability comes from the

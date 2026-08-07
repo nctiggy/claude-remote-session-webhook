@@ -61,6 +61,14 @@ EnvironmentFile=%h/.config/crswd/env
 # value shown is the daemon's own default, so a line deleted here changes
 # nothing. `.env.example` says what each one refuses to start on.
 Environment=CRSW_ALLOWED_ROOTS=%h/code
+
+# The working-directory picker on the create form (#59). Both default to nothing:
+# an empty list and no discovery is the plain text field the form had before.
+# Neither widens anything — CRSW_ALLOWED_ROOTS above is still the control, and a
+# path from the list is resolved and checked against it on create like any other.
+Environment=CRSW_WORK_DIRS=
+Environment=CRSW_WORK_DIRS_DISCOVER=
+
 Environment=CRSW_LISTEN=127.0.0.1:8765
 Environment=CRSW_MAX_SESSIONS=5
 
