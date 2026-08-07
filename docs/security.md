@@ -112,7 +112,13 @@ Specific to this daemon:
 
 ### 3. Secret hygiene
 - Secrets come from the environment or 1Password. Never a source file.
-- `.env` is gitignored; `.env.example` documents the *names* only.
+- The daemon's own file is `~/.config/crswd/config`, and it must be mode 0600 —
+  group- or world-readable is a **startup failure**, because a secret in a
+  mode-0644 file has already leaked to every account on the host. That refusal is
+  the reason the file beats an `Environment=` line, which `systemctl show` prints
+  to anyone who asks. `config.example` is committed and documents the *keys* only.
+- **A config parse error never quotes the line.** A malformed line may be the
+  secret with a typo in it, and a startup error lives in the journal forever.
 - **Session output is secret.** Captured pane content can contain anything on the
   host — keys, tokens, customer data. Never log it, never ship it to telemetry,
   never include it in an error message.

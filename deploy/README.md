@@ -37,7 +37,7 @@ enforces — the edge is the gate, and this is the daemon asserting the gate is
 configured as believed. Configuring them on the Cloudflare side alone is a daemon
 that does not start, which is the inverse of the failure this section used to have.
 
-Everything the daemon reads is named in [`.env.example`](../.env.example), with
+Everything the daemon reads is named in [`config.example`](../config.example), with
 what each value refuses to start on. Four are required — `CRSW_SHARED_SECRET` and
 the three `CRSW_ACCESS_*` above — and the rest have defaults, which
 `crswd.example.service` sets to their own default value so the whole list is

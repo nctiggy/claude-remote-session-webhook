@@ -36,7 +36,7 @@ import (
 //
 // gosec G101 fires on EnvSharedSecret because the identifier says "secret" and
 // the value is a string literal. The value is the *name* of an environment
-// variable and is meant to be published — .env.example carries it verbatim. The
+// variable and is meant to be published — config.example carries its key. The
 // secret itself only ever exists as the []byte returned by loadSecret.
 const (
 	EnvSharedSecret = "CRSW_SHARED_SECRET" //nolint:gosec // G101: an env var name, not a credential

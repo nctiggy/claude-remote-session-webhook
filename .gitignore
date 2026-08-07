@@ -22,10 +22,13 @@ target/
 *.test
 coverage.out
 
-# env & secrets — never commit these
+# config & secrets — never commit these
 .env
 .env.*
-!.env.example
+# A filled-in copy of config.example dropped in the repo root for local work.
+# Anchored, because an unanchored `config` would also match internal/config.
+/config
+!config.example
 *.pem
 *.key
 secrets.json

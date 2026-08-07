@@ -1,21 +1,65 @@
 # crswd configuration — NAMES AND DESCRIPTIONS ONLY.
 #
+# Copy this to ~/.config/crswd/config and fill it in:
+#
+#     install -Dm600 config.example ~/.config/crswd/config
+#
+# Mode 0600 is not advice. The shared secret lives in this file, and the daemon
+# refuses to start if the file is group- or world-readable — a secret in a
+# mode-0644 file is a secret that has already leaked to every account on the
+# host. That refusal is the whole reason a file beats an `Environment=` line in
+# a systemd unit, which `systemctl show crswd` prints to anyone who asks.
+#
 # Every assignment below is deliberately empty. This file is committed and this
 # repository is public, so a value written here is a value published forever.
-# Copy it to .env (gitignored) for local development, or fill in a copy kept
-# outside the repo and point the systemd unit's EnvironmentFile at that — see
-# deploy/README.md.
+# An empty value means "unset", so a copy of this file with nothing filled in
+# loads exactly as no file at all does.
+#
+# --- The format ---
+#
+# `key = value`, one per line, flat: no sections, no nesting, no quoting. A `#`
+# at the start of a line is a comment; a `#` anywhere else is part of the value,
+# because a shared secret may contain one and a parser that guessed would
+# truncate it into an authentication layer that refuses every request.
+# Whitespace around the key and the value is trimmed. A key set twice, a key
+# this daemon does not read, or a line that is neither blank, a comment, nor
+# `key = value` is a startup failure naming the line number — never its
+# contents, because a malformed line may be the secret with a typo in it.
+#
+# YAML and TOML were not options: `go.sum` must not exist in this repository
+# (docs/security.md §5), neither has a standard-library parser, and neither is
+# safe to hand-roll. JSON was, and would have deleted every comment below.
+#
+# --- Where it is read from ---
+#
+#   1. --config, if you pass it. Named and absent is a startup failure.
+#   2. $XDG_CONFIG_HOME/crswd/config, else ~/.config/crswd/config.
+#      Absent is not an error: defaults plus environment variables still start
+#      a daemon, which is what every pre-#65 deployment is.
+#   3. Environment variables (CRSW_ + the key, upper-cased), which OVERRIDE the
+#      file. `allowed_roots` here is CRSW_ALLOWED_ROOTS there. They stay because
+#      they are how a container is configured and how a test changes one value
+#      without writing a file.
+#   4. Built-in defaults.
 #
 # The daemon reads its whole configuration once, before it binds or spawns
 # anything, and nothing here can be changed while it runs. Every value that
 # would weaken a bound is a startup failure rather than a warning
 # (docs/security.md §4), because sessions run with
-# --dangerously-skip-permissions and these variables are what stands in for the
+# --dangerously-skip-permissions and these settings are what stands in for the
 # permission prompt that is gone.
 #
-# internal/config is the source of truth. The names below are pinned to it by
-# TestEnvExampleNamesEveryVariable, so a variable added there fails the build
-# until it is documented here.
+# The daemon NEVER writes this file. Your file is yours; a daemon that
+# reformatted one has taken a decision that was not its to take.
+#
+# internal/config is the source of truth. The keys below are pinned to it by
+# TestConfigExampleNamesEveryKey, so a setting added there fails the build until
+# it is documented here.
+
+# Which schema this file was written against. Absent means 1, which is what
+# every hand-written file is. A version this daemon does not know is a startup
+# failure rather than a guess at what the keys now mean.
+version = 1
 
 # --- Required. The daemon refuses to start without it. ---
 
@@ -26,11 +70,11 @@
 #
 # Generate with `openssl rand -hex 32` and keep it in 1Password. It is never
 # logged, never returned in an error, and never echoed back — not even its
-# length.
-CRSW_SHARED_SECRET=
+# length. This is the setting the file mode above exists for.
+shared_secret =
 
 # Your Cloudflare Access team domain — normally `<team>.cloudflareaccess.com`.
-# Unset or unusable is a startup failure.
+# Unusable is a startup failure.
 #
 # One value, because two things must agree: the daemon derives the expected
 # issuer (`https://<host>`) and the key-set URL
@@ -42,24 +86,27 @@ CRSW_SHARED_SECRET=
 # loopback IP literal — that carve-out exists so the quickstart and the contract
 # tests can serve a key set they control on 127.0.0.1 with no Cloudflare account.
 # It skips no validation.
-CRSW_ACCESS_TEAM_DOMAIN=
+access_team_domain =
 
 # The Access application's AUD tag, from the application's settings in the
-# Cloudflare dashboard. Empty is a startup failure.
+# Cloudflare dashboard.
 #
 # It is compared for equality against the assertion's audience and never parsed,
 # so an assertion minted for a different application on the same team — or for a
 # different team entirely — is refused.
-CRSW_ACCESS_AUD=
+access_aud =
 
-# Comma-separated list of the email addresses allowed to reach the dashboard. At
-# least one is required; empty, or an entry that is empty or carries a space, is
-# a startup failure.
+# Comma-separated list of the email addresses allowed to reach the dashboard. An
+# entry that is empty or carries a space is a startup failure.
 #
 # The edge is the gate. This is the daemon asserting the gate is configured as
 # believed — layer 1 is not weakened by an Access policy someone widened in the
 # dashboard and forgot. A refused address never reaches the audit trail.
-CRSW_ACCESS_ALLOWED_EMAILS=
+#
+# These three are all-or-nothing: set every one to enable the dashboard, or none
+# to run the API alone. Some of them is a startup failure, because a
+# half-configured door refuses every login while looking correct.
+access_allowed_emails =
 
 # --- Optional. Each falls back to the default named in its description. ---
 
@@ -76,7 +123,7 @@ CRSW_ACCESS_ALLOWED_EMAILS=
 # directory that resolves; one that does not is a startup failure, as is an
 # empty entry. Two spellings that resolve to the same directory collapse to
 # one. When this is unset, HOME must be set and absolute or startup fails.
-CRSW_ALLOWED_ROOTS=
+allowed_roots =
 
 # host:port for the HTTP listener. Default: 127.0.0.1:8765.
 #
@@ -85,12 +132,12 @@ CRSW_ALLOWED_ROOTS=
 # or a resolver could move the bind off loopback without this value changing.
 # A non-loopback host is a startup failure. Reachability comes from the
 # Cloudflare Tunnel, never from this address.
-CRSW_LISTEN=
+listen =
 
 # How many sessions may exist at once. Default: 5. Below 1 is a startup
 # failure. A create past the cap is refused with 429 rather than degrading the
 # host.
-CRSW_MAX_SESSIONS=
+max_sessions =
 
 # Whether stopping the daemon also destroys every running session.
 #
@@ -103,18 +150,19 @@ CRSW_MAX_SESSIONS=
 # running, nothing to reconnect to. Note that a *crash* leaves sessions running
 # either way, which is why adoption exists — this setting governs the clean stop
 # only.
-CRSW_DESTROY_ON_SHUTDOWN=
+destroy_on_shutdown =
+
 # How long a session may live from creation. Default: 24h. A create may ask for
-# less, or for more up to CRSW_SESSION_LIFETIME_MAX. There is deliberately no
-# value meaning "never": raise the ceiling as far as you like, but a session that
+# less, or for more up to session_lifetime_max. There is deliberately no value
+# meaning "never": raise the ceiling as far as you like, but a session that
 # outlives the daemon's own memory of why it exists is what the bound is for.
-CRSW_SESSION_LIFETIME=
+session_lifetime =
 
 # The ceiling a per-session lifetime override may not exceed. Defaults to
-# CRSW_SESSION_LIFETIME, so overrides buy nothing until this is raised
-# deliberately. Below the default is a startup failure — every create would be
-# refused by a bound set without meaning to.
-CRSW_SESSION_LIFETIME_MAX=
+# session_lifetime, so overrides buy nothing until this is raised deliberately.
+# Below the default is a startup failure — every create would be refused by a
+# bound set without meaning to.
+session_lifetime_max =
 
 # How long a session may go untouched before the reaper takes it. Default: 60m.
 #
@@ -123,33 +171,33 @@ CRSW_SESSION_LIFETIME_MAX=
 # watching is still reaped. A create may pass a negative value to disable idle
 # reaping for that session alone; the absolute lifetime still applies, so the
 # bound is relaxed rather than removed.
-CRSW_IDLE_TIMEOUT=
+idle_timeout =
 
 # The ceiling an idle-timeout override may not exceed. Defaults to
-# CRSW_IDLE_TIMEOUT. An idle timeout longer than the session lifetime is a
-# startup failure: it could never fire, and a setting that does nothing is worse
-# than one that refuses.
-CRSW_IDLE_TIMEOUT_MAX=
+# idle_timeout. An idle timeout longer than the session lifetime is a startup
+# failure: it could never fire, and a setting that does nothing is worse than
+# one that refuses.
+idle_timeout_max =
 
 # Per-caller create budget, in creates per minute. Default: 6. Below 1 is a
 # startup failure.
 #
 # The burst is derived from this rate as max(1, rate/2) — 3 at the default —
-# and is deliberately not a second variable, which could be set in
-# disagreement with the first. A create spends a token whatever it goes on to
-# answer, so getting the request wrong on purpose is not free.
-CRSW_CREATE_RATE_PER_MIN=
+# and is deliberately not a second setting, which could be set in disagreement
+# with the first. A create spends a token whatever it goes on to answer, so
+# getting the request wrong on purpose is not free.
+create_rate_per_min =
 
 # Largest request body the daemon will read, in bytes. Default: 65536. Below 1
 # is a startup failure. An oversize body is refused before it is parsed, so it
 # never reaches a handler and never reaches the audit trail.
-CRSW_MAX_BODY_BYTES=
+max_body_bytes =
 
 # How many live output streams may be open at once, across every browser tab.
 # Default: 10 — twice the default session cap, so every session on a fully
 # loaded host is watchable from two tabs before the daemon starts refusing.
 # Below 1 is a startup failure. An open past the cap is refused with 429.
-CRSW_MAX_STREAMS=
+max_streams =
 
 # The command line typed into a new session's shell. Default:
 # `claude --dangerously-skip-permissions` — exactly what every session ran
@@ -163,14 +211,14 @@ CRSW_MAX_STREAMS=
 # control character, which would submit half a line.
 #
 # Read `docs/security.md` before changing it. Both this and any entry in
-# CRSW_START_COMMANDS run unsupervised in an unsandboxed shell, and the daemon's
+# start_commands run unsupervised in an unsandboxed shell, and the daemon's
 # audit trail sees only what the daemon itself did.
-CRSW_START_COMMAND=
+start_command =
 
 # The named set a create may choose from, as `name=command line` entries
 # separated by commas. Default: empty — only the `default` command above exists.
 #
-#   CRSW_START_COMMANDS=rc=claude remote-control --permission-mode bypassPermissions
+#   start_commands = rc=claude remote-control --permission-mode bypassPermissions
 #
 # A create carries a NAME (`"start_command":"rc"`), never a command line: a
 # create route that took a command line would make this daemon a general
@@ -178,17 +226,17 @@ CRSW_START_COMMAND=
 # is refused with 400 and starts nothing.
 #
 # `default` is always present. Naming it here is how you set it alongside the
-# others — but setting it here *and* in CRSW_START_COMMAND is a startup failure,
+# others — but setting it here *and* in start_command is a startup failure,
 # because which of two spellings wins is the last thing to leave to chance. Each
-# entry is validated exactly as CRSW_START_COMMAND is; a name is [a-z0-9-] and
-# at most 32 characters, because a name reaches the audit trail. A command line
-# may not contain a comma.
+# entry is validated exactly as start_command is; a name is [a-z0-9-] and at
+# most 32 characters, because a name reaches the audit trail. A command line may
+# not contain a comma.
 #
 # A command line may carry `{name}`, and nothing else in braces. It is replaced
 # with the session's own name, so the session an operator names here is the
 # session they find in claude.ai:
 #
-#   CRSW_START_COMMANDS=rc=claude remote-control --permission-mode bypassPermissions --spawn=same-dir --name {name}
+#   start_commands = rc=claude remote-control --permission-mode bypassPermissions --spawn=same-dir --name {name}
 #
 # That substitution is safe because a session name is `^[a-zA-Z0-9-]{1,64}$` —
 # no space, quote, semicolon, backtick or newline — so no name can change the
@@ -196,30 +244,28 @@ CRSW_START_COMMAND=
 # startup failure naming the token, because a typo like `{worrking_dir}` typed
 # at a shell is a brace expansion nobody asked for. `${HOME}` is the shell's own
 # and passes through untouched.
-CRSW_START_COMMANDS=
+start_commands =
 
 # Which of the names above the dashboard's remote-control switch turns on.
 # Default: `rc`.
 #
 # The switch is a mode, not a menu: the create form asks whether remote control
-# is on, and this variable is where an operator reads and changes what that
+# is on, and this setting is where an operator reads and changes what that
 # means. Off maps to `default`, on maps to this name.
 #
 # Left unset on a daemon that configures no `rc` command, there is no remote
-# control to offer and the form renders no switch. Set to a name
-# CRSW_START_COMMANDS does not define, the daemon refuses to start — a switch
-# that quietly started plain sessions is worse than one that is absent.
-CRSW_REMOTE_CONTROL_COMMAND=
+# control to offer and the form renders no switch. Set to a name start_commands
+# does not define, the daemon refuses to start — a switch that quietly started
+# plain sessions is worse than one that is absent.
+remote_control_command =
 
 # --- Not configurable, and named here so nobody goes looking for a knob. ---
 #
-# The idle timeout (60m), the absolute session lifetime (24h, which is also the
-# session token's lifetime by construction), and the signed-request timestamp
-# window (300s in both directions) are constants in the code, not variables.
-# They bound the host, and a deployment that could widen them from an
-# environment file could unbound it.
+# The signed-request timestamp window (300s in both directions) is a constant in
+# the code, not a setting. It bounds the host, and a deployment that could widen
+# it from a file could unbound it.
 #
-# There is no variable that disables Access validation. The development bypass
-# is a build tag and a flag (`go build -tags dev`, `--dev-auth-bypass`), absent
+# There is no setting that disables Access validation. The development bypass is
+# a build tag and a flag (`go build -tags dev`, `--dev-auth-bypass`), absent
 # from the shipping binary rather than defaulted off, because a production
-# artifact that can disable authentication from its environment is a backdoor.
+# artifact that can disable authentication from its configuration is a backdoor.

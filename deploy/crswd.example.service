@@ -48,7 +48,7 @@ StandardError=journal
 # All four are required and the daemon refuses to start without them: the secret
 # is layer 2, and the other three are what layer 1 verifies a browser's Access
 # assertion against — a daemon that cannot check who the browser is has no
-# browser door at all. `.env.example` describes each one.
+# browser door at all. `config.example` describes each one.
 #
 # Never `Environment=` any of them in this file. A unit's contents are readable
 # by anyone who can run `systemctl --user show crswd`, and this example is
@@ -59,7 +59,7 @@ EnvironmentFile=%h/.config/crswd/env
 
 # The rest, inline. This is every remaining variable the daemon reads, and each
 # value shown is the daemon's own default, so a line deleted here changes
-# nothing. `.env.example` says what each one refuses to start on.
+# nothing. `config.example` says what each one refuses to start on.
 Environment=CRSW_ALLOWED_ROOTS=%h/code
 Environment=CRSW_LISTEN=127.0.0.1:8765
 Environment=CRSW_MAX_SESSIONS=5
@@ -80,7 +80,7 @@ Environment=CRSW_MAX_STREAMS=10
 # what the daemon typed before this was configurable at all, and the named set is
 # empty, so both lines can be deleted without changing anything. A create picks
 # from the set BY NAME and can never send a command line of its own — see
-# `.env.example`, and read `docs/security.md` before adding an entry that starts
+# `config.example`, and read `docs/security.md` before adding an entry that starts
 # a second unsupervised path into the same unsandboxed shell.
 Environment="CRSW_START_COMMAND=claude --dangerously-skip-permissions"
 Environment="CRSW_START_COMMANDS="

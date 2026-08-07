@@ -74,7 +74,7 @@ alike, and it names which `docs/` file to load for a given change.
 
 ```bash
 git config core.hooksPath .githooks   # once per clone — gitleaks pre-commit
-cp .env.example .env                  # names only; fill in locally, never commit
+install -Dm600 config.example ~/.config/crswd/config   # names only; fill in locally
 
 go mod download
 go build ./...
@@ -110,14 +110,38 @@ what it does. Wrap it in the loop only once the behaviour is boring.
 
 ## Configuration
 
-The daemon is configured **only** by the environment, read once at startup before
-it binds or spawns anything. There are no flags and no config file; `-h` reports
-usage and nothing else. [`.env.example`](.env.example) carries the same list with
-longer descriptions, and names only — never a value.
+The daemon is configured from `~/.config/crswd/config`, read once at startup
+before it binds or spawns anything. The format is flat `key = value` with `#`
+comments; [`config.example`](config.example) is that file, carrying every key
+with a long description and never a value. Copy it:
+
+```bash
+install -Dm600 config.example ~/.config/crswd/config
+```
+
+Mode 0600 is enforced, not advised: the shared secret lives in this file, and a
+group- or world-readable one is a startup failure naming the file and the
+`chmod` to run.
+
+Precedence, highest first:
+
+1. `--config <path>`, the only flag. Named and absent is a startup failure.
+2. `$XDG_CONFIG_HOME/crswd/config`, else `~/.config/crswd/config`. **Absent is
+   not an error** — defaults and environment variables still start a daemon.
+3. Environment variables, which **override** the file. `CRSW_` plus the key,
+   upper-cased: `allowed_roots` is `CRSW_ALLOWED_ROOTS`. They stay because they
+   are how a container is configured.
+4. Built-in defaults.
+
+An unknown key is a startup failure, not a warning: a misspelled `alowed_roots`
+that silently did nothing is exactly how a containment boundary ends up unset.
 
 Anything that would weaken a bound is a **startup failure, not a warning**.
-Sessions run with `--dangerously-skip-permissions`, so these variables are what
+Sessions run with `--dangerously-skip-permissions`, so these settings are what
 stands in for the permission prompt that is gone.
+
+Named below by their environment variable; the file key for each is the same
+name lower-cased without `CRSW_`.
 
 | Variable | Required | Default | Refuses to start when |
 |---|---|---|---|

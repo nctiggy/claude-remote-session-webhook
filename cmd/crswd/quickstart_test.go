@@ -431,7 +431,7 @@ func freePort(t *testing.T) string {
 // the host, and gives it straight back.
 //
 // quickstart.md writes both as port 8765, and so did this file. That is the port
-// .env.example, the systemd unit and the live deployment all name, so on the one
+// config.example, the systemd unit and the live deployment all name, so on the one
 // host an operator would run an acceptance suite on — the host running the
 // product — the "nothing bound" probe below was reporting the deployed daemon's
 // listener rather than a refusal that had leaked one. The host spelling is what

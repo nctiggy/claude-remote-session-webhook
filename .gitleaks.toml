@@ -10,14 +10,18 @@ useDefault = true
 [[rules]]
 id = "crsw-shared-secret"
 description = "CRSW HMAC shared secret assigned a real value"
-# 32+ hex chars after the var name. The empty assignment in .env.example does not match.
-regex = '''(?i)CRSW_SHARED_SECRET\s*[=:]\s*['"]?[0-9a-f]{32,}'''
+# 32+ hex chars after the name. Both spellings, because since #65 the same
+# setting is `CRSW_SHARED_SECRET` in a unit and `shared_secret` in a config
+# file, and a rule that knew only the first would miss every leak from the
+# format this project now tells operators to use. The empty assignment in
+# config.example does not match either.
+regex = '''(?i)(CRSW_)?SHARED_SECRET\s*[=:]\s*['"]?[0-9a-f]{32,}'''
 tags = ["secret", "crsw"]
 
 [[rules]]
 id = "crsw-access-aud"
 description = "Cloudflare Access AUD tag"
-regex = '''(?i)CRSW_ACCESS_AUD\s*[=:]\s*['"]?[0-9a-f]{40,}'''
+regex = '''(?i)(CRSW_)?ACCESS_AUD\s*[=:]\s*['"]?[0-9a-f]{40,}'''
 tags = ["config", "crsw"]
 
 [[rules]]
@@ -29,7 +33,7 @@ tags = ["secret", "cloudflare"]
 [allowlist]
 description = "Documentation and examples carry placeholders, not secrets"
 paths = [
-  '''\.env\.example$''',
+  '''^config\.example$''',
   '''^deploy/.*\.example\..*$''',
   '''^deploy/README\.md$''',
   '''^docs/.*\.md$''',
