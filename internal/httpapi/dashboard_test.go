@@ -613,72 +613,49 @@ func TestTheRenderedFleetOffersWhatDiscoveryFound(t *testing.T) {
 	}
 }
 
-// TestTheRenderedFleetOffersPriorConversations is T032 at the call site, and the
-// half three passing component tests cannot see: session.ListConversations
-// shipped one task before anything called it, which is the shape of failure this
-// repository has shipped three times.
+// TestTheRenderedFleetReadsNoConversationStore is US5 at the call site: the page
+// a browser is handed no longer asks Claude Code's own store what it has
+// recorded, because the form no longer carries the question.
 //
-// **Must fail when** the offer is wired to anything but the store — a constant, a
-// list built from the directories alone, a walk with its gate dropped. The pair
-// of cases is what makes it an assertion about the *host*: an offer that ignored
-// the store passes the first case and fails the second.
+// It replaces the assertion that the offer was wired to the store, and it is the
+// same claim read the other way round — the shape milestone 2's empty-state test
+// took when a component was made to stop offering something.
 //
-// It is serial, alone in this file, because it describes a home directory. The
-// store's location comes from the environment Claude Code itself reads, and there
-// is no way to say "this host has recorded a conversation" without saying where
-// this host keeps them.
-func TestTheRenderedFleetOffersPriorConversations(t *testing.T) {
+// **Must fail when** the projection keeps walking the store "so the data is there
+// when the field comes back". That walk ran on the render path, for a fact
+// nothing on the page could use, in the one place this daemon reads a directory
+// it was never asked about.
+//
+// It is serial, alone in this file, because it describes a home directory: the
+// store's location comes from the environment Claude Code itself reads.
+func TestTheRenderedFleetReadsNoConversationStore(t *testing.T) {
 	const conversation = "8f14e45f-ceea-467a-9b3d-0f2fc9de5b21"
 
-	for name, recorded := range map[string]bool{
-		"a directory Claude Code has been run in": true,
-		"a directory it has not":                  false,
-	} {
-		t.Run(name, func(t *testing.T) {
-			f := newFleet(t)
-			f.cfg.Roots = []config.ApprovedRoot{{Path: f.fixture.root}}
-			f.cfg.DiscoverRoots = true
+	f := newFleet(t)
+	f.cfg.Roots = []config.ApprovedRoot{{Path: f.fixture.root}}
+	f.cfg.DiscoverRoots = true
 
-			// The daemon's own home, which is where Claude Code keeps the store
-			// and therefore the only place this daemon looks. A test that pointed
-			// the code somewhere else would be asserting against a layout no host
-			// has.
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			if recorded {
-				dir := filepath.Join(home, ".claude", "projects", strings.ReplaceAll(f.fixture.repo, "/", "-"))
-				if err := os.MkdirAll(dir, 0o750); err != nil {
-					t.Fatalf("create the conversation store: %v", err)
-				}
-				if err := os.WriteFile(filepath.Join(dir, conversation+".jsonl"), []byte("{}\n"), 0o600); err != nil {
-					t.Fatalf("record a conversation: %v", err)
-				}
-			}
+	// A host that really has recorded a conversation, which is the only state in
+	// which a surviving walk would show itself.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".claude", "projects", strings.ReplaceAll(f.fixture.repo, "/", "-"))
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("create the conversation store: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, conversation+".jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("record a conversation: %v", err)
+	}
 
-			create := sectionOf(t, f.view(t).Body.String(), "create")
-			offer := `<option value="` + conversation + `">`
+	create := sectionOf(t, f.view(t).Body.String(), "create")
 
-			if recorded {
-				if !strings.Contains(create, offer) {
-					t.Errorf("this host has a conversation for %s and the create form offers none:\n%s", f.fixture.repo, create)
-				}
-				if !strings.Contains(create, `list="conversation-suggestions"`) {
-					t.Errorf("the create form offers conversations the field does not point at:\n%s", create)
-				}
-				// The identifier and a time, and nothing that could only come from
-				// inside the transcript (FR-034).
-				if strings.Contains(create, "{}") {
-					t.Errorf("the create form carries transcript contents:\n%s", create)
-				}
-				return
-			}
-			if strings.Contains(create, offer) {
-				t.Errorf("the create form offers a conversation this host has not recorded:\n%s", create)
-			}
-			if strings.Contains(create, `list="conversation-suggestions"`) {
-				t.Errorf("the field points at an offer that was not rendered:\n%s", create)
-			}
-		})
+	if strings.Contains(create, conversation) {
+		t.Errorf("the create form names a conversation off this host, so the render still reads the store:\n%s", create)
+	}
+	for _, gone := range []string{`name="resume"`, "conversation-suggestions"} {
+		if strings.Contains(create, gone) {
+			t.Errorf("the rendered create form still carries %s:\n%s", gone, create)
+		}
 	}
 }
 

@@ -243,59 +243,17 @@ type createFormView struct {
 	// explicit list, and no task in this milestone builds one.
 	Suggestions []string
 
-	// Conversations is what the form offers for resume (T032, FR-033): the prior
-	// conversations of the directories above, each with the directory it belongs
-	// to and how long ago it was last written.
+	// There is no Conversations field, and there is no projection behind one
+	// (US5). The form asked an operator for an opaque conversation identifier and
+	// offered the conversations of every *suggested directory* to fill it with,
+	// which is not the thing an operator wants back: what they want is the
+	// conversation *this session* was having, and FR-032 already refuses to
+	// resolve that ambiguity by guessing.
 	//
-	// It is the Suggestions list's companion and not a second picker. This form
-	// asks for a working directory and a conversation in one submission, so the
-	// page cannot know which directory an operator is about to name — the offer
-	// therefore carries the directory with each entry, and the create route
-	// checks the identifier against the directory that was actually submitted.
-	// A conversation offered here for some other directory is refused exactly as
-	// an invented one is.
-	//
-	// **Nothing in this list is validated, and nothing in it needs to be**, for
-	// the reason Suggestions needs none: it reaches no decision. What makes a
-	// resume legal is Manager.Create finding the identifier in the resolved
-	// working directory's own listing, so an entry here grants nothing and an
-	// identifier absent from here is still resumable typed.
-	//
-	// Empty renders no datalist and no `list` attribute, leaving a plain field an
-	// operator can still paste an identifier into — FR-018a's discipline about
-	// absent values, and the reason a daemon that discovers no directory is not
-	// a daemon that cannot resume.
-	Conversations []conversationOffer
-}
-
-// conversationOffer is one prior conversation as the create form renders it: the
-// identifier the operator would submit, and enough context to tell one from
-// another (T032).
-//
-// Everything here is either the identifier itself or derived from a modification
-// time, which is the whole of what session.Conversation carries — no title, no
-// first prompt, no summary, because every one of them would have to be read out
-// of a transcript (FR-034). A projection that grew such a field would put the
-// listing's narrowness — its entire security property — behind a template.
-type conversationOffer struct {
-	// ID is the identifier Claude Code named the conversation with, and the value
-	// the field submits. It is rendered as an attribute value and escaped like
-	// every other, but it is also the one string on this page that reaches a
-	// command line if it comes back, which is why session.resumableID has already
-	// refused anything but letters, digits, "-" and "_".
-	ID string
-
-	// WorkDir is the directory the conversation belongs to, so an operator can
-	// tell two identifiers apart — a UUID says nothing on its own, and the
-	// directory is the one fact that makes the offer legible. It is already on
-	// every card in the fleet and in the field above.
-	WorkDir string
-
-	// Age is how long ago the conversation was last written, formatted by
-	// formatAge for the reason a card's is: coarse, computed server-side, and
-	// spelled by the one function that pluralises, so a conversation and a
-	// session cannot describe the same duration two ways.
-	Age string
+	// The offer was also the only thing in this struct that read the filesystem
+	// on the render path for a fact no other component needed. What replaces the
+	// question is not designed yet and is deliberately not invented here
+	// (Principle II) — removing it is this milestone's, answering it is not.
 }
 
 // outcomeView is the banner the fleet renders for what an action just did (T014).

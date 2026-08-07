@@ -164,49 +164,17 @@
   announcement.
 */}}{{ with .Suggestions }}<div class="field-hint" id="create-workdir-subset" role="status" aria-live="polite" data-workdir-subset="Showing {n} of {all} suggested directories."></div>{{ end }}
 </div>{{/*
-  The conversation to carry on from (T032, FR-033). **Empty is fresh, and empty
-  is how this field renders**: there is no value, no preselected option and no
-  checkbox already ticked, so an operator who fills in nothing starts a new
-  conversation and a resume is always something they chose (FR-037). The default
-  is the absence of a value rather than a value meaning "fresh", which is what
-  makes it impossible for a later edit to change the default without deleting
-  something visible.
+  There is no conversation field here, and its absence is the requirement rather
+  than a deletion that has not been finished (US5, FR-033 withdrawn). It asked an
+  operator for an opaque identifier they had no way to obtain from this page: the
+  offer beside it could only ever be the conversations of *this directory*, while
+  the thing an operator wants back is *this session's* — an ambiguity FR-032
+  already refuses to resolve by guessing. A field nobody can answer is worse than
+  no field, because it reads like a capability.
 
-  It is the working-directory field's control for the working-directory field's
-  reasons: `list` plus a `<datalist>` filter as the operator types, take a
-  keyboard, announce their options, and leave the field free text — with nothing
-  running. The last of those is what keeps this usable on a daemon that suggests
-  no directories at all: an operator who has an identifier from Claude Code's own
-  `--resume` list pastes it in full, exactly as a path absent from the picker is
-  still typed in full (FR-040).
-
-  Two fields, one submission, and the offer therefore carries the directory each
-  conversation belongs to: this page cannot know which working directory the
-  operator is about to name, so it says which one each identifier came from and
-  lets the create route check the pairing. **A conversation offered here is never
-  an authorisation.** The identifier is checked against the listing of the
-  directory that was actually submitted, so choosing from this list and typing an
-  identifier meet the same refusal — the relationship the datalist above has to
-  ResolveWorkDir (FR-042), applied to the conversation.
-
-  No `maxlength` and no `pattern`. Both would be the daemon's own rule about what
-  an identifier is copied into markup, free to drift from resumableID, and a
-  maxlength would silently truncate a pasted identifier into one this daemon
-  refuses for a reason nothing on the page could explain.
-
-  What the option says is the directory and how long ago the conversation was
-  last written, which is everything session.Conversation carries. There is no
-  title, no first line and no summary, because every one of them would have to be
-  read out of the transcript — the listing's narrowness is the whole security
-  property of this offer (FR-034).
-*/}}
-<div class="field">
-<label class="field-label" for="create-resume">Conversation</label>
-<input class="field-input" id="create-resume" type="text" name="resume"{{ if .Conversations }} list="conversation-suggestions"{{ end }} autocomplete="off" spellcheck="false" aria-describedby="create-resume-hint">{{ with .Conversations }}<datalist id="conversation-suggestions">{{ range . }}<option value="{{ .ID }}">{{ .WorkDir }}, last used {{ .Age }} ago</option>{{ end }}</datalist>{{ end }}
-<div class="field-hint" id="create-resume-hint">
-<p class="field-hint-text">Leave this empty to start a fresh conversation. Resuming one still starts a new session, with its own identifier and its own lifetime.</p>
-</div>
-</div>{{/*
+  What replaces it is not designed yet and deliberately not invented here
+  (Principle II). Removing the question is this milestone's; answering it is not.
+*/}}{{/*
   The start-command chooser (#38, #39), rendered only when the operator has
   configured more than one. A select with a single option is a control that
   cannot change anything, so a daemon configuring nothing shows the form it
