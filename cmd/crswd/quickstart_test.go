@@ -801,18 +801,34 @@ func (d *daemon) waitForPane(id, token, want string) string {
 
 // TestQuickstartPrerequisites checks the table at the top of quickstart.md
 // against the host it claims to describe.
+//
+// The tools divide into two kinds, and conflating them is what kept this suite
+// out of CI (#87). `go` and `tmux` are what the stories below *run*: without
+// either, every case fails in a way that says nothing about the daemon.
+// `goimports` is a formatting tool nothing here shells out to — a developer
+// wants to know it is missing, and a runner has no use for it.
+//
+// So its absence is reported and not fatal. The alternative was making CI fetch
+// it from the module proxy on every run, which is a network dependency in the
+// one repository whose defining property is having none, to satisfy a check
+// about a tool it does not use.
 func TestQuickstartPrerequisites(t *testing.T) {
 	for _, tool := range []struct {
-		name string
-		args []string
+		name     string
+		args     []string
+		required bool
 	}{
-		{"go", []string{"version"}},
-		{"tmux", []string{"-V"}},
-		{"golangci-lint", []string{"--version"}},
-		{"goimports", nil},
+		{name: "go", args: []string{"version"}, required: true},
+		{name: "tmux", args: []string{"-V"}, required: true},
+		{name: "golangci-lint", args: []string{"--version"}, required: true},
+		{name: "goimports"},
 	} {
 		path, err := exec.LookPath(tool.name)
 		if err != nil {
+			if !tool.required {
+				t.Logf("%-14s absent (not needed to run these stories): %v", tool.name, err)
+				continue
+			}
 			t.Errorf("%s: %v", tool.name, err)
 			continue
 		}
