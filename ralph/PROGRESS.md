@@ -2556,3 +2556,99 @@ each `start_commands` entry is a warning, and the check must never hardcode `cla
   the assertion became positional — the mutation that changed the test); the `event.detail` guard
   deleted (red on the keyboard clause); and the anchor's `href` replaced by `data-card-open` in
   `session-card.html` (red on both markup clauses — the destination and the one-hook count).
+
+## Iteration 29 — 2026-08-07 08:50
+
+**Did:** T029. New `internal/config/depcheck.go`: `Config.CheckDependencies(warn)` probes `tmux` via
+`exec.LookPath` and **refuses** when it is absent, then probes the first word of every entry in
+`Config.StartCommands` and **warns** for each one that is missing, naming the command, the binary,
+and the file (`start_commands in <path>`) or the variable (`CRSW_START_COMMAND(S)`) that set it.
+Called from `run()` in `cmd/crswd/main.go` after `loadConfig` and before `newDaemon`. Tests:
+`depcheck_test.go` carries the contract's four plus `TestMessageNamesConfigFile`; the acceptance case
+`TestQuickstartRefusesWithoutTmux` is behind `-tags quickstart`. No install command yet — that is
+T030, which owns `/etc/os-release`, and the refusal is one sentence until then.
+
+**Learned:**
+
+- **The acceptance case passed with the call deleted from `main.go`, and that is the whole lesson of
+  this task.** A daemon with no dependency check *also* exits non-zero on a host without tmux: it
+  gets as far as `Reconcile`, which shells out, and prints `reconcile with the host: tmux
+  list-sessions: exec: "tmux": executable file not found in $PATH` — which contains the word `tmux`,
+  which was what the first draft asserted. The test now asserts the probe's **own** sentence
+  (`cannot manage a session without it`) *and* that the output does **not** contain `reconcile`,
+  which is what makes it a test of ordering rather than of exit codes. **Any future test that a
+  startup check is wired must assert the check's own words** — every startup failure in this daemon
+  exits 1 and most of them name the thing that failed.
+- **`PATH` is overridable through the quickstart harness's `over` map** (`h.env`, quickstart_test.go
+  :299), so `{"PATH": h.shimDir}` describes a host with the `claude` stand-in and no tmux at all.
+  That is cheaper than any fake and is the only way to exercise a missing-binary start from outside.
+- **The unit tests inject the probe rather than emptying `PATH`.** The seam is
+  `config.CheckDependenciesWith` in `export_test.go` (the file's fourth entry now), because `PATH` is
+  one variable shared by the whole test binary: a case that cleared it could not run in parallel and
+  would be one `os.Setenv` away from probing the real host instead of the described one.
+- **`Config.StartCommands` always carries `default`**, so a test fixture with one named entry is
+  really two probes, and a check that hardcoded `claude` would find the *default* present on a host
+  that has Claude and say nothing about the configured `frobnicate` — which is why
+  `TestChecksConfiguredCommandNotClaude` installs `claude` in its fake host. Asserting "warns about
+  something" would have passed the hardcoded version.
+- **The contract lists `TestMessageNamesConfigFile` and no task owns it** — T029 lists four tests,
+  T030 lists three, and this is the eighth. It is implemented here because this is the task that
+  writes the message; T030 should not add it a second time.
+- **`Config.FilePath` is the only thing the message can name**, and it is the file that was *read*,
+  which after a backup recovery is `config.bak`. That is the right answer — it is the file whose
+  values are in effect — but the sentence tells an operator to correct a file they did not write.
+  Not fixed here; it is one clause in a warning and the backup banner above it already says so.
+
+**Left:** T030–T035. Next is **T030** (same file): derive the install command from `/etc/os-release`
+and `runtime.GOOS` per `contracts/dependency-check.md`'s table, falling back to `install tmux using
+your platform's package manager`, and add it to the tmux refusal — the worked example there is three
+lines and this iteration shipped one of them.
+
+**Findings:**
+
+- **The `config check` subcommand does not probe anything** (`cmd/crswd/config_cmd.go`). An operator
+  running `crswd config check` on a host is asking whether this configuration works there, and the
+  answer today says nothing about whether the commands it names exist. Not T029's scope — the task
+  says *startup* probes — but it is the obvious second caller and no task owns it.
+- **The warning is per configured name, so one missing binary shared by five names is fifteen lines.**
+  Deliberate (the operator wants to know which sessions will fail) but worth revisiting if a fleet
+  ever configures that many.
+- **A start command with a leading environment assignment (`FOO=bar claude`) probes `FOO=bar`** and
+  warns about a binary that does not exist. Honest rather than wrong — `LookPath` is what the daemon
+  would do — but the warning would confuse. No task owns it; nothing in this repo configures one.
+- **Renaming from the session page with scripting on still leaves the card above showing the old
+  name** (27-29). **Every action still redirects to the fleet** (19-29). **The `aria-describedby` on
+  the card's link is still redundant** (26-29). **Nothing posts to
+  `/dashboard/sessions/{id}/mode`** (19-29) — eleventh iteration carrying it, and still the finding
+  most likely to end the milestone with a feature the operator cannot use.
+- **`docs/components.md:14`'s "draws rain, reads panes and follows the fleet stream"** is still four
+  behaviours short (28-29), and its action table still says the rename answers "`200` and the renamed
+  card" — stale for all four rows since T014. T035 owns the doc sweep.
+- **Still open from iterations 5-28:** the three red `-tags quickstart` tests
+  (`TestDashboardQuickstartStory1Adopted`, `TestQuickstartStory4Restart`, `TestQuickstartStory5Cap` —
+  `CRSW_DESTROY_ON_SHUTDOWN` has no loader, so sessions outlive a shutdown the tests predate);
+  `.fleet-note:empty { display: none }` against the accessibility floor; nothing rendering a
+  directory suggestion in the shipped default and the walk's silent cap;
+  `contracts/directory-picker.md`'s `name="workdir"`; `contracts/settings-page.md`'s 405 row and its
+  worked example; three `ReadFile` refusals missing from `contracts/config-file.md`; the `version < 1`
+  row; "exactly eight keys" against nine; a dangling symlink reading as absent; `f.values` having no
+  enumerator; `os.Open` on a FIFO blocking startup; `--config <path>` unbuilt; `README.md` and
+  `deploy/README.md` silent on the config file (T034/T035); the misnamed `Test*AndAnswersWithItsCard`
+  pair; the unsynchronised `s.report` in `newAuditedServerWith`; the two `TestParseSessions` fixtures
+  passing for the wrong reason; `contracts/tmuxctl.md` stale by three fields; `contracts/actions.md`
+  stale in nine places; `contracts/card-layout.md` naming three tests this milestone has no task for;
+  the NEEDS CLARIFICATION from iteration 20 about a start command that ignores SIGINT.
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean; `go build`, `go vet`, `go test -count=1 ./...` all green; `go vet` green under `-tags tmux`,
+  `-tags quickstart` and `-tags dev`; `go test -tags dev ./cmd/crswd ./internal/access
+  ./internal/config` green; `go.sum` still absent. This task touches `cmd/crswd`, so the **whole**
+  `-tags quickstart` suite was run: the same three known-red tests and nothing else, with the new
+  case green. No tmux code was touched, so `-tags tmux` was vetted rather than run. Six mutations
+  were run and reverted by reverse `Edit`: the tmux refusal replaced by a warning (red on
+  `TestMissingTmuxRefusesToStart`); `binary := "claude"` (red on
+  `TestChecksConfiguredCommandNotClaude` and on `TestProbesFirstWordOnly`'s absolute-path case);
+  `binary := command` (red on all four `TestProbesFirstWordOnly` cases); the start-command warning
+  promoted to a refusal (red on three tests); the file-path branch deleted from the message (red on
+  `TestMessageNamesConfigFile`); and the `CheckDependencies` call deleted from `main.go` (**green**
+  against the first draft's `Contains("tmux")`, red once the assertion became the probe's own
+  sentence plus the absence of `reconcile` — the mutation that changed the test).
