@@ -217,12 +217,15 @@ Audit records are structured JSON on stdout, which makes the journal the entire
 storage design — no file mode, no rotation, no disk to fill.
 
 ```bash
-journalctl --user -u crswd -f -o cat | jq .
-journalctl --user -u crswd -o cat | jq 'select(.action == "auth.reject")'
+journalctl --user -u crswd -f -o cat -t crswd | jq .
+journalctl --user -u crswd -o cat -t crswd | jq 'select(.action == "auth.reject")'
 ```
 
-`-o cat` is what makes this work: it prints the message alone, without the syslog
-prefix systemd would otherwise put in front of the JSON. No record carries prompt
+`-o cat` prints the message alone, without the syslog prefix systemd would
+otherwise put in front of the JSON. `-t crswd` is the other half and just as
+load-bearing: `-u crswd` alone selects everything in the unit's cgroup, so
+systemd's own `Started…`/`Stopped…` lines and any helper's syslog output arrive
+in the same stream and `jq` aborts on the first one. No record carries prompt
 text, pane output, a token, a token hash, or the shared secret — `internal/audit`
 asserts that across every operation, so the journal is safe to read in a way a
 pane never is.

@@ -29,9 +29,23 @@ ExecStart=%h/bin/crswd
 # trail is kept. Stated rather than inherited from a distro default, because
 # "what happened" depends on it:
 #
-#   journalctl --user -u crswd -o cat | jq .
+#   journalctl --user -u crswd -o cat -t crswd | jq .
+#
+# `-t crswd` is not decoration. `-u crswd` selects everything in the unit's
+# cgroup, so systemd's own lifecycle lines ("Started…", "Stopped…", the CPU-time
+# summary) and anything a session's helpers send to syslog land in the same
+# stream — none of it JSON, and `jq` aborts on the first one. Any deployment
+# that has ever been restarted has them, so the unfiltered pipe never worked
+# twice. `-t` selects by syslog identifier instead, which is the daemon's own
+# messages and nothing else; filtering by shape (`grep '^{'`) would instead
+# silently drop a malformed audit record, which is the one line worth seeing.
+#
+# SyslogIdentifier= is set rather than left to systemd, which would otherwise
+# infer it from the ExecStart basename — the same string today, but by accident,
+# and the documented command breaks quietly if that path is ever renamed.
 StandardOutput=journal
 StandardError=journal
+SyslogIdentifier=crswd
 
 # Four values come from a file OUTSIDE the repo, mode 0600, written at deploy
 # time. EnvironmentFile parses NAME=value lines, so write the assignments and not
@@ -158,6 +172,20 @@ ProtectSystem=full
 #                        tmux and Claude Code write to has to be handed back one
 #                        at a time with ReadWritePaths — a list that fails at run
 #                        time, in a pane, rather than at install time.
+#
+# One visible consequence of the two settings above, so that finding it in the
+# journal does not start a hunt. `utempter` is a setgid-`utmp` helper tmux runs
+# to record a login; NoNewPrivileges and RestrictSUIDSGID stop the setgid bit
+# taking effect, so it runs unprivileged, cannot write /run/utmp, and logs
+#
+#   [ppid=NNNN] pututline: Permission denied
+#
+# on every session create. The effect is cosmetic: sessions do not appear in
+# `who` or `w`. Nothing here reads utmp — the account of what happened is the
+# JSON audit trail, not a login record. This is expected and the hardening
+# stays. Adding the invoking user to group `utmp` is not the fix either: on a
+# containerized host supplementary groups map to 65534 and /run/utmp is owned
+# nobody:nogroup, so it changes nothing.
 
 [Install]
 WantedBy=default.target

@@ -31,6 +31,7 @@ const (
 	unitPath        = "../../deploy/crswd.example.service"
 	cloudflaredPath = "../../deploy/cloudflared.example.yml"
 	readmePath      = "../../deploy/README.md"
+	rootReadmePath  = "../../README.md"
 
 	// envFilePath is the file the README's recipe writes and the unit's
 	// EnvironmentFile reads. It identifies the recipe among the README's other
@@ -279,6 +280,52 @@ func TestUnitInlineValuesAreTheDaemonDefaults(t *testing.T) {
 	// default root spelled the only way a unit file can spell it.
 	if roots, want := set[config.EnvAllowedRoots], "%h/"+config.DefaultRootName; roots != want {
 		t.Errorf("%s sets %s=%s, want %s to match the built-in default root", unitPath, config.EnvAllowedRoots, roots, want)
+	}
+}
+
+// auditPipe matches a documented `journalctl … | jq …` recipe, which is the
+// audit trail being read, as distinct from prose that merely names the tool. The
+// first alternation stops at the pipe so a command with several of them — the
+// `| sort | uniq -c` histogram — is still one match starting at journalctl.
+var auditPipe = regexp.MustCompile(`journalctl[^\n|]*\|[^\n]*\bjq\b`)
+
+// TestDocumentedAuditCommandsSelectOnlyTheDaemon holds every published reading of
+// the audit trail to a filter that can actually survive one.
+//
+// `-u crswd` selects the unit's whole cgroup: systemd's own lifecycle lines, the
+// CPU-time summary it prints on stop, and anything a session's helpers send to
+// syslog. None of it is JSON, jq exits on the first one, and every deployment
+// that has ever restarted has them — so the command shipped in three files was
+// broken for everyone and worked in review because a first-boot journal has
+// nothing in it but records (#88). `-t` selects by syslog identifier instead,
+// which is why the unit sets SyslogIdentifier= rather than letting systemd infer
+// one from the ExecStart basename: an inferred identifier is not a promise the
+// docs can be written against.
+func TestDocumentedAuditCommandsSelectOnlyTheDaemon(t *testing.T) {
+	t.Parallel()
+
+	identifiers := unitSettings(t)["SyslogIdentifier"]
+	if len(identifiers) != 1 {
+		t.Fatalf("%s sets SyslogIdentifier %d times, want exactly one: without it `-t` selects on a string systemd infers, and the documented commands have nothing to be correct against", unitPath, len(identifiers))
+	}
+	want := "-t " + identifiers[0]
+
+	for _, path := range []string{unitPath, readmePath, rootReadmePath} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+
+		commands := auditPipe.FindAllString(string(raw), -1)
+		if len(commands) == 0 {
+			t.Errorf("%s documents no `journalctl … | jq` command; this file is meant to carry one and the test is not checking it", path)
+			continue
+		}
+		for _, cmd := range commands {
+			if !strings.Contains(cmd, want) {
+				t.Errorf("%s documents %q, which lacks %q: it selects the unit's whole cgroup, so systemd's own lines reach jq and the operator's first read of the audit trail fails", path, cmd, want)
+			}
+		}
 	}
 }
 

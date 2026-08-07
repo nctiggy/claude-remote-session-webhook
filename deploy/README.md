@@ -157,13 +157,23 @@ Audit records are structured JSON on stdout, so systemd's journal is the whole
 storage design — there is no file mode, no rotation, and no disk to fill.
 
 ```bash
-journalctl --user -u crswd -f -o cat | jq .          # follow, one record per line
-journalctl --user -u crswd -o cat | jq 'select(.action == "auth.reject")'
-journalctl --user -u crswd --since "1 hour ago" -o cat | jq -r '.action' | sort | uniq -c
+journalctl --user -u crswd -f -o cat -t crswd | jq .   # follow, one record per line
+journalctl --user -u crswd -o cat -t crswd | jq 'select(.action == "auth.reject")'
+journalctl --user -u crswd --since "1 hour ago" -o cat -t crswd | jq -r '.action' | sort | uniq -c
 ```
 
-`-o cat` is what makes this work: it prints the message alone, without the syslog
-prefix systemd would otherwise put in front of the JSON.
+Both flags are load-bearing. `-o cat` prints the message alone, without the
+syslog prefix systemd would otherwise put in front of the JSON. `-t crswd`
+selects the daemon's own messages by syslog identifier — `-u crswd` on its own
+selects everything in the unit's cgroup, which is systemd's `Started…`,
+`Stopped…` and CPU-time lines plus anything a session's helpers send to syslog,
+none of it JSON and every one of them enough to abort `jq`. Any deployment that
+has been restarted has them.
+
+The daemon's own stderr shares that identifier, so a last-resort diagnostic will
+still stop `jq`. There is exactly one shape of those and it is prefixed
+`crswd: ` — a line worth stopping on. Filtering by shape instead (`grep '^{'`)
+would hide it, and would hide a malformed audit record with it.
 
 No record carries prompt text, pane output, a token, a token hash, or the shared
 secret — `internal/audit/leak_test.go` asserts that across every operation. The

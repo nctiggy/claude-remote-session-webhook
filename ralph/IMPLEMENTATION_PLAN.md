@@ -64,7 +64,7 @@ Milestones 1 through 3 are **live**, not merely built. Changes here land on a de
 | Public | `https://crswd.craigcloud.io` via the `crswd` Cloudflare Tunnel |
 | Edge | Access app `CRSWD Session Control`, two policies — Google identity, and Service Auth for the API client |
 | Daemon | Validates the Access assertion itself; the dashboard reads, streams, and **acts** |
-| Audit | `journalctl --user -u crswd -o cat \| jq .` |
+| Audit | `journalctl --user -u crswd -o cat -t crswd \| jq .` |
 | Secrets | `op://Lobster/crswd/{shared-secret,access-client-id,access-client-secret}` |
 
 **Sessions now survive a daemon restart with their metadata**, which is what makes a
