@@ -3151,3 +3151,106 @@ check; assert `go.sum` is still absent). It is the last task in the plan.
   check, twice); a second `# listen = ...` line (red on exactly-once — while `# For example, listen =
   ... moves the port.` inside a sentence is correctly *not* a second occurrence); and `parseFile`
   splitting on the last `=` (red on the `start_commands` line alone).
+
+---
+
+## Iteration 35 — 2026-08-07 10:30
+
+**Did:** T035, the last task in the plan. `README.md` said the daemon is configured "**only** by the
+environment" and that "there are no flags and no config file" — false since T007 — so the
+Configuration section now carries the file, where it lives, its three grammar rules, the precedence
+order, the 0600 rule, the two `config` subcommands, `/settings`, and the dependency probes. Its
+variable table had drifted to eight rows against `config.go`'s twenty and is now complete and pinned.
+`docs/security.md` gains the file's secret rules under §3, the probe's fatal/warning split under §4,
+`go.sum` under §5, and a new "Configuration, and the page that shows it" section; `docs/components.md`
+records that the settings page introduces no component and carries none of the three things an
+actionable page carries; `deploy/README.md` gains the file as an alternative to `EnvironmentFile`.
+New `internal/config/docs_test.go`: `TestNoDependencies` (SC-012) and
+`TestREADMEDocumentsEveryVariable`.
+
+**Learned:**
+
+- **SC-012 was asserted only behind `-tags quickstart`, which CI does not run.**
+  `TestQuickstartNoDependencies` has checked `go.sum` since milestone 1, in the one suite that has
+  been red on three unrelated tests since iteration 5 and that `go test ./...` never reaches. An
+  assertion nothing runs has stopped being made, so the check now lives in the default build too.
+  Both halves matter: `go.sum` absent alone is also true of a repo one `go mod download` away from
+  having one, so the `require` block is checked as well.
+- **The README pin is keyed on the *first cell* of a table row, and both restrictions are
+  load-bearing.** Not every name on the line, because a row describes one variable in terms of
+  others — `CRSW_IDLE_TIMEOUT_MAX`'s default *is* `CRSW_IDLE_TIMEOUT` — and a variable with no row
+  of its own would pass on a mention in someone else's. Not the whole file, because the prose names
+  `CRSW_CONFIG_FILE`, which `file.go` reads and `config.go` does not declare: it points *at* the file
+  rather than being a setting *in* one, so it has no row, and a scan of the prose would report it as
+  invented. `declaredVars` comes from `envexample_test.go` (same test package) so the AST walk is
+  shared with the `.env.example` and unit-file pins.
+- **`deploy/README.md` and `config.go` both said the three `CRSW_ACCESS_*` values are required, and
+  `validateAccessGroup` says all-three-or-none.** Zero of three is a supported deployment — the API
+  works, the dashboard admits nobody, and `warnNoIdentityProvider` says so in a banner at every start
+  — while *some* of three refuses. The deploy README is fixed (it needs all three because it has a
+  dashboard, which is a property of that deployment and not of the daemon); the `config.go` comment
+  is Go source outside this task's named files and is logged below.
+- **Three README claims besides the config file had gone stale**, which is what a docs sweep is for:
+  the status blurb stopped at milestone 2, the roadmap called milestone 4 the login relay, and "three
+  limits are constants in the code, not variables" was two-thirds wrong — `CRSW_SESSION_LIFETIME` and
+  `CRSW_IDLE_TIMEOUT` became settings with #37 and only the 300s signing window is still a constant.
+  `docs/auth-and-sessions.md`'s "Relaying Claude's own login (milestone 4)" heading was retitled for
+  the same reason: leaving it would have contradicted the roadmap this iteration corrected.
+
+**Left:** Nothing in the plan — every task T001–T035 is checked. What is *not* in the plan is in the
+findings below, and the two an operator would notice first are the mode POST nothing submits to and
+the three red `-tags quickstart` tests.
+
+**Findings:**
+
+- **`internal/config/config.go:84-86` says the Access trio is "Required, and fatal when absent",
+  and `validateAccessGroup` (config.go:1351) returns nil on zero of three.** The comment describes a
+  daemon that refuses; the code warns loudly and serves the API. It is a stale comment on the exact
+  question an operator asks when their dashboard admits nobody. Not fixed here: `docs/` and
+  `README.md` are this task's named files and AR-008 forbids the wander.
+- **`config.example` documents `destroy_on_shutdown` as a key this build does not read**, and the
+  README's new row says the same. Both sentences are honest today and both should be deleted the
+  moment the loader grows its case — it is the same missing loader as the three red `-tags
+  quickstart` tests.
+- **`contracts/config-file.md`'s worked example still spells `allowed_roots` with commas** while the
+  loader splits on `:` (34), and **`idle_timeout = 0` does not disable idle reaping though
+  `validateLifetimes`'s message says it does** (34).
+- **Nothing posts to `/dashboard/sessions/{id}/mode`** (19-34) — seventeenth iteration carrying it,
+  and the milestone ends with it: T019 built the route and T021 shows the mode on the card, but no
+  template renders a form that submits to it, so the operator cannot use the switch from a browser.
+  This is the one finding worth reading before calling milestone 4 shippable.
+- **Renaming from the session page with scripting on still leaves the card above showing the old
+  name** (27-34). **Every action still redirects to the fleet** (19-34). **The `aria-describedby` on
+  the card's link is still redundant** (26-34). **`crswd config check` still probes nothing** (29-34).
+  **A start command with a leading environment assignment (`FOO=bar claude`) probes `FOO=bar`**
+  (29-34). **The store-directory mapping is verified for `/` only** (31-34). **The conversation offer
+  is dark unless `CRSW_DISCOVER_ROOTS` is on** (32-34). **`docs/components.md:14`** is still four
+  behaviours short (28-34) — this iteration added a settings-page section to that file and did not
+  touch line 14, which is a different claim about `crswd.js`. **`internal/httpapi/stream.go:180-196`
+  states a second, looser bound** whose comment is stale by one sentence (33).
+- **Still open from iterations 5-34:** the three red `-tags quickstart` tests
+  (`TestDashboardQuickstartStory1Adopted`, `TestQuickstartStory4Restart`, `TestQuickstartStory5Cap` —
+  `CRSW_DESTROY_ON_SHUTDOWN` has no loader); `.fleet-note:empty { display: none }` against the
+  accessibility floor; nothing rendering a directory suggestion in the shipped default and the walk's
+  silent cap; `contracts/directory-picker.md`'s `name="workdir"`; `contracts/settings-page.md`'s 405
+  row and its worked example; three `ReadFile` refusals missing from `contracts/config-file.md`; the
+  `version < 1` row; "exactly eight keys" against ten now; a dangling symlink reading as absent;
+  `f.values` having no enumerator; `os.Open` on a FIFO blocking startup; `--config <path>` unbuilt; a
+  refused capture reading to the operator as "not just now" (33); the misnamed
+  `Test*AndAnswersWithItsCard` pair; the unsynchronised `s.report` in `newAuditedServerWith`; the two
+  `TestParseSessions` fixtures passing for the wrong reason; `contracts/tmuxctl.md` stale by four
+  fields; `contracts/actions.md` stale in nine places and with no `resume` row;
+  `contracts/card-layout.md` naming three tests this milestone has no task for; the NEEDS
+  CLARIFICATION from iteration 20 about a start command that ignores SIGINT.
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean; `go build`, `go vet`, `go test -count=1 ./...` all green; `go vet` green under `-tags tmux`,
+  `-tags quickstart` and `-tags dev`; `go test -tags dev ./...` green; `go.sum` still absent. `go test
+  -tags quickstart ./cmd/crswd` fails on exactly the three tests iterations 5-34 recorded and nothing
+  else. Four mutations were run and reverted: an empty `go.sum` created at the root (red — the task's
+  "must fail when"); a `require` block appended to `go.mod` with no `go.sum` beside it (red, which is
+  the half `go.sum` alone would miss); `CRSW_PANE_BOUND`'s row replaced by an invented
+  `CRSW_INVENTED_BOUND` (red in **both** directions at once — a bound the operator never learns they
+  have, and a setting they would set and never see take effect); and a second `CRSW_MAX_STREAMS` row
+  (red on the two-rows check, which is what stops a table growing a contradiction).
+
+RALPH_COMPLETE
