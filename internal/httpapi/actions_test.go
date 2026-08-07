@@ -4116,6 +4116,16 @@ type attempt struct {
 	site      string
 	token     string
 	id        string
+
+	// smuggled is anything a caller put in the form beyond what the route asks
+	// for, merged over the route's own fields (T016). It is how a case poses the
+	// question FR-022 answers — the caller wrote something, and the outcome must
+	// still be the daemon's — and it can overwrite one of the route's fields,
+	// which is what a caller filling in a field the handler really reads does.
+	//
+	// Nil for every refusal case below: what those vary is who the caller is, not
+	// what they typed.
+	smuggled url.Values
 }
 
 // wellFormed is the attempt every case varies from — everything the door asks
@@ -4140,6 +4150,10 @@ func (r *refuser) send(t *testing.T, route mutatingRoute, a attempt) *httptest.R
 	t.Helper()
 
 	form := route.fields(t, r)
+	// After the route's own fields, so a case can put a caller's text in one of
+	// them, and before the token, which the attempt owns: a form field must never
+	// be able to reach past the gate by naming what the gate reads.
+	maps.Copy(form, a.smuggled)
 	if a.token != absent {
 		form.Set(fieldPageToken, a.token)
 	}
@@ -4156,6 +4170,23 @@ func (r *refuser) send(t *testing.T, route mutatingRoute, a attempt) *httptest.R
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	return w
+}
+
+// callerText is a field a route really reads, filled with words the caller
+// chose, and what the fleet says about the request that carried them (T016).
+//
+// It is the FR-022 case with teeth. A field no handler reads could only reach a
+// page by being echoed on purpose; this text is already in the handler's hand at
+// the instant it picks an outcome, which is where "the outcome is built from
+// caller-supplied text" would actually be written.
+type callerText struct {
+	field string
+
+	// yields is the code the route chooses for it, and states is the sentence
+	// the fleet renders — the daemon's own words about a refusal the caller's
+	// text caused, carrying none of that text (FR-042).
+	yields outcome
+	states string
 }
 
 // mutatingRoute is one of the four routes contracts/actions.md registers, in the
@@ -4184,9 +4215,27 @@ type mutatingRoute struct {
 	// succeeds is the code the route redirects with when nothing refuses it —
 	// the non-vacuity every case below rests on.
 	succeeds outcome
+
+	// states is the sentence the fleet renders for that code (T016), quoted from
+	// outcome.go's map rather than read out of it — the discipline every literal
+	// in this file follows. It is a fact about the route rather than about either
+	// test, which is why it sits here beside the code it is the words for.
+	states string
+
+	// chosen is a field this route reads and what a caller writing their own
+	// words into it is told (T016). The compact carries none, and that is FR-016
+	// rather than a gap: it reads no field at all, so there is nothing on it for
+	// a caller to fill in.
+	chosen callerText
 }
 
 func mutatingRoutes() []mutatingRoute {
+	// The sentence a refused name is answered with, on the create and the rename
+	// alike — one sentence for both, which the redirect earned (outcome.go). It
+	// is written once here because two rows state it, not because the code shares
+	// a constant: what these rows quote is contracts/actions.md's copy.
+	const refusedName = "That is not a usable session name. Use letters, digits and hyphens, up to 64 characters. Nothing was changed."
+
 	return []mutatingRoute{
 		{
 			name:          "POST /dashboard/sessions/{id}/destroy",
@@ -4200,6 +4249,14 @@ func mutatingRoutes() []mutatingRoute {
 				return form
 			},
 			succeeds: wantDestroyedOutcome,
+			states:   "Session destroyed. The host confirmed its window is gone.",
+			// The confirming step is the one value this route reads, and anything
+			// that is not `yes` is a destroy that did not happen (FR-029).
+			chosen: callerText{
+				field:  fieldConfirm,
+				yields: wantUnconfirmedOutcome,
+				states: "This destroy was not confirmed, so nothing was torn down.",
+			},
 		},
 		{
 			name:          "POST /dashboard/sessions",
@@ -4214,6 +4271,12 @@ func mutatingRoutes() []mutatingRoute {
 				return form
 			},
 			succeeds: wantCreatedOutcome,
+			states:   "Session started. Its card is on the fleet below.",
+			chosen: callerText{
+				field:  fieldName,
+				yields: wantCreateBadNameOutcome,
+				states: refusedName,
+			},
 		},
 		{
 			name:          "POST /dashboard/sessions/{id}/rename",
@@ -4227,6 +4290,12 @@ func mutatingRoutes() []mutatingRoute {
 				return form
 			},
 			succeeds: wantRenamedOutcome,
+			states:   "Session renamed.",
+			chosen: callerText{
+				field:  fieldName,
+				yields: wantRenameBadNameOutcome,
+				states: refusedName,
+			},
 		},
 		{
 			name:          "POST /dashboard/sessions/{id}/compact",
@@ -4237,6 +4306,9 @@ func mutatingRoutes() []mutatingRoute {
 			// caller to choose.
 			fields:   func(*testing.T, *refuser) url.Values { return url.Values{} },
 			succeeds: wantCompactedOutcome,
+			states:   "Compact delivered. The session decides what to do with it.",
+			// No chosen field, for the reason there are no fields: a route that
+			// reads nothing cannot be told anything.
 		},
 	}
 }
@@ -4450,6 +4522,218 @@ func TestRefusalIsNotARedirect(t *testing.T) {
 
 				r := newRefuser(t)
 				wantOutcome(t, r.send(t, route, r.wellFormed(t, r.mine(t).ID)), route.succeeds)
+			})
+		})
+	}
+}
+
+// --- US3: all four actions with no script at all (T016) ---------------------
+//
+// SC-006, per action, and the claim US3 exists for. T014 made every action
+// answer a 303 and T015 fixed what deliberately does not; neither follows the
+// redirect, and the operator this story is about is the one who does. Without a
+// script that is the whole interaction: a form post, and the GET the browser
+// makes of the Location it was handed. Milestone 3 answered the first half
+// correctly and left that operator on a bare `<p>` with no page around it, which
+// is a defect only a test that makes the second request can see.
+//
+// No audit assertion in this section, deliberately, and not because there is
+// nothing to say: the four per-route tests above each count their action's
+// record while it is still the only one. Following a redirect is a second
+// request and leaves a dashboard.view of its own, so a count taken here would
+// either have to run before the page is opened — where it duplicates theirs — or
+// be a count of two requests, which is not what FR-041 claims about either.
+
+// withoutScript is the four registered routes driven the way a browser with no
+// script drives them: the post refuser already builds, and then the GET of
+// whatever Location came back.
+//
+// It embeds that fixture rather than replacing it because what varies here is
+// still the route — the thing refuser and mutatingRoutes exist for — and a
+// fixture of this section's own would be a second way to build the one request
+// these four doors take. What it adds is the second half of the interaction,
+// which is the half US3 is about.
+type withoutScript struct{ *refuser }
+
+// wholePage is what tells the page an action returns to from the fragment
+// milestone 3 answered with.
+//
+// The first two are the document itself, which a fragment has none of. The third
+// is the fleet's own shell, so a page that is *some* whole page — the not-found,
+// a refusal — does not pass. The fourth is the one that makes "usable" more than
+// "renders": the create form is on it, carrying a freshly minted token, so the
+// operator who just acted can act again without going anywhere. That is the
+// difference between landing somewhere sensible and landing somewhere.
+var wholePage = []string{
+	"<!doctype html>",
+	`<html lang="en">`,
+	`<main class="shell"`,
+	`<form class="create-form"`,
+}
+
+// callerSentence is what a caller writes into a form when the thing they are
+// attacking is the page rather than the host: a claim about this daemon, wrapped
+// in markup, addressed to the one operator who trusts this page about their own
+// machine.
+const callerSentence = `<em>the daemon says your key is exposed</em>`
+
+// callerFragments is every shape of it a page must not carry. The escaped forms
+// are named because escaping is not the claim — html/template would render a
+// reflected value harmlessly, and a harmless lie on this page is still a lie
+// this daemon told.
+var callerFragments = []string{
+	callerSentence,
+	"the daemon says your key is exposed",
+	"<em",
+	"&lt;em",
+}
+
+// follows is the browser doing what the 303 told it to, with nothing running on
+// the page: it re-issues the Location as a GET and reads what comes back.
+//
+// The address comes off the response's own header rather than being rebuilt
+// here. A URL this test composed would prove that the fleet renders a code the
+// test chose; what is under test is that it renders the one the daemon wrote.
+//
+// It carries the edge's assertion and no Sec-Fetch-Site, which is what a
+// navigation is: the cross-site check guards the actions, and a GET of the fleet
+// that demanded it would refuse every operator who followed a link to it.
+func (s withoutScript) follows(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+
+	to := w.Header().Get(headerLocation)
+	if to == "" {
+		t.Fatalf("the action answered %d with no %s; a browser with no script has nowhere to go from here",
+			w.Code, headerLocation)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, to, nil)
+	r.Header.Set(headerAccessAssertion, s.keys.mint(t, s.keys.claims()))
+
+	landed := httptest.NewRecorder()
+	s.ServeHTTP(landed, r)
+	if landed.Code != http.StatusOK {
+		t.Fatalf("following %s to %q = %d (%s); want %d — an action that redirects somewhere unusable is the defect US3 is about",
+			headerLocation, to, landed.Code, landed.Body.String(), http.StatusOK)
+	}
+	return landed.Body.String()
+}
+
+// states asserts the sentence the page an operator landed on is carrying.
+func statesOutcome(t *testing.T, page, want string) {
+	t.Helper()
+
+	if got := bannerOn(page); got != want {
+		t.Errorf("the page states\n%q\nwant outcome.go's own\n%q\nfull page:\n%s", got, want, page)
+	}
+}
+
+// carriesNothingOfTheCallers is FR-022 read at the far end: whatever the caller
+// wrote, none of it is on the page they were sent to.
+func carriesNothingOfTheCallers(t *testing.T, page string) {
+	t.Helper()
+
+	for _, fragment := range callerFragments {
+		if strings.Contains(page, fragment) {
+			t.Errorf("the page carries %q, which the caller wrote — an outcome is chosen from a fixed set by the daemon and never built from what arrived (FR-022):\n%s",
+				fragment, page)
+		}
+	}
+}
+
+// TestAllFourActionsUsableWithoutScript is SC-006 and FR-021 together, for each
+// of create, destroy, rename and compact: the action answers 303, and the page
+// the browser then asks for is a whole, usable fleet stating what happened in
+// words from outcome.go's fixed vocabulary.
+//
+// **Must fail when** an outcome is built from caller-supplied text (FR-022). It
+// fails three ways, because there are three ways to write that defect. A handler
+// that redirected with a field it reads — `outcome(r.PostForm.Get(fieldName))` is
+// the whole of it — sends a code no vocabulary spells, and the fleet renders no
+// banner at all: the first case sees a page that says nothing happened. A handler
+// that let the caller name the code outright is the second case, which sends a
+// *real* code the route did not choose and would land an operator on an alarm
+// about a teardown nobody attempted. And a refusal that quoted the text it
+// refused is the third, which is the one a well-meaning hand actually writes —
+// "that name is not usable" reads better with the name in it, and it is caller
+// text on its way back out through a page (FR-042).
+//
+// It must also fail when the answer stops being a page. Following the redirect is
+// what makes that visible: milestone 3's four routes answered exactly one request
+// each, correctly, and the operator with no script was left on a fragment — so a
+// test that stopped at the 303 would have passed against the defect this story
+// was written for.
+func TestAllFourActionsUsableWithoutScript(t *testing.T) {
+	t.Parallel()
+
+	for _, route := range mutatingRoutes() {
+		t.Run(route.name, func(t *testing.T) {
+			t.Parallel()
+
+			t.Run("it lands the browser on a whole page that says what happened", func(t *testing.T) {
+				t.Parallel()
+
+				s := withoutScript{newRefuser(t)}
+				w := s.send(t, route, s.wellFormed(t, s.mine(t).ID))
+
+				wantOutcome(t, w, route.succeeds)
+
+				page := s.follows(t, w)
+				for _, mark := range wholePage {
+					if !strings.Contains(page, mark) {
+						t.Errorf("the page carries no %s, so this is not a fleet an operator can act from again:\n%s", mark, page)
+					}
+				}
+				statesOutcome(t, page, route.states)
+			})
+
+			t.Run("nothing the caller sent decides what the page says", func(t *testing.T) {
+				t.Parallel()
+
+				s := withoutScript{newRefuser(t)}
+				a := s.wellFormed(t, s.mine(t).ID)
+				// Three fields no route reads, and the first is the attack proper: a
+				// code that really is in the vocabulary, so a handler taking the
+				// outcome from the form would not merely render nothing — it would
+				// tell this operator a shell may have survived a destroy they never
+				// asked for.
+				a.smuggled = url.Values{
+					queryOutcome: []string{string(outcomeTeardownUnverified)},
+					"message":    []string{callerSentence},
+					"banner":     []string{callerSentence},
+				}
+				w := s.send(t, route, a)
+
+				wantOutcome(t, w, route.succeeds)
+
+				page := s.follows(t, w)
+				statesOutcome(t, page, route.states)
+				if strings.Contains(page, outcomeAlarmClass) {
+					t.Errorf("a form field named the alarming outcome and the page rendered it:\n%s", page)
+				}
+				carriesNothingOfTheCallers(t, page)
+			})
+
+			// The compact reads no field, so there is nothing on it to fill in —
+			// see mutatingRoute.chosen. Skipping it is the absence of a case rather
+			// than a case that does not apply.
+			if route.chosen.field == "" {
+				return
+			}
+
+			t.Run("a refusal the caller's own words caused is stated in the daemon's", func(t *testing.T) {
+				t.Parallel()
+
+				s := withoutScript{newRefuser(t)}
+				a := s.wellFormed(t, s.mine(t).ID)
+				a.smuggled = url.Values{route.chosen.field: []string{callerSentence}}
+				w := s.send(t, route, a)
+
+				wantOutcome(t, w, route.chosen.yields)
+
+				page := s.follows(t, w)
+				statesOutcome(t, page, route.chosen.states)
+				carriesNothingOfTheCallers(t, page)
 			})
 		})
 	}
