@@ -929,6 +929,10 @@
       return paths;
     };
 
+    // Which option the keyboard is on, as a position in the list that is drawn
+    // right now: -1 is none, which is what every filter starts at.
+    let active = -1;
+
     /*
      * The listbox, rebuilt from what matches. textContent and never innerHTML:
      * a suggestion is a directory name off a filesystem walk, so it is a string
@@ -941,16 +945,31 @@
      * empty box under the field reads as a control that has broken, and a
      * combobox claiming to be expanded over no options is that same lie told
      * twice.
+     *
+     * Each option is given an id (T011) because `aria-activedescendant` names
+     * one element by id and can point at nothing else. It is built from the
+     * listbox's own id rather than spelled here, for the reason `aria-controls`
+     * is read off the same property: the id belongs to the template, and this
+     * file holds no copy of it to drift.
      */
     const draw = (paths) => {
       listbox.replaceChildren(
-        ...paths.map((path) => {
+        ...paths.map((path, index) => {
           const option = document.createElement('li');
+          option.id = `${listbox.id}-option-${index}`;
           option.setAttribute('role', 'option');
           option.textContent = path;
           return option;
         }),
       );
+
+      // Every option here is new markup, so whatever the keyboard was on went
+      // with the previous filter. Cleared rather than kept by position: an index
+      // that survived a keystroke would point at a different path, which is a
+      // control moving the answer while the operator types it.
+      active = -1;
+      field.removeAttribute('aria-activedescendant');
+
       const open = paths.length > 0;
       listbox.hidden = !open;
       field.setAttribute('aria-expanded', open ? 'true' : 'false');
@@ -974,11 +993,141 @@
     };
 
     let settling;
+
     field.addEventListener('input', () => {
       const paths = matching();
       draw(paths);
       clearTimeout(settling);
       settling = setTimeout(() => say(paths.length), SETTLE_MS);
+    });
+
+    /*
+     * The keyboard (T011, and the table in contracts/themed-combobox.md).
+     *
+     * The rule the whole picker turns on bites hardest here. This is a text
+     * field and it stays one: nothing below reads a character that was typed,
+     * nothing below rewrites what is in the field except the one accept the
+     * operator asked for, and the four keys that are answered are answered
+     * because each of them means something to a list that is open. Everything
+     * else reaches the field untouched, which is what keeps any path typeable in
+     * full (FR-008) — the list offers, it does not narrow what may be sent.
+     */
+    const optionAt = (index) => listbox.children[index] || null;
+
+    /*
+     * Where the keyboard is, said three ways because three different things read
+     * it. `aria-activedescendant` is what tells a reader where the focus that
+     * never left the input is now pointing; `aria-selected` is the selector the
+     * ring in crswd.css is keyed on, because `:focus-visible` can never reach an
+     * option and without the attribute a keyboard operator moves an invisible
+     * cursor; and the scroll is for the operator who can see one — the list is a
+     * bounded scroll box, so an option moved past its edge is one they have no
+     * way to know they are on.
+     */
+    const activate = (index) => {
+      const leaving = optionAt(active);
+      if (leaving) {
+        leaving.removeAttribute('aria-selected');
+      }
+      active = index;
+
+      const option = optionAt(active);
+      if (!option) {
+        field.removeAttribute('aria-activedescendant');
+        return;
+      }
+      option.setAttribute('aria-selected', 'true');
+      field.setAttribute('aria-activedescendant', option.id);
+      option.scrollIntoView({ block: 'nearest' });
+    };
+
+    /*
+     * Closing, which is the path the keyboard adds: until these keys existed the
+     * list shut only when nothing matched what was typed, so a list opened by
+     * one keystroke stayed open over the rest of the form.
+     *
+     * The subset sentence goes with it, including the one a settling timer was
+     * about to write. `.combo-status` counts what the list is showing, and a
+     * count left standing under a closed list is a sentence about something that
+     * is no longer there.
+     */
+    const close = () => {
+      activate(-1);
+      listbox.hidden = true;
+      field.setAttribute('aria-expanded', 'false');
+      clearTimeout(settling);
+      status.textContent = '';
+    };
+
+    /*
+     * Wrapping, because the alternative is a key that does nothing at an end the
+     * operator cannot see. The first press lands on the near end of the list in
+     * the direction it was pressed, which is what makes ↓ the way in.
+     */
+    const step = (by) => {
+      const count = listbox.children.length;
+      if (count === 0) {
+        return;
+      }
+      activate(active < 0 ? (by > 0 ? 0 : count - 1) : (active + by + count) % count);
+    };
+
+    field.addEventListener('keydown', (event) => {
+      switch (event.key) {
+        case 'ArrowDown':
+        case 'ArrowUp':
+          // Reopened here rather than only on the next keystroke: Escape closes
+          // a list the operator may not be finished with, and without this the
+          // only way back to the options is to change what is typed.
+          if (listbox.hidden) {
+            draw(matching());
+          }
+          step(event.key === 'ArrowDown' ? 1 : -1);
+          // Refused, because both keys already mean "the caret goes to the end
+          // of the value" in a text field, and an operator moving through paths
+          // would be dragging the caret with them.
+          event.preventDefault();
+          break;
+
+        case 'Enter': {
+          const option = optionAt(active);
+          // Enter with nothing active is the submit this form has always had,
+          // and it is deliberately untouched: a path typed in full is sent by
+          // the same key whether or not this file ran. Only the accept is
+          // claimed, and only when there is something to accept.
+          if (!option) {
+            return;
+          }
+          field.value = option.textContent;
+          close();
+          event.preventDefault();
+          break;
+        }
+
+        case 'Escape':
+          // What was typed stays typed. Escape dismisses the offer and never the
+          // answer — no path through here touches the field's value — and it is
+          // refused so that a browser which reads Escape in a text field as
+          // "revert what was typed" does not do that instead.
+          if (listbox.hidden) {
+            return;
+          }
+          close();
+          event.preventDefault();
+          break;
+
+        case 'Tab':
+          // Never refused: Tab is how the operator leaves this field, and
+          // whatever is in it stands exactly as it would with this file absent.
+          // The list is shut on the way out so it cannot hang over the control
+          // that now has focus.
+          close();
+          break;
+
+        default:
+          // Typing, which is never intercepted.
+          break;
+      }
     });
   };
 

@@ -1095,6 +1095,153 @@ func TestTheThemedPickerEnhancesTheNativeOne(t *testing.T) {
 	}
 }
 
+// TestComboKeyboardOperable is T011 and the last row of the themed-combobox
+// contract's own table: the arrows move the active option, Enter accepts,
+// Escape dismisses, Tab leaves, and `aria-activedescendant` follows.
+//
+// The requirement underneath all four is the one this control is likeliest to
+// be improved past. **Must fail when** the listbox constrains what can be typed
+// — any path must remain typeable in full (FR-008), and the listbox offers
+// rather than restricts. A keyboard handler is exactly where that is lost: an
+// inline completion that writes the nearest match into the field as the
+// operator types, an Escape that reverts what they had, a blur that normalises
+// it to something on the list. Every one of those looks like a better picker
+// and every one of them makes a path that is not on the list unreachable, on a
+// field whose whole point is that the allowlist is the daemon's and the list is
+// a convenience. So the floor held below is the field's own value: it is
+// written in exactly one place, it is written from an option the operator
+// accepted, and nothing else in this file touches it. The markup half — no
+// `pattern`, no `<select>`, still `type="text"` — is TestAnyPathStillTypeable's.
+//
+// The second requirement is T009's ring, which is keyed on
+// `[aria-selected="true"]` because `:focus-visible` can never reach an option.
+// Nothing wore it until this task, so the attribute and the rule are asserted
+// together: a ring drawn for a selector no script sets is a keyboard operator
+// moving a cursor nothing shows.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed
+// — the same footing every other script assertion in this file stands on.
+func TestComboKeyboardOperable(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	// Most of what follows is asserted about the picker's own block rather than
+	// the whole file, because the words it turns on are ordinary ones: the toast
+	// hides itself with `hidden = true` and both it and the card's selection fix
+	// call preventDefault. The block runs from the picker's one constant to the
+	// query that applies the enhancement, which is all of it and none of anything
+	// else.
+	from := strings.Index(source, "SETTLE_MS")
+	to := strings.Index(source, "data-combo")
+	if from < 0 || to <= from {
+		t.Fatalf("crswd.js has no picker block between its settle constant (%d) and the wrapper query (%d); the enhancement is where the keyboard lives", from, to)
+	}
+	picker := source[from:to]
+
+	if !regexp.MustCompile(`addEventListener\(\s*['"]keydown['"]`).MatchString(picker) {
+		t.Fatal("the picker listens for no keydown, so the themed listbox is a box a keyboard operator can see and never reach — the native popup this replaces was operable, and an enhancement that costs behaviour is not one")
+	}
+
+	// The four keys, each by the name the platform gives it. A handler switching
+	// on keyCode or on a spelling of its own answers a key nobody pressed.
+	for key, why := range map[string]string{
+		"'ArrowDown'": "down is the way into the list, and the key an operator reaches for first",
+		"'ArrowUp'":   "a list that can only be moved down is one an operator has to close and reopen to correct a step",
+		"'Enter'":     "the accept, and the only thing in this file permitted to write the field's value",
+		"'Escape'":    "the dismissal, which leaves what was typed exactly where it is",
+		"'Tab'":       "leaving the field closes the list, or it hangs over whatever now has focus",
+	} {
+		if !strings.Contains(picker, key) {
+			t.Errorf("the picker answers no %s: %s", key, why)
+		}
+	}
+
+	// Where the keyboard is, as the two attributes that say so — one for the
+	// reader, one for the ring. Both are cleared when there is nothing active,
+	// which is every redraw: an id left pointing at an option the last filter
+	// removed is a reader told about an element that is gone.
+	for _, wanted := range []struct {
+		pattern *regexp.Regexp
+		what    string
+		why     string
+	}{
+		{regexp.MustCompile(`setAttribute\(\s*['"]aria-activedescendant['"]\s*,\s*[A-Za-z_$][\w$]*\.id`), "aria-activedescendant, read off the option", "focus never leaves the input, so this attribute is the whole of what tells a reader which option the arrows are on — and the id is the element's own, not a spelling this file keeps"},
+		{regexp.MustCompile(`setAttribute\(\s*['"]aria-selected['"]\s*,\s*['"]true['"]`), `aria-selected="true"`, "that is the selector the active option's ring is keyed on, and nothing else can wear it"},
+		{regexp.MustCompile("\\.id\\s*=\\s*`[^`]*\\$\\{[A-Za-z_$][\\w$]*\\.id\\}"), "an id on each option, built from the listbox's", "aria-activedescendant names one element by id and can point at nothing else, and an id spelled here is the joint that drifts when the template renames one"},
+		{regexp.MustCompile(`\.hidden\s*=\s*true`), "a close path", "before this task the list shut only when nothing matched, so one opened by a keystroke stayed open over the rest of the form"},
+	} {
+		if !wanted.pattern.MatchString(picker) {
+			t.Errorf("the picker never sets %s: %s", wanted.what, wanted.why)
+		}
+	}
+
+	// And the redraw clears it, which is asserted where it happens rather than
+	// anywhere in the block. Every keystroke replaces every option, and the ids
+	// are positional — so an attribute that outlived its filter does not dangle,
+	// it points at whatever path is in that position now, while the ring is on
+	// nothing. That is a reader told one thing and an operator shown another, and
+	// a clear on the close path alone reads as covering it.
+	rebuild := strings.Index(picker, "replaceChildren")
+	listener := strings.Index(picker, "addEventListener")
+	if rebuild < 0 || listener <= rebuild {
+		t.Fatalf("the picker rebuilds no listbox between %d and %d; the options are what the keyboard moves over", rebuild, listener)
+	}
+	if !strings.Contains(picker[rebuild:listener], "aria-activedescendant") {
+		t.Error("the picker rebuilds its options without clearing aria-activedescendant; the ids are positional, so an attribute left over from the last filter names whichever path now sits in that position — announced as active while the ring is on nothing")
+	}
+
+	// The field's own value, which is the floor. One assignment, from an option's
+	// own text — so there is no completion writing the nearest match into the
+	// field as it is typed, no Escape putting back what was there before, and no
+	// path by which the list narrows what may be submitted.
+	assigns := regexp.MustCompile(`\.value\s*=[^=]`).FindAllStringIndex(source, -1)
+	if len(assigns) != 1 {
+		t.Fatalf("crswd.js writes a field's value in %d places; want exactly 1 — the accept the operator asked for. Any second one is this file deciding what the operator meant to type, on the field FR-008 says any path stays typeable in", len(assigns))
+	}
+	if !regexp.MustCompile(`\.value\s*=\s*[A-Za-z_$][\w$]*\.textContent`).MatchString(picker) {
+		t.Error("the accepted path is not the option's own text; a value assembled here is one the daemon never offered, and the option is the only thing on this page that was")
+	}
+	if accept := strings.Index(source, "'Enter'"); accept < 0 || assigns[0][0] < accept {
+		t.Error("the picker writes the field's value before it has answered Enter; the accept is the one keystroke that may change what is in this field, and a write on any other path is the list constraining what was typed")
+	}
+
+	// Tab is never refused. It is last in the contract's table and last in the
+	// branch order below, so what follows it is the default that does nothing —
+	// and a Tab this file swallowed is focus trapped in a text field, which trades
+	// the accessibility floor for a tidy-looking close.
+	leaving := picker[strings.Index(picker, "'Tab'"):]
+	if strings.Contains(leaving, "preventDefault") {
+		t.Error("the picker refuses the Tab that leaves the field; closing the list is all that is owed here, and swallowing the key traps a keyboard operator in the one control this milestone exists to make operable")
+	}
+
+	// The sweep: every shape of intercepting what is typed. Each looks like a
+	// better picker and each makes an unlisted path unreachable — which is the
+	// list becoming the allowlist, the mistake this whole control is arranged
+	// against.
+	for _, forbidden := range []struct {
+		pattern *regexp.Regexp
+		what    string
+		why     string
+	}{
+		{regexp.MustCompile(`['"](keypress|beforeinput)['"]`), "listens for the characters themselves", "typing is never intercepted; the keys this file answers are the ones that mean something to a list, and a character is not one of them"},
+		{regexp.MustCompile(`\bkey\.length\b`), "branches on single characters", "that test exists to catch typing, and catching typing is the one thing this handler may not do"},
+		{regexp.MustCompile(`\breadOnly\b`), "makes the field read-only", "a picker that can only be picked from is the chooser FR-040 refuses — the allowlist is the daemon's and this control is a convenience"},
+		{regexp.MustCompile(`setCustomValidity\(`), "refuses a value in the browser", "the refusal an operator gets is the daemon's, in words it wrote; a native bubble here is the containment rule copied into a browser and free to drift"},
+	} {
+		if match := forbidden.pattern.FindString(picker); match != "" {
+			t.Errorf("the picker %s (%q): %s", forbidden.what, match, forbidden.why)
+		}
+	}
+
+	// And the stylesheet half, which is the joint this task closes. T009 drew the
+	// ring for an attribute nothing set; the assertion above says the script sets
+	// it and this one says the rule is still there to be worn.
+	if !strings.Contains(stylesheet(t), `[aria-selected="true"]`) {
+		t.Error("crswd.css draws nothing for the active option; the attribute the arrows move is invisible without it, and a keyboard operator moves a cursor the page never shows")
+	}
+}
+
 // TestSelectionDoesNotNavigate is FR-051, and it is as much about what this file
 // is not allowed to become as about the one call that satisfies it.
 //
