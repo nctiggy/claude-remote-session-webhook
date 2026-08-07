@@ -19,6 +19,8 @@ package httpapi
 
 import (
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
@@ -46,10 +48,19 @@ type settingsView struct {
 	Operator *access.VerifiedOperator
 
 	// Settings is the table's rows, projected from the Config at render time by
-	// settingsOf. Today it holds the secret keys and only those (T011); T012
-	// widens the same walk to every key config.go declares and adds the source
-	// column beside the value.
+	// settingsOf: one per key config.go declares, in that order.
 	Settings []settingRow
+
+	// ConfigFile is the file those values were read from, and is empty when none
+	// was (FR-018). The page says which above the table, because "why did my edit
+	// do nothing?" is answered by the source column only once the operator knows
+	// they and this daemon are talking about the same file — the commonest
+	// version of that question is an edit made to a file the daemon never read.
+	//
+	// It comes from the Config, so it is the path this daemon *did* read at
+	// startup rather than the one it would look for now: a value recovered from
+	// the backup beside it names the backup (config.Config.FilePath).
+	ConfigFile string
 }
 
 // settingRow is one configuration key as the page states it.
@@ -68,6 +79,13 @@ type settingRow struct {
 	// Value is the effective value, or — for a secret — one of the two words
 	// below and nothing else.
 	Value string
+
+	// Source is which layer supplied it, in config.Source's four words. It is
+	// read from the record the precedence shim wrote as it decided, never worked
+	// out here by comparing the value against the default: a file and an
+	// environment holding the same bytes are indistinguishable by comparison, and
+	// that is the case an operator is on this page to ask about.
+	Source string
 }
 
 // The value column's entire vocabulary for a secret (FR-017,
@@ -92,21 +110,152 @@ const (
 // It walks config.Vars() rather than a list of its own, so the page cannot
 // invent a setting or forget one, and the order is the order config.go declares
 // them.
+//
+// One row per key, including a key with no loader behind it. CRSW_DESTROY_ON_SHUTDOWN
+// is one today — it has a constant, a field and a consumer, and nothing reads it
+// (internal/config's own varWithNoLoader pins the gap) — so this page reports it
+// as `false` from `default`, which is what that daemon actually does. Dropping
+// the row would hide the defect from the one page an operator would find it on.
 func settingsOf(cfg *config.Config) []settingRow {
 	rows := make([]settingRow, 0, len(config.Vars()))
 	for _, name := range config.Vars() {
 		key := config.KeyForVar(name)
-		// Every other key is T012's, which owns the value column and the source
-		// beside it. This task owns the one cell whose contents are a security
-		// decision, and shipping it first is what keeps that decision from being
-		// retrofitted onto a table that already prints everything.
-		if !config.IsSecret(key) {
-			continue
-		}
-		configured, known := secretConfigured(cfg, name)
-		rows = append(rows, settingRow{Key: key, Value: presence(configured && known)})
+		rows = append(rows, settingRow{
+			Key:   key,
+			Value: settingText(cfg, name, key),
+			// The shim's own record, read by the name it keyed it under. A key
+			// nothing ever looked up is absent from the map and reads
+			// SourceDefault, which is the zero value precisely so that "nothing
+			// supplied it" needs no special case here.
+			Source: cfg.Sources[name].String(),
+		})
 	}
 	return rows
+}
+
+// settingText is the value cell: two words for a secret, the effective value for
+// everything else.
+//
+// The secret gate comes first and is the only branch that can suppress a value,
+// which is what keeps config.IsSecret the single classifier T001 made it. A
+// second rule about what is too sensitive to print — a start command redacted
+// here because it looks like one, say — would be a second answer to "which keys
+// are secret", and the two would disagree the day one of them was edited.
+func settingText(cfg *config.Config, name, key string) string {
+	if config.IsSecret(key) {
+		configured, known := secretConfigured(cfg, name)
+		return presence(configured && known)
+	}
+	value, _ := settingValue(cfg, name)
+	return value
+}
+
+// The separators the value column spells a list with.
+//
+// A root list is prose here rather than the ":" the variable takes, because
+// these paths are the *resolved* ones — absolute, cleaned, every symlink already
+// followed — so the cell is not a string an operator could paste back into their
+// file whatever it is separated by. What SC-004 needs it to be is legible: an
+// operator whose working directory was refused is reading down this cell asking
+// whether theirs is under one of them.
+//
+// The start-command set keeps its own grammar exactly, for the opposite reason:
+// that cell *is* what the operator wrote, and a space introduced for looks would
+// make the page disagree with the file it is describing.
+const (
+	rootsSeparator         = ", "
+	startCommandsSeparator = ","
+)
+
+// settingValue is the effective value of one non-secret setting, and whether
+// this page knows how to state it.
+//
+// It reads the Config's own fields rather than re-reading the environment or the
+// file, so the page cannot state a value the daemon is not actually running on
+// — the two would drift the moment an operator edited the file under a daemon
+// that had already started, which is the exact confusion this page exists to end.
+//
+// **The start commands are spelled out, command lines and all.** They are not
+// secret by config.IsSecret and they are the operator's own configuration, read
+// back to the identity layer 1 verified — the same identity that may start a
+// session running them. Config.String names them without spelling them, but that
+// is a rule about *log lines*, where the alternative is a command line in a
+// journal anyone with the unit can read. Applying it here would be a second
+// redaction rule outside IsSecret, and it would break the one thing this cell is
+// for: an operator who cannot see what `rc` runs cannot tell whether the switch
+// they are about to throw does what they think.
+//
+// The second return exists for the variable that is not here yet, and it is the
+// same guard secretConfigured carries: a variable added to config.Vars() and not
+// to this switch renders an empty cell, which claims nothing rather than
+// claiming `false` or `0` about a setting this page has never heard of.
+// TestEverySettingRendersAValue keeps that branch unreachable. It also fails
+// closed for the two secrets, which do not reach here at all — narrowing
+// IsSecret drops a value from this page rather than printing one.
+func settingValue(cfg *config.Config, name string) (value string, known bool) {
+	switch name {
+	case config.EnvAllowedRoots:
+		paths := make([]string, 0, len(cfg.Roots))
+		for _, root := range cfg.Roots {
+			paths = append(paths, root.Path)
+		}
+		return strings.Join(paths, rootsSeparator), true
+	case config.EnvListen:
+		return cfg.Listen, true
+	case config.EnvMaxSessions:
+		return strconv.Itoa(cfg.MaxSessions), true
+	case config.EnvDestroyOnShutdown:
+		return strconv.FormatBool(cfg.DestroyOnShutdown), true
+	case config.EnvSessionLifetime:
+		return cfg.SessionLifetime.String(), true
+	case config.EnvSessionLifetimeMax:
+		return cfg.SessionLifetimeMax.String(), true
+	case config.EnvIdleTimeout:
+		return cfg.IdleTimeout.String(), true
+	case config.EnvIdleTimeoutMax:
+		return cfg.IdleTimeoutMax.String(), true
+	case config.EnvCreateRatePerMin:
+		return strconv.Itoa(cfg.CreateRatePerMin), true
+	case config.EnvMaxBodyBytes:
+		return strconv.FormatInt(cfg.MaxBodyBytes, 10), true
+	case config.EnvAccessTeamDomain:
+		return cfg.AccessTeamDomain, true
+	case config.EnvAccessAUD:
+		return cfg.AccessAUD, true
+	case config.EnvMaxStreams:
+		return strconv.Itoa(cfg.MaxStreams), true
+	case config.EnvStartCommand:
+		// The command bound to the default name, which is what this variable
+		// sets and what a create that asks for nothing in particular runs.
+		command, _ := cfg.StartCommands.Command(config.DefaultStartCommandName)
+		return command, true
+	case config.EnvStartCommands:
+		return startCommandSet(cfg.StartCommands), true
+	case config.EnvRemoteControlCommand:
+		return cfg.RemoteControlCommand, true
+	default:
+		return "", false
+	}
+}
+
+// startCommandSet spells the named set the way the variable and the file spell
+// it, so the cell and the operator's own line are the same string.
+//
+// The names come back sorted from Names(), which is the order the create form
+// already offers them in — a set that rendered in map order would reshuffle
+// itself on every load of a page whose whole purpose is being compared against a
+// file that does not move.
+func startCommandSet(commands config.StartCommands) string {
+	names := commands.Names()
+	entries := make([]string, 0, len(names))
+	for _, name := range names {
+		command, ok := commands.Command(name)
+		if !ok {
+			continue
+		}
+		entries = append(entries, name+"="+command)
+	}
+	return strings.Join(entries, startCommandsSeparator)
 }
 
 // presence is the only function that turns a fact about a secret into text, so
@@ -127,10 +276,11 @@ func presence(configured bool) string {
 // is wrong.
 //
 // The second return exists for the key that is not here yet. config.IsSecret is
-// the classifier, so a third secret added there is hidden by settingsOf whether
-// or not this switch has heard of it; what it would otherwise lose is the
-// ability to say anything true about it. An unknown one reads as absent rather
-// than as present because that is the answer an operator investigates: reading
+// the classifier, so a third secret added there is kept out of the value column
+// by settingText whether or not this switch has heard of it; what it would
+// otherwise lose is the ability to say anything true about it. An unknown one
+// reads as absent rather than as present because that is the answer an operator
+// investigates: reading
 // "absent" for a configured secret sends somebody to look, and reading "present"
 // for one that is missing does not. TestEverySecretKeyReportsItsPresence keeps
 // the branch unreachable.
@@ -171,7 +321,8 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	// value on this page was resolved once, at startup, so the page cannot
 	// disagree with the daemon it describes.
 	s.renderPage(w, r, http.StatusOK, "settings", settingsView{
-		Operator: operator,
-		Settings: settingsOf(s.cfg),
+		Operator:   operator,
+		Settings:   settingsOf(s.cfg),
+		ConfigFile: s.cfg.FilePath,
 	})
 }

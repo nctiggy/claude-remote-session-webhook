@@ -783,6 +783,14 @@ body {
   border-collapse: collapse;
 }
 
+/* The file the values were read from, above the table it qualifies. Dim, because
+   it is the provenance of the whole page rather than a setting on it — and mono
+   by inheritance, since a path is what the machine calls a file. */
+.settings p {
+  margin-block: 0 var(--s5);
+  color: var(--dim);
+}
+
 /* The table's accessible name, where a heading would only repeat the masthead.
    Aligned to the start rather than centred: a centred caption over a table this
    narrow reads as a title for the page instead of for the table. */

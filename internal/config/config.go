@@ -354,6 +354,17 @@ type Config struct {
 	// and reads SourceDefault — the zero value, which is why that constant is
 	// zero. The settings page reads this, and nothing else does.
 	Sources map[string]Source
+
+	// FilePath is the configuration file these values were read from, and is
+	// empty when none was (FR-018). The settings page names it above the table.
+	//
+	// It is the file that was actually *read*, which is not always the file the
+	// operator most recently wrote: a start recovered from the backup beside it
+	// carries the backup's path, because naming the live file there would have
+	// the page describe a set of values that is not in effect. That is the same
+	// question provenance answers one row at a time — "which layer supplied
+	// this?" — asked once about the whole file.
+	FilePath string
 }
 
 // String redacts the shared secret so that formatting a Config — in a log line,
@@ -577,6 +588,15 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 
 		RemoteControlCommand: remoteControl,
 		Sources:              sources,
+
+		// The file this load actually read, taken from the *File that was
+		// layered in rather than from DefaultPath: a path that was looked for
+		// and not found would otherwise have the settings page name a file
+		// nobody wrote. A nil *File is the deployment with no file at all and
+		// answers with the empty string; the recovery in loadBackup comes
+		// through here with the backup's own *File, so it names the file whose
+		// values are in effect.
+		FilePath: file.Path(),
 	}, nil
 }
 

@@ -720,6 +720,85 @@ func TestSourceIsNotInferred(t *testing.T) {
 	}
 }
 
+// The file the values came from is carried on the Config, because the settings
+// page names it above the table (FR-018) and has no way to work it out for
+// itself. A page that asked DefaultPath at render time would be answering "where
+// would I look now?" rather than "where did these values come from?" — and the
+// two differ on exactly the host whose operator is asking, since the environment
+// that named the file may have changed under a daemon that is still running on
+// what it read at start.
+//
+// **Must fail when** nothing carries the path through the load. That mutation is
+// a daemon that works perfectly and a settings page that says no file was read
+// on a host configured entirely by one.
+func TestConfigNamesTheFileThatWasRead(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the file the values came from", func(t *testing.T) {
+		t.Parallel()
+
+		root := t.TempDir()
+		home := homeWith(t, fileLines(root, "listen = 127.0.0.1:9999"))
+		// Spelled out rather than read back from the Config, for the reason
+		// plantConfig spells it: a fixture that asks the code under test where it
+		// looked agrees with it about the wrong directory too.
+		want := filepath.Join(home, defaultConfigHomeName, "crswd", "config")
+
+		cfg, err := config.LoadFrom(env(map[string]string{"HOME": home}), io.Discard)
+		if err != nil {
+			t.Fatalf("LoadFrom(): %v", err)
+		}
+		if cfg.FilePath != want {
+			t.Errorf("FilePath = %q, want %q — the file every value on this daemon was read from", cfg.FilePath, want)
+		}
+	})
+
+	t.Run("no file at all", func(t *testing.T) {
+		t.Parallel()
+
+		// The deployment every daemon before this milestone was: a home with no
+		// configuration file in it, configured entirely by the environment. The
+		// path is looked *for* and not found, and a Config naming it anyway would
+		// have the page name a file nobody wrote.
+		pairs, _ := baseEnv(t)
+		pairs["HOME"] = t.TempDir()
+
+		cfg, err := config.LoadFrom(env(pairs), io.Discard)
+		if err != nil {
+			t.Fatalf("LoadFrom(): %v", err)
+		}
+		if cfg.FilePath != "" {
+			t.Errorf("FilePath = %q with no configuration file present; want the empty string, which is what makes the page say none was read", cfg.FilePath)
+		}
+	})
+
+	t.Run("a start recovered from the backup names the backup", func(t *testing.T) {
+		t.Parallel()
+
+		// FR-010's recovery, and the case where naming the operator's own file
+		// would be a lie: the daemon is up on the older copy, and the values on
+		// the page are the backup's. An operator comparing the page against the
+		// file they just edited has to be told which file they are reading about.
+		root := t.TempDir()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config")
+		if err := os.WriteFile(path, []byte("listen 127.0.0.1:9999\n"), 0o600); err != nil {
+			t.Fatalf("write the live configuration file: %v", err)
+		}
+		if err := os.WriteFile(config.BackupPath(path), []byte(fileLines(root, "listen = 127.0.0.1:8888")), 0o600); err != nil {
+			t.Fatalf("write the backup configuration file: %v", err)
+		}
+
+		cfg, err := config.LoadFrom(env(map[string]string{configFileEnvName: path}), io.Discard)
+		if err != nil {
+			t.Fatalf("LoadFrom() refused rather than falling back to the backup: %v", err)
+		}
+		if want := config.BackupPath(path); cfg.FilePath != want {
+			t.Errorf("FilePath = %q after a recovery, want %q — the file whose values are in effect", cfg.FilePath, want)
+		}
+	})
+}
+
 // The record is names and layers, and never a value. Recording provenance means
 // the shim now sees every secret this daemon has at the moment it decides, so
 // the one thing it must not grow is a line saying what it resolved: a startup

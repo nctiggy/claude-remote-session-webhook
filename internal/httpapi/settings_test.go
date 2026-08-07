@@ -7,6 +7,7 @@
 package httpapi
 
 import (
+	"html"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -524,10 +525,238 @@ func TestEverySecretKeyReportsItsPresence(t *testing.T) {
 		t.Fatal("no key in config.Vars() is secret, so this test asserted nothing — and the page has no secret to protect")
 	}
 
-	// And every one of them reaches the page. A classifier nothing consults is
-	// the failure this milestone has shipped three times: the code exists and
-	// nothing calls it.
-	if rows := settingsOf(testConfig(loopbackListen)); len(rows) != secrets {
-		t.Errorf("the settings page renders %d rows for %d secret keys (%v)", len(rows), secrets, rows)
+	// And every one of them is stated in those two words on the page, which is
+	// the half that has to be counted now that every key has a row: a secret
+	// whose cell held a value would still have a row, so the assertion is about
+	// the vocabulary rather than about the number of rows. A classifier nothing
+	// consults is the failure this milestone has shipped three times: the code
+	// exists and nothing calls it.
+	rows := settingsOf(testConfig(loopbackListen))
+	stated := 0
+	for _, row := range rows {
+		if row.Value == secretPresent || row.Value == secretAbsent {
+			stated++
+		}
+	}
+	if stated != secrets {
+		t.Errorf("the settings page states presence for %d keys and config.IsSecret names %d (%v)", stated, secrets, rows)
+	}
+}
+
+// TestEverySettingRendersAValue is the value column's half of the same drift
+// guard, and it is the direction that fails silently: a variable added to
+// config.go and to config.Vars() gets a row on this page whether or not anything
+// here knows how to state it, so the failure is a blank cell on a page an
+// operator is reading to find out what this daemon is configured to do.
+//
+// Blank rather than wrong is deliberate — see settingValue — but it is still a
+// setting the page cannot describe, and the fix is one case in that switch.
+//
+// **Must fail when** config.Vars() grows a variable settingValue has no case
+// for. It says which one, because that is the whole of the fix.
+func TestEverySettingRendersAValue(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(loopbackListen)
+	stated := 0
+	for _, name := range config.Vars() {
+		if config.IsSecret(config.KeyForVar(name)) {
+			continue
+		}
+		stated++
+		if _, known := settingValue(cfg, name); !known {
+			t.Errorf("config.Vars() names %s and the settings page has no way to state its value, so its row renders an empty cell", name)
+		}
+	}
+	if stated == 0 {
+		t.Fatal("every key in config.Vars() is secret, so this test asserted nothing")
+	}
+}
+
+// TestSettingsRendersOneRowPerKey is the contract's first sentence about the
+// table: one row per configuration key, in the order config.go declares them.
+//
+// The order is asserted rather than the set, because the two failures are
+// different and only one of them is visible to a reader. A missing key is a
+// setting the page silently does not mention; a reordered table is a page that
+// no longer matches config.example, the file it exists to be compared against.
+func TestSettingsRendersOneRowPerKey(t *testing.T) {
+	t.Parallel()
+
+	page := settingsBody(t, newFleet(t))
+
+	at := -1
+	for _, name := range config.Vars() {
+		key := config.KeyForVar(name)
+		found := strings.Index(page, ">"+key+"<")
+		if found < 0 {
+			t.Errorf("the settings page has no row for %s, so it says nothing at all about that setting", key)
+			continue
+		}
+		if found < at {
+			t.Errorf("the settings page renders %s out of the order config.go declares it in", key)
+		}
+		at = found
+	}
+	if rows := settingsOf(testConfig(loopbackListen)); len(rows) != len(config.Vars()) {
+		t.Errorf("the settings page renders %d rows for %d configuration keys", len(rows), len(config.Vars()))
+	}
+}
+
+// TestShowsSourcePerKey is contracts/settings-page.md's source row, and every
+// case below is built so that the value alone cannot produce the right answer.
+//
+// That is the point of the column. A source *inferred* at render time can only
+// compare the value against the built-in default, which is right about the two
+// uninteresting cases and wrong about both of the ones an operator is on this
+// page to ask about: a file that set a value the daemon would have defaulted to
+// anyway, and a value that differs from the default because something *else*
+// supplied it. So the fixture holds the default value under a file source and a
+// non-default value under a default source — a comparison would get both
+// backwards, and reading the shim's record gets both right.
+//
+// **Must fail when** the source is inferred at render time instead of read from
+// the map the precedence shim wrote (T008).
+func TestShowsSourcePerKey(t *testing.T) {
+	t.Parallel()
+
+	f := settingsOn(t, func(cfg *config.Config) {
+		// The value a daemon with no configuration at all would have. An
+		// inference says "default"; the record says an operator wrote it.
+		cfg.Listen = config.DefaultListen
+		// The reverse: nothing supplied it, and it is not the built-in default
+		// either — which is every daemon whose ceiling was derived from another
+		// setting rather than configured (loadWith defaults the MAX pair to the
+		// pair below them).
+		cfg.MaxStreams = config.DefaultMaxStreams + 3
+		cfg.MaxSessions = 3
+		cfg.Sources = map[string]config.Source{
+			config.EnvListen:      config.SourceFile,
+			config.EnvMaxStreams:  config.SourceDefault,
+			config.EnvMaxSessions: config.SourceEnv,
+		}
+	})
+	page := settingsBody(t, f)
+
+	for _, tc := range []struct {
+		key  string
+		want config.Source
+		why  string
+	}{
+		{"listen", config.SourceFile, "the file set it to the value it would have defaulted to; nothing about the value says so"},
+		{"max_streams", config.SourceDefault, "nothing supplied it, and it is not the value a comparison would call the default"},
+		{"max_sessions", config.SourceEnv, "the environment answered this lookup"},
+		{"idle_timeout", config.SourceDefault, "no lookup for it was ever recorded, which is the zero value's whole job"},
+	} {
+		row := settingsRowFor(t, page, tc.key)
+		if !strings.Contains(row, "<td>"+tc.want.String()+"</td>") {
+			t.Errorf("the %s row is %q; want a source cell holding exactly %q — %s", tc.key, row, tc.want, tc.why)
+		}
+	}
+}
+
+// TestNamesConfigFileRead is FR-018's first half. The path appears verbatim,
+// because an operator comparing this page against the file they just edited is
+// checking that the two are the same file — and a page that named it in prose
+// ("your configuration file") would answer a question nobody has.
+//
+// **Must fail when** the page omits it.
+func TestNamesConfigFileRead(t *testing.T) {
+	t.Parallel()
+
+	// Not the path this host's daemon would read: a fixture that agreed with
+	// config.DefaultPath would pass against a page that had worked the path out
+	// for itself, which is the mutation this and the Config field exist to stop.
+	const read = "/nonexistent-crswd-test-home/.config/crswd/config"
+
+	page := settingsBody(t, settingsOn(t, func(cfg *config.Config) { cfg.FilePath = read }))
+
+	if !strings.Contains(page, "Read from "+read) {
+		t.Errorf("the settings page does not name %s as the file it was configured from:\n%s", read, page)
+	}
+	if strings.Contains(page, noFileRead) {
+		t.Errorf("the settings page says %q while naming a file it read", noFileRead)
+	}
+}
+
+// noFileRead is the sentence a daemon configured entirely by its environment
+// says, spelled here as contracts/settings-page.md spells it — the full stop
+// included, because it is a sentence and the path above it is not.
+const noFileRead = "No configuration file was read."
+
+// TestSaysWhenNoFileRead is FR-018's other half, and it is the deployment every
+// daemon before this milestone was: no configuration file, every value from the
+// environment or a default.
+//
+// The sentence is required rather than the line being empty. A blank space above
+// the table reads as a page that failed to render one, and the operator's next
+// move is to go looking for the file it did not name — which is the search this
+// line exists to end.
+//
+// **Must fail when** the line is blank instead.
+func TestSaysWhenNoFileRead(t *testing.T) {
+	t.Parallel()
+
+	page := settingsBody(t, settingsOn(t, func(cfg *config.Config) { cfg.FilePath = "" }))
+
+	if !strings.Contains(page, noFileRead) {
+		t.Errorf("the settings page does not say that no configuration file was read:\n%s", page)
+	}
+	if strings.Contains(page, "Read from") {
+		t.Errorf("the settings page says it read from something while no file was read:\n%s", page)
+	}
+}
+
+// TestSettingsStatesTheValueOfEveryNonSecretKey is the value column at the two
+// keys a reader would most expect to be missing from it, and the pair the two
+// halves of this page are decided by.
+//
+// allowed_roots is SC-004: an operator whose working directory was refused reads
+// this cell and sees immediately whether theirs is under one of them, so the
+// paths are spelled out rather than counted.
+//
+// start_commands is the decision this task had to make, and it is worth a
+// reviewer's eye. The command lines are not secret by config.IsSecret, they are
+// the operator's own configuration, and the identity reading them is the identity
+// that may start a session running them. Config.String names them without
+// spelling them — but that is a rule for log lines, and applying it here would be
+// a second redaction rule outside IsSecret, which is exactly what T001 exists to
+// prevent.
+func TestSettingsStatesTheValueOfEveryNonSecretKey(t *testing.T) {
+	t.Parallel()
+
+	const (
+		firstRoot  = "/nonexistent-crswd-test-root"
+		secondRoot = "/nonexistent-crswd-test-work"
+		rcCommand  = "claude remote-control --name {name}"
+	)
+
+	page := settingsBody(t, settingsOn(t, func(cfg *config.Config) {
+		cfg.Roots = []config.ApprovedRoot{{Path: firstRoot}, {Path: secondRoot}}
+		cfg.StartCommands = config.NewStartCommands(map[string]string{
+			config.DefaultStartCommandName: config.DefaultStartCommand,
+			"rc":                           rcCommand,
+		})
+		cfg.RemoteControlCommand = "rc"
+		cfg.MaxSessions = 4
+	}))
+
+	for _, tc := range []struct {
+		key  string
+		want string
+	}{
+		{"allowed_roots", firstRoot + ", " + secondRoot},
+		{"listen", loopbackListen},
+		{"max_sessions", "4"},
+		{"start_command", config.DefaultStartCommand},
+		{"start_commands", config.DefaultStartCommandName + "=" + config.DefaultStartCommand + "," + "rc=" + rcCommand},
+		{"remote_control_command", "rc"},
+	} {
+		row := settingsRowFor(t, page, tc.key)
+		// Escaped as the template escapes it, so the assertion is about the value
+		// the browser renders rather than about the bytes on the wire.
+		if want := "<td>" + html.EscapeString(tc.want) + "</td>"; !strings.Contains(row, want) {
+			t.Errorf("the %s row is %q; want a value cell holding exactly %q", tc.key, row, want)
+		}
 	}
 }
