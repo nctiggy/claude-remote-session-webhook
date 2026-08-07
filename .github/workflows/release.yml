@@ -82,6 +82,21 @@ jobs:
           done
           ls -l dist
 
+      - name: Stage the deployment files
+        # A release of the binary alone leaves the operator writing a unit file
+        # by hand, which is the state this milestone exists to end. deploy/
+        # already holds working, commented examples, so the release ships those
+        # same bytes rather than a second copy that drifts from them.
+        #
+        # The unit is published under the name it is installed as: an asset
+        # called crswd.example.service invites copying the word "example" into
+        # ~/.config/systemd/user, and the installer writes crswd.service.
+        run: |
+          cp deploy/crswd.example.service dist/crswd.service
+          cp deploy/cloudflared.example.yml dist/cloudflared.example.yml
+          cp deploy/crswd-api dist/crswd-api
+          ls -l dist
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -92,4 +107,7 @@ jobs:
             --target "$GITHUB_SHA" \
             --generate-notes \
             "dist/crswd_${VERSION}_linux_amd64.tar.gz" \
-            "dist/crswd_${VERSION}_linux_arm64.tar.gz"
+            "dist/crswd_${VERSION}_linux_arm64.tar.gz" \
+            "dist/crswd.service" \
+            "dist/cloudflared.example.yml" \
+            "dist/crswd-api"

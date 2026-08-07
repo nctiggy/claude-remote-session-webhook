@@ -8,20 +8,23 @@ package release_test
 // wrong, and they replay its build so the artifact's properties are measured
 // rather than asserted about.
 //
-// Three of the four failures this guards are silent on the builder and loud on
+// Four of the five failures this guards are silent on the builder and loud on
 // somebody else's machine, which is the whole subject of this milestone:
 //
 //   - cgo left on          — links libc, runs here, fails where there is no libc
 //   - a mistyped -X path   — the linker sets nothing and the release says "dev"
 //   - a shallow checkout   — `git rev-list --count HEAD` counts 1, forever
+//   - the binary alone     — it builds, it publishes, and whoever downloads it
+//     still has to write a unit file by hand
 //
-// The fourth, a tag-only trigger, is silent everywhere: releases simply stop
+// The fifth, a tag-only trigger, is silent everywhere: releases simply stop
 // happening and self-update finds nothing.
 
 import (
 	"debug/elf"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -47,6 +50,20 @@ const (
 // failure here instead of a 404 for whoever runs on it.
 var published = []string{"amd64", "arm64"}
 
+// deployed is the other half of a release: the files an operator needs before
+// the binary is any use. The key is the published asset name, the value where
+// those bytes come from — deploy/ already carries working, commented examples,
+// and the release ships those rather than a second copy that drifts.
+//
+// The unit is renamed on the way out, to the name it is installed under. An
+// asset called crswd.example.service invites carrying the word "example" into
+// ~/.config/systemd/user.
+var deployed = map[string]string{
+	"crswd.service":           "deploy/crswd.example.service",
+	"cloudflared.example.yml": "deploy/cloudflared.example.yml",
+	"crswd-api":               "deploy/crswd-api",
+}
+
 func readWorkflow(t *testing.T) string {
 	t.Helper()
 
@@ -70,6 +87,82 @@ func find(t *testing.T, text, what string, pattern *regexp.Regexp) string {
 			workflowPath, what, pattern)
 	}
 	return m[1]
+}
+
+// uploadedAssets returns the asset names the publish step hands to
+// `gh release create`, spelled as the YAML spells them.
+//
+// Read from that one command rather than from the file as a whole: a path
+// written anywhere else is a file that was made, not a file anybody can
+// download, and the difference is the entire subject of TestReleaseCarriesEveryAsset.
+func uploadedAssets(t *testing.T, wf string) map[string]bool {
+	t.Helper()
+
+	// One backslash-continued line per asset, so the command ends at the first
+	// line that does not continue. Reading to the end of the file instead would
+	// swallow the verify-install job T012 adds after it.
+	cmd := find(t, wf, "`gh release create` command", regexp.MustCompile(`gh release create((?:[^\n]*\\\n)*[^\n]*)`))
+
+	// Every asset argument is a path; --generate-notes and "$VERSION" are not.
+	names := map[string]bool{}
+	for _, m := range regexp.MustCompile(`"([^"\s]*/[^"\s]*)"`).FindAllStringSubmatch(cmd, -1) {
+		names[path.Base(m[1])] = true
+	}
+	return names
+}
+
+// TestReleaseCarriesEveryAsset checks the published set against the one
+// contracts/release.md names — in both directions, because "every asset" is a
+// claim about the whole list and stops being true the moment the workflow grows
+// one this file has not heard of.
+//
+// The failure it exists for is the tempting one: the tarballs are obviously the
+// release, so the deployment files read as documentation and get dropped. The
+// CI run stays green, the release page looks right, and the operator who
+// downloads it is back to writing a systemd unit from scratch.
+func TestReleaseCarriesEveryAsset(t *testing.T) {
+	t.Parallel()
+
+	wf := readWorkflow(t)
+
+	want := map[string]bool{}
+	for _, arch := range published {
+		want["crswd_${VERSION}_linux_"+arch+".tar.gz"] = true
+	}
+	for name := range deployed {
+		want[name] = true
+	}
+
+	got := uploadedAssets(t, wf)
+
+	for name := range want {
+		if !got[name] {
+			t.Errorf("%s publishes no asset named %s.\ncontracts/release.md names it as part of a release; without it whoever downloads this has to write that file by hand, which is the state this milestone exists to end", workflowPath, name)
+		}
+	}
+	for name := range got {
+		if !want[name] {
+			t.Errorf("%s publishes %s, which is not one of the assets this test knows about.\nIf a release now carries it, add it here and to contracts/release.md — \"every asset\" holds only while this list is the whole list.\nSHA256SUMS and SHA256SUMS.sig arrive with T006 and T014 and belong in it then", workflowPath, name)
+		}
+	}
+
+	// Each deployment asset has to be a copy of something that exists. The
+	// workflow names these paths in a string no compiler reads, so a rename in
+	// deploy/ is caught here rather than by a release that publishes nothing
+	// under a name the installer then asks for.
+	for name, src := range deployed {
+		staged := regexp.MustCompile(`(?m)^.*(deploy/\S+).*dist/` + regexp.QuoteMeta(name) + `(?:\s|$)`).FindStringSubmatch(wf)
+		if staged == nil {
+			t.Errorf("%s uploads %s but no step copies it out of deploy/.\nAn asset built from nothing is an empty file with the right name on it", workflowPath, name)
+			continue
+		}
+		if staged[1] != src {
+			t.Errorf("%s stages %s from %s; the release is meant to carry %s", workflowPath, name, staged[1], src)
+		}
+		if _, err := os.Stat(filepath.Join(repoRoot, staged[1])); err != nil {
+			t.Errorf("%s copies %s, which is not in the working tree: %v\nThe copy fails in CI, after the build has already succeeded", workflowPath, staged[1], err)
+		}
+	}
 }
 
 // TestReleasePublishedOnMerge is the contract's trigger case. A tag-only
