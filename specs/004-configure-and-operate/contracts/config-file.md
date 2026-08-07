@@ -101,7 +101,7 @@ config file, it is explicit, and it keeps a backup at `config.bak` (FR-009).
 
 | Test | Asserts | **Must fail when** |
 |---|---|---|
-| `TestParseAcceptsWorkedExample` | The eight keys above parse to exactly those values | The parser splits on the last `=`, or strips trailing `#` |
+| `TestParseAcceptsWorkedExample` | The seven keys above parse to exactly those values, and `version` is not among the settings | The parser splits on the last `=`, or strips trailing `#`, or keeps `version` as a setting |
 | `TestValueMayContainHash` | `shared_secret` parses as `hunter2#not-a-comment` | Trailing-comment stripping is added |
 | `TestValueMayContainEquals` | `start_commands` retains both `=` signs | `strings.Split` replaces `strings.Cut` |
 | `TestWhitespaceAroundSeparatorIgnored` | `a=b`, `a = b`, `  a  =  b  ` all yield `a`→`b` | Key or value is not trimmed |
