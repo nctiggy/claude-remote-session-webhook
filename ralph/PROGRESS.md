@@ -246,3 +246,85 @@ abandoned branch already wrote.
   `gofmt -l .` clean, `go vet` green untagged and under `-tags tmux`, `-tags quickstart` and
   `-tags dev`, and `go.sum` is still absent. `go install golangci-lint/v2@v2.12.2` was not
   retried; the sandbox denial from iteration 1 has not changed. CI is the gate.
+
+---
+
+## Iteration 4 — 2026-08-07 03:04
+
+**Did:** T004. `internal/config/file.go` carries the five file-level refusals forward from
+`origin/claude/issue-issue-65-20260807-0112`: unknown key, repeated key, malformed line, future
+schema version, and the renamed-key *warning*. With them come `Vars()` (the 18 variables the
+unknown-key check is made of), `maxKeyLen`, `versionKey`/`SchemaVersion`/`checkSchemaVersion`,
+and an empty `renamedKeys`. `file_test.go` carries the six contract tests plus
+`TestVarsNamesEveryDeclaredVariable`, `TestARenamedKeyRepeatsItsCurrentSpelling` and
+`TestAnOverlongKeyIsRefusedWithoutQuotingIt`.
+
+**Learned:**
+
+- **Eight mutations were run, not reasoned about**, per iteration 1's rule: unknown key skipped,
+  rename not resolved, repeated key last-wins, version key ignored, the value `%q`-ed into the
+  unknown-key message, the `maxKeyLen` bound widened ×100, `EnvMaxStreams` dropped from `Vars()`,
+  and the rename resolved *after* the seen-check instead of before. Each failed; all three files
+  were then checked by `sha256sum` against their pre-mutation digests and `git diff --stat` came
+  back empty before the gate.
+- **`maxKeyLen` is not tidiness, and the mutation proves it.** Widening the bound made
+  `TestErrorNeverContainsValue/a_secret_pasted_where_a_key_belongs` print
+  `has unknown key "0123456789abcdef…"` — a 64-character hex secret quoted into stderr and the
+  journal. That is the whole reason the bound exists and iteration 3 was right to hand it to T004.
+- **`ParseFile` now takes a third argument, `warn io.Writer`** — the rename warning needs a sink,
+  and this is the house shape (`LoadFrom(getenv, warn, opts...)`). `nil` becomes `os.Stderr`, not
+  `io.Discard`, for the reason `LoadFrom` does it: a file that still works is the one thing that
+  will never prompt an operator to update it. **T007 wiring `withFile` must thread `LoadFrom`'s
+  own `warn` through**, or the rename banner ends up on a different stream from every other
+  startup warning.
+- **`renamedKeys` is empty and the mechanism is still proven**, via `internal/config/export_test.go`
+  — a new test-only file exposing `parseFile(path, data, renames, warn)` and `RenamedKeys()`. The
+  branch made the rename table a parameter for exactly this reason but never wrote the test, so it
+  had a rename mechanism nothing had ever run. `export_test.go` compiles only under `go test`,
+  declares no constants (so no clash with `envPrefix`), and is exempt from T001's classifier walk.
+- **The rename resolves *before* the repeated-key check.** This is a deliberate deviation from the
+  branch, which checked `seen` first: with the branch's order, `bind_address = a` and `listen = b`
+  in one file are two keys, and one silently overwrites the other. `TestARenamedKeyRepeatsItsCurrentSpelling`
+  pins it in both orderings.
+- **`version` is consumed, not stored**, as iteration 3 asked. `TestParseAcceptsWorkedExample` had
+  to change: it previously asserted `Lookup(VarForKey("version")) == "1"` and now asserts the
+  opposite. `TestWhitespaceAroundSeparatorIgnored` also had to move off its `a = b` fixture — `a`
+  is not a key this daemon has, so every case in it would now be refused as unknown. **Expect the
+  same for any future test that invents a key.**
+- **Contract wording beat branch wording again**, as in T003. The branch's messages wrap an
+  `ErrConfigFile` sentinel and read "configuration file %s:%d sets %s, which this daemon does not
+  read…"; `tasks.md` pins the unknown-key literal as `config file %s:%d has unknown key %q;
+  refusing to start`. The branch's reasoning moved into comments, which is where it reads better
+  anyway.
+
+**Left:** T005–T035. Next is T005 🔒 (the mode refusal gated on the file containing a secret),
+which is the first of the four security-critical tasks since T001 and the first task that opens a
+file rather than being handed bytes.
+
+**Findings:**
+
+- **`ErrConfigFile` was deliberately NOT added, and T009 is where it belongs.** T004 names no
+  sentinel and nothing branches on a file error yet; `AGENTS.md` says sentinels are for what
+  callers branch on, and the plan's own anti-requirement is that code with no caller is the
+  failure this repo has shipped three times. The first real caller is **T009**, which needs to tell
+  "your file is wrong" from "your configuration is wrong" to decide whether to fall back to
+  `config.bak`. When it is added, `errors.New("config file")` + `fmt.Errorf("%w %s:%d …")`
+  reproduces the contract's message shapes exactly; `errors.New("configuration file")` — the
+  branch's spelling — does not.
+- **The `version < 1` refusal is not in the contract's table.** `contracts/config-file.md` lists
+  only "Future schema" and "Bad version", and `version = 0` is a whole number, so the contract as
+  written accepts it. The branch refused it and T004 carries that. If this is wrong, it is a
+  two-line deletion — but a daemon accepting `version = -3` is reading a schema that does not
+  exist. **Worth adding a row to the contract table** rather than leaving the code ahead of it.
+- **The contract's "yields exactly eight keys" is still wrong and is now wrong differently.** The
+  example sets seven keys, one of which is `version`, which T004 consumes — so the example now
+  yields **six settings** plus an accepted schema version. Iteration 3 flagged the count; T034
+  writes `config.example` against this same text and will inherit the error if nobody fixes it.
+- **`f.values` still has no enumerator, and T012 needs one.** `TestParseAcceptsWorkedExample` can
+  assert every expected key is present but cannot assert that *no other* key was invented — it
+  proxies with a single `EnvMaxSessions` probe. T012 renders one row per key and will need a real
+  accessor; adding it there also closes this test's gap.
+- **Lint still UNVERIFIED locally** (v1.62.2 on PATH, #26): `golangci-lint run` silent, `gofmt -l .`
+  clean, `go build`/`go vet`/`go test ./...` green, `go vet` green under `-tags tmux`,
+  `-tags quickstart` and `-tags dev`, and `go.sum` still absent. The v2 install was not retried —
+  the iteration-1 sandbox denial has not changed. CI is the gate.
