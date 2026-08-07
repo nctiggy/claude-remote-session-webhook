@@ -97,6 +97,32 @@ jobs:
           cp deploy/crswd-api dist/crswd-api
           ls -l dist
 
+      - name: Checksum every asset
+        # Every asset, not only the binaries. The tarballs read as "the release"
+        # and the rest as documentation, but the deployment files are the ones
+        # written into ~/.config/systemd/user and ~/.config/crswd — summing only
+        # the binary verifies the half that was never in doubt.
+        #
+        # Taken from what dist/ holds rather than from the asset list typed out
+        # a second time here. A second list is a list that drifts from the one
+        # Publish uploads, and the asset it loses is the one that quietly stops
+        # being checked.
+        run: |
+          cd dist
+          # -maxdepth 1 -type f is the asset set exactly: the per-architecture
+          # directories under dist/ are the tarballs' input, not something
+          # anybody downloads.
+          #
+          # Bare names, because `sha256sum -c SHA256SUMS` is run from whatever
+          # directory the assets were downloaded into, where dist/ does not
+          # exist.
+          sums=$(find . -maxdepth 1 -type f -printf '%P\n' | sort | xargs -r sha256sum)
+          # Written only once the sums are taken. A redirect would create the
+          # file before find ran, so SHA256SUMS would appear in its own list,
+          # holding the checksum of the empty file it was a moment earlier.
+          printf '%s\n' "$sums" > SHA256SUMS
+          cat SHA256SUMS
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -110,4 +136,5 @@ jobs:
             "dist/crswd_${VERSION}_linux_arm64.tar.gz" \
             "dist/crswd.service" \
             "dist/cloudflared.example.yml" \
-            "dist/crswd-api"
+            "dist/crswd-api" \
+            "dist/SHA256SUMS"
