@@ -350,3 +350,75 @@ so the ordering is intact.
    commit, every browser create ran the default command regardless of the switch. It now
    honours the switch. Nothing needs migrating — the mode is derived from the start command
    already recorded — but an operator watching the deployment will see the switch start working.
+
+---
+
+## Iteration 5 — 2026-08-07 16:50
+
+**Did:** T005, in commit `2b1f3b3`. `CRSW_WORKDIR_SUGGESTIONS` — comma-separated, absolute
+paths — is declared, loaded through the `withFile` shim like every other key, and lands on
+`Config.WorkdirSuggestions`. `TestWorkdirSuggestionsIsRead` in `config_test.go` plus two rows
+in `TestLoadFromRejects`. **Nothing consumes the field yet; T006 is the union that does.**
+
+**Learned:**
+
+- **One new `CRSW_` constant forces edits in six files, and the compiler tells you about none
+  of them.** `declaredVars` in `envexample_test.go` parses `config.go`'s own AST, so adding a
+  constant instantly reddens four suites in three packages. The full list, for whoever does
+  this next:
+  1. `internal/config/config.go` — const, `Config` field, loader, call site, struct literal
+  2. `internal/config/file.go` — `Vars()`, **in `config.go`'s declaration order**
+  3. `.env.example` — assignment with a comment line *immediately above it* (no blank line
+     between, or `TestEnvExampleDescribesEveryVariable` fails) and **no value**
+  4. `README.md` — a row in the configuration table, first cell `` `CRSW_...` ``
+  5. `deploy/crswd.example.service` — an inline `Environment=` line, empty unless the daemon
+     has a non-empty default (`TestUnitInlineValuesAreTheDaemonDefaults` pins the ones it has)
+  6. `config.example` — a commented `# key = value` line, **in `Vars()` order**, which is
+     asserted positionally against `config.Vars()`
+  7. `internal/httpapi/settings.go` — a `settingValue` case, or the row renders an empty cell
+     and `TestEverySettingRendersAValue` fails
+- **The validation question T005 actually has to answer is "which refusals?", and the contract
+  answers it.** `contracts/directory-suggestions.md`'s worked example offers `/srv/scratch`
+  and says it is refused on submit unless it is under a root — so containment is deliberately
+  *not* checked at load. What is refused is only what no configuration could ever accept: a
+  relative entry (`ResolveWorkDir` refuses non-absolute before it even reaches containment, so
+  it is a suggestion with one possible outcome) and an empty entry. Nothing here touches the
+  filesystem, which is the point rather than an omission — a stat behind a key that is live by
+  default would be the disclosure `discover_roots` exists to keep opt-in.
+- **Mutation-verified twice, both reverted.** Making `loadWorkdirSuggestions` ignore its
+  `getenv` — the literal "declared and never read" failure — fails exactly three assertions and
+  nothing else: the value check, and both reject rows. Note the settings-page suite stays
+  **green** under that mutant, because an empty cell is still a cell; the config test is the
+  only thing pinning the read. That is worth knowing before trusting `/settings` as the
+  no-loader detector a second time.
+- Linter confirmed v2 before trusting the green: `golangci-lint 2.12.2`, 0 issues. `go vet`
+  compiles all three tagged suites, and the quickstart acceptance suite ran uncached (28s) and
+  passed — `127.0.0.1:8765` was free.
+
+**Left:** T006–T016. **T006 is next**: `internal/config/suggestions.go`, the union of roots ∪
+`workdir_suggestions` ∪ discovered children, deduped and sorted, replacing
+`s.cfg.DiscoveredWorkDirs()` at `dashboard.go:254`. It is also the third link in the
+create-form chain (`T001 → T003 → T006 → T008`); `create-form.html` was not touched this
+iteration, so the ordering is intact. Note the loader keeps duplicates *within* the list on
+purpose — dedup is T006's, and two rules about it would be two answers.
+
+**Findings:**
+
+1. **`config.example:157` tells the operator a lie about `destroy_on_shutdown`.** It says
+   "This build does not read the key. It parses, and /settings renders it, but the loader has
+   no case for it yet" — which stopped being true when the loader was added (`config.go`, the
+   `loadBool` call that the comment above it dates to #63). `README.md`'s row for
+   `CRSW_DESTROY_ON_SHUTDOWN` says the same thing: "**This build parses the key and does not
+   act on it**". Both now describe a daemon that has not shipped for some time, and an operator
+   reading either will not set a flag that works. Not fixed here — neither file's line is part
+   of this task and AR-008 is load-bearing. **T016 owns it**, and it is a two-line docs fix.
+2. **`internal/httpapi/settings.go:114-118` carries the same stale claim in a code comment**,
+   naming `CRSW_DESTROY_ON_SHUTDOWN` as the "key with no loader behind it" the page exists to
+   expose. The paragraph's *argument* is still right and still worth keeping; only its example
+   is spent. It also refers to "internal/config's own `varWithNoLoader`", which no longer
+   exists anywhere in the tree. T016 again.
+3. **`contracts/directory-suggestions.md:62` spells `allowed_roots` with commas**
+   (`/home/nctiggy/code,/home/nctiggy/work`) where the real separator is `:`
+   (`rootListSeparator`, fixed at colon on purpose). The contract is right about everything
+   that matters and wrong in the one place an operator would copy from. Spec files are not
+   this milestone's to edit, but it is worth a line in T016's docs pass.

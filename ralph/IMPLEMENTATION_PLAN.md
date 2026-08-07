@@ -135,7 +135,12 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
 
 ### US2 — Suggestions that exist on a default install
 
-- [ ] T005 Add the `workdir_suggestions` configuration key
+- [x] T005 Add the `workdir_suggestions` configuration key
+  - The key is read and reaches `Config.WorkdirSuggestions`; **nothing consumes it until
+    T006's union**. Refusals are only what no configuration could accept — a relative
+    entry and an empty one. A path outside the roots loads and is offered, exactly as
+    `contracts/directory-suggestions.md` requires; the create refuses it. Duplicates
+    *within* the list survive on purpose: dedup belongs to T006 and is stated once.
 - [ ] T006 Union the three sources in `internal/config/suggestions.go`
 - [ ] T007 🔒 A suggested path outside the roots is refused identically to a typed one
 
