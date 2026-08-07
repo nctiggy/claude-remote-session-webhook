@@ -11,7 +11,7 @@
 | Dependency | How it is found | Missing means |
 |---|---|---|
 | `tmux` | `exec.LookPath("tmux")` | **Fatal.** The daemon refuses to start. |
-| The configured start command's binary | First word of each entry in `start_commands`, via `LookPath` | **Warning.** The daemon starts. |
+| The configured start command's binary | First word of each entry in `start_commands`, via `LookPath` **in the daemon's own process** | **Warning**, and one that says which PATH it read. The daemon starts. |
 
 The split is the point. Without `tmux` this daemon can do nothing at all, so
 starting would only defer the failure to the operator's first request. Without a
@@ -54,10 +54,27 @@ crswd: refusing to start.
 ```
 
 ```
-crswd: warning: the start command "rc" runs "claude", which is not on PATH.
-crswd: install it, or correct start_commands in /home/nctiggy/.config/crswd/config.
-crswd: starting anyway; sessions using "rc" will fail until it is present.
+crswd: warning: the start command "rc" runs "claude", which is not on this daemon's PATH.
+crswd: sessions type that command into a shell in a tmux pane, and that shell's PATH is the one that decides, so this may be a difference between the two environments rather than a missing binary.
+crswd: starting anyway; if "rc" reports "command not found" in its pane, install "claude" or correct start_commands in /home/nctiggy/.config/crswd/config.
 ```
+
+## The second probe reads a PATH that is not the one that decides (issue #96)
+
+`LookPath` answers for the **daemon's** process. The start command never runs
+there — it is typed into a shell in a tmux pane, which loads the operator's
+profile. A systemd user manager and a login shell on the same host routinely
+disagree: `~/.local/bin` is on one and not the other, and a `claude` installed
+there is invisible to this probe and perfectly present to every session.
+
+So the warning states its scope instead of predicting an outcome. It may not say
+"sessions will fail" — it does not know that, and it said it on every start of a
+healthy deployment for the whole of milestone 4.
+
+Resolving the pane's PATH honestly would mean `bash -lc 'command -v …'` at
+startup, which executes the operator's profile in the daemon and is forbidden
+here by `TestNeverExecutesInstall`: this package reaches `os/exec` for `LookPath`
+and nothing else.
 
 ## Contract tests
 
@@ -71,3 +88,4 @@ crswd: starting anyway; sessions using "rc" will fail until it is present.
 | `TestUnknownPlatformSaysSo` | Unrecognised `ID` yields the generic sentence | A package manager is guessed (FR-013) |
 | `TestNeverExecutesInstall` | No `exec.Command` in the package runs a package manager | An "auto-install" convenience is added (FR-014) |
 | `TestMessageNamesConfigFile` | The warning names the file to correct | The operator is told what is wrong but not where |
+| `TestWarningNamesThePathItProbed` | The warning names the daemon's PATH and the pane's, and predicts no failure | The message claims a session "will fail" from a probe of the wrong environment (#96) |
