@@ -1662,6 +1662,138 @@ func TestTheCreateFormNamesTheConfiguredRoots(t *testing.T) {
 	})
 }
 
+// The picker's fixture and the element it hangs off. Two paths, because a list
+// of one cannot show that the whole list renders, and both under a plausible
+// root because that is what either source produces — a configured list or
+// T023's walk one level below an approved root.
+var (
+	workdirSuggestions = []string{"/home/operator/code/crswd", "/home/operator/code/notes"}
+	workdirInput       = regexp.MustCompile(`<input\b[^>]*\bname="work_dir"[^>]*>`)
+)
+
+// TestPickerWorksWithoutScript is T022's named test and the reason the
+// abandoned branch's combobox was not carried: this control is markup, and
+// markup runs whether or not a script does.
+//
+// **Must fail when** the control becomes script-dependent (FR-043) — a field
+// whose suggestions are assembled by crswd.js offers nothing at all with
+// scripting off, which is the state this dashboard is required to work in.
+//
+// The assertion is deliberately made against the field's own `list` attribute
+// rather than against the literal id: a datalist nothing points at is invisible
+// to the browser and to a screen reader alike, and the two spellings drifting
+// apart is exactly the failure that leaves a form looking correct in review.
+func TestPickerWorksWithoutScript(t *testing.T) {
+	t.Parallel()
+
+	out := renderComponent(t, "create-form", createFormView{PageToken: "t", Suggestions: workdirSuggestions})
+
+	input := workdirInput.FindString(out)
+	if input == "" {
+		t.Fatalf("the create form renders no work_dir field at all:\n%s", out)
+	}
+	list, ok := attributeValue(t, input, "list")
+	if !ok {
+		t.Fatalf("the working-directory field points at no list (%s), so the suggestions below it are markup the browser never reads:\n%s", input, out)
+	}
+	if !strings.Contains(out, `<datalist id="`+list+`">`) {
+		t.Errorf("the field points at the datalist %q and no such element is rendered:\n%s", list, out)
+	}
+	for _, path := range workdirSuggestions {
+		if !strings.Contains(out, `<option value="`+path+`">`) {
+			t.Errorf("the datalist omits the suggestion %q:\n%s", path, out)
+		}
+	}
+
+	// Nothing has to run for any of the above to be true. The form already
+	// carries data-submit-once, which is an enhancement over a form that
+	// submits without it; what must not appear is markup that only works
+	// because a script interpreted it.
+	for _, scripted := range scriptedMarkup {
+		if strings.Contains(out, scripted) {
+			t.Errorf("the create form carries %q; the picker is the platform's own control and needs none of it:\n%s", scripted, out)
+		}
+	}
+	if strings.Contains(strings.ToLower(out), "<script") {
+		t.Errorf("the create form loads a script of its own:\n%s", out)
+	}
+
+	// A suggestion is an attribute value, and from T023 it is a directory name
+	// off a filesystem walk rather than a line the operator typed. A directory
+	// named with a quote must close nothing.
+	hostile := renderComponent(t, "create-form", createFormView{PageToken: "t", Suggestions: []string{`/srv/work/" onfocus="stealFocus`}})
+	if strings.Contains(hostile, `" onfocus="stealFocus`) {
+		t.Errorf("a suggestion escaped its attribute:\n%s", hostile)
+	}
+}
+
+// TestAnyPathStillTypeable is FR-040, and the requirement a picker is most
+// likely to be "improved" past: a list of directories is one short step from a
+// chooser of directories, and the chooser is wrong.
+//
+// **Must fail when** a `<select>` replaces the input, or a `pattern` appears on
+// it. Either turns the convenience into the control — an allowlist rendered
+// into markup, free to drift from ResolveWorkDir, refusing in a native bubble
+// this daemon never wrote and with nothing on the page to say why.
+//
+// The other half of the sentence — that a typed path *is* accepted when it is
+// allowlisted — is the handler's, unchanged by this task and pinned by the
+// create route's own tests. This control narrows nothing it hands over.
+func TestAnyPathStillTypeable(t *testing.T) {
+	t.Parallel()
+
+	for name, view := range map[string]createFormView{
+		"offering suggestions": {PageToken: "t", Suggestions: workdirSuggestions},
+		"offering none":        {PageToken: "t"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			out := renderComponent(t, "create-form", view)
+
+			input := workdirInput.FindString(out)
+			if input == "" {
+				t.Fatalf("the working directory is no longer a field the operator can type into:\n%s", out)
+			}
+			if kind, _ := attributeValue(t, input, "type"); kind != "text" {
+				t.Errorf("the working-directory field is type %q; free text is what makes any path reachable (%s)", kind, input)
+			}
+			if pattern, ok := attributeValue(t, input, "pattern"); ok {
+				t.Errorf("the working-directory field carries pattern=%q, which is the containment rule copied into the markup:\n%s", pattern, out)
+			}
+			if chooser := regexp.MustCompile(`<select\b[^>]*\bname="work_dir"`).FindString(out); chooser != "" {
+				t.Errorf("the working directory became a chooser (%s):\n%s", chooser, out)
+			}
+		})
+	}
+}
+
+// TestNoSuggestionsRendersPlainField is the absent-value half, and it is the
+// state every render is in today: no task yet supplies a suggestion, so this is
+// what an operator actually meets.
+//
+// **Must fail when** an empty `<datalist>` is emitted, or the field points at
+// one that was not rendered. Both are the same defect in two shapes — markup
+// that reads like an offer and makes none — and FR-018a's rule about absent
+// values is that a component states the absence rather than rendering
+// something shaped like a value.
+func TestNoSuggestionsRendersPlainField(t *testing.T) {
+	t.Parallel()
+
+	out := renderComponent(t, "create-form", createForm())
+
+	if strings.Contains(out, "<datalist") {
+		t.Errorf("a form with nothing to suggest renders a datalist anyway:\n%s", out)
+	}
+	input := workdirInput.FindString(out)
+	if input == "" {
+		t.Fatalf("the create form renders no work_dir field at all:\n%s", out)
+	}
+	if list, ok := attributeValue(t, input, "list"); ok {
+		t.Errorf("the field points at the datalist %q and none is rendered (%s); the field with nothing to suggest is the field that shipped before this existed", list, input)
+	}
+}
+
 // TestTheCardSaysWhatItIsRunning covers the other half: two sessions are
 // otherwise identical on a fleet, and an operator needs to tell the
 // remote-control one from the plain one.

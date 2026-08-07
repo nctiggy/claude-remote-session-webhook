@@ -217,6 +217,29 @@ type createFormView struct {
 	// root is missing from the hint would read it as a refusal they have no way
 	// to explain.
 	Roots []string
+
+	// Suggestions is what the working-directory picker offers (T022): the paths
+	// that render as `<option>` elements inside the field's `<datalist>`.
+	//
+	// It is not the Roots hint in another shape. That sentence says which
+	// directories a session may run *under*; this list is the working
+	// directories themselves, one level in, and a form can carry both because
+	// they answer different questions — "what is permitted" and "what is here".
+	//
+	// **Nothing in this list is validated, and nothing in it needs to be.** The
+	// datalist submits an ordinary string, so a chosen path and a typed one are
+	// indistinguishable to the handler and both meet ResolveWorkDir — the same
+	// allowlist check, the same uniform refusal, the same audit record (FR-042).
+	// A path here grants nothing, and a path absent from it is still acceptable
+	// typed (FR-040). Treating a suggestion as an authorisation is the one real
+	// vulnerability this control could introduce, and it is closed by the list
+	// reaching no decision at all.
+	//
+	// Empty renders no datalist and no `list` attribute — the field as it
+	// shipped before the picker existed (FR-043). It is empty in every render
+	// today: the sources the contract names are a configured list and the
+	// discovery walk, and T023 is what supplies them.
+	Suggestions []string
 }
 
 // outcomeView is the banner the fleet renders for what an action just did (T014).

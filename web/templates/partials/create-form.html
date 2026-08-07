@@ -85,8 +85,43 @@
 <input class="field-input" id="create-name" type="text" name="name" required maxlength="64" pattern="[-a-zA-Z0-9]+" autocomplete="off" spellcheck="false">
 </div>
 <div class="field">
-<label class="field-label" for="create-work-dir">Working directory</label>
-<input class="field-input" id="create-work-dir" type="text" name="work_dir" required autocomplete="off" spellcheck="false" aria-describedby="create-roots">{{/*
+<label class="field-label" for="create-work-dir">Working directory</label>{{/*
+  The picker is the platform's own control and nothing besides (T022,
+  contracts/directory-picker.md). `list` plus a `<datalist>` filter as the
+  operator types (FR-039), are operable by keyboard (FR-044), announce their
+  options to a screen reader (FR-044), and leave the field free text (FR-040) —
+  five of the six picker requirements, with no script running at all. The one
+  remaining requirement, saying when the list is showing a subset (FR-045), is
+  an addition to a control that already works rather than the thing that makes
+  it work.
+
+  The abandoned branch's hand-rolled combobox is deliberately not carried here:
+  225 lines reimplementing filtering, focus management and ARIA roles the
+  browser already provides correctly, which degrade to nothing with scripting
+  off and own accessibility bugs the browser would otherwise own. Only its
+  discovery walk is worth carrying, and that is T023's.
+
+  **A suggestion is never an authorisation.** The datalist submits an ordinary
+  string, so the handler cannot tell a chosen path from a typed one and both
+  meet ResolveWorkDir, the same refusal and the same audit record (FR-042).
+  That is the whole security story of this control: the list is presentation,
+  the allowlist is the control. A path listed here grants nothing.
+
+  The attribute and the element are both conditional on there being something
+  to suggest, so a daemon with no suggestions renders the field exactly as it
+  shipped before the picker existed — FR-043's degradation, and FR-018a's
+  discipline about absent values applied to a control. An empty `<datalist>` is
+  markup that reads like an offer and makes none, and a `list` pointing at an
+  element that was not rendered is an attribute an operator cannot act on.
+
+  Still no `placeholder` and still no `pattern`. A placeholder is not a label
+  (docs/components.md's Form rules). A pattern would be the containment rule
+  copied into the markup, free to drift from ResolveWorkDir and refusing in a
+  native browser bubble this daemon never wrote — which is the same reason this
+  is not a `<select>`: a path absent from the list must still be typeable in
+  full.
+*/}}
+<input class="field-input" id="create-work-dir" type="text" name="work_dir"{{ if .Suggestions }} list="workdir-suggestions"{{ end }} required autocomplete="off" spellcheck="false" aria-describedby="create-roots">{{ with .Suggestions }}<datalist id="workdir-suggestions">{{ range . }}<option value="{{ . }}"></option>{{ end }}</datalist>{{ end }}{{/*
   The whole hint is one element carrying one id, so aria-describedby on the input
   reaches the sentence and the list together. A daemon configured with no root at
   all cannot start — config.Load refuses it — so the `with` here is the zero
