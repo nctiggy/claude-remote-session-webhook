@@ -540,3 +540,119 @@ remains BLOCKED-ON-HUMAN; T014 and after wait on it.
 6. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
 7. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
 8. **No ad-hoc defects observed** in the code touched.
+
+---
+
+## Iteration 9 — 2026-08-07 23:55
+
+**Did:** T009, the start of US3. `install.sh` at the repository root: detect linux/amd64 or
+linux/arm64 and refuse anything else by name, resolve the version from the `latest` redirect,
+download the tarball, `SHA256SUMS` and `SHA256SUMS.sig`, verify the signature and then the
+checksum, and only then unpack. Five tests in `internal/release/install_test.go`
+(`TestAssetNamesAgreeAcrossLanguages`, `TestInstallerNamesNobody`,
+`TestInstallVerifiesBeforeExecutable` with five cases, `TestInstallRefusesUnknownPlatform`,
+`TestInstallerCarriesTheCommittedKeys`). Gate green: build, vet, `go test ./...`,
+`golangci-lint run` (2.12.2, 0 issues), `gofmt -l` empty, `go.sum` still absent.
+
+**Learned:**
+
+- **The whole script is replayed, not a step of it** — `bash -c stubs+"\n"+install.sh`, with
+  `curl`, `uname`, `openssl`, `sha256sum`, `tar`, `chmod` and `install` defined as bash
+  functions ahead of it. That is iteration 7's `ghStub` trick applied to a file rather than a
+  `run:` block, and two things make it work: prepending before the `#!` line is harmless, and
+  **`command -v` reports a shell function**, so `require_tools` is satisfied by the stubs even
+  where the real tool is absent. Only `curl` and `uname` answer for themselves; the rest wrap
+  the real tool with `command` and log that they ran, because a stub standing in for `openssl`
+  or `tar` would be the test agreeing with itself.
+- **"Verified before anything is executable" is an ordering claim, so the test reads an event
+  log rather than the filesystem.** `tar` is in the same list as `chmod` and `install`, and
+  that is the non-obvious part: **tar restores the mode stored in the archive**, so unpacking
+  is itself the moment inert bytes become a file the host will run. The invariant asserted is
+  that no event in {tar, chmod, install} precedes both {openssl, sha256sum} — which is also
+  what **T010 and T011 have to keep true as they add the placement steps**. Checking the
+  filesystem instead would have proven nothing: the script's `trap … EXIT` removes its own
+  workdir, so "nothing executable is left" is true even of an installer that made one.
+- **openssl is on this host and the signature path really runs.** A raw ed25519 public key is
+  wrapped for `openssl pkeyutl -verify -pubin -rawin` by prepending the constant 12-byte SPKI
+  header, whose base64 is `MCowBQYDK2VwAyEA` — 12 divides by three, so it concatenates with
+  the key's base64 with no re-encoding. The test derives that prefix from
+  `x509.MarshalPKIXPublicKey` rather than typing it, because **a wrong prefix fails exactly
+  like a wrong key**: every release refuses, and nothing says why. **T013's `keygen` must
+  print the public half as base64 of the raw 32 bytes** for this to keep working, which is
+  also what `ed25519.PublicKey` marshals to.
+- **The installer carries its own copy of the key list and it is empty**, matching what T013 is
+  told to do with `internal/updater/release_key.txt`. It cannot read that file — it is fetched
+  on its own with no checkout — so the lines are written twice.
+  `TestInstallerCarriesTheCommittedKeys` **skips today and starts asserting the moment T013
+  creates the file**, which is the drift it exists for. **The operator's step is now three
+  places, not two: `RELEASE_SIGNING_KEY`, `release_key.txt`, and the `RELEASE_KEYS` heredoc in
+  `install.sh`.**
+- **`sha256sum -c SHA256SUMS` is the wrong command here and it fails against a *correct*
+  release.** The file covers every asset and the installer downloads one of them, so the other
+  four are missing files. What it does instead is `grep -Fqx "$(sha256sum "$tarball")"` — the
+  published line matched whole, which cannot be satisfied by a substring and needs no parsing.
+  The fixture carries the four undownloaded names deliberately, so this mutation is caught.
+- **The version comes from the `latest` redirect, not the API.** `curl -o /dev/null -w
+  '%{url_effective}'` on `/releases/latest` answers `…/releases/tag/v0.42`; the API would work
+  too and is rate-limited by address, so an office behind one address installs a few times and
+  then cannot. `${url##*/}` is also why the version can never contain a `/`, which is what
+  makes it safe in the asset name and the `-o` path.
+- **All eight mutations were run and each fails with the right message**: unpack moved above
+  the checks; an empty key list treated as "nothing to verify against"; a missing
+  `SHA256SUMS.sig` downloaded with `|| true` and skipped; `sha256sum -c` over the whole file;
+  one character changed in the SPKI prefix (fires twice — the prefix assertion *and* every
+  signature); `crswd-${version}-linux-…` renaming; a `/home/<user>` path in `mktemp`; and an
+  unknown architecture falling through to amd64. **Note that `fetch … || true` does not mutate
+  anything** — `die` runs `exit`, which `||` does not catch — so the missing-signature
+  mutation has to bypass `fetch` entirely to be a real one.
+- **`errcheck` has `check-blank: true`, so `raw, _ := os.ReadFile(…)` is a lint failure** even
+  in a test, even beside a `//nolint:gosec`. `if raw, err := os.ReadFile(log); err == nil` is
+  shorter anyway and drops the `os.Stat` in front of it.
+- **No tagged suite was needed.** Nothing here is behind a build tag: `internal/release` is
+  test-only in the default build, and neither `cmd/crswd` nor `deploy/` was touched.
+- **`shellcheck` and `chmod` were both refused by the sandbox**, as in iterations 6 and 7. The
+  script's syntax is exercised for real — the tests run the whole file under `bash` eight
+  times — but nothing has *linted* it. **`install.sh` is therefore committed mode 0644**:
+  `chmod` and `git update-index --chmod=+x` were both refused, and the documented use is
+  `curl … | bash`, which does not need the bit. **Whoever can run `chmod` should set it**, or
+  `./install.sh` from a clone fails for a reason that has nothing to do with the script.
+
+**Left:** T010–T021. T010 (place the binary, the unit, the recorded hash, and a config only if
+absent) is next and unblocked; it extends `install.sh` where `main` currently ends, and
+`runInstaller` in `install_test.go` already sets `HOME` to a directory the test owns. T013
+remains BLOCKED-ON-HUMAN; T014 and after wait on it.
+
+**Findings:**
+
+1. **The installer refuses every release until the operator commits a key, and that is
+   deliberate — but it means T012 cannot go green yet.** T012 runs the installer on a fresh
+   runner against **the published release**, and no published release carries `SHA256SUMS.sig`
+   until T014, which waits on T013's human step. The refusal is correct in both directions
+   (spec FR-025, and "an unsigned release is a release nobody can install"), so **T012 should
+   be taken after the operator's step rather than before it**, or it lands as a job that fails
+   on every merge to `main`. Not a defect in T009 — the same is true of T015's verifier, which
+   embeds the same empty file.
+2. **`quickstart.md`'s installer check contradicts `contracts/installer.md`.** Line 56 runs
+   `grep -iE 'nctiggy\|/home/[a-z]' install.sh` and expects **no matches**, but the contract
+   says plainly that "the repository owner appears in the URL it fetches from, which is
+   unavoidable and fine", and there is nowhere else to download a release from. Built to the
+   contract, and `TestInstallerNamesNobody` encodes exactly that reading: the account name only
+   on a line containing `https://`, no `/home`, `/Users` or `/root` path, no address. The
+   quickstart line as written can only pass on an installer that cannot work. Not fixed — it is
+   one line in a superseded artifact and outside this task (AR-008) — but **T021 should correct
+   it while documenting the one-liner**, because it is the check a human would run by hand.
+3. **CI lints no shell outside `.claude/hooks/`, `ralph/loop.sh`, `.claude/statusline.sh` and
+   `.github/scripts/`.** `ci.yml`'s `Shell syntax` and `shellcheck` steps both name those
+   paths explicitly, so `install.sh` — the one shell script this project asks strangers to pipe
+   into bash — is checked by nothing but the tests written for it. Adding it to both lists is a
+   two-word change to `ci.yml`, outside this task's named files. **Worth doing in the fix lane,
+   or by T012 while it is already editing a workflow.**
+4. **Iteration 7's finding about `gh release list --limit 1000` still stands.**
+5. **Iteration 6's finding about `data-model.md`/`contracts/release.md` and `SHA256SUMS.sig`
+   still stands** — T015's verifier must expect the sums file to cover five names, not seven.
+6. **Iteration 5's finding about `crswd-api` arriving non-executable still stands** (T021's
+   README). `install.sh` does not touch it: T009 unpacks the binary and nothing else.
+7. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
+8. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
+9. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
+10. **No ad-hoc defects observed** in the code touched.
