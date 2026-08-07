@@ -1118,3 +1118,96 @@ command through a login shell in `internal/config/depcheck.go`, four tests in
    uncapped-union note and iteration 7's missing wiring test are also still open and unowned.
 8. **#95 still has not received T002's SHA** (`ef18756`), because `gh` is not an approved
    command in the loop's session. Unchanged since iteration 2 and still needs a human.
+
+---
+
+## Iteration 14 — 2026-08-07 18:39
+
+**Did:** T014, in commit `ca1feb9`. The start-command probe now resolves a binary the way a
+session will — through a login shell — and where it cannot, it says what it checked instead
+of claiming the command is absent. Six new tests in `internal/config/depcheck_test.go`
+(`TestProbeResolvesThroughLoginShell`, `TestGenuinelyMissingCommandStillWarns`,
+`TestProbeNamesWhatItChecked`, `TestMissingTmuxStillFatal`, `TestTheProbeReallyAsksALoginShell`,
+`TestTheLoginShellIsAskedNothingAboutTheCommand`), plus a third case on
+`TestNoSecretInAnyDiagnostic` and a rewritten `TestNeverExecutesInstall`. Closes #96.
+
+**Learned:**
+
+- **The probe asks the shell for its PATH; it never names the command to the shell.**
+  `sh -lc "command -v $binary"` would resolve identically and is a **shell string built from
+  configuration**, which `docs/security.md` §2 forbids by name ("No `sh -c`"). The plan's
+  complexity table authorises *executing the operator's profile*, not building a command line
+  — those are two different permissions and only the first was granted. So `loginShellPATH`
+  runs `$SHELL -l` with a **constant** script (`printf '%s\n' "$PATH"`) on **stdin**, and the
+  name is resolved in Go by `lookInPATH` against the list that comes back. Two tests keep that
+  from drifting back: `TestNeverExecutesInstall` now requires every `exec.CommandContext`
+  argument past the program to be a source literal, and
+  `TestTheLoginShellIsAskedNothingAboutTheCommand` requires `loginShellPATH` to take **no
+  parameters** — a probe that cannot be told what to look for cannot be told to look for it in
+  a command line.
+- **`TestNeverExecutesInstall` had to change and its guarantee is intact.** It asserted that
+  `exec.LookPath` was the *only* member of `os/exec` this package reaches, which forbids the
+  fix outright. It now allows `CommandContext` as well, and pays for it with two claims the old
+  version did not make: the argv is literal (above), and this package starts **exactly one**
+  subprocess. FR-014 — never install anything, never run a probed binary — is untouched: the
+  one program started is the operator's own shell and `printf` is a builtin.
+- **`cmd.Stderr = io.Discard` is a disclosure rule, not tidiness.** With `Stderr` left nil,
+  `cmd.Output()` folds the child's stderr into the returned `*exec.ExitError`, and this daemon
+  prints that error into a journal that outlives the process (FR-043). A `.profile` is free to
+  print anything. The note quotes the *exec* error and never the shell's own output.
+- **Three outcomes, not two, and the third is the requirement.** Found on the daemon's PATH →
+  silent, as before. Not there, login shell finds it → **silent** (the #96 case: nothing is
+  wrong). Not there, login shell could not be asked → a **note** naming what was checked.
+  Neither there → the old warning, now carrying `checked: this daemon's own PATH, and the PATH
+  a login shell gives a session`. The exact sentences differ slightly from the illustrative
+  ones in `contracts/diagnostics-and-probe.md` §Part 2; the contract's four named tests all
+  exist and pass. **T016 should document the note**, because an operator meeting it in a
+  journal has never been told this daemon has two environments to be wrong about.
+- **The shell is asked once per start, not once per command** (`sessionPATH` memoises the
+  failure too), and **only after this daemon's own PATH has already missed** — a host where
+  everything is present never runs the operator's profile. `TestProbesFirstWordOnly` asserts
+  the zero, `TestProbeResolvesThroughLoginShell` asserts the one.
+- **Which shell is a guess this daemon cannot make better.** tmux takes `default-shell` from
+  `$SHELL` and falls back to the passwd entry, which pure Go cannot read (`os/user` exposes no
+  Shell field). The probe reads `$SHELL`, falls back to `/bin/sh`, and the messages say what
+  was checked — which is exactly why FR-023c exists. A `.profile` full of bashisms read by
+  `dash` is the same story: the shell exits, the probe returns an error, and the operator gets
+  the note rather than a false absence.
+- **Mutation-verified five ways, each reverted:** (a) ignoring the login shell's answer —
+  `TestProbeResolvesThroughLoginShell` fails with both warnings quoted, which is #96 verbatim;
+  (b) dropping `-l` — `TestTheProbeReallyAsksALoginShell` fails, and its failure prints the
+  non-login PATH, which is the only way to see that an ordinary shell never reads `~/.profile`;
+  (c) the unanswerable branch calling the warning instead of the note —
+  `TestProbeNamesWhatItChecked` fails on four claims including "says `will fail`, which is a
+  claim about the command"; (d) the tmux probe consulting the login shell —
+  `TestMissingTmuxStillFatal`'s second case fails; (e) a non-literal argument to the shell —
+  `TestNeverExecutesInstall` fails naming the position.
+- **The fixture describes two environments now.** `newHostTools` takes `*testing.T` and starts
+  with a real empty `t.TempDir()` as the login shell's PATH, so "the shell was asked and found
+  nothing" is the default and every existing case kept its meaning. `loginShellFinds` writes a
+  **real executable** rather than answering a lookup, because the resolution against a
+  directory list is production code and a fake that answered "installed" would skip it.
+
+**Left:** T015 (the documented audit-trail command, needs `-tags quickstart`), T017 (pointer
+selection and blur close), T016 (docs).
+
+**Ad-hoc findings, not fixed:**
+
+1. **The live daemon's new behaviour was not measured, only the mechanism.** `env -i … /bin/sh -l`
+   is not an approved command in the loop's session, so whether the deployed unit now goes
+   silent about `rc` is unverified on the host. `TestTheProbeReallyAsksALoginShell` proves a
+   login shell is asked and that a `~/.profile` addition reaches the answer; the remaining
+   uncertainty is only which shell systemd's environment names. **A human restarting
+   `crswd.service` closes this in one line of journal.**
+2. **The daemon now runs the operator's profile at startup, before anything binds.** Bounded
+   by a 5s timeout and a 1s `WaitDelay`, and only on a host where a command is already missing
+   from this daemon's PATH — but it is a new startup dependency on a file the daemon does not
+   own. The plan's complexity table took this trade deliberately (`plan.md:138`); recording it
+   here because nothing in `deploy/` or `README.md` mentions it. **T016 or milestone 6.**
+3. Findings 2–8 of iteration 13 are all still open and unchanged: `journalctl -p` is not
+   T015's answer; `Config.String()` prints `start_commands` unredacted (**T016**); the picker
+   has no pointer selection and no blur close (**T017**); the reduced-motion rule resets
+   `transition` and not `animation` (**T016** or milestone 6); `docs/components.md` documents
+   no `.combo*` or `.switch-*` entry (**T016**); the stale-prose list from iterations 4–7
+   (**T016**); and **#95 still has not received T002's SHA `ef18756`**, because `gh` is not an
+   approved command in the loop's session — unchanged since iteration 2, still needs a human.

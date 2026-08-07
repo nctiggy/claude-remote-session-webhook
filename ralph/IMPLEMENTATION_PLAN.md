@@ -226,7 +226,20 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
     **T015 is unblocked and the port is not its problem**: `127.0.0.1:8765` is still held
     by the deployed daemon, but quickstart stopped binding it — `freeAddrOn` covers the two
     startup cases. See `PROGRESS.md` iteration 13.
-- [ ] T014 🔒 Resolve the start command the way the session will, or say what was checked
+- [x] T014 🔒 Resolve the start command the way the session will, or say what was checked
+  - The probe asks `$SHELL -l` **what PATH it has** — a constant script on stdin — and
+    resolves the binary against that list in Go. It never names the command to the shell:
+    `sh -lc "command -v $binary"` resolves identically and is the shell string
+    `docs/security.md` §2 forbids, and the plan's complexity table authorised *executing the
+    profile*, not *building a command line*. **`TestNeverExecutesInstall` had to change** —
+    it forbade every member of `os/exec` but `LookPath` — and now pays for `CommandContext`
+    with two stronger claims: every argv element past the program is a source literal, and
+    this package starts exactly one subprocess. **Three outcomes, not two**: found on either
+    PATH is silent, neither is the old warning plus what was checked, and a shell that could
+    not be asked is a *note* (FR-023c). The daemon now runs the operator's profile at
+    startup, bounded by a 5s timeout and only when a command is already missing from its own
+    PATH; nothing in `deploy/` or `README.md` says so — **T016**. See `PROGRESS.md`
+    iteration 14.
 - [ ] T015 Correct the documented audit-trail command
 
 ### US4 — the pointer, which the keyboard task could not reach
