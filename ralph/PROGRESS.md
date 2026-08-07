@@ -1301,3 +1301,104 @@ findings below and in iterations 4–14.
    undocumented (**T016**); and **#95 still has not received T002's SHA `ef18756`**, because
    `gh` is not an approved command in the loop's session — unchanged since iteration 2, still
    needs a human.
+
+---
+
+## Iteration 16 — 2026-08-07 19:03
+
+**Did:** T017, in commit `02a24b9`. The themed picker can be used with a mouse: a `mousedown`
+delegated from the listbox activates the option under the pointer and runs the same accept
+`Enter` runs, and `blur` on the field runs the same `close` `Tab` runs. The accept is now one
+helper (`accept(option)`) that both triggers call, so `crswd.js` still writes the field's
+value in exactly one place. Two tests in `stylesheet_test.go`,
+`TestComboOptionIsPointerSelectable` and `TestComboClosesOnBlur`, plus a new `pickerBlock`
+helper they share.
+
+**Learned:**
+
+- **The two halves really are one change, and the ordering trap is the reason.** A blur closes
+  the list; a blur fires *between* a press and the click that would have followed it. So a
+  `click` handler on an option is a handler on markup that has already been hidden — it works
+  when it wins the race and does nothing when it does not. Mutation (a) below is that exact
+  bug, and it failed **twice**: the pointer test's own assertion, and T011's Tab tail, which is
+  bounded by the `'mousedown'` marker and runs to the end of the block without it.
+- **`preventDefault()` on the press is not politeness, it is two behaviours.** The default
+  action of a press on something that cannot hold focus takes focus off the field — so without
+  it, dragging the scroll bar of a bounded list blurs the field and shuts the list under the
+  pointer, and an operator who picks a path ends up holding it with focus on the document body.
+  It is refused for **every** position inside the list rather than only on an option, which is
+  what makes the scroll-bar case work.
+- **The accept had to be extracted, and where it sits is load-bearing.** T011 holds `.value =`
+  at exactly one occurrence in the whole file *and* asserts that occurrence is after the first
+  `'Enter'` literal. A shared helper declared above the keydown handler — the obvious place —
+  fails the second claim while satisfying the first. It is declared **between** its two callers
+  instead: below the key that first needed it, above the pointer that now shares it. Both
+  claims stay true and neither assertion had to be weakened.
+- **One existing assertion did have to move, and it is the Tab tail.** T011 sliced
+  `picker[index("'Tab'"):]` and forbade `preventDefault` in it, which was exactly right when
+  the switch was the last thing in the block. The pointer's refusal is of a *focus move*, not
+  of a key, so the tail now ends at the `'mousedown'` marker (and falls back to the end of the
+  block if the pointer ever moves above it). What is held is unchanged: nothing between the Tab
+  literal and the end of the keydown handler refuses the key.
+- **The new assertions find a helper by the state it owns rather than by name.** The accept is
+  the nearest `const NAME = (` above the file's one `.value =`; the activation is the nearest
+  one above `setAttribute('aria-selected'`. Then both trigger regions are required to call it.
+  That is the same principle the ids follow — this file keeps no spelling the script owns — and
+  it is what makes "a second trigger, not a second behaviour" testable rather than asserted in
+  prose.
+- **`pickerBlock` is new and T011's inline slicing was left alone.** Three tests now want the
+  same slice; rewriting a green test to route through a new helper is the churn AR-008 keeps
+  out of a task's diff. If a fourth wants it, moving T011 across is a one-line change with the
+  helper already proven.
+- **Mutation-verified seven ways, each reverted:** (a) `mousedown` → `click` — the pointer test
+  fatals *and* T011's Tab tail fails, which is the task's named must-fail from two directions;
+  (b) `cursor: pointer` deleted from `.combo-list li` — the stylesheet half fails, printing the
+  rule, which is the other named must-fail (removing the affordance instead of implementing
+  it); (c) the blur listener bound on `focus` instead — `TestComboClosesOnBlur` fatals;
+  (d) a blur that normalises the field to the nearest match — the blur test's `.value` sweep
+  **and** T011's whole-file count both fail, so FR-008's floor is held twice on the path
+  nobody watches; (e) the pointer writing the value itself instead of calling the accept — same
+  two, from the other side; (f) `activate` dropped from the pointer — the activation assertion
+  fails; (g) `preventDefault` dropped from the press — the refusal assertion fails.
+- **Everything is green including the tagged suites.** `go build`, `go vet`, `go test ./...`,
+  `golangci-lint run` (confirmed **2.12.2**, 0 issues), `gofmt -l` clean, no `go.sum`. Also
+  `go test -tags tmux ./...` green and **`go test -tags quickstart ./cmd/crswd` green in 28s** —
+  iteration 15's finding holds, the deployed daemon on `127.0.0.1:8765` is no longer in the
+  way, and the run does not disturb it.
+
+**Left:** **T016 only** — docs, and assert `go.sum` is still absent. It is the last task in the
+plan and it is carrying the findings of iterations 4–15 (see the list below). Everything else
+in milestone 5 is checked.
+
+**Findings:**
+
+1. **`docs/components.md` still documents no `.combo`, `.combo-list`, `.combo-status` or
+   `.switch-*` entry** (iterations 8–11, still open, still **T016's**). T017 adds the last two
+   things worth writing down about this control: **the pointer selects on `mousedown` and the
+   press is refused so focus never leaves the field**, and **the accept is one helper two
+   triggers call**. Both are decisions the next themed control over a native one would
+   otherwise re-derive — and the first is a bug it would otherwise ship.
+2. **A pointer selection cannot reopen the list.** Accepting closes it, which is right, but the
+   only ways back are typing or an arrow key — there is no press on the field that reopens what
+   is already there. The native popup reopens on a click in the field. It is a smaller gap than
+   the one T017 closed (the value is already correct, and the keyboard has a way back), it is
+   outside T017's two named behaviours, and it needs a decision about whether a press on a
+   field an operator has just finished with should open a list at all. **Milestone 6, or a
+   `NEEDS CLARIFICATION` if someone wants it in T016.**
+3. **Nothing pins the `mousedown`/`blur` pair as a pair.** The two tests hold each behaviour,
+   and the ordering that makes them work is prose in `crswd.js` and in the task text. A future
+   task that added a second close path — a `focusout` on the wrapper, say — would be green and
+   would reintroduce the race for anything bound below it. There is no cheap Go assertion for
+   "these two orderings agree"; the closest is forbidding a second close registration, which is
+   more rule than the file has earned. **Recorded rather than fixed.**
+4. Iteration 9's reduced-motion hole is unchanged and still **T016's or milestone 6's**:
+   nothing in `crswd.css` stops an `animation` under `prefers-reduced-motion`, only a
+   `transition`. T017 adds no animation.
+5. Everything in iteration 15's findings 1–4 is unchanged and still open: `.golangci.yml` never
+   lints the `quickstart` tag (27 pre-existing issues behind adding it); the two READMEs still
+   print the broken audit command; `contracts/diagnostics-and-probe.md:19-36` is stale;
+   `Config.String()` prints `start_commands` unredacted; the startup dependency on the
+   operator's `~/.profile` is in no deployment doc; T014's *note* outcome is undocumented; the
+   stale-prose list from iterations 4–7; and **#95 still has not received T002's SHA
+   `ef18756`** — `gh` is not an approved command in the loop's session, unchanged since
+   iteration 2, still needs a human.

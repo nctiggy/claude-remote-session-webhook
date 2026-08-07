@@ -254,7 +254,18 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
 
 ### US4 — the pointer, which the keyboard task could not reach
 
-- [ ] T017 Pointer selection **and** blur close, written together in `web/static/crswd.js`
+- [x] T017 Pointer selection **and** blur close, written together in `web/static/crswd.js`
+  - `mousedown` on an option activates it and runs a shared `accept(option)`; `blur` on the
+    field runs the same `close` `Tab` runs. **The accept is declared between its two callers**
+    — below the key that needed it first, above the pointer that shares it — because T011 holds
+    the file's one `.value =` *after* the first `'Enter'` literal, and the obvious placement
+    above the handler fails that while satisfying the count. The press is `preventDefault`ed
+    for every position inside the list, which keeps focus in the field and stops a drag on the
+    scroll bar from shutting the list. **One existing assertion moved**: T011's "Tab is never
+    refused" tail now ends at the `'mousedown'` marker, because what is below it refuses a
+    focus move rather than a key. **A pointer selection cannot reopen the list** and nothing
+    pins the two orderings as a pair — `PROGRESS.md` iteration 16, findings 2 and 3,
+    milestone 6.
 
 ### Ship it
 
