@@ -1,5 +1,8 @@
-// Package config loads the daemon's whole configuration from the process
-// environment, once, before anything binds or spawns.
+// Package config loads the daemon's whole configuration once, before anything
+// binds or spawns, from a file under ~/.config/crswd with the process
+// environment overriding it (#65). file.go owns the file half; everything here
+// reads through one getenv function and does not know, or need to know, which
+// source a value came from.
 //
 // Every check here is fail-closed on purpose. Sessions run with
 // --dangerously-skip-permissions, so the allowlisted roots, the loopback bind,
@@ -26,8 +29,10 @@ import (
 	"unicode"
 )
 
-// The environment is the only configuration surface (FR-001). Named as
-// constants so an error message and the variable it blames cannot drift.
+// The settings, named as constants so an error message and the variable it
+// blames cannot drift. Each is also a configuration-file key — the same name,
+// lower-cased and without the CRSW_ prefix (#65, and KeyForVar in file.go) —
+// so there is one list of settings rather than two that can disagree.
 //
 // gosec G101 fires on EnvSharedSecret because the identifier says "secret" and
 // the value is a string literal. The value is the *name* of an environment
@@ -332,6 +337,14 @@ type Config struct {
 	// remote-control command, and the dashboard renders no switch — an operator
 	// is never offered a control whose only outcome is a refusal.
 	RemoteControlCommand string
+
+	// File is the configuration file this Config was read from, or "" when there
+	// was none — either because the default path holds no file or because every
+	// value came from the environment. It is the path and never the contents:
+	// naming the file answers "which one did you actually read?", which is the
+	// question an operator asks first and the one a settings page (#49) can only
+	// answer if the loader remembers.
+	File string
 }
 
 // String redacts the shared secret so that formatting a Config — in a log line,
@@ -341,8 +354,8 @@ type Config struct {
 // The allowed addresses are counted rather than named: they are a list of real
 // people, and this string is written wherever a Config is formatted.
 func (c Config) String() string {
-	return fmt.Sprintf("config{shared_secret:<redacted> roots:%v listen:%q max_sessions:%d create_rate_per_min:%d max_body_bytes:%d access_team_domain:%q access_aud:%q allowed_emails:%d max_streams:%d start_commands:%v}",
-		c.Roots, c.Listen, c.MaxSessions, c.CreateRatePerMin, c.MaxBodyBytes,
+	return fmt.Sprintf("config{file:%q shared_secret:<redacted> roots:%v listen:%q max_sessions:%d create_rate_per_min:%d max_body_bytes:%d access_team_domain:%q access_aud:%q allowed_emails:%d max_streams:%d start_commands:%v}",
+		c.File, c.Roots, c.Listen, c.MaxSessions, c.CreateRatePerMin, c.MaxBodyBytes,
 		c.AccessTeamDomain, c.AccessAUD, len(c.AccessAllowedEmails), c.MaxStreams,
 		c.StartCommands)
 }
@@ -350,12 +363,31 @@ func (c Config) String() string {
 // GoString mirrors String, so %#v is not a way around the redaction.
 func (c Config) GoString() string { return c.String() }
 
-// Option adjusts what counts as a complete configuration. There is exactly one,
-// because there is exactly one thing outside the environment that changes the
-// answer.
+// Option adjusts where the configuration comes from, or what counts as a
+// complete one.
 type Option func(*loadOptions)
 
-type loadOptions struct{ accessBypassed bool }
+type loadOptions struct {
+	accessBypassed bool
+
+	// file is --config: a path the operator named themselves. Absent from the
+	// filesystem it is a startup failure, unlike the default path.
+	file string
+}
+
+// WithFile names the configuration file explicitly, which is what --config does.
+//
+// It is the first step of the precedence chain: this file, else
+// $XDG_CONFIG_HOME/crswd/config (defaulting to ~/.config/crswd/config), with
+// environment variables overriding whichever was read and built-in defaults
+// under both.
+//
+// A path given here must exist. An operator who named a file has said which
+// bounds they mean, and starting on defaults because of a typo in the path would
+// be the daemon quietly running with none of them.
+func WithFile(path string) Option {
+	return func(o *loadOptions) { o.file = path }
+}
 
 // WithAccessBypassActive stops the loader demanding the three layer-1 values
 // (FR-042). It says the operator has *activated* the development bypass — a
@@ -389,6 +421,29 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 		// thing it may never be.
 		warn = os.Stderr
 	}
+
+	// The file is a *source*, not a second set of rules (#65). Everything below
+	// this point reads through getenv exactly as it always has, so a value
+	// supplied by a file is validated by the same loader, refused by the same
+	// check, and blamed in the same message as one supplied by a variable.
+	path, required := o.file, true
+	if path == "" {
+		path, required = DefaultPath(getenv), false
+	}
+	var fileValues map[string]string
+	if path != "" {
+		values, err := readConfigFile(path, required, warn)
+		if err != nil {
+			return nil, err
+		}
+		fileValues = values
+	}
+	if fileValues == nil {
+		// A file that was not there is not a file that was read, and the audit
+		// record and the settings page must not claim otherwise.
+		path = ""
+	}
+	getenv = layeredEnv(getenv, fileValues)
 
 	secret, err := loadSecret(getenv)
 	if err != nil {
@@ -485,6 +540,7 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 		StartCommands:       startCommands,
 
 		RemoteControlCommand: remoteControl,
+		File:                 path,
 	}, nil
 }
 
