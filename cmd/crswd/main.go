@@ -1,9 +1,9 @@
 // Command crswd is the claude-remote-session-webhook daemon.
 //
 // Every setting is a variable or a line in the configuration file (CRSW_*), so
-// no flags are defined here; flag.Parse still runs so -h reports usage rather
-// than an unknown-flag error. There are two subcommands, `config check` and
-// `config migrate`, and they are in config_cmd.go.
+// the only flag defined here is --version, which asks the binary what it is and
+// starts nothing. There are two subcommands, `config check` and `config
+// migrate`, and they are in config_cmd.go.
 //
 // # The two streams
 //
@@ -23,20 +23,23 @@
 // the one failure this daemon's trail cannot afford, so the rule is "records
 // only" rather than "mostly records" (FR-023a).
 //
-// The subcommands are outside it rather than an exception to it: `config check`
-// runs *instead of* the daemon, writes no record, and its report on stdout is
-// the answer the operator ran it for.
+// The subcommands and --version are outside it rather than exceptions to it:
+// each runs *instead of* the daemon, writes no record, and what it puts on
+// stdout is the answer the operator ran it for.
 package main
 
 import (
 	"context"
 	"errors"
 	"flag"
+	"io"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo"
 )
 
 // shutdownBudget is how long the daemon gives itself between a termination
@@ -49,8 +52,25 @@ import (
 // could not finish — before that escalation is due.
 const shutdownBudget = 30 * time.Second
 
+// unreleased is internal/buildinfo's default, named again here because this is
+// the one place the difference has to be said out loud. Its own
+// TestDefaultVersionIsDev pins the default to this string, so the two cannot
+// drift without that test going red.
+const unreleased = "dev"
+
 func main() {
+	// The only flag on this command, and it starts nothing. A host that cannot
+	// run the daemon at all — no secret, no tmux, a binary that was just swapped
+	// for one that will not exec — must still be able to answer "what is
+	// installed here?", which is the first question asked when an update went
+	// wrong.
+	version := flag.Bool("version", false, "print what this build calls itself, and exit")
 	flag.Parse()
+
+	if *version {
+		printVersion(os.Stdout)
+		return
+	}
 
 	// A subcommand runs *instead* of the daemon and never beside it. `config
 	// check` exists to be run on a host that is already serving, and a program
@@ -67,6 +87,21 @@ func main() {
 	if err := run(context.Background()); err != nil {
 		log.Fatalf("crswd: %v", err)
 	}
+}
+
+// printVersion answers `crswd --version`.
+//
+// An unstamped build says so in words rather than printing "dev" and leaving the
+// reader to decode it. "dev" is the *default* — what a build that skipped the
+// ldflags calls itself — so the line an operator gets back here is telling them
+// the binary in front of them is not a release, and there is no published
+// version to compare it against or roll back to.
+func printVersion(out io.Writer) {
+	if buildinfo.Version == unreleased {
+		say(out, "crswd %s (not a release)\n", buildinfo.Version)
+		return
+	}
+	say(out, "crswd %s\n", buildinfo.Version)
 }
 
 // run is the startup sequence, and its order is the requirement.

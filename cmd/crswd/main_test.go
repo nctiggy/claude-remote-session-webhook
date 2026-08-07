@@ -34,6 +34,13 @@ const theTrailsOwnFile = "internal/audit/audit.go"
 // second, ordinary print in main.go from inheriting the exemption.
 const theSubcommandsReport = "runConfigCommand"
 
+// theVersionReport is the third, on exactly the same terms and for the same
+// reason: `crswd --version` runs *instead of* the daemon, emits no record, and
+// the line it prints is the answer the operator ran it for. Named as a call
+// like the one above, so that an ordinary print added to main.go later still
+// fails this test.
+const theVersionReport = "printVersion"
+
 // TestDiagnosticsGoToStderr is FR-023a as a property of the whole daemon rather
 // than of one sink: nothing it is built from writes a human-readable line to
 // standard output.
@@ -72,7 +79,7 @@ func TestDiagnosticsGoToStderr(t *testing.T) {
 	for name, file := range files {
 		ast.Inspect(file, func(n ast.Node) bool {
 			if call, ok := n.(*ast.CallExpr); ok {
-				if fn, ok := call.Fun.(*ast.Ident); ok && fn.Name == theSubcommandsReport {
+				if fn, ok := call.Fun.(*ast.Ident); ok && (fn.Name == theSubcommandsReport || fn.Name == theVersionReport) {
 					for _, arg := range call.Args {
 						permitted[arg.Pos()] = true
 					}
@@ -100,11 +107,11 @@ func TestDiagnosticsGoToStderr(t *testing.T) {
 		})
 	}
 
-	// The walk has to have seen the two it knows about, or it is a sweep over
+	// The walk has to have seen the three it knows about, or it is a sweep over
 	// nothing reporting no violations — which is what a wrong root path, a
 	// renamed audit file, or a skipped directory each look like from here.
-	if exempt < 2 {
-		t.Fatalf("the sweep found %d os.Stdout in %d files and exempted %d; it expects at least the trail's own and the subcommand's, so it is reading the wrong tree",
+	if exempt < 3 {
+		t.Fatalf("the sweep found %d os.Stdout in %d files and exempted %d; it expects at least the trail's own, the subcommand's and --version's, so it is reading the wrong tree",
 			found, len(files), exempt)
 	}
 }
