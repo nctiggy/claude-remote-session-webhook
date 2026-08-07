@@ -245,3 +245,108 @@ creates it either**. Neither of these is the same field, and neither has an owne
    the duplicate should go.
 3. Nothing else. The create-form chain's ordering is intact: T006 is next in that file and
    nothing outside the chooser's own block was touched.
+
+---
+
+## Iteration 4 — 2026-08-07 16:42
+
+**Did:** T004, in commit `f66b94b`. The create route reads `remote_control` as a two-state
+mode — `on`, or absent — instead of the `start_command` name the form stopped sending in T003.
+Which command a mode runs is asked of `Manager.RemoteStartCommand()`, a new export over the
+existing `commandForMode`'s remote branch. Five tests, all in `actions_test.go`. **This closes
+the milestone's MVP: T001–T004 deliver what milestone 4 claimed.**
+
+**The two open questions from iteration 3, answered:**
+
+1. **`remote_control=on` on a daemon that configures no remote-control command → refused**
+   (`outcomeCreateFailed`, `errModeUnavailable` on the record). **This was not invented.** The
+   repo already states the rule in three places and they agree: `config.go:124` ("a switch that
+   silently started plain sessions instead would be worse than no switch"),
+   `Manager.commandForMode`, which refuses the identical mode for the identical reason on the
+   toggle route, and `refuseBrowserCreate`'s unknown-name branch ("a caller who asked for
+   remote control and silently got a plain session has no way to discover that is what
+   happened"). Applying a stated rule to a new caller is not a guess.
+2. **The switch still renders unconditionally, and that is now a UX wart rather than a hole.**
+   Before this commit a daemon with no remote command showed a switch that silently did
+   nothing; it now shows one that refuses honestly. The conditional still needs a view field
+   nothing specifies, and `data-model.md`'s `RemoteDefault bool` still has no owner — but
+   `RemoteDefault` is "whether the switch renders *on*", default `false`, which is what an
+   unchecked box already is, so it is a no-op field and not the same thing as the conditional.
+   **Neither is blocking any remaining task.** Carried to T016 or to a milestone-6 decision.
+
+**Learned:**
+
+- **`PostForm.Get` cannot express this field, and that is the whole design.** Absent,
+  present-and-empty, and repeated all flatten to `""`. Absence is a *state* (local), so
+  reading the map directly — `values, present := form[field]` — is what keeps the safe state
+  reachable by exactly the one spelling a form produces. `offersRemoteControlState` requires
+  `len(values) == 1 && values[0] == "on"`; everything else is the uniform refusal.
+- **The mapping had to go through the manager, and reusing `commandForMode` wholesale would
+  have been wrong.** Its *local* branch refuses when the remote-control command *is* the
+  default — correct for a transition (nowhere to move to), and catastrophic for a create: on
+  such a daemon every unticked create would error, which is precisely the "absence is treated
+  as an error" the task forbids. So `RemoteStartCommand()` exports the remote branch only, and
+  local stays `StartCommand: ""`, which `config.StartCommands.Command` already reads as the
+  default. **Check what a shared helper refuses before sharing it.**
+- **The refusal reuses `outcomeBadMode` and `errModeUnavailable` rather than adding codes.**
+  Both already say exactly the right thing, and `outcome_test.go:27` sweeps the vocabulary, so
+  a new code is a change in two places for no new sentence. The trail tells a create's refusal
+  from a toggle's by `action` (`dashboard.create` vs `session.mode`), which is the arrangement
+  every other shared reason on this door already uses.
+- **The value check sits *after* the rate limiter, deliberately** — the opposite of
+  `modeFromBrowser`, which reads its value first. The toggle's argument is that skipping a
+  confirming step costs nothing; a budget is not a confirming step. A refusal in front of the
+  limiter is one an unbudgeted stream produces for free, audit records included.
+- **`offersRemoteControl` was already taken** — it is a `*testServer` method in
+  `actions_test.go`. The production allowlist is `offersRemoteControlState`. A method and a
+  package function may share a name in Go, but a reader should not have to know that.
+- **The test fixture was lying and had to be fixed to assert the card.** `offersRemoteControl()`
+  told the *manager* the remote name but not `s.cfg`, and `cardOf` derives the word a card says
+  from `s.cfg.RemoteControlCommand` (dashboard.go:259). A production daemon sets both from one
+  value at `server.go:346`, so the fixture was a daemon that cannot exist. One line added; the
+  whole suite stays green.
+- **`cardModeRow` and `markupTags` in `partials_test.go` are reusable** — same package — and
+  they are how "the card says so in words" is asserted without a test that would pass on a
+  `title` attribute.
+- **Verified against three mutations, each reverted:** (a) the pre-T004 passthrough
+  `StartCommand: r.PostForm.Get(fieldRemoteControl)` with the allowlist deleted — four of the
+  five tests fail, including every row of the security case; (b) absence returning
+  `("", false)` — `TestAbsentFieldMeansLocal` and the local half of the audit test fail;
+  (c) the unavailable-remote branch falling through to the default —
+  `TestRemoteControlOnWithNoRemoteCommandRefuses` fails alone. Note that a naive mutation of
+  the struct literal alone will not compile: `startCommand` goes unused and Go refuses it.
+- **A "the reason does not quote the value" substring check is a trap.** It was written and
+  removed: `errCreateStateNotOffered`'s own sentence contains "on" (inside *remote-control*),
+  so the `on`-valued rows failed on their own sentinel. Asserting the reason **equals** the
+  sentinel is the stronger claim anyway — a fixed string cannot carry caller text.
+- Linter confirmed v2 before trusting the green: `golangci-lint 2.12.2`, 0 issues. The
+  quickstart acceptance suite ran uncached (14s) and passed; `-tags tmux`, `-tags dev` and
+  `-tags quickstart` all compile.
+
+**Left:** T005–T016. **T005 is next** and it is the plan's own warning made concrete: a
+`workdir_suggestions` key with no reader is `CRSW_DESTROY_ON_SHUTDOWN` for the fifth time. The
+create-form chain's next link is T006, and `create-form.html` was not touched this iteration,
+so the ordering is intact.
+
+**Findings:**
+
+1. **`outcomeBadStartCommand`'s comment in `outcome.go` is now stale.** It reasons that "the
+   operator picked from a list this page rendered", which stopped being true when T003 deleted
+   the list. The *sentence* it justifies is still correct, and the branch is still reachable if
+   the manager's command set and `cfg.RemoteControlCommand` ever disagree — so this is prose to
+   correct, not a defect. Not fixed here: it is in a different file from anything this task
+   changed, and AR-008 is load-bearing this milestone. **T016 owns the tidy-up.**
+2. **`refuseBrowserCreate`'s "the same four branches" and the const block's "two fields" are
+   both fixed** — the two stale-prose items iterations 2 and 3 assigned to this task. The
+   branch count is now stated as a relationship rather than a number, so it cannot go stale
+   again the next time a branch is added.
+3. **`ErrUnknownStartCommand` is now unreachable from the browser door.** The name this door
+   submits is the daemon's own, resolved from the same configuration the manager holds. The
+   branch is kept and its comment says why: it is two objects agreeing rather than one fact,
+   and it is the honest answer the day they do not. Worth knowing before anyone reads it as
+   dead code and deletes it — the create's *name* validation is what it guards, and the API
+   door still submits names.
+4. **The daemon is live and this changes its behaviour.** Between `73b9933` (T003) and this
+   commit, every browser create ran the default command regardless of the switch. It now
+   honours the switch. Nothing needs migrating — the mode is derived from the start command
+   already recorded — but an operator watching the deployment will see the switch start working.

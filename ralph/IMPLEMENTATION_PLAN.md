@@ -124,12 +124,14 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
 ### US1 — Remote control at create time (the milestone-4 miss)
 
 - [x] T003 Replace the start-command `<select>` with the `remote_control` switch
-- [ ] T004 🔒 Accept `on` or absent; refuse everything else, including a real command name
-  - ⚠️ **Two open questions T003 could not answer without inventing a requirement**, both
-    written out in `PROGRESS.md` iteration 3 under `NEEDS CLARIFICATION`: what the switch
-    means on a daemon configuring no remote command (the switch renders unconditionally
-    today, and `config.go:212` says it should not), and who owns `data-model.md`'s
-    `RemoteDefault bool`, which no task creates.
+- [x] T004 🔒 Accept `on` or absent; refuse everything else, including a real command name
+  - Both of T003's open questions are answered in `PROGRESS.md` iteration 4. **`on` with no
+    remote command configured is refused**, which is the rule `config.go:124`,
+    `Manager.commandForMode` and `refuseBrowserCreate` already state — not a new decision.
+    **The switch still renders unconditionally**: that conditional needs a view field nothing
+    specifies, and it is now a UX wart rather than a hole, because the route refuses honestly.
+    `data-model.md`'s `RemoteDefault bool` is still unowned and is a no-op (`false` is what an
+    unchecked box already is). Neither blocks a remaining task; **T016 or milestone 6**.
 
 ### US2 — Suggestions that exist on a default install
 
