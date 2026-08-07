@@ -509,8 +509,12 @@ func TestTheCardsDestroyFormCarriesWhatTheRouteRequires(t *testing.T) {
 	got := renderComponent(t, "session-card", card)
 
 	forms := cardForm.FindAllStringSubmatch(got, -1)
-	if len(forms) != 3 {
-		t.Fatalf("the card renders %d action forms; this milestone's card carries three, the destroy, the rename and the compact:\n%s", len(forms), got)
+	// Two, not three: the rename left the card for the session's own page (T027,
+	// FR-049), and a count is the cheapest thing that notices it coming back — a
+	// third form here is either that or a control nobody meant to ship on twenty
+	// cards at once.
+	if len(forms) != 2 {
+		t.Fatalf("the card renders %d action forms; this milestone's card carries two, the destroy and the compact:\n%s", len(forms), got)
 	}
 
 	target := strings.Replace(strings.TrimPrefix(patternDashboardDestroy, "POST "), "{"+pathValueID+"}", card.ID, 1)
@@ -548,11 +552,16 @@ func TestTheCardsDestroyFormCarriesWhatTheRouteRequires(t *testing.T) {
 	}
 }
 
-// TestTheCardsRenameFormCarriesWhatTheRouteRequires is the destroy form's
-// linkage for the second control on the card (T017): the markup, the route and
-// the handler have to agree about one address and two field names, and when they
-// do not, the card renders perfectly and every rename is refused — by the gate if
-// the token field moved, and as bad input if the name field did.
+// TestTheRenameFormCarriesWhatTheRouteRequires is the destroy form's linkage for
+// the rename (T017): the markup, the route and the handler have to agree about
+// one address and two field names, and when they do not, the form renders
+// perfectly and every rename is refused — by the gate if the token field moved,
+// and as bad input if the name field did.
+//
+// It reads the session's own page rather than the card, because T027 moved the
+// control there and left the route where it was (FR-049, FR-050). Every
+// assertion below is the one the card's version made: moving a control is not an
+// invitation to re-decide what it submits.
 //
 // The address and both names are derived from what the daemon registers and reads
 // rather than spelled again here. This template set is parsed with no function
@@ -561,19 +570,20 @@ func TestTheCardsDestroyFormCarriesWhatTheRouteRequires(t *testing.T) {
 //
 // The label is asserted because docs/components.md requires one on every input
 // and a placeholder is not a label — and its `for` is asserted to name *this*
-// card's field, because a fleet is many cards and a label pointing at another
-// card's input reads correctly while operating the wrong session.
-func TestTheCardsRenameFormCarriesWhatTheRouteRequires(t *testing.T) {
+// session's field, because the identifier is what qualifies every other id in
+// this tree and a label pointing elsewhere reads correctly while operating the
+// wrong session.
+func TestTheRenameFormCarriesWhatTheRouteRequires(t *testing.T) {
 	t.Parallel()
 
 	card := actionableCard()
-	got := renderComponent(t, "session-card", card)
+	got := renderedSessionPage(t, card)
 
 	forms := cardForm.FindAllStringSubmatch(got, -1)
 	target := strings.Replace(strings.TrimPrefix(patternDashboardRename, "POST "), "{"+pathValueID+"}", card.ID, 1)
 	attributes, contents, ok := formPostingTo(forms, target)
 	if !ok {
-		t.Fatalf("no form on the card posts to %q, which is where the daemon serves the rename:\n%s", target, got)
+		t.Fatalf("no form on the session page posts to %q, which is where the daemon serves the rename:\n%s", target, got)
 	}
 
 	// A GET on that path is an unknown route rather than a 405, so a form that
@@ -596,7 +606,7 @@ func TestTheCardsRenameFormCarriesWhatTheRouteRequires(t *testing.T) {
 		t.Fatalf("the rename form submits no %q field, and the handler reads the new label out of one:\n%s", fieldName, got)
 	}
 	if !strings.Contains(contents, `type="submit"`) {
-		t.Errorf("the rename form holds no submit control, so nothing on the card operates it:\n%s", got)
+		t.Errorf("the rename form holds no submit control, so nothing on the page operates it:\n%s", got)
 	}
 
 	id, ok := attributeValue(t, name, "id")
@@ -604,7 +614,7 @@ func TestTheCardsRenameFormCarriesWhatTheRouteRequires(t *testing.T) {
 		t.Fatalf("the %q input carries no id (%s), so no label can name it", fieldName, name)
 	}
 	if !strings.Contains(id, card.ID) {
-		t.Errorf("the %q input is called %q, which does not name this session; every card on a fleet renders this form, and duplicate ids point every label at the first one", fieldName, id)
+		t.Errorf("the %q input is called %q, which does not name this session; every id in this tree is qualified by the identifier, and an unqualified one is a label waiting to name somebody else's field", fieldName, id)
 	}
 	labelled := false
 	for _, label := range formLabel.FindAllStringSubmatch(contents, -1) {
@@ -625,15 +635,15 @@ func TestTheCardsRenameFormCarriesWhatTheRouteRequires(t *testing.T) {
 	adopted := actionableCard()
 	adopted.Name = ""
 	nameless := regexp.MustCompile(`<input\b[^>]*\bname="` + regexp.QuoteMeta(fieldName) + `"[^>]*>`).
-		FindString(renderComponent(t, "session-card", adopted))
+		FindString(renderedSessionPage(t, adopted))
 	if value, _ := attributeValue(t, nameless, "value"); value != "" {
-		t.Errorf("a session with no recorded name renders the rename field holding %q; an invented label is the card telling an operator something false about an unsandboxed shell", value)
+		t.Errorf("a session with no recorded name renders the rename field holding %q; an invented label is the page telling an operator something false about an unsandboxed shell", value)
 	}
 
 	// The client hints, pinned to the daemon's own rule rather than to a second
 	// spelling of it — the create form's arrangement, and for its reason: a hint
 	// that disagrees refuses in a native bubble this daemon never wrote, about a
-	// rule it does not have, with nothing on the card to say why.
+	// rule it does not have, with nothing on the page to say why.
 	if limit, ok := attributeValue(t, name, "maxlength"); !ok {
 		t.Errorf("the %q input sets no maxlength (%s); the daemon's ceiling is %d characters", fieldName, name, session.MaxNameLen)
 	} else if limit != strconv.Itoa(session.MaxNameLen) {
@@ -658,15 +668,23 @@ func TestTheCardsRenameFormCarriesWhatTheRouteRequires(t *testing.T) {
 		}
 	}
 	// The route refuses an empty name, so a form that submits without one is a
-	// round trip whose only outcome is a refusal — and, on this route, a card
-	// replaced by that refusal.
+	// round trip whose only outcome is the refusal the fleet renders after the
+	// redirect — on a page the operator has been taken off to read it.
 	if !regexp.MustCompile(`\brequired\b`).MatchString(name) {
 		t.Errorf("the %q input is not required (%s), and the route refuses an empty one", fieldName, name)
+	}
+
+	// And the page offers none of this without a token to submit, which is the
+	// discipline every action on the card above it already follows: a control the
+	// gate is certain to refuse is worse than no control, because an operator
+	// cannot tell the two apart until they use it.
+	if unauthorised := renderedSessionPage(t, ownedCard()); strings.Contains(unauthorised, target) {
+		t.Errorf("a session page rendered with no page token still offers the rename:\n%s", unauthorised)
 	}
 }
 
 // TestTheCardsCompactFormCarriesWhatTheRouteRequires is the destroy's and the
-// rename's linkage for the third control on the card (T020), and it is the
+// rename's linkage for the second control on the card (T020), and it is the
 // shortest of the three because the route reads no field of its own: what is
 // delivered is a constant in the manager, so all this form has to carry is the
 // evidence the gate demands.
@@ -1128,6 +1146,135 @@ func renderedFleet(t *testing.T) string {
 		Empty:    emptyView{Title: "No sessions running", Body: "Nothing is executing on this host right now."},
 		Create:   createForm(),
 	})
+}
+
+// renderedSessionPage is one session's own page as a browser receives it, given
+// the card that page is about.
+//
+// It takes the card because that is the parameter every assertion here varies:
+// a card carrying a token and one carrying none are the two pages the rename has
+// to behave differently on, and an adopted session's blank name is the third.
+// The operator and the pane are fixtures, and neither is asserted through this.
+func renderedSessionPage(t *testing.T, card sessionView) string {
+	t.Helper()
+
+	return renderComponent(t, "session", sessionPageView{
+		Operator: &access.VerifiedOperator{Email: "operator@example.com"},
+		Session:  card,
+		Pane:     paneView{ID: card.ID, Text: "$ go test ./..."},
+	})
+}
+
+// disclosure is a <details> element with its attributes and everything it holds.
+var disclosure = regexp.MustCompile(`(?s)<details\b([^>]*)>(.*?)</details>`)
+
+// TestRenameAbsentFromFleet is FR-049, and it is the half of T027 that is an
+// absence — which is the half that comes back by accident.
+//
+// A rename on a card is a text entry on every card in the fleet: twenty fields
+// between an operator and the thing a dashboard is scanned for, spent on the one
+// action of the four that changes nothing on the host. The card is where it was
+// and where a hand would put it back, so the claim is made against the page and
+// against the component both. The component matters on its own because the
+// fleet's live half re-fetches a *card* from its own route as sessions change —
+// a rename restored there would reach a browser without this page ever being
+// rendered again.
+//
+// The second half is the vacuity guard. "No form posts to the rename" is
+// satisfied by a fleet that renders no controls at all, which is a much worse
+// bug wearing this test's green, so the two controls that stayed are asserted
+// present in the same pass.
+//
+// **Must fail when** rename returns to the card (FR-049).
+func TestRenameAbsentFromFleet(t *testing.T) {
+	t.Parallel()
+
+	card := actionableCard()
+	rename := strings.Replace(strings.TrimPrefix(patternDashboardRename, "POST "), "{"+pathValueID+"}", card.ID, 1)
+
+	fleetless := map[string]string{
+		"the fleet page":     renderedFleet(t),
+		"the card component": renderComponent(t, "session-card", card),
+	}
+	for name, markup := range fleetless {
+		if _, _, found := formPostingTo(cardForm.FindAllStringSubmatch(markup, -1), rename); found {
+			t.Errorf("%s renders a form posting to %q; the rename is on the session's own page and on no card (FR-049):\n%s", name, rename, markup)
+		}
+	}
+
+	// The controls that stayed, so the absence above cannot be satisfied by a
+	// fleet that offers nothing.
+	fleet := renderedFleet(t)
+	for what, pattern := range map[string]string{
+		"destroy": patternDashboardDestroy,
+		"compact": patternDashboardCompact,
+	} {
+		target := strings.Replace(strings.TrimPrefix(pattern, "POST "), "{"+pathValueID+"}", card.ID, 1)
+		if _, _, ok := formPostingTo(cardForm.FindAllStringSubmatch(fleet, -1), target); !ok {
+			t.Errorf("the fleet offers no %s either (%q); this test would then be passing on a page with no controls on it at all:\n%s", what, target, fleet)
+		}
+	}
+}
+
+// TestRenameOnSessionPageIsDisclosure is FR-050, and it is two claims: the
+// control is on the session's own page, and it is revealed on request rather
+// than resident.
+//
+// The second is what a <details> with no `open` attribute means, and it is
+// asserted structurally rather than by class, because "closed until asked for"
+// is a property of the element and not of a stylesheet — a page that styled a
+// resident field to look collapsed would satisfy any assertion about appearance
+// and none about what a screen reader is handed.
+//
+// The summary's words are asserted for the same reason the label's are: a
+// disclosure whose control announces nothing is a control a non-sighted operator
+// cannot find, and this is the only route to the field behind it.
+//
+// **Must fail when** it becomes a resident field (FR-050) — the form outside a
+// disclosure, or a disclosure rendered open.
+func TestRenameOnSessionPageIsDisclosure(t *testing.T) {
+	t.Parallel()
+
+	card := actionableCard()
+	page := renderedSessionPage(t, card)
+	rename := strings.Replace(strings.TrimPrefix(patternDashboardRename, "POST "), "{"+pathValueID+"}", card.ID, 1)
+
+	if _, _, ok := formPostingTo(cardForm.FindAllStringSubmatch(page, -1), rename); !ok {
+		t.Fatalf("the session page posts nothing to %q, so the rename is on no page at all (FR-050):\n%s", rename, page)
+	}
+
+	var attributes, contents string
+	for _, details := range disclosure.FindAllStringSubmatch(page, -1) {
+		if strings.Contains(details[2], `action="`+rename+`"`) {
+			attributes, contents = details[1], details[2]
+		}
+	}
+	if contents == "" {
+		t.Fatalf("the rename form sits outside every <details> on the page; a field that is always there is not revealed on request (FR-050):\n%s", page)
+	}
+
+	// `open` is the whole of the difference between a disclosure and a field with
+	// a heading over it, and it is one word away in either direction.
+	if regexp.MustCompile(`(?i)\bopen\b`).MatchString(attributes) {
+		t.Errorf("the rename disclosure is rendered open (<details%s>), so it is resident markup wearing a summary (FR-050)", attributes)
+	}
+
+	summary := regexp.MustCompile(`(?s)<summary\b[^>]*>(.*?)</summary>`).FindStringSubmatch(contents)
+	if summary == nil {
+		t.Fatalf("the rename disclosure carries no <summary>, so the browser labels the one control that opens it:\n%s", contents)
+	}
+	if strings.TrimSpace(summary[1]) == "" {
+		t.Errorf("the rename disclosure's summary holds no words; the control that reveals the field announces nothing")
+	}
+
+	// And nothing script-shaped opens it. The element does that itself, which is
+	// why it was chosen — the page loads one script, and it draws rain and reads
+	// panes.
+	for _, offer := range scriptedMarkup {
+		if strings.Contains(strings.ToLower(contents), offer) {
+			t.Errorf("the rename disclosure is wired with %q; a disclosure that needs script is one that does not open with script disabled:\n%s", offer, contents)
+		}
+	}
 }
 
 // TestStreamLossIsVisible is FR-020, and it is the pane's ended note made about

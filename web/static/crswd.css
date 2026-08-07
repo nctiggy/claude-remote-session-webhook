@@ -456,26 +456,6 @@ body {
   margin: 0;
 }
 
-/* The rename, which is the one action carrying a field rather than only a
-   button. It takes the row to itself: the row above wraps, and a text entry
-   sharing a line with the one control on this card that cannot be taken back is
-   a destroy sitting where a Tab from a half-typed name lands.
-
-   The label spans both columns rather than sitting beside the field, which is
-   the arrangement the create panel's fields already use — a label beside a
-   narrow input in a card-width column leaves neither enough room to read. */
-.card-rename {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: var(--s1) var(--s2);
-  inline-size: 100%;
-}
-
-.card-rename .field-label {
-  grid-column: 1 / -1;
-}
-
 /* Every control that submits something. A button does not inherit the page's
    font, so the family is set here rather than left to the platform's: a
    dashboard whose one button is set in the system sans is a dashboard with a
@@ -718,6 +698,57 @@ body {
   color: var(--dim);
   font-family: var(--sans);
   font-size: var(--fs-prose);
+}
+
+/* The rename disclosure, which is on the session's own page and on no card
+   (FR-049, FR-050). A panel rather than a card, on the create form's terms: a
+   card is one session and this is a control beside one, so it borrows the
+   surface and the border without the grid or the hover that belong to something
+   clickable.
+
+   Nothing here opens or closes it. <details> does that itself, which is why the
+   element was chosen — and nothing here animates the opening either: the design
+   system permits a transition on a disclosure, and a block of markup sliding
+   into a page above a live terminal is motion beside content an operator is
+   reading. */
+.rename {
+  margin-block-start: var(--s5);
+  padding: var(--s4);
+  background: var(--surface);
+  border: var(--edge-width) solid var(--edge);
+  border-radius: var(--r);
+}
+
+/* The disclosure's own control, set as the section eyebrow the create panel's
+   heading already uses: this is a section of the page saying what it is, and a
+   second voice for that would be a second heading style. The pointer is the one
+   thing a <summary> does not get from the platform's own affordance. */
+.rename-summary {
+  color: var(--dim);
+  font-size: var(--fs-eyebrow);
+  font-weight: 600;
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+/* The field and its button, in the arrangement the card's rename had: the label
+   spans both columns rather than sitting beside the field, because a label
+   beside a narrow input leaves neither enough room to read. Bounded by the
+   grid's own track token rather than by a width invented for a form, exactly as
+   .field is — a name is short and an input spanning the shell is a control with
+   nothing in most of it. */
+.rename-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--s1) var(--s2);
+  margin-block-start: var(--s4);
+  inline-size: min(100%, var(--card-min));
+}
+
+.rename-form .field-label {
+  grid-column: 1 / -1;
 }
 
 /* The one surface where the rain runs at full strength: nothing competes with

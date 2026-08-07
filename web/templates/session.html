@@ -34,6 +34,47 @@
 {{ template "header" .Operator }}
 <main class="shell">
 {{ template "session-card" .Session }}
+{{/*
+  Rename, which is on this page and on no other (FR-049, FR-050, T027). It was a
+  field on every card in the fleet, which put a text entry on twenty cards to
+  serve the one action of the four that changes nothing on the host — and this is
+  the page an operator is already on when they know which session they mean.
+
+  A <details> rather than a field that is always there, because "revealed on
+  request" is a behaviour the platform ships: the summary is focusable, operable
+  by keyboard, announced as a disclosure, and opens with no script running at
+  all. That is the same argument the working-directory picker's <datalist> won
+  (research.md), and it is why this page still loads exactly one script that
+  draws rain and reads panes. The element is rendered closed — no `open`
+  attribute — which is the whole of what makes it a disclosure rather than a
+  resident field with a heading over it.
+
+  Everything inside it is the card's rename, unchanged: the same address, the
+  same two field names, the same page token, the same client hints pinned to
+  ValidateName by a test. Moving a control is not an invitation to re-decide what
+  it submits, and the route on the other end has not moved at all.
+
+  It renders from the page token like every action on the card above it, so a
+  page that could not mint one offers no rename rather than a rename the gate is
+  certain to refuse. The id is still qualified by the session's identifier even
+  though this page draws one card: the label and the field are one spelling of
+  that rule, not two, and a page that grew a second session would otherwise grow
+  a label naming the first one.
+
+  The field is rendered holding the name the daemon currently has, so the
+  operator edits a label rather than recalling one, and an adopted session —
+  which has no recorded name at all (FR-018a) — renders an empty field rather
+  than an invented one. It discloses nothing the card above does not already
+  show as text.
+
+  It sits between the card and the pane rather than after it. The pane is a
+  fixed-height scroll container holding a whole screen, so a control below it is
+  a control an operator scrolls past a terminal to reach — and the tab order is
+  the visual order without anything here setting one.
+*/}}{{ with .Session.PageToken }}<details class="rename">
+<summary class="rename-summary">Rename this session</summary>
+<form class="rename-form" method="post" action="/dashboard/sessions/{{ $.Session.ID }}/rename">{{ template "page-token" . }}<label class="field-label" for="rename-{{ $.Session.ID }}">New name</label><input class="field-input" id="rename-{{ $.Session.ID }}" type="text" name="name" value="{{ $.Session.Name }}" required maxlength="64" pattern="[-a-zA-Z0-9]+" autocomplete="off" spellcheck="false"><button class="button" type="submit" aria-describedby="card-id-{{ $.Session.ID }}">Rename</button></form>
+</details>{{ end }}
 {{ template "pane" .Pane }}
 </main>
 {{/*

@@ -60,7 +60,7 @@ the form it submits, and the variants are the classes the stylesheet defines:
 
 | Class | Use for | Where it is today |
 |---|---|---|
-| `.button` | Every ordinary action | Rename, Compact |
+| `.button` | Every ordinary action | Compact on the card, Rename on the session page |
 | `.button .button-primary` | The one action a view exists for | Start session |
 | `.button .button-danger` | An action that ends an unsandboxed shell | Destroy |
 
@@ -117,8 +117,14 @@ Rules:
   shell. The readable half and the action row are **separate elements**, and the
   rule between them is that split made visible rather than the split itself — a
   border says nothing to a screen reader and a high-contrast theme may drop it.
-- Destroy is `.button-danger` + `confirm=yes`. Rename and Compact are plain
-  `.button`.
+- Destroy is `.button-danger` + `confirm=yes`. Compact is a plain `.button`.
+- **Rename is not on the card**, and its absence is a rule rather than an
+  omission. A fleet is twenty cards, and a text entry on each is twenty fields
+  between an operator and what a dashboard is scanned for — spent on the one
+  action of the four that changes nothing on the host. It lives on the session's
+  own page, inside a `<details>` that is rendered closed: revealed on request,
+  operable by keyboard, announced as a disclosure, and opened by the platform
+  rather than by script.
 - Working directory renders as text, truncated with a `title` attribute — it is
   caller-supplied (see `security.md`).
 - An absent name or working directory renders as a sentence saying the value is
@@ -256,8 +262,9 @@ Rules — these are security rules as much as design rules:
 
 No Form partial. Two forms are shipped, and they are the pattern: the create form
 (`partials/create-form.html`, outside every card, because a create names no
-session) and the rename on the card. A text entry is a `<div class="field">`
-holding a `<label class="field-label">` and an `<input class="field-input">`.
+session) and the rename disclosure on the session's own page
+(`templates/session.html`). A text entry is a `<div class="field">` holding a
+`<label class="field-label">` and an `<input class="field-input">`.
 
 ```gotemplate
 <div class="field">
