@@ -459,3 +459,89 @@ where the parser gets a caller at all.
   against a v2 config (#26), so only the linters it happens to understand ran — gosec demonstrably
   does. `gofmt -l .` clean, `go build`, `go vet`, `go test ./...` green, `go vet` green under
   `-tags tmux`, `-tags quickstart` and `-tags dev`, `go.sum` still absent. CI is the gate.
+
+---
+
+## Iteration 7 — 2026-08-07 03:35
+
+**Did:** T007 🔒, the keystone. `withFile(getenv, *File)` in `config.go` is the whole precedence
+chain — environment first, file second, `""` meaning default — and `LoadFrom` now resolves
+`DefaultPath(getenv)` (`$XDG_CONFIG_HOME/crswd/config`, falling back to `~/.config/crswd/config`,
+carried from the abandoned branch), reads it with `ReadFile`, and layers it behind `getenv`.
+`source_test.go` gains the five contract tests plus `TestTheFileIsReadFromTheOperatorsConfigDirectory`.
+**`ReadFile` finally has a caller**, which is the anti-requirement the plan names twice.
+
+**Learned:**
+
+- **`DefaultPath` had to land here, and it is not an invented requirement.** FR-001 says the daemon
+  reads its configuration "from a file, by default under the operator's own configuration
+  directory", and `data-model.md` fixes the two locations. Iterations 5 and 6 logged this as
+  `NEEDS CLARIFICATION`; it is not one for the *default* path. What genuinely has no owner is the
+  **override** — `--config <path>` and `CRSW_CONFIG_FILE`, both named in `data-model.md` and in no
+  task. See Findings.
+- **The path is resolved from the *unwrapped* environment, before the shim wraps it.** A file able
+  to name the file read next is a configuration whose meaning depends on what it says about itself.
+  One line of ordering, worth the comment it carries.
+- **`withFile` deliberately does NOT record provenance yet.** The contract's snippet takes a
+  `map[string]Source` and writes to it; that is **T008's** half (`tasks.md` gives it its own three
+  tests). Writing a map here that nothing reads is the dead-code shape this plan exists to avoid.
+  T008 adds the parameter, the `Config` field, and the recording — the function is shaped so that
+  is a two-line change. Consequence: T007's `TestEnvBeatsFile`/`TestFileBeatsDefault` assert the
+  **value** only, not the `Source`; the contract table's source column for those two rows arrives
+  with T008.
+- **A file value must be validated by the same loader, which means the test has to delete the
+  variable.** The first draft of `TestFileValueIsValidatedIdentically` was green-then-red on
+  `allowed_roots` and `access_allowed_emails` because `baseEnv` sets both: the environment answered
+  first and the file's bad value was never looked at. A file-precedence test that leaves the
+  variable set proves the opposite of what it claims.
+- **Seven mutations run, not reasoned about.** (1) precedence reversed → `TestEnvBeatsFile`, with
+  the message that names the stale-file-beats-container failure. (2) shim returning `getenv` only →
+  five test functions. (3) `withFile(getenv, nil)` with the file still read → **does not compile**
+  (`declared and not used`), which is the cheapest possible guard on the no-caller bug. (4) the read
+  removed entirely → five test functions. (5) `DefaultPath` preferring HOME over XDG → the subtest.
+  (6) `filepath.IsAbs` dropped → the relative-directory subtest. (7) a bound of the shim's own (a
+  file value containing a space refused) → `TestFileBeatsDefault` and three
+  `TestFileValueIsValidatedIdentically` rows. Each reverted; `git diff` read back in full before the
+  gate.
+- **`git stash`, `git worktree add` and `VAR=x go test …` are all denied by this sandbox**, on top
+  of iteration 3's `/tmp` and `cp` denials. There is no way to A/B a suite against `HEAD` here — the
+  baseline has to come from `git show HEAD:<file>` and reading. Budget for that.
+
+**Left:** T008–T035. Next is **T008** (provenance in the same shim), which is the two-line change
+described above plus the `Config` field and its three tests.
+
+**Findings:**
+
+- **`go test -tags quickstart ./cmd/crswd` is RED, on `HEAD` as well as on this change.** Three
+  tests: `TestDashboardQuickstartStory1Adopted`, `TestQuickstartStory4Restart`,
+  `TestQuickstartStory5Cap`. **No previous iteration ran this suite — all four only vetted it** —
+  so this has been red for some time and nothing noticed. The proximate cause is pinned:
+  **`CRSW_DESTROY_ON_SHUTDOWN` has a constant, a `Config.DestroyOnShutdown` field and a consumer at
+  `internal/httpapi/server.go:955`, and no loader.** `LoadFrom` never reads the variable and never
+  sets the field — `git show HEAD:internal/config/config.go` shows the same — so the field is false
+  in every shipping daemon and the three "outlived the daemon's shutdown" assertions cannot pass.
+  It is the fourth instance of this repo's signature bug: **code with no caller**. Two further
+  assertions in Story 1 say the adopted card carries a name and a working directory "the daemon
+  does not record", which looks like the same milestone-3 gap from the other end.
+  **Not fixed here: it is not T007, and it is a milestone-3 defect rather than a milestone-4 one.**
+  It wants an issue and a fix-lane entry. Note that this makes SC-002's wording — "verified against
+  the existing acceptance suites unchanged" — currently unverifiable: the suite it names is red
+  before this milestone touches anything.
+- **`TestQuickstartStory5RateLimit` is flaky**, not consistently red: `[201 201 201 429 429]` on one
+  run of the full suite and green on the next. Timing, not this change.
+- **Nothing owns `--config <path>` or `CRSW_CONFIG_FILE`.** `data-model.md` names both as the
+  override for `DefaultPath`; no task in `tasks.md` mentions either. T009 is the only remaining US1
+  task touching `cmd/crswd` and it is about `config check`/`config migrate`, which **need** a way to
+  name a file — so T009 is the natural home, but its text does not say so. Whoever takes T009 should
+  decide it there or raise it. Note `CRSW_CONFIG_FILE` cannot simply become another `Env*` constant
+  in `config.go`: `TestVarsNamesEveryDeclaredVariable` would then demand it be a file key, and a
+  file that can name the file read next is exactly what `DefaultPath`'s comment refuses.
+- **Still open from iterations 5 and 6, none of it addressed here:** three `ReadFile` refusals
+  missing from `contracts/config-file.md`'s table (cannot be opened, cannot be inspected, past the
+  size bound); the `version < 1` row; the contract's "yields exactly eight keys" against seven; a
+  dangling symlink reading as absent; `f.values` having no enumerator (T012 needs one); and
+  `os.Open` on a FIFO blocking startup with no message.
+- **Lint unchanged:** `golangci-lint run` clean, but the binary on PATH is v1.62.2 against a v2
+  config (#26). `gofmt -l .` clean, `go build`, `go vet`, `go test ./...` green, `go vet` green
+  under `-tags tmux`, `-tags quickstart` and `-tags dev`, `go test -tags dev ./internal/access`
+  green, `go.sum` still absent. CI is the gate.
