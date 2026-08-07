@@ -1228,8 +1228,15 @@ func (m *Manager) Adopt(ctx context.Context) ([]AdoptedSession, error) {
 			// Still empty for a session created before those options existed,
 			// and that is correct: an invented value would describe nothing.
 			// Neither field is ever used to build a tmux target — the id is.
-			Name:         info.Label,
-			WorkDir:      info.WorkDir,
+			Name:    info.Label,
+			WorkDir: info.WorkDir,
+			// The name mode is derived from, restored the same way and empty on
+			// the same terms. Empty is the daemon's default and therefore local,
+			// which is the correct reading of a session started before the option
+			// existed — not a failure, and not a reason to skip the adoption. A
+			// session left unadopted over it would be an unowned unsandboxed
+			// shell, which is the trade Principle VI never makes.
+			StartCommand: info.StartCommand,
 			CreatedAt:    info.Created,
 			LastActivity: now,
 			State:        StateRunning,
@@ -1405,6 +1412,19 @@ func (m *Manager) start(ctx context.Context, s Session) error {
 	}
 	if err := m.tmux.SetOption(ctx, name, tmuxctl.OptionWorkDir, base64.StdEncoding.EncodeToString([]byte(s.WorkDir))); err != nil {
 		return fmt.Errorf("record the session working directory: %w", err)
+	}
+	// The third fact the host would otherwise lose, and the one mode is derived
+	// from (contracts/session-mode.md). It is the configured *name*, so what
+	// survives a restart is a reference into the operator's own configuration
+	// rather than a command line — a stored command line would be a command line
+	// a restart could be made to run.
+	//
+	// Written even when it is empty, which is the daemon's default. Setting the
+	// option to nothing and never setting it at all read back identically, and
+	// the branch that skipped one of them would be a branch no adoption could
+	// tell from the other.
+	if err := m.tmux.SetOption(ctx, name, tmuxctl.OptionStart, s.StartCommand); err != nil {
+		return fmt.Errorf("record the session start command: %w", err)
 	}
 	// The command is resolved from the name the record carries, not from the
 	// request: by the time a session is being started its name has already been

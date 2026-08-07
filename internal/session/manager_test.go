@@ -214,6 +214,10 @@ func TestCreateSendsTheTmuxCommandsInOrder(t *testing.T) {
 		// a path may contain the separator list-sessions puts between fields.
 		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, "@crswd-name", f.request().Name}},
 		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, "@crswd-workdir", base64.StdEncoding.EncodeToString([]byte(f.repo()))}},
+		// The name mode is derived from, written even when it is the default's
+		// empty string: an option set to nothing and one never set read back
+		// identically, so the branch that skipped it would be untestable.
+		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, "@crswd-start", ""}},
 		{Op: tmuxctl.OpSendKeys, Argv: []string{
 			"tmux", "send-keys", "-t", pane, "--", "claude --dangerously-skip-permissions", "Enter",
 		}},
@@ -1950,7 +1954,7 @@ func TestAdoptTakesBackASurvivingSessionWithAFreshCredential(t *testing.T) {
 	// argv is spelled out rather than built from tmuxctl's helpers: this asserts
 	// the command line tmux will receive, not that Adopt called a builder.
 	want := []tmuxctl.Call{
-		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}"}},
+		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}"}},
 		{Op: tmuxctl.OpHas, Argv: []string{"tmux", "has-session", "-t", "=" + name}},
 	}
 	calls := f.tmux.Calls()[before:]

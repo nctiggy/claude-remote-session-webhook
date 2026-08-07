@@ -88,6 +88,18 @@ const (
 	OptionName    = "@crswd-name"
 	OptionWorkDir = "@crswd-workdir"
 
+	// OptionStart carries the configured start-command *name* the session was
+	// started with — never the command line. Mode is derived from that name
+	// (contracts/session-mode.md), so a restart that lost it would silently move
+	// every remote session back to local, which is a mode change nobody asked
+	// for on a session the operator is still driving.
+	//
+	// It goes on raw, like OptionName and unlike OptionWorkDir: a name is
+	// [a-z0-9-] and at most 32 characters (config.validateStartCommandName), so
+	// it can carry neither the "|" list-sessions puts between fields nor a
+	// newline that would end the row early.
+	OptionStart = "@crswd-start"
+
 	// OptionManagedValue is what OptionManaged is set to. List only tests the
 	// option for emptiness, so this is a marker rather than data — but it is
 	// spelled once so a future reader does not have to check whether the value
@@ -111,4 +123,10 @@ type SessionInfo struct {
 	// Label, not Name: Name above is tmux's own session name, which is the id.
 	Label   string
 	WorkDir string
+
+	// StartCommand is the configured start-command name read back off the host,
+	// and empty for a session started before OptionStart existed. Absence is not
+	// an error: it is the correct reading of a session this daemon started under
+	// an older build, and every one of those was started with the default.
+	StartCommand string
 }

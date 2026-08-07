@@ -208,15 +208,20 @@ func parseSessions(stdout string) ([]SessionInfo, error) {
 	rows := strings.Split(trimmed, "\n")
 	sessions := make([]SessionInfo, 0, len(rows))
 	for _, row := range rows {
-		// Five fields, and only the first may contain the separator: a session
-		// name is whatever the operator called it, while the four after it are
-		// digits, a flag, a validated label, and base64. So the last four splits
-		// are found from the right and everything before them is the name.
+		// Six fields, and only the first may contain the separator: a session
+		// name is whatever the operator called it, while the five after it are
+		// digits, a flag, a validated label, base64, and a validated command
+		// name. So the last five splits are found from the right and everything
+		// before them is the name.
 		//
 		// The workdir is base64 for exactly this reason (#72). A path may contain
 		// "|", and a raw one here would make the field boundaries ambiguous from
 		// either end — the one thing this parser is careful about.
-		rest, workDirB64, ok := cutLast(row, "|")
+		rest, startCommand, ok := cutLast(row, "|")
+		if !ok {
+			return nil, fmt.Errorf("tmux list-sessions: unreadable row %q", row)
+		}
+		rest, workDirB64, ok := cutLast(rest, "|")
 		if !ok {
 			return nil, fmt.Errorf("tmux list-sessions: unreadable row %q", row)
 		}
@@ -257,6 +262,10 @@ func parseSessions(stdout string) ([]SessionInfo, error) {
 			Managed: managed != "",
 			Label:   label,
 			WorkDir: workDir,
+			// Empty here means the option was never set, which is a session
+			// started before it existed rather than a row that failed to parse.
+			// See SessionInfo.StartCommand: it is not an error.
+			StartCommand: startCommand,
 		})
 	}
 	return sessions, nil

@@ -92,7 +92,7 @@ func argvHas(name string) []string {
 // One exec yields everything reconciliation needs: name, creation time, and
 // provenance. An empty third field means we did not create the session.
 func argvList() []string {
-	return []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{" + OptionManaged + "}|#{" + OptionName + "}|#{" + OptionWorkDir + "}"}
+	return []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{" + OptionManaged + "}|#{" + OptionName + "}|#{" + OptionWorkDir + "}|#{" + OptionStart + "}"}
 }
 
 // Fake is an in-memory Controller for every other package's tests, so no unit
@@ -274,6 +274,10 @@ func (f *Fake) List(_ context.Context) ([]SessionInfo, error) {
 			Managed: s.options[OptionManaged] != "",
 			Label:   s.options[OptionName],
 			WorkDir: workDir,
+			// Read back for the reason the label is: a fake that stored the name
+			// and never returned it would let an adoption test pass against a
+			// daemon whose sessions all come back local after a restart.
+			StartCommand: s.options[OptionStart],
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

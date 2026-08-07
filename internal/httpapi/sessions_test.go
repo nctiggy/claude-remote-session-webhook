@@ -390,7 +390,13 @@ func TestCreateStartsTheSessionItPromised(t *testing.T) {
 			}
 		}
 	}
-	wantOps := []tmuxctl.Op{tmuxctl.OpNew, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSendKeys}
+	// Five options now, the fifth being the start-command name mode is derived
+	// from (contracts/session-mode.md).
+	wantOps := []tmuxctl.Op{
+		tmuxctl.OpNew,
+		tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption,
+		tmuxctl.OpSendKeys,
+	}
 	if !slices.Equal(ops, wantOps) {
 		t.Errorf("tmux calls = %v; want %v", ops, wantOps)
 	}
