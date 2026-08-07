@@ -1212,3 +1212,279 @@ func TestHiddenAlwaysWins(t *testing.T) {
 		}
 	}
 }
+
+// cssRule is one selector and the declarations it carries.
+type cssRule struct{ selector, body string }
+
+// cssRules splits a stylesheet into its rules. Media preludes are stripped
+// first, exactly as styledClasses does it, so a rule inside a media query is
+// read as an ordinary chunk rather than being skipped along with the query —
+// and a slice rather than a map, because .rain is declared twice and the second
+// one is the reduced-motion answer to the first.
+func cssRules(source string) []cssRule {
+	var out []cssRule
+	for _, chunk := range strings.Split(mediaOpen.ReplaceAllString(source, ""), "}") {
+		selector, body, ok := strings.Cut(chunk, "{")
+		if !ok {
+			continue
+		}
+		out = append(out, cssRule{strings.TrimSpace(selector), body})
+	}
+	return out
+}
+
+// comboSelector is the picker and the switch. Matched by prefix on the class
+// itself, so a rule added for either component is swept without this expression
+// being edited — and anchored on the dot, so .field-switch, which is the row's
+// layout and not the control's presentation, is not one of them.
+var comboSelector = regexp.MustCompile(`\.(combo|switch)[\w-]*`)
+
+// comboRules is every rule T009 is answerable for.
+func comboRules(t *testing.T) []cssRule {
+	t.Helper()
+
+	var out []cssRule
+	for _, rule := range cssRules(stylesheet(t)) {
+		if comboSelector.MatchString(rule.selector) {
+			out = append(out, rule)
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("crswd.css styles no picker and no switch at all, so every assertion about them below is vacuous")
+	}
+	return out
+}
+
+// comboColourProperties are the declarations that paint. A value here naming no
+// token is a colour this file invented, whether or not it is spelled as a hex.
+var comboColourProperties = map[string]bool{
+	"color":            true,
+	"background":       true,
+	"background-color": true,
+	"border":           true,
+	"border-color":     true,
+	"outline":          true,
+	"outline-color":    true,
+	"accent-color":     true,
+	"box-shadow":       true,
+	"text-shadow":      true,
+}
+
+// TestNoLiteralColourInComboRules is docs/design-system.md's first rule read at
+// the component this task dressed. The whole-file sweep above already fails a
+// hex anywhere, and this is deliberately not redundant with it: it also fails a
+// paint declaration that names no token at all — a currentColor, a color-mix(),
+// a keyword that sweep's list does not carry — which is how a palette drifts
+// without a literal ever being written.
+//
+// **Must fail when** a hex value is introduced into any rule for the picker or
+// the switch.
+func TestNoLiteralColourInComboRules(t *testing.T) {
+	t.Parallel()
+
+	for _, rule := range comboRules(t) {
+		for _, forbidden := range forbiddenInRules {
+			if match := forbidden.pattern.FindString(rule.body); match != "" {
+				t.Errorf("%s carries %s (%q); the picker is a component, and a component that introduced a value of its own is the drift Principle VII forbids", rule.selector, forbidden.what, match)
+			}
+		}
+		for property, value := range declarations(rule.body) {
+			if comboColourProperties[property] && !strings.Contains(value, "var(--") {
+				t.Errorf("%s sets %s: %s, which references no token; every colour the picker spends comes out of the token block", rule.selector, property, value)
+			}
+		}
+	}
+}
+
+// outlineRemoved is the half of the focus rule that is lost by improvement
+// rather than by mistake: a ring somebody thought was ugly on a listbox.
+var outlineRemoved = regexp.MustCompile(`(?i)outline\s*:\s*(none|0)\b`)
+
+// TestComboFocusRingSurvives is docs/components.md's accessibility floor at the
+// three places this control takes focus, and the third is the one a stylesheet
+// has to answer on its own.
+//
+// The input and the switch are reached by the page's single :focus-visible
+// rule, so what is held for them is that neither takes it away again — and that
+// the rule is still unqualified, because a ring narrowed to a selector these two
+// do not match is a ring removed for them just as surely.
+//
+// An option is different in kind. :focus-visible can never match one: focus
+// stays on the input and aria-activedescendant is what points at the active
+// option (T011), so nothing in the platform draws an indicator there and the
+// only thing that can is a rule here.
+//
+// **Must fail when** `outline: none` appears with no replacement.
+func TestComboFocusRingSurvives(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+
+	for _, rule := range comboRules(t) {
+		if match := outlineRemoved.FindString(rule.body); match != "" {
+			t.Errorf("%s carries %q; the design system permits removing the outline only by replacing it, and a picker is where a keyboard operator most needs to know where they are", rule.selector, match)
+		}
+	}
+
+	var unqualified bool
+	for _, rule := range cssRules(source) {
+		unqualified = unqualified || rule.selector == ":focus-visible"
+	}
+	if !unqualified {
+		t.Error("crswd.css has no unqualified :focus-visible rule, so the ring on the working-directory field and on the switch is whatever their own rules happen to draw")
+	}
+
+	active := blockFor(t, source, `.combo-list li[aria-selected="true"]`)
+	ring := regexp.MustCompile(`(?i)outline\s*:\s*([^;}]+)`).FindStringSubmatch(active)
+	if ring == nil {
+		t.Fatalf("the active option draws no outline (%q); an option is never focused, so a keyboard operator moving through this list moves a cursor nothing shows", active)
+	}
+	for _, token := range []string{"var(--focus-width)", "var(--phosphor)"} {
+		if !strings.Contains(ring[1], token) {
+			t.Errorf("the active option's ring is %q and does not spend %s; the indicator is the design system's own ring, not a width and a colour invented for a listbox", strings.TrimSpace(ring[1]), token)
+		}
+	}
+}
+
+// animationDecl is the property the reduced-motion block does not name.
+var animationDecl = regexp.MustCompile(`(?i)(?:^|[;{\s])animation(-[a-z]+)?\s*:\s*[^;}]+`)
+
+// universalReset is the block's answer: transition removed for everything,
+// rather than for the rules that happened to transition when it was written.
+var universalReset = regexp.MustCompile(`(?s)\*[^{}]*\{[^}]*transition\s*:\s*none`)
+
+// TestComboDoesNotAnimateUnderReducedMotion is FR-018 for the one component
+// this milestone adds motion to, and the reason it is not covered by
+// TestReducedMotionStopsEveryTransition is one property: that block resets
+// `transition` and nothing else, so an @keyframes animation on the listbox runs
+// on for an operator who asked for no motion and every existing test stays
+// green.
+//
+// **Must fail when** a fade is added to the listbox that the preference does not
+// reach.
+func TestComboDoesNotAnimateUnderReducedMotion(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+
+	transitions := 0
+	for _, rule := range comboRules(t) {
+		if match := animationDecl.FindString(rule.body); match != "" {
+			t.Errorf("%s declares %q; the preference is answered by a universal transition: none, which an animation does not obey", rule.selector, strings.TrimSpace(match))
+		}
+		transitions += len(transitionDecl.FindAllString(rule.body, -1))
+	}
+	if transitions == 0 {
+		t.Fatal("no rule for the picker or the switch transitions anything, so the preference has nothing here to answer and this test asserts nothing")
+	}
+
+	reduced := blockFor(t, source, "@media (prefers-reduced-motion: reduce)")
+	if !universalReset.MatchString(reduced) {
+		t.Errorf("the reduced-motion block carries no universal transition: none (%q), so the picker's own transitions survive a preference for no motion", reduced)
+	}
+}
+
+// appearanceNone is what takes the platform's own rendering away, in either
+// spelling.
+var appearanceNone = regexp.MustCompile(`(?i)(?:^|[;{\s-])appearance\s*:\s*none`)
+
+// TestModeNotConveyedByColourAlone is FR-019 and the design system's fifth
+// non-negotiable at the control that chooses how privileged a session is.
+//
+// The switch is a real checkbox and stays one: accent-color paints the
+// platform's tick in this palette's green without removing the tick, so the
+// state is a shape and the colour reinforces it. Take the appearance away and
+// what is left is whatever fill this stylesheet draws — which is the state
+// carried by hue, readable to nobody who cannot separate two greens.
+//
+// The words beside it are the other half, and they are what a state is actually
+// carried by: a label a reader announces and a sighted operator reads, bound to
+// the box by `for` rather than by sitting next to it.
+//
+// **Must fail when** the switch is styled with colour as its only cue.
+func TestModeNotConveyedByColourAlone(t *testing.T) {
+	t.Parallel()
+
+	for _, rule := range comboRules(t) {
+		if !strings.Contains(rule.selector, ".switch") {
+			continue
+		}
+		if match := appearanceNone.FindString(rule.body); match != "" {
+			t.Errorf("%s carries %q; the tick is the platform's own shape and it is what says the mode is on, so the two states then differ by fill alone", rule.selector, strings.TrimSpace(match))
+		}
+		if !strings.Contains(rule.selector, ":checked") {
+			continue
+		}
+		var beyondColour bool
+		for property := range declarations(rule.body) {
+			beyondColour = beyondColour || !comboColourProperties[property]
+		}
+		if !beyondColour {
+			t.Errorf("%s changes nothing but colour (%q), so being switched on is a hue; colour is reinforcement and never the state itself", rule.selector, strings.TrimSpace(rule.body))
+		}
+	}
+
+	out := renderComponent(t, "create-form", createFormView{PageToken: testCardToken})
+
+	box := regexp.MustCompile(`<input\b[^>]*\bclass="switch-input"[^>]*>`).FindString(out)
+	if box == "" {
+		t.Fatalf("the create form renders no .switch-input, so the rules above dress nothing:\n%s", out)
+	}
+	if kind, _ := attributeValue(t, box, "type"); kind != "checkbox" {
+		t.Errorf("the switch is type=%q; the tick this test protects is a native checkbox's, and nothing else on the platform draws one", kind)
+	}
+
+	label := regexp.MustCompile(`(?s)<label\b[^>]*\bclass="switch-label"[^>]*>(.*?)</label>`).FindStringSubmatch(out)
+	if label == nil || strings.TrimSpace(label[1]) == "" {
+		t.Fatalf("the switch carries no .switch-label with words in it, so nothing but the box's own appearance says which mode is chosen:\n%s", out)
+	}
+	id, _ := attributeValue(t, box, "id")
+	if named, _ := attributeValue(t, label[0], "for"); named != id {
+		t.Errorf("the .switch-label names %q and the switch is id=%q; a label that is only beside a control is not that control's name", named, id)
+	}
+}
+
+// comboClasses are the classes this component is made of: the picker's three,
+// the switch's two, and the row the switch sits in.
+var comboClasses = []string{"combo", "combo-list", "combo-status", "field-switch", "switch-input", "switch-label"}
+
+// TestComboClassesAppearInRenderedMarkup names them one by one, which the
+// stylesheet's own both-directions sweep deliberately does not: that test reads
+// the template *source*, so a class inside a branch that is never taken counts
+// as rendered there and would leave a rule styling markup no operator is ever
+// handed.
+//
+// Both of the wrapper's states are checked, because the plain field — a daemon
+// with nothing at all to suggest — is the one an enhancement can never help and
+// the one a conditional is likeliest to have swallowed.
+//
+// **Must fail when** a class exists only in CSS, which the existing sweep reads
+// as a dead rule and is how a second picker starts.
+func TestComboClassesAppearInRenderedMarkup(t *testing.T) {
+	t.Parallel()
+
+	styled := styledClasses(t)
+
+	for name, view := range comboViews() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			out := renderComponent(t, "create-form", view)
+			rendered := make(map[string]bool)
+			for _, attr := range classAttr.FindAllStringSubmatch(out, -1) {
+				for _, class := range strings.Fields(attr[1]) {
+					rendered[class] = true
+				}
+			}
+
+			for _, class := range comboClasses {
+				if !rendered[class] {
+					t.Errorf("the create form renders no %q; a rule for markup a browser is never handed is a component nobody built:\n%s", class, out)
+				}
+				if !styled[class] {
+					t.Errorf("crswd.css has no rule selecting %q, so the browser gets it unstyled", class)
+				}
+			}
+		})
+	}
+}
