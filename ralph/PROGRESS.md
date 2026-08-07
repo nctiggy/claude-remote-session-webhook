@@ -1313,3 +1313,96 @@ as the default gate.
   -count=1 ./...` and `go test -count=2 ./internal/httpapi` green, `go vet` green under
   `-tags tmux`, `-tags quickstart` and `-tags dev`, `go test -tags dev ./internal/access
   ./internal/config ./internal/httpapi` green, `go.sum` still absent.
+
+## Iteration 17 — 2026-08-07 06:18
+
+**Did:** T017, the first US4 task. `@crswd-start` is written by `Manager.start` as the fifth
+tmux user option, carried in the `list-sessions` format string, and read back into the record by
+`Adopt`. Two `-tags tmux` tests in the new `internal/session/mode_test.go` drive the round trip
+through a **real** tmux on a private `-L` socket: `TestStartCommandSurvivesRestart` (create under
+manager A, adopt under manager B with an empty store) and `TestRestoredSessionWithoutOptionIsLocal`
+(a session built by hand with provenance and no `@crswd-start` adopts cleanly, empty name).
+
+**Learned:**
+
+- **The option is a fifth field in a format string, so it is a fifth field in six test fixtures.**
+  `parseSessions` cuts from the right and the row went from five fields to six, which meant one
+  more `|` on every valid row in `exec_test.go`, plus the argv literal in three files
+  (`manager_test.go`, `fake_test.go`, `exec_test.go`) and two call-count assertions
+  (`TestCreateSendsTheTmuxCommandsInOrder`, and `TestCreateStartsTheSessionItPromised` in
+  `internal/httpapi`, which counts `SetOption` ops). **The httpapi one is the one you will not
+  predict** — nothing in `internal/session` points at it, and `go build`/`go vet` are both silent.
+  Run the whole default suite before assuming a tmuxctl change is local.
+- **`internal/session` had no `-tags tmux` file before this one**, so there was no harness to
+  reuse. It needed its own `newModeFixture` — `tmuxctl.NewExec` on a `crswd-test-<name>` socket
+  with a `kill-server` cleanup, modelled on `newTestExec` in `internal/tmuxctl/exec_tmux_test.go`
+  (whose `socketFor` is unexported and one package away). Two things that are **not** optional
+  there: the fixture calls `SetStartCommands` with `true` under both names, because the daemon's
+  own default is `claude --dangerously-skip-permissions` and a real `SendKeys` into a real shell
+  would start an unsandboxed assistant on whatever host ran the suite; and the manager takes the
+  **real** clock via `NewManager`, not `stoppedClock`, because tmux stamps `#{session_created}`
+  from the host clock and `Adopt` compares the two — a stopped clock makes every real session look
+  either newborn or long expired.
+- **A build tag excludes, it does not replace.** `mode_test.go` compiles *alongside*
+  `manager_test.go` and `workdir_test.go` under `-tags tmux`, so `newWorkDirFixture`,
+  `capNotUnderTest` and `stoppedClock` are all in scope. Only `repo()` had to be restated: it
+  hangs off `managerFixture`, which carries the tmux fake this file exists to avoid.
+- **Both mutations were run, not reasoned about.** Wrapping the new `SetOption` in `if false`
+  → `TestStartCommandSurvivesRestart` reds with `restored StartCommand = "", want "rc"`. Adding
+  an `info.StartCommand == ""` → `failures` arm to `Adopt` → `TestRestoredSessionWithoutOptionIsLocal`
+  reds with the refusal in the message. Reverted by reverse `Edit` (iteration 16's note:
+  `git checkout --` needs approval in this loop), and `git diff --stat` afterwards is the check.
+- **The deployed daemon is safe across this.** The new format string ships with the new parser, and
+  tmux renders an unset user option as an empty field — so the live fleet's five-option sessions
+  produce six-field rows with the last one empty, which is exactly the second test's case.
+
+**Left:** T018–T035. Next is **T018** (`Session.Mode()`, derived, plus the startup refusal for a
+`remote_start_commands` name absent from `start_commands`). It is where `ModeLocal`/`ModeRemote`
+first exist — see the first finding below.
+
+**Findings:**
+
+- **T017's contract row names `ModeLocal`, which T018 is the task that creates.**
+  `contracts/session-mode.md` says `TestRestoredSessionWithoutOptionIsLocal` asserts "No
+  `@crswd-start` → `ModeLocal`, no error", but `Session.Mode()` does not exist until T018. The
+  test as shipped asserts the observable half T017 owns — an empty `StartCommand` and a
+  successful adoption — which is precisely the value `Mode()` will read. **T018 should strengthen
+  it to `restored.Mode() != ModeLocal` in the same commit that adds `Mode()`**; it is a one-line
+  change and the test is already positioned for it. Not done here because AR-008 keeps a task
+  inside its named work.
+- **Two `TestParseSessions` fixtures pass for the wrong reason** (pre-existing, untouched):
+  `"creation time is not a number"` is `"crswd-abc123|whenever|1\n||"` and `"creation time missing
+  entirely"` is `"crswd-abc123||1\n||"`. The `\n` in the middle looks like a typo for a single row
+  — as written they are two rows, the first of which fails on *separator count* and never reaches
+  `ParseInt`, so neither case exercises the parse it is named for. They were left exactly as they
+  were (they still error, before and after), so this is a **fix-lane commit**: drop the `\n` and
+  pad each to six fields. First iteration logging it.
+- **`specs/001-crswd-daemon-core/contracts/tmuxctl.md` is now stale by three fields**, not one.
+  Line 163 still documents `list-sessions -F '#{session_name}|#{session_created}|#{@crswd-managed}'`
+  — it was already two behind after #72 added `@crswd-name` and `@crswd-workdir`, and this
+  iteration makes it three. Lines 81-82 likewise list two `set-option` calls where `start` now
+  makes five. **Wants a docs commit** alongside the `contracts/actions.md` one below.
+- **`contracts/actions.md` (milestone 3's) is still stale in nine places** — iterations 14, 15, 16,
+  unchanged. It fixes the four routes' statuses (200/202/400/409/429/500) and quotes two bodies
+  byte for byte; every one is a `303` today. **It wants a docs commit.** Fourth iteration logging it.
+- **`TestBrowserCreateStartsTheSessionAndAnswersWithItsCard` and
+  `TestRenameRelabelsTheRecordAndAnswersWithItsCard` are still misnamed** (iterations 14-16).
+  Neither answers with a card. Now fix-lane or nothing.
+- **`internal/httpapi` still carries the data race in its own fixture** (iterations 13-16):
+  `newAuditedServerWith` sets `s.report = func(err error) { ts.failed = append(ts.failed, err) }`
+  unsynchronised (`middleware_test.go:215`). Untouched; fifth iteration logging it; still wants the
+  lock `syncSink` already has.
+- **Still open from iterations 5-16:** the three red `-tags quickstart` tests
+  (`CRSW_DESTROY_ON_SHUTDOWN` has no loader — the oldest unfixed finding here; not run this
+  iteration, the port is held by the live daemon, though `go vet -tags quickstart ./...` is green);
+  `contracts/settings-page.md`'s `TestNoMutatingVerbRegistered` row still saying 405, and its worked
+  example showing values no loader would produce; three `ReadFile` refusals missing from
+  `contracts/config-file.md`'s table; the `version < 1` row; the contract's "yields exactly eight
+  keys" against seven; a dangling symlink reading as absent; `f.values` having no enumerator;
+  `os.Open` on a FIFO blocking startup with no message; `--config <path>` still unbuilt;
+  `README.md` and `deploy/README.md` silent on the config file (T034/T035).
+- **Lint:** `golangci-lint run` reports `0 issues` on **v2.12.2**, CI's pinned version. `gofmt -l .`
+  clean, `go build`, `go vet`, `go test -count=1 ./...` green; `go test -count=1 -tags tmux ./...`
+  green **and the two new tests ran rather than skipped** (`-v` confirms); `go vet` green under
+  `-tags tmux`, `-tags quickstart` and `-tags dev`; `go test -tags dev ./internal/access
+  ./internal/config ./internal/httpapi` green; `go.sum` still absent.

@@ -148,7 +148,7 @@ under `NEEDS CLARIFICATION` and stop.
 
 ### US4 — Turn remote control on and off (P4)
 
-- [ ] T017 Persist the start-command name as `@crswd-start`, the fifth tmux option
+- [x] T017 Persist the start-command name as `@crswd-start`, the fifth tmux option
 - [ ] T018 `Session.Mode()`, derived; refuse a mode naming an unconfigured command
 - [ ] T019 🔒 `POST /dashboard/sessions/{id}/mode`, fields `mode` and `confirm`
 - [ ] T020 Restart the process in place, with `--continue`, preserving scrollback
