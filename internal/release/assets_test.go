@@ -575,6 +575,79 @@ func TestRetentionKeepsTwentyAndNeverTheNewestTwo(t *testing.T) {
 	}
 }
 
+// TestUnitRestartsAlways is the last link in the self-update chain and the only
+// one that is not Go. Step 7 of contracts/self-update.md is a deliberate
+// `exit 0`, taken once the staged binary has been verified and renamed into
+// place: the daemon stops, and systemd starting it again is what actually puts
+// the new binary into service.
+//
+// `Restart=on-failure` — what this unit shipped with, and the value that reads
+// as the careful one — treats that exit as success and does nothing at all. The
+// update then completes, reports success, and leaves the host with a new binary
+// and no daemon running it. Nothing logs an error, because nothing failed.
+//
+// The comment is checked too, because on its own the directive invites the
+// correction that breaks it: a daemon that exits on purpose and is restarted
+// anyway looks like a unit nobody tightened.
+func TestUnitRestartsAlways(t *testing.T) {
+	t.Parallel()
+
+	// Read through the path the release publishes this file from, rather than
+	// naming it a second time here — a rename in deploy/ then fails in one place.
+	src := deployed["crswd.service"]
+	raw, err := os.ReadFile(filepath.Join(repoRoot, src))
+	if err != nil {
+		t.Fatalf("read %s: %v", src, err)
+	}
+
+	// Restart= is only a restart policy inside [Service]; anywhere else systemd
+	// rejects the whole unit. The comment block immediately above it is kept as
+	// the reason for whichever directive follows — a blank line ends a block, so
+	// prose further up the file cannot stand in for one that is missing here.
+	var (
+		section string
+		comment []string
+		values  []string
+		reason  string
+	)
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "#"):
+			comment = append(comment, trimmed)
+			continue
+		case trimmed == "":
+			comment = nil
+			continue
+		case strings.HasPrefix(trimmed, "["):
+			section, comment = trimmed, nil
+			continue
+		}
+		// RestartSec= is not a restart policy; the `=` is what separates them.
+		if section == "[Service]" && strings.HasPrefix(trimmed, "Restart=") {
+			values = append(values, strings.TrimPrefix(trimmed, "Restart="))
+			reason = strings.Join(comment, "\n")
+		}
+		comment = nil
+	}
+
+	switch len(values) {
+	case 1:
+	case 0:
+		t.Fatalf("%s sets no Restart= in [Service].\nsystemd's default is Restart=no, so the exit self-update ends with is just the daemon stopping: every check passes, the new binary is in place, and nothing on the host is running it", src)
+	default:
+		t.Fatalf("%s sets Restart= %d times in [Service] (%v); systemd takes the last, which is not what reading the file suggests", src, len(values), values)
+	}
+
+	if got := values[0]; got != "always" {
+		t.Errorf("%s sets Restart=%s, want Restart=always.\nSelf-update finishes by exiting 0 on purpose (contracts/self-update.md, step 7) and depends on systemd starting the daemon again; %s does not restart after a clean exit, so the update succeeds and the service never comes back", src, got, got)
+	}
+
+	if !strings.Contains(strings.ToLower(reason), "update") {
+		t.Errorf("%s sets Restart=always with no comment above it naming self-update as the reason. What is above it is:\n%s\nUnexplained, the directive reads as a daemon nobody bothered to bound, and on-failure is the obvious tightening — which silently removes the last step of the update path", src, reason)
+	}
+}
+
 // TestReleasePublishedOnMerge is the contract's trigger case. A tag-only
 // workflow is the failure that looks like nothing at all: the repository keeps
 // merging, no release appears, and self-update has nothing to find.
