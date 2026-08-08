@@ -578,6 +578,17 @@ func TestReleaseIsSigned(t *testing.T) {
 	}
 }
 
+// jobBlock returns one job's YAML, from its name to the next job's. Jobs sit at
+// two spaces and everything inside one at four or more, so the next line at that
+// indent is where this job ends — which matters because every assertion about a
+// job is only about a job while it is read from inside one.
+func jobBlock(t *testing.T, wf, job string) string {
+	t.Helper()
+
+	return find(t, wf, "job `"+job+"`",
+		regexp.MustCompile(`(?s)\n  `+regexp.QuoteMeta(job)+`:\n(.*?)(?:\n  [a-z]|\z)`))
+}
+
 // stepAt returns where a step's `- name:` line appears in the workflow, so two
 // steps can be placed against each other. Order is the one thing a replay
 // cannot see: a step is replayed on its own, and every assertion about what it
@@ -1009,5 +1020,149 @@ func TestBinaryIsStaticallyLinked(t *testing.T) {
 				t.Errorf("the %s artifact links %v at run time; a host without them cannot start it", arch, libs)
 			}
 		})
+	}
+}
+
+const (
+	// verifyInstallJob is contracts/installer.md's fourth task, and the only
+	// place any claim about the installer is made on a machine that has never
+	// seen this project.
+	verifyInstallJob = "verify-install"
+
+	// freshStep is the step that refuses to prove anything on a host where the
+	// answer is already yes.
+	freshStep = "Nothing the installer writes is here yet"
+
+	// secondRunStep is the run that carries the requirement. The first one only
+	// proves an install; this one is the re-run an operator does to take a newer
+	// binary, on a host they have configured since.
+	secondRunStep = "Install again, over an edited config and an edited unit"
+)
+
+// commands strips the comments and the `::error::` messages out of a block of
+// workflow, leaving what a job actually runs.
+//
+// Both halves are traps this test fell into while it was being written, and both
+// fail in the same direction. A step that explains itself names the command it
+// runs and the answer it wants twice over — once in the comment above the check
+// and once in the sentence printed when the check fails — so a search over the
+// raw text is satisfied by the prose and goes on being satisfied after the check
+// itself has been deleted. Two of the mutations written against this test passed
+// for exactly that reason before this existed.
+func commands(block string) string {
+	var kept []string
+	for _, line := range strings.Split(block, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") || strings.Contains(line, "::error::") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+// TestVerifyInstallProvesItOnAnotherMachine reads the job that is the whole
+// answer to "how is the installer proven at all".
+//
+// Nothing here can run it — it installs a published release onto a host that has
+// never seen this project, which is precisely what this machine is not — so what
+// a working tree can check is the shape the job has to keep. Every assertion
+// below is a way for it to go on passing while proving nothing:
+//
+//   - moved to the self-hosted runners, which are the operator's own machines,
+//     where the binary, the unit, the configuration and the PATH entry are all
+//     already there and the installer could do nothing at all and still be green
+//   - run before or beside the release, so what it installs is the version
+//     before this one
+//   - run once, which cannot ask the question the second run exists for
+//   - the freshness list drifting from what install.sh writes, so a file the
+//     installer creates is one this job found already sitting there
+//
+// The last arrives on its own: install.sh grows a fifth path, nothing here
+// changes, and that file is never once watched being created.
+func TestVerifyInstallProvesItOnAnotherMachine(t *testing.T) {
+	t.Parallel()
+
+	wf := readWorkflow(t)
+	job := commands(jobBlock(t, wf, verifyInstallJob))
+
+	// GitHub-hosted is the requirement here rather than the fallback. #77 moved
+	// ci.yml to self-hosted runners for a reason that does not reach this job:
+	// those machines are the operator's, and this project is installed on them.
+	if runner := find(t, job, "`runs-on:` in the "+verifyInstallJob+" job",
+		regexp.MustCompile(`(?m)^\s*runs-on: (.+)$`)); runner != "ubuntu-latest" {
+		t.Errorf("the %s job runs on %s; contracts/installer.md requires ubuntu-latest.\nThe self-hosted runners are the operator's own machines, where every precondition the installer exists to create is already true — a run there is green whatever the installer does, which is the failure this job was written against",
+			verifyInstallJob, runner)
+	}
+
+	// After the release, because the release is what it installs.
+	if needs := find(t, job, "`needs:` in the "+verifyInstallJob+" job",
+		regexp.MustCompile(`(?m)^\s*needs: (.+)$`)); needs != "release" {
+		t.Errorf("the %s job needs %q; it has to run after `release`.\nWithout that it installs whatever the `latest` pointer resolved to before this run, and reports the result as a check on what this run published",
+			verifyInstallJob, needs)
+	}
+
+	// Every path install.sh writes, read out of install.sh — the four are
+	// spelled there relative to $HOME and nowhere else, so a fifth one added the
+	// same way is picked up here without this test being told about it.
+	script := readInstaller(t)
+	var written []string
+	for _, m := range regexp.MustCompile(`(?m)^readonly [A-Z_]+="(\.[^"]+)"$`).FindAllStringSubmatch(script, -1) {
+		written = append(written, m[1])
+	}
+	if len(written) < 4 {
+		t.Fatalf("%s declares %d paths under $HOME (%v); it writes at least four — the binary, the unit, the record and the config.\nIf they are spelled some other way now, spell them that way here too: this test is the only thing keeping the CI job's freshness check level with them",
+			installerPath, len(written), written)
+	}
+
+	fresh := commands(stepScript(t, wf, freshStep))
+	for _, rel := range written {
+		if !strings.Contains(fresh, rel) {
+			t.Errorf("the %q step does not check ~/%s, which %s writes.\nA path this job does not know about is one it never sees created: it is there after the install because it was there before, and nothing says so",
+				freshStep, rel, installerPath)
+		}
+	}
+
+	// Twice, and the second run is the one that carries the requirement: a
+	// re-run is how an operator takes a newer binary, and the two files it must
+	// leave alone are the only two on that host they wrote themselves.
+	runs := regexp.MustCompile(`bash install\.sh`).FindAllStringIndex(job, -1)
+	if len(runs) != 2 {
+		t.Fatalf("the %s job holds %d `bash install.sh`; contracts/installer.md says two — one to prove it installs, one to prove it does not overwrite.\nA single run cannot ask the second question at all",
+			verifyInstallJob, len(runs))
+	}
+
+	// The edits happen inside the second step and before its install, which is
+	// the only place they can be read as edits. Measured against that step
+	// rather than against everything between the two runs: the first step also
+	// names the config, to check its mode, and a span that wide is satisfied by
+	// a job that reads both files and changes neither.
+	second := commands(stepScript(t, wf, secondRunStep))
+	before, _, _ := strings.Cut(second, "bash install.sh")
+	for _, rel := range []string{installedConfig, installedUnit} {
+		if !strings.Contains(before, rel) {
+			t.Errorf("the %q step does not touch ~/%s before it runs the installer again.\nThe second run only means something on a host somebody has since configured; against an untouched one it takes the same branch as the first and agrees with itself",
+				secondRunStep, rel)
+		}
+	}
+	if !strings.Contains(before, ">>") {
+		t.Errorf("the %q step changes neither file before running the installer again.\nNaming them is not editing them, and an installer asked to replace what it wrote itself is the one case that is supposed to say yes",
+			secondRunStep)
+	}
+
+	// And compared as bytes afterwards. "Still there" is what an installer that
+	// rewrote the config from its own template also leaves behind — a file of
+	// the right shape holding none of the operator's settings.
+	if after := job[runs[1][1]:]; !strings.Contains(after, "sha256sum -c") {
+		t.Errorf("the %s job does not compare the files it edited after the second install.\nWhat it must show is that they came back byte-identical, which is not the same as them still existing",
+			verifyInstallJob)
+	}
+
+	// The one assertion the task names, and the one no Go test can make: a
+	// systemd that was actually asked, and an answer that is actually compared.
+	asked := strings.Contains(job, "systemctl --user is-active crswd")
+	compared := strings.Contains(job, "inactive")
+	if !asked || !compared {
+		t.Errorf("the %s job does not run `systemctl --user is-active crswd` and require it to answer `inactive` (asked=%t, compared=%t).\nThe daemon cannot serve a request before the secret is set, so an installer that started it would leave a service failing on first boot — which teaches its operator to ignore a failing service",
+			verifyInstallJob, asked, compared)
 	}
 }

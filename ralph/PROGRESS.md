@@ -1507,3 +1507,109 @@ T014 is done.
     worked around.
 
 **No `RALPH_COMPLETE`.** T012, T015, T016, T017 and T019 are open and all five are takeable.
+
+---
+
+## Iteration 17 — 2026-08-08 02:05
+
+**Did:** **T012**, the `verify-install` job. A second job in `release.yml`, `needs: release`, on
+`ubuntu-latest`: it asserts the runner carries none of the four paths `install.sh` writes, starts
+a user manager, runs the checked-out `install.sh` against the release the same run published,
+checks the four paths landed and that the config is mode 600 and that the placed binary reports
+this run's version, then requires `systemctl --user is-active crswd` to answer `inactive` and
+`is-enabled` to answer `disabled` — then edits the config and the unit and installs again,
+requiring both back byte-identical and the installer to have said so. `release` grew one output,
+`version`. `TestVerifyInstallProvesItOnAnotherMachine` in `internal/release/assets_test.go`, with
+`jobBlock` and `commands` beside `stepScript`. Gate green: build, vet, `go test ./...`,
+`golangci-lint run` (2.12.2, 0 issues), `gofmt -l` empty, `go vet` under all three tags. `go.sum`
+still absent.
+
+**Learned:**
+
+- **⚠️ Two of the nine mutations passed, and both passed for the same reason: the test was
+  matching the step's own prose.** A step that explains itself names the command it runs and the
+  answer it wants three times — in the comment above the check, in the check, and in the sentence
+  printed when it fails — so `strings.Contains(job, "systemctl --user is-active crswd")` was
+  satisfied by the `::error::` message, and `Contains(job, "inactive")` by the comment. Both
+  stayed satisfied with the check deleted. `commands()` now strips comment lines and `::error::`
+  lines before any search. **Any test that greps a workflow for a command has this bug until it
+  does the same** — and the better the comments, the more thoroughly it is fooled.
+- **⚠️ A span between two steps is not the same as a step.** The first version read "the config
+  is edited between the two installs" from `job[firstRun:secondRun]`, which passed while the
+  config was renamed out of the edit — because the *install* step names the same path to check
+  its mode. Narrowed to the second-run step, cut at its own `bash install.sh`, plus a check that
+  something is actually appended: naming a file is not editing it.
+- **The runner's own `$HOME` is the fresh HOME, and asserting that is stronger than making one.**
+  A `mktemp -d` HOME would be fresh and would also put the unit somewhere the user manager cannot
+  see — its lookup path comes from the manager's own environment, not the client's — so
+  `is-active` would answer `inactive` for a unit that does not exist, which is the assertion
+  passing on nothing. Installing into `/home/runner` and *proving* the four paths were absent
+  first keeps `is-active` meaning installed-and-stopped. It also fails loudly the day a runner
+  image ships something at one of those paths.
+- **`systemctl --user` needs a bus that a runner does not have.** The agent is started by a system
+  unit, so the account is never logged in: no session, no `/run/user/<uid>`, and every
+  `systemctl --user` fails to connect rather than answering. `loginctl enable-linger` starts a
+  user manager without a login — the same line `deploy/crswd.example.service` tells an operator to
+  run — and the job then waits for `/run/user/<uid>/bus` and exports `XDG_RUNTIME_DIR`. It
+  installs `dbus-user-session` first if the image lacks it. **If the job fails there, it fails
+  loudly rather than skipping the assertion**, which is the whole point of the task.
+- **`is-active` cannot see an `enable` without `--now`**, so the job asks `is-enabled` too. The
+  installer's promise is that it enables nothing; without that second question, a
+  `systemctl --user enable crswd` added for convenience is invisible today and running after the
+  next reboot.
+- **It installs the checked-out `install.sh`, not the `raw.githubusercontent.com` URL the README
+  prints.** Same file at the same commit, but that URL is served through a cache that goes on
+  answering with the previous commit's copy for some minutes after a merge — the one-liner would
+  occasionally test an installer other than the one being released, and pass.
+- **A `stepScript` dump plus `bash -n` is the only local check on workflow shell there is here**,
+  and the sandbox blocks `bash -n` on a file, `python3` entirely, and any YAML parser. The block
+  scalars were read back through `stepScript` instead and inspected: all five extract whole, which
+  is what a wrong `run: |` indent would break. **`ci.yml`'s guardrails job shellchecks workflow
+  `run:` blocks for free** — it installs shellcheck immediately before actionlint, and actionlint
+  runs shellcheck over every `run:` it finds. That is the first real check on this shell.
+- **`uploadedAssets` already anticipated this job**, and its comment says why: it reads only the
+  backslash-continued `gh release create` line rather than to end of file, so a second job after
+  Publish does not join the asset list. Nothing else in `assets_test.go` needed changing.
+
+**Left:** **T015 → T016 → T017 → T019, in that order** — the whole of US4 and every one of them
+security-critical. T015 is the topmost open task and the one the other three are built on:
+checksum **then** signature, and a missing `.sig` is a refusal rather than a skip.
+
+**Findings:**
+
+1. **⚠️ Iteration 14's finding 2 is now the thing most likely to make the next release run red,
+   and it is still unfixed.** `deploy/crswd.example.service` — published as the `crswd.service`
+   asset — has `ExecStart=%h/bin/crswd` and a required `EnvironmentFile=%h/.config/crswd/env`,
+   while `install.sh` places `~/.local/bin/crswd` and `~/.config/crswd/config`. **A fresh install
+   still ends with a unit that cannot start.** T012 as written does *not* catch it — it never
+   starts the service, on purpose — so this is still a fix-lane PR somebody has to open. Checked
+   again here, in the file: both lines are unchanged.
+2. **⚠️ Nothing in this job has ever run.** The first merge to `main` is its first execution and
+   its first four unknowns, in the order they would fail: whether `loginctl enable-linger` yields
+   a usable bus on a GitHub runner; whether the release's `latest` pointer resolves in time for
+   `install.sh` to find it; whether `install.sh` verifies the real signature made by the real
+   secret (Iteration 16's finding 1 — the signing step has never met the operator's key either);
+   and whether the published amd64 binary execs. **Read what it printed before changing anything**
+   — every refusal in the job names its own cause.
+3. **Iteration 12's finding still stands and this iteration did not fix it**: CI shellchecks
+   nothing outside `.claude/hooks/`, `ralph/loop.sh`, `.claude/statusline.sh` and
+   `.github/scripts/`. **`install.sh` is linted by nothing** — which matters more now that a CI
+   job runs it twice per release. It is a one-line addition to `ci.yml`'s shellcheck step.
+4. **Iteration 16's finding 4 still stands and is still urgent**: `quickstart.md`'s SC-009 check
+   greps for the *name* of the `RELEASE_SIGNING_KEY` secret and calls a match a failure, which
+   `install.sh`, `keygen.go` and now `release.yml` all legitimately produce.
+5. **Iteration 14's finding 3 still stands**: an empty zero-byte `/tmp/crswd-keygen-probe` is
+   still there; the sandbox refuses to remove it. It holds nothing.
+6. **Iteration 11's finding that nothing tests "unit absent, record present" still stands.**
+7. **Iteration 7's finding about `gh release list --limit 1000` still stands.**
+8. **Iteration 6's finding about `data-model.md`/`contracts/release.md` and `SHA256SUMS.sig`
+   still stands** — T015's verifier must expect the sums file to cover five names, not seven.
+9. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
+10. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
+11. **Iteration 13's finding that the README describes `POST /dashboard/update` before it exists
+    still stands** — T019 should delete the qualifier above that section.
+12. **No ad-hoc defects observed** in the code touched. The two problems found here were this
+    iteration's own test matching its own prose and its own span being too wide, both found by
+    mutation and both fixed rather than noted.
+
+**No `RALPH_COMPLETE`.** T015, T016, T017 and T019 are open.

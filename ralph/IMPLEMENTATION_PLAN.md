@@ -41,9 +41,10 @@ The project is installed here, a config exists, `~/.local/bin` is on `PATH`, and
 place. **Every precondition the installer exists to create is already true**, so a green run
 here demonstrates nothing.
 
-T012 moves that verification to a GitHub-hosted runner with a fresh `HOME`, running the
-published release, twice. It is **not optional polish** — without it, T009–T011 are proven only
-in the one environment where they cannot fail.
+**T012 moved that verification off this host** (Iteration 17): `verify-install` in `release.yml`
+installs the release the same run published, on `ubuntu-latest`, twice. **It has never run** —
+the first merge to `main` after this is its first execution, and the first time anything about
+`install.sh` is demonstrated rather than asserted.
 
 Where a task carries *"it was only ever run where the project is already installed"*, that
 phrasing is the point.
@@ -133,9 +134,9 @@ re-litigate these** — if one looks wrong, write it in `PROGRESS.md` under
 - [x] T009 Detect, download, and verify **before** anything is executable
 - [x] T010 Place the binary, the unit, the recorded hash, and a config only if absent
 - [x] T011 Refuse to clobber: an edited unit, and one we have no record of
-- [ ] T012 The `verify-install` job on a GitHub-hosted runner — **not optional**, and
-      **unblocked at Iteration 16**: T014 signs, so the release this job installs from carries a
-      `SHA256SUMS.sig` made in the same run that publishes it. **This is the topmost open task.**
+- [x] T012 The `verify-install` job on a GitHub-hosted runner — installs the release the same run
+      published, onto a host asserted to carry none of the four paths `install.sh` writes, twice.
+      See Iteration 17.
 
 ### The signing key — ✅ THE HUMAN STEP IS DONE
 
@@ -172,12 +173,12 @@ possible at all.
 
 T020 and T021 were what there was to take while T013/T014 waited on the operator. T018 followed,
 because fetching is the one step of US4 that carries no verification and so never needed a key.
-T014 came next, once the key turned out to have been committed three iterations earlier.
+T014 came next, once the key turned out to have been committed three iterations earlier, and
+T012 after it.
 
-**Nothing is blocked now.** The graph's one human edge — T013 → T014 → {T012, T015…} — is
-satisfied, and every remaining task is ordinary work: **T012**, then **T015 → T016 → T017 → T019**
-in that order. T012 is the topmost, and it is the only one of them that can fail for reasons
-this host cannot show you.
+**What is left is US4, in one chain: T015 → T016 → T017 → T019.** Each is security-critical and
+each depends on the one before it — verification before staging, staging before the swap, the
+swap before a route that asks for one. Nothing is blocked.
 
 ---
 

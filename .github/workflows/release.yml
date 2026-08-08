@@ -32,6 +32,13 @@ jobs:
     # rather than blocking a merge, so #77's reason for leaving GitHub-hosted
     # runners does not reach this workflow.
     runs-on: ubuntu-latest
+    outputs:
+      # What was published, for the job below to check it installed. Without it
+      # verify-install proves the installer works against whatever the `latest`
+      # pointer happened to resolve to, which on the day this run fails part-way
+      # is the release before it — a green run describing bytes nobody just
+      # built.
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -294,3 +301,201 @@ jobs:
             # remaining record of which commit that version named.
             gh release delete "$tag" --yes
           done <<< "$ordered"
+
+  verify-install:
+    name: Install on a host that has never seen this project
+    # After the release, and against it. What this job installs is the version
+    # the job above published, so it cannot run beside it.
+    needs: release
+    # GitHub-hosted, and this is the one job in the repository where that is the
+    # requirement rather than the fallback. ci.yml runs on the operator's own
+    # machines (#77), where this project is already installed, ~/.local/bin is
+    # already on PATH, a configuration already exists and the unit is already in
+    # place — every precondition the installer exists to create. A run there is
+    # green whatever the installer does, which is the exact failure this job is
+    # written against. A fresh cloud VM is genuinely somebody else's computer.
+    runs-on: ubuntu-latest
+    # It reads a public release over https and needs no token. The write
+    # permission above belongs to the job that publishes.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Nothing the installer writes is here yet
+        # Stated rather than assumed. The claim this job makes is about a machine
+        # that has never seen the project, and "it is a fresh VM" is exactly the
+        # premise that stops being true without anybody noticing: a runner image
+        # that shipped one of these paths would turn every assertion below into a
+        # description of what was already there.
+        #
+        # These four are every path install.sh writes, and a test holds the two
+        # lists together — a fifth path added to the installer and not to this
+        # loop is a file this job would find already present and report as
+        # installed.
+        run: |
+          fresh=0
+          for rel in .local/bin/crswd \
+                     .config/systemd/user/crswd.service \
+                     .local/share/crswd/crswd.service.sha256 \
+                     .config/crswd/config; do
+            if [ -e "$HOME/$rel" ]; then
+              echo "::error::~/$rel already exists, so installing it here proves nothing"
+              fresh=1
+            fi
+          done
+          exit "$fresh"
+
+      - name: A user manager to ask about the service
+        # `systemctl --user` talks to a per-user systemd over that user's bus,
+        # and a runner's account is never logged in — the agent is started by a
+        # system unit — so there is no session, no /run/user/<uid>, and the
+        # assertions below would fail to connect rather than answer. Lingering
+        # starts a user manager without a login: the same line
+        # deploy/crswd.example.service tells an operator to run, for the same
+        # reason, which is that this daemon has to be reachable when nobody is
+        # sitting at the host.
+        run: |
+          # The bus itself is a socket unit that ships in this package. Without
+          # it the manager starts and there is no address to reach it at.
+          dpkg -s dbus-user-session > /dev/null 2>&1 || {
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq dbus-user-session
+          }
+          sudo loginctl enable-linger "$USER"
+
+          # enable-linger returns before the manager it asks for is up.
+          runtime="/run/user/$(id -u)"
+          for _ in $(seq 30); do
+            if [ -S "$runtime/bus" ]; then break; fi
+            sleep 1
+          done
+          if [ ! -S "$runtime/bus" ]; then
+            echo "::error::no user bus at $runtime/bus, so systemctl --user has nothing to ask and the one assertion this job exists to make cannot be made"
+            exit 1
+          fi
+          echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
+
+      - name: Install
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        # The installer out of this checkout rather than the raw.githubusercontent
+        # URL the README prints. They are the same file at the same commit, and
+        # that URL is served through a cache that goes on answering with the
+        # previous commit's copy for some minutes after a merge — so the
+        # one-liner would occasionally test an installer other than the one this
+        # run is releasing, and pass.
+        run: |
+          log="$RUNNER_TEMP/install-1.log"
+          if ! bash install.sh > "$log" 2>&1; then
+            cat "$log"
+            echo "::error::the installer failed on the kind of machine it is written for"
+            exit 1
+          fi
+          cat "$log"
+
+          for rel in .local/bin/crswd \
+                     .config/systemd/user/crswd.service \
+                     .local/share/crswd/crswd.service.sha256 \
+                     .config/crswd/config; do
+            if [ ! -e "$HOME/$rel" ]; then
+              echo "::error::the installer reported success and wrote no ~/$rel"
+              exit 1
+            fi
+          done
+
+          # Measured on a real host with a real umask, which is the half the Go
+          # tests cannot speak for: this file is where the shared secret goes.
+          mode=$(stat -c %a "$HOME/.config/crswd/config")
+          if [ "$mode" != 600 ]; then
+            echo "::error::~/.config/crswd/config is mode $mode, want 600 — it is the file the shared secret is written into"
+            exit 1
+          fi
+
+          # Which release was installed, asked of the binary that was placed.
+          # This is also the first time the published artifact is executed
+          # anywhere: a tarball that verifies and cannot exec passes every check
+          # in the job above.
+          got=$("$HOME/.local/bin/crswd" --version)
+          if [ "$got" != "crswd $VERSION" ]; then
+            echo "::error::the installed binary says '$got'; this run published $VERSION"
+            exit 1
+          fi
+
+      - name: Nothing was started and nothing was enabled
+        run: |
+          systemctl --user daemon-reload
+
+          # "inactive" has to mean installed-and-stopped rather than no-such-unit,
+          # or the assertion below would pass on a host where the installer wrote
+          # nothing at all.
+          if ! systemctl --user cat crswd.service > /dev/null; then
+            echo "::error::the user manager cannot see ~/.config/systemd/user/crswd.service, so is-active would be answering about a unit that does not exist"
+            exit 1
+          fi
+
+          state=$(systemctl --user is-active crswd || true)
+          if [ "$state" != inactive ]; then
+            echo "::error::systemctl --user is-active crswd says $state, want inactive. The daemon cannot serve a request before the secret is set, and a service that fails on first boot teaches its operator to ignore a failing service"
+            exit 1
+          fi
+
+          # is-active cannot see an enable without --now: the service would be
+          # absent today and running after the next boot, which is the same
+          # promise broken one reboot later.
+          enabled=$(systemctl --user is-enabled crswd || true)
+          if [ "$enabled" != disabled ]; then
+            echo "::error::systemctl --user is-enabled crswd says $enabled, want disabled. The installer enables nothing; it prints the enable command instead"
+            exit 1
+          fi
+
+      - name: Install again, over an edited config and an edited unit
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        # The second run is the requirement that cannot be tested by installing
+        # once. Re-running the one-liner is what an operator does to upgrade, and
+        # the two files it must not touch are the only two on the host they
+        # authored.
+        run: |
+          config="$HOME/.config/crswd/config"
+          unit="$HOME/.config/systemd/user/crswd.service"
+
+          printf '# edited on this host after the first install\n' >> "$config"
+          printf '# edited on this host after the first install\n' >> "$unit"
+          sha256sum "$config" "$unit" > "$RUNNER_TEMP/edited.sha256"
+
+          log="$RUNNER_TEMP/install-2.log"
+          if ! bash install.sh > "$log" 2>&1; then
+            cat "$log"
+            echo "::error::the second run failed; running the installer again on a host somebody has since configured has to be safe"
+            exit 1
+          fi
+          cat "$log"
+
+          # Byte-identical, not merely still there. An installer that rewrote the
+          # config from its own template would leave a file of the right shape
+          # holding none of the operator's settings.
+          if ! sha256sum -c "$RUNNER_TEMP/edited.sha256"; then
+            echo "::error::the second run overwrote a file the operator had edited"
+            exit 1
+          fi
+
+          # And said so. A refusal nobody is told about reads as an install that
+          # took, so the next thing the operator does is wonder why their setting
+          # had no effect.
+          if ! grep -Fq '.config/crswd/config exists' "$log"; then
+            echo "::error::the second run left the config alone without saying so"
+            exit 1
+          fi
+          if ! grep -Fq 'crswd.service has been modified' "$log"; then
+            echo "::error::the second run left the edited unit alone without saying so"
+            exit 1
+          fi
+
+          # The binary is the one thing a second run does replace, which is how
+          # re-running the one-liner upgrades a host.
+          got=$("$HOME/.local/bin/crswd" --version)
+          if [ "$got" != "crswd $VERSION" ]; then
+            echo "::error::after the second run the installed binary says '$got'; this run published $VERSION"
+            exit 1
+          fi
