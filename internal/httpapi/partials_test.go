@@ -1333,11 +1333,13 @@ func TestStreamLossIsVisible(t *testing.T) {
 	if strings.TrimSpace(note[1]) == "" {
 		t.Error("the note carries no copy at all, so revealing it would say nothing")
 	}
-	// The page cannot recover what it missed while the stream was gone — the
-	// reconnection brings no history with it — so the note has to name the one
-	// thing that does. A sentence that only announced the loss would leave an
-	// operator looking at a fleet they have been told not to trust with nothing
-	// to do about it.
+	// The note has to name something the operator can do. The page recovers itself
+	// now — a reconnection brings no history with it, so the live half re-fetches
+	// the fleet and hides this note when that answers (issue #99) — which means the
+	// note is left standing only where the re-fetch failed. That is precisely when
+	// a sentence announcing the loss and nothing else would leave an operator
+	// looking at a fleet they have been told not to trust with nothing to do about
+	// it.
 	if !strings.Contains(strings.ToLower(note[1]), "reload") {
 		t.Errorf("the note reads %q and names nothing the operator can do about it; only a fresh render restores a fleet this page can vouch for", strings.TrimSpace(note[1]))
 	}
@@ -1449,6 +1451,30 @@ func TestTheFleetNamesTheStreamAndTheCardItRefetches(t *testing.T) {
 	// shell.
 	if strings.ContainsAny(card[1], "?#") {
 		t.Errorf("the card's address carries more than the path to the session (%q)", card[1])
+	}
+
+	// And the fleet's own address, which the live half asks for again when a
+	// stream it lost comes back (issue #99). It is derived from the pattern the
+	// daemon registers like the other two, with the `{$}` anchor taken off: that
+	// anchor is what stops GET / matching every unrouted path, and it is a fact
+	// about the router rather than a byte of any address a browser asks for.
+	//
+	// A drift here has the symptom the other two have — a page that renders
+	// perfectly — with the failure moved to the one moment it is least welcome: a
+	// daemon restart, after which the recovery asks for something that is not the
+	// fleet and the operator is left with the note telling them to reload.
+	whole := regexp.MustCompile(`data-fleet-page="([^"]*)"`).FindStringSubmatch(page)
+	if whole == nil {
+		t.Fatalf("the fleet page names no address for itself, so a stream that came back has nothing to re-fetch and the stalled note is permanent (issue #99):\n%s", page)
+	}
+	if want := strings.TrimSuffix(strings.TrimPrefix(patternFleet, "GET "), "{$}"); whole[1] != want {
+		t.Errorf("the fleet page re-fetches itself from %q and the daemon serves %q", whole[1], want)
+	}
+	// FR-034 on this address for the reason the card's carries it, and one more:
+	// an outcome query carried into the recovery would re-render a banner about an
+	// action that finished long before the stream dropped.
+	if strings.ContainsAny(whole[1], "?#") {
+		t.Errorf("the fleet's own address carries more than the path to the page (%q)", whole[1])
 	}
 
 	// And the identifier on the card itself, at the component as well as on the

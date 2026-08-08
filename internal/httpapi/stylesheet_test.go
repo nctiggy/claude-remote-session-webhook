@@ -966,6 +966,102 @@ func TestTheFleetUpdatesInPlaceRatherThanReloading(t *testing.T) {
 	}
 }
 
+// TestTheFleetRecoversARestartRatherThanAskingForAReload is issue #99: the
+// stalled note was revealed on every interruption and never hidden again,
+// because only a reload was thought to restore a fleet this page can vouch for.
+// A re-fetch restores it too, and this file already re-fetches one card when the
+// stream names one — the whole fleet is the same mechanism at a different
+// granularity.
+//
+// It matters more than a papercut because a daemon restart is now routine:
+// milestone 6's self-update exits and lets systemd restart it, so every update
+// drops every open stream, and the operator who ran that update from this page
+// was told the dashboard had given up at the one moment they were watching. A
+// note that appears after every ordinary interruption is also a note people stop
+// reading, and it is the same note that has to be believed when the daemon is
+// genuinely gone.
+//
+// **Must fail when** the recovery is removed, when it hides the note without
+// having succeeded, when it stops announcing a fleet that changed size while the
+// stream was gone, or when it becomes more than one request. Each of those is
+// silent in Go and obvious nowhere until an operator is looking at a stale fleet.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed —
+// the same footing every other script assertion in this file stands on.
+func TestTheFleetRecoversARestartRatherThanAskingForAReload(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	// The reconnection and not the drop. `error` is a host that has just stopped
+	// answering, and a re-fetch aimed at that moment fails for a reason that is no
+	// longer true a second later; `open` is the browser saying it has a stream
+	// again, which is the first instant the daemon can answer at all.
+	if !regexp.MustCompile(`addEventListener\(\s*['"]open['"]`).MatchString(source) {
+		t.Error("crswd.js listens for no `open` event, so a stream that came back is a stream nothing recovers from and the note stays up for the rest of the tab's life (issue #99)")
+	}
+
+	// The address is the page's, exactly as the card's is. A script that spelled a
+	// route would be a second place for it to drift from the one the daemon
+	// registers, and the symptom is a fleet that recovers into the not-found page.
+	if !strings.Contains(source, "dataset.fleetPage") {
+		t.Error("crswd.js never reads the hook naming the fleet's own address, so the recovery has nothing to ask (issue #99)")
+	}
+	// One request per recovery, which is one record in the trail. A recovery that
+	// fanned out over the cards would be a restart answered by a burst of requests
+	// from every open tab.
+	if n := strings.Count(source, "fetch(shell.dataset.fleetPage"); n != 1 {
+		t.Errorf("crswd.js asks for the fleet in %d places; want exactly 1 — a re-fetch is a request, and one recovery is one record", n)
+	}
+
+	// Both halves of the note. Revealed while the page cannot vouch for what it
+	// shows, and hidden again only where the re-fetch answered — a note hidden on
+	// reconnection alone would be the page claiming a currency it never got back,
+	// which is the reasoning this change keeps rather than the conclusion it drops.
+	for spelling, why := range map[string]string{
+		`stalled\.hidden\s*=\s*false`: "a stream that stopped has to say so; FR-020 is unchanged by the recovery",
+		`stalled\.hidden\s*=\s*true`:  "a page that re-fetched the fleet is current again, and a note left standing over it is the one that trains an operator to stop reading it (issue #99)",
+	} {
+		if !regexp.MustCompile(spelling).MatchString(source) {
+			t.Errorf("crswd.js never writes %s: %s", spelling, why)
+		}
+	}
+
+	// And the failure leaves it. Both re-fetches on this page fall back to the same
+	// note, which is what makes the sentence worth believing when the daemon really
+	// is gone: the page says it cannot vouch for the fleet only when it could not
+	// ask.
+	if n := strings.Count(source, "catch(lostTheFleet)"); n != 2 {
+		t.Errorf("crswd.js falls back to the stalled note in %d places; want 2 — the card's re-fetch and the fleet's, because a recovery that failed is exactly the case FR-020 is about", n)
+	}
+
+	// The fleet is lifted whole out of one render, so the counts and the cards they
+	// describe come from a single reading — the property the incremental path keeps
+	// by re-deriving the row from the cards beneath it.
+	for selector, why := range map[string]string{
+		"main[data-fleet-stream] .grid":    "the cards come out of the answer's own grid; an answer that is not a fleet page must not be read as an empty fleet",
+		"main[data-fleet-stream] .summary": "the counts come out of the same render as those cards, or the row and the grid disagree about the fleet they describe",
+	} {
+		if !strings.Contains(source, `'`+selector+`'`) {
+			t.Errorf("crswd.js never selects %q in the answer: %s", selector, why)
+		}
+	}
+
+	// The announcement (issue #51) at the moment it is most owed. Arriving back to
+	// a different fleet is exactly when an operator who cannot see it needs telling,
+	// and it is said with the page's own two sentences rather than a third — so
+	// each of them is now written from two places: the event that changed the shape
+	// and the recovery that found it changed.
+	for what, why := range map[string]string{
+		"fleetAppeared": "a fleet that grew while the stream was gone",
+		"fleetVanished": "a fleet that shrank while the stream was gone",
+	} {
+		if n := strings.Count(source, "say('"+what+"')"); n != 2 {
+			t.Errorf("crswd.js says %q from %d places; want 2 — the event and the recovery, or %s is a page that silently rearranged (issue #51)", what, n, why)
+		}
+	}
+}
+
 // createFormMarkup is the create form's own source with its prose removed, for
 // the two tests below that hold a joint between this tree and the script's.
 func createFormMarkup(t *testing.T) string {
