@@ -1145,3 +1145,21 @@ body {
 [hidden] {
   display: none !important;
 }
+
+/* The version, on every page.
+
+   Muted and small because it is the least important true thing on the page: an
+   operator came for the fleet, and a footer that competes with it has
+   misunderstood which of them matters. Tokens only, like everything else. */
+.footer {
+  margin-block-start: var(--s6);
+  padding-block: var(--s3);
+  border-block-start: var(--edge-width) solid var(--edge);
+}
+
+.footer-version {
+  margin: 0;
+  color: var(--dim);
+  font-size: var(--fs-eyebrow);
+  text-align: center;
+}
