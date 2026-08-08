@@ -568,3 +568,61 @@ func TestFetcherIsTheDaemonsOwnClient(t *testing.T) {
 		t.Error("NewFetcher accepts no hosts at all, so it can download nothing")
 	}
 }
+
+// TestReleaseCarriesItsNotes is issue #103's first half in this package.
+//
+// The settings page shows an operator what they would be taking before they take
+// it, and the only place that text exists is the release description GitHub
+// answers with. This file used to parse `tag_name` and `assets` and drop `body`,
+// so the notes were unreachable from anywhere in the daemon — a page asking for
+// them would have rendered an empty panel for every release ever published.
+//
+// The three rows are the three shapes a release description arrives in: notes
+// written, notes empty, and no `body` key at all. The last two are the same fact
+// — this release said nothing about itself — and the page states it rather than
+// showing a blank, so they must be indistinguishable here.
+//
+// **Must fail when** the decoder stops reading `body`, which is the state this
+// package shipped in.
+func TestReleaseCarriesItsNotes(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		declared string
+		want     string
+	}{
+		{
+			name:     "a release that described itself",
+			declared: `,"body":"## v0.42\n\n- The update control is on /settings now."`,
+			want:     "## v0.42\n\n- The update control is on /settings now.",
+		},
+		{name: "a release whose notes are empty", declared: `,"body":""`},
+		{name: "a release description with no body at all"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Written out rather than marshalled, so the third row can omit the
+			// key entirely — which is what a struct with a string field cannot
+			// express, and it is exactly the case being distinguished.
+			described := []byte(`{"tag_name":"` + testVersion + `"` + tc.declared + `,"assets":[]}`)
+
+			srv := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tagPath(testVersion) {
+					http.NotFound(w, r)
+					return
+				}
+				answer(t, w, described)
+			}))
+
+			rel, err := fetcherFor(t, srv).Release(context.Background(), testVersion)
+			if err != nil {
+				t.Fatalf("Release(%q): %v", testVersion, err)
+			}
+			if rel.Notes != tc.want {
+				t.Errorf("Release(%q).Notes = %q, want %q — an operator deciding whether to take this release reads exactly this text", testVersion, rel.Notes, tc.want)
+			}
+		})
+	}
+}

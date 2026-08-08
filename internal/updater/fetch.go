@@ -151,6 +151,21 @@ type Release struct {
 	// to name in the asset it then asks for.
 	Version string
 
+	// Notes is what the release said about itself — GitHub's `body`, which is
+	// the text an author wrote on the release page (issue #103).
+	//
+	// It is carried because an operator deciding whether to take an update is
+	// deciding what they would be taking, and a version number alone does not
+	// say. It is a stranger's text as far as this daemon is concerned: it
+	// arrives over the network, before any signature has been checked, and
+	// nothing in this package acts on it. Whatever renders it renders it as
+	// text — html/template does that by construction, which is the rule
+	// docs/security.md gives pane output and this is the same kind of byte.
+	//
+	// A release that published no notes carries none, and the page says so
+	// rather than showing an empty panel: absence is a fact about the release.
+	Notes string
+
 	// assets maps an exact asset name to where its bytes are. Unexported, so
 	// the only URLs this package will fetch are ones a release named: a caller
 	// asks for an asset by name and cannot ask for an address.
@@ -213,10 +228,12 @@ func (f *Fetcher) Release(ctx context.Context, version string) (*Release, error)
 	// (docs/security.md §2) and would be wrong here: the GitHub API answers with
 	// dozens of fields this daemon has no opinion about, and adding one is a
 	// thing it does without telling anybody. What is constrained instead is what
-	// is *read* — two fields, both strings, neither reaching a filesystem or a
-	// command line.
+	// is *read* — three fields, all strings, none reaching a filesystem or a
+	// command line. The third is the release's own description, which is read
+	// and shown to an operator and acted on by nothing.
 	var described struct {
 		TagName string `json:"tag_name"`
+		Body    string `json:"body"`
 		Assets  []struct {
 			Name string `json:"name"`
 			URL  string `json:"browser_download_url"`
@@ -229,7 +246,11 @@ func (f *Fetcher) Release(ctx context.Context, version string) (*Release, error)
 		return nil, fmt.Errorf("the description of release %q names no tag", version)
 	}
 
-	rel := &Release{Version: described.TagName, assets: make(map[string]string, len(described.Assets))}
+	rel := &Release{
+		Version: described.TagName,
+		Notes:   described.Body,
+		assets:  make(map[string]string, len(described.Assets)),
+	}
 	for _, a := range described.Assets {
 		if _, dup := rel.assets[a.Name]; dup {
 			// "The asset named exactly this" has to identify one file. Two of
