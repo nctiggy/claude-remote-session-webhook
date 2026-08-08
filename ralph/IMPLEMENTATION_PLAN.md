@@ -153,7 +153,7 @@ re-litigate these** — if one looks wrong, write it in `PROGRESS.md` under
 - [x] T017 🔒 Swap: **smoke-test the staged binary**, then rename, then exit. See Iteration 20
 - [x] T018 Fetch: TLS, no cross-host redirect, exact asset name — **the one task in US4
       that never needed the key**; see Iteration 15
-- [ ] T019 🔒 `POST /dashboard/update` via `handleAction`, with a confirming step
+- [x] T019 🔒 `POST /dashboard/update` via `handleAction`, with a confirming step. See Iteration 21
 
 ### US5 — The rain says something (independent)
 
@@ -176,14 +176,15 @@ because fetching is the one step of US4 that carries no verification and so neve
 T014 came next, once the key turned out to have been committed three iterations earlier, and
 T012 after it.
 
-**What is left is T019, and it is the last task in the plan.** Nothing is blocked.
+**Nothing is left. T019 closed the plan** (Iteration 21), and with it the caller gap this section
+tracked for four iterations: `Fetcher`, `Stager.Stage` and `Swapper.Swap` all have a production
+caller now, and it is the one route — `POST /dashboard/update`, whose test asserts it reaches fetch,
+stage and swap with what the step before it produced rather than asserting the handler exists.
 
-**Three things in `internal/updater` have no production caller: `Fetcher`, `Stager.Stage` and
-`Swapper.Swap`.** T016 closed two others — `Stage` calls `Verify`, and `cmd/crswd`'s startup calls
-`Sweep` — and T017 added the third, exactly as this section predicted it would. **T019 is the only
-task left and it has to close all three.** A test that asserts the route reaches fetch, verify,
-stage *and* swap is what closes it; a test that asserts the handler exists is the failure this
-repository has shipped five times.
+**What T019 did *not* ship is a button.** The route is registered, gated and audited; no page
+renders a form that posts to it. That is FR-029 satisfied at the route and not on the page, it was
+never in any task's scope, and it is Iteration 21's finding 1 — the first thing a follow-up
+milestone should take.
 
 **The interfaces between the four steps are three values and nothing else.** `Fetcher.Asset`
 returns bytes; `Stage` returns the path of a candidate at `0700`; `Swap` takes that path and the

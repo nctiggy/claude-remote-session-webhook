@@ -1960,3 +1960,139 @@ audit action `dashboard.update` — and its test must assert the route reaches f
     dead weight.
 
 **No `RALPH_COMPLETE`.** T019 is open.
+
+---
+
+## Iteration 21 — 2026-08-08 03:15
+
+**Did:** **T019**, the route, and with it the last task in the plan.
+`internal/httpapi/update.go`: `POST /dashboard/update` registered through
+`s.handleAction(patternDashboardUpdate, audit.ActionDashboardUpdate, s.updateFromBrowser)` — the
+same call the other five actions use, so the cross-site gate, the audit record and the uniform
+refusals are inherited rather than re-implemented. `confirm=yes` compared exactly (reusing
+`fieldConfirm`/`confirmYes`), optional `version` (absent means latest), then the chain: `Release` →
+`Asset` × 3 (the tarball for `runtime.GOARCH`, `SHA256SUMS`, `SHA256SUMS.sig`) → `Stage` → `Swap` →
+303 → `emit` → flush → `ExitForRestart`. New audit action `dashboard.update`; six new outcome codes
+with their sentences (`updated`, `update-unconfirmed`, `bad-version`, `update-not-fetched`,
+`update-unverified`, `update-refused`). `update_test.go` carries the four tests `tasks.md` names
+plus `TestUpdateInstallsTheReleaseAndExitsForRestart`, `TestUpdateNamesTheVersionForARollback`,
+`TestUpdateRefusesAReleaseThatDoesNotVerify` (driven through the **real** `updater.Stager`),
+`TestARefusedUpdateNeverInstallsAndNeverExits` (nine steps' worth of refusals),
+`TestARefusedVersionIsNeverEchoed`, `TestAnUpdateIsNoRouteOnAnyOtherMethod` and
+`TestTheShippingBuildWiresTheRealUpdatePath`. README's "still open" qualifier deleted. Gate green:
+build, vet, `go test ./...` (11 packages), `golangci-lint run` (2.12.2, 0 issues), `gofmt -l` empty,
+`go vet` under all three tags, `go test -race -count=2 ./internal/httpapi` clean. `go.sum` still
+absent.
+
+**Learned:**
+
+- **⚠️ The update path is deliberately *not* built in `newServer`, and that is a safety property
+  rather than a style choice.** `newServer` is what every test in `internal/httpapi` builds a server
+  through, and this host has a real `~/.local/bin/crswd` and a real deployed daemon. A test that
+  drove the registered route without standing in front of the collaborators would have downloaded a
+  release onto the machine running the suite and renamed it over that binary. So `liveSelfUpdate()`
+  is wired in **`newWithLayer1`** — beside the real layer 1, which is the other collaborator no test
+  may acquire by accident — and a test server carries none, so the route refuses on it.
+  `TestTheShippingBuildWiresTheRealUpdatePath` asserts both halves; without the second half this
+  file is one forgotten fixture away from updating the operator's own daemon.
+- **`ExitForRestart` is the caller's to time, and the only vantage point from which the timing is
+  observable is inside the exit itself.** The fake's `atExit` hook reads the recorder's status, its
+  `Flushed` flag and the trail's length at the instant the process would have ended. Moving the exit
+  above the redirect leaves all three red and leaves *every* after-the-fact assertion green — the
+  same trap Iteration 19 hit with the chmod, in another file.
+- **The early `s.emit` is the stream's arrangement reused**, and it is what makes FR-041 survive a
+  handler that never returns. `emit` guards against a second record, so the middleware's deferred
+  emit — which runs in a test, where the exit is a fake — writes nothing more. A handler that left
+  the record to the middleware would produce **no** record in production at all.
+- **`if false && cond` is the usable form of a mutation that `if false { … }` is not.** `go test`
+  runs vet's unreachable analyser, so the second fails to build and reports nothing; the first
+  compiles and goes red. Extends Iteration 19's note.
+- **The real `Stager` can be driven from this package after all**, through
+  `updater.NewStager(func(string) string { return t.TempDir() })` — `NewStager` takes the `getenv`
+  it reads `HOME` from. It can only ever be driven to *refuse* here, since nothing outside the
+  operator's terminal can sign a fixture, and that is enough: the refusal is the real comparison
+  against the real embedded key list, and `TestStagerVerifiesWithTheCommittedKey` pins the other
+  half from inside `internal/updater`.
+- **`updater.Release` carries an unexported `assets` map**, so no test outside that package can
+  build a release that publishes anything. A fake has to implement `Release` *and* `Asset`
+  together — which is why the fixture here is one type standing in for all three collaborators
+  rather than three.
+- **The version is not re-validated at the route, on purpose.** `fetch.go` checks `versionShape`
+  where it pastes into a URL path and `stage.go` checks it where it joins a filename, which is
+  docs/security.md §2's rule; a third copy on this door would be free to be the loosest of the
+  three. What the route uses instead is `ErrMalformedVersion`, exactly as `fetch.go`'s comment
+  predicted T019 would — it is the one refusal that answers a bad *form field* rather than a
+  release that is not there, and it is the one that must never echo what arrived.
+- **The fixture's release answers a tag no case submits** (`v0.42` against a submitted `v0.41`).
+  Without that, a route that pasted the form field into the asset name and a route that used
+  `rel.Version` are indistinguishable — and the first is wrong for every update that names no
+  version at all.
+- **Nine mutations, every one caught**: the route registered with `handleBrowser`; the confirming
+  step loosened to `!= "no"`; the exit moved ahead of the redirect; the asset named for the
+  submitted version; the `ErrMalformedVersion` branch removed; the wrapped cause recorded as the
+  audit reason; the signature asset never fetched; the unwired guard removed; and the early emit
+  and the flush removed together.
+
+**Left:** **Nothing in the plan.** T001–T021 are all ticked and the tree is green, so this iteration
+appends `RALPH_COMPLETE`. What is *not* in the plan is finding 1 below, and it is the one to read
+first.
+
+**Findings:**
+
+1. **⚠️ There is no dashboard affordance for this route, so FR-029 is satisfied at the route and not
+   on the page.** T019's contract names the handler, the fields, the action and four tests, and no
+   template; `contracts/self-update.md`'s route table names no form; and no task remains to add
+   one. As shipped, the only way to reach `POST /dashboard/update` from a browser is to hand-build a
+   form post carrying a page token minted for some *other* form on the page — which works, because
+   a token is bound to the identity rather than to the route, and which nobody would call
+   "trigger an update from the browser". **This needs a follow-up task**: a confirming form on the
+   settings or fleet page, built from `docs/components.md`'s existing vocabulary, with the
+   `version` field optional. Deliberately not invented here (AR-008, Principle IV).
+2. **⚠️ Iteration 20's finding 13 reproduced, and the mechanism is now named.** Under
+   `go test -tags dev ./...`, `TestSmokeTestRequiresMatchingVersion/a_build_that_was_never_stamped`
+   failed with `fork/exec …/staging/crswd.v0.42: text file busy` — **ETXTBSY**, not a regression:
+   parallel subtests in `swap_test.go` each fork `/bin/sh`, and a fork inherits the write descriptor
+   another subtest still holds on the file it is about to exec. Green under `-count=5`, green on
+   two re-runs, and nothing in `internal/updater` was touched this iteration. **The fix is that
+   file's own** — write the candidate before any parallel subtest can fork, or retry ETXTBSY once —
+   and it is a fix-lane change nobody has made.
+3. **⚠️ The README's install blockquote is now false.** Lines around 43–48 still say "the line above
+   refuses every release today" and "the key list is empty until the operator runs `crswd keygen`".
+   `install.sh`'s `RELEASE_KEYS` block has carried a key since `c606df3`. Only the milestone-status
+   qualifier was in T019's scope and only that one was edited; this one is a fix-lane PR.
+4. **`internal/updater/release_key.txt` says the same thing about itself**, one line above its own
+   key: "There are no keys here yet, and that is a halt rather than an omission." Same fix, same
+   lane, and worth doing in the same PR as finding 3.
+5. **`audit.ActionSessionMode` is absent from `audit_test.go`'s two action tables** — the concrete
+   instance of Iteration 3's finding. `dashboard.update` was added to both this iteration because it
+   is this task's; adding the missing `session.mode` line is not, and the table's own comment
+   ("Listing *every* action") is what it violates.
+6. **⚠️ Iteration 14's finding 2 still stands and now has a third consumer.**
+   `deploy/crswd.example.service` has `ExecStart=%h/bin/crswd` while `install.sh` writes
+   `~/.local/bin/crswd` and this route renames over that same path. `Swap` refuses outright rather
+   than creating, so the mismatch surfaces as `ErrNoInstalledBinary` — `update-refused` on the page
+   — instead of an update that reports success and changes nothing. Still a fix-lane PR nobody has
+   opened, and it is now the most likely first failure of the feature this milestone shipped.
+7. **⚠️ Nothing in `verify-install` has ever run** (Iteration 17, finding 2), and the signing step
+   has never met the real secret (Iteration 16, finding 1). The first merge to `main` is the first
+   execution of both. Read what they printed before changing anything.
+8. **Iteration 16's finding 4 still stands and is still urgent**: `quickstart.md`'s SC-009 check
+   greps for the *name* of the `RELEASE_SIGNING_KEY` secret and calls a match a failure, which
+   `install.sh`, `keygen.go` and `release.yml` all legitimately produce.
+9. **Iteration 12's finding still stands**: CI shellchecks nothing outside `.claude/hooks/`,
+   `ralph/loop.sh`, `.claude/statusline.sh` and `.github/scripts/`. **`install.sh` is linted by
+   nothing**, and a CI job now runs it twice per release. One line in `ci.yml`.
+10. **Iteration 14's finding 3 still stands**: an empty zero-byte `/tmp/crswd-keygen-probe` is still
+    there; the sandbox refuses to remove it. It holds nothing.
+11. **Iteration 11's finding that nothing tests "unit absent, record present" still stands.**
+12. **Iteration 7's finding about `gh release list --limit 1000` still stands.**
+13. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
+14. **`-tags quickstart` was not run and is not owed by this task.** Nothing under `cmd/crswd` was
+    touched; `go vet -tags quickstart ./...` passes. Iteration 19's constraint is unchanged —
+    `127.0.0.1:8765` is held by the deployed daemon and two startup cases bind that exact port.
+15. **No ad-hoc defects observed** in the code touched. Two gaps in this iteration's own tests were
+    found by mutation and closed rather than noted: nothing observed the *order* of the exit against
+    the response and the record until `atExit` was added, and nothing pinned that the asset name
+    comes from the release's tag until the fixture was made to answer a different one.
+
+RALPH_COMPLETE
