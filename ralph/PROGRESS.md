@@ -971,3 +971,104 @@ heredoc in `install.sh`.
     `internal/httpapi/stylesheet_test.go` in its **Tests** line; nothing was added there, because
     all four tests it lists belong in `partials_test.go` and the two existing rain assertions in
     `stylesheet_test.go` still pass unchanged.
+
+---
+
+## Iteration 13 — 2026-08-08 00:40
+
+**Did:** **T021**, the last task the loop may take. `README.md` now leads with the one-line
+install — the `curl … | bash`, what the installer writes, what it refuses to overwrite, and the
+plain statement that it refuses every release until the operator commits a key — followed by
+**Updating, and rolling back** (`POST /dashboard/update` with a named `version`, and
+`~/.local/bin/crswd.previous` for the daemon that no longer starts) and a note that a release
+asset carries no file mode. Three tests in new `internal/release/readme_test.go`:
+`TestReadmeLeadsWithTheOneLiner`, `TestReadmeDocumentsRollingBack`, `TestReleaseHasNoDependencies`.
+Also corrected `quickstart.md`'s FR-020 check (iteration 9, finding 2). Gate green: build, vet,
+`go test ./...`, `golangci-lint run` (2.12.2, 0 issues), `gofmt -l` empty, `go.sum` still absent.
+
+**Learned:**
+
+- **`go.sum`'s absence was asserted only under `-tags quickstart`.** `TestQuickstartNoDependencies`
+  in `cmd/crswd/quickstart_test.go` is behind the tag, so `go test ./...` never reached it and
+  neither did the untagged half of CI — an import added between tagged runs would have been caught
+  by a suite nobody ran on the change that added it. `TestReleaseHasNoDependencies` is the untagged
+  copy. **The duplication is deliberate**; do not "deduplicate" it by deleting one.
+- **Prose is testable the same way the asset name is.** The install command is read out of
+  `install.sh`'s header comment with `findIn` and required to appear in `README.md`; the rollback
+  path is built from the script's own `readonly BINARY=` line as `~/$BINARY.previous`. Both are
+  the `TestAssetNamesAgreeAcrossLanguages` trick applied to a document, and both catch the failure
+  that has no symptom until a stranger runs the line.
+- **"Leads with" has to be asserted as a position, not a mention.** The test finds the byte offset
+  of the install command and requires `go build`, `git clone` and `go mod download` to all appear
+  after it. A `strings.Contains` would have passed against a README that mentions the one-liner as
+  a footnote under clone-and-build, which is what it looked like before.
+- **The installer and the updater verify in opposite orders, and both are correct.** `install.sh`
+  is signature-then-checksum (`verify_signature` at :327, then `verify_checksum`); `contracts/
+  self-update.md` and T015 fix the updater at checksum-then-signature. Both put both checks in
+  front of anything executable, which is the property. **Whoever writes T015 should not "fix" it
+  to match the shell** — and the README describes each component's own order, so the two
+  paragraphs disagreeing is not a defect in either.
+- **All six mutations were run and each fails with the right message**: the base URL in
+  `install.sh`'s header changed to `master/` (the drift check, which is the whole reason the
+  command is not typed twice); a clone-and-build block inserted above the install line (fires on
+  both `go build` and `git clone`, naming both byte offsets); `readonly BINARY` moved to
+  `.local/libexec/crswd`; the `crswd.previous` paragraph replaced with a vaguer sentence; a
+  one-line `go.sum` created; and a `require` block appended to `go.mod`.
+- **No tagged suite was needed.** Nothing here is behind a build tag: `internal/release` is
+  test-only in the default build, and `cmd/crswd`, `web/` and `deploy/` were all untouched.
+- **The mutation harness lived in `.ralph-tmp/`** (gitignored, removed after), as in iterations 10
+  and 11 — `git checkout` cannot revert a mutation while the task's own work is uncommitted.
+
+**Left:** **Nothing the loop may take.** T012 (`- [!]`), T013 (BLOCKED-ON-HUMAN) and T014–T019
+all wait, directly or transitively, on the operator's signing key. **This is the handover.**
+
+### ⛔ HANDOVER — what the operator has to do
+
+Six of the seven remaining tasks are behind one manual step, in this order:
+
+1. Run `crswd keygen` — **which T013 has not implemented yet**, so this is two steps: someone
+   implements T013 (it writes nothing to disk and commits an *empty*
+   `internal/updater/release_key.txt`), then the operator runs it.
+2. Add the private half as the repository secret `RELEASE_SIGNING_KEY`.
+3. Commit the public half **to both copies**: `internal/updater/release_key.txt` *and* the
+   `RELEASE_KEYS` heredoc in `install.sh:72`. `TestInstallerCarriesTheCommittedKeys` fails if only
+   one of them is filled — it currently `t.Skip`s, because the file does not exist yet.
+
+Then T014 (sign in CI) → T012 (`verify-install`) and T015–T019 unblock in plan order.
+
+**Findings:**
+
+1. **⚠️ The operator's key is the critical path for the whole remainder of the milestone**
+   (iteration 12, finding 1) — now with T021 done it is the critical path for *everything* left.
+   T013 itself is the loop's own work up to the halt; what the loop must not do is generate the
+   key.
+2. **⚠️ Iteration 10's findings 1 and 2 still stand and are still the most urgent fix-lane PR.**
+   `deploy/crswd.example.service` — published as the `crswd.service` asset — has
+   `ExecStart=%h/bin/crswd` and a required `EnvironmentFile=%h/.config/crswd/env`, while
+   `install.sh` places the binary at `~/.local/bin/crswd` and the configuration at
+   `~/.config/crswd/config`. **A fresh install still ends with a unit that cannot start**
+   (203/EXEC, or a missing `EnvironmentFile`), and the README now tells strangers to run that
+   install as the first thing on the page. T012 would have caught it and T012 is blocked. The
+   unit also sets `Environment=CRSW_ALLOWED_ROOTS=%h/code` inline, which beats the config file
+   the installer's own next-steps text points at.
+3. **Iteration 12's finding about CI linting no shell outside `.claude/hooks/`, `ralph/loop.sh`,
+   `.claude/statusline.sh` and `.github/scripts/` still stands.** `install.sh` is linted by
+   nothing; `shellcheck` was refused by the sandbox for the fifth iteration running. Two words in
+   `ci.yml`'s two path lists, and T012 is no longer coming to do it.
+4. **Iteration 11's finding that nothing tests "unit absent, record present" still stands.**
+5. **Iteration 7's finding about `gh release list --limit 1000` still stands.**
+6. **Iteration 6's finding about `data-model.md`/`contracts/release.md` and `SHA256SUMS.sig`
+   still stands** — T015's verifier must expect the sums file to cover five names, not seven.
+7. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
+8. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
+9. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
+10. **Iteration 9's finding about `quickstart.md`'s installer grep is FIXED** here, and iteration
+    5's about `crswd-api` arriving non-executable is **documented** in the README's "A release,
+    without the installer" section. Both were held for T021 and both are now discharged.
+11. **The README describes `POST /dashboard/update` before it exists**, marked as milestone 6's
+    remaining work in the status block above it rather than in the section itself. Whoever
+    finishes T019 should delete that qualifier; the route's shape as documented comes straight
+    from `contracts/self-update.md` and should need no other edit.
+12. **No ad-hoc defects observed** in the code touched.
+
+**No `RALPH_COMPLETE`.** T012–T019 are open, and the tree being green does not make the plan done.

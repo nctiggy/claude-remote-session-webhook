@@ -114,7 +114,7 @@ environment where they cannot fail.
 
 ## Phase 7: Polish
 
-- [ ] T021 [P] Update `README.md` to lead with the one-line install rather than "clone and build", and document rolling back with `crswd.previous`. Assert `go.sum` is still absent.
+- [x] T021 [P] Update `README.md` to lead with the one-line install rather than "clone and build", and document rolling back with `crswd.previous`. Assert `go.sum` is still absent.
 
 ---
 
