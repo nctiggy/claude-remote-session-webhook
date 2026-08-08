@@ -68,6 +68,10 @@ type settingsView struct {
 	// the backup beside it names the backup (config.Config.FilePath).
 	ConfigFile string
 
+	// Shown is the section the operator is looking at, which is the one the menu
+	// marks as current and the only one whose contents are rendered.
+	Shown string
+
 	// Sections is Settings grouped for reading rather than for storage.
 	//
 	// One flat table of every key is what the daemon knows; it is not how an
@@ -377,10 +381,12 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	// value on this page was resolved once, at startup, so the page cannot
 	// disagree with the daemon it describes.
 	rows := settingsOf(s.cfg)
+	sections := sectioned(rows)
 	s.renderPage(w, r, http.StatusOK, "settings", settingsView{
 		Operator:   operator,
 		Settings:   rows,
-		Sections:   sectioned(rows),
+		Sections:   sections,
+		Shown:      shownSection(r.URL.Query().Get(querySection), sections),
 		ConfigFile: s.cfg.FilePath,
 		Update:     s.updatePanelFor(r, operator),
 	})
@@ -540,4 +546,41 @@ func (s *Server) latestRelease(ctx context.Context) (version, notes string, err 
 	s.releases.notes = rel.Notes
 	s.releases.fetched = time.Now()
 	return rel.Version, rel.Notes, nil
+}
+
+// querySection is how the menu names which section to show.
+const querySection = "section"
+
+// sectionUpdates is the one section that is not a group of configuration keys,
+// so it is named rather than derived.
+const sectionUpdates = "Updates"
+
+// shownSection resolves the menu's choice to a section that exists.
+//
+// Anything unrecognised falls back to the first, rather than refusing: a link
+// somebody kept from an older version, or a section that stopped existing when a
+// key moved, should land an operator on a page rather than on an error. Nothing
+// here reaches a filesystem or a command — it selects among headings this
+// process composed a moment ago, and a value matching none of them selects the
+// default.
+func shownSection(asked string, sections []settingSection) string {
+	if asked == sectionUpdates {
+		return sectionUpdates
+	}
+	for _, section := range sections {
+		if section.Title == asked {
+			return asked
+		}
+	}
+	// The first configuration section, not Updates.
+	//
+	// Somebody opening this page is usually answering a question about how the
+	// daemon is configured — why a working directory was refused, what it
+	// listens on. Updates is the section with news, which is exactly why it
+	// should not be the one that greets everybody: a page that opens on an offer
+	// is a page that interrupts.
+	if len(sections) > 0 {
+		return sections[0].Title
+	}
+	return sectionUpdates
 }

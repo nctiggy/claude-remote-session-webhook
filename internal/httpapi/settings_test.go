@@ -357,7 +357,50 @@ func settingsOn(t *testing.T, adjust func(*config.Config)) *fleet {
 
 // settingsBody opens the settings page as the verified operator and hands back
 // what a browser would receive.
+// settingsEverySection is the whole page as an operator sees it across the menu.
+//
+// The page shows one section at a time (#103), so a test asking "does this page
+// mention every key" has to walk the menu the way somebody would. Concatenated
+// rather than merged, because what is being asserted is reachability: a key in
+// no section, or a section the menu does not link, is a setting nobody can get
+// to, and both look identical to a test that only ever loads the default page.
+func settingsEverySection(t *testing.T, f *fleet) string {
+	t.Helper()
+
+	var all strings.Builder
+	all.WriteString(settingsSectionBody(t, f, sectionUpdates))
+	for _, section := range sectioned(settingsOf(testConfig(loopbackListen))) {
+		all.WriteString(settingsSectionBody(t, f, section.Title))
+	}
+	return all.String()
+}
+
+// settingsSectionBody is one section as the menu reaches it.
+func settingsSectionBody(t *testing.T, f *fleet, section string) string {
+	t.Helper()
+
+	w := f.open(t, settingsPath+"?"+querySection+"="+url.QueryEscape(section))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET %s section %q = %d (%s); want %d", settingsPath, section, w.Code, w.Body.String(), http.StatusOK)
+	}
+	return w.Body.String()
+}
+
+// settingsBody is what the settings page says, which since #103 means what it
+// says across its menu rather than what one request returns.
+//
+// The page shows one section at a time, so a test asking "does this page mention
+// X" has to walk the way an operator would. Every existing assertion kept its
+// meaning through that change; what it costs is that a test wanting the literal
+// default page asks for settingsDefaultBody instead, and there is exactly one.
 func settingsBody(t *testing.T, f *fleet) string {
+	t.Helper()
+
+	return settingsEverySection(t, f)
+}
+
+// settingsDefaultBody is the one request an operator's first click makes.
+func settingsDefaultBody(t *testing.T, f *fleet) string {
 	t.Helper()
 
 	w := f.open(t, settingsPath)
@@ -614,22 +657,31 @@ func TestEverySettingRendersAValue(t *testing.T) {
 func TestSettingsRendersOneRowPerKey(t *testing.T) {
 	t.Parallel()
 
-	page := settingsBody(t, newFleet(t))
+	f := newFleet(t)
+	page := settingsBody(t, f)
 
-	// Every key appears, exactly once, somewhere. The page groups by subject now
-	// (#103), so declaration order across the whole document is no longer the
-	// property — it was never the point of it either. What matters is that
-	// grouping loses nothing: a settings page missing a key is quietly
-	// incomplete, and an operator has no way to tell which key it is.
+	// The page shows one section at a time now, so this walks the menu the way an
+	// operator would and requires the union to cover every key.
 	//
-	// Order *within* a section is still declaration order, and sectioned()
-	// preserves it by construction: it appends in the order it is given.
-	for _, name := range config.Vars() {
-		key := config.KeyForVar(name)
-		if n := strings.Count(page, ">"+key+"<"); n != 1 {
-			t.Errorf("the settings page renders %d rows for %s; every key belongs to exactly one section", n, key)
+	// That is a better assertion than the flat page's was. A key that no section
+	// claims, or a menu entry that leads nowhere, both leave a setting an
+	// operator cannot reach — and the flat table could not tell those apart from
+	// working, because everything was on one page regardless of the menu.
+	seen := map[string]int{}
+	for _, section := range sectioned(settingsOf(testConfig(loopbackListen))) {
+		body := settingsSectionBody(t, f, section.Title)
+		for _, name := range config.Vars() {
+			key := config.KeyForVar(name)
+			seen[key] += strings.Count(body, ">"+key+"<")
 		}
 	}
+	for _, name := range config.Vars() {
+		key := config.KeyForVar(name)
+		if seen[key] != 1 {
+			t.Errorf("walking every section reaches %s %d times; each key belongs to exactly one section and must be reachable from the menu", key, seen[key])
+		}
+	}
+	_ = page
 	if rows := settingsOf(testConfig(loopbackListen)); len(rows) != len(config.Vars()) {
 		t.Errorf("the settings page renders %d rows for %d configuration keys", len(rows), len(config.Vars()))
 	}
@@ -1091,6 +1143,16 @@ func TestFullRouteSweepLeaksNoSecret(t *testing.T) {
 	}{
 		{"the fleet", http.MethodGet, "/", nil, http.StatusOK},
 		{"the settings page", http.MethodGet, settingsPath, nil, http.StatusOK},
+		// Every section, because the page shows one at a time (#103) and this
+		// sweep's whole claim is that NO response carries a secret. A sweep that
+		// loaded only the default section would be searching a fraction of what
+		// this route can return and reporting it as all of it.
+		{"the settings page, where it listens", http.MethodGet, settingsPath + "?section=Where+it+listens", nil, http.StatusOK},
+		{"the settings page, who may reach it", http.MethodGet, settingsPath + "?section=Who+may+reach+it", nil, http.StatusOK},
+		{"the settings page, what it may touch", http.MethodGet, settingsPath + "?section=What+it+may+touch", nil, http.StatusOK},
+		{"the settings page, what it runs", http.MethodGet, settingsPath + "?section=What+it+runs", nil, http.StatusOK},
+		{"the settings page, limits", http.MethodGet, settingsPath + "?section=Limits", nil, http.StatusOK},
+		{"the settings page, updates", http.MethodGet, settingsPath + "?section=Updates", nil, http.StatusOK},
 		{"what the daemon calls itself", http.MethodGet, versionPath, nil, http.StatusOK},
 		{"the page a card links to", http.MethodGet, "/sessions/" + browser.ID + "/view", nil, http.StatusOK},
 		// A recorder cannot lift a write deadline, so an open that got past
@@ -1230,7 +1292,7 @@ func TestFullRouteSweepLeaksNoSecret(t *testing.T) {
 	// than fatal, because the two failures overlap: a page rendering the value
 	// instead of the word fails this as well as leaking, and a precondition that
 	// stopped the test first would report the leak as a broken fixture.
-	page := s.answerFor(t, "the settings page")
+	page := s.answerFor(t, "the settings page, who may reach it")
 	for _, key := range []string{"shared_secret", "access_allowed_emails"} {
 		if row := settingsRowFor(t, page, key); !strings.Contains(row, "<td>"+secretPresent+"</td>") {
 			t.Errorf("the swept daemon reports %s as %q; this is a claim about a daemon that has both secrets configured", key, row)
@@ -1309,7 +1371,7 @@ func TestSettingsSurvivesAnUnreachableFeed(t *testing.T) {
 	f.releaseFeed = func(context.Context) (*updater.Release, error) {
 		return nil, errors.New("the release feed is unreachable")
 	}
-	page := settingsBody(t, f)
+	page := settingsEverySection(t, f)
 
 	if !strings.Contains(page, "could not reach the release feed") {
 		t.Errorf("the page does not say it could not look, which is a different fact from being current:\n%s", page)
@@ -1335,5 +1397,85 @@ func TestEverySettingAppearsInASection(t *testing.T) {
 	}
 	if grouped != len(rows) {
 		t.Errorf("sectioning holds %d of %d settings; a grouping that loses a key is a page that is quietly incomplete", grouped, len(rows))
+	}
+}
+
+// TestSettingsMenuReachesEverySection is the menu's own obligation.
+//
+// **Must fail when** a section exists that the menu does not link, which is a
+// setting an operator cannot reach — invisible to any test that asserts on the
+// data rather than the page, because sectioned() would still hold it.
+func TestSettingsMenuReachesEverySection(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	page := settingsDefaultBody(t, f)
+
+	for _, section := range sectioned(settingsOf(testConfig(loopbackListen))) {
+		// %20 rather than +, because html/template escapes for a URL context and
+		// that is the encoding it chooses. Asserting the rendered form rather
+		// than a guess at it is the point: a test that built the link itself
+		// would agree with its own assumption and not with the page.
+		link := `href="/settings?section=` + strings.ReplaceAll(section.Title, " ", "%20") + `"`
+		if !strings.Contains(page, link) {
+			t.Errorf("the menu has no link to %q, so that section is unreachable:\n%s", section.Title, page)
+		}
+	}
+	if !strings.Contains(page, sectionUpdates) {
+		t.Error("the menu does not offer Updates")
+	}
+}
+
+// TestSettingsMarksWhereYouAre is the highlight, said to somebody who cannot see
+// it.
+//
+// **Must fail when** the current section is marked by colour alone. aria-current
+// is what a screen reader reads, and the stylesheet pairs it with a border for
+// the same reason: no state on this interface is conveyed by hue.
+func TestSettingsMarksWhereYouAre(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	for _, section := range []string{sectionUpdates, "Limits"} {
+		body := settingsSectionBody(t, f, section)
+		if !strings.Contains(body, `aria-current="page"`) {
+			t.Errorf("the %s section does not mark itself current, so only sighted operators know where they are", section)
+		}
+	}
+}
+
+// TestSettingsShowsOnlyTheChosenSection is what the menu is for.
+//
+// **Must fail when** every section renders regardless, which would make the menu
+// decoration over a page that never changed.
+func TestSettingsShowsOnlyTheChosenSection(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	limits := settingsSectionBody(t, f, "Limits")
+
+	if !strings.Contains(limits, ">max_sessions<") {
+		t.Error("the Limits section does not carry max_sessions")
+	}
+	if strings.Contains(limits, ">allowed_roots<") {
+		t.Errorf("the Limits section also renders allowed_roots, so the menu chooses nothing:\n%s", limits)
+	}
+}
+
+// TestSettingsMenuNeedsNoScript is the degradation this menu was built for.
+//
+// **Must fail when** the entries stop being links. A scripted tab strip would be
+// faster and would leave an operator with scripting off looking at one section
+// and no way to reach the rest — on the page whose job is answering "how is this
+// daemon configured?".
+func TestSettingsMenuNeedsNoScript(t *testing.T) {
+	t.Parallel()
+
+	page := settingsDefaultBody(t, newFleet(t))
+	if strings.Contains(page, "<button") && !strings.Contains(page, `class="settings-menu-link"`) {
+		t.Error("the settings menu is buttons rather than links, so it cannot work without script")
+	}
+	if !strings.Contains(page, `<a class="settings-menu-link" href="/settings?section=`) {
+		t.Errorf("the menu is not made of real links:\n%s", page)
 	}
 }

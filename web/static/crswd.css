@@ -89,6 +89,11 @@
   --focus-offset: 2px;
 
   --shell-max: 1160px;
+  /* The settings menu's width. A token because docs/design-system.md keeps
+     every length in one place, and because a menu narrower than its longest
+     heading wraps every entry. */
+  --menu-min: 10rem;
+  --menu-max: 14rem;
   --card-min: 310px;
   /* The action toast's own width, alongside --card-min for the same reason: a
      layout dimension the design system does not name, declared once here rather
@@ -1022,6 +1027,14 @@ body {
   .brand-tag {
     display: none;
   }
+
+  /* The settings menu goes above its panel rather than beside it. One column is
+     the only sensible arrangement for a menu and a table on a phone, and this
+     shares the stylesheet's single breakpoint rather than inventing a second —
+     docs/design-system.md gives it one. */
+  .settings {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Removed entirely rather than slowed: the canvas leaves the layout, so the
@@ -1134,23 +1147,6 @@ body {
 }
 
 
-/* The version, on every page.
-
-   Muted and small because it is the least important true thing on the page: an
-   operator came for the fleet, and a footer that competes with it has
-   misunderstood which of them matters. Tokens only, like everything else. */
-.footer {
-  margin-block-start: var(--s6);
-  padding-block: var(--s3);
-  border-block-start: var(--edge-width) solid var(--edge);
-}
-
-.footer-version {
-  margin: 0;
-  color: var(--dim);
-  font-size: var(--fs-eyebrow);
-  text-align: center;
-}
 
 /* The settings page, in sections (#103).
 
@@ -1229,6 +1225,68 @@ body {
   margin: 0;
   color: var(--dim);
   font-size: var(--fs-eyebrow);
+}
+
+/* The version, beside the name it belongs to.
+
+   It was a footer, which put the least surprising fact on the page as far from
+   the thing it describes as the layout allows. Beside the wordmark it reads as
+   part of the identity — this daemon, this version — which is what it is. Muted
+   and small, because it is still not what an operator came for. */
+.brand-version {
+  color: var(--dim);
+  font-size: var(--fs-eyebrow);
+  font-weight: normal;
+}
+
+/* Settings as a menu beside a panel (#103).
+
+   Real links, not a scripted tab strip: each entry is a GET this daemon answers,
+   so the whole thing works with no script, a section can be bookmarked, and the
+   back button behaves. The grid collapses to one column at the same breakpoint
+   the rest of the page uses — the menu above the panel rather than beside it,
+   which is the only sensible arrangement on a phone. */
+.settings {
+  display: grid;
+  grid-template-columns: minmax(var(--menu-min), var(--menu-max)) 1fr;
+  gap: var(--s6);
+  align-items: start;
+}
+
+.settings-menu-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--s2);
+}
+
+.settings-menu-link {
+  display: block;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r);
+  color: var(--dim);
+  text-decoration: none;
+}
+
+.settings-menu-link:hover {
+  color: var(--bright);
+}
+
+/* Where the operator is. A border as well as a colour, because state is never
+   conveyed by hue alone — and aria-current says it to everybody else. */
+.settings-menu-link[aria-current="page"] {
+  color: var(--bright);
+  border-inline-start: var(--edge-width) solid var(--edge-bright);
+  background: var(--glow);
+}
+
+.settings-menu {
+  min-inline-size: 0;
+}
+
+.settings-panel {
+  min-inline-size: 0;
 }
 
 /* The hidden attribute has to win (#77).
