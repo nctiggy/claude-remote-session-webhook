@@ -656,3 +656,114 @@ remains BLOCKED-ON-HUMAN; T014 and after wait on it.
 8. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
 9. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
 10. **No ad-hoc defects observed** in the code touched.
+
+---
+
+## Iteration 10 — 2026-08-08 00:08
+
+**Did:** T010, the placement half of the installer. `install.sh` now downloads the published
+`crswd.service` beside the tarball and checksums it too, then places the binary at
+`~/.local/bin/crswd` (0755), the unit at `~/.config/systemd/user/crswd.service` (0644), the
+hash of that unit at `~/.local/share/crswd/crswd.service.sha256`, and a starter configuration
+at `~/.config/crswd/config` (0600) **only when there is none** — and prints what is left
+without enabling or starting anything. Four tests in `internal/release/install_test.go`:
+`TestInstallPlacesWhatItDownloaded`, `TestConfigModeIs0600` (two cases),
+`TestInstallPrintsNextSteps`, and a sixth case in T009's `TestInstallVerifiesBeforeExecutable`
+for a unit that does not match its checksum. Gate green: build, vet, `go test ./...`,
+`golangci-lint run` (2.12.2, 0 issues), `gofmt -l` empty, `go.sum` still absent.
+
+**Learned:**
+
+- **The release publishes no `config.example`, so "write the config from the example" can only
+  mean an example this script carries.** `contracts/release.md` fixes the asset list at seven
+  names and `config.example` is not one of them; the tarball holds `crswd` and nothing else;
+  there is no `crswd config example` subcommand to print one. Fetching it from `raw.
+  githubusercontent.com` would be pulling unverified content onto a host mid-install, which is
+  the one thing this installer exists to refuse. So the starter is a heredoc in `install.sh`:
+  `version = 1` and every other setting commented out, which is also what `docs/security.md`
+  §3 says keeps a copy of the example from being a file that holds a secret. **It is a fourth
+  copy of configuration prose and it will drift from `config.example`** — it names only
+  `shared_secret` and `allowed_roots` and links to the full file to keep that surface small.
+- **`install(1)`, not `cp`, and that is not style.** It unlinks the destination before writing,
+  so a re-install over the binary of a daemon that happens to be running produces a new file
+  under the old name instead of `ETXTBSY`. It was already in T009's stub list; it is now also
+  in `require_tools`.
+- **The umask and the `chmod` are both there on purpose.** `umask 077` around the heredoc is
+  what closes the window — a file written first and chmod'd second is world-readable for the
+  length of the write, and that file is where the shared secret goes. The `chmod 0600` after it
+  states the mode rather than leaving it as a consequence of arithmetic three lines up. The
+  mutation that removes both is caught; either one alone still passes, which is correct.
+- **`fakeRelease` now writes the deployment files, not just their checksums.** That is what
+  makes the installer's `crswd.service` fetch fail if the release workflow ever renames the
+  asset: the fixture builds its directory from `deployed`, so the name is checked by the
+  release actually carrying it rather than by a second string comparison. The two files it
+  never fetches still have no copy in the download directory, so the `sha256sum -c SHA256SUMS`
+  mutation is still caught.
+- **`runInstaller` drops every `XDG_*` variable from the environment it hands bash.** The
+  daemon reads `$XDG_CONFIG_HOME` ahead of `~/.config`; `install.sh` does not, deliberately,
+  because `contracts/installer.md` fixes the literal paths. On the day somebody teaches the
+  installer the daemon's rule, an inherited `XDG_CONFIG_HOME` would send these tests' writes
+  into the home of whoever ran the suite. Dropped now so that cannot arrive as a surprise.
+- **`runInstaller` takes optional `seed` functions** that run against the temporary `$HOME`
+  before the installer does — that is how "a host that already has a configuration" is set up,
+  and T011 needs the same hook for "a host that already has a unit".
+- **All eight mutations were run and each fails with the right message**: config inheriting the
+  umask (0644); config written unconditionally; `next_steps` removed; `systemctl --user enable
+  --now crswd` actually run; `record_unit` removed; the binary placed 0644; the unit never
+  placed; the unit fetched and never checksummed; and placement moved in front of
+  `verify_signature`, which trips T009's ordering assertion 25 times over.
+- **`bash -n`, `shellcheck`, `perl -pi` and writing outside the repo were all refused by the
+  sandbox.** The mutation harness had to live in `.ralph-tmp/` (gitignored, removed after) and
+  each mutation applied with the Edit tool and reverted from a saved copy. The script's syntax
+  is exercised for real — the suite runs the whole file under `bash` a dozen times — but
+  **nothing has linted it**, as in iterations 6, 7 and 9.
+- **No tagged suite was needed.** Nothing here is behind a build tag; `internal/release` is
+  test-only in the default build and neither `cmd/crswd` nor `deploy/` was touched.
+
+**Left:** T011–T021. **T011 (refuse to clobber) is next and unblocked** — it reads the record
+this task writes, `~/.local/share/crswd/crswd.service.sha256`, which holds the bare lowercase
+hex digest and no filename; `write_config`'s if-absent branch is the shape its unit comparison
+wants, and `runInstaller`'s new `seed` parameter is how it plants an edited unit and a record
+that does or does not exist. T013 remains BLOCKED-ON-HUMAN; T014 and after wait on it.
+
+**Findings:**
+
+1. **⚠️ The unit this installer places cannot start the binary this installer places.**
+   `deploy/crswd.example.service`, published as the `crswd.service` asset, has
+   `ExecStart=%h/bin/crswd` — `~/bin/crswd`, not `~/.local/bin/crswd`, which is the path
+   `contracts/installer.md` step 4 fixes and this task implements. A fresh install therefore
+   ends with a unit pointing at a file nothing wrote, and the operator's first
+   `systemctl --user enable --now crswd` fails with 203/EXEC. **This is not something T010
+   could fix in scope** — the contract fixes the installer's path, and changing `ExecStart`
+   edits a file that is live on this operator's own host — but it makes the printed next step
+   a step that does not work. **T012's `verify-install` job will catch it on a fresh runner if
+   it does more than check the file landed**, and T021 documents the one-liner. Worth a fix-lane
+   PR before either.
+2. **⚠️ Same shape, second instance: the unit's `EnvironmentFile=%h/.config/crswd/env` is
+   required, and the installer writes `~/.config/crswd/config`.** No `-` prefix, so systemd
+   fails the unit outright when that file is absent — which it is on every fresh install. The
+   unit also sets `Environment=CRSW_ALLOWED_ROOTS=%h/code` inline, and the environment beats
+   the configuration file, so `allowed_roots` set where the installer says to set it is
+   **overridden by the unit that installer just wrote**. The next-steps text is built to
+   `contracts/installer.md`'s worked example, which is the authority; the two files disagree
+   about where configuration lives and **only one of them can be right**. Belongs with
+   finding 1, in the same fix.
+3. **The if-absent branch of `write_config` is exercised, but "a second whole run leaves the
+   file byte-identical" is still T011's `TestInstallNeverOverwritesConfig`.** What is asserted
+   here is one run against a seeded home, which is the same predicate reached a shorter way.
+4. **Iteration 9's finding that T012 cannot go green before the operator's key still stands**,
+   and now matters more: T012 is the only thing that would catch findings 1 and 2.
+5. **Iteration 9's finding about `quickstart.md`'s `grep -iE 'nctiggy|/home/[a-z]'` check still
+   stands** (T021).
+6. **Iteration 9's finding about CI linting no shell outside `.claude/hooks/`, `ralph/loop.sh`,
+   `.claude/statusline.sh` and `.github/scripts/` still stands** — `install.sh` has now doubled
+   in size and is still linted by nothing.
+7. **Iteration 7's finding about `gh release list --limit 1000` still stands.**
+8. **Iteration 6's finding about `data-model.md`/`contracts/release.md` and `SHA256SUMS.sig`
+   still stands** — T015's verifier must expect the sums file to cover five names, not seven.
+9. **Iteration 5's finding about `crswd-api` arriving non-executable still stands** (T021's
+   README). `install.sh` still does not touch it, and does not touch
+   `cloudflared.example.yml` either: `contracts/installer.md`'s eight steps name neither.
+10. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
+11. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
+12. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**

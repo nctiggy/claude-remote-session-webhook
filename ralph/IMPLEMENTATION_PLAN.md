@@ -125,7 +125,7 @@ re-litigate these** — if one looks wrong, write it in `PROGRESS.md` under
 ### US3 — Install in one line (all of it about another machine)
 
 - [x] T009 Detect, download, and verify **before** anything is executable
-- [ ] T010 Place the binary, the unit, the recorded hash, and a config only if absent
+- [x] T010 Place the binary, the unit, the recorded hash, and a config only if absent
 - [ ] T011 Refuse to clobber: an edited unit, and one we have no record of
 - [ ] T012 The `verify-install` job on a GitHub-hosted runner — **not optional**
 
