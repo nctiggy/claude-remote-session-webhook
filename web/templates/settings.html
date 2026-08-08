@@ -1,17 +1,21 @@
 {{/*
-  The settings page — GET /settings (contracts/settings-page.md). It is the
-  read-only account of how this daemon was configured, and it is the page that
-  makes the configuration file legible: an operator who edited a file and saw
-  nothing change reads here which layer actually supplied each value.
+  The settings page — GET /settings (contracts/settings-page.md, issue #103). It
+  is the account of how this daemon was configured, and it is the page that makes
+  the configuration file legible: an operator who edited a file and saw nothing
+  change reads here which layer actually supplied each value.
 
-  What it holds is the same header every other page carries and a table of what
-  this daemon is configured to do: one row per key config.go declares, in that
-  order, with the layer that supplied it beside the value.
+  What it holds is the same header every other page carries, the configuration in
+  sections, and the daemon's own version with the one control that changes it.
+  Each section is one table of the keys config.go declares for that subject, in
+  that order, with the layer that supplied each value beside it. It was a single
+  flat table of every key until #103, which made the page answer only the question
+  an operator already knew to ask — reading down twenty-one rows to find the four
+  that decide who is admitted is a search, not a report.
 
-  Above the table is the file those values were read from, or the sentence saying
-  none was (FR-018). It is first because it qualifies everything under it — the
-  commonest form of "why did my edit do nothing?" is an edit made to a file this
-  daemon never read, and no amount of per-row provenance answers that one.
+  Above the sections is the file those values were read from, or the sentence
+  saying none was (FR-018). It is first because it qualifies everything under it —
+  the commonest form of "why did my edit do nothing?" is an edit made to a file
+  this daemon never read, and no amount of per-row provenance answers that one.
 
   The value of a secret is `present` or `absent` and is never the value, its
   length, a prefix, a suffix, or a hash (FR-017). That word is chosen in Go, by
@@ -20,12 +24,12 @@
   credential than it was handed, and no way to add a "helpful" masked form without
   editing the projection that a test reads.
 
-  There is no form here, and there is not going to be one. No mutating verb is
-  registered on this path (spec, Out of Scope), so this page carries no page
-  token, no action row and no live region — the three things every actionable
-  page in this tree carries and this one must not. A form rendered here would be a
-  form the daemon has no route to receive, which is the one shape of dead control
-  the design system cannot show an operator is dead.
+  There is one form here, and there is exactly one thing it may do. No mutating
+  verb is registered on *this* path and none is going to be — writing the
+  operator's configuration file from a browser is out of scope, and a route that
+  does not exist cannot be mis-gated. The form below posts to /dashboard/update,
+  which milestone 6 built, tested against real releases, and left with no control
+  anywhere in this tree. Every configuration value above it stays read-only.
 
   Load-bearing, and the same three absences the other three pages carry: no
   inline <script>, no inline <style>, and no external origin. The policy in
@@ -51,8 +55,16 @@
 <main class="shell">
 <div class="settings">
 <p>{{ if .ConfigFile }}Read from {{ .ConfigFile }}{{ else }}No configuration file was read.{{ end }}</p>
-<table>
-<caption>Configuration</caption>
+{{/*
+  One section per subject, each a heading, a sentence saying what the rows under
+  it decide, and the table itself. The table is named by that heading rather than
+  by a caption repeating it: a <table> takes no accessible name from a heading
+  beside it, so the two are bound by id — and the id is the daemon's own
+  (settingsSection.Slug), never one composed here out of a title.
+*/}}{{ range .Sections }}<section class="settings-section" id="{{ .Slug }}">
+<h2 class="settings-heading" id="{{ .Slug }}-heading">{{ .Title }}</h2>
+<p class="settings-blurb">{{ .Blurb }}</p>
+<table aria-labelledby="{{ .Slug }}-heading">
 <thead>
 <tr>
 <th scope="col">Key</th>
@@ -70,8 +82,102 @@
 {{ end }}
 </tbody>
 </table>
+</section>
+{{ end }}{{/*
+  Updates (issue #103), and the one section on this page that is not a projection
+  of the configuration.
+
+  It is last for the reason the create form is last on the fleet: a page is read
+  for what it reports before it is used for what it can do, and the account above
+  is what an operator came here for.
+
+  The two releases are stated the same way — the version, then what that release
+  said about itself — because the whole point is comparing them. An operator about
+  to replace the binary that manages every session on this host can read what they
+  would be taking before they take it, which is a thing no version number says.
+
+  The notes are a <pre> and never markup. They are a stranger's text: they arrive
+  from the GitHub API over the network, before any signature has been checked, and
+  they are written in Markdown by whoever authored the release. html/template
+  escapes them here by construction, which is the same rule docs/security.md gives
+  pane output — style the container, never the content.
+*/}}<section class="settings-section" id="settings-updates">
+<h2 class="settings-heading" id="settings-updates-heading">Updates</h2>
+<p class="settings-blurb">The release this daemon is running, the release it could move to, and what each of them said about itself.</p>
+{{ with .Updates }}
+<div class="release">
+<h3 class="release-heading">Installed — {{ .Installed.Version }}</h3>
+{{/*
+  Three states and each one says which it is. Notes present is the ordinary case;
+  a release that published none is a fact about the release; and notes this daemon
+  could not go and read is a fact about this host's network. Collapsing the last
+  two into one blank panel would tell an operator nothing about either.
+*/}}{{ if .Installed.Notes }}<pre class="release-notes">{{ .Installed.Notes }}</pre>
+{{ else if .Installed.Known }}<p class="release-note">This release published no notes.</p>
+{{ else if .Reachable }}<p class="release-note">The release feed does not describe this version. A daemon built outside a release carries no published notes.</p>
+{{ else }}<p class="release-note">This daemon could not reach the release feed, so it cannot say what this version was released with.</p>
+{{ end }}</div>
+<div class="release">
+{{ if .Available.Known }}<h3 class="release-heading">Available — {{ .Available.Version }}</h3>
+{{ if .Current }}<p class="release-note">This is the release this daemon is running.</p>
+{{ else if .Available.Notes }}<pre class="release-notes">{{ .Available.Notes }}</pre>
+{{ else }}<p class="release-note">This release published no notes.</p>
+{{ end }}{{ else }}<h3 class="release-heading">Available — unknown</h3>
+{{/*
+  The degradation this section is written for. The page has already rendered every
+  configured value above; what could not be done is one network call, and the
+  sentence says so plainly rather than leaving an empty panel an operator has to
+  interpret. The control below is still offered: it names no release the browser
+  chose, and the daemon resolves `latest` for itself when it acts.
+*/}}<p class="release-note">This daemon could not reach the release feed, so it cannot say which release is available. Everything above is local configuration and is unaffected.</p>
+{{ end }}</div>
+{{/*
+  The control milestone 6 never rendered.
+
+  The whole form renders from the token, exactly as a card's action row does: a
+  page that could not mint one offers no control rather than one the gate is
+  certain to refuse.
+
+  `confirm=yes` is the confirming step the route already requires (FR-029a), sent
+  as a hidden field the page carries deliberately rather than by a modal — there
+  is no Modal partial and a <dialog> would need script for an action that needs
+  none.
+
+  The version field is optional and it is what makes a rollback an ordinary
+  update: empty installs whatever `latest` resolves to, and naming an earlier tag
+  installs that one. The pattern is a client hint over a rule the daemon holds
+  authoritatively — internal/updater checks the shape at the two boundaries that
+  consume the value, and a browser that ignores the hint meets that check.
+
+  Not `.button-danger`: that class is for an action that ends an unsandboxed
+  shell, and this ends none — the tmux sessions on this host outlive the swap.
+  Not `.button-primary` either, because this page exists to report how the daemon
+  was configured rather than to update it.
+*/}}{{ with .PageToken }}<form class="update-form" method="post" action="/dashboard/update">{{ template "page-token" . }}<input type="hidden" name="confirm" value="yes">
+<div class="field">
+<label class="field-label" for="update-version">Version</label>
+<input class="field-input" id="update-version" type="text" name="version" pattern="v[0-9]+(\.[0-9]+)*" autocomplete="off" spellcheck="false" aria-describedby="update-version-hint">
 </div>
-</main>
+<div class="field-hint" id="update-version-hint">
+<p class="field-hint-text">Leave this empty to install the latest release. Naming an earlier version is how this daemon is rolled back.</p>
+</div>
+<button class="button" type="submit">Update this daemon</button>
+</form>
+{{ end }}{{ end }}
+</section>
+</div>
+</main>{{/*
+  Where this page's one action shows its answer, instead of the page it would
+  otherwise become.
+
+  The update form is a real form posting to a real route, which is what makes it
+  work with no script at all: the route answers 303 to the fleet and the banner
+  there says what happened. With the script running, the post is intercepted and
+  the answer is written here — and a page carrying action controls without this
+  region gets no interception at all, which is issue #77's lesson and the reason
+  this is not left to the two pages that already had one.
+*/}}
+<output class="action-toast" id="action-toast" role="status" aria-live="polite" hidden></output>
 {{ template "footer" }}
 </body>
 </html>

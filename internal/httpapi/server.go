@@ -230,6 +230,13 @@ type Server struct {
 	// accident.
 	updates selfUpdate
 
+	// releases is the settings page's cached answer about what this project has
+	// published (issue #103). It is built by nobody: the zero value is an empty
+	// cache, and a server whose `updates` is unwired never fills it, which is
+	// what keeps a test suite off the network without anything being stood in
+	// front of it.
+	releases releaseFeed
+
 	// registered records what was actually handed to the mux, which is not the
 	// same claim as the routes table above. See Routes.
 	registered []Route

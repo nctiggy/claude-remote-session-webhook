@@ -2583,7 +2583,10 @@ func TestCardShowsMode(t *testing.T) {
 func TestEveryActionablePageCarriesTheLiveRegion(t *testing.T) {
 	t.Parallel()
 
-	for _, page := range []string{"dashboard.html", "session.html"} {
+	// settings.html joined this list with issue #103: the page had no control at
+	// all until the update form landed on it, and a page that gains its first
+	// action without gaining the region is exactly the state #77 describes.
+	for _, page := range []string{"dashboard.html", "session.html", "settings.html"} {
 		source, err := fs.ReadFile(web.Templates, "templates/"+page)
 		if err != nil {
 			t.Fatalf("read %s: %v", page, err)
@@ -2760,8 +2763,17 @@ func renderedPages(t *testing.T) map[string]string {
 		"dashboard": renderedFleet(t),
 		"session":   renderedSessionPage(t, actionableCard()),
 		"settings": renderComponent(t, "settings", settingsView{
-			Operator:   operator,
-			Settings:   []settingRow{{Key: "listen", Value: loopbackListen, Source: "default"}},
+			Operator: operator,
+			Sections: []settingsSection{{
+				Title:    "Listener and limits",
+				Slug:     "settings-listener",
+				Blurb:    "The loopback address this daemon binds.",
+				Settings: []settingRow{{Key: "listen", Value: loopbackListen, Source: "default"}},
+			}},
+			// The section renders its control from the token, so a page built
+			// without one here would satisfy every assertion about the update
+			// form by carrying no form at all (issue #103).
+			Updates:    updatesView{Installed: releaseView{Version: "v0.42"}, PageToken: testCardToken},
 			ConfigFile: "/home/operator/.config/crswd/crswd.conf",
 		}),
 		"not-found": renderComponent(t, "not-found", notFoundView{
