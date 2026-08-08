@@ -2,8 +2,8 @@
 //
 // Every setting is a variable or a line in the configuration file (CRSW_*), so
 // the only flag defined here is --version, which asks the binary what it is and
-// starts nothing. There are two subcommands, `config check` and `config
-// migrate`, and they are in config_cmd.go.
+// starts nothing. There are three subcommands: `config check` and `config
+// migrate` in config_cmd.go, and `keygen` in keygen.go.
 //
 // # The two streams
 //
@@ -25,7 +25,9 @@
 //
 // The subcommands and --version are outside it rather than exceptions to it:
 // each runs *instead of* the daemon, writes no record, and what it puts on
-// stdout is the answer the operator ran it for.
+// stdout is the answer the operator ran it for. `keygen` is the sharpest case:
+// what it prints is a private key, and the reason it goes to a stream rather
+// than to a file is written down in keygen.go.
 package main
 
 import (
@@ -77,6 +79,14 @@ func main() {
 	// that answered the question and then started would bind the port the
 	// running daemon is on and reconcile its sessions onto a second process.
 	if args := flag.Args(); len(args) > 0 {
+		// keygen is dispatched here rather than under `config`, because it is
+		// not about a configuration file and must not grow the ability to write
+		// one: the only code in this repository that writes a config file is in
+		// config_cmd.go, and a key printer reached through that door is a key
+		// printer one refactor away from an --output flag.
+		if args[0] == keygenCommand {
+			os.Exit(runKeygen(os.Stdout, os.Stderr, args[1:]))
+		}
 		os.Exit(runConfigCommand(os.Stdout, os.Stderr, args))
 	}
 

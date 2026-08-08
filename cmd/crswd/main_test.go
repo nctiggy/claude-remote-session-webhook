@@ -41,6 +41,12 @@ const theSubcommandsReport = "runConfigCommand"
 // fails this test.
 const theVersionReport = "printVersion"
 
+// theKeygenReport is the fourth and the one with the strongest claim to the
+// stream: `crswd keygen` runs instead of the daemon, emits no record, and what
+// it puts on stdout is a private key the operator asked for and must be able to
+// pipe, copy, or read. Named as a call for the same reason as the two above.
+const theKeygenReport = "runKeygen"
+
 // TestDiagnosticsGoToStderr is FR-023a as a property of the whole daemon rather
 // than of one sink: nothing it is built from writes a human-readable line to
 // standard output.
@@ -79,7 +85,8 @@ func TestDiagnosticsGoToStderr(t *testing.T) {
 	for name, file := range files {
 		ast.Inspect(file, func(n ast.Node) bool {
 			if call, ok := n.(*ast.CallExpr); ok {
-				if fn, ok := call.Fun.(*ast.Ident); ok && (fn.Name == theSubcommandsReport || fn.Name == theVersionReport) {
+				if fn, ok := call.Fun.(*ast.Ident); ok &&
+					(fn.Name == theSubcommandsReport || fn.Name == theVersionReport || fn.Name == theKeygenReport) {
 					for _, arg := range call.Args {
 						permitted[arg.Pos()] = true
 					}
@@ -110,8 +117,8 @@ func TestDiagnosticsGoToStderr(t *testing.T) {
 	// The walk has to have seen the three it knows about, or it is a sweep over
 	// nothing reporting no violations — which is what a wrong root path, a
 	// renamed audit file, or a skipped directory each look like from here.
-	if exempt < 3 {
-		t.Fatalf("the sweep found %d os.Stdout in %d files and exempted %d; it expects at least the trail's own, the subcommand's and --version's, so it is reading the wrong tree",
+	if exempt < 4 {
+		t.Fatalf("the sweep found %d os.Stdout in %d files and exempted %d; it expects at least the trail's own, the subcommand's, --version's and keygen's, so it is reading the wrong tree",
 			found, len(files), exempt)
 	}
 }

@@ -22,8 +22,9 @@ import (
 const configUsage = `usage: crswd                          start the daemon
        crswd config check [path]      report on a configuration file without starting
        crswd config migrate [path]    rewrite one into the current schema, keeping a backup
+       crswd keygen                   print a new ed25519 release key pair
 
-With no path, both subcommands read the file the daemon itself would: ` +
+With no path, check and migrate read the file the daemon itself would: ` +
 	"$CRSW_CONFIG_FILE, else $XDG_CONFIG_HOME/crswd/config, else ~/.config/crswd/config.\n"
 
 // runConfigCommand answers `crswd config …` and returns the process's exit code.
