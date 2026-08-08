@@ -55,7 +55,7 @@ phrasing is the point.
 |---|---|
 | **T015** verify | Checksum **then** signature, and a missing signature is a refusal, not a skip. Get this wrong and signing is decorative. |
 | **T016** stage | Nothing executable before both checks pass; staging swept at startup. |
-| **T017** swap | Smoke test before the rename; any failure leaves the daemon on what it was running. |
+| ~~**T017** swap~~ | ✅ Iteration 20. Smoke test before the rename; any failure leaves the daemon on what it was running. |
 | **T013** keygen | Writes nothing to disk. The operator holds the private half. |
 
 ## What is already running
@@ -150,7 +150,7 @@ re-litigate these** — if one looks wrong, write it in `PROGRESS.md` under
 
 - [x] T015 🔒 Verify: checksum **then** signature; a missing signature refuses. See Iteration 18
 - [x] T016 🔒 Stage: `0600` until verified, swept at startup. See Iteration 19
-- [ ] T017 🔒 Swap: **smoke-test the staged binary**, then rename, then exit
+- [x] T017 🔒 Swap: **smoke-test the staged binary**, then rename, then exit. See Iteration 20
 - [x] T018 Fetch: TLS, no cross-host redirect, exact asset name — **the one task in US4
       that never needed the key**; see Iteration 15
 - [ ] T019 🔒 `POST /dashboard/update` via `handleAction`, with a confirming step
@@ -176,19 +176,20 @@ because fetching is the one step of US4 that carries no verification and so neve
 T014 came next, once the key turned out to have been committed three iterations earlier, and
 T012 after it.
 
-**What is left is US4, in one chain: T017 → T019.** Both are security-critical and the second
-depends on the first — the swap before a route that asks for one. Nothing is blocked.
+**What is left is T019, and it is the last task in the plan.** Nothing is blocked.
 
-**T016 closed `updater.Verify`'s caller gap and opened its own.** `Stager.Stage` calls `Verify`,
-and `Stager.Sweep` is called by `cmd/crswd`'s startup sequence — so the verifier is now reached and
-the sweep is now run. **`Stage` itself is what nothing calls**, along with `Fetcher`, and **T019 is
-the task that has to close both.** A test that asserts the route reaches fetch, verify *and* stage
-is what closes it; code that merely exists is not done. T017 inherits the same obligation for the
-swap it writes.
+**Three things in `internal/updater` have no production caller: `Fetcher`, `Stager.Stage` and
+`Swapper.Swap`.** T016 closed two others — `Stage` calls `Verify`, and `cmd/crswd`'s startup calls
+`Sweep` — and T017 added the third, exactly as this section predicted it would. **T019 is the only
+task left and it has to close all three.** A test that asserts the route reaches fetch, verify,
+stage *and* swap is what closes it; a test that asserts the handler exists is the failure this
+repository has shipped five times.
 
-**`Stage` returns the path of a staged binary at `0700` and stops there.** T017 execs it with
-`--version`, requires the exact string back, and only then renames — the staged path is the whole
-of the interface between the two.
+**The interfaces between the four steps are three values and nothing else.** `Fetcher.Asset`
+returns bytes; `Stage` returns the path of a candidate at `0700`; `Swap` takes that path and the
+version it is meant to be, and returns after the rename. **`ExitForRestart` is separate on purpose**
+— the route has a 303 to write and one audit record to emit before the process may end, and a swap
+that exited on the way out would take both with it.
 
 ---
 

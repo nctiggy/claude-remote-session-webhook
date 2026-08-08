@@ -1844,3 +1844,119 @@ path is the whole interface between the two.
     exists for.
 
 **No `RALPH_COMPLETE`.** T017 and T019 are open.
+
+---
+
+## Iteration 20 — 2026-08-08 02:53
+
+**Did:** **T017**, the swap. `internal/updater/swap.go`: `Swapper{bin, exit}` over
+`~/.local/bin/crswd`, `Swap(ctx, staged, version)` — exec the candidate with `--version`, require
+**exactly** `crswd <version>`, hard-link the running binary to `crswd.previous`, `os.Rename` the
+candidate over the installed one. `ExitForRestart()` is step 7 and calls `os.Exit(0)`. Three
+sentinels (`ErrNoInstalledBinary`, `ErrCandidateWillNotRun`, `ErrCandidateIsAnotherVersion`).
+`swap_test.go` carries the three tests `tasks.md` names plus `TestRefusedSwapLeavesTheRunningBinary`,
+`TestSwapExitsForSystemd`, `TestInstalledPathIsTheDocumentedPath`,
+`TestInstalledPathIsWhereTheInstallerWrites`, `TestSmokeTestExpectsWhatTheDaemonPrints` and
+`TestSmokeTestRunsTheCandidateWithNothingFromThisProcess`. Gate green: build, vet, `go test ./...`
+(11 packages), `golangci-lint run` (2.12.2, 0 issues), `gofmt -l` empty, `go vet` under all three
+tags, `go test -race -count=5 ./internal/updater` clean. `go.sum` still absent.
+
+**Learned:**
+
+- **⚠️ A `Write` that truncates must still report the full count, and getting this wrong turns a
+  bound into a refusal of a good release.** `boundedBuffer` first returned `len(p)` *after* slicing
+  `p` down to the room left, so `io.Copy` read it as `io.ErrShortWrite`, closed the pipe, and the
+  candidate died of `SIGPIPE` — which arrives at the caller as "this release does not run on this
+  host". Found by the case that stages a candidate printing 2000 lines; without that case the bug
+  ships and only ever fires on a release that prints more than 4 KiB.
+- **⚠️ `env` is not a probe for an inherited environment.** `/bin/sh` manufactures `PWD` for itself
+  even when started with `Env: []string{}`, so the first version of the "nothing from this process"
+  test failed against correct code. It asks about `${CRSW_SHARED_SECRET:+…}` instead — and reports
+  only *whether* it was handed one, never the value, so a test proving a leak does not put a
+  credential in its own failure output.
+- **The previous binary is a hard link, not a rename.** Two renames leave an instant with nothing at
+  `~/.local/bin/crswd`, and this process is about to exit on purpose; a host that lost power there
+  comes back with a unit whose `ExecStart` names nothing. `link` → `rename` has no such window. It
+  is also why the swap works on the file this process is executing at all: a running binary cannot
+  be *written* (`ETXTBSY`), but its directory entry can be replaced.
+- **`link(2)` refuses a name that already exists**, and on every update after the first
+  `crswd.previous` does. The `os.Remove` before it is not tidiness — without it the second update
+  a host ever performs fails outright. Caught by the "the update after that one" subtest, which is
+  the only one that starts from a host that has updated before.
+- **The exact-line comparison is what the smoke test is for, and `strings.Contains` is the mutation
+  to watch.** `crswd v0.42 (not a release)` contains the right answer and is an unstamped build.
+  Two table rows exist for that one substitution: that string, and a runnable file that prints
+  nothing at all (which kills "check the exit status only").
+- **The order in `tasks.md` — exec, *then* rename — is observable only through what is left
+  behind.** Every refusal path is asserted against the installed bytes, the absence of
+  `crswd.previous`, and the removal of the candidate, because a smoke test that ran *after* the
+  rename would still return the right error.
+- **Two constants in this file have a second spelling somewhere this package cannot import**, and
+  both drifts are silent: `installedPath` against `install.sh`'s `readonly BINARY` (a drift installs
+  the release where nothing runs, and the update reports success), and `versionPrefix` against
+  `cmd/crswd`'s `printVersion` (a drift refuses every release, forever). Both are held by tests that
+  read the other file — the second through the AST, since `main.go` says "version" in prose often
+  enough to satisfy any grep.
+- **`t.Context()` is Go 1.24 and `go.mod` says `go 1.23.0`**, so it does not compile here even
+  though the toolchain is 1.24. `context.Background()` in tests.
+- **`t.Setenv` and `t.Parallel` cannot appear in the same test** — testing panics. The one test that
+  needs a secret in this process's environment is therefore the only sequential test in the file.
+- **Twelve mutations, every one caught**: the smoke test removed entirely; the version comparison
+  dropped; it loosened to `strings.Contains`; `keepPrevious` removed; the `os.Remove` before the
+  link removed; the failure cleanup neutered; `ExitForRestart` exiting 1; the installed-binary
+  precondition removed; the environment inherited; the link moved *after* the rename; and each of
+  the two cross-file constants drifted.
+
+**Left:** **T019**, the last task in the plan and the one that closes the caller gap for the whole
+chain. `POST /dashboard/update` through `s.handleAction(...)`, `confirm=yes`, optional `version`,
+audit action `dashboard.update` — and its test must assert the route reaches fetch, verify, stage
+*and* swap.
+
+**Findings:**
+
+1. **⚠️ `Fetcher`, `Stage` and now `Swap` have no production caller.** T016 closed `Verify` and
+   `Sweep`; this iteration adds a third to the list rather than shortening it, which is what the
+   plan said it would. **T019 is the only task left and it has to close all three.** A test that
+   asserts the handler exists does not close it; one that asserts the route reaches each step does.
+2. **⚠️ T017 and Iteration 14's finding 2 collide, and the collision is now visible rather than
+   silent.** `deploy/crswd.example.service` still has `ExecStart=%h/bin/crswd` while `install.sh`
+   writes `~/.local/bin/crswd` and this swap renames over that same path. On a host running the
+   published unit, an update would replace a binary the unit does not exec. `Swap` refuses outright
+   when nothing is at `~/.local/bin/crswd` — `ErrNoInstalledBinary` rather than a create — so the
+   mismatch surfaces as a refusal an operator can read instead of an update that reports success and
+   changes nothing. **The unit is still wrong and still a fix-lane PR nobody has opened.**
+3. **⚠️ Nothing in `verify-install` has ever run** (Iteration 17, finding 2), and the signing step
+   has never met the real secret (Iteration 16, finding 1). The first merge to `main` is the first
+   execution of both. Read what they printed before changing anything.
+4. **Iteration 16's finding 4 still stands and is still urgent**: `quickstart.md`'s SC-009 check
+   greps for the *name* of the `RELEASE_SIGNING_KEY` secret and calls a match a failure, which
+   `install.sh`, `keygen.go` and `release.yml` all legitimately produce.
+5. **Iteration 12's finding still stands**: CI shellchecks nothing outside `.claude/hooks/`,
+   `ralph/loop.sh`, `.claude/statusline.sh` and `.github/scripts/`. **`install.sh` is linted by
+   nothing**, and a CI job now runs it twice per release. One line in `ci.yml`.
+6. **Iteration 14's finding 3 still stands**: an empty zero-byte `/tmp/crswd-keygen-probe` is still
+   there; the sandbox refuses to remove it. It holds nothing.
+7. **Iteration 11's finding that nothing tests "unit absent, record present" still stands.**
+8. **Iteration 7's finding about `gh release list --limit 1000` still stands.**
+9. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
+10. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
+11. **Iteration 13's finding that the README describes `POST /dashboard/update` before it exists
+    still stands** — T019 should delete the qualifier above that section.
+12. **`-tags quickstart` was not run and is not owed by this task.** Nothing outside
+    `internal/updater` was touched, so the plan's rule does not ask for it; `go vet -tags quickstart
+    ./...` passes regardless. Iteration 19's constraint is unchanged — `127.0.0.1:8765` is held by
+    the deployed daemon — and **T019 touches `internal/httpapi` rather than `cmd/crswd`, so it does
+    not need that suite either.**
+13. **One subtest failed once, under a three-mutation run, and did not reproduce.**
+    `TestSmokeTestRequiresMatchingVersion/a_build_that_was_never_stamped` went red in the combined
+    exit-1 + no-precondition + inherited-environment run and stayed green under each of those three
+    alone and under `-race -count=5`. The only mechanism that fits is a transient `fork/exec`
+    failure, which this file's tests would correctly report as `ErrCandidateWillNotRun`. **Noted so
+    that a future red there is investigated as environmental before it is treated as a regression**
+    — every case in this file forks a `/bin/sh`, which no other test in this package does.
+14. **`maxSmokeOutput` is not pinned by behaviour.** Remove the bound and every test still passes,
+    because what makes a chatty candidate wrong is its first line. It is there so that what gets
+    quoted into the journal is bounded regardless of who wrote it; noted so it is not deleted as
+    dead weight.
+
+**No `RALPH_COMPLETE`.** T019 is open.
