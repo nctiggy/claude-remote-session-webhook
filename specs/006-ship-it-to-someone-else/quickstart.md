@@ -53,7 +53,15 @@ The first is the important one: an unstamped build must **not** claim a release.
 | `stat -c %a ~/.config/crswd/config` | `600` |
 | Edit config and unit, run again | Both left **byte-identical**; installer says so |
 | Run on an unsupported arch | Refuses, names what is published |
-| `grep -iE 'nctiggy\|/home/[a-z]' install.sh` | no matches |
+| `grep -nE '/home/\|/Users/\|/root/' install.sh` | no matches |
+| `grep -n nctiggy install.sh` | only lines carrying `https://` |
+
+The last two rows are FR-020, and they are two rows rather than one on purpose.
+`contracts/installer.md` says plainly that the account name in the URL it fetches
+from "is unavoidable and fine" — the release is published under it and there is
+nowhere else to get the bytes. A check expecting the name to be absent outright
+could only pass on an installer that cannot download anything.
+`TestInstallerNamesNobody` encodes the same two rows.
 
 ---
 

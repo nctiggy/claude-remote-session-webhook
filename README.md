@@ -7,7 +7,95 @@ a `*.example.com` hostname. Each session runs in a tmux window with
 `--dangerously-skip-permissions`. Two clients: a browser UI behind Cloudflare Access
 (Google identity), and a companion Claude skill authenticating by HMAC signature.
 
-> **Status: milestones 1 through 4 are complete and deployed; milestone 5 is
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nctiggy/claude-remote-session-webhook/main/install.sh | bash
+```
+
+One command. No clone, no compiler, no package manager. It downloads the latest
+release, verifies the ed25519 signature over `SHA256SUMS` and then each file's
+checksum — **in that order, and before anything it downloaded is executable** —
+and then writes four things:
+
+| | |
+|---|---|
+| `~/.local/bin/crswd` | the binary |
+| `~/.config/systemd/user/crswd.service` | the unit |
+| `~/.local/share/crswd/crswd.service.sha256` | a record of the unit it wrote |
+| `~/.config/crswd/config` | a starter configuration, **only if there is none** |
+
+It enables nothing and starts nothing, because the daemon cannot serve a request
+before the secret is set and a service that fails on first boot teaches its
+operator to ignore a failing service. So the rest is yours:
+
+```bash
+$EDITOR ~/.config/crswd/config          # shared_secret, allowed_roots
+systemctl --user enable --now crswd
+```
+
+**Run it again whenever.** It never replaces a configuration, and it replaces the
+unit only when the hash it recorded still matches what is on disk — a unit you
+edited, or one you wrote by hand before this installer existed, is left alone and
+said so. There is no record to read for a unit it did not write, and no record is
+read as "leave it", never as permission.
+
+> **The line above refuses every release today, and that is the design working
+> rather than a bug.** A release is installed only if it is signed by a key this
+> installer carries, and the key list is empty until the operator runs
+> `crswd keygen`, keeps the private half as a repository secret, and commits the
+> public half. Until then, build from a clone — see
+> [Working in this repo](#working-in-this-repo).
+
+### Updating, and rolling back
+
+An update is a version, and **a rollback is an update you name**:
+
+```
+POST /dashboard/update    confirm=yes                 # the latest release
+POST /dashboard/update    confirm=yes  version=v0.41  # a named one
+```
+
+The daemon stages the release under `~/.local/share/crswd/staging/` at mode
+`0600`, checks the checksum and then the signature, and only then makes it
+executable and runs it once with `--version` to prove it execs *on this host*: a
+binary for the wrong architecture passes every cryptographic check and then fails
+to start, and by then it would be the installed one. Only after that does it
+rename over `~/.local/bin/crswd` and exit for systemd to restart into it. A
+failure at any step leaves the daemon running exactly what it was running.
+
+The binary it replaced is kept at **`~/.local/bin/crswd.previous`**. That is the
+way back from the case the route cannot help with — a daemon that no longer
+starts, so no request reaches it:
+
+```bash
+systemctl --user stop crswd
+install -m 0755 ~/.local/bin/crswd.previous ~/.local/bin/crswd
+systemctl --user start crswd
+~/.local/bin/crswd --version          # which one is actually running
+```
+
+`crswd.previous` is one deep, and the next successful update overwrites it. It is
+the way back from *this* version, not a history — to go further back, name the
+version.
+
+### A release, without the installer
+
+Every release carries a tarball per architecture, `SHA256SUMS`, `SHA256SUMS.sig`,
+and the deployment files: `crswd.service`, `cloudflared.example.yml` and
+`crswd-api`. Check the sums before unpacking anything.
+
+**A release asset is bytes and nothing else — file modes do not survive the
+upload.** `crswd-api` is executable in this repository and arrives without the
+bit, so install it rather than copying it:
+
+```bash
+install -m 0755 crswd-api ~/.local/bin/crswd-api
+```
+
+---
+
+> **Status: milestones 1 through 5 are complete and deployed; milestone 6 is
 > landing.** The daemon core — config, `tmuxctl`, session CRUD, HMAC auth, the
 > audit log, and the reaper — ships alongside daemon-side Cloudflare Access
 > validation and a dashboard that reads, streams **and acts**: create, destroy,
@@ -16,13 +104,13 @@ a `*.example.com` hostname. Each session runs in a tmux window with
 > re-verified by the daemon, and the API client is admitted by an Access service
 > token and then checked by signature, timestamp, replay and per-session token.
 > Milestone 4 added the configuration file, the read-only `/settings` page that
-> says where every value came from, and the startup dependency probes. Milestone
-> 5 finishes the dashboard: remote control chosen as a **mode** rather than by
-> command name, working-directory suggestions that exist on a default install
-> behind a themed picker, a settings link on every page, and two defects in
-> shipped code — a dependency probe that warned falsely and an audit trail that
-> could not be read as documented. The device-code login relay and the companion
-> Claude skill are still ahead of it.
+> says where every value came from, and the startup dependency probes; milestone
+> 5 finished the dashboard. Milestone 6 is the one above: `--version` and
+> `GET /dashboard/version`, a release on every merge, and the installer. **The
+> signing key, `POST /dashboard/update` and the staging-and-swap behind it are
+> the part still open** — they wait on the operator holding a key, which is the
+> whole point of signing. The device-code login relay and the companion Claude
+> skill are still ahead of all of it.
 
 ---
 
@@ -75,14 +163,19 @@ one loop for the lot.
 | 3 | Dashboard actions | create, destroy, rename, compact |
 | 4 | Configure and operate | config file, read-only `/settings`, dependency probes, a dashboard that works without script |
 | 5 | Finish the dashboard | remote control as a mode, working-directory suggestions + themed picker, the settings link, the audit-trail and probe defects |
+| 6 | Ship it to someone else | `--version`, a release per merge, the one-line installer, signed self-update |
 
-The device-code login relay and the companion Claude skill follow milestone 5;
+The device-code login relay and the companion Claude skill follow milestone 6;
 they are not in it.
 
 ## Working in this repo
 
 Read [`AGENTS.md`](AGENTS.md) first — it is the contract for humans and agents
 alike, and it names which `docs/` file to load for a given change.
+
+This is the from-source path, for changing the daemon. To *run* it, use the
+[one-line install](#install) — a released binary needs no compiler, which is the
+point of publishing one.
 
 ```bash
 git config core.hooksPath .githooks   # once per clone — gitleaks pre-commit
@@ -352,6 +445,10 @@ come from the environment or 1Password at deploy time.
 > policy for the API client, on the same application. Access needs at least one
 > Allow policy alongside Service Auth, or it never issues a usable assertion. See
 > `deploy/README.md`.
+
+The [one-line install](#install) does the first two lines below for you, from a
+published release. What follows is the same deployment done from a clone, and the
+account of what each file is for.
 
 ```bash
 go build -o ~/bin/crswd ./cmd/crswd
