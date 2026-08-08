@@ -18,9 +18,15 @@ package httpapi
 // mis-gated, or reached by a future refactor that forgets which door it is on.
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
@@ -61,6 +67,42 @@ type settingsView struct {
 	// startup rather than the one it would look for now: a value recovered from
 	// the backup beside it names the backup (config.Config.FilePath).
 	ConfigFile string
+
+	// Sections is Settings grouped for reading rather than for storage.
+	//
+	// One flat table of every key is what the daemon knows; it is not how an
+	// operator looks for something. The grouping is by what a setting is *about*
+	// — where it listens, who may reach it, what it may touch — because that is
+	// the question somebody arrives with.
+	Sections []settingSection
+
+	// Update is what this daemon is and what it could become. Nil when the
+	// release feed could not be reached, which is deliberately not an error: this
+	// page's first job is reporting local configuration, and that needs no
+	// network at all.
+	Update *updatePanel
+}
+
+// settingSection is a heading and the keys that belong under it.
+type settingSection struct {
+	Title    string
+	Settings []settingRow
+}
+
+// updatePanel is the Updates section: what is running, what is available, and
+// what each of them says about itself.
+//
+// Available is empty when the feed could not be reached or when this build is
+// already the newest — two different facts, distinguished by Reachable so the
+// page can say "you are current" rather than "we could not tell", which are not
+// the same reassurance.
+type updatePanel struct {
+	Installed      string
+	InstalledNotes string
+	Available      string
+	AvailableNotes string
+	Reachable      bool
+	Token          string
 }
 
 // settingRow is one configuration key as the page states it.
@@ -334,9 +376,168 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	// The Config the server was built from, read here and nowhere else: every
 	// value on this page was resolved once, at startup, so the page cannot
 	// disagree with the daemon it describes.
+	rows := settingsOf(s.cfg)
 	s.renderPage(w, r, http.StatusOK, "settings", settingsView{
 		Operator:   operator,
-		Settings:   settingsOf(s.cfg),
+		Settings:   rows,
+		Sections:   sectioned(rows),
 		ConfigFile: s.cfg.FilePath,
+		Update:     s.updatePanelFor(r, operator),
 	})
+}
+
+// settingSectionOf says which section a key belongs under.
+//
+// A map from key to heading rather than a heading per key, so a key added to
+// config.go lands somewhere without this file being edited: anything unclaimed
+// falls to "Other", which is visible on the page and is the prompt to classify
+// it. The alternative — a key silently vanishing because no section claimed it —
+// is the failure this arrangement is shaped to avoid.
+func settingSectionOf(key string) string {
+	switch key {
+	case "listen":
+		return "Where it listens"
+	case "access_team_domain", "access_aud", "access_allowed_emails", "shared_secret":
+		return "Who may reach it"
+	case "allowed_roots", "workdir_suggestions", "discover_roots":
+		return "What it may touch"
+	case "start_commands", "remote_start_commands":
+		return "What it runs"
+	case "session_lifetime", "session_lifetime_max", "idle_timeout", "idle_timeout_max",
+		"max_sessions", "max_streams", "create_rate_per_min", "max_body_bytes", "pane_bound",
+		"destroy_on_shutdown":
+		return "Limits"
+	default:
+		return "Other"
+	}
+}
+
+// sectionOrder is the order the page shows them in, which is the order an
+// operator is likely to be looking: the reachable surface first, the containment
+// boundary next, and the numbers last.
+var sectionOrder = []string{
+	"Where it listens",
+	"Who may reach it",
+	"What it may touch",
+	"What it runs",
+	"Limits",
+	"Other",
+}
+
+// sectioned groups rows without dropping any.
+//
+// The count is asserted by TestEverySettingAppearsInASection, because a grouping
+// that loses a key is a settings page that is quietly incomplete — worse than no
+// grouping, since the operator has no way to tell which one it is.
+func sectioned(rows []settingRow) []settingSection {
+	byTitle := make(map[string][]settingRow, len(sectionOrder))
+	for _, row := range rows {
+		title := settingSectionOf(row.Key)
+		byTitle[title] = append(byTitle[title], row)
+	}
+
+	out := make([]settingSection, 0, len(sectionOrder))
+	for _, title := range sectionOrder {
+		if held := byTitle[title]; len(held) > 0 {
+			out = append(out, settingSection{Title: title, Settings: held})
+		}
+	}
+	return out
+}
+
+// releaseFeedTimeout is how long composing this page will wait on the network.
+//
+// Short on purpose. This page's first job is reporting local configuration,
+// which needs no network at all, so a slow or unreachable feed must cost the
+// Updates section and nothing else. An operator asking "why was my working
+// directory refused?" should never wait on GitHub to find out.
+const releaseFeedTimeout = 3 * time.Second
+
+// releaseFeedTTL is how long an answer is reused.
+//
+// Without it, every render of this page is a request to someone else's API, and
+// a page an operator leaves open would poll it forever. Releases are cut on
+// merge, so minutes-old is current enough for a question about whether to
+// update.
+const releaseFeedTTL = 5 * time.Minute
+
+// errNoReleaseFeed is a server built without one. It is not a failure: the
+// Updates section still reports the installed version, which is local knowledge.
+var errNoReleaseFeed = errors.New("this server was built with no release feed")
+
+// updatePanelFor composes the Updates section.
+//
+// It returns nil rather than an error when the feed cannot be reached. That is
+// the whole arrangement: the section is missing and the rest of the page is
+// exactly as it was, because a settings page that failed to render because
+// GitHub was slow would be reporting on this daemon by asking somebody else.
+func (s *Server) updatePanelFor(r *http.Request, operator *access.VerifiedOperator) *updatePanel {
+	token, minted := s.pageTokenFor(nil, r, operator)
+	if !minted {
+		// No token means no form may act, so the section would be a description
+		// of a button that could not be pressed.
+		return nil
+	}
+
+	panel := &updatePanel{Installed: buildinfo.Version, Token: token}
+
+	ctx, cancel := context.WithTimeout(r.Context(), releaseFeedTimeout)
+	defer cancel()
+
+	latest, notes, err := s.latestRelease(ctx)
+	if err != nil {
+		// Reachable stays false, which is a different sentence on the page from
+		// "you are current" — the page must not offer reassurance it did not
+		// earn.
+		return panel
+	}
+	panel.Reachable = true
+	if latest != buildinfo.Version {
+		panel.Available = latest
+		panel.AvailableNotes = notes
+	}
+	return panel
+}
+
+// releaseCache is the one answer this server keeps about somebody else's API.
+type releaseCache struct {
+	mu      sync.Mutex
+	version string
+	notes   string
+	fetched time.Time
+}
+
+// latestRelease answers what is published, from cache when it is fresh.
+//
+// The lock is held across the fetch rather than only around the fields. Two
+// operators opening this page at once would otherwise make two identical
+// requests to an API that rate-limits by address, and the second learns nothing
+// the first did not.
+func (s *Server) latestRelease(ctx context.Context) (version, notes string, err error) {
+	s.releases.mu.Lock()
+	defer s.releases.mu.Unlock()
+
+	if time.Since(s.releases.fetched) < releaseFeedTTL && s.releases.version != "" {
+		return s.releases.version, s.releases.notes, nil
+	}
+
+	if s.releaseFeed == nil {
+		// No feed wired: the Updates section reports what is installed and says
+		// it could not look further. Tests get this by construction rather than
+		// by reaching the internet — a page composer that made a live request to
+		// somebody else's API in a unit test would be slow, flaky, and wrong
+		// offline, and it would be asserting GitHub's behaviour rather than this
+		// daemon's.
+		return "", "", errNoReleaseFeed
+	}
+
+	rel, err := s.releaseFeed(ctx)
+	if err != nil {
+		return "", "", err
+	}
+
+	s.releases.version = rel.Version
+	s.releases.notes = rel.Notes
+	s.releases.fetched = time.Now()
+	return rel.Version, rel.Notes, nil
 }

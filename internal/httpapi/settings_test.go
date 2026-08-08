@@ -8,6 +8,10 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/updater"
 	"html"
 	"maps"
 	"net/http"
@@ -392,6 +396,10 @@ func settingsRowFor(t *testing.T, page, key string) string {
 // **Must fail when** a "masked" value like `qx7v…` is introduced. That is the
 // mutation this exists for: it looks like a courtesy, it passes a test that
 // searched for the whole value, and it is a disclosure.
+// entities matches a numeric character reference, whose digits are an encoding
+// artefact rather than anything the page is saying.
+var entities = regexp.MustCompile(`&#[0-9]+;`)
+
 func TestSettingsNeverRendersSecretValue(t *testing.T) {
 	t.Parallel()
 
@@ -417,7 +425,11 @@ func TestSettingsNeverRendersSecretValue(t *testing.T) {
 		// The length, which is what "shorter than the required 32 bytes" is
 		// careful never to measure in a startup error either (loadSecret).
 		length := regexp.MustCompile(`\b` + strconv.Itoa(len(secret.value)) + `\b`)
-		if match := length.FindString(page); match != "" {
+		// Numeric character references are stripped first: `&#39;` is an
+		// apostrophe, and a page carrying prose will carry entities whose digits
+		// have nothing to do with any secret. Matching them was a false positive
+		// that arrived the moment this page rendered text somebody else wrote.
+		if match := length.FindString(entities.ReplaceAllString(page, " ")); match != "" {
 			t.Errorf("the settings page carries %q, which is the length of %s", match, secret.what)
 		}
 	}
@@ -604,18 +616,19 @@ func TestSettingsRendersOneRowPerKey(t *testing.T) {
 
 	page := settingsBody(t, newFleet(t))
 
-	at := -1
+	// Every key appears, exactly once, somewhere. The page groups by subject now
+	// (#103), so declaration order across the whole document is no longer the
+	// property — it was never the point of it either. What matters is that
+	// grouping loses nothing: a settings page missing a key is quietly
+	// incomplete, and an operator has no way to tell which key it is.
+	//
+	// Order *within* a section is still declaration order, and sectioned()
+	// preserves it by construction: it appends in the order it is given.
 	for _, name := range config.Vars() {
 		key := config.KeyForVar(name)
-		found := strings.Index(page, ">"+key+"<")
-		if found < 0 {
-			t.Errorf("the settings page has no row for %s, so it says nothing at all about that setting", key)
-			continue
+		if n := strings.Count(page, ">"+key+"<"); n != 1 {
+			t.Errorf("the settings page renders %d rows for %s; every key belongs to exactly one section", n, key)
 		}
-		if found < at {
-			t.Errorf("the settings page renders %s out of the order config.go declares it in", key)
-		}
-		at = found
 	}
 	if rows := settingsOf(testConfig(loopbackListen)); len(rows) != len(config.Vars()) {
 		t.Errorf("the settings page renders %d rows for %d configuration keys", len(rows), len(config.Vars()))
@@ -1228,5 +1241,99 @@ func TestFullRouteSweepLeaksNoSecret(t *testing.T) {
 	// it, and FR-041 puts one record behind every request above.
 	if records := s.records(t); len(records) < len(s.answers) {
 		t.Errorf("%d requests left %d audit records; the trail this searched is missing some of them", len(s.answers), len(records))
+	}
+}
+
+// TestSettingsOffersTheUpdate is #103, and it reads the markup because that is
+// the whole of what went wrong.
+//
+// Milestone 6 built self-update — fetch, checksum, ed25519 signature, smoke
+// test, atomic swap — verified it against real releases, and rendered no control
+// for it anywhere. Every test asserted on the route or the record; none read a
+// page. That is milestone 4's FR-026 exactly, in the milestone that came after
+// the one which learned it.
+//
+// **Must fail when** the route accepts an update but no page offers one.
+func TestSettingsOffersTheUpdate(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	f.releaseFeed = func(context.Context) (*updater.Release, error) {
+		return &updater.Release{Version: "v9.99", Notes: "## What's Changed\nthings"}, nil
+	}
+	page := settingsBody(t, f)
+
+	for _, want := range []string{
+		`action="/dashboard/update"`,
+		`name="version" value="v9.99"`,
+		`name="confirm" value="yes"`,
+		fieldPageToken,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the settings page carries no %s, so the update route has no control:\n%s", want, page)
+		}
+	}
+	if !strings.Contains(page, "v9.99") {
+		t.Error("the page does not name the version it would move to")
+	}
+	if !strings.Contains(page, "things") {
+		t.Error("the page does not carry the release's own notes, so an operator cannot read what they would be taking")
+	}
+}
+
+// TestSettingsOffersNoUpdateWhenCurrent is the other half: a button that would
+// refuse is worse than no button, because it invites a click and answers with a
+// refusal the operator cannot act on.
+func TestSettingsOffersNoUpdateWhenCurrent(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	f.releaseFeed = func(context.Context) (*updater.Release, error) {
+		return &updater.Release{Version: buildinfo.Version}, nil
+	}
+	if page := settingsBody(t, f); strings.Contains(page, `action="/dashboard/update"`) {
+		t.Errorf("the settings page offers an update to the version already running:\n%s", page)
+	}
+}
+
+// TestSettingsSurvivesAnUnreachableFeed is the offline host, and the default
+// every other test in this file runs under.
+//
+// **Must fail when** composing this page depends on the network. Its first job is
+// reporting local configuration, which needs none, and an operator asking why a
+// working directory was refused must not wait on somebody else's API to find out.
+func TestSettingsSurvivesAnUnreachableFeed(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	f.releaseFeed = func(context.Context) (*updater.Release, error) {
+		return nil, errors.New("the release feed is unreachable")
+	}
+	page := settingsBody(t, f)
+
+	if !strings.Contains(page, "could not reach the release feed") {
+		t.Errorf("the page does not say it could not look, which is a different fact from being current:\n%s", page)
+	}
+	if !strings.Contains(page, "allowed_roots") {
+		t.Error("an unreachable feed cost the page its configuration, which needs no network at all")
+	}
+}
+
+// TestEverySettingAppearsInASection guards the grouping, not the sections.
+//
+// **Must fail when** a key is added to config.go that no section claims and the
+// grouping drops it. It cannot: settingSectionOf falls through to "Other", which
+// is visible on the page and is the prompt to classify it. A key that vanished
+// instead would leave the page quietly incomplete, which is worse than ungrouped.
+func TestEverySettingAppearsInASection(t *testing.T) {
+	t.Parallel()
+
+	rows := settingsOf(testConfig(loopbackListen))
+	var grouped int
+	for _, section := range sectioned(rows) {
+		grouped += len(section.Settings)
+	}
+	if grouped != len(rows) {
+		t.Errorf("sectioning holds %d of %d settings; a grouping that loses a key is a page that is quietly incomplete", grouped, len(rows))
 	}
 }
