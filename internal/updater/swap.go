@@ -52,6 +52,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -233,6 +234,57 @@ func (s *Swapper) Swap(ctx context.Context, staged, version string) (err error) 
 func (s *Swapper) ExitForRestart() { s.exit(0) }
 
 // smokeTest is step 5: run the candidate and require it to say exactly what it
+// etxtbsyAttempts and etxtbsyBackoff bound the retry below.
+const (
+	etxtbsyAttempts = 5
+	etxtbsyBackoff  = 20 * time.Millisecond
+)
+
+// runCandidate runs the smoke test, retrying only ETXTBSY.
+//
+// Linux refuses to exec a file while any process holds it open for writing, and
+// the staged binary is written moments earlier. The writer is closed before this
+// runs — that is not the race. The race is that a *concurrent* fork anywhere in
+// this process can inherit the descriptor for the window between open and
+// close, and this daemon forks constantly: every tmux call is a fork. That is
+// golang/go#22315, and a bounded retry is its accepted remedy.
+//
+// It is worth being precise about why only this error is retried. "Text file
+// busy" is the one failure here that says nothing about the candidate — it is a
+// fact about this process's timing, and a moment later it is not true. Every
+// other failure is the release's fault and must not be retried: an exec format
+// error means the wrong architecture, and an exit status means the binary ran
+// and disagreed. Retrying those would be asking a broken release the same
+// question until it happened to answer differently.
+//
+// Found by CI rather than here. This host has fewer cores and lost the race less
+// often; the runner did not, which is the same lesson the installer's job is
+// built around.
+func runCandidate(cmd *exec.Cmd) error {
+	var err error
+	for attempt := range etxtbsyAttempts {
+		if attempt > 0 {
+			time.Sleep(etxtbsyBackoff)
+			cmd = cloneCommand(cmd)
+		}
+		if err = cmd.Run(); !errors.Is(err, syscall.ETXTBSY) {
+			return err
+		}
+	}
+	return err
+}
+
+// cloneCommand rebuilds a Cmd, because an exec.Cmd cannot be run twice.
+func cloneCommand(old *exec.Cmd) *exec.Cmd {
+	fresh := exec.Command(old.Path, old.Args[1:]...) //nolint:gosec // G204: same path this package composed, unchanged from the caller above.
+	fresh.Env = old.Env
+	fresh.Stdin = old.Stdin
+	fresh.Stdout = old.Stdout
+	fresh.Stderr = old.Stderr
+	fresh.WaitDelay = old.WaitDelay
+	return fresh
+}
+
 // is.
 func (s *Swapper) smokeTest(ctx context.Context, staged, version string) error {
 	ctx, cancel := context.WithTimeout(ctx, smokeTimeout)
@@ -254,7 +306,7 @@ func (s *Swapper) smokeTest(ctx context.Context, staged, version string) error {
 	cmd.Stderr = io.Discard
 	cmd.WaitDelay = smokeWaitDelay
 
-	if err := cmd.Run(); err != nil {
+	if err := runCandidate(cmd); err != nil {
 		// The wrong-architecture case arrives here as "exec format error", and a
 		// candidate that ran and failed arrives as an exit status. Both are the
 		// same answer: this is not a binary to install.
