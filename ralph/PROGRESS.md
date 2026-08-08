@@ -1382,3 +1382,128 @@ Two things the next iterations should know:
    than either failing outright, because it looks like it works. **A test pinning the two
    copies together is still owed**, the same way the asset names got one. Whichever task next
    touches either file should add it.
+
+---
+
+## Iteration 16 — 2026-08-08 01:39
+
+**Did:** **T014**, and the operator's key is why it was takeable. A `Sign SHA256SUMS` step in
+`release.yml`, between `Checksum every asset` and `Publish`: it decodes `RELEASE_SIGNING_KEY`,
+refuses anything that is not 64 bytes of ed25519 private key, **refuses a key whose public half
+is not a line in `internal/updater/release_key.txt`**, wraps the seed as PKCS#8 DER and signs
+with `openssl pkeyutl -sign -rawin`. `dist/SHA256SUMS.sig` joins the upload list and the
+`generated` set. `TestReleaseIsSigned` in `internal/release/assets_test.go` — seven cases,
+replayed for real. Gate green: build, vet, `go test ./...`, `golangci-lint run` (2.12.2, 0
+issues), `gofmt -l` empty, `go vet` under all three tags. `go.sum` still absent.
+
+**Learned:**
+
+- **⚠️ The repository changed under this iteration, and the change was the operator's.**
+  `c606df3` (before Iteration 15) committed the public key to both files; during this iteration
+  the operator also appended *Handover complete* to this notebook and moved T012/T013 off `- [!]`
+  in both the plan and `tasks.md`. **The session-start snapshot is a snapshot.** If the plan's
+  markers and the prose in a task's own entry disagree — T012 was `- [ ]` while its text still
+  said `[BLOCKED behind T013/T014]` — read the entry, and check the tree rather than either.
+- **The operator's note 2 asks for a test that already exists.** *"A test pinning the two copies
+  together is still owed."* It is not: `TestInstallerCarriesTheCommittedKeys`
+  (`install_test.go:1109`) compares `install.sh`'s `RELEASE_KEYS` block against
+  `release_key.txt`, ignoring comments and blanks, and names both files when they differ. It was
+  skipping while the file was absent and **runs now** — verified here, not assumed. Nobody needs
+  to write a second one.
+- **⚠️ Signing with the wrong 32 bytes produces a perfectly valid signature that verifies
+  nowhere, and only `ed25519.Verify` in the test can see it.** `tail -c 32` instead of
+  `head -c 32` hands openssl the *public* half as the seed: it loads, it signs, the step exits 0,
+  the release publishes. Every check on the runner passes. The mutation is caught by one
+  assertion — the test verifying the produced signature against the public half of the key it
+  handed in. **T015 will meet the same shape from the other side.**
+- **The step refuses to publish rather than publishing unsigned, and the ordering is what does
+  it.** Signing sits above `Publish`, so a run that cannot sign never creates the release. That
+  matters more than it looks: `install.sh` and the daemon both refuse an unsigned release, so a
+  published-but-unsigned version is what `latest` then resolves to — installing stops working
+  altogether rather than one release being skippable.
+- **The step also refuses a key whose public half is committed nowhere**, which is rotation done
+  in the wrong order (secret replaced first). That release would look perfect and verify on no
+  host at all. `grep -Fqx` — whole line — so a key *commented out* in the file, which is how
+  somebody retires one, does not count as carried. `install.sh` skips `#` lines for the same
+  reason, and the mutation to `-Fq` is caught by exactly that case.
+- **openssl takes the key as DER: `-inkey key.der -keyform DER`. Do not build a PEM here.** The
+  first version did, and `TestNoPrivateKeyInRepository` went red on the workflow — it reports a
+  PEM banner wherever it finds one. That prong is not a heuristic worth softening: a PKCS#8
+  ed25519 key is 48 bytes, and the sweep's other prong needs an 86-character base64 run, so **the
+  banner is the only way it can see a PEM-wrapped key at all.** The false positive was pointing
+  at a conversion that was never needed — openssl unwraps PEM to the same DER. Two lines shorter
+  and the detector stays strict.
+- **The PKCS#8 header is `MC4CAQAwBQYDK2VwBCIEIA==`, 16 bytes, and the test derives it from
+  `x509.MarshalPKCS8PrivateKey` rather than trusting the literal.** It cannot be concatenated in
+  base64 the way `install.sh` concatenates the 12-byte SPKI header — 16 is not a multiple of
+  three — so the bytes are joined first and encoded once. Iteration 14 predicted this exactly.
+- **`bash -e` has no `pipefail`, so a decode failure has to be caught where it happens.**
+  `printf … | base64 -d > file || { … }` works because `base64 -d` is last in the pipeline. The
+  guards are separate on purpose: with the length check removed, a 32-byte secret still refuses
+  — but as "not one this file carries", which sends the operator to rotate a key when the real
+  fault was pasting the wrong line. The test asserts *what the refusal says*, not just that it
+  refused.
+- **Eleven mutations were run and each fails with the right message**: the step below `Publish`;
+  the step above the checksums; `SHA256SUMS.sig` dropped from the upload list; the committed-key
+  check removed; `-Fqx` weakened to `-Fq`; the seed taken from the wrong end; the public half
+  taken from the wrong end; `-rawin` dropped; one character changed in the DER header (fires
+  twice, and the derived-header assertion holds even where openssl is absent); both guards on the
+  secret removed, one at a time; and the signature made over a different file. The harness lived
+  in `.ralph-tmp/` (gitignored, removed after), as in iterations 10, 11, 13, 14 and 15.
+- **`actionlint` and `shellcheck` still could not be run here** (not installed; the sandbox
+  refuses to fetch or run them). The step's shell follows the pattern the rest of the file
+  already passes actionlint with — step-level `env:`, uppercase names, every expansion quoted.
+  **`ci.yml`'s guardrails job (`ci.yml:88`) is the first real check of it.**
+- **No tagged suite was needed.** `internal/release` is test-only in the default build, and
+  neither `cmd/crswd` nor `deploy/` was touched. `go vet` under all three tags was run anyway.
+
+**Left:** **T012, T015, T016, T017, T019 — and none of them is blocked on anybody.** The one
+human edge in the graph is satisfied. **T012 is the topmost open task**: it is the `verify-install`
+job, and the release it installs from now carries a `SHA256SUMS.sig` produced by the same run that
+publishes it. Iteration 15's open question about T015 is moot — the graph drew T014 → T015 and
+T014 is done.
+
+**Findings:**
+
+1. **⚠️ The first release published after this merge is the first one anybody can install, and
+   it is also the first test of two things this host cannot check.** The signing step has never
+   run against the real secret, and `releaseHosts` in `fetch.go` names two githubusercontent
+   hosts written from knowledge rather than from an observed redirect (Iteration 15, finding 2).
+   **If the release run goes red at `Sign SHA256SUMS`, read what it printed** — the four refusals
+   each name their own cause, and none of them prints key material.
+2. **⚠️ Iteration 14's finding 2 still stands and is still the most urgent fix-lane PR.**
+   `deploy/crswd.example.service` — published as the `crswd.service` asset — has
+   `ExecStart=%h/bin/crswd` and a required `EnvironmentFile=%h/.config/crswd/env`, while
+   `install.sh` places `~/.local/bin/crswd` and `~/.config/crswd/config`. **A fresh install still
+   ends with a unit that cannot start.** T012 is now unblocked and is exactly the job that will
+   catch it — on a fresh runner, loudly, on every merge. **Fix the unit before or with T012**, or
+   T012 lands red for a defect that predates it.
+3. **`TestNoPrivateKeyInRepository` sweeps the working tree, not the index**, so it reads
+   gitignored directories too — `.ralph-tmp/` included. A mutation harness holding a copy of a
+   file under test can red the tree for a reason that is not in any commit. Not a defect: a key
+   sitting untracked in the working directory is still a key on this disk. Worth knowing before
+   spending time on a confusing failure.
+4. **Iteration 14's finding 1 still stands**: `quickstart.md`'s SC-009 check greps for the *name*
+   of the `RELEASE_SIGNING_KEY` secret and calls a match a failure, which `install.sh` and
+   `keygen.go` both legitimately produce. **Now worth fixing urgently** — the operator has done
+   the handover, so the quickstart is the next thing they would run.
+5. **Iteration 12's finding about CI linting no shell outside `.claude/hooks/`, `ralph/loop.sh`,
+   `.claude/statusline.sh` and `.github/scripts/` still stands.** `install.sh` is linted by
+   nothing. **T012 edits `ci.yml`'s neighbour and is the natural place to add it.**
+6. **Iteration 14's finding 3 still stands**: an empty zero-byte `/tmp/crswd-keygen-probe` is
+   still there; the sandbox refuses to remove it. It holds nothing.
+7. **Iteration 11's finding that nothing tests "unit absent, record present" still stands.**
+8. **Iteration 7's finding about `gh release list --limit 1000` still stands.**
+9. **Iteration 6's finding about `data-model.md`/`contracts/release.md` and `SHA256SUMS.sig`
+   still stands** — T015's verifier must expect the sums file to cover five names, not seven.
+   Confirmed again here: the sign step writes `SHA256SUMS.sig` *after* the sums are taken, so it
+   is not and cannot be inside them.
+10. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
+11. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
+12. **Iteration 13's finding that the README describes `POST /dashboard/update` before it exists
+    still stands** — T019 should delete the qualifier above that section.
+13. **No ad-hoc defects observed** in the code touched. The one problem found here was this
+    iteration's own PEM detour, found by `TestNoPrivateKeyInRepository`, and removed rather than
+    worked around.
+
+**No `RALPH_COMPLETE`.** T012, T015, T016, T017 and T019 are open and all five are takeable.
