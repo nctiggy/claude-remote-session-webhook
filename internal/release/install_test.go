@@ -43,6 +43,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/updater"
 )
 
 const (
@@ -60,12 +62,14 @@ const (
 )
 
 // tarballName is Go's spelling of the release asset name — the third of the
-// three contracts/release.md fixes, beside the YAML's and install.sh's. Nothing
-// ships from this package, so this stays the Go side of that agreement until
-// T018 gives the updater a real reason to build the string in production code;
-// that constant then has to agree with this one too.
+// three contracts/release.md fixes, beside the YAML's and install.sh's.
+//
+// It reads the shipped one rather than holding a copy. T018 gave the updater a
+// real reason to build this string in production code, and a second spelling
+// here would be a test that agreed with itself while the daemon asked for
+// something else.
 func tarballName(version, arch string) string {
-	return "crswd_" + version + "_linux_" + arch + ".tar.gz"
+	return updater.AssetName(version, arch)
 }
 
 func readInstaller(t *testing.T) string {
