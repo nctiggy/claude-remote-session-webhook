@@ -2583,7 +2583,10 @@ func TestCardShowsMode(t *testing.T) {
 func TestEveryActionablePageCarriesTheLiveRegion(t *testing.T) {
 	t.Parallel()
 
-	for _, page := range []string{"dashboard.html", "session.html"} {
+	// settings.html joined this list with issue #103: the page had no control at
+	// all until the update form landed on it, and a page that gains its first
+	// action without gaining the region is exactly the state #77 describes.
+	for _, page := range []string{"dashboard.html", "session.html", "settings.html"} {
 		source, err := fs.ReadFile(web.Templates, "templates/"+page)
 		if err != nil {
 			t.Fatalf("read %s: %v", page, err)
