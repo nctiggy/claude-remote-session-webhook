@@ -839,8 +839,15 @@ func TestSettingsStatesTheValueOfEveryNonSecretKey(t *testing.T) {
 		row := settingsRowFor(t, page, tc.key)
 		// Escaped as the template escapes it, so the assertion is about the value
 		// the browser renders rather than about the bytes on the wire.
-		if want := "<td>" + html.EscapeString(tc.want) + "</td>"; !strings.Contains(row, want) {
-			t.Errorf("the %s row is %q; want a value cell holding exactly %q", tc.key, row, want)
+		// Either shape states the value: a plain cell for a key this page will
+		// not write, and an input carrying it for one it will. What is being
+		// asserted is that the page says what the setting currently holds — the
+		// editing arrived after this test and changed the markup, not the claim.
+		escaped := html.EscapeString(tc.want)
+		stated := strings.Contains(row, "<td>"+escaped+"</td>") ||
+			strings.Contains(row, `value="`+escaped+`"`)
+		if !stated {
+			t.Errorf("the %s row is %q; want it to state the value %q, in a cell or in a field", tc.key, row, tc.want)
 		}
 	}
 }

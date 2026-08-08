@@ -1312,6 +1312,18 @@ func TestLoadReadsTheProcessEnvironment(t *testing.T) {
 }
 
 func TestLoadRefusesAWeakProcessEnvironment(t *testing.T) {
+	// HOME is pointed at an empty directory, so this test is about the
+	// environment it sets rather than about whoever runs it.
+	//
+	// Since the config file landed, Load falls through to
+	// $XDG_CONFIG_HOME/crswd/config when a variable is empty — so on a developer
+	// machine that has one, the secret this test clears is supplied by their own
+	// file and Load succeeds. It failed the moment this project's author
+	// migrated his own daemon to a config file, which is exactly the shape of
+	// bug the installer's fresh-host job exists for: a test that reads the real
+	// home directory is a test about that home directory.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv(config.EnvSharedSecret, "")
 	t.Setenv(config.EnvAllowedRoots, t.TempDir())
 	// Complete apart from the secret, so the refusal under test is the one the

@@ -215,6 +215,27 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 // renderPage answers a template that failed, and for the same reason: 500 with no
 // body, the reason on the record, the detail on the report channel where an
 // operator is already reading. What went wrong is this daemon's, not the caller's.
+// mintPageToken is pageTokenFor without the response.
+//
+// Composing part of a page must not be able to write a header as a side effect.
+// pageTokenFor answers 500 when minting fails, which is right for a render that
+// is the whole response and wrong for one section of one: a settings page whose
+// Updates panel could not mint a token should render everything else, not
+// become an error.
+//
+// It exists because the first version of that passed a nil ResponseWriter, which
+// worked until minting actually failed and then panicked — a bug that only
+// appears in the failure path, which is the worst place to keep one.
+func (s *Server) mintPageToken(r *http.Request, operator *access.VerifiedOperator) (string, bool) {
+	token, err := s.pageKey.mint(operator.Email, s.clock.Now())
+	if err != nil {
+		AuditFrom(r.Context()).Deny(err.Error())
+		s.report(fmt.Errorf("mint the page token for a page section: %w", err))
+		return "", false
+	}
+	return token, true
+}
+
 func (s *Server) pageTokenFor(w http.ResponseWriter, r *http.Request, operator *access.VerifiedOperator) (string, bool) {
 	token, err := s.pageKey.mint(operator.Email, s.clock.Now())
 	if err != nil {

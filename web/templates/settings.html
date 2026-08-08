@@ -109,7 +109,27 @@
 <tbody>
 {{ range .Settings }}<tr>
 <th scope="row">{{ .Key }}</th>
-<td>{{ .Value }}</td>
+{{/*
+  An editable key gets a field; the rest get the text they always had.
+  
+  config.Editable is the one predicate, and it answers no for exactly what
+  IsSecret names. The reason is narrower than "it is a boundary": a form that
+  edited a secret would put the secret in the page, in the browser's history and
+  in a POST body — undoing, in the same file, what this page spent a milestone
+  learning to do by rendering `present` and never a value.
+  
+  One form per row rather than one for the table. A page that saved everything at
+  once would make an operator who changed one bound also re-submit nine values
+  they did not look at, and any of those going wrong would be attributed to the
+  edit they meant to make.
+*/}}{{ if and .Editable $.Token }}<td>
+<form class="setting-form" method="post" action="/settings/edit">
+<input type="hidden" name="crsw_page_token" value="{{ $.Token }}">
+<input type="hidden" name="key" value="{{ .Key }}">
+<input class="setting-input" id="set-{{ .Key }}" type="text" name="value" value="{{ .Value }}" aria-label="{{ .Key }}">
+<button class="button setting-save" type="submit">Save</button>
+</form>
+</td>{{ else }}<td>{{ .Value }}</td>{{ end }}
 <td>{{ .Source }}</td>
 </tr>
 {{ end }}</tbody>

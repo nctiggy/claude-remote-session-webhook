@@ -81,6 +81,13 @@ const (
 	// happens next is the service manager's.
 	outcomeUpdated outcome = "updated"
 
+	// The settings edit's two answers. Written rather than "saved" because the
+	// daemon has not read it yet: a setting takes effect at the next start, and
+	// a word implying otherwise would be the page claiming something it has not
+	// observed — the same care compactDelivered takes.
+	outcomeSettingWritten outcome = "setting-written"
+	outcomeSettingRefused outcome = "setting-refused"
+
 	outcomeBadName         outcome = "bad-name"
 	outcomeBadWorkDir      outcome = "bad-work-dir"
 	outcomeBadStartCommand outcome = "bad-start-command"
@@ -207,6 +214,24 @@ var banners = map[outcome]outcomeView{
 		// code carries no data, so what a banner can say is fixed at compile time.
 		// The version is on /dashboard/version, asked of whichever daemon answers.
 		Message: "Update installed. This daemon is exiting so its service manager can start the release that is now in place.",
+	},
+	outcomeSettingWritten: {
+		// Written, not saved, and it says the daemon has not read it yet — which
+		// is the fact an operator most needs and the one a cheerful "Saved!"
+		// would hide. The same care outcomeCompacted takes about reporting
+		// delivery rather than a result.
+		//
+		// No key in it, and no value: a code carries no data, so what a banner
+		// can say is fixed at compile time. Which setting changed is in the audit
+		// record; what it now holds is on the page.
+		Message: "Setting written to the configuration file. This daemon is still running the value it started with, so restart it for the change to take effect.",
+	},
+	outcomeSettingRefused: {
+		// One sentence for two causes — a value the loader would reject, and a
+		// file that could not be replaced — because the operator's next move is
+		// the same either way: look at the file. Naming which would mean naming
+		// the value or the error, and neither is this banner's to carry.
+		Message: "That setting was not written. The configuration was left exactly as it was.",
 	},
 
 	outcomeBadName: {

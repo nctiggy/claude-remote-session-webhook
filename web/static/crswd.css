@@ -92,6 +92,8 @@
   /* The settings menu's width. A token because docs/design-system.md keeps
      every length in one place, and because a menu narrower than its longest
      heading wraps every entry. */
+  /* The narrowest a settings input may get before a path becomes unreadable. */
+  --field-min: 8rem;
   --menu-min: 10rem;
   --menu-max: 14rem;
   --card-min: 310px;
@@ -1287,6 +1289,39 @@ body {
 
 .settings-panel {
   min-inline-size: 0;
+}
+
+/* Editing one setting, in its own row.
+
+   A form per row rather than one for the table: a page that saved everything at
+   once would make an operator who changed one bound re-submit nine values they
+   never looked at, and any of those going wrong would be blamed on the edit they
+   meant to make.
+
+   The input is labelled by aria-label rather than a visible <label>, because the
+   row header beside it already says the key and a second copy would be the same
+   word twice to anybody reading it aloud. */
+.setting-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  align-items: center;
+}
+
+.setting-input {
+  flex: 1 1 var(--field-min);
+  min-inline-size: 0;
+  padding: var(--s2);
+  border: var(--edge-width) solid var(--edge);
+  border-radius: var(--r);
+  background: transparent;
+  color: inherit;
+  font-family: var(--font);
+  font-size: var(--fs-body);
+}
+
+.setting-save {
+  flex: 0 0 auto;
 }
 
 /* The hidden attribute has to win (#77).

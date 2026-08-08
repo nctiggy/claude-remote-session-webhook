@@ -80,6 +80,12 @@ type settingsView struct {
 	// the question somebody arrives with.
 	Sections []settingSection
 
+	// Token is what an edit form carries, minted for this render and this
+	// identity. Empty when none was minted, in which case no form is drawn — a
+	// field that could not be submitted is worse than a value that cannot be
+	// changed, because it looks like it could.
+	Token string
+
 	// Update is what this daemon is and what it could become. Nil when the
 	// release feed could not be reached, which is deliberately not an error: this
 	// page's first job is reporting local configuration, and that needs no
@@ -121,6 +127,12 @@ type settingRow struct {
 	// lower-cased — because that is the spelling an operator wrote in their own
 	// file and the spelling config.IsSecret takes.
 	Key string
+
+	// Editable is whether this page may write the key, which is
+	// config.Editable's answer and not a second one. A row that is not editable
+	// renders its value as text, which is what every row did before editing
+	// existed.
+	Editable bool
 
 	// Value is the effective value, or — for a secret — one of the two words
 	// below and nothing else.
@@ -169,8 +181,9 @@ func settingsOf(cfg *config.Config) []settingRow {
 	for _, name := range config.Vars() {
 		key := config.KeyForVar(name)
 		rows = append(rows, settingRow{
-			Key:   key,
-			Value: settingText(cfg, name, key),
+			Key:      key,
+			Editable: config.Editable(key),
+			Value:    settingText(cfg, name, key),
 			// The shim's own record, read by the name it keyed it under. A key
 			// nothing ever looked up is absent from the map and reads
 			// SourceDefault, which is the zero value precisely so that "nothing
@@ -382,11 +395,13 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	// disagree with the daemon it describes.
 	rows := settingsOf(s.cfg)
 	sections := sectioned(rows)
+	editToken, _ := s.mintPageToken(r, operator)
 	s.renderPage(w, r, http.StatusOK, "settings", settingsView{
 		Operator:   operator,
 		Settings:   rows,
 		Sections:   sections,
 		Shown:      shownSection(r.URL.Query().Get(querySection), sections),
+		Token:      editToken,
 		ConfigFile: s.cfg.FilePath,
 		Update:     s.updatePanelFor(r, operator),
 	})
@@ -478,7 +493,7 @@ var errNoReleaseFeed = errors.New("this server was built with no release feed")
 // exactly as it was, because a settings page that failed to render because
 // GitHub was slow would be reporting on this daemon by asking somebody else.
 func (s *Server) updatePanelFor(r *http.Request, operator *access.VerifiedOperator) *updatePanel {
-	token, minted := s.pageTokenFor(nil, r, operator)
+	token, minted := s.mintPageToken(r, operator)
 	if !minted {
 		// No token means no form may act, so the section would be a description
 		// of a button that could not be pressed.
