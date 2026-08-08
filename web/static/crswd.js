@@ -695,6 +695,78 @@
         .catch(lostTheFleet);
     };
 
+    /*
+     * What a reconnection does, and the correction it represents (issue #99).
+     *
+     * lostTheFleet used to be the end of the story: the note appeared and stayed,
+     * and the copy told the operator to reload. The reasoning was that
+     * EventSource reconnects on its own but the changes that happened while it
+     * was gone arrive as no event, so hiding the note would claim a currency the
+     * page never got back.
+     *
+     * Every clause of that is true except the conclusion. A reload is not the
+     * only thing that restores currency — asking again does. This page already
+     * re-fetches one card when the stream names one; the whole fleet is the same
+     * mechanism at a different granularity, and nobody chose against it.
+     *
+     * It matters more since self-update shipped: a daemon restart is now routine,
+     * and every restart drops every open stream. An operator who updates from
+     * this dashboard would have watched it announce that it had given up, at the
+     * exact moment they most want to see it come back.
+     *
+     * Only the grid, the summary and the empty state are replaced. The create
+     * form lives in this same shell and is deliberately left alone — it may hold
+     * a half-typed working directory, which is what issue #51 removed the reload
+     * to protect.
+     *
+     * A failed re-fetch leaves the note up, because then the page really cannot
+     * vouch for what it shows.
+     */
+    const resync = () => {
+      const before = grid() ? grid().childElementCount : 0;
+
+      fetch(window.location.pathname, { credentials: 'same-origin' })
+        .then((answer) => {
+          if (!answer.ok) {
+            throw new Error('the daemon did not answer with the fleet');
+          }
+          return answer.text();
+        })
+        .then((markup) => {
+          const fresh = new DOMParser()
+            .parseFromString(markup, 'text/html')
+            .querySelector('main.shell');
+          if (!fresh) {
+            throw new Error('that answer carried no fleet');
+          }
+
+          for (const part of ['.grid', '.summary', '.empty']) {
+            const next = fresh.querySelector(part);
+            const here = shell.querySelector(part);
+            if (next && here) {
+              here.replaceWith(document.importNode(next, true));
+            }
+          }
+          compose();
+
+          // The shape change that happened while nobody was listening. It is
+          // announced for the same reason a live one is: arriving back to a
+          // different fleet is exactly when somebody who cannot see it needs
+          // telling, and the reconnection itself says nothing.
+          const after = grid() ? grid().childElementCount : 0;
+          if (after > before) {
+            say('fleetAppeared');
+          } else if (after < before) {
+            say('fleetVanished');
+          }
+
+          if (stalled) {
+            stalled.hidden = true;
+          }
+        })
+        .catch(lostTheFleet);
+    };
+
     const live = new EventSource(shell.dataset.fleetStream);
 
     // Decoded before the page is touched, on the same terms the pane decodes a
@@ -714,7 +786,23 @@
      * one thing to a browser: a response that ended. Which is exactly why the
      * page has a sentence for it.
      */
-    live.onerror = lostTheFleet;
+    // Set by onerror and read by onopen, so a re-sync happens only after an
+    // interruption. EventSource fires open on its very first connection too, and
+    // re-fetching a fleet the page has just rendered would be a request for
+    // nothing on every load.
+    let interrupted = false;
+
+    live.onerror = () => {
+      interrupted = true;
+      lostTheFleet();
+    };
+
+    live.onopen = () => {
+      if (interrupted) {
+        interrupted = false;
+        resync();
+      }
+    };
   };
 
   for (const shell of document.querySelectorAll('main[data-fleet-stream]')) {
