@@ -62,16 +62,27 @@
   ];
 
   /*
-   * Roughly two seconds of legibility, and roughly one message every two or
-   * three minutes per field.
+   * Roughly two seconds of legibility, and roughly one message a minute per
+   * field.
    *
-   * Occasional is the requirement rather than a taste: a header that spoke on a
-   * schedule would be something to watch, and a background that has to be
-   * watched has stopped being a background. Drawn per frame rather than on a
-   * timer, so the odds are a property of the loop that is already running.
+   * The odds are per frame at FRAME_MS, so the arithmetic is 1 / (odds * fps):
+   * 1 / (0.0012 * 14) is about 60 seconds. It was 0.0005 — about two and a half
+   * minutes — which is long enough that an operator could use this daily and
+   * never see one, and an easter egg nobody encounters is a comment in a
+   * different font.
+   *
+   * Occasional is still the requirement rather than a taste: a header that spoke
+   * on a schedule would be something to watch, and a background that has to be
+   * watched has stopped being a background. Per frame rather than on a timer, so
+   * the odds stay a property of the loop that is already running — and so a page
+   * that draws no rain says nothing, which is the whole of FR-032.
+   *
+   * Every canvas rolls independently, so a dashboard showing the empty state has
+   * two and sees roughly twice as many. That is deliberate: the empty state is
+   * the page an operator stares at with nothing else to read.
    */
   const SAYING_FRAMES = 28;
-  const SAYING_ODDS = 0.0005;
+  const SAYING_ODDS = 0.0012;
 
   const still = window.matchMedia('(prefers-reduced-motion: reduce)');
 
