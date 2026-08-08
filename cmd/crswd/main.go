@@ -42,6 +42,7 @@ import (
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/updater"
 )
 
 // shutdownBudget is how long the daemon gives itself between a termination
@@ -133,6 +134,11 @@ func printVersion(out io.Writer) {
 // shells, and serving anyway would leave them unowned for the life of the
 // process.
 //
+// The staging sweep sits with reconciliation because it is the same question
+// asked of a different leftover: what did the last process leave on this host
+// that nothing running now has vouched for? A staged release is a candidate for
+// this daemon's own binary, so it is emptied rather than resumed.
+//
 // Only then the listener. Every error on the way is returned rather than logged
 // and survived: this is the one part of the daemon where refusing to start is
 // still an option.
@@ -172,6 +178,20 @@ func run(ctx context.Context) error {
 	// live daemon printed on every start, and it is what the documented
 	// `grep '^{'` filter has to be able to drop. See the two streams, above.
 	if err := cfg.CheckDependencies(os.Stderr); err != nil {
+		return err
+	}
+
+	// Before anything can serve a route that stages a new one, and before the
+	// listener binds. Whatever is in there was vouched for by a process that did
+	// not live to say so, and this directory's contents become this daemon's own
+	// binary — so a candidate is never trusted across a restart, however far
+	// through verification the last run got with it.
+	//
+	// Fatal, like every other refusal in this sequence. A sweep that could not
+	// finish leaves a file nobody has vouched for in the directory the update
+	// path renames out of, and a daemon that started anyway would be one that
+	// found that and said nothing.
+	if err := updater.NewStager(os.Getenv).Sweep(); err != nil {
 		return err
 	}
 
