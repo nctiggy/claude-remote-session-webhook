@@ -593,18 +593,24 @@ func TestEverySettingRendersAValue(t *testing.T) {
 }
 
 // TestSettingsRendersOneRowPerKey is the contract's first sentence about the
-// table: one row per configuration key, in the order config.go declares them.
+// table, as issue #103 leaves it: one row per configuration key, and each key in
+// the order config.go declares it *within the section it belongs to*.
 //
-// The order is asserted rather than the set, because the two failures are
-// different and only one of them is visible to a reader. A missing key is a
-// setting the page silently does not mention; a reordered table is a page that
-// no longer matches config.example, the file it exists to be compared against.
+// The whole-page ordering this used to assert was the flat table's, and the
+// sections deliberately break it — what an operator reads down is now a subject
+// rather than a loading order. What has not changed, and is the half worth
+// keeping, is that a key rendered out of its declared order inside a section is a
+// table that no longer matches config.example, the file it exists to be compared
+// against. The set is asserted below it: a missing key is a setting the page
+// silently does not mention, which is the failure a reader cannot see.
 func TestSettingsRendersOneRowPerKey(t *testing.T) {
 	t.Parallel()
 
 	page := settingsBody(t, newFleet(t))
 
-	at := -1
+	// Where each section's rows start on the page, so "in order within its
+	// section" is asked of one section at a time rather than of the document.
+	within := make(map[string]int, len(settingsSections))
 	for _, name := range config.Vars() {
 		key := config.KeyForVar(name)
 		found := strings.Index(page, ">"+key+"<")
@@ -612,13 +618,69 @@ func TestSettingsRendersOneRowPerKey(t *testing.T) {
 			t.Errorf("the settings page has no row for %s, so it says nothing at all about that setting", key)
 			continue
 		}
-		if found < at {
-			t.Errorf("the settings page renders %s out of the order config.go declares it in", key)
+		if strings.Count(page, ">"+key+"<") != 1 {
+			t.Errorf("the settings page renders %s in more than one place; a setting stated twice is two answers to one question", key)
 		}
-		at = found
+		section := sectionForKey[key]
+		if found < within[section] {
+			t.Errorf("the settings page renders %s out of the order config.go declares it in, inside %s", key, section)
+		}
+		within[section] = found
 	}
 	if rows := settingsOf(testConfig(loopbackListen)); len(rows) != len(config.Vars()) {
 		t.Errorf("the settings page renders %d rows for %d configuration keys", len(rows), len(config.Vars()))
+	}
+}
+
+// TestEverySettingIsInASection is the half of the sectioning that a reader
+// cannot check by looking (issue #103).
+//
+// The page renders sections, and a key belonging to none of them is rendered
+// nowhere at all — so the failure of forgetting to place a new setting is a
+// setting that silently vanishes from the one page meant to hold every one of
+// them. That is the same shape as the defect this issue is about: a thing that
+// exists in the daemon and appears in no markup.
+//
+// Both directions, because the reverse is its own defect: a section naming a key
+// config.go does not declare is a heading over a row that will never render, and
+// a slug that names no section is a key filed under nothing.
+//
+// **Must fail when** a variable is added to config.Vars() and not to
+// sectionForKey.
+func TestEverySettingIsInASection(t *testing.T) {
+	t.Parallel()
+
+	declared := make(map[string]bool, len(config.Vars()))
+	for _, name := range config.Vars() {
+		key := config.KeyForVar(name)
+		declared[key] = true
+
+		slug, placed := sectionForKey[key]
+		switch {
+		case !placed:
+			t.Errorf("%s is in no section, so the settings page renders it nowhere at all and an operator is never told what this daemon is running with", key)
+		case !hasSection(slug):
+			t.Errorf("%s is filed under %q and the page renders no section by that name", key, slug)
+		}
+	}
+	for key := range sectionForKey {
+		if !declared[key] {
+			t.Errorf("%s is placed in a section and config.go declares no such setting", key)
+		}
+	}
+
+	// Vacuity guard: the two loops above assert nothing on a page with no
+	// sections at all, which is what a deleted settingsSections would leave.
+	sections := sectionsOf(testConfig(loopbackListen))
+	if len(sections) != len(settingsSections) {
+		t.Errorf("the settings page renders %d of its %d sections; an empty one is dropped, and on a real config none of them is empty", len(sections), len(settingsSections))
+	}
+	rows := 0
+	for _, section := range sections {
+		rows += len(section.Settings)
+	}
+	if rows != len(config.Vars()) {
+		t.Errorf("the sections hold %d rows for %d configuration keys", rows, len(config.Vars()))
 	}
 }
 

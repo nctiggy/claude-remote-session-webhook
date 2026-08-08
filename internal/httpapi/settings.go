@@ -16,9 +16,17 @@ package httpapi
 // configuration file from a browser is the highest-consequence surface in the
 // product (spec, Out of Scope); a route that does not exist cannot be exploited,
 // mis-gated, or reached by a future refactor that forgets which door it is on.
+//
+// That sentence is about *this* path and it survives issue #103 unchanged. What
+// changed is that the page now carries a form posting to a route of its own —
+// POST /dashboard/update, which milestone 6 built and nothing rendered a control
+// for. The configuration is still read-only; the daemon's own version is the one
+// thing on this page an operator may act on, and the action is on the update
+// route where it always was.
 
 import (
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -47,9 +55,23 @@ type settingsView struct {
 	// not come from anything the caller wrote.
 	Operator *access.VerifiedOperator
 
-	// Settings is the table's rows, projected from the Config at render time by
-	// settingsOf: one per key config.go declares, in that order.
-	Settings []settingRow
+	// Sections is the page's configuration, grouped (issue #103). One flat table
+	// of every key was the whole page until this change, and it made the page
+	// answer only the question an operator already knew to ask: reading down
+	// twenty-one rows to find the four that decide who is admitted is a search,
+	// not a report.
+	//
+	// The rows inside a section are still settingsOf's, in config.go's order, so
+	// nothing about *what* the page says has moved — a section is a boundary
+	// drawn around rows that were already adjacent in meaning.
+	Sections []settingsSection
+
+	// Updates is the one section that is not a projection of the Config: what
+	// this daemon is running, what it could be running, and the control that
+	// moves it (issue #103). It is last on the page for the reason the create
+	// form is last on the fleet — a page is read for what it reports before it is
+	// used for what it can do.
+	Updates updatesView
 
 	// ConfigFile is the file those values were read from, and is empty when none
 	// was (FR-018). The page says which above the table, because "why did my edit
@@ -62,6 +84,148 @@ type settingsView struct {
 	// the backup beside it names the backup (config.Config.FilePath).
 	ConfigFile string
 }
+
+// settingsSection is one group of configuration keys, with the sentence that
+// says what the group is for (issue #103).
+//
+// The Slug is what binds the table to the heading above it. A `<table>` inside a
+// `<section>` has no accessible name from the heading beside it, so the page
+// points one at the other by id — and the id is composed here rather than in the
+// template, because a template that built one out of a title would build a
+// different one the day a title gained a word a browser will not take in an id.
+type settingsSection struct {
+	Title    string
+	Slug     string
+	Blurb    string
+	Settings []settingRow
+}
+
+// The sections, in the order the page renders them, and the sentence each one
+// carries.
+//
+// The order is not config.go's and deliberately so: what config.go declares is a
+// loading order, and what an operator reads down is a subject. Identity is first
+// because it is the answer to "who can reach this daemon at all", and the
+// listener and its limits are last because they are the thing an operator is
+// least often on this page about.
+//
+// Sans, and a sentence rather than a label: docs/design-system.md gives prose to
+// a human and mono to the machine, and every one of these is a human explaining
+// what the rows under it decide.
+var settingsSections = []settingsSection{
+	{
+		Title: "Identity",
+		Slug:  "settings-identity",
+		Blurb: "Who this daemon admits, on each of its two doors: the browser through Cloudflare Access, and the companion skill by signature.",
+	},
+	{
+		Title: "Working directories",
+		Slug:  "settings-work-dirs",
+		Blurb: "Where a session may run. A working directory outside these roots is refused before anything starts.",
+	},
+	{
+		Title: "Sessions",
+		Slug:  "settings-sessions",
+		Blurb: "How many unsandboxed shells this host will carry at once, and how long each one may live before the reaper ends it.",
+	},
+	{
+		Title: "Commands",
+		Slug:  "settings-commands",
+		Blurb: "What a session actually runs, and which of the configured commands means remote control.",
+	},
+	{
+		Title: "Listener and limits",
+		Slug:  "settings-listener",
+		Blurb: "The loopback address this daemon binds, and the bounds it answers a request under.",
+	},
+}
+
+// sectionForKey says which section a configuration key belongs to, keyed by the
+// file spelling the page renders.
+//
+// A map rather than a field on each row, because the grouping is a property of
+// the page and not of the configuration: internal/config decides what a setting
+// means and this decides where an operator reads about it, and folding the two
+// together would put a rendering decision inside the loader.
+//
+// A key that is not here renders in no section at all rather than in a bucket
+// called "other" — and TestEverySettingIsInASection is what turns that into a
+// failure of the suite instead of a setting quietly missing from the one page
+// that is meant to hold every one of them.
+var sectionForKey = map[string]string{
+	config.KeyForVar(config.EnvAccessTeamDomain):    "settings-identity",
+	config.KeyForVar(config.EnvAccessAUD):           "settings-identity",
+	config.KeyForVar(config.EnvAccessAllowedEmails): "settings-identity",
+	config.KeyForVar(config.EnvSharedSecret):        "settings-identity",
+
+	config.KeyForVar(config.EnvAllowedRoots):       "settings-work-dirs",
+	config.KeyForVar(config.EnvDiscoverRoots):      "settings-work-dirs",
+	config.KeyForVar(config.EnvWorkdirSuggestions): "settings-work-dirs",
+
+	config.KeyForVar(config.EnvMaxSessions):        "settings-sessions",
+	config.KeyForVar(config.EnvSessionLifetime):    "settings-sessions",
+	config.KeyForVar(config.EnvSessionLifetimeMax): "settings-sessions",
+	config.KeyForVar(config.EnvIdleTimeout):        "settings-sessions",
+	config.KeyForVar(config.EnvIdleTimeoutMax):     "settings-sessions",
+	config.KeyForVar(config.EnvDestroyOnShutdown):  "settings-sessions",
+
+	config.KeyForVar(config.EnvStartCommand):         "settings-commands",
+	config.KeyForVar(config.EnvStartCommands):        "settings-commands",
+	config.KeyForVar(config.EnvRemoteControlCommand): "settings-commands",
+
+	config.KeyForVar(config.EnvListen):           "settings-listener",
+	config.KeyForVar(config.EnvMaxBodyBytes):     "settings-listener",
+	config.KeyForVar(config.EnvCreateRatePerMin): "settings-listener",
+	config.KeyForVar(config.EnvMaxStreams):       "settings-listener",
+	config.KeyForVar(config.EnvPaneBound):        "settings-listener",
+}
+
+// sectionsOf groups the rows settingsOf projected into the sections the page
+// renders.
+//
+// It reads settingsOf rather than config.Vars() directly, so there is still one
+// projection of a Config into rows and this adds only a grouping over it. A
+// second walk would be a second answer to "what does this page say about this
+// setting", free to disagree with the first about a value or a source.
+//
+// A section that ends up empty is dropped. That is not a case any shipped
+// configuration reaches — every key above names a section that exists — but a
+// heading and a sentence over no rows is an affordance-shaped nothing, which is
+// the discipline FR-018a states for a value and applies just as well to a table.
+func sectionsOf(cfg *config.Config) []settingsSection {
+	grouped := make(map[string][]settingRow, len(settingsSections))
+	for _, row := range settingsOf(cfg) {
+		slug, placed := sectionForKey[row.Key]
+		if !placed {
+			continue
+		}
+		grouped[slug] = append(grouped[slug], row)
+	}
+
+	sections := make([]settingsSection, 0, len(settingsSections))
+	for _, section := range settingsSections {
+		rows := grouped[section.Slug]
+		if len(rows) == 0 {
+			continue
+		}
+		section.Settings = rows
+		sections = append(sections, section)
+	}
+	return sections
+}
+
+// sectionSlugs is every slug the page can render a section under, which is what
+// makes "this key names a section that exists" a checkable claim.
+func sectionSlugs() []string {
+	slugs := make([]string, 0, len(settingsSections))
+	for _, section := range settingsSections {
+		slugs = append(slugs, section.Slug)
+	}
+	return slugs
+}
+
+// hasSection reports whether slug names one of the sections above.
+func hasSection(slug string) bool { return slices.Contains(sectionSlugs(), slug) }
 
 // settingRow is one configuration key as the page states it.
 //
@@ -311,10 +475,13 @@ func secretConfigured(cfg *config.Config, name string) (configured, known bool) 
 
 // settings serves GET /settings (FR-016 … FR-020, contracts/settings-page.md).
 //
-// It mints no page token, and that is a decision rather than an omission. A page
-// token authorises a write, this page offers none, and the one on a rendered page
-// is a value worth not minting where nothing can spend it — the fleet and the
-// session view each carry one because each carries forms.
+// It mints a page token, which it did not before issue #103. The rule that kept
+// one off this page has not changed — a token is minted where something can spend
+// it — and what changed is that something can: the Updates section carries the
+// control for POST /dashboard/update, and the gate in front of that route refuses
+// a submission that arrives without one. A page rendering a form it cannot
+// authorise would be the dead control docs/components.md forbids, which is the
+// same defect as the missing control this section exists to fix.
 func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	operator, ok := OperatorFrom(r.Context())
 	if !ok {
@@ -327,6 +494,11 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	token, minted := s.pageTokenFor(w, r, operator)
+	if !minted {
+		return
+	}
+
 	// No SetSessionID: this page is about the daemon and not about one session.
 	// The record the middleware emits carries settings.view and the identity that
 	// asked, which is the whole of what an operator counting who read the
@@ -334,9 +506,15 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	// The Config the server was built from, read here and nowhere else: every
 	// value on this page was resolved once, at startup, so the page cannot
 	// disagree with the daemon it describes.
+	//
+	// The Updates section is the one part of this page that is not the Config,
+	// and it is composed last and separately: everything above it is local and
+	// cannot fail, which is what lets the release feed be unreachable without
+	// costing an operator the configuration they came here to read.
 	s.renderPage(w, r, http.StatusOK, "settings", settingsView{
 		Operator:   operator,
-		Settings:   settingsOf(s.cfg),
+		Sections:   sectionsOf(s.cfg),
+		Updates:    s.updatesFor(r.Context(), token),
 		ConfigFile: s.cfg.FilePath,
 	})
 }

@@ -2760,8 +2760,17 @@ func renderedPages(t *testing.T) map[string]string {
 		"dashboard": renderedFleet(t),
 		"session":   renderedSessionPage(t, actionableCard()),
 		"settings": renderComponent(t, "settings", settingsView{
-			Operator:   operator,
-			Settings:   []settingRow{{Key: "listen", Value: loopbackListen, Source: "default"}},
+			Operator: operator,
+			Sections: []settingsSection{{
+				Title:    "Listener and limits",
+				Slug:     "settings-listener",
+				Blurb:    "The loopback address this daemon binds.",
+				Settings: []settingRow{{Key: "listen", Value: loopbackListen, Source: "default"}},
+			}},
+			// The section renders its control from the token, so a page built
+			// without one here would satisfy every assertion about the update
+			// form by carrying no form at all (issue #103).
+			Updates:    updatesView{Installed: releaseView{Version: "v0.42"}, PageToken: testCardToken},
 			ConfigFile: "/home/operator/.config/crswd/crswd.conf",
 		}),
 		"not-found": renderComponent(t, "not-found", notFoundView{

@@ -95,6 +95,16 @@
      than spelled into the rule that uses it. */
   --toast-max: 34rem;
   --pane-h: 30rem;
+  /* How wide a line of prose is allowed to get, for the same reason --toast-max
+     is a token: the design system gives sans to what a human wrote and says
+     nothing about its measure, and a sentence run across the full shell is one
+     an eye loses its place in on the way back. In ch so it tracks the text
+     rather than the viewport. */
+  --measure: 68ch;
+  /* The release notes' ceiling, for --pane-h's reason: a changelog is somebody
+     else's text of unknown length, and a section that grew with it would push
+     the control it describes off the screen. */
+  --notes-h: 22rem;
   /* The picker listbox's ceiling, here for the same reason --toast-max is: a
      layout dimension the design system does not name, declared once rather
      than spelled into the rule that uses it. A popup that grows with its list
@@ -1103,16 +1113,33 @@ body {
   color: var(--dim);
 }
 
-/* The table's accessible name, where a heading would only repeat the masthead.
-   Aligned to the start rather than centred: a centred caption over a table this
-   narrow reads as a title for the page instead of for the table. */
-.settings caption {
-  margin-block-end: var(--s3);
+/* One section per subject (issue #103). The rule between them is space and a
+   heading, not a border: the tables already draw a grid, and a box around each
+   one would read as a card — a component this page does not have and must not
+   grow a second spelling of. */
+.settings-section {
+  margin-block-end: var(--s6);
+}
+
+/* The section's name, where a caption used to be, and in the eyebrow role the
+   caption had: a heading over a table of values is a label for the group rather
+   than a title competing with the masthead. */
+.settings-heading {
+  margin-block: 0 var(--s2);
   color: var(--dim);
   font-size: var(--fs-eyebrow);
   letter-spacing: var(--ls-eyebrow);
-  text-align: start;
   text-transform: uppercase;
+}
+
+/* What the rows under it decide, in sans: a human wrote this sentence, and the
+   design system gives mono to the machine and sans to a person. */
+.settings-blurb {
+  max-inline-size: var(--measure);
+  margin-block: 0 var(--s3);
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: var(--fs-prose);
 }
 
 /* A key is what the machine calls the setting, so both columns stay in mono and
@@ -1131,6 +1158,61 @@ body {
   font-size: var(--fs-label);
   letter-spacing: var(--ls-label);
   text-transform: uppercase;
+}
+
+/* One release as the Updates section states it: the version, and what that
+   release said about itself (issue #103). Two of them sit above the control, so
+   the space between them is what says they are two things being compared. */
+.release {
+  margin-block-end: var(--s4);
+}
+
+/* The version, in mono, because it is what the machine calls this build — the
+   same string --version prints and the footer carries. */
+.release-heading {
+  margin-block: 0 var(--s2);
+  color: var(--text);
+  font-size: var(--fs-body);
+  font-weight: 400;
+}
+
+/* The notes themselves. Markdown written by whoever authored the release, shown
+   as the text it is: a container with a scroll of its own, never a rendering of
+   somebody else's markup. Bounded in both axes for the pane's reason — wide
+   content scrolls inside its own box and never moves the page sideways — and
+   with a ceiling on the block size, because a release with a long changelog would
+   otherwise push the control that acts on it off the screen. */
+.release-notes {
+  max-block-size: var(--notes-h);
+  margin: 0;
+  padding: var(--s3);
+  overflow: auto;
+  border: var(--edge-width) solid var(--edge);
+  border-radius: var(--r);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-pane);
+  line-height: var(--lh-pane);
+  white-space: pre-wrap;
+}
+
+/* What the section says when there are no notes to show: a release that
+   published none, a build that is not a release, or a feed this host could not
+   reach. Sans and dim, because all three are a human explaining an absence
+   rather than anything the machine said. */
+.release-note {
+  max-inline-size: var(--measure);
+  margin: 0;
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: var(--fs-prose);
+}
+
+/* The one control on this page. Spaced off the releases above it because it acts
+   on what they describe, and left as the ordinary flow otherwise: a single
+   button and one optional field is not a layout. */
+.update-form {
+  margin-block-start: var(--s5);
 }
 
 /* The hidden attribute has to win (#77).
