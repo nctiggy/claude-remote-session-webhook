@@ -54,6 +54,9 @@ const (
 	// operator commits a public key (T013), so the tests below that need a
 	// signature to verify put an ephemeral one here first.
 	keyBlockOpen = "cat <<'RELEASE_KEYS'\n"
+	// keyBlockClose is the heredoc terminator, so a case can strip the block
+	// rather than depend on the repository having left it empty.
+	keyBlockClose = "RELEASE_KEYS\n"
 )
 
 // tarballName is Go's spelling of the release asset name — the third of the
@@ -453,6 +456,30 @@ func (r *release) signedBy(t *testing.T, script string) string {
 	return strings.Replace(script, keyBlockOpen, keyBlockOpen+line+"\n", 1)
 }
 
+// withoutKeys strips every committed key from the installer, so a case about
+// "carrying no key" measures that rather than whatever the repository happens
+// to hold today.
+//
+// It exists because the test that needed it broke the moment a real key was
+// committed: it had been asserting the empty-block message while reading the
+// real install.sh, so its precondition was the state of the repository rather
+// than something the case set up. A test that inherits its premise passes for a
+// reason it does not state, and fails on a change that was not a regression.
+func withoutKeys(t *testing.T, script string) string {
+	t.Helper()
+
+	open := strings.Index(script, keyBlockOpen)
+	if open < 0 {
+		t.Fatalf("%s no longer opens its key list with %q", installerPath, keyBlockOpen)
+	}
+	rest := open + len(keyBlockOpen)
+	end := strings.Index(script[rest:], keyBlockClose)
+	if end < 0 {
+		t.Fatalf("%s no longer closes its key list with %q", installerPath, keyBlockClose)
+	}
+	return script[:rest] + script[rest+end:]
+}
+
 // TestInstallVerifiesBeforeExecutable is FR-013, run rather than read.
 //
 // Every refusal below has the same two obligations: leave with a non-zero
@@ -571,6 +598,12 @@ func TestInstallVerifiesBeforeExecutable(t *testing.T) {
 			script := readInstaller(t)
 			if tt.commit {
 				script = r.signedBy(t, script)
+			} else {
+				// Strip whatever the repository carries, so this case is about
+				// an installer with no key rather than about an installer whose
+				// key does not match — two different refusals with two
+				// different messages.
+				script = withoutKeys(t, script)
 			}
 			got := runInstaller(t, script, r.dir, version)
 
