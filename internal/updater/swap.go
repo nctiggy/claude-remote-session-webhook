@@ -260,12 +260,12 @@ const (
 // Found by CI rather than here. This host has fewer cores and lost the race less
 // often; the runner did not, which is the same lesson the installer's job is
 // built around.
-func runCandidate(cmd *exec.Cmd) error {
+func runCandidate(ctx context.Context, cmd *exec.Cmd) error {
 	var err error
 	for attempt := range etxtbsyAttempts {
 		if attempt > 0 {
 			time.Sleep(etxtbsyBackoff)
-			cmd = cloneCommand(cmd)
+			cmd = cloneCommand(ctx, cmd)
 		}
 		if err = cmd.Run(); !errors.Is(err, syscall.ETXTBSY) {
 			return err
@@ -275,8 +275,15 @@ func runCandidate(cmd *exec.Cmd) error {
 }
 
 // cloneCommand rebuilds a Cmd, because an exec.Cmd cannot be run twice.
-func cloneCommand(old *exec.Cmd) *exec.Cmd {
-	fresh := exec.Command(old.Path, old.Args[1:]...) //nolint:gosec // G204: same path this package composed, unchanged from the caller above.
+//
+// It takes the context explicitly, and that is the whole reason this is a
+// function rather than three lines inline. Built with exec.Command instead, a
+// retry would carry no deadline at all: the first attempt would be bounded by
+// smokeTimeout and every one after it unbounded, so a candidate that hangs would
+// hang forever the moment a retry happened. CI caught exactly that — the fix for
+// one race introduced a worse failure in the case the smoke test exists for.
+func cloneCommand(ctx context.Context, old *exec.Cmd) *exec.Cmd {
+	fresh := exec.CommandContext(ctx, old.Path, old.Args[1:]...) //nolint:gosec // G204: same path this package composed, unchanged from the caller above.
 	fresh.Env = old.Env
 	fresh.Stdin = old.Stdin
 	fresh.Stdout = old.Stdout
@@ -306,7 +313,7 @@ func (s *Swapper) smokeTest(ctx context.Context, staged, version string) error {
 	cmd.Stderr = io.Discard
 	cmd.WaitDelay = smokeWaitDelay
 
-	if err := runCandidate(cmd); err != nil {
+	if err := runCandidate(ctx, cmd); err != nil {
 		// The wrong-architecture case arrives here as "exec format error", and a
 		// candidate that ran and failed arrives as an exit status. Both are the
 		// same answer: this is not a binary to install.
