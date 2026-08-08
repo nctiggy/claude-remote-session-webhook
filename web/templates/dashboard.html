@@ -59,8 +59,15 @@
   single session, and it is the same address the card's own heading links to: no
   route is added here, and nothing new is exposed to a browser that could already
   open that page by clicking the card.
+
+  data-fleet-page is the fourth, and it is this page's own address (issue #99).
+  A stream that dropped and came back missed changes that arrive as no event at
+  all, so the live half asks for the fleet again rather than telling the operator
+  to reload — the same mechanism as the card above at the granularity of the
+  whole page, and the same argument for the address being here: no route is added
+  and nothing is exposed that a reload did not already ask for.
 */}}
-<main class="shell" data-fleet-stream="/dashboard/fleet/stream" data-fleet-card="/sessions/{id}/view" data-fleet-stalled="fleet-stalled" data-fleet-changed="fleet-changed">
+<main class="shell" data-fleet-stream="/dashboard/fleet/stream" data-fleet-card="/sessions/{id}/view" data-fleet-page="/" data-fleet-stalled="fleet-stalled" data-fleet-changed="fleet-changed">
 {{/*
   What the action that redirected here did (T014), and nothing at all on an
   ordinary visit. It is first in the page on purpose: an operator arriving from
@@ -83,10 +90,12 @@
   daemon drops on purpose when it falls behind — neither arrives as an event,
   both arrive as a connection that ended (contracts/fleet-stream.md).
 
-  It stays once shown. The reconnection that follows is automatic and correct,
-  but nothing fills the gap it left, so a note that hid itself again would be
-  the page claiming a currency it did not recover. Only a reload does that, and
-  the copy says so.
+  It stays until the page has recovered, and what recovers it is a re-fetch
+  rather than a reload (issue #99). The reconnection is automatic and correct but
+  fills no gap on its own, so the live half asks for this page again, replaces
+  the grid and the counts with what came back, and hides this note only then. A
+  re-fetch that failed leaves it exactly where it was, which is the case the copy
+  is written for: a page that cannot ask has nothing left to offer but a reload.
 
   Hidden with the attribute rather than with a class, as the pane's notes are:
   `hidden` is the browser's own, needs no rule in the stylesheet and cannot be

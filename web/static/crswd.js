@@ -448,17 +448,39 @@
     const cardFor = (id) => shell.querySelector(`article.card[data-session="${CSS.escape(id)}"]`);
 
     /*
-     * FR-020, and the reason it is revealed and never hidden again: the page
-     * has missed a window it cannot ask about afterwards. EventSource reconnects
-     * on its own, which is the right recovery — a fresh request, authorised from
-     * scratch, re-subscribed — but the changes that happened while it was gone
-     * arrive as no event at all, so a note that hid itself on reconnection would
-     * be the page claiming a currency it never got back. Only a reload does
-     * that, and the copy over there says so.
+     * FR-020: the page has missed a window it cannot ask about afterwards, so it
+     * says so for as long as that is true. EventSource reconnects on its own — a
+     * fresh request, authorised from scratch, re-subscribed — but the changes
+     * that happened while it was gone arrive as no event at all, so a note that
+     * hid itself the moment the stream came back would be the page claiming a
+     * currency it had not recovered.
+     *
+     * What recovers it is below. Until that answers, this is the honest state.
      */
     const lostTheFleet = () => {
       if (stalled) {
         stalled.hidden = false;
+      }
+    };
+
+    /*
+     * And the other half, which this file did not have until issue #99.
+     *
+     * The note used to be permanent, on the reasoning that only a reload restores
+     * a fleet this page can vouch for. That was the one wrong clause: a re-fetch
+     * restores it too, and this file already re-fetches a card when the stream
+     * names one. The whole fleet is the same mechanism at a different
+     * granularity — and it matters more than it looks now that a self-update
+     * exits and lets systemd restart the daemon (milestone 6), so an operator who
+     * updates from this page drops every stream on purpose and used to be told
+     * the dashboard had given up at the exact moment they needed it.
+     *
+     * It is hidden only where the re-fetch succeeded, which is what keeps the
+     * sentence worth believing when the daemon is genuinely gone.
+     */
+    const foundTheFleet = () => {
+      if (stalled) {
+        stalled.hidden = true;
       }
     };
 
@@ -695,6 +717,87 @@
         .catch(lostTheFleet);
     };
 
+    /*
+     * The whole fleet, re-fetched after an interruption (issue #99).
+     *
+     * It is the card path at a different granularity and it follows the same
+     * rules. The markup is the daemon's own — this page's own address, rendered
+     * by the same handler that composed what is on screen now — and it is parsed
+     * into an inert document before anything is taken out of it, so nothing a
+     * session printed into that answer runs, loads, or reaches this document.
+     * The request carries the operator's ambient credential and nothing else,
+     * exactly as reloading would; it is one request and therefore one record in
+     * the trail.
+     *
+     * Three things are replaced and no more: the cards, the counts, and which of
+     * the page's two shapes is showing. Everything a reload would have destroyed
+     * is deliberately untouched — a half-typed working directory in the create
+     * form, the scroll position, the caret — which is issue #51's correction
+     * applied to the one path that still asked an operator to throw all of it
+     * away.
+     *
+     * Nothing is composed here. The grid and the summary row are lifted whole
+     * from one render, so the counts and the cards they describe come from a
+     * single reading of the fleet and cannot disagree — the property the
+     * incremental path keeps by re-deriving the row from the cards beneath it.
+     *
+     * An answer that is not a fleet page is a failure rather than an empty
+     * fleet. A daemon that is still down, an identity that has to log in again,
+     * anything at all in front of this one: each answers with something, and a
+     * page that read "no grid" as "no sessions" would empty the operator's fleet
+     * on the word of whatever replied. So the shape is checked before a single
+     * card is moved, and the note stays for everything that fails the check.
+     */
+    const resync = () =>
+      fetch(shell.dataset.fleetPage, { credentials: 'same-origin' })
+        .then((answer) => {
+          if (!answer.ok) {
+            throw new Error('the daemon did not answer with the fleet');
+          }
+          return answer.text();
+        })
+        .then((markup) => {
+          const rendered = new DOMParser().parseFromString(markup, 'text/html');
+          const composed = rendered.querySelector('main[data-fleet-stream] .grid');
+          const counted = rendered.querySelector('main[data-fleet-stream] .summary');
+          const fleet = grid();
+          const rows = summary();
+          if (!composed || !counted || !fleet || !rows) {
+            throw new Error('the answer did not carry a fleet this page is made of');
+          }
+
+          // Read before the grid is exchanged, for the announcement below: after
+          // the swap there is nothing left to compare the new fleet against.
+          const held = fleet.childElementCount;
+
+          fleet.replaceChildren(
+            ...Array.from(composed.children, (card) => document.importNode(card, true)),
+          );
+          rows.replaceChildren(
+            ...Array.from(counted.children, (row) => document.importNode(row, true)),
+          );
+          compose();
+
+          /*
+           * What changed while the page could not hear (issue #51's requirement
+           * at the one moment it is most owed). Arriving back to a different
+           * fleet is exactly when an operator who cannot see it needs telling,
+           * and it is said with the page's own two sentences rather than a third
+           * — the fleet is a card larger or a card smaller, which is what those
+           * two say. A fleet the same size is a fleet whose shape did not change,
+           * and narrating cards that were replaced in place is the noise
+           * docs/components.md keeps off the grid.
+           */
+          if (fleet.childElementCount > held) {
+            say('fleetAppeared');
+          } else if (fleet.childElementCount < held) {
+            say('fleetVanished');
+          }
+
+          foundTheFleet();
+        })
+        .catch(lostTheFleet);
+
     const live = new EventSource(shell.dataset.fleetStream);
 
     // Decoded before the page is touched, on the same terms the pane decodes a
@@ -714,7 +817,35 @@
      * one thing to a browser: a response that ended. Which is exactly why the
      * page has a sentence for it.
      */
-    live.onerror = lostTheFleet;
+    let interrupted = false;
+
+    live.onerror = () => {
+      interrupted = true;
+      lostTheFleet();
+    };
+
+    /*
+     * And the recovery, which is a reconnection and not the drop (issue #99).
+     *
+     * `open` is the browser saying it has a stream again — the daemon is
+     * answering, the request was authorised from scratch, and this page is
+     * subscribed. That is the first moment a re-fetch can succeed; asking at the
+     * drop would be asking a host that has just stopped answering, which fails
+     * and leaves the note up for a reason that was never true.
+     *
+     * The guard is what keeps the first connection ordinary. Every EventSource
+     * opens once before anything has gone wrong, and re-fetching a page the
+     * daemon rendered a moment ago would be a second request per load for
+     * nothing — one more record in the trail, saying what the render already
+     * said.
+     */
+    live.addEventListener('open', () => {
+      if (!interrupted) {
+        return;
+      }
+      interrupted = false;
+      resync();
+    });
   };
 
   for (const shell of document.querySelectorAll('main[data-fleet-stream]')) {
