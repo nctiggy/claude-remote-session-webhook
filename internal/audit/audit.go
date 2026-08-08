@@ -156,6 +156,35 @@ const (
 	// request and every response — a trail that printed it would be the one copy
 	// of it that left the daemon.
 	ActionSessionMode Action = "session.mode"
+
+	// ActionDashboardVersion is the running daemon asked what version it is
+	// (milestone 6, contracts/version.md). It is its own action for the reason
+	// settings.view is: this is the question an operator asks before deciding
+	// whether to update, and one asked repeatedly by anything watching the fleet
+	// — counting it as a page view would bury both in the dashboard's own traffic.
+	//
+	// It is dashboard.version rather than version.view because the route is on the
+	// dashboard's door and the command-line reader emits nothing at all: there is
+	// no second way to ask a *running* daemon this, so the name says which door
+	// answered rather than which subject was read.
+	ActionDashboardVersion Action = "dashboard.version"
+
+	// ActionDashboardUpdate is this daemon asked to replace its own binary
+	// (milestone 6, contracts/self-update.md), whether it did or refused.
+	//
+	// It is the highest-consequence record in the vocabulary and the only one
+	// about the daemon rather than about a session: everything else here changes
+	// what is running *under* this process, and this changes the process. An
+	// operator auditing a host has one line to grep for the question "when did
+	// what is running here last change, and who asked".
+	//
+	// dashboard.update rather than daemon.update, because the door is what the
+	// prefix names throughout this block and there is no second way to ask a
+	// running daemon for this. It never carries the version, the asset, or a
+	// staging path — the record shape is frozen (FR-016) and none of the three is
+	// a field on it; which release was installed is what the version route
+	// answers afterwards.
+	ActionDashboardUpdate Action = "dashboard.update"
 )
 
 // Decision is the allow/deny outcome, and unlike Action it is closed: two

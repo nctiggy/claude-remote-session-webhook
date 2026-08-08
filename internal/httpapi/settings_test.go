@@ -835,10 +835,12 @@ type sweep struct {
 //
 // The API's six and their method-less twins are read off the contract's own
 // table, and the assets off the embedded tree, so neither can drift from what
-// the daemon registers. The browser door's ten are listed here because there is
-// nowhere to read them from — but they are the *constants* newServer registers,
-// so a renamed route moves this sweep with it. An eleventh would have to be
-// added here by hand, and that is the one gap this arrangement cannot close.
+// the daemon registers. The browser door's eleven are listed here because there
+// is nowhere to read them from — but they are the *constants* newServer
+// registers, so a renamed route moves this sweep with it. A twelfth would have to
+// be added here by hand, and that is the one gap this arrangement cannot close.
+// The version route was the eleventh, and it was added here by hand exactly as
+// this comment says it would have to be.
 func registeredPatterns(t *testing.T) []string {
 	t.Helper()
 
@@ -848,6 +850,7 @@ func registeredPatterns(t *testing.T) []string {
 		patternSessionStream,
 		patternFleetStream,
 		patternSettings,
+		patternVersion,
 		patternDashboardCreate,
 		patternDashboardDestroy,
 		patternDashboardRename,
@@ -1075,6 +1078,7 @@ func TestFullRouteSweepLeaksNoSecret(t *testing.T) {
 	}{
 		{"the fleet", http.MethodGet, "/", nil, http.StatusOK},
 		{"the settings page", http.MethodGet, settingsPath, nil, http.StatusOK},
+		{"what the daemon calls itself", http.MethodGet, versionPath, nil, http.StatusOK},
 		{"the page a card links to", http.MethodGet, "/sessions/" + browser.ID + "/view", nil, http.StatusOK},
 		// A recorder cannot lift a write deadline, so an open that got past
 		// identity, the cross-site check, the ownership lookup and the cap answers

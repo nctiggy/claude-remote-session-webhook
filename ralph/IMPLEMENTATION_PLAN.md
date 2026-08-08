@@ -2,89 +2,93 @@
 
 > Worked top-to-bottom by `ralph/loop.sh` — one task per iteration.
 >
-> **This is milestone 5.** Milestones 1 through 4 are complete, reviewed, and deployed;
-> their task lists are archived under [`archive/`](archive/) because `PROGRESS.md`
-> references their T-numbers, and the notebook itself is at
-> [`archive/progress-milestones-1-4.md`](archive/progress-milestones-1-4.md).
+> **This is milestone 6, the last of the backlog.** Milestones 1 through 5 are complete,
+> reviewed, and deployed; their task lists are archived under [`archive/`](archive/) and the
+> notebook at [`archive/progress-milestones-1-5.md`](archive/progress-milestones-1-5.md).
 
 ## Status: generated from the spec
 
-Generated from [`specs/005-finish-the-dashboard/tasks.md`](../specs/005-finish-the-dashboard/tasks.md),
-which is the single source of truth. `spec.md`, `plan.md`, `research.md`, `data-model.md`
-and the six files in `contracts/` supersede anything this file summarises.
+Generated from [`specs/006-ship-it-to-someone-else/tasks.md`](../specs/006-ship-it-to-someone-else/tasks.md),
+which is the single source of truth. `spec.md`, `plan.md`, `research.md`, `data-model.md` and
+the six files in `contracts/` supersede anything this file summarises.
 
-**Before starting a task, read its matching `T0NN` entry in `tasks.md`.** The entries below
-are the ordered checklist; the task file carries the exact literals, the test each task must
-include, and — for every task that adds behaviour — **the condition under which that test
-must fail**.
+**Before starting a task, read its matching `T0NN` entry in `tasks.md`.**
 
-## ⚠️ The obligation this milestone exists for
+## ✅ THE KEY HAS ARRIVED — nothing in this milestone waits on a human any more
 
-**A requirement about what an operator SEES needs a test that reads the RENDERED MARKUP.**
+**The operator generated the pair and completed all three steps of the handover** (commit
+`c606df3`, before Iteration 15): the private half is the `RELEASE_SIGNING_KEY` repository
+secret, and the public half is committed to **both** `internal/updater/release_key.txt` and
+`install.sh`'s `RELEASE_KEYS` block. `TestInstallerCarriesTheCommittedKeys` holds them together.
 
-Milestone 4 wrote FR-026: *"choose remote control as a mode, rather than selecting a command
-by name."* Three tasks shipped for it — derive the mode, add the route, show it on the card —
-all green. **The create form still renders a dropdown of command names**, because every
-assertion was about a route or a record and none read the form.
+**Still true, forever: do not generate a key. Do not commit one. Do not put an "example" key in
+a fixture** — an example key that happens to be valid is a real key in the repository. Tests that
+need a signature generate an ephemeral pair in the process and never write it down; that is what
+`install_test.go` and `TestReleaseIsSigned` do. Rotation is the operator's too, and additive:
+commit the new public line to both files **first**, then replace the secret. The signing step
+refuses the other order rather than publishing a release that verifies nowhere.
 
-That is not a testing-volume problem. It is testing the wrong layer. Where a task below
-carries the failing condition *"the route accepts the right value but the form still renders
-the old control"*, that phrasing is the point and must not be softened.
+**This heading has cost two iterations more than the tasks under it did.** Iteration 15 found
+T018 was never blocked by it. Worse, the key landed in `c606df3` **before Iteration 15 ran**, and
+that iteration's notebook still recorded the file as holding no key line — a fact it stated
+rather than checked. **A summary does not block a task; `tasks.md`, the contract, and the tree
+do.** Before believing a heading, look at the thing it describes:
+`git log -1 -- internal/updater/release_key.txt` settles this one in a second.
 
-## ⚠️ The create-form ordering is strict
+## ⚠️ Nothing about the installer can be proven on this host
 
-**Four stories touch `web/templates/partials/create-form.html`.** They run in this order and
-are never interleaved — each leaves the file green, so a failure names one story:
+The project is installed here, a config exists, `~/.local/bin` is on `PATH`, and the unit is in
+place. **Every precondition the installer exists to create is already true**, so a green run
+here demonstrates nothing.
 
-```
-T001 delete  →  T003 replace  →  T006 feed  →  T008 wrap
-```
+**T012 moved that verification off this host** (Iteration 17): `verify-install` in `release.yml`
+installs the release the same run published, on `ubuntu-latest`, twice. **It has never run** —
+the first merge to `main` after this is its first execution, and the first time anything about
+`install.sh` is demonstrated rather than asserted.
 
-A task that tidies that file while it is there makes the next story's diff unreadable. AR-008
-is load-bearing this milestone.
+Where a task carries *"it was only ever run where the project is already installed"*, that
+phrasing is the point.
 
-## 🔒 Three tasks are security-relevant
+## 🔒 Four tasks are security-critical, in this order of risk
 
 | Task | Why |
 |---|---|
-| **T004** `remote_control` validation | The field carries a **mode**, not a name. A real configured name like `rc` must still be refused, or the browser regains the ability to name what runs. |
-| **T007** suggestion validation | A path in the datalist but outside `allowed_roots` must be refused identically to a typed one. A suggestion is never an authorisation. |
-| **T014** probe honesty | A check that says "missing" about a command that works trains an operator to ignore it, which is worse than not checking at all. |
+| **T015** verify | Checksum **then** signature, and a missing signature is a refusal, not a skip. Get this wrong and signing is decorative. |
+| **T016** stage | Nothing executable before both checks pass; staging swept at startup. |
+| ~~**T017** swap~~ | ✅ Iteration 20. Smoke test before the rename; any failure leaves the daemon on what it was running. |
+| **T013** keygen | Writes nothing to disk. The operator holds the private half. |
 
 ## What is already running
 
-Milestones 1 through 4 are **live**. Changes here land on a deployed daemon:
+Milestones 1 through 5 are **live**:
 
 | | |
 |---|---|
 | Service | `crswd.service`, systemd user unit, loopback `127.0.0.1:8765` |
-| tmux | **Its own server**, `-L crswd-<listen>` — never the operator's default server (#22) |
 | Public | `https://crswd.craigcloud.io` via the `crswd` Cloudflare Tunnel |
-| Daemon | Config file, settings page, mode toggle, post-redirect-get, directory picker |
-| Audit | `journalctl --user -u crswd -o cat \| grep '^{' \| jq .` — the grep is not optional (T015) |
-| CI | `go test`, `-tags tmux` and `-tags quickstart` all run on the self-hosted runners (#87) |
+| Daemon | Config file, settings page, mode toggle, PRG, themed picker, dependency probe |
+| Audit | `journalctl --user -u crswd -o cat \| grep '^{' \| jq .` |
+| CI | `go test`, `-tags tmux`, `-tags quickstart`, all on self-hosted runners (#87) |
 
-**Two tasks fix defects in code milestone 4 shipped**, both found by *running* the daemon
-during planning rather than reading it. T014 fixes a probe that has warned on every start that
-`claude` is missing while sessions using it work. T013/T015 fix an audit trail that cannot be
-read because diagnostics share a stream with records.
+**There is no release, no version, and no installer.** That is this milestone.
 
 ## Resolved decisions
 
-Settled in [`research.md`](../specs/005-finish-the-dashboard/research.md). **Do not
-re-litigate these in an iteration** — if one looks wrong, write it in `PROGRESS.md` under
+Settled in [`research.md`](../specs/006-ship-it-to-someone-else/research.md). **Do not
+re-litigate these** — if one looks wrong, write it in `PROGRESS.md` under
 `NEEDS CLARIFICATION` and stop.
 
 | Question | Decision | Consequence |
 |---|---|---|
-| What is the remote-control control? | A single **checkbox**, `name="remote_control"`, `value="on"`, styled as a switch | The platform's own two-state control: keyboard-operable and announced correctly with no script. An unticked box posts nothing, so a lost field yields the *less* privileged mode |
-| What does a default install offer as directories? | **The approved roots themselves**, always; union with the explicit list and, when enabled, discovered children | The roots are the one source guaranteed non-empty whenever a session can be created, and they disclose nothing the operator did not already configure. Their *children* read the filesystem, which is what `discover_roots` exists to keep opt-in |
-| Where does the settings link go? | In `.masthead-bar` **after** the operator and **outside** the `<h1 class="brand">` | #46 made the wordmark the link home and it lives in the page's one first-level heading. A second anchor there would make the heading a menu. One link is not a nav bar |
-| Native control or scripted one? | **Enhance the native one** — script layers a themed listbox over `<input list>` + `<datalist>` | Milestone 4's R6 chose native and was right on what it weighed; it missed that a datalist popup cannot be styled by any CSS. Enhancing rather than replacing means script failure costs the theme and never the ability to pick or type a directory |
-| Where do the ARIA roles live? | **Added by script, never in the template** | Without script `aria-expanded` would describe a control that is not there. Markup that lies to a screen reader is worse than markup describing the plain field that exists |
-| Does `conversation.go` survive the field it fed? | **Deleted**, with its SHA recorded in #95 | Keeping it would be the fifth caller-less thing this repo has shipped. It also likely does not fit #95, which needs *this session's* conversation while `listConversations` answers about *this directory's* — the ambiguity FR-032 already refuses to resolve by guessing |
-| Why does the documented audit command fail? | **systemd merges both file descriptors into one journal.** The daemon's streams were already right — audit to stdout, diagnostics to stderr — and `journalctl` sees them interleaved regardless (corrected by T013; this row previously said the streams were shared, which was wrong about the mechanism) | Measured: `_COMM=crswd` still fails, which is how the cause was identified — #88 assumed the noise was systemd's. Fix is diagnostics to stderr, and the filter works only because of that |
-| Why does the dependency probe warn falsely? | It asks the **service manager's** PATH; the command runs in a **login shell** inside tmux | `claude` is at `~/.local/bin/claude`, which the login shell has and the service manager does not. Both answers are right about their own environment; the check asks the wrong one |
+| How does the version reach the binary? | One variable, `internal/buildinfo.Version`, default `"dev"`, stamped with `-ldflags -X` | A package rather than `main`, because httpapi must read the same string. **The default is the sentinel**: forgetting to stamp cannot make a working tree claim to be a release |
+| Where does the build number come from? | `git rev-list --count HEAD` | Monotonic and **derived from the repository itself**. `github.run_number` resets when a workflow is recreated, which would make an older release outrank a newer one and break both "is this newer" and retention |
+| What are the asset names? | `crswd_<version>_linux_<arch>.tar.gz`, plus `SHA256SUMS` and `SHA256SUMS.sig` | Built in YAML, shell and Go, which cannot share a constant. The duplication is unavoidable; the drift is not, so a test asserts they agree. A drift is a 404 while somebody is installing |
+| Who holds the signing key? | **The operator.** `crswd keygen` prints both halves and writes nothing | A key written to a file is a key that gets committed by accident. The public half is **committed, not fetched** — a key retrieved from the host that serves the release is the same factor twice |
+| How does rotation work? | Additive: one key per line, any may verify, retire the old only once every retained release is signed by the new | A rotation that deletes first strands every release an operator might roll back to |
+| How does a daemon replace its own binary? | Stage → checksum → signature → chmod → **smoke test** → atomic rename → exit for systemd | The smoke test is the non-obvious step: a checksum proves the bytes are the published bytes and says nothing about whether they *run here*. An arm64 build on amd64 passes every cryptographic check and then fails to exec — after it is installed |
+| What does "staged" mean? | `~/.local/share/crswd/staging/`, mode `0600` until verified, swept at startup | Nothing is executable before both checks pass. Swept because the process that vouched for those bytes did not live to say so |
+| How does the installer know a unit was edited? | It records the hash of what it wrote; **no record means leave it alone** | The third case is every host deployed before this milestone, including the operator's own |
+| Why no automatic rollback? | A daemon that cannot start cannot decide to replace itself | It would need a supervisor this project does not have. The previous binary is kept and the failure is made loud instead |
 
 ## Conventions
 
@@ -111,211 +115,96 @@ re-litigate these in an iteration** — if one looks wrong, write it in `PROGRES
 
 ## Tasks
 
-### US5 — Stop asking a question nobody can answer (first, because it deletes)
+### US1 — Know what is running (everything depends on this)
 
-- [x] T001 Remove the resume field and the `Conversations` view data
-- [x] T002 Delete `internal/session/conversation.go`; record the SHA in #95
-  - ⚠️ **The SHA is `ef18756` and it is NOT yet on #95.** `gh` is not an approved
-    command in the loop's session, so the comment could not be posted. The text to
-    post is in `PROGRESS.md` iteration 2 — a human or an iteration with `gh` should
-    paste it. The code is recoverable from git either way; #95 is where someone
-    will look for it.
+- [x] T001 `internal/buildinfo.Version`, default `"dev"` — the default is the sentinel
+- [x] T002 `--version` on the command line, honest about unreleased builds
+- [x] T003 `GET /dashboard/version`, reading the same variable
 
-### US1 — Remote control at create time (the milestone-4 miss)
+### US2 — Releases exist
 
-- [x] T003 Replace the start-command `<select>` with the `remote_control` switch
-- [x] T004 🔒 Accept `on` or absent; refuse everything else, including a real command name
-  - Both of T003's open questions are answered in `PROGRESS.md` iteration 4. **`on` with no
-    remote command configured is refused**, which is the rule `config.go:124`,
-    `Manager.commandForMode` and `refuseBrowserCreate` already state — not a new decision.
-    **The switch still renders unconditionally**: that conditional needs a view field nothing
-    specifies, and it is now a UX wart rather than a hole, because the route refuses honestly.
-    `data-model.md`'s `RemoteDefault bool` is still unowned and is a no-op (`false` is what an
-    unchecked box already is). Neither blocks a remaining task; **T016 or milestone 6**.
+- [x] T004 The release workflow: `v0.<count>`, both architectures, `CGO_ENABLED=0`
+- [x] T005 Attach the deployment files, not just the binary
+- [x] T006 `SHA256SUMS` covering every asset
+- [x] T007 Retention: keep 20, never the newest two, never what `latest` resolves to
+- [x] T008 `Restart=always` in the unit — self-update depends on it
 
-### US2 — Suggestions that exist on a default install
+### US3 — Install in one line (all of it about another machine)
 
-- [x] T005 Add the `workdir_suggestions` configuration key
-  - The key is read and reaches `Config.WorkdirSuggestions`; **nothing consumes it until
-    T006's union**. Refusals are only what no configuration could accept — a relative
-    entry and an empty one. A path outside the roots loads and is offered, exactly as
-    `contracts/directory-suggestions.md` requires; the create refuses it. Duplicates
-    *within* the list survive on purpose: dedup belongs to T006 and is stated once.
-- [x] T006 Union the three sources in `internal/config/suggestions.go`
-  - `Config.SuggestedWorkDirs()`, read by `dashboard.go:254`. **A `<datalist>` now renders
-    on every real page**, so `TestTheRenderedFleetOffersWhatDiscoveryFound`'s "discovery off
-    means no list at all" half was rewritten to "offers the root, not the root's child" —
-    that was the task, not collateral. The walk's silent `maxDiscoveredWorkDirs = 200` no
-    longer bounds what a page can carry, since the roots and the explicit list are added on
-    top of it; see `PROGRESS.md` iteration 6, **T016** or a `NEEDS CLARIFICATION`.
-- [x] T007 🔒 A suggested path outside the roots is refused identically to a typed one
-  - `TestSuggestedPathOutsideRootsRefused` in `actions_test.go`, on **one coherent
-    configuration** rather than milestone 4's page/allowlist divergence: `workdir_suggestions`
-    is unconstrained by the roots by contract, so a real daemon offers the path. Test-only —
-    the refusal already existed. **What it pins is the handler, not the wiring**: every
-    `internal/httpapi` fixture injects `fixture.mgr`, so a `server.go:332` that fed
-    `SuggestedWorkDirs()` into the manager's roots would go unnoticed here *and* in quickstart.
-    See `PROGRESS.md` iteration 7 — **T016** or milestone 6.
+- [x] T009 Detect, download, and verify **before** anything is executable
+- [x] T010 Place the binary, the unit, the recorded hash, and a config only if absent
+- [x] T011 Refuse to clobber: an edited unit, and one we have no record of
+- [x] T012 The `verify-install` job on a GitHub-hosted runner — installs the release the same run
+      published, onto a host asserted to carry none of the four paths `install.sh` writes, twice.
+      See Iteration 17.
 
-### US4 — Controls that belong to this interface
+### The signing key — ✅ THE HUMAN STEP IS DONE
 
-- [x] T008 Markup: the `.combo` wrapper, the listbox, the status region — **behaviour unchanged**
-  - Three minimum CSS rules shipped with it, because `TestTheStylesheetAndTheMarkupNameTheSameThings`
-    sweeps both directions and a rendered class with no rule is red — the same reason T003
-    carried `.switch-input`. **`.combo { display: grid }` is load-bearing** and nothing pins it:
-    an `<input>` is inline-block, so a block wrapper would shrink the field. **T010 must rewrite
-    `TestSubsetAnnounced`'s addition sweep** — it forbids the exact operations T010 mandates —
-    **and delete `#create-workdir-subset`** when it moves the sentence into `.combo-status`, or
-    the field keeps two live regions with one dead. See `PROGRESS.md` iteration 8.
-- [x] T009 Styling: tokens, focus rings, and the reduced-motion rule
-  - The active option's ring is keyed on **`[aria-selected="true"]`** — `:focus-visible`
-    can never reach an option, so **T011 must set that attribute** or the ring is worn by
-    nothing. `position: relative` on `.combo` is now load-bearing exactly as `display: grid`
-    is, and no test can see either. **The reduced-motion block resets `transition` and not
-    `animation`**: verified green with an `animation` on the listbox, so the picker's own
-    test forbids the property outright and every other component in the file is still
-    uncovered — **T016** or milestone 6. See `PROGRESS.md` iteration 9.
-- [x] T010 Enhancement: suppress the native popup, add the ARIA, filter, announce the subset
-  - `field.list` is read **before** `removeAttribute("list")` cuts it, and the order is
-    asserted positionally: reversed, the picker offers nothing and every other assertion
-    stays green. `#create-workdir-subset` is **deleted** and FR-045's sentence now sits on
-    `.combo-status`, so the field has one live region. `aria-controls` is read off
-    `listbox.id`; the script carries no id the template owns. **T011 must set
-    `aria-selected="true"`** (T009's ring is keyed on it), **give each `<li>` an id** for
-    `aria-activedescendant`, and add the close path — T010 closes the list only when nothing
-    matches. **Nothing selects an option with the pointer and no task owns that**; see
-    `PROGRESS.md` iteration 10, finding 1.
-- [x] T011 Keyboard: arrows, Enter, Escape, Tab, `aria-activedescendant`
-  - FR-008 is held by **counting `.value =` across the whole file**: exactly one, reading an
-    option's own `textContent`, after the `'Enter'` literal. Every way of intercepting typing
-    writes that property, and the count is what caught the must-fail. The other claims are
-    scoped to the picker's block, because `hidden = true` and `preventDefault` are words the
-    toast and the card's selection fix also use. **A whole-block "the descendant is cleared"
-    assertion is green with the clear deleted from `draw()`** — `activate(-1)` satisfies it —
-    so that one is positional; the ids are positional too, and a stale one names a *different*
-    path rather than nothing. **Nothing still selects an option with the pointer** and the list
-    has no blur close: both are outside T011's four keys, both are now small, see
-    `PROGRESS.md` iteration 11, findings 1 and 2.
+- [x] T013 🔒 `crswd keygen` and a `release_key.txt` the operator has since filled in — the
+      private half is the `RELEASE_SIGNING_KEY` secret, the public half is committed to that
+      file **and** to `install.sh`. See Iteration 14 for the build, `c606df3` for the key.
+- [x] T014 Sign `SHA256SUMS` in CI, and refuse to publish a release that cannot be signed or
+      that would be signed by a key nothing carries. See Iteration 16.
 
-### US3 — Reaching the settings page (independent)
+### US4 — Update without rebuilding (cannot start before US1)
 
-- [x] T012 Add the settings link to the header, outside the brand heading
-  - Seven tests, not six: `TestSettingsLinkHasVisibleFocusRing` is in
-    `contracts/settings-link.md` and absent from `tasks.md`, and the contract supersedes.
-    **`TestSettingsStillHasNoMutatingVerb` reads the `href` out of the rendered header**
-    and asks the four verbs at *that* path — `settings_test.go`'s `TestNoMutatingVerbRegistered`
-    already holds the same claim against the constant, so a copy would have been the assertion
-    twice. `renderedPages` is checked against the template tree, so a page added later cannot
-    ship with an unasserted header. **`.operator` gained `margin-inline-start: auto`**: a third
-    child under `space-between` puts the identity in the centre, which breaks what
-    `docs/components.md` says the header is and which no test can see — see `PROGRESS.md`
-    iteration 12.
+- [x] T015 🔒 Verify: checksum **then** signature; a missing signature refuses. See Iteration 18
+- [x] T016 🔒 Stage: `0600` until verified, swept at startup. See Iteration 19
+- [x] T017 🔒 Swap: **smoke-test the staged binary**, then rename, then exit. See Iteration 20
+- [x] T018 Fetch: TLS, no cross-host redirect, exact asset name — **the one task in US4
+      that never needed the key**; see Iteration 15
+- [x] T019 🔒 `POST /dashboard/update` via `handleAction`, with a confirming step. See Iteration 21
 
-### Two defects in shipped code (independent)
+### US5 — The rain says something (independent)
 
-- [x] T013 Diagnostics to stderr, audit records to stdout
-  - **The shipped daemon already routed both streams correctly** — measured, not read:
-    the probe's banners, the loader's and both `log` channels are on stderr, only the
-    trail is on stdout. #88's cause is journald merging the two fds, which
-    `contracts/diagnostics-and-probe.md` already anticipates ("document the filter
-    anyway, because systemd merges both into the journal"). So T013 is the invariant
-    written down and enforced, not a re-routing. Three tests: `TestAuditRecordsGoToStdout`
-    (`internal/httpapi`, the production `New` on the process's real stdout),
-    `TestDiagnosticsGoToStderr` + `TestStartupDiagnosticsGoToStderr` (`cmd/crswd`, an AST
-    sweep of the whole module), `TestNoSecretInAnyDiagnostic` (`internal/config`).
-    **T015 is unblocked and the port is not its problem**: `127.0.0.1:8765` is still held
-    by the deployed daemon, but quickstart stopped binding it — `freeAddrOn` covers the two
-    startup cases. See `PROGRESS.md` iteration 13.
-- [x] T014 🔒 Resolve the start command the way the session will, or say what was checked
-  - The probe asks `$SHELL -l` **what PATH it has** — a constant script on stdin — and
-    resolves the binary against that list in Go. It never names the command to the shell:
-    `sh -lc "command -v $binary"` resolves identically and is the shell string
-    `docs/security.md` §2 forbids, and the plan's complexity table authorised *executing the
-    profile*, not *building a command line*. **`TestNeverExecutesInstall` had to change** —
-    it forbade every member of `os/exec` but `LookPath` — and now pays for `CommandContext`
-    with two stronger claims: every argv element past the program is a source literal, and
-    this package starts exactly one subprocess. **Three outcomes, not two**: found on either
-    PATH is silent, neither is the old warning plus what was checked, and a shell that could
-    not be asked is a *note* (FR-023c). The daemon now runs the operator's profile at
-    startup, bounded by a 5s timeout and only when a command is already missing from its own
-    PATH; nothing in `deploy/` or `README.md` says so — **T016**. See `PROGRESS.md`
-    iteration 14.
-- [x] T015 Correct the documented audit-trail command
-  - `TestDocumentedCommandParses` reads the command **out of the unit file** and substitutes
-    only the `journalctl` producer, because a restated command is the two-documents drift #88
-    already was. It makes two claims: the whole trail comes back as JSON, **and** a truncated
-    record is rejected — the second is what a `grep '^{'` with no parse would fail, and is why
-    the test does not name `jq`. **`jq` is now a prerequisite of `-tags quickstart`**, in
-    `TestQuickstartPrerequisites` and in `AGENTS.md`'s tag table. **The two READMEs still
-    carry the broken command** (`deploy/README.md:182-184`, `README.md:326-327`) and so does
-    `contracts/diagnostics-and-probe.md:19-36` — outside T015's named file, **T016**. Also
-    found: `.golangci.yml` never lints the `quickstart` tag and 27 pre-existing issues sit
-    behind adding it. See `PROGRESS.md` iteration 15.
-
-### US4 — the pointer, which the keyboard task could not reach
-
-- [x] T017 Pointer selection **and** blur close, written together in `web/static/crswd.js`
-  - `mousedown` on an option activates it and runs a shared `accept(option)`; `blur` on the
-    field runs the same `close` `Tab` runs. **The accept is declared between its two callers**
-    — below the key that needed it first, above the pointer that shares it — because T011 holds
-    the file's one `.value =` *after* the first `'Enter'` literal, and the obvious placement
-    above the handler fails that while satisfying the count. The press is `preventDefault`ed
-    for every position inside the list, which keeps focus in the field and stops a drag on the
-    scroll bar from shutting the list. **One existing assertion moved**: T011's "Tab is never
-    refused" tail now ends at the `'mousedown'` marker, because what is below it refuses a
-    focus move rather than a key. **A pointer selection cannot reopen the list** and nothing
-    pins the two orderings as a pair — `PROGRESS.md` iteration 16, findings 2 and 3,
-    milestone 6.
+- [x] T020 Messages drawn on the canvas, never inserted into the DOM
 
 ### Ship it
 
-- [x] T016 Docs, and assert `go.sum` is still absent
-  - **`docs/security.md` was the find, and it was on no list**: it claimed the probe's "only
-    contact with the host is `exec.LookPath`", which T014 falsified without touching prose —
-    a binding document wrong about what the daemon executes at startup. Corrected there,
-    in both READMEs (the audit command), `docs/components.md` (Header, picker, switch),
-    `README.md` (suggestion union, mode not name, settings link, the probe's three outcomes,
-    `CRSW_DESTROY_ON_SHUTDOWN`), `config.example`, two stale code comments, and two contracts.
-    **SC-010 needed no new assertion** — `internal/config/docs_test.go`'s `TestNoDependencies`
-    already holds it in the default build. Two new tests instead:
-    `TestEveryDocumentedTrailCommandSurvivesTheStream` runs every `journalctl` line this repo
-    commits over a real stream (clean = exit 0 **and** empty stderr, because a pipeline
-    reports its last stage), and `TestTheComponentsDocumentNamesThePickerTheSwitchAndTheHeader`
-    sweeps `.combo*`/`.switch*`/`.masthead*` both ways between the stylesheet and the document.
-    See `PROGRESS.md` iteration 17 — findings 1 and 3 are milestone 6's, finding 4 needs a human.
+- [x] T021 README leads with the one-liner; document rolling back
 
 ---
 
-## Shippable at T004
+## Shippable at T008
 
-**T001–T004 are the demonstrable MVP.** They deliver what milestone 4 claimed and did not: an
-operator chooses remote control as a mode, and no command name reaches the browser. Everything
-after is real but additive.
+**US1 and US2 together are the core.** A daemon that can say what it is, and a release someone
+could download by hand. The installer and self-update make it pleasant; releases make it
+possible at all.
 
-T012–T015 are independent of every story and can run whenever an iteration is blocked on the
-create-form chain.
+T020 and T021 were what there was to take while T013/T014 waited on the operator. T018 followed,
+because fetching is the one step of US4 that carries no verification and so never needed a key.
+T014 came next, once the key turned out to have been committed three iterations earlier, and
+T012 after it.
+
+**Nothing is left. T019 closed the plan** (Iteration 21), and with it the caller gap this section
+tracked for four iterations: `Fetcher`, `Stager.Stage` and `Swapper.Swap` all have a production
+caller now, and it is the one route — `POST /dashboard/update`, whose test asserts it reaches fetch,
+stage and swap with what the step before it produced rather than asserting the handler exists.
+
+**What T019 did *not* ship is a button.** The route is registered, gated and audited; no page
+renders a form that posts to it. That is FR-029 satisfied at the route and not on the page, it was
+never in any task's scope, and it is Iteration 21's finding 1 — the first thing a follow-up
+milestone should take.
+
+**The interfaces between the four steps are three values and nothing else.** `Fetcher.Asset`
+returns bytes; `Stage` returns the path of a candidate at `0700`; `Swap` takes that path and the
+version it is meant to be, and returns after the rename. **`ExitForRestart` is separate on purpose**
+— the route has a 303 to write and one audit record to emit before the process may end, and a swap
+that exited on the way out would take both with it.
 
 ---
 
 ## Out of scope
 
-Deliberately NOT in milestone 5, so no iteration wanders into them:
+Deliberately NOT in milestone 6:
 
-- **Releases, versioning, the installer, and self-update** (#57, #68, #69, #66) — milestone 6.
-  Scope recorded on #69: the installer should also write the systemd unit, Ubuntu and systemd
-  first, and it must not overwrite a unit the operator has edited
-- **Auto-recovery of a crashed session** (#95's second half). Removing the incomprehensible
-  field is in scope; designing what replaces it is not. It collides with FR-032, which already
-  refuses to resume where "the last conversation in this directory" could be another
-  session's — and the operator asked to think about it further
-- **Editing settings from the browser.** The read-only view is correct, and **no mutating verb
-  is registered on `/settings` at all** — a route that does not exist cannot be exploited
-- **The rain's Easter eggs** (#54) and the **browser accessibility verification** (#17) —
-  polish, and a task only a human with a browser can do
-- The Claude device-code login relay, and the `needs-auth` state
-- The companion Claude skill
-- **Sending arbitrary prompt text from the browser**
-- Bulk actions across multiple sessions at once
-- Persisting session records, dashboard state, or output history to disk
-- Multi-user support beyond one allowlisted identity and the ownership check that exists
-- Any change to milestone 1's signing procedure, its six operations, or the audit record shape
+- **Automatic updating.** This makes an update possible and verifiable. A daemon that updates
+  itself on a schedule, unasked, is a larger decision
+- **Auto-recovery of a crashed session** (#95). It collides with the rule that refuses to
+  resume where "the last conversation in this directory" could be another session's, and the
+  operator asked to think about it further
+- **Editing settings from the browser.** No mutating verb is registered on `/settings` at all
+- **Windows, and any package manager** — apt, brew, nix. A tarball and an install script
+- **Multi-user support**, the device-code login relay, and the companion skill
+- **Any change to milestone 1's signing procedure, its six operations, or the audit record
+  shape.** The update path is new; the API beside it is not

@@ -72,10 +72,26 @@ const (
 	// four sentences would tell an operator.
 	outcomeModeChanged outcome = "mode-changed"
 
+	// outcomeUpdated is the sixth, and the only success on this door whose banner
+	// is rendered by a different process from the one that chose it (T019): the
+	// route writes this redirect and then exits for systemd, so the fleet the
+	// operator lands on is served by the release that was just installed. That is
+	// the whole reason it says the daemon is restarting rather than that it has
+	// restarted — this code is chosen a moment before the process ends, and what
+	// happens next is the service manager's.
+	outcomeUpdated outcome = "updated"
+
 	outcomeBadName         outcome = "bad-name"
 	outcomeBadWorkDir      outcome = "bad-work-dir"
 	outcomeBadStartCommand outcome = "bad-start-command"
 	outcomeBadMode         outcome = "bad-mode"
+
+	// outcomeBadVersion is a `version` field that is not shaped like a release
+	// tag, and it is the update's own bad-field code rather than a reuse of
+	// outcomeBadName for the reason each of the four above is per-field: what an
+	// operator has to fix is the version they typed, and a sentence about session
+	// names would send them to the wrong form.
+	outcomeBadVersion outcome = "bad-version"
 
 	outcomeLimited     outcome = "limited"
 	outcomeUnconfirmed outcome = "unconfirmed"
@@ -86,6 +102,11 @@ const (
 	// the per-action failures below are separate for the same reason.
 	outcomeModeUnconfirmed outcome = "mode-unconfirmed"
 
+	// outcomeUpdateUnconfirmed is the update's own unconfirmed, and not either of
+	// the two above (T019). Each of the three says what was *not* done, and this
+	// is the only one of them about the daemon rather than about a session.
+	outcomeUpdateUnconfirmed outcome = "update-unconfirmed"
+
 	outcomeTeardownUnverified outcome = "teardown-unverified"
 
 	outcomeCreateFailed  outcome = "create-failed"
@@ -93,6 +114,18 @@ const (
 	outcomeRenameFailed  outcome = "rename-failed"
 	outcomeCompactFailed outcome = "compact-failed"
 	outcomeModeFailed    outcome = "mode-failed"
+
+	// The update's three refusals (T019). They are three rather than one because
+	// the operator's next move differs by the step that refused, which is the same
+	// argument that keeps the five failures above from being one `failed`.
+	//
+	// outcomeUpdateRefused is the last of them and the widest: everything from the
+	// smoke test onwards, plus a daemon with no update path wired behind the
+	// route at all. What they share is the only fact worth stating on a page —
+	// nothing was installed — and which of them it really was is on the record.
+	outcomeUpdateNotFetched outcome = "update-not-fetched"
+	outcomeUpdateUnverified outcome = "update-unverified"
+	outcomeUpdateRefused    outcome = "update-refused"
 )
 
 // queryOutcome is the query parameter the fleet reads its banner from, spelled
@@ -162,6 +195,19 @@ var banners = map[outcome]outcomeView{
 		// test quotes from here.
 		Message: "Mode changed. The process in the pane was restarted where it left off, and the session, its window and its scrollback are as they were.",
 	},
+	outcomeUpdated: {
+		// Claims the two things this daemon did — the release verified, and it is
+		// now the installed binary — and stops there, exactly where outcomeCompacted
+		// and outcomeModeChanged stop (FR-016a). Whether the service manager brings
+		// the new one back up is not a fact this process can observe: it is about
+		// to end, and a sentence promising a restart would be the one claim it has
+		// no way to check.
+		//
+		// No version in it, and that is the closed vocabulary rather than caution: a
+		// code carries no data, so what a banner can say is fixed at compile time.
+		// The version is on /dashboard/version, asked of whichever daemon answers.
+		Message: "Update installed. This daemon is exiting so its service manager can start the release that is now in place.",
+	},
 
 	outcomeBadName: {
 		// One sentence for the create and the rename alike, which the redirect
@@ -199,6 +245,13 @@ var banners = map[outcome]outcomeView{
 		// document, the thing the closed vocabulary above exists to prevent.
 		Message: "That is not a mode this daemon offers. Nothing was changed.",
 	},
+	outcomeBadVersion: {
+		// Says what a version looks like rather than quoting the one that arrived.
+		// The field reaches an API path and a filename, so the values this refusal
+		// exists to turn away are exactly the ones that must not come back out
+		// through a page — and the shape is the useful half anyway.
+		Message: "That is not the shape of a release version. Name one like v0.42, or leave the field empty for the latest. Nothing was changed.",
+	},
 	outcomeLimited: {
 		Message: "No session was started: this host is at its limit for now. Destroy one, or try again shortly.",
 	},
@@ -210,6 +263,12 @@ var banners = map[outcome]outcomeView{
 		// its shape: a mode change tears nothing down, and telling an operator
 		// that nothing was torn down would be true and about something else.
 		Message: "This mode change was not confirmed, so nothing was changed.",
+	},
+	outcomeUpdateUnconfirmed: {
+		// The same shape as the two above with the fact it states replaced: an
+		// unconfirmed update downloads nothing, so nothing about this daemon or any
+		// session on it is different for having asked.
+		Message: "This update was not confirmed, so nothing was downloaded and nothing was replaced.",
 	},
 
 	outcomeTeardownUnverified: {
@@ -249,6 +308,25 @@ var banners = map[outcome]outcomeView{
 		// needs from a failed toggle: the process they are watching is the one
 		// they were already watching, and the mode on its card is still true.
 		Message: "The session's mode could not be changed. It is running what it was running.",
+	},
+
+	// The three refusals of an update all end on the same fact — this daemon is
+	// running what it was running (FR-028) — and differ in what the operator does
+	// next. None of them names a host, a URL or a path: what an operator needs to
+	// act is the step, and the detail is in the journal beside the reason.
+	outcomeUpdateNotFetched: {
+		Message: "That release could not be downloaded, so nothing was installed. This daemon is still running what it was running.",
+	},
+	outcomeUpdateUnverified: {
+		// The one refusal here worth reading twice, and it says why without
+		// dramatising it: bytes arrived and could not be shown to be this
+		// project's. It is not the alarm outcomeTeardownUnverified carries — that
+		// one means something may still be running unsandboxed on this host, and
+		// this means the opposite, that a check did its job and nothing ran at all.
+		Message: "That release could not be verified against the signing keys this daemon carries, so nothing was made executable and nothing was installed. This daemon is still running what it was running.",
+	},
+	outcomeUpdateRefused: {
+		Message: "The update was refused, so this daemon is still running what it was running. The audit trail says which step refused it.",
 	},
 }
 

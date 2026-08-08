@@ -1,0 +1,501 @@
+name: Release
+
+# A release per merge to main, not per tag. Tag-only means a release happens
+# when somebody remembers to tag, and self-update then has nothing to find —
+# which for anyone downstream is the same as not shipping at all.
+on:
+  push:
+    branches: [main]
+  # For a publish that failed part-way. Re-running a commit that already has a
+  # release fails on the duplicate tag, on purpose: the version is the commit
+  # count, so a second release of the same commit would be one version naming
+  # two different sets of bytes.
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the release and upload its assets
+
+# One publish at a time, and never cancelled part-way: a cancelled run can leave
+# a release created with some of its assets missing, which reads as a release.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    # GitHub-hosted, unlike ci.yml. The self-hosted runners are the operator's
+    # own machines, which also run unsandboxed Claude sessions — collapsing
+    # those two trust boundaries is what docs/github-automation.md §2 refuses.
+    # These bytes are the ones other people download and execute, so they are
+    # built somewhere that holds nothing of his. A stall here delays a release
+    # rather than blocking a merge, so #77's reason for leaving GitHub-hosted
+    # runners does not reach this workflow.
+    runs-on: ubuntu-latest
+    outputs:
+      # What was published, for the job below to check it installed. Without it
+      # verify-install proves the installer works against whatever the `latest`
+      # pointer happened to resolve to, which on the day this run fails part-way
+      # is the release before it — a green run describing bytes nobody just
+      # built.
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The version is the commit count, and actions/checkout defaults to a
+          # depth of 1 — which counts 1. Without this every release is v0.1.
+          fetch-depth: 0
+
+      - name: Version
+        id: version
+        # Counted from the repository, not from github.run_number, which resets
+        # when a workflow is recreated — an older release would then outrank a
+        # newer one and break both "is this newer" and retention.
+        run: |
+          version="v0.$(git rev-list --count HEAD)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version"
+
+      - uses: actions/setup-go@v7
+        with:
+          # Match ci.yml and the dev host. The three move together.
+          go-version: '1.24'
+          cache: true
+
+      - name: Build linux/amd64 and linux/arm64
+        env:
+          # The artifact has to run where there is no compiler and no matching
+          # libc. With cgo on, net and os/user resolve through the host's C
+          # library and the binary links it dynamically — which works here on
+          # the builder and fails on someone else's host, the only place the
+          # answer matters.
+          CGO_ENABLED: "0"
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            # arm64 is cross-compiled on this same runner rather than built on a
+            # second machine: without cgo, GOARCH is the whole difference.
+            #
+            # The -X path is spelled character for character in
+            # cmd/crswd/version_test.go, and a test asserts the two agree. A
+            # mistyped symbol is not an error — the linker sets nothing, the
+            # "dev" default survives, and the release calls itself unreleased.
+            GOOS=linux GOARCH="$arch" go build \
+              -trimpath \
+              -ldflags "-s -w -X github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo.Version=$VERSION" \
+              -o "dist/$arch/crswd" ./cmd/crswd
+            tar -C "dist/$arch" -czf "dist/crswd_${VERSION}_linux_${arch}.tar.gz" crswd
+          done
+          ls -l dist
+
+      - name: Stage the deployment files
+        # A release of the binary alone leaves the operator writing a unit file
+        # by hand, which is the state this milestone exists to end. deploy/
+        # already holds working, commented examples, so the release ships those
+        # same bytes rather than a second copy that drifts from them.
+        #
+        # The unit is published under the name it is installed as: an asset
+        # called crswd.example.service invites copying the word "example" into
+        # ~/.config/systemd/user, and the installer writes crswd.service.
+        run: |
+          cp deploy/crswd.example.service dist/crswd.service
+          cp deploy/cloudflared.example.yml dist/cloudflared.example.yml
+          cp deploy/crswd-api dist/crswd-api
+          ls -l dist
+
+      - name: Checksum every asset
+        # Every asset, not only the binaries. The tarballs read as "the release"
+        # and the rest as documentation, but the deployment files are the ones
+        # written into ~/.config/systemd/user and ~/.config/crswd — summing only
+        # the binary verifies the half that was never in doubt.
+        #
+        # Taken from what dist/ holds rather than from the asset list typed out
+        # a second time here. A second list is a list that drifts from the one
+        # Publish uploads, and the asset it loses is the one that quietly stops
+        # being checked.
+        run: |
+          cd dist
+          # -maxdepth 1 -type f is the asset set exactly: the per-architecture
+          # directories under dist/ are the tarballs' input, not something
+          # anybody downloads.
+          #
+          # Bare names, because `sha256sum -c SHA256SUMS` is run from whatever
+          # directory the assets were downloaded into, where dist/ does not
+          # exist.
+          sums=$(find . -maxdepth 1 -type f -printf '%P\n' | sort | xargs -r sha256sum)
+          # Written only once the sums are taken. A redirect would create the
+          # file before find ran, so SHA256SUMS would appear in its own list,
+          # holding the checksum of the empty file it was a moment earlier.
+          printf '%s\n' "$sums" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Sign SHA256SUMS
+        # What makes the checksums mean anything. SHA256SUMS travels with the
+        # assets it describes, so on its own it says only that the two arrived
+        # together — anyone able to serve a tampered tarball can serve a checksum
+        # that matches it. The signature is made with a key that exists only in
+        # the operator's hands and in this secret, and it is checked against a
+        # copy of the public half that the daemon embedded when it was built: the
+        # trust decision was made at install time, before any attacker was
+        # involved, rather than at download time by the host serving the download.
+        #
+        # It runs before Publish, and that ordering is the failure this step
+        # exists to prevent. Both the daemon and install.sh refuse a release
+        # carrying no SHA256SUMS.sig, so publishing one anyway would create a
+        # version nobody can install and that the `latest` pointer then resolves
+        # to — which breaks installing entirely, rather than shipping one release
+        # people can skip. A release that cannot be signed must not exist.
+        env:
+          # The private half. `crswd keygen` prints it and writes nothing to
+          # disk, so this secret and the operator's terminal are the only two
+          # places it has ever been.
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          # The public halves, read from the file the daemon embeds and install.sh
+          # copies its RELEASE_KEYS block from. Named here rather than written
+          # into the script below so that a test can replay this step against a
+          # key of its own — signing cannot be checked with the operator's key,
+          # because nothing outside this runner has the half that signs.
+          PUBLIC_KEYS: internal/updater/release_key.txt
+        run: |
+          [ -n "$RELEASE_SIGNING_KEY" ] || {
+            echo "RELEASE_SIGNING_KEY is not set, so there is nothing to sign this release with." >&2
+            echo "It is the private half of a key in $PUBLIC_KEYS; that file says how one is made." >&2
+            exit 1
+          }
+
+          # 0600 on everything written below, in a directory that goes away with
+          # the step. The private half has to reach the disk because openssl(1)
+          # reads a key from a file and from nowhere else.
+          umask 077
+          work=$(mktemp -d)
+          trap 'rm -rf -- "$work"' EXIT
+
+          # The secret is base64 of the 64 bytes `crswd keygen` prints: a 32-byte
+          # seed, then the public half.
+          printf '%s' "$RELEASE_SIGNING_KEY" | base64 -d > "$work/key.raw" || {
+            echo "RELEASE_SIGNING_KEY is not base64 — refusing" >&2
+            exit 1
+          }
+          [ "$(wc -c < "$work/key.raw")" -eq 64 ] || {
+            echo "RELEASE_SIGNING_KEY does not hold the 64 bytes of an ed25519 private key — refusing" >&2
+            exit 1
+          }
+
+          # The public half of the key about to sign, spelled the way the
+          # committed file spells one. A signature by a key neither the daemon
+          # nor install.sh carries verifies nowhere: every install and every
+          # update refuses it, and nothing about the release looks wrong. That is
+          # exactly what replacing the secret before committing the new public
+          # line produces, so it is refused here — where it costs a red run
+          # instead of a version no host can move to.
+          public=$(tail -c 32 "$work/key.raw" | base64 -w0)
+          grep -Fqx -- "$public" "$PUBLIC_KEYS" || {
+            echo "the key in RELEASE_SIGNING_KEY is not one $PUBLIC_KEYS carries, so nothing" >&2
+            echo "could verify this release: the daemon embeds that file and install.sh carries" >&2
+            echo "the same lines. Rotation is additive and in this order — commit the new public" >&2
+            echo "line to both, and only then replace the secret." >&2
+            exit 1
+          }
+
+          # openssl reads a private key as PKCS#8 and nothing else. The DER header
+          # for ed25519 is 16 constant bytes, written here as the base64 that
+          # decodes to them so no hex tool is needed, and joined to the seed as
+          # bytes: 16 is not a multiple of three, so these two cannot be
+          # concatenated as base64 the way install.sh concatenates the 12-byte
+          # public header — and a wrong header fails exactly like a wrong key,
+          # with every release refusing and nothing saying why.
+          #
+          # Handed over as DER rather than wrapped in PEM, which openssl would
+          # only decode again. It also keeps the shape of a private key out of
+          # this file: cmd/crswd's sweep for committed key material reports a PEM
+          # banner wherever it finds one, because a PEM-wrapped key is 48 bytes
+          # and too short for the check that recognises key material by decoding
+          # it. A workflow that assembles the banner teaches that sweep to be
+          # narrower, and it is the only thing standing between this repository
+          # and a key pasted into a file.
+          {
+            printf '%s' 'MC4CAQAwBQYDK2VwBCIEIA==' | base64 -d
+            head -c 32 "$work/key.raw"
+          } > "$work/key.der"
+
+          # -rawin because ed25519 signs the message itself. There is no
+          # pre-hashed form of it to hand a signer instead.
+          openssl pkeyutl -sign -inkey "$work/key.der" -keyform DER -rawin \
+            -in dist/SHA256SUMS -out dist/SHA256SUMS.sig
+
+          ls -l dist/SHA256SUMS.sig
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --target "$GITHUB_SHA" \
+            --generate-notes \
+            "dist/crswd_${VERSION}_linux_amd64.tar.gz" \
+            "dist/crswd_${VERSION}_linux_arm64.tar.gz" \
+            "dist/crswd.service" \
+            "dist/cloudflared.example.yml" \
+            "dist/crswd-api" \
+            "dist/SHA256SUMS" \
+            "dist/SHA256SUMS.sig"
+
+      - name: Prune old releases
+        # Bounded history, minus two refusals that pruning by age alone gets
+        # wrong.
+        #
+        # The pointer is the one that matters. An installer downloads through
+        # /releases/latest/download/<asset>, and `latest` is normally the newest
+        # release but is not required to be — a prerelease, a draft, or a
+        # release marked by hand moves it. A `latest` that 404s is worse than an
+        # unbounded list: nothing is installable at all, and the person it
+        # happens to has no way to tell that from the project being broken.
+        #
+        # Only what this workflow publishes is prunable: v0.<count>, the version
+        # research.md R2 settled on. A tag in any other shape came from
+        # somewhere else and is left where it is.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Declared here rather than written into the script below, so the
+          # floor is provable: a test that cannot lower this cannot show that
+          # the two most recent survive it being lowered.
+          KEEP: "20"
+        run: |
+          # What the pointer resolves to, asked of GitHub rather than assumed to
+          # be the highest number. `|| true` because a repository with no
+          # release answers with an error, which is not a reason to fail.
+          latest=$(gh release view --json tagName --jq '.tagName' || true)
+          echo "latest resolves to ${latest:-nothing}"
+
+          # Newest first by the number in the tag, not by the order the API
+          # happens to answer in and not by date: the version is the commit
+          # count, so the number is the ranking, and a re-published older
+          # release carries today's date with yesterday's rank. Sorting the tags
+          # as text is the same mistake mirrored — v0.9 outranks v0.30.
+          tags=$(gh release list --limit 1000 --json tagName --jq '.[].tagName')
+          ordered=$(printf '%s\n' "$tags" | grep -E '^v0\.[0-9]+$' | sort -t. -k2,2nr || true)
+
+          n=0
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+            n=$((n + 1))
+
+            # The two most recent survive whatever KEEP says. Redundant while it
+            # is 20, and it is the rule that has to hold when somebody lowers it
+            # in a hurry — a retention limit is exactly the knob that gets
+            # turned down under pressure, and rolling back needs somewhere to
+            # roll back to.
+            if [ "$n" -le 2 ] || [ "$n" -le "$KEEP" ]; then
+              continue
+            fi
+            if [ "$tag" = "$latest" ]; then
+              echo "keeping $tag: the latest pointer still resolves to it"
+              continue
+            fi
+
+            echo "pruning $tag"
+            # The release, not the tag: --cleanup-tag would also delete the only
+            # remaining record of which commit that version named.
+            gh release delete "$tag" --yes
+          done <<< "$ordered"
+
+  verify-install:
+    name: Install on a host that has never seen this project
+    # After the release, and against it. What this job installs is the version
+    # the job above published, so it cannot run beside it.
+    needs: release
+    # GitHub-hosted, and this is the one job in the repository where that is the
+    # requirement rather than the fallback. ci.yml runs on the operator's own
+    # machines (#77), where this project is already installed, ~/.local/bin is
+    # already on PATH, a configuration already exists and the unit is already in
+    # place — every precondition the installer exists to create. A run there is
+    # green whatever the installer does, which is the exact failure this job is
+    # written against. A fresh cloud VM is genuinely somebody else's computer.
+    runs-on: ubuntu-latest
+    # It reads a public release over https and needs no token. The write
+    # permission above belongs to the job that publishes.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Nothing the installer writes is here yet
+        # Stated rather than assumed. The claim this job makes is about a machine
+        # that has never seen the project, and "it is a fresh VM" is exactly the
+        # premise that stops being true without anybody noticing: a runner image
+        # that shipped one of these paths would turn every assertion below into a
+        # description of what was already there.
+        #
+        # These four are every path install.sh writes, and a test holds the two
+        # lists together — a fifth path added to the installer and not to this
+        # loop is a file this job would find already present and report as
+        # installed.
+        run: |
+          fresh=0
+          for rel in .local/bin/crswd \
+                     .config/systemd/user/crswd.service \
+                     .local/share/crswd/crswd.service.sha256 \
+                     .config/crswd/config; do
+            if [ -e "$HOME/$rel" ]; then
+              echo "::error::~/$rel already exists, so installing it here proves nothing"
+              fresh=1
+            fi
+          done
+          exit "$fresh"
+
+      - name: A user manager to ask about the service
+        # `systemctl --user` talks to a per-user systemd over that user's bus,
+        # and a runner's account is never logged in — the agent is started by a
+        # system unit — so there is no session, no /run/user/<uid>, and the
+        # assertions below would fail to connect rather than answer. Lingering
+        # starts a user manager without a login: the same line
+        # deploy/crswd.example.service tells an operator to run, for the same
+        # reason, which is that this daemon has to be reachable when nobody is
+        # sitting at the host.
+        run: |
+          # The bus itself is a socket unit that ships in this package. Without
+          # it the manager starts and there is no address to reach it at.
+          dpkg -s dbus-user-session > /dev/null 2>&1 || {
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq dbus-user-session
+          }
+          sudo loginctl enable-linger "$USER"
+
+          # enable-linger returns before the manager it asks for is up.
+          runtime="/run/user/$(id -u)"
+          for _ in $(seq 30); do
+            if [ -S "$runtime/bus" ]; then break; fi
+            sleep 1
+          done
+          if [ ! -S "$runtime/bus" ]; then
+            echo "::error::no user bus at $runtime/bus, so systemctl --user has nothing to ask and the one assertion this job exists to make cannot be made"
+            exit 1
+          fi
+          echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
+
+      - name: Install
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        # The installer out of this checkout rather than the raw.githubusercontent
+        # URL the README prints. They are the same file at the same commit, and
+        # that URL is served through a cache that goes on answering with the
+        # previous commit's copy for some minutes after a merge — so the
+        # one-liner would occasionally test an installer other than the one this
+        # run is releasing, and pass.
+        run: |
+          log="$RUNNER_TEMP/install-1.log"
+          if ! bash install.sh > "$log" 2>&1; then
+            cat "$log"
+            echo "::error::the installer failed on the kind of machine it is written for"
+            exit 1
+          fi
+          cat "$log"
+
+          for rel in .local/bin/crswd \
+                     .config/systemd/user/crswd.service \
+                     .local/share/crswd/crswd.service.sha256 \
+                     .config/crswd/config; do
+            if [ ! -e "$HOME/$rel" ]; then
+              echo "::error::the installer reported success and wrote no ~/$rel"
+              exit 1
+            fi
+          done
+
+          # Measured on a real host with a real umask, which is the half the Go
+          # tests cannot speak for: this file is where the shared secret goes.
+          mode=$(stat -c %a "$HOME/.config/crswd/config")
+          if [ "$mode" != 600 ]; then
+            echo "::error::~/.config/crswd/config is mode $mode, want 600 — it is the file the shared secret is written into"
+            exit 1
+          fi
+
+          # Which release was installed, asked of the binary that was placed.
+          # This is also the first time the published artifact is executed
+          # anywhere: a tarball that verifies and cannot exec passes every check
+          # in the job above.
+          got=$("$HOME/.local/bin/crswd" --version)
+          if [ "$got" != "crswd $VERSION" ]; then
+            echo "::error::the installed binary says '$got'; this run published $VERSION"
+            exit 1
+          fi
+
+      - name: Nothing was started and nothing was enabled
+        run: |
+          systemctl --user daemon-reload
+
+          # "inactive" has to mean installed-and-stopped rather than no-such-unit,
+          # or the assertion below would pass on a host where the installer wrote
+          # nothing at all.
+          if ! systemctl --user cat crswd.service > /dev/null; then
+            echo "::error::the user manager cannot see ~/.config/systemd/user/crswd.service, so is-active would be answering about a unit that does not exist"
+            exit 1
+          fi
+
+          state=$(systemctl --user is-active crswd || true)
+          if [ "$state" != inactive ]; then
+            echo "::error::systemctl --user is-active crswd says $state, want inactive. The daemon cannot serve a request before the secret is set, and a service that fails on first boot teaches its operator to ignore a failing service"
+            exit 1
+          fi
+
+          # is-active cannot see an enable without --now: the service would be
+          # absent today and running after the next boot, which is the same
+          # promise broken one reboot later.
+          enabled=$(systemctl --user is-enabled crswd || true)
+          if [ "$enabled" != disabled ]; then
+            echo "::error::systemctl --user is-enabled crswd says $enabled, want disabled. The installer enables nothing; it prints the enable command instead"
+            exit 1
+          fi
+
+      - name: Install again, over an edited config and an edited unit
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        # The second run is the requirement that cannot be tested by installing
+        # once. Re-running the one-liner is what an operator does to upgrade, and
+        # the two files it must not touch are the only two on the host they
+        # authored.
+        run: |
+          config="$HOME/.config/crswd/config"
+          unit="$HOME/.config/systemd/user/crswd.service"
+
+          printf '# edited on this host after the first install\n' >> "$config"
+          printf '# edited on this host after the first install\n' >> "$unit"
+          sha256sum "$config" "$unit" > "$RUNNER_TEMP/edited.sha256"
+
+          log="$RUNNER_TEMP/install-2.log"
+          if ! bash install.sh > "$log" 2>&1; then
+            cat "$log"
+            echo "::error::the second run failed; running the installer again on a host somebody has since configured has to be safe"
+            exit 1
+          fi
+          cat "$log"
+
+          # Byte-identical, not merely still there. An installer that rewrote the
+          # config from its own template would leave a file of the right shape
+          # holding none of the operator's settings.
+          if ! sha256sum -c "$RUNNER_TEMP/edited.sha256"; then
+            echo "::error::the second run overwrote a file the operator had edited"
+            exit 1
+          fi
+
+          # And said so. A refusal nobody is told about reads as an install that
+          # took, so the next thing the operator does is wonder why their setting
+          # had no effect.
+          if ! grep -Fq '.config/crswd/config exists' "$log"; then
+            echo "::error::the second run left the config alone without saying so"
+            exit 1
+          fi
+          if ! grep -Fq 'crswd.service has been modified' "$log"; then
+            echo "::error::the second run left the edited unit alone without saying so"
+            exit 1
+          fi
+
+          # The binary is the one thing a second run does replace, which is how
+          # re-running the one-liner upgrades a host.
+          got=$("$HOME/.local/bin/crswd" --version)
+          if [ "$got" != "crswd $VERSION" ]; then
+            echo "::error::after the second run the installed binary says '$got'; this run published $VERSION"
+            exit 1
+          fi

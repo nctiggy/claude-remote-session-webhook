@@ -2906,3 +2906,243 @@ func TestSettingsStillHasNoMutatingVerb(t *testing.T) {
 		}
 	}
 }
+
+// The rain's own vocabulary, read out of the one file that declares it rather
+// than transcribed here. A second copy in Go would be the very thing the four
+// tests below exist to forbid — message text on the server — and it would agree
+// with itself for as long as nobody changed the array.
+var (
+	messageArray  = regexp.MustCompile(`(?s)const MESSAGES = \[(.*?)\];`)
+	messageString = regexp.MustCompile(`'([^']*)'`)
+)
+
+// rainSays is what crswd.js occasionally draws, and it fails the test rather
+// than returning nothing: an empty list would make every sweep below vacuous.
+func rainSays(t *testing.T) []string {
+	t.Helper()
+
+	block := messageArray.FindStringSubmatch(script(t))
+	if block == nil {
+		t.Fatal("crswd.js declares no MESSAGES array, so the rain says nothing and every assertion about what it says is vacuous")
+	}
+
+	var said []string
+	for _, quoted := range messageString.FindAllStringSubmatch(block[1], -1) {
+		if text := strings.TrimSpace(quoted[1]); text != "" {
+			said = append(said, text)
+		}
+	}
+	if len(said) == 0 {
+		t.Fatal("crswd.js declares MESSAGES and puts nothing in it")
+	}
+	return said
+}
+
+// canvasTag is a canvas element's opening tag and everything on it.
+var canvasTag = regexp.MustCompile(`(?i)<canvas([^>]*)>`)
+
+// TestRainCanvasIsAriaHidden is FR-033's belt beside the braces.
+//
+// Canvas content is already outside the accessibility tree, so a drawn message
+// is inaudible whatever this attribute says. The attribute is what covers the
+// element itself — a canvas is still a node, and one with no accessible name
+// sitting in the middle of a header is at best noise to move past.
+//
+// Asserted over every page rather than over the partial, and over *every*
+// canvas on each: the partial is already checked in isolation elsewhere, and
+// the failure this adds is a page that renders a second canvas of its own
+// without the attribute the component carries.
+//
+// **Must fail when** a message becomes announceable.
+func TestRainCanvasIsAriaHidden(t *testing.T) {
+	t.Parallel()
+
+	canvases := 0
+	for name, page := range renderedPages(t) {
+		for _, canvas := range canvasTag.FindAllStringSubmatch(page, -1) {
+			canvases++
+			if !strings.Contains(canvas[1], `aria-hidden="true"`) {
+				t.Errorf(`the %s page renders <canvas%s>; the rain says nothing an operator needs, so it carries aria-hidden="true" (FR-033)`, name, canvas[1])
+			}
+		}
+	}
+	if canvases == 0 {
+		t.Fatal("no page renders a canvas at all, so this asserted nothing — and the rain has nowhere to fall")
+	}
+}
+
+// TestNoMessageInRenderedMarkup is the contract's "drawn, never inserted", made
+// against the bytes a browser is handed.
+//
+// The messages are decoration drawn on a canvas, and a canvas leaves no trace in
+// markup. So the whole claim is an absence: whatever crswd.js says, no render of
+// any page ever contains it. That is what keeps the message out of the
+// accessibility tree — a DOM node would be in it whatever the canvas beside it
+// carried.
+//
+// Matched case-insensitively, because the failure is a message becoming content
+// and a title-cased copy of one is exactly that.
+//
+// **Must fail when** they are inserted as DOM nodes.
+func TestNoMessageInRenderedMarkup(t *testing.T) {
+	t.Parallel()
+
+	said := rainSays(t)
+	for name, page := range renderedPages(t) {
+		lowered := strings.ToLower(page)
+		for _, message := range said {
+			if strings.Contains(lowered, strings.ToLower(message)) {
+				t.Errorf("the %s page renders %q; the rain's messages are drawn on the canvas and never put in the document, or they are in the accessibility tree (FR-033)", name, message)
+			}
+		}
+	}
+}
+
+// The rain's half of crswd.js: everything from the glyph table down to the pane
+// watcher, which is the first thing in the file that is not the rain. Both ends
+// are asserted rather than assumed, so a rename that moved the boundary fails
+// here instead of quietly shrinking what the sweep covers.
+const (
+	rainOpens  = "const GLYPHS ="
+	rainCloses = "const watch = (pane) =>"
+)
+
+// reducedMotionGuard is start()'s early return under the preference — the one
+// thing standing between a page that asked for stillness and the loop.
+var reducedMotionGuard = regexp.MustCompile(`still\.matches\s*\)\s*\{\s*return;`)
+
+// TestNothingRunsUnderReducedMotion is FR-032, and it is a structural claim
+// because Go cannot execute this file — the same footing every other assertion
+// about crswd.js stands on.
+//
+// FR-032 needs no code of its own: the rain already stops under the preference,
+// and no rain means no messages. What it needs is for that to stay the only
+// path. So the message must have no timer, no listener and no entry point of its
+// own — it is reached from paint, paint is reached from the shared loop, and the
+// loop is what start() declines to schedule when the preference is set.
+//
+// **Must fail when** a message path is added outside the rain's guard.
+func TestNothingRunsUnderReducedMotion(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+	opens := strings.Index(source, rainOpens)
+	closes := strings.Index(source, rainCloses)
+	if opens < 0 || closes < opens {
+		t.Fatalf("crswd.js does not open the rain at %q (%d) and close it at %q (%d), so there is no region to hold this to", rainOpens, opens, rainCloses, closes)
+	}
+	rain := source[opens:closes]
+
+	if !reducedMotionGuard.MatchString(rain) {
+		t.Error("the rain's loop is not guarded by a return on still.matches, so it runs on a page that asked for stillness and the messages run with it (FR-032)")
+	}
+
+	// Every name the message is made of, confined to the rain. A reference from
+	// anywhere else in this file is a second caller, and a second caller is a
+	// path the guard above does not stand in front of.
+	for _, name := range []string{"MESSAGES", "SAYING_FRAMES", "SAYING_ODDS", "saying", "saidFor"} {
+		spelling := regexp.MustCompile(`\b` + name + `\b`)
+		found := spelling.FindAllStringIndex(source, -1)
+		if len(found) == 0 {
+			t.Errorf("crswd.js mentions %s nowhere; the rain has nothing to say and this sweep asserted nothing about where it says it", name)
+			continue
+		}
+		for _, at := range found {
+			if at[0] < opens || at[0] >= closes {
+				t.Errorf("crswd.js reads %s at %d, outside the rain (%d..%d); the message may only be reached from the loop the preference stops (FR-032)", name, at[0], opens, closes)
+			}
+		}
+	}
+
+	// No clock of its own. The odds are spent once per painted frame, so a page
+	// with no rain on it rolls them never.
+	for _, timer := range []string{"setTimeout(", "setInterval(", "requestIdleCallback("} {
+		if strings.Contains(rain, timer) {
+			t.Errorf("the rain carries %s; a message on a timer would appear on a page whose loop never started (FR-032)", timer)
+		}
+	}
+
+	// And it is drawn from inside paint, not beside it. The ordering is the
+	// claim: a call between paint and tick is a call in paint's body, and paint
+	// is only ever reached from the loop.
+	paintAt := strings.Index(source, "const paint = (field) => {")
+	callAt := strings.Index(source, "saying(field);")
+	tickAt := strings.Index(source, "const tick = (now) => {")
+	switch {
+	case paintAt < 0 || callAt < 0 || tickAt < 0:
+		t.Fatalf("crswd.js does not define paint (%d), call saying (%d) and define tick (%d)", paintAt, callAt, tickAt)
+	case callAt < paintAt || callAt > tickAt:
+		t.Errorf("crswd.js calls saying at %d, outside paint (%d..%d); drawn anywhere else it is no longer the loop that decides whether it runs (FR-032)", callAt, paintAt, tickAt)
+	}
+}
+
+// TestMessagesAreNotServerSupplied is the contract's "beside the rain, not in a
+// template", held in the direction it would be lost.
+//
+// The messages are decoration with no server involvement. Routing them through a
+// handler or a template would make them content — something the daemon is
+// saying, on the one surface an operator reads to find out what is running on
+// their host — and it would put a second copy of the list somewhere it could
+// disagree with the first. So the text exists in crswd.js and nowhere else in
+// this repository's serving path: not in the template tree, not in the package
+// that renders it.
+//
+// **Must fail when** they become content, and the daemon starts having opinions.
+func TestMessagesAreNotServerSupplied(t *testing.T) {
+	t.Parallel()
+
+	said := rainSays(t)
+
+	templates := 0
+	err := fs.WalkDir(web.Templates, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		source, err := fs.ReadFile(web.Templates, p)
+		if err != nil {
+			return err
+		}
+		templates++
+		lowered := strings.ToLower(string(source))
+		for _, message := range said {
+			if strings.Contains(lowered, strings.ToLower(message)) {
+				t.Errorf("web/%s carries %q; the rain's messages live beside the rain, and a template that holds one has made it something the daemon says", p, message)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the embedded template tree: %v", err)
+	}
+	if templates == 0 {
+		t.Fatal("the embedded template tree is empty, so this sweep asserted nothing")
+	}
+
+	// The handlers too, because a route is the other way a message becomes
+	// content: a view field carrying one reaches a template that never spelled it.
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the package this renders from: %v", err)
+	}
+	handlers := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(name) //nolint:gosec // G304: the name came from reading this package's own directory, which is the only way to sweep a file nobody remembered to list.
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		handlers++
+		lowered := strings.ToLower(string(source))
+		for _, message := range said {
+			if strings.Contains(lowered, strings.ToLower(message)) {
+				t.Errorf("internal/httpapi/%s carries %q; the daemon does not know what the rain says, which is what keeps it decoration", name, message)
+			}
+		}
+	}
+	if handlers == 0 {
+		t.Fatal("this package has no non-test Go file, so the handler half of this sweep asserted nothing")
+	}
+}

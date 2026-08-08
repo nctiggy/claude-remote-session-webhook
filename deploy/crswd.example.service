@@ -137,7 +137,16 @@ Environment=CRSW_IDLE_TIMEOUT_MAX=
 # it from a unit file could unbound it. Do not add one here expecting it to be
 # read — nothing reads it, and nothing tells you so.
 
-Restart=on-failure
+# `always` rather than `on-failure`, and self-update is the whole reason. Step 7
+# of the update is a deliberate `exit 0` once the new binary has been verified
+# and renamed into place — systemd starting the daemon again IS how the update
+# takes effect. `on-failure` reads that clean exit as a job finished and does
+# nothing, which leaves the host with the new binary installed and no daemon
+# running it: an update that reports success and stops the service for good.
+#
+# It does not make the service unstoppable. `systemctl --user stop crswd` still
+# stops it; this governs the daemon ending on its own.
+Restart=always
 RestartSec=5s
 
 # Longer than the daemon's own 30s shutdown budget (cmd/crswd/main.go), so the
