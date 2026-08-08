@@ -220,6 +220,16 @@ type Server struct {
 	// drops or chokes on, depending on what it happens to start with (FR-023a).
 	report func(error)
 
+	// updates is the four steps of contracts/self-update.md behind
+	// POST /dashboard/update (T019). It is the one collaborator in this struct
+	// that is *not* built by newServer, and that is the point: a server built for
+	// a test carries no update path, so no case can download a release onto the
+	// machine running the suite and rename it over the daemon already installed
+	// there. The shipping build wires it in newWithLayer1, beside the real layer 1
+	// and for the same reason — those are the two things a test must never get by
+	// accident.
+	updates selfUpdate
+
 	// registered records what was actually handed to the mux, which is not the
 	// same claim as the routes table above. See Routes.
 	registered []Route
@@ -375,7 +385,18 @@ func newWithLayer1(
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the Access assertion validator: %w", err)
 	}
-	return newServer(cfg, net.Listen, authn, browser, trail, sessions, creates)
+	srv, err := newServer(cfg, net.Listen, authn, browser, trail, sessions, creates)
+	if err != nil {
+		return nil, err
+	}
+	// The update path, wired here rather than in newServer for the reason layer 1
+	// is chosen here: this and the door in front of it are the two collaborators
+	// that reach outside the process in a way no test may reach by accident. A
+	// server built through newServer has none, and its update route refuses;
+	// every server a daemon runs has this one, which is what
+	// TestTheShippingBuildWiresTheRealUpdatePath pins from the other side.
+	srv.updates = liveSelfUpdate()
+	return srv, nil
 }
 
 func newServer(
@@ -573,6 +594,14 @@ func newServer(
 	// vocabulary before anything is looked up — no command line arrives from a
 	// browser, in either direction (FR-030).
 	s.handleAction(patternDashboardMode, audit.ActionSessionMode, s.modeFromBrowser)
+	// The sixth, and the only one of the six that changes this daemon rather than
+	// a session it manages (T019). It goes through handleAction like the five
+	// above, and the argument for the gate is at its strongest here: a
+	// third-party page that could reach this route could make this host download
+	// and execute a binary, which is the whole threat model in one request. What
+	// admits the bytes is a signature made before the request existed, and the
+	// door does not relax it (FR-029b).
+	s.handleAction(patternDashboardUpdate, audit.ActionDashboardUpdate, s.updateFromBrowser)
 	// One route per embedded asset, so `/static/` names exactly the files the
 	// binary carries and a path that is not one of them is a path nothing claims
 	// (contracts/dashboard.md's route table; see loadAssets for why a wildcard is

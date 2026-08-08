@@ -106,10 +106,11 @@ install -m 0755 crswd-api ~/.local/bin/crswd-api
 > Milestone 4 added the configuration file, the read-only `/settings` page that
 > says where every value came from, and the startup dependency probes; milestone
 > 5 finished the dashboard. Milestone 6 is the one above: `--version` and
-> `GET /dashboard/version`, a release on every merge, and the installer. **The
-> signing key, `POST /dashboard/update` and the staging-and-swap behind it are
-> the part still open** — they wait on the operator holding a key, which is the
-> whole point of signing. The device-code login relay and the companion Claude
+> `GET /dashboard/version`, a release on every merge, the installer, and
+> **`POST /dashboard/update` with the staging-and-swap behind it** — the release
+> is fetched, checked against its published checksum, checked against a signature
+> made by a key the operator holds, run once to prove it execs here, and only
+> then renamed into place. The device-code login relay and the companion Claude
 > skill are still ahead of all of it.
 
 ---

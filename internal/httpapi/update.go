@@ -1,0 +1,347 @@
+package httpapi
+
+// update.go is the sixth route on the browser door that changes something, and
+// the only one of the six that changes *this daemon* rather than a session it
+// manages (US4, contracts/self-update.md).
+//
+// What lives here is the order of the four steps internal/updater implements and
+// nothing else: fetch, then stage — which verifies before anything is executable
+// — then swap, which smoke-tests before it renames. No check is re-implemented on
+// this side, because a second copy of one is a copy free to be the weaker
+// (FR-029b): what admits the *request* is the gate every other action runs
+// behind, and what admits the *bytes* is a signature made before this request
+// existed.
+//
+// The step this file owns outright is the last one. Swap returns with the new
+// binary in place and this process still running the old one, so the exit is the
+// route's to time — and it is timed after the redirect and after the record,
+// because a process that ended on its way out of the handler would take both with
+// it.
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"runtime"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/updater"
+)
+
+// patternDashboardUpdate is the update route, from contracts/self-update.md's
+// table.
+//
+// It is spelled the other five's way and for their reasons: under /dashboard/ so
+// milestone 1's surface is untouched (FR-005) and a grep for the prefix finds
+// every browser-initiated change, and the method inside the pattern so a GET here
+// matches no pattern of this route's, falls to handleUnrouted's `/`, and is
+// answered as a path nothing claims rather than as a 405 with an Allow header
+// (FR-033).
+//
+// It carries no {id}, like the create and unlike the other four: an update names
+// no session. What it replaces is the binary every session on this host is
+// managed by, which is why there is no ownership question behind it and no
+// uniform not-found for it to give.
+const patternDashboardUpdate = "POST /dashboard/update"
+
+// fieldVersion is the release an operator named, and the whole of what this route
+// reads beside the confirming step (FR-022).
+//
+// Absent means whatever `latest` resolves to, which is the ordinary update.
+// Naming one is what makes a rollback an ordinary update as well, so there is no
+// second route for going backwards and no second path for it to go wrong on.
+//
+// The value is deliberately not checked here. internal/updater checks it at the
+// two boundaries that consume it — the one that pastes it into an API path, and
+// the one that joins it into a filename — which is the rule docs/security.md §2
+// states; a shape check copied onto this door would be a third opinion, free to
+// be the loosest of the three and free to drift from both.
+const fieldVersion = "version"
+
+// The three collaborators the seven steps live in.
+//
+// They are interfaces so that this route can be driven without the network,
+// without writing into the operator's staging directory and without renaming
+// anything over the binary this daemon is running — and three of them rather than
+// one because standing in front of exactly one while leaving the others real is
+// what makes a test able to say *which* step refused.
+type (
+	// releaseSource is step 1: what a release published, and the bytes of one
+	// asset of it by exact name (FR-027).
+	releaseSource interface {
+		Release(ctx context.Context, version string) (*updater.Release, error)
+		Asset(ctx context.Context, rel *updater.Release, name string) ([]byte, error)
+	}
+
+	// releaseStager is steps 2 to 4, in one call: the bytes are written at 0600,
+	// checked against the published checksum, checked against the signature over
+	// it, and only then made executable. The order is that method's, and this
+	// route cannot reorder it.
+	releaseStager interface {
+		Stage(version, name string, asset, sums, signature []byte) (string, error)
+	}
+
+	// releaseInstaller is steps 5 and 6, and then step 7 separately. The split is
+	// the whole reason ExitForRestart exists as its own method: a swap that
+	// exited on the way out would end the process with the redirect unwritten and
+	// the audit record unemitted.
+	releaseInstaller interface {
+		Swap(ctx context.Context, staged, version string) error
+		ExitForRestart()
+	}
+)
+
+// selfUpdate is the update path as one field on the Server, so that a route
+// reaching all of it reaches one thing rather than three that can be wired
+// apart.
+type selfUpdate struct {
+	releases  releaseSource
+	staging   releaseStager
+	installer releaseInstaller
+}
+
+// liveSelfUpdate is the update path as the shipping build wires it: this
+// project's releases, the documented staging directory, and the binary
+// install.sh placed.
+//
+// It is built in newWithLayer1 and deliberately not in newServer, which is the
+// constructor every test in this package builds a server through. A test server
+// therefore carries no update path at all, and the route refuses on it — so a
+// case that forgot to stand in front of these three cannot download a release
+// onto the machine running the suite and rename it over the daemon that host is
+// already running. TestTheShippingBuildWiresTheRealUpdatePath is the other half
+// of that arrangement: a seam that could be left unwired in production is a
+// dashboard button that quietly does nothing.
+func liveSelfUpdate() selfUpdate {
+	return selfUpdate{
+		releases:  updater.NewFetcher(),
+		staging:   updater.NewStager(os.Getenv),
+		installer: updater.NewSwapper(os.Getenv),
+	}
+}
+
+// wired reports whether there is an update path behind this route at all.
+func (u selfUpdate) wired() bool {
+	return u.releases != nil && u.staging != nil && u.installer != nil
+}
+
+// The refusals this route authors, one per step so that the journal says which
+// of them turned an update away. Each is a sentinel written here, so no record
+// can carry a byte the caller chose (FR-042) — and in particular none of them
+// names the version that was asked for, which is the one field this route reads.
+var (
+	// errUpdateUnconfirmed is an update without `confirm=yes` (FR-029a). It is
+	// its own sentinel rather than the destroy's or the toggle's, for the reason
+	// every reason on this door is: what tells one action's records from
+	// another's is this.
+	errUpdateUnconfirmed = errors.New("a browser update arrived without the confirming step")
+
+	// errUpdateVersionNotOffered is a `version` field that is not shaped like a
+	// release tag (updater.ErrMalformedVersion). The value reaches a URL path and
+	// a filename, and it is refused before it reaches either; the refusal names
+	// neither the value nor its length, because what this check exists to turn
+	// away is exactly the text nobody should be handed back or have written into
+	// their journal.
+	errUpdateVersionNotOffered = errors.New("a browser update named something that is not the shape of a release version")
+
+	// errUpdateNotFetched is step 1 refusing: no such release, no asset published
+	// under exactly the name asked for, a redirect to a host a release does not
+	// come from, or a download that did not finish. Nothing has been written
+	// anywhere on this path.
+	errUpdateNotFetched = errors.New("the release a browser asked for could not be downloaded")
+
+	// errUpdateNotVerified is steps 2 to 4 refusing, and it is the one an operator
+	// should read twice: the bytes arrived and are not the ones this project
+	// published, or are not signed by any key this binary carries. Nothing was
+	// made executable, and the candidate has been removed.
+	errUpdateNotVerified = errors.New("a release was refused before anything was made executable")
+
+	// errUpdateNotInstalled is steps 5 and 6 refusing: a release that verified and
+	// then would not run here, called itself another version, or could not be
+	// renamed into place. This is where an arm64 build on an amd64 host stops
+	// (FR-028) — cryptographically perfect, and not for this machine.
+	errUpdateNotInstalled = errors.New("a verified release was not installed, and this daemon is running what it was running")
+
+	// errUpdateUnwired is the route reached on a server that has no update path
+	// behind it. It should not happen in a daemon built by New, and it is a
+	// refusal rather than a panic for the reason every other should-not-happen
+	// branch on this door is one: fail-closed is only a property if it holds on
+	// the paths that do not happen.
+	errUpdateUnwired = errors.New("the update route was reached on a daemon with no update path behind it")
+)
+
+// updateFromBrowser is POST /dashboard/update (US4, contracts/self-update.md).
+//
+// Everything that authorises it has already run: handleAction wrapped this
+// handler in the gate, so layer 1 has verified an identity, the browser has said
+// the request came from this page, and the form has carried a token minted for
+// that identity. What is left is the confirming step and the seven steps of the
+// update itself.
+//
+// The confirming step is read first, ahead of anything that costs this host
+// anything at all. An update replaces the binary that manages every session on
+// this machine and then ends the process; a request that was never going to be
+// carried out must not download a release on the way to being refused, which is
+// where the destroy's own ordering rule comes from (FR-029, FR-029a).
+func (s *Server) updateFromBrowser(w http.ResponseWriter, r *http.Request) {
+	if _, ok := OperatorFrom(r.Context()); !ok {
+		// Fail closed on the path that should not happen, the way every other
+		// handler on this door does: the gate in front puts the operator in the
+		// context, so a false here is a route wired without one.
+		AuditFrom(r.Context()).Deny(errDashboardNoOperator.Error())
+		s.refuseBrowser(w)
+		return
+	}
+
+	// Read from PostForm and never Form, for the reason the gate reads the token
+	// that way: a confirmation this daemon would accept from a query string is a
+	// binary replacement that a link can carry. The form itself was parsed by the
+	// gate, under the configured body limit.
+	if r.PostForm.Get(fieldConfirm) != confirmYes {
+		AuditFrom(r.Context()).Deny(errUpdateUnconfirmed.Error())
+		s.redirectOutcome(w, r, outcomeUpdateUnconfirmed)
+		return
+	}
+
+	if !s.updates.wired() {
+		AuditFrom(r.Context()).Deny(errUpdateUnwired.Error())
+		s.redirectOutcome(w, r, outcomeUpdateRefused)
+		return
+	}
+
+	version, err := s.updateTo(r.Context(), r.PostForm.Get(fieldVersion))
+	if err != nil {
+		s.refuseBrowserUpdate(w, r, err)
+		return
+	}
+
+	// Step 7, in the order the two things that must survive it require. The
+	// redirect is written and pushed onto the connection, the record reaches the
+	// trail, and only then may the process end — an exit before either would
+	// leave the operator watching a request that never answered and an update
+	// that happened with nothing in the journal to say so (FR-041).
+	//
+	// The record is emitted here rather than left to the middleware for the reason
+	// the stream emits its own: this handler does not return in production. The
+	// emit is guarded against a second one, so the deferred emit on the way out —
+	// which is what runs in a test, where the exit is a fake — writes nothing more.
+	s.redirectOutcome(w, r, outcomeUpdated)
+	s.emit(AuditFrom(r.Context()))
+	if err := http.NewResponseController(w).Flush(); err != nil { //nolint:bodyclose // false positive: a ResponseController is not a response and has no body to close.
+		// Reported and not acted on. The rename has already happened, so the
+		// binary at ExecStart is the new one either way; a daemon that stayed up
+		// because it could not flush a redirect would be one running the release
+		// it just replaced, which is the single state this whole path exists to
+		// avoid.
+		s.report(fmt.Errorf("flush the answer to an update of %s before exiting: %w", version, err))
+	}
+	s.updates.installer.ExitForRestart()
+}
+
+// updateTo is steps 1 to 6, in the order contracts/self-update.md numbers them,
+// and it returns the version that is now installed.
+//
+// asked is the operator's `version` field: empty means whatever `latest`
+// resolves to. What every step after the first is given is the version the
+// release *says* it is (rel.Version) rather than the string that was submitted —
+// an empty ask has no other name to work from, and a named one that resolved to
+// something else is a release this daemon should stage under the name it really
+// carries.
+//
+// Each step's failure is wrapped in the sentinel for that step, so the handler
+// can say which one refused without any of them having to be told about the
+// others. The cause travels with it for the operator's stderr and never for the
+// trail — the record gets the sentinel alone (FR-042).
+func (s *Server) updateTo(ctx context.Context, asked string) (string, error) {
+	rel, err := s.updates.releases.Release(ctx, asked)
+	if err != nil {
+		if errors.Is(err, updater.ErrMalformedVersion) {
+			// Deliberately not wrapped with the cause: this is the one refusal on
+			// this path reached by something the caller wrote, and the value stops
+			// here. Every other error below quotes at most a version internal/updater
+			// has already matched against its own shape.
+			return "", errUpdateVersionNotOffered
+		}
+		return "", fmt.Errorf("%w: %w", errUpdateNotFetched, err)
+	}
+
+	// This host's own architecture, asked of the toolchain rather than of the
+	// request. FR-027 wants the asset named exactly, and the only machine whose
+	// name is right here is the one about to run the binary — an operator cannot
+	// usefully choose, and a field that let them choose would be a way to install
+	// a build that passes every check and then will not exec.
+	name := updater.AssetName(rel.Version, runtime.GOARCH)
+
+	asset, err := s.updates.releases.Asset(ctx, rel, name)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", errUpdateNotFetched, err)
+	}
+	// The checksum list and the signature over it are two more assets of the same
+	// release, fetched by exactly their names. A release that publishes no
+	// signature ends here, as a refusal rather than as a skipped check: absence is
+	// not "nothing to verify against" (FR-025).
+	sums, err := s.updates.releases.Asset(ctx, rel, updater.ChecksumsAsset)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", errUpdateNotFetched, err)
+	}
+	signature, err := s.updates.releases.Asset(ctx, rel, updater.SignatureAsset)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", errUpdateNotFetched, err)
+	}
+
+	// Steps 2 to 4. The bytes are handed over rather than a path, so nothing this
+	// route fetched has reached the filesystem before the one place that writes it
+	// at 0600 does — and the name is the one that was fetched, because the
+	// checksum list is read by exact asset name and "the nearest entry" is not the
+	// entry.
+	staged, err := s.updates.staging.Stage(rel.Version, name, asset, sums, signature)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", errUpdateNotVerified, err)
+	}
+
+	// Steps 5 and 6. The candidate is executed once before it is renamed, which is
+	// the step no cryptographic check can stand in for, and the rename is the only
+	// irreversible line in this path.
+	if err := s.updates.installer.Swap(ctx, staged, rel.Version); err != nil {
+		return "", fmt.Errorf("%w: %w", errUpdateNotInstalled, err)
+	}
+	return rel.Version, nil
+}
+
+// refuseBrowserUpdate maps a refused update onto the answer this route gives, and
+// it is refuseBrowserDestroy's and refuseBrowserMode's shape for their reason:
+// one function, so the branches are read together.
+//
+// Four arms rather than one shared failure, and the three named ones are the
+// steps where an operator's next move differs: a version that is not a version is
+// theirs to correct, a release that would not download is one to try again, and a
+// release that did not verify is one to leave alone. Everything past verification
+// shares the last arm, because by then there is one thing to say — nothing was
+// installed — and the difference between a wrong-architecture build, a
+// mislabelled release and a rename that failed is a question for the journal,
+// where each carries a reason of its own.
+//
+// The cause is reported to stderr and never to the trail. It carries at most a
+// version internal/updater has already matched against its own shape, an asset
+// name this daemon composed, and a path it chose — an operator diagnosing a
+// failed update needs all three, and none of them is a byte the caller wrote.
+func (s *Server) refuseBrowserUpdate(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, errUpdateVersionNotOffered):
+		AuditFrom(r.Context()).Deny(errUpdateVersionNotOffered.Error())
+		s.redirectOutcome(w, r, outcomeBadVersion)
+	case errors.Is(err, errUpdateNotFetched):
+		AuditFrom(r.Context()).Deny(errUpdateNotFetched.Error())
+		s.report(err)
+		s.redirectOutcome(w, r, outcomeUpdateNotFetched)
+	case errors.Is(err, errUpdateNotVerified):
+		AuditFrom(r.Context()).Deny(errUpdateNotVerified.Error())
+		s.report(err)
+		s.redirectOutcome(w, r, outcomeUpdateUnverified)
+	default:
+		AuditFrom(r.Context()).Deny(errUpdateNotInstalled.Error())
+		s.report(err)
+		s.redirectOutcome(w, r, outcomeUpdateRefused)
+	}
+}

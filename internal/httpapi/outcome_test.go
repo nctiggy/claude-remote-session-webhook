@@ -23,11 +23,12 @@ import (
 // map agrees with itself, and would go on passing through an edit that dropped a
 // code a route still chooses.
 var spelledOutcomes = []outcome{
-	"created", "destroyed", "renamed", "compacted", "mode-changed",
-	"bad-name", "bad-work-dir", "bad-start-command", "bad-mode", "limited", "unconfirmed",
-	"mode-unconfirmed",
+	"created", "destroyed", "renamed", "compacted", "mode-changed", "updated",
+	"bad-name", "bad-work-dir", "bad-start-command", "bad-mode", "bad-version", "limited", "unconfirmed",
+	"mode-unconfirmed", "update-unconfirmed",
 	"teardown-unverified",
 	"create-failed", "destroy-failed", "rename-failed", "compact-failed", "mode-failed",
+	"update-not-fetched", "update-unverified", "update-refused",
 }
 
 // TestEveryOutcomeThisPackageSpellsHasASentence is the other half of FR-022: the
