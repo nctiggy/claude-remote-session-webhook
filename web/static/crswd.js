@@ -39,6 +39,40 @@
    */
   const FRAME_MS = 1000 / 14;
 
+  /*
+   * What the rain occasionally says (FR-031).
+   *
+   * Here rather than in a template, and that is the whole of the containment:
+   * routing these through the daemon would make them look like content —
+   * something this host is telling its operator — on the one surface whose job
+   * is saying what is running on it. Nothing on the server knows these strings,
+   * so no route can be made to carry one and no render can put one in the
+   * document.
+   *
+   * They are about the theme and never about the fleet, for the same reason. A
+   * line that read like status would be a status display with nothing behind
+   * it, which is worse than no line at all.
+   */
+  const MESSAGES = [
+    'wake up',
+    'follow the white rabbit',
+    'knock knock',
+    'there is no spoon',
+    'free your mind',
+  ];
+
+  /*
+   * Roughly two seconds of legibility, and roughly one message every two or
+   * three minutes per field.
+   *
+   * Occasional is the requirement rather than a taste: a header that spoke on a
+   * schedule would be something to watch, and a background that has to be
+   * watched has stopped being a background. Drawn per frame rather than on a
+   * timer, so the odds are a property of the loop that is already running.
+   */
+  const SAYING_FRAMES = 28;
+  const SAYING_ODDS = 0.0005;
+
   const still = window.matchMedia('(prefers-reduced-motion: reduce)');
 
   let fields = [];
@@ -78,6 +112,48 @@
   };
 
   /*
+   * The message, drawn into the same grid the columns fall down — one glyph per
+   * cell, centred, in the lead glyph's colour, so it reads as the rain having
+   * lined up rather than as text laid on top of it. Drawn on the canvas and
+   * never inserted: canvas content is not in the accessibility tree, so FR-033
+   * holds by construction rather than by an attribute somebody could remove.
+   *
+   * It is redrawn every frame it is showing and never erased. The translucent
+   * wipe at the top of paint is what takes it away — the same fade that gives a
+   * column its trail — so a message dissolves back into the field it came out
+   * of instead of blinking off.
+   *
+   * Called from paint and from nowhere else, which is FR-032. paint runs only
+   * from the shared loop, and start() does not schedule that loop under a
+   * reduced-motion preference; giving the message a timer of its own would have
+   * been a second path for it to arrive by on a page that asked for stillness.
+   */
+  const saying = (field) => {
+    if (field.saidFor > 0) {
+      field.saidFor -= 1;
+    } else if (Math.random() < SAYING_ODDS) {
+      field.said = MESSAGES[Math.floor(Math.random() * MESSAGES.length)];
+      field.saidFor = SAYING_FRAMES;
+    }
+    if (field.saidFor === 0) {
+      return;
+    }
+
+    const { context, cell, said } = field;
+    // Clamped at the left edge: a field narrower than the longest message would
+    // otherwise start it off-canvas, which loses the front of the line rather
+    // than the ends of it.
+    const columns = Math.floor(field.canvas.width / cell);
+    const from = Math.max(0, Math.floor((columns - said.length) / 2));
+    const row = Math.floor(field.canvas.height / cell / 2);
+
+    context.fillStyle = token('--text');
+    for (let index = 0; index < said.length; index++) {
+      context.fillText(said[index], (from + index) * cell, row * cell);
+    }
+  };
+
+  /*
    * Wiped with a translucent fill rather than clearRect: the trail behind each
    * lead glyph is the effect, and clearing would leave a field of unrelated
    * characters blinking.
@@ -102,6 +178,10 @@
       field.drops[column] =
         y > field.canvas.height && Math.random() > 0.975 ? 0 : field.drops[column] + 1;
     }
+
+    // Last, so the line sits over the trails rather than under them — and
+    // inside paint, so there is exactly one place the rain can speak from.
+    saying(field);
   };
 
   /*
@@ -133,6 +213,11 @@
       context: canvas.getContext('2d'),
       cell: 0,
       drops: [],
+      // Rebuilt here, so a field that stopped and started again — which is what
+      // switching the preference on and back off does — begins silent rather
+      // than resuming a line nobody was reading.
+      said: '',
+      saidFor: 0,
     })).filter((field) => field.context);
     if (fields.length > 0) {
       frame = requestAnimationFrame(tick);
