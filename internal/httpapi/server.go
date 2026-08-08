@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/updater"
 	"html/template"
 	"net"
 	"net/http"
@@ -103,6 +104,18 @@ var routes = []Route{
 // holds no session state — that lives in internal/session — and every field is
 // read-only after Listen, so the handlers it serves need no lock to reach it.
 type Server struct {
+	// releases caches what the release feed last said, so a page an operator
+	// leaves open does not poll somebody else's API forever (settings.go).
+	releases releaseCache
+
+	// releaseFeed asks what is published, and is nil in tests.
+	//
+	// A seam rather than a direct call because composing a page must not depend
+	// on the network: nil means the Updates section says it could not look, which
+	// is the same answer an offline host gets and is therefore the behaviour
+	// worth having tests exercise by default.
+	releaseFeed func(context.Context) (*updater.Release, error)
+
 	cfg  *config.Config
 	mux  *http.ServeMux
 	http *http.Server
@@ -273,7 +286,18 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewWith(cfg, tmux, audit.New())
+	srv, err := NewWith(cfg, tmux, audit.New())
+	if err != nil {
+		return nil, err
+	}
+	// The real release feed, wired here and nowhere else. NewWith leaves it nil,
+	// so every test composes the Updates section without a network call and
+	// exercises the offline answer by default — which is the one an operator on a
+	// disconnected host gets.
+	srv.releaseFeed = func(ctx context.Context) (*updater.Release, error) {
+		return updater.NewFetcher().Release(ctx, "")
+	}
+	return srv, nil
 }
 
 // NewWith is New with the two collaborators that reach outside the process

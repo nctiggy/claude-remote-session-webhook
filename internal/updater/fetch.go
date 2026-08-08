@@ -151,6 +151,15 @@ type Release struct {
 	// to name in the asset it then asks for.
 	Version string
 
+	// Notes is what the release says about itself, as text.
+	//
+	// It exists so an operator can read what they would be taking before taking
+	// it, which is the difference between an update and a leap. It is never
+	// markup: whoever can publish a release writes this, and a page that rendered
+	// it as HTML would let the release feed decide what the settings page
+	// contains.
+	Notes string
+
 	// assets maps an exact asset name to where its bytes are. Unexported, so
 	// the only URLs this package will fetch are ones a release named: a caller
 	// asks for an asset by name and cannot ask for an address.
@@ -217,6 +226,7 @@ func (f *Fetcher) Release(ctx context.Context, version string) (*Release, error)
 	// command line.
 	var described struct {
 		TagName string `json:"tag_name"`
+		Body    string `json:"body"`
 		Assets  []struct {
 			Name string `json:"name"`
 			URL  string `json:"browser_download_url"`
@@ -229,7 +239,16 @@ func (f *Fetcher) Release(ctx context.Context, version string) (*Release, error)
 		return nil, fmt.Errorf("the description of release %q names no tag", version)
 	}
 
-	rel := &Release{Version: described.TagName, assets: make(map[string]string, len(described.Assets))}
+	rel := &Release{
+		Version: described.TagName,
+		// Notes are the release's own prose, rendered as text and never as
+		// markup: this string is written by whoever can publish a release, and a
+		// page that interpreted it would be letting the release feed decide what
+		// this daemon's own settings page contains. html/template escapes it,
+		// and that is the point rather than an inconvenience.
+		Notes:  described.Body,
+		assets: make(map[string]string, len(described.Assets)),
+	}
 	for _, a := range described.Assets {
 		if _, dup := rel.assets[a.Name]; dup {
 			// "The asset named exactly this" has to identify one file. Two of

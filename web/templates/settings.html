@@ -50,9 +50,51 @@
 {{ template "header" .Operator }}
 <main class="shell">
 <div class="settings">
-<p>{{ if .ConfigFile }}Read from {{ .ConfigFile }}{{ else }}No configuration file was read.{{ end }}</p>
-<table>
-<caption>Configuration</caption>
+{{/*
+  Updates first, because it is the only section here that asks the operator to
+  decide something. Everything below it reports; this one offers.
+*/}}{{ with .Update }}<section class="settings-section">
+<h2 class="settings-title">Updates</h2>
+
+<dl class="version-facts">
+<dt>Running now</dt><dd>{{ .Installed }}</dd>
+{{ if .Reachable }}{{ if .Available }}<dt>Available</dt><dd>{{ .Available }}</dd>{{ else }}<dt>Available</dt><dd>nothing newer</dd>{{ end }}{{ else }}<dt>Available</dt><dd>could not reach the release feed</dd>{{ end }}
+</dl>
+
+{{/*
+  The notes are rendered as text, never as markup. Whoever can publish a release
+  writes them, and a page that interpreted that string would let the release feed
+  decide what this daemon's own settings page contains. html/template escaping is
+  the control, and it is the reason Notes is a string here rather than anything
+  richer.
+*/}}{{ if .AvailableNotes }}<details class="release-notes">
+<summary>What {{ .Available }} says about itself</summary>
+<pre class="release-notes-body">{{ .AvailableNotes }}</pre>
+</details>{{ end }}
+
+{{/*
+  The control the update route never had (#103). It posts to the same route
+  destroy posts to, through the same gate, carrying the same confirming step —
+  reusing them rather than restating them is what keeps one door rather than two.
+
+  It renders only when there is something to move to. A button that would refuse
+  is worse than no button: it invites a click and answers with a refusal the
+  operator cannot act on.
+*/}}{{ if and .Reachable .Available }}<form class="update-form" method="post" action="/dashboard/update">
+<input type="hidden" name="crsw_page_token" value="{{ .Token }}">
+<input type="hidden" name="version" value="{{ .Available }}">
+<input type="hidden" name="confirm" value="yes">
+<button class="button button-primary" type="submit">Update to {{ .Available }}</button>
+<p class="update-caution">This replaces the running binary and restarts the daemon. Sessions survive it.</p>
+</form>{{ end }}
+</section>{{ end }}
+
+<section class="settings-section">
+<h2 class="settings-title">Configuration</h2>
+<p class="settings-source">{{ if .ConfigFile }}Read from {{ .ConfigFile }}{{ else }}No configuration file was read.{{ end }}</p>
+
+{{ range .Sections }}<table class="settings-table">
+<caption>{{ .Title }}</caption>
 <thead>
 <tr>
 <th scope="col">Key</th>
@@ -61,15 +103,14 @@
 </tr>
 </thead>
 <tbody>
-{{ range .Settings }}
-<tr>
+{{ range .Settings }}<tr>
 <th scope="row">{{ .Key }}</th>
 <td>{{ .Value }}</td>
 <td>{{ .Source }}</td>
 </tr>
-{{ end }}
-</tbody>
+{{ end }}</tbody>
 </table>
+{{ end }}</section>
 </div>
 </main>
 {{ template "footer" }}

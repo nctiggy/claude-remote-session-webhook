@@ -1133,18 +1133,6 @@ body {
   text-transform: uppercase;
 }
 
-/* The hidden attribute has to win (#77).
-   `[hidden] { display: none }` is a user-agent rule, so any class that sets
-   `display` outranks it — .empty, .grid, .summary and .empty-action all do, and
-   all four are hidden by attribute rather than by class (issue #51 renders both
-   fleet shapes and hides the inactive one). The empty state was therefore
-   rendering underneath a fleet that had sessions in it.
-   Declared once, at the end, rather than as [hidden] on each rule: the next
-   component that sets display and hides by attribute is covered without anyone
-   remembering this exists. */
-[hidden] {
-  display: none !important;
-}
 
 /* The version, on every page.
 
@@ -1162,4 +1150,96 @@ body {
   color: var(--dim);
   font-size: var(--fs-eyebrow);
   text-align: center;
+}
+
+/* The settings page, in sections (#103).
+
+   One flat table was what the daemon knows; it is not how somebody looks for
+   something. Each section is a heading and the keys that belong under it, and
+   the rules below are spacing and rhythm only — every colour, size and edge
+   comes from the token block, as everywhere else. */
+.settings-section {
+  margin-block-end: var(--s7);
+}
+
+.settings-title {
+  margin-block: 0 var(--s4);
+  font-size: var(--fs-label);
+  color: var(--bright);
+}
+
+.settings-source {
+  margin-block: 0 var(--s5);
+  color: var(--dim);
+  font-size: var(--fs-eyebrow);
+}
+
+.settings-table {
+  inline-size: 100%;
+  margin-block-end: var(--s5);
+  border-collapse: collapse;
+}
+
+/* What is running and what is available, side by side. A description list
+   because that is what it is: two terms, two answers. */
+.version-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--s2) var(--s4);
+  margin-block: 0 var(--s5);
+}
+
+.version-facts dt {
+  color: var(--dim);
+  font-size: var(--fs-eyebrow);
+}
+
+.version-facts dd {
+  margin: 0;
+}
+
+/* The release's own prose. Closed by default: an operator who wants to read what
+   they are taking opens it, and one who has already decided is not made to
+   scroll past it. */
+.release-notes {
+  margin-block-end: var(--s5);
+}
+
+.release-notes-body {
+  margin-block: var(--s3) 0;
+  padding: var(--s4);
+  border: var(--edge-width) solid var(--edge);
+  border-radius: var(--r);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  font-size: var(--fs-eyebrow);
+  color: var(--dim);
+}
+
+.update-form {
+  display: grid;
+  gap: var(--s3);
+  justify-items: start;
+}
+
+/* What the button will actually do, beside the button. Not a colour and not an
+   icon: replacing the running binary is a sentence, and FR-030's rule that an
+   outcome is text rather than a hue applies just as well before the fact. */
+.update-caution {
+  margin: 0;
+  color: var(--dim);
+  font-size: var(--fs-eyebrow);
+}
+
+/* The hidden attribute has to win (#77).
+   `[hidden] { display: none }` is a user-agent rule, so any class that sets
+   `display` outranks it — .empty, .grid, .summary and .empty-action all do, and
+   all four are hidden by attribute rather than by class (issue #51 renders both
+   fleet shapes and hides the inactive one). The empty state was therefore
+   rendering underneath a fleet that had sessions in it.
+   Declared once, at the end, rather than as [hidden] on each rule: the next
+   component that sets display and hides by attribute is covered without anyone
+   remembering this exists. */
+[hidden] {
+  display: none !important;
 }
