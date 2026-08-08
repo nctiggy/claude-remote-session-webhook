@@ -235,6 +235,21 @@ every secret at render time:
   the highest-consequence surface in the product; a route that does not exist
   cannot be exploited, mis-gated, or reached by a refactor that forgets which door
   it is on.
+- **The page carries one form, and it posts somewhere else.** Since issue #103
+  the Updates section renders the control for `POST /dashboard/update` — a route
+  that has always existed and, until then, was reachable from nothing. It goes
+  through the action gate like every other mutating browser route, and the
+  sentence above is unchanged: nothing on this page writes configuration.
+- **The release notes it shows are untrusted text.** They come from the GitHub
+  API, over the network, before any signature has been checked, and they are
+  authored by whoever published the release. They are rendered under the same
+  rule as pane output below — escaped by `html/template` into a `<pre>`, never
+  `template.HTML`, never client-side `innerHTML`.
+- **Reading the release feed cannot cost this page.** The lookup is bounded by a
+  deadline of its own and cached, and every failure of it renders as a sentence
+  on a page that has already reported every configured value. A settings page an
+  offline operator cannot open is a settings page that has failed at its first
+  job.
 
 **Sweep every route for secrets, do not reason about it.** The check that matters
 is the absence of a value across every registered path on both doors, asserted the
