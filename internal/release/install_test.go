@@ -1155,7 +1155,7 @@ func TestKeyListsAgree(t *testing.T) {
 	t.Parallel()
 
 	keyPath := filepath.Join("..", "updater", "release_key.txt")
-	blob, err := os.ReadFile(keyPath)
+	blob, err := os.ReadFile(keyPath) //nolint:gosec // G304 false positive: keyPath is a constant path built from filepath.Join literals, not from input.
 	if err != nil {
 		t.Fatalf("read %s: %v", keyPath, err)
 	}
