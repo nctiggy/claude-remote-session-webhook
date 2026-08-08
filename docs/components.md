@@ -55,15 +55,53 @@ built. A new partial follows that, not the sketch.
 
 ### The settings page has no component of its own
 
-`web/templates/settings.html` is the header partial and a plain `<table>` — one
-row per configuration key, with the layer that supplied it beside the value. It
-introduces no primitive, and it deliberately carries **none** of the three things
-every actionable page in this tree carries: no page token, no action row, no live
-region. `GET /settings` is the only verb registered on that path, so a form
-rendered there would be a form the daemon has no route to receive — the one shape
-of dead control this design system cannot show an operator is dead. No rain sits
-behind it either: the effect is permitted behind the header and in the empty state
-and nowhere else, and a table of values is content being read.
+`web/templates/settings.html` is the header partial and plain `<table>`s — one
+section per subject, one row per configuration key, with the layer that supplied
+it beside the value. It introduces no primitive: the sections are a heading, a
+sentence and a table, and the one control on the page is the Button and Form
+vocabulary below. No rain sits behind it: the effect is permitted behind the
+header and in the empty state and nowhere else, and a table of values is content
+being read.
+
+**It carries a page token, an action and a live region, and it did not until
+issue #103.** What this section used to say — that the page carries none of the
+three, because `GET /settings` is the only verb registered on that path — was
+right about the path and wrong about the page. `POST /dashboard/update` is a
+route this daemon has always been able to receive; milestone 6 built it and
+rendered no control for it anywhere, which is FR-026's defect one milestone
+later. The Updates section is that control's home:
+
+| Class | What it is |
+|---|---|
+| `.settings-section` | One group of configuration keys, or the Updates section |
+| `.settings-heading` | The group's name, in the eyebrow role, bound to its table by `aria-labelledby` |
+| `.settings-blurb` | One sans sentence saying what the rows under it decide |
+| `.release` | One release: its version, and what it said about itself |
+| `.release-heading` | That version, in mono — what the machine calls this build |
+| `.release-notes` | The notes, as **text in a `<pre>`**, never as markup |
+| `.release-note` | The sans sentence shown instead when there are none to show |
+| `.update-form` | The one control on this page |
+
+Rules:
+- **Still no form that writes configuration**, and there is not going to be one.
+  Writing the operator's file from a browser is out of scope; the one action here
+  posts to the update route and every configured value stays read-only.
+- **The notes are somebody else's text.** They arrive from the GitHub API before
+  any signature has been checked and are written by whoever authored the release.
+  They are rendered the way pane output is — escaped by `html/template` into a
+  container that is styled, never sanitised into markup that is trusted.
+- **The section states the absence it means.** A release that published no notes,
+  a build that is not a release, and a feed this host could not reach are three
+  different sentences. One blank panel for all three tells an operator nothing.
+- **The page never needs the network to render.** Everything except the Updates
+  section is configuration resolved at startup. The release lookup is bounded and
+  cached, and its failure is a sentence rather than a slow page or a 500.
+- The update button is a plain `.button`: not `.button-danger`, which is for an
+  action that ends an unsandboxed shell, and an update ends none — the tmux
+  sessions outlive the swap. Not `.button-primary` either, because this page
+  exists to report how the daemon was configured rather than to update it.
+- The confirming step is `confirm=yes`, the hidden field the destroy already
+  uses. Not a modal — see Modal below.
 
 ## Header
 
@@ -199,6 +237,15 @@ a security control, not decoration.
 | Create | `POST /dashboard/sessions` | `200` and the new card; `429` at the cap or the rate limit |
 | Rename | `POST /dashboard/sessions/{id}/rename` | `200` and the renamed card |
 | Compact | `POST /dashboard/sessions/{id}/compact` | `202` — **delivered**, never "compacted" |
+| Update | `POST /dashboard/update` | `303` to the fleet, and the daemon exits for its service manager. On the settings page, not a card — an update names no session |
+
+**Every route in that table has a control, and a sweep enforces it**
+(`TestEveryBrowserActionHasAControl`). This project has now shipped a working,
+tested, unreachable route twice — FR-026 in milestone 4 and the update route in
+milestone 6 — because every assertion was about a handler or a record and none
+read a page. A route with no markup is now a failing test, and the one remaining
+exception is named in that test with its reason: `POST /dashboard/sessions/{id}/mode`,
+the toggle #58 built, has no control either.
 
 All four also answer `400` for input they refuse, `404` for a session that is not
 this operator's to act on, and `500` when the host would not do it — each one
