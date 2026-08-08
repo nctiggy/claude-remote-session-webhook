@@ -7,7 +7,7 @@
 # project published, before any of them can be run. Two checks, in this order:
 #
 #   1. ed25519 over SHA256SUMS, against a key carried in this file
-#   2. sha256 of the downloaded tarball, against its line in SHA256SUMS
+#   2. sha256 of each downloaded asset, against its line in SHA256SUMS
 #
 # The order is the point. A checksum file travels with the artifacts it
 # describes, so on its own it proves only that the two arrived together —
@@ -18,6 +18,12 @@
 #
 # Unpacking is the first moment anything here is executable, because tar
 # restores the mode stored in the archive. Both checks stand in front of it.
+#
+# What it then writes is the binary, the service unit, a record of the unit it
+# wrote, and a configuration file — that last one only where there is none. It
+# enables nothing and starts nothing: the daemon cannot serve a request before
+# the secret is set, and a service that fails on first boot teaches its operator
+# to ignore a failing service.
 #
 # This script belongs to the project rather than to a person: no home
 # directory and no username appears below. The account name in the URLs is
@@ -30,6 +36,19 @@ readonly REPO_URL="https://github.com/nctiggy/claude-remote-session-webhook"
 # What the release workflow builds, and all it builds. Anything else is refused
 # by name rather than handed an amd64 binary to fail on later.
 readonly PUBLISHED="linux/amd64 linux/arm64"
+
+# The published unit, downloaded and checked like everything else. It is written
+# into ~/.config/systemd/user, where systemd runs what it says — an asset taken
+# on trust there is the same problem as an unverified binary under another name.
+readonly UNIT_ASSET="crswd.service"
+
+# Everything this installer writes, and the only places it writes. Each is
+# spelled once, relative to $HOME, so the path it creates and the `~/…` it
+# prints cannot drift — and so no home directory is named in this file.
+readonly BINARY=".local/bin/crswd"
+readonly UNIT=".config/systemd/user/crswd.service"
+readonly UNIT_RECORD=".local/share/crswd/crswd.service.sha256"
+readonly CONFIG=".config/crswd/config"
 
 say() { printf 'crswd: %s\n' "$*"; }
 die() {
@@ -55,7 +74,7 @@ RELEASE_KEYS
 
 require_tools() {
   missing=""
-  for tool in curl tar sha256sum openssl; do
+  for tool in curl tar sha256sum openssl install; do
     command -v "$tool" > /dev/null 2>&1 || missing="$missing $tool"
   done
   [ -z "$missing" ] || die "not on PATH:$missing"
@@ -143,6 +162,108 @@ verify_checksum() {
   say "verifying $1 ... ok"
 }
 
+# place writes one verified file under $HOME at a mode it states rather than one
+# it inherits. install(1) rather than cp: it unlinks the destination before
+# writing, so replacing the binary of a daemon that happens to be running leaves
+# a new file under the old name instead of failing with ETXTBSY.
+place() {
+  local mode="$1" src="$2" rel="$3"
+  mkdir -p -- "$HOME/${rel%/*}"
+  install -m "$mode" -- "$src" "$HOME/$rel"
+  say "installed ~/$rel"
+}
+
+# The hash of the unit as it was written. It is the only thing a later run can
+# use to tell a unit this installer wrote from one the operator has since
+# edited, and it is written by the same step that writes the unit: a run that
+# placed one and recorded nothing would leave the next run unable to tell those
+# two apart, and the only safe answer to that is to refuse to touch it.
+record_unit() {
+  local sum
+  mkdir -p -- "$HOME/${UNIT_RECORD%/*}"
+  sum=$(sha256sum < "$HOME/$UNIT")
+  # The digest alone, no filename: what is compared is the contents of a path
+  # this installer already knows, and a `sha256sum -c` line would tie the record
+  # to the directory it was taken from.
+  printf '%s\n' "${sum%% *}" > "$HOME/$UNIT_RECORD"
+}
+
+# The configuration, and only when there is none. The operator's file is the one
+# thing on this host they authored; an installer that replaced it would destroy
+# it during an operation they think of as safe.
+#
+# What is written is an example with every setting commented out, so the file as
+# written behaves exactly as no file at all — and holds no secret, which is what
+# makes leaving a copy of it lying around safe.
+write_config() {
+  if [ -e "$HOME/$CONFIG" ]; then
+    say "~/$CONFIG exists — leaving it alone"
+    return 0
+  fi
+
+  mkdir -p -- "$HOME/${CONFIG%/*}"
+  # Created under a 0077 umask rather than written and then chmod'd: between
+  # those two there is a moment where a file that is about to hold the shared
+  # secret is readable by every account on this host. The chmod after it is not
+  # redundant — it states the mode this file must have, where the umask only
+  # arranges for it.
+  (
+    umask 077
+    cat > "$HOME/$CONFIG" <<'CONFIG'
+# crswd configuration.
+#
+# Written once, by the installer. Nothing in this project writes it again — a
+# re-install leaves whatever is here alone. This file is yours.
+#
+# Every setting is commented out, so as written it behaves exactly like no
+# configuration file at all. Uncomment only what you mean to change. The full
+# annotated list of every setting there is lives at
+# https://github.com/nctiggy/claude-remote-session-webhook/blob/main/config.example
+#
+# Format: `key = value`, one per line. `#` starts a comment at the start of a
+# line and nowhere else, because a shared secret may legitimately contain one.
+# A key is its environment variable without the CRSW_ prefix, lower-cased. The
+# environment still wins: flag, then environment, then this file, then the
+# built-in default.
+
+# The schema this file was written against. Leave it.
+version = 1
+
+# REQUIRED. The HMAC shared secret the API client signs with, at least 32
+# bytes. Unset is a startup failure: an absent secret is an absent
+# authentication layer, and a daemon that starts without one is worse than a
+# daemon that does not start. Generate one with `openssl rand -hex 32`.
+#
+# A file that sets this must be mode 0600, which is how this one was written.
+# shared_secret =
+
+# The blast radius, and the real containment control — keep it narrow.
+# Colon-separated absolute paths; a session may only run in a directory one of
+# them contains, and every entry must already exist.
+#
+# Default: $HOME/code. $HOME itself is never the default and is a poor choice:
+# SSH keys, cloud credentials and browser profiles all live directly under it,
+# which would make the allowlist decorative.
+# allowed_roots =
+CONFIG
+  )
+  chmod 0600 -- "$HOME/$CONFIG"
+  say "wrote ~/$CONFIG (mode 0600)"
+}
+
+# What is left, said plainly, because nothing else is going to say it. The
+# daemon cannot serve a request before the secret is set, so an installer that
+# enabled the unit here would leave a service failing on first boot — which
+# teaches an operator to ignore a failing service, a habit worth more than the
+# convenience of not typing one command.
+next_steps() {
+  say ""
+  say "Next: set shared_secret and allowed_roots in ~/$CONFIG,"
+  say "then: systemctl --user enable --now crswd"
+  say ""
+  say "Nothing was enabled and nothing is running: this installer starts no service."
+}
+
 main() {
   require_tools
   detect_platform
@@ -160,16 +281,24 @@ main() {
   # Not optional. A release with no signature is refused, never installed on
   # the strength of a checksum that arrived from the same place as the bytes.
   fetch SHA256SUMS.sig
+  fetch "$UNIT_ASSET"
 
   cd "$workdir"
   verify_signature
   verify_checksum "$tarball"
+  verify_checksum "$UNIT_ASSET"
 
   # Only the member the release publishes, by name: an archive carrying extra
   # paths then cannot write anywhere this did not intend.
   mkdir -p unpacked
   tar -xzf "$tarball" -C unpacked crswd
   say "unpacked $tarball"
+
+  place 0755 unpacked/crswd "$BINARY"
+  place 0644 "$UNIT_ASSET" "$UNIT"
+  record_unit
+  write_config
+  next_steps
 }
 
 main "$@"

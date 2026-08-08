@@ -34,6 +34,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -209,6 +210,11 @@ sha256sum() { _log sha256sum; command sha256sum "$@"; }
 tar() { _log tar; command tar "$@"; }
 chmod() { _log chmod; command chmod "$@"; }
 install() { _log install; command install "$@"; }
+
+# Answers rather than wrapping, and the one stub whose job is to never be
+# reached: FR-018 is that the installer enables and starts nothing, and a
+# systemctl that succeeded quietly is exactly how that requirement gets lost.
+systemctl() { _log "systemctl $*"; }
 `
 
 // run is one execution of install.sh under those stubs.
@@ -216,7 +222,11 @@ type run struct {
 	stdout string
 	stderr string
 	events []string
-	err    error
+	// home is the directory the run was given as $HOME. Everything the
+	// installer places is under it, and it belongs to the test rather than to
+	// whoever is running the suite.
+	home string
+	err  error
 }
 
 // index is where an event first appears, or -1. The invariant every case below
@@ -235,15 +245,35 @@ func (r run) ran(event string) bool { return r.index(event) >= 0 }
 
 // runInstaller executes the real script with the stubs prepended, against a
 // release directory the caller built.
-func runInstaller(t *testing.T, script, releaseDir, version string) run {
+//
+// seed runs against the home directory before the installer does, for the cases
+// whose subject is a host that already has something on it.
+func runInstaller(t *testing.T, script, releaseDir, version string, seed ...func(t *testing.T, home string)) run {
 	t.Helper()
 
 	dir := t.TempDir()
 	log := filepath.Join(dir, "events")
 
+	for _, prepare := range seed {
+		prepare(t, dir)
+	}
+
+	// $HOME is this test's, and so is everything the installer writes under it.
+	// The XDG variables are dropped rather than passed through: the daemon
+	// reads $XDG_CONFIG_HOME ahead of ~/.config, and on the day the installer
+	// is taught the same rule an inherited one would send these writes into the
+	// home of whoever is running the suite.
+	env := make([]string, 0, len(os.Environ()))
+	for _, pair := range os.Environ() {
+		if strings.HasPrefix(pair, "XDG_") {
+			continue
+		}
+		env = append(env, pair)
+	}
+
 	cmd := exec.Command("bash", "-c", stubs+"\n"+script) //nolint:gosec // G204: the script is this repository's own committed installer.
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(env,
 		"STUB_LOG="+log,
 		"STUB_OS=Linux",
 		"STUB_MACHINE=x86_64",
@@ -264,7 +294,7 @@ func runInstaller(t *testing.T, script, releaseDir, version string) run {
 	if raw, readErr := os.ReadFile(log); readErr == nil { //nolint:gosec // G304: log is this test's own t.TempDir.
 		events = strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 	}
-	return run{stdout: stdout.String(), stderr: stderr.String(), events: events, err: err}
+	return run{stdout: stdout.String(), stderr: stderr.String(), events: events, home: dir, err: err}
 }
 
 // release is a published release as the workflow produces one, built in a
@@ -314,13 +344,22 @@ func fakeRelease(t *testing.T, version, arch string) *release {
 	}
 	r.write(t, r.tarball, gz.Bytes())
 
-	// SHA256SUMS covers every asset, and only the tarball is downloaded — so
-	// the four names with no file beside them are the case an installer that
-	// runs `sha256sum -c SHA256SUMS` gets wrong, against a release that is
-	// entirely correct.
+	// The deployment files, written as well as summed, because a published
+	// release carries them and the installer downloads one of them: the unit,
+	// which it verifies and then writes into ~/.config/systemd/user. Their
+	// names come from `deployed` rather than being typed here, so a rename in
+	// the release workflow surfaces as an installer asking for a name nothing
+	// publishes — which is the 404 whoever is installing would otherwise be the
+	// first to see.
+	//
+	// The two it never fetches still matter: SHA256SUMS covers every asset, so
+	// they are the names with no file beside them in the download directory,
+	// which is what an installer running `sha256sum -c SHA256SUMS` gets wrong
+	// against a release that is entirely correct.
 	sums := map[string][]byte{r.tarball: gz.Bytes()}
 	for name := range deployed {
 		sums[name] = []byte("the bytes of " + name + "\n")
+		r.write(t, name, sums[name])
 	}
 	names := make([]string, 0, len(sums))
 	for name := range sums {
@@ -440,6 +479,19 @@ func TestInstallVerifiesBeforeExecutable(t *testing.T) {
 				body := r.read(t, r.tarball)
 				body[len(body)/2] ^= 0xff
 				r.write(t, r.tarball, body)
+			},
+			commit: true,
+			says:   "checksum",
+		},
+		{
+			// The other file the installer downloads, and the one it is
+			// tempting to take on trust because it is "just configuration".
+			// It is not: it is what systemd reads to decide what to execute,
+			// where, and with which environment, and it is written into
+			// ~/.config/systemd/user on a host that is about to enable it.
+			name: "refuses a unit that does not match its checksum",
+			tamper: func(t *testing.T, r *release) {
+				r.write(t, "crswd.service", []byte("[Service]\nExecStart=/bin/false\n"))
 			},
 			commit: true,
 			says:   "checksum",
@@ -586,6 +638,192 @@ func TestInstallRefusesUnknownPlatform(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// needsOpenSSL skips a case that cannot run without it. Every test that gets as
+// far as placing a file has to get past verify_signature first, and there is no
+// standing in for openssl there: a stub would be the test agreeing with itself.
+func needsOpenSSL(t *testing.T) {
+	t.Helper()
+
+	if _, err := exec.LookPath("openssl"); err != nil {
+		t.Skipf("openssl is not on PATH, so no release can be verified here: %v", err)
+	}
+}
+
+// installs runs the whole installer against a release it published itself, and
+// fails if it refused one. Every case below starts here: what they are about is
+// what is on the host afterwards.
+func installs(t *testing.T, seed ...func(t *testing.T, home string)) run {
+	t.Helper()
+
+	r := fakeRelease(t, "v0.42", "amd64")
+	got := runInstaller(t, r.signedBy(t, readInstaller(t)), r.dir, r.version, seed...)
+	if got.err != nil {
+		t.Fatalf("the installer refused a release it published itself: %v\nstdout:\n%sstderr:\n%s", got.err, got.stdout, got.stderr)
+	}
+	return got
+}
+
+// placed reads back a file the installer wrote, with the mode it wrote it at.
+func placed(t *testing.T, got run, rel string) ([]byte, fs.FileMode) {
+	t.Helper()
+
+	path := filepath.Join(got.home, rel)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("~/%s: %v\nThe installer verified a release and then left that behind.\nWhat it said:\n%s", rel, err, got.stdout)
+	}
+	body, err := os.ReadFile(path) //nolint:gosec // G304: the home is this test's own t.TempDir.
+	if err != nil {
+		t.Fatalf("read ~/%s: %v", rel, err)
+	}
+	return body, info.Mode().Perm()
+}
+
+// TestInstallPlacesWhatItDownloaded is steps 4 to 6 of contracts/installer.md,
+// and it reads the host rather than the transcript: an installer that prints
+// "installed" and wrote nothing says exactly what a working one says.
+//
+// The record is the part with no symptom of its own. It is what T011 compares
+// an installed unit against, and a run that placed a unit and recorded nothing
+// leaves the next run unable to tell "we wrote this" from "somebody else did" —
+// at which point the only safe answer is to refuse, forever, on a host this
+// installer set up itself.
+func TestInstallPlacesWhatItDownloaded(t *testing.T) {
+	t.Parallel()
+	needsOpenSSL(t)
+
+	got := installs(t)
+
+	// The unit, byte for byte what the release published. The bytes matter as
+	// much as the path: this is the file systemd reads to decide what to run.
+	unit, mode := placed(t, got, ".config/systemd/user/crswd.service")
+	if want := "the bytes of crswd.service\n"; string(unit) != want {
+		t.Errorf("~/.config/systemd/user/crswd.service holds %q, not the published unit %q", unit, want)
+	}
+	if mode != 0o644 {
+		t.Errorf("the installed unit is mode %04o, want 0644", mode)
+	}
+
+	body, mode := placed(t, got, ".local/bin/crswd")
+	if !strings.Contains(string(body), "crswd v0.42") {
+		t.Errorf("~/.local/bin/crswd holds %q, which is not what the tarball carried", body)
+	}
+	if mode&0o111 == 0 {
+		t.Errorf("~/.local/bin/crswd is mode %04o, which nothing can execute.\nsystemd reports that as 203/EXEC, long after the install said it worked", mode)
+	}
+
+	record, _ := placed(t, got, ".local/share/crswd/crswd.service.sha256")
+	if want := fmt.Sprintf("%x", sha256.Sum256(unit)); strings.TrimSpace(string(record)) != want {
+		t.Errorf("the recorded unit hash is %q; the unit it just wrote hashes to %s.\nT011 compares those two to tell an edited unit from one this installer wrote, and a record of the wrong bytes means every later run reads its own unit as edited", strings.TrimSpace(string(record)), want)
+	}
+}
+
+// TestConfigModeIs0600 is FR-017. The file is written to hold the shared
+// secret, and a mode inherited from the umask is 0644 on a stock host: a
+// credential for a daemon that runs unsandboxed code, readable by every account
+// on the machine, written that way by the install step itself.
+func TestConfigModeIs0600(t *testing.T) {
+	t.Parallel()
+	needsOpenSSL(t)
+
+	const config = ".config/crswd/config"
+
+	t.Run("written 0600 on a host that has none", func(t *testing.T) {
+		t.Parallel()
+
+		// A stock umask, set here rather than inherited, so what this asserts
+		// does not depend on the shell the suite was started from. Under 0022 a
+		// file created without care is 0644, which is the failure itself.
+		r := fakeRelease(t, "v0.42", "amd64")
+		got := runInstaller(t, "umask 0022\n"+r.signedBy(t, readInstaller(t)), r.dir, r.version)
+		if got.err != nil {
+			t.Fatalf("the installer refused a release it published itself: %v\nstderr:\n%s", got.err, got.stderr)
+		}
+
+		body, mode := placed(t, got, config)
+		if mode != 0o600 {
+			t.Errorf("~/%s is mode %04o, want 0600.\nThat file is where the shared secret goes, and 0644 is what a `cat >` inherits from a stock umask", config, mode)
+		}
+
+		// Every setting commented out, which is what docs/security.md §3 says
+		// keeps a copy of the example from being a file that holds a secret —
+		// and what makes this file behave exactly as no file at all until the
+		// operator edits it.
+		for _, line := range strings.Split(string(body), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") || line == "version = 1" {
+				continue
+			}
+			t.Errorf("the installed configuration sets %q.\nEverything but the schema version has to arrive commented out: a value here is one the operator did not choose, on a file they are about to be told is theirs", line)
+		}
+		for _, key := range []string{"shared_secret", "allowed_roots"} {
+			if !strings.Contains(string(body), key) {
+				t.Errorf("the installed configuration never mentions %s, which the next steps tell the operator to set in it", key)
+			}
+		}
+	})
+
+	t.Run("a configuration already there is not touched at all", func(t *testing.T) {
+		t.Parallel()
+
+		// 0644 and holding no secret, which is a file the daemon accepts: the
+		// refusal fires on contents, not on the name. So this is not a mode the
+		// installer may quietly correct — it is somebody's file.
+		const theirs = "# mine\nmax_sessions = 2\n"
+		got := installs(t, func(t *testing.T, home string) {
+			t.Helper()
+
+			dir := filepath.Join(home, ".config", "crswd")
+			if err := os.MkdirAll(dir, 0o750); err != nil {
+				t.Fatalf("make %s: %v", dir, err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "config"), []byte(theirs), 0o644); err != nil { //nolint:gosec // G306: the mode is the subject of this case.
+				t.Fatalf("write the operator's configuration: %v", err)
+			}
+		})
+
+		body, mode := placed(t, got, config)
+		if string(body) != theirs {
+			t.Errorf("the installer rewrote a configuration that was already there:\n%s\nIt is the one file on this host the operator authored, and this is an operation they think of as safe", body)
+		}
+		if mode != 0o644 {
+			t.Errorf("the installer changed the mode of an existing configuration to %04o.\nLeaving it alone means the mode too — that file holds no secret, so 0644 is a mode the daemon accepts and not one to correct on somebody's behalf", mode)
+		}
+	})
+}
+
+// TestInstallPrintsNextSteps is FR-018 and FR-019 together, because they are the
+// same step: the installer stops, and the only reason that is not an unfinished
+// job is that it says what is left.
+//
+// It cannot enable the unit — the daemon refuses to start without the secret, so
+// a service enabled here fails on first boot, and an operator who has watched
+// this service fail once reads the next failure as normal.
+func TestInstallPrintsNextSteps(t *testing.T) {
+	t.Parallel()
+	needsOpenSSL(t)
+
+	got := installs(t)
+
+	for _, want := range []string{
+		// The two settings with no default that will do, named as the
+		// configuration file spells them rather than as prose.
+		"shared_secret",
+		"allowed_roots",
+		// Where to set them, and the command that is deliberately not run.
+		"~/.config/crswd/config",
+		"systemctl --user enable --now crswd",
+	} {
+		if !strings.Contains(got.stdout, want) {
+			t.Errorf("the installer never says %q:\n%s\nIt has just stopped one command short of a working daemon; whoever ran it has to be told which one", want, got.stdout)
+		}
+	}
+
+	if got.ran("systemctl") {
+		t.Errorf("the installer called systemctl:\n%v\nIt cannot start: the secret is not set yet, so the service it enabled would fail on first boot and teach its operator to ignore a failing service", got.events)
 	}
 }
 
