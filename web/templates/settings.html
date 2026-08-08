@@ -51,9 +51,25 @@
 <main class="shell">
 <div class="settings">
 {{/*
-  Updates first, because it is the only section here that asks the operator to
-  decide something. Everything below it reports; this one offers.
-*/}}{{ with .Update }}<section class="settings-section">
+  The menu, and it is real links rather than a scripted tab strip.
+  
+  Each entry is a GET this daemon answers, so the whole thing works with no
+  script at all, a section can be linked to and bookmarked, and the back button
+  does what a back button does. The cost is a request per click; on a loopback
+  daemon that is not a cost worth engineering around, and the honest version is
+  worth more than the instant one.
+  
+  aria-current marks where the operator is, which is the thing a highlight says
+  visually and says to nobody otherwise.
+*/}}<nav class="settings-menu" aria-label="Settings sections">
+<ul class="settings-menu-list">
+<li><a class="settings-menu-link" href="/settings?section=Updates"{{ if eq .Shown "Updates" }} aria-current="page"{{ end }}>Updates</a></li>
+{{ range .Sections }}<li><a class="settings-menu-link" href="/settings?section={{ .Title }}"{{ if eq $.Shown .Title }} aria-current="page"{{ end }}>{{ .Title }}</a></li>
+{{ end }}</ul>
+</nav>
+
+<div class="settings-panel">
+{{ if eq .Shown "Updates" }}{{ with .Update }}<section class="settings-section">
 <h2 class="settings-title">Updates</h2>
 
 <dl class="version-facts">
@@ -62,39 +78,27 @@
 </dl>
 
 {{/*
-  The notes are rendered as text, never as markup. Whoever can publish a release
-  writes them, and a page that interpreted that string would let the release feed
-  decide what this daemon's own settings page contains. html/template escaping is
-  the control, and it is the reason Notes is a string here rather than anything
-  richer.
+  Rendered as text, never as markup. Whoever can publish a release writes this
+  string, and a page that interpreted it would let the release feed decide what
+  this daemon's own settings page contains.
 */}}{{ if .AvailableNotes }}<details class="release-notes">
 <summary>What {{ .Available }} says about itself</summary>
 <pre class="release-notes-body">{{ .AvailableNotes }}</pre>
 </details>{{ end }}
 
-{{/*
-  The control the update route never had (#103). It posts to the same route
-  destroy posts to, through the same gate, carrying the same confirming step —
-  reusing them rather than restating them is what keeps one door rather than two.
-
-  It renders only when there is something to move to. A button that would refuse
-  is worse than no button: it invites a click and answers with a refusal the
-  operator cannot act on.
-*/}}{{ if and .Reachable .Available }}<form class="update-form" method="post" action="/dashboard/update">
+{{ if and .Reachable .Available }}<form class="update-form" method="post" action="/dashboard/update">
 <input type="hidden" name="crsw_page_token" value="{{ .Token }}">
 <input type="hidden" name="version" value="{{ .Available }}">
 <input type="hidden" name="confirm" value="yes">
 <button class="button button-primary" type="submit">Update to {{ .Available }}</button>
 <p class="update-caution">This replaces the running binary and restarts the daemon. Sessions survive it.</p>
 </form>{{ end }}
-</section>{{ end }}
+</section>{{ end }}{{ end }}
 
-<section class="settings-section">
-<h2 class="settings-title">Configuration</h2>
-<p class="settings-source">{{ if .ConfigFile }}Read from {{ .ConfigFile }}{{ else }}No configuration file was read.{{ end }}</p>
-
-{{ range .Sections }}<table class="settings-table">
-<caption>{{ .Title }}</caption>
+{{ range .Sections }}{{ if eq $.Shown .Title }}<section class="settings-section">
+<h2 class="settings-title">{{ .Title }}</h2>
+<p class="settings-source">{{ if $.ConfigFile }}Read from {{ $.ConfigFile }}{{ else }}No configuration file was read.{{ end }}</p>
+<table class="settings-table">
 <thead>
 <tr>
 <th scope="col">Key</th>
@@ -110,9 +114,9 @@
 </tr>
 {{ end }}</tbody>
 </table>
-{{ end }}</section>
+</section>{{ end }}{{ end }}
+</div>
 </div>
 </main>
-{{ template "footer" }}
 </body>
 </html>

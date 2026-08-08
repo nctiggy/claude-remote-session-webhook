@@ -3167,13 +3167,16 @@ func TestEveryPageShowsTheVersion(t *testing.T) {
 		return string(source)
 	}
 
+	// It lives in the header now rather than a footer, which put the least
+	// surprising fact on the page as far from the thing it describes as the
+	// layout allows. Every page renders the header, so every page carries it.
 	for _, page := range []string{"dashboard", "session", "settings", "not-found"} {
-		if !strings.Contains(read(page+".html"), `{{ template "footer" }}`) {
-			t.Errorf("%s.html renders no footer, so an operator on that page cannot tell what is running", page)
+		if !strings.Contains(read(page+".html"), `{{ template "header"`) {
+			t.Errorf("%s.html renders no header, so an operator on that page cannot tell what is running", page)
 		}
 	}
 
-	if !strings.Contains(read("partials/footer.html"), "{{ version }}") {
-		t.Error("the footer does not call the version function; a hardcoded string renders perfectly and is wrong from the next release onward")
+	if !strings.Contains(read("partials/header.html"), "{{ version }}") {
+		t.Error("the header does not call the version function; a hardcoded string renders perfectly and is wrong from the next release onward")
 	}
 }
