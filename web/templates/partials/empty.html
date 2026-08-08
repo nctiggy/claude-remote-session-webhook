@@ -19,6 +19,19 @@
   other call site leaves it false, which is the state showing.
 */}}<section class="empty"{{ if .Hidden }} hidden{{ end }}>
 {{ template "rain" }}
+{{/*
+  The same rain as the header, and the same canvas element, so the message the
+  header occasionally says can also arrive here.
+
+  This is the page an operator looks at when there is nothing to look at, which
+  is exactly when an easter egg is worth encountering. `.empty` is already
+  position:relative with overflow:hidden and `.empty-message` is already
+  position:relative, so the canvas needs no rule of its own — it lands behind the
+  text by the same mechanism the masthead uses.
+
+  It carries aria-hidden like the header's, and draws nothing under a
+  reduced-motion preference, because the script schedules no loop there.
+*/}}{{ template "rain" }}
 <div class="empty-message">
 <h2 class="empty-title">{{ .Title }}</h2>
 <p class="empty-body">{{ .Body }}</p>

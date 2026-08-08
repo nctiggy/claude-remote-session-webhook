@@ -20,6 +20,7 @@ package httpapi
 // notices.
 
 import (
+	"github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo"
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
@@ -308,7 +309,16 @@ func parseTemplates(fsys fs.FS) (*template.Template, error) {
 		return nil, errors.New("httpapi: no template source provided; refusing to start")
 	}
 
-	set := template.New("")
+	// The version is a function rather than a field on every view.
+	//
+	// Every page shows it, and none of them is *about* it: threading it through
+	// eight view structs would put the same line in eight places for a value
+	// that is a property of the binary rather than of anything a page renders.
+	// A function also cannot drift — buildinfo.Version is the same variable
+	// --version prints, so the footer and the command line cannot disagree.
+	set := template.New("").Funcs(template.FuncMap{
+		"version": func() string { return buildinfo.Version },
+	})
 	source := make(map[string]string)
 	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {

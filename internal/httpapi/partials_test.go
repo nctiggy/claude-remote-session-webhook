@@ -3146,3 +3146,34 @@ func TestMessagesAreNotServerSupplied(t *testing.T) {
 		t.Fatal("this package has no non-test Go file, so the handler half of this sweep asserted nothing")
 	}
 }
+
+// TestEveryPageShowsTheVersion is the operator's question — "what is actually
+// running?" — answered without a shell on the host.
+//
+// **Must fail when** a page is added without the footer, or when the footer
+// stops reading buildinfo.Version. The second is the one worth guarding: a
+// footer that hardcoded a string would render perfectly and be wrong from the
+// next release onward, which is indistinguishable from working until somebody
+// deploys and the number does not move.
+func TestEveryPageShowsTheVersion(t *testing.T) {
+	t.Parallel()
+
+	read := func(p string) string {
+		t.Helper()
+		source, err := fs.ReadFile(web.Templates, "templates/"+p)
+		if err != nil {
+			t.Fatalf("read %s: %v", p, err)
+		}
+		return string(source)
+	}
+
+	for _, page := range []string{"dashboard", "session", "settings", "not-found"} {
+		if !strings.Contains(read(page+".html"), `{{ template "footer" }}`) {
+			t.Errorf("%s.html renders no footer, so an operator on that page cannot tell what is running", page)
+		}
+	}
+
+	if !strings.Contains(read("partials/footer.html"), "{{ version }}") {
+		t.Error("the footer does not call the version function; a hardcoded string renders perfectly and is wrong from the next release onward")
+	}
+}
