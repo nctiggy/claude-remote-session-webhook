@@ -148,7 +148,7 @@ re-litigate these** — if one looks wrong, write it in `PROGRESS.md` under
 
 ### US4 — Update without rebuilding (cannot start before US1)
 
-- [ ] T015 🔒 Verify: checksum **then** signature; a missing signature refuses
+- [x] T015 🔒 Verify: checksum **then** signature; a missing signature refuses. See Iteration 18
 - [ ] T016 🔒 Stage: `0600` until verified, swept at startup
 - [ ] T017 🔒 Swap: **smoke-test the staged binary**, then rename, then exit
 - [x] T018 Fetch: TLS, no cross-host redirect, exact asset name — **the one task in US4
@@ -176,9 +176,15 @@ because fetching is the one step of US4 that carries no verification and so neve
 T014 came next, once the key turned out to have been committed three iterations earlier, and
 T012 after it.
 
-**What is left is US4, in one chain: T015 → T016 → T017 → T019.** Each is security-critical and
-each depends on the one before it — verification before staging, staging before the swap, the
-swap before a route that asks for one. Nothing is blocked.
+**What is left is US4, in one chain: T016 → T017 → T019.** Each is security-critical and each
+depends on the one before it — staging before the swap, the swap before a route that asks for one.
+Nothing is blocked.
+
+**T015 landed the verification the rest of the chain rests on, and nothing calls it yet.** That is
+the deliberate order — verification before the thing it protects — but it is also this repo's
+oldest failure mode. `updater.Verify` and `Fetcher` are both waiting for a caller, and **T019 is
+the task that finally has to be one.** A test that asserts the route reaches both is what closes
+it; code that merely exists is not done.
 
 ---
 

@@ -1613,3 +1613,113 @@ checksum **then** signature, and a missing `.sig` is a refusal rather than a ski
     mutation and both fixed rather than noted.
 
 **No `RALPH_COMPLETE`.** T015, T016, T017 and T019 are open.
+
+---
+
+## Iteration 18 — 2026-08-08 02:18
+
+**Did:** **T015**, the verifier. `internal/updater/verify.go`: `Verify(name, asset, sums, signature)`
+— sha256 of the downloaded bytes against the one `SHA256SUMS` line naming that asset exactly, then
+`ed25519.Verify` over `SHA256SUMS` itself against **any** line of `release_key.txt`, embedded with
+`go:embed`. Seven sentinels (`ErrUnsummedAsset`, `ErrChecksumMismatch`, `ErrMalformedChecksums`,
+`ErrNotSigned`, `ErrSignatureUnverified`, `ErrNoReleaseKey`, `ErrMalformedReleaseKey`).
+`verify_test.go` carries the six tests `tasks.md` names plus `TestNoKeyInAnyLogOrRecord`, which
+`contracts/signing.md` asked for and nothing had. Gate green: build, vet, `go test ./...` (11
+packages), `golangci-lint run` (2.12.2, 0 issues), `gofmt -l` empty, `go vet` under all three tags.
+`go.sum` still absent.
+
+**Learned:**
+
+- **The order the contract fixes — checksum *then* signature — is only observable when a release
+  is wrong in both ways at once**, since both checks must pass either way. So one case corrupts
+  the bytes *and* signs with a stranger's key and requires `ErrChecksumMismatch`. Without it,
+  swapping the two steps is a mutation nothing catches. It is worth pinning: the concrete local
+  refusal is the one an operator can act on.
+- **⚠️ The test that proves signing is not decorative is not "a bad signature".** It is a
+  *consistent* forgery: tampered tarball, `SHA256SUMS` rebuilt to cover it, and the real release's
+  signature. Step 2 passes — the list and the bytes agree, because the attacker wrote both — and
+  only step 3 can tell the two releases apart. A verifier that stops after the checksum installs
+  it. `TestSignatureMismatchRefuses/a_tampered_tarball_with_a_list_rebuilt_to_match_it`.
+- **Every table here carries a row for the release exactly as published, wanting no error.**
+  Without it a fixture broken for an unrelated reason makes every refusal case pass while proving
+  nothing — and that is not theoretical: the "comment lines not skipped" mutation was caught
+  *by those rows*, because the committed file's `#` header then failed to decode and refused
+  everything.
+- **`ed25519.Verify` panics on a public key that is not 32 bytes.** So the length check in the key
+  parser is not tidiness — without it a typo'd line in `release_key.txt` takes the daemon down
+  instead of refusing an update. `TestVerifyRejectsUnknownKey/a_key_line_that_decodes_to_31_bytes`
+  is what catches that, and with the check removed it fails *as a panic*.
+- **A malformed key line refuses the whole update rather than being skipped**, which is the
+  fail-closed direction: skipping it means a rotation with a typo verifies against the old key and
+  looks like it worked, right until the old line is retired. Same for an unreadable `SHA256SUMS`
+  line — it might have been the one covering the asset.
+- **`errcheck` here is configured with `check-type-assertions: true`**, so
+  `signer.Public().(ed25519.PublicKey)` is a lint failure in a *test*. It is right to be: an
+  unchecked assertion yields the zero key, and the failure reads as "verification refused a
+  release signed by the key it carries" — a defect in the file under test. `publicHalf(t, signer)`
+  does it properly.
+- **The verifier accepts both of coreutils' separators, `"  "` and `" *"`,** and refuses anything
+  else after the digest. The workflow writes the first; refusing a release over which of the two
+  forms it used would be a refusal nobody could explain, and accepting *anything* would let a line
+  be read as covering a name it does not.
+- **Iteration 6's finding was right and it cost nothing**: the verifier looks up **one** name, so
+  whether `SHA256SUMS` covers five assets or seven is a question it never asks. No test counts them.
+- **Thirteen mutations, every one caught**: the signature check dropped entirely; an absent
+  signature accepted; a wrong-length signature handed to `Verify` anyway; only the first key line
+  tried; the checksum check dropped; the two steps swapped; `#` lines not skipped; the public-key
+  length check removed (panics); an unsummed asset accepted silently; the separator unchecked; the
+  digest not required to be hex; two checksums for one asset resolved by line order; and the key
+  read from disk at run time instead of embedded — that last one caught by the import allowlist
+  rather than by behaviour.
+- **`perl -i`, `sed -i` and running a `.sh` from `bash` are all refused by this sandbox**, so the
+  mutation harness could not be a script this time. Mutations were applied with the Edit tool and
+  reverted the same way, with a pristine copy in `.ralph-tmp/` (gitignored, removed after) for
+  `diff` to prove the file came back byte-identical. **Slower but no worse** — and `cp` from that
+  copy *is* permitted, which is the cheap restore.
+- **The import allowlist is the structural half of "embedded, not fetched".** `verify.go` may
+  import eight packages and `net`, `net/http` and `os` are not among them, so fetching the key it
+  verifies against is not something the file *can* do. Copied from `keygen_test.go`'s
+  `keygenMayImport`, which denies that file the means to write one.
+
+**Left:** **T016 → T017 → T019**, in that order, all three security-critical. T016 is the topmost
+open task: stage at `0600`, chmod to `0700` only after `Verify` returns nil, remove the staged file
+on any failure, and sweep the staging directory at startup.
+
+**Findings:**
+
+1. **⚠️ `updater.Verify` has no production caller, and neither does `Fetcher`.** That is the
+   order the contract fixes — verification before the thing it protects — but it is also the
+   failure this repo has shipped four times, and there are now two files waiting on it. **T019 is
+   the task that has to close it**, and its test has to assert the route reaches fetch *and*
+   verify, not merely that the handler exists. Written into the plan as well as here.
+2. **⚠️ Iteration 14's finding 2 still stands and is still the most likely thing to make the next
+   release run red.** `deploy/crswd.example.service` — published as the `crswd.service` asset —
+   has `ExecStart=%h/bin/crswd` and a required `EnvironmentFile=%h/.config/crswd/env`, while
+   `install.sh` places `~/.local/bin/crswd` and `~/.config/crswd/config`. A fresh install still
+   ends with a unit that cannot start. Still a fix-lane PR nobody has opened; checked again here.
+3. **⚠️ Nothing in `verify-install` has ever run** (Iteration 17, finding 2), and the signing step
+   has never met the real secret (Iteration 16, finding 1). The first merge to `main` is the first
+   execution of both. Read what they printed before changing anything.
+4. **Iteration 16's finding 4 still stands and is still urgent**: `quickstart.md`'s SC-009 check
+   greps for the *name* of the `RELEASE_SIGNING_KEY` secret and calls a match a failure, which
+   `install.sh`, `keygen.go` and `release.yml` all legitimately produce.
+5. **Iteration 12's finding still stands**: CI shellchecks nothing outside `.claude/hooks/`,
+   `ralph/loop.sh`, `.claude/statusline.sh` and `.github/scripts/`. **`install.sh` is linted by
+   nothing**, and a CI job now runs it twice per release. One line in `ci.yml`.
+6. **Iteration 14's finding 3 still stands**: an empty zero-byte `/tmp/crswd-keygen-probe` is
+   still there; the sandbox refuses to remove it. It holds nothing.
+7. **Iteration 11's finding that nothing tests "unit absent, record present" still stands.**
+8. **Iteration 7's finding about `gh release list --limit 1000` still stands.**
+9. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
+10. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
+11. **Iteration 13's finding that the README describes `POST /dashboard/update` before it exists
+    still stands** — T019 should delete the qualifier above that section.
+12. **`contracts/self-update.md` names `TestChecksumMismatchRefuses` under the *route*'s
+    obligations too** — "update refused, nothing renamed, version unchanged". This iteration can
+    only prove the first clause; nothing is renameable yet. **T017 and T019 owe the other two**,
+    and they are not the same assertion as this one.
+13. **No ad-hoc defects observed** in the code touched. Two gaps in this iteration's own tests were
+    found by mutation and closed rather than noted: nothing exercised the checksum-line parser's
+    separator, hex or duplicate branches, and nothing pinned the order of the two steps.
+
+**No `RALPH_COMPLETE`.** T016, T017 and T019 are open.
