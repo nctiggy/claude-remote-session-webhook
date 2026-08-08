@@ -33,6 +33,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -244,15 +245,24 @@ func (r run) index(event string) int {
 func (r run) ran(event string) bool { return r.index(event) >= 0 }
 
 // runInstaller executes the real script with the stubs prepended, against a
-// release directory the caller built.
+// release directory the caller built, on a host nothing has touched.
 //
 // seed runs against the home directory before the installer does, for the cases
 // whose subject is a host that already has something on it.
 func runInstaller(t *testing.T, script, releaseDir, version string, seed ...func(t *testing.T, home string)) run {
 	t.Helper()
 
-	dir := t.TempDir()
-	log := filepath.Join(dir, "events")
+	return runInstallerIn(t, t.TempDir(), script, releaseDir, version, seed...)
+}
+
+// runInstallerIn is the same run against a home the caller names, which is how
+// the same installer is run twice against what the first run left behind. The
+// event log is deliberately not under that home: two runs sharing one would
+// read as one run that did everything twice.
+func runInstallerIn(t *testing.T, dir, script, releaseDir, version string, seed ...func(t *testing.T, home string)) run {
+	t.Helper()
+
+	log := filepath.Join(t.TempDir(), "events")
 
 	for _, prepare := range seed {
 		prepare(t, dir)
@@ -356,24 +366,43 @@ func fakeRelease(t *testing.T, version, arch string) *release {
 	// they are the names with no file beside them in the download directory,
 	// which is what an installer running `sha256sum -c SHA256SUMS` gets wrong
 	// against a release that is entirely correct.
-	sums := map[string][]byte{r.tarball: gz.Bytes()}
 	for name := range deployed {
-		sums[name] = []byte("the bytes of " + name + "\n")
-		r.write(t, name, sums[name])
+		r.write(t, name, []byte("the bytes of "+name+"\n"))
 	}
-	names := make([]string, 0, len(sums))
-	for name := range sums {
-		names = append(names, name)
+	r.republish(t)
+	return r
+}
+
+// republish sums whatever the release directory now holds and signs the result
+// — what the workflow does at the end of every run, and what makes an asset
+// changed by a test a release rather than a tampered one.
+//
+// The names are taken from the directory rather than from a list, so an asset a
+// test adds is covered exactly as the workflow's `find`-driven step would cover
+// it. Anything called SHA256SUMS* is skipped: a signature is made from the sums
+// file and so cannot be inside it.
+func (r *release) republish(t *testing.T) {
+	t.Helper()
+
+	entries, err := os.ReadDir(r.dir)
+	if err != nil {
+		t.Fatalf("read the release directory: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), "SHA256SUMS") {
+			continue
+		}
+		names = append(names, entry.Name())
 	}
 	sort.Strings(names)
 
 	var lines strings.Builder
 	for _, name := range names {
-		fmt.Fprintf(&lines, "%x  %s\n", sha256.Sum256(sums[name]), name)
+		fmt.Fprintf(&lines, "%x  %s\n", sha256.Sum256(r.read(t, name)), name)
 	}
 	r.write(t, "SHA256SUMS", []byte(lines.String()))
-	r.sign(t, priv)
-	return r
+	r.sign(t, r.priv)
 }
 
 func (r *release) write(t *testing.T, name string, body []byte) {
@@ -824,6 +853,214 @@ func TestInstallPrintsNextSteps(t *testing.T) {
 
 	if got.ran("systemctl") {
 		t.Errorf("the installer called systemctl:\n%v\nIt cannot start: the secret is not set yet, so the service it enabled would fail on first boot and teach its operator to ignore a failing service", got.events)
+	}
+}
+
+// Where the installer puts the two files it must never clobber, and the record
+// that decides one of those two questions. Spelled once here because every case
+// below is about one of those paths being compared against that record.
+const (
+	installedUnit   = ".config/systemd/user/crswd.service"
+	installedConfig = ".config/crswd/config"
+	unitRecord      = ".local/share/crswd/crswd.service.sha256"
+)
+
+// twice is the installer run against the same host twice, which is the only way
+// the questions below can be asked at all: what the second run does is decided
+// entirely by what the first one left behind.
+//
+// between runs on that host after the first install and before the second — an
+// operator editing what the next steps told them to edit, or a later release
+// arriving. seed runs before the first, for a host that already had something on
+// it before this installer had ever been near it.
+//
+// Both runs are required to succeed. Meeting a host that already has crswd on it
+// is not an error: it is what an operator does to take a newer binary, and what
+// anybody does who is not sure the first run finished.
+func twice(t *testing.T, between func(t *testing.T, home string, r *release), seed ...func(t *testing.T, home string)) (first, second run) {
+	t.Helper()
+
+	r := fakeRelease(t, "v0.42", "amd64")
+	script := r.signedBy(t, readInstaller(t))
+	home := t.TempDir()
+
+	first = runInstallerIn(t, home, script, r.dir, r.version, seed...)
+	if first.err != nil {
+		t.Fatalf("the installer refused a release it published itself: %v\nstdout:\n%sstderr:\n%s", first.err, first.stdout, first.stderr)
+	}
+	if between != nil {
+		between(t, home, r)
+	}
+	second = runInstallerIn(t, home, script, r.dir, r.version)
+	if second.err != nil {
+		t.Fatalf("the second run failed on the host the first one set up: %v\nstdout:\n%sstderr:\n%s", second.err, second.stdout, second.stderr)
+	}
+	return first, second
+}
+
+// TestInstallNeverOverwritesConfig asks FR-016 the only way it can be asked:
+// install, edit the file the installer has just told the operator to edit, then
+// install again. That file is the one thing on this host they authored, and the
+// command that would destroy it is one they think of as safe.
+func TestInstallNeverOverwritesConfig(t *testing.T) {
+	t.Parallel()
+	needsOpenSSL(t)
+
+	// Deliberately not a shared secret: what is asserted is that the bytes come
+	// back unchanged, and a credential-shaped fixture is a credential in the
+	// repository. max_sessions is a setting with a default, so this is a file
+	// the daemon would accept.
+	const theirs = "version = 1\nmax_sessions = 2\nallowed_roots = /tmp/crswd-roots\n"
+
+	first, second := twice(t, func(t *testing.T, home string, _ *release) {
+		t.Helper()
+
+		if err := os.WriteFile(filepath.Join(home, installedConfig), []byte(theirs), 0o600); err != nil {
+			t.Fatalf("edit the configuration the first run wrote: %v", err)
+		}
+	})
+
+	if want := "wrote ~/" + installedConfig; !strings.Contains(first.stdout, want) {
+		t.Fatalf("the first run never wrote a configuration, so the second had nothing to leave alone:\n%s", first.stdout)
+	}
+
+	body, mode := placed(t, second, installedConfig)
+	if string(body) != theirs {
+		t.Errorf("the second run rewrote the configuration.\ngot:\n%s\nwant:\n%s\nEvery setting the operator was told to make lives in that file, and this is the command they were told to run", body, theirs)
+	}
+	if mode != 0o600 {
+		t.Errorf("the configuration is mode %04o after a second run, want 0600", mode)
+	}
+	if want := "~/" + installedConfig + " exists"; !strings.Contains(second.stdout, want) {
+		t.Errorf("the second run never said %q:\n%s\nA file quietly left alone reads exactly like a file quietly overwritten", want, second.stdout)
+	}
+}
+
+// TestInstallNeverOverwritesEditedUnit is the first two rows of the table in
+// contracts/installer.md, and the pair is the whole point: the comparison has to
+// be against the hash this installer recorded, never against the unit the
+// release ships.
+//
+// Both readings leave an edited unit alone, so the edited case cannot tell them
+// apart. Only the recorded one still delivers a *changed* unit to a host that
+// never touched the old one — which is every host that ever takes an update, and
+// the reason T008's Restart=always could otherwise never reach one.
+func TestInstallNeverOverwritesEditedUnit(t *testing.T) {
+	t.Parallel()
+	needsOpenSSL(t)
+
+	t.Run("an edited unit survives, and so does the record of the one we wrote", func(t *testing.T) {
+		t.Parallel()
+
+		// The published bytes plus a line: an edit, rather than a different
+		// file, because that is what an operator does to a unit that works.
+		const edited = "the bytes of crswd.service\nEnvironment=CRSW_MAX_SESSIONS=1\n"
+
+		// Read between the two runs, and it has to be: they share a home, so a
+		// read taken afterwards would be the same bytes compared with themselves
+		// — which is a comparison that passes against an installer that rewrote
+		// the record here, and this test's whole second half.
+		var recorded []byte
+
+		_, second := twice(t, func(t *testing.T, home string, _ *release) {
+			t.Helper()
+
+			raw, err := os.ReadFile(filepath.Join(home, unitRecord)) //nolint:gosec // G304: the home is this test's own t.TempDir.
+			if err != nil {
+				t.Fatalf("read the record the first run wrote: %v", err)
+			}
+			recorded = raw
+
+			if err := os.WriteFile(filepath.Join(home, installedUnit), []byte(edited), 0o644); err != nil { //nolint:gosec // G306: 0644 is the mode the installer writes a unit at, and this is standing in for it.
+				t.Fatalf("edit the unit the first run wrote: %v", err)
+			}
+		})
+
+		body, _ := placed(t, second, installedUnit)
+		if string(body) != edited {
+			t.Errorf("the second run replaced an edited unit.\ngot:\n%s\nwant:\n%s\nThat file is what systemd reads to decide what to execute and with which environment; whatever was changed in it was changed for a reason this installer cannot see", body, edited)
+		}
+		if want := "has been modified"; !strings.Contains(second.stdout, want) {
+			t.Errorf("the second run left an edited unit alone without saying so:\n%s\nIt has to say %q, because the operator is about to restart a daemon that is not running the unit they think they just installed", second.stdout, want)
+		}
+
+		// The record still describes the unit we wrote. Recording the operator's
+		// bytes here would make the *next* run find a record that matches and
+		// replace them without a word — a refusal that lasts exactly one command.
+		after, _ := placed(t, second, unitRecord)
+		if !bytes.Equal(recorded, after) {
+			t.Errorf("the second run rewrote the record for a unit it did not write: %q, was %q.\nThe run after it finds a record that matches the operator's unit and replaces it without a word", after, recorded)
+		}
+	})
+
+	t.Run("a unit we wrote is replaced when the release publishes a new one", func(t *testing.T) {
+		t.Parallel()
+
+		const newUnit = "[Service]\nExecStart=%h/.local/bin/crswd\nRestart=always\n"
+
+		_, second := twice(t, func(t *testing.T, _ string, r *release) {
+			t.Helper()
+
+			r.write(t, "crswd.service", []byte(newUnit))
+			r.republish(t)
+		})
+
+		body, _ := placed(t, second, installedUnit)
+		if string(body) != newUnit {
+			t.Errorf("the installer kept the old unit: %q.\nNobody had touched it — it hashed to exactly what the previous run recorded — so this is a comparison against the copy the release ships rather than against what this installer wrote, and no host would ever receive a corrected unit", body)
+		}
+		record, _ := placed(t, second, unitRecord)
+		if want := fmt.Sprintf("%x", sha256.Sum256([]byte(newUnit))); strings.TrimSpace(string(record)) != want {
+			t.Errorf("the record says %q for a unit that hashes to %s.\nEvery later run compares against that record, and one holding the wrong bytes makes this installer read its own unit as edited from here on", strings.TrimSpace(string(record)), want)
+		}
+	})
+}
+
+// TestInstallLeavesNoRecordAlone is the third row, and it is not an edge case.
+// This daemon has been deployed by writing the unit by hand, so every host
+// running it today has a unit and no record of one — including the host that
+// publishes these releases. Absence of evidence that we wrote a file is not
+// permission to replace it.
+func TestInstallLeavesNoRecordAlone(t *testing.T) {
+	t.Parallel()
+	needsOpenSSL(t)
+
+	// A unit that predates this installer: nothing like the published bytes, and
+	// pointing somewhere the published one does not.
+	const theirs = "[Unit]\nDescription=crswd, written by hand\n\n[Service]\nExecStart=%h/bin/crswd\n"
+
+	first, second := twice(t, nil, func(t *testing.T, home string) {
+		t.Helper()
+
+		dir := filepath.Join(home, filepath.Dir(installedUnit))
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("make %s: %v", dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, filepath.Base(installedUnit)), []byte(theirs), 0o600); err != nil {
+			t.Fatalf("write the unit this host already had: %v", err)
+		}
+	})
+
+	// Twice, because the failure this guards is not "it overwrote a stranger's
+	// unit" so much as "it recorded one, and then overwrote it on the next run".
+	for i, got := range []run{first, second} {
+		if want := "was not written by this installer"; !strings.Contains(got.stdout, want) {
+			t.Errorf("run %d left a unit it has no record of alone without saying so:\n%s\nIt has to say %q: the operator is running a unit this installer did not write and will not update", i+1, got.stdout, want)
+		}
+	}
+
+	body, _ := placed(t, second, installedUnit)
+	if string(body) != theirs {
+		t.Fatalf("the installer replaced a unit it has no record of writing:\n%s\nIt cannot tell one written by hand from one it wrote itself, and the only safe answer to that is the one that leaves the file", body)
+	}
+	if _, err := os.Stat(filepath.Join(second.home, unitRecord)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the installer recorded a hash for a unit it did not write (%v).\nThe run after that finds a record that matches and replaces the operator's unit without a word", err)
+	}
+
+	// Refusing to touch one file is not a reason to leave the host without a
+	// binary: the rest of the install still has to have happened.
+	if _, mode := placed(t, second, ".local/bin/crswd"); mode&0o111 == 0 {
+		t.Errorf("~/.local/bin/crswd is mode %04o after a run that left the unit alone", mode)
 	}
 }
 

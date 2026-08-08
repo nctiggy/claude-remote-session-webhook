@@ -20,10 +20,11 @@
 # restores the mode stored in the archive. Both checks stand in front of it.
 #
 # What it then writes is the binary, the service unit, a record of the unit it
-# wrote, and a configuration file — that last one only where there is none. It
-# enables nothing and starts nothing: the daemon cannot serve a request before
-# the secret is set, and a service that fails on first boot teaches its operator
-# to ignore a failing service.
+# wrote, and a configuration file — but it replaces neither a configuration nor
+# a unit it cannot show it wrote itself, so running it again on a host somebody
+# has since configured is safe. It enables nothing and starts nothing: the
+# daemon cannot serve a request before the secret is set, and a service that
+# fails on first boot teaches its operator to ignore a failing service.
 #
 # This script belongs to the project rather than to a person: no home
 # directory and no username appears below. The account name in the URLs is
@@ -188,6 +189,45 @@ record_unit() {
   printf '%s\n' "${sum%% *}" > "$HOME/$UNIT_RECORD"
 }
 
+# The unit, unless the copy on this host is not ours to replace. The record
+# written beside the last one we wrote is the only evidence that distinguishes a
+# unit this installer placed from a unit the operator authored, and a unit is
+# not a document: it is what systemd executes, with which environment, and
+# whether it is enabled at boot.
+#
+#   record matches   untouched since we wrote it     replace
+#   record differs   the operator edited it          leave it, say so
+#   no record        somebody else put it there      leave it, say so
+#
+# The third row is not an edge case and reading it as permission is the failure
+# this exists to prevent: every host deployed before this installer existed has
+# a hand-written unit and no record of one, including the host that publishes
+# these releases. A record that is not there to be read falls in the same row —
+# there is no information in one, and the safe direction is to leave a file
+# alone.
+#
+# Nothing is recorded on the two paths that leave the unit alone. Recording
+# somebody else's unit would make the *next* run read it as ours and replace it,
+# which is this refusal undoing itself one command later.
+place_unit() {
+  local recorded current
+  if [ -e "$HOME/$UNIT" ]; then
+    if [ ! -f "$HOME/$UNIT_RECORD" ] || [ ! -r "$HOME/$UNIT_RECORD" ]; then
+      say "~/$UNIT was not written by this installer — leaving it alone"
+      return 0
+    fi
+    recorded=$(cat -- "$HOME/$UNIT_RECORD")
+    current=$(sha256sum < "$HOME/$UNIT")
+    if [ "$recorded" != "${current%% *}" ]; then
+      say "~/$UNIT has been modified — leaving it alone"
+      return 0
+    fi
+  fi
+
+  place 0644 "$UNIT_ASSET" "$UNIT"
+  record_unit
+}
+
 # The configuration, and only when there is none. The operator's file is the one
 # thing on this host they authored; an installer that replaced it would destroy
 # it during an operation they think of as safe.
@@ -295,8 +335,7 @@ main() {
   say "unpacked $tarball"
 
   place 0755 unpacked/crswd "$BINARY"
-  place 0644 "$UNIT_ASSET" "$UNIT"
-  record_unit
+  place_unit
   write_config
   next_steps
 }
