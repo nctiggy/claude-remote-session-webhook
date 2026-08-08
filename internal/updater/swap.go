@@ -150,17 +150,48 @@ func newSwapper(bin string) *Swapper {
 	return &Swapper{bin: bin, exit: os.Exit}
 }
 
-// InstalledPath is ~/.local/bin/crswd.
+// InstalledPath is the binary this process is running, resolved through any
+// symlinks. It returns "" when that cannot be determined.
 //
-// It returns "" when the process has no absolute HOME — the same answer, and for
-// the same reason, that StagingDir gives: where a binary is renamed over may not
-// depend on the directory somebody happened to be in when they ran systemctl.
-func InstalledPath(getenv func(string) string) string {
-	home := strings.TrimSpace(getenv(envHome))
-	if !filepath.IsAbs(home) {
+// # Why this asks the process rather than composing a path
+//
+// It used to return ~/.local/bin/crswd, which is where install.sh puts a binary
+// and therefore looks like the right answer. It is the right answer only when
+// the operator installed the way the installer installs.
+//
+// The daemon this was written on runs /home/nctiggy/bin/crswd, placed there by
+// hand long before there was an installer. Against that host the old version
+// verified a release correctly, renamed it over a file nothing executes, exited
+// for systemd — and systemd restarted the *old* binary from the path it was
+// actually configured with. **The update reported success and changed nothing**,
+// which is the worst shape a failure can take: an operator who is told the
+// update worked has no reason to look again.
+//
+// os.Executable answers the only question that matters — what is running — and
+// it is right for every layout: the installer's, a hand-placed one, a package
+// manager's, a checkout. EvalSymlinks because renaming over a symlink replaces
+// the link and leaves the real binary untouched, which is the same silent
+// no-op wearing a different hat.
+//
+// The getenv argument is kept so callers and tests do not all change; it is
+// unused, and the compiler is told so rather than the parameter being dropped
+// from a package's exported surface for a reason that is not about its meaning.
+func InstalledPath(_ func(string) string) string {
+	self, err := os.Executable()
+	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, installedPath)
+	resolved, err := filepath.EvalSymlinks(self)
+	if err != nil {
+		// The path exists — os.Executable found it — but a link in it does not
+		// resolve. Renaming over what we cannot resolve is how a link gets
+		// replaced by a regular file, so this refuses instead.
+		return ""
+	}
+	if !filepath.IsAbs(resolved) {
+		return ""
+	}
+	return resolved
 }
 
 // Bin is the binary this Swapper replaces, or "" if it cannot.

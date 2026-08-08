@@ -16,6 +16,7 @@ package updater
 // executed at all.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -334,19 +335,47 @@ func TestRefusedSwapLeavesTheRunningBinary(t *testing.T) {
 		h.requireUntouched(t)
 	})
 
-	t.Run("a daemon with no home directory", func(t *testing.T) {
+	t.Run("a binary somewhere this daemon cannot write", func(t *testing.T) {
 		t.Parallel()
 
-		// A container configured entirely by environment variables: there is
-		// nowhere to stage and nothing to replace, so it cannot self-update,
-		// which is correct — its binary comes from its image.
-		s := NewSwapper(func(string) string { return "" })
-		if s.Bin() != "" {
-			t.Fatalf("a process with no HOME named an installed binary at %s", s.Bin())
+		// The case that used to be "a daemon with no HOME". That premise went
+		// away when InstalledPath started asking the process what it is running
+		// instead of composing a path from the environment — a process always
+		// knows its own executable, so there is no longer a daemon that cannot
+		// name one.
+		//
+		// The concern underneath it survives and is better served here. A
+		// container's binary comes from its image and must not be replaced, and
+		// an image layer is read-only: the refusal an operator actually gets is
+		// the filesystem's, and it is worth proving this reaches them as a
+		// refusal that leaves the running binary alone rather than as a panic or
+		// a half-finished rename.
+		dir := t.TempDir()
+		bin := filepath.Join(dir, "crswd")
+		if err := os.WriteFile(bin, binaryBytes, 0o700); err != nil { //nolint:gosec // G306: an executable under t.TempDir() has to be executable; that is what is being replaced.
+			t.Fatalf("write %s: %v", bin, err)
 		}
+		if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // G302: read-only-and-traversable is the condition under test.
+			t.Fatalf("make %s read-only: %v", dir, err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:errcheck,gosec // best-effort restore so t.TempDir can clean up; a failure here fails nothing under test.
+
+		before, err := os.ReadFile(bin) //nolint:gosec // G304: bin is filepath.Join of t.TempDir() and a literal.
+		if err != nil {
+			t.Fatalf("read %s: %v", bin, err)
+		}
+
 		staged := stagedCandidate(t, binaryBytes)
-		if err := s.Swap(context.Background(), staged, testVersion); !errors.Is(err, ErrNoInstalledBinary) {
-			t.Fatalf("swapping with no home directory returned %v, want %v", err, ErrNoInstalledBinary)
+		if err := newSwapper(bin).Swap(context.Background(), staged, testVersion); err == nil {
+			t.Fatal("a binary in a directory this daemon cannot write was replaced anyway")
+		}
+
+		after, err := os.ReadFile(bin) //nolint:gosec // G304: same path, same reason.
+		if err != nil {
+			t.Fatalf("read %s after the refusal: %v", bin, err)
+		}
+		if !bytes.Equal(before, after) {
+			t.Error("the refusal changed the running binary; a refused update must leave it exactly as it was")
 		}
 		requireGone(t, staged)
 	})
@@ -425,40 +454,43 @@ func TestSwapExitsForSystemd(t *testing.T) {
 	})
 }
 
-// TestInstalledPathIsTheDocumentedPath holds the location the contract fixes,
-// and the refusal to build one out of anything but an absolute HOME.
+// TestInstalledPathIsWhatIsRunning holds the contract that replaced a composed
+// path: this daemon updates the binary it is executing, not the one an installer
+// would have written.
 //
-// **Must fail when** a relative HOME is joined to whatever directory the daemon
-// was started in: which file this daemon renames over may not depend on
-// somebody's working directory at the moment they ran systemctl.
-func TestInstalledPathIsTheDocumentedPath(t *testing.T) {
+// It used to assert ~/.local/bin/crswd built from HOME, which is where install.sh
+// puts a binary and therefore looks correct. It is correct only for hosts that
+// installed the way the installer installs. The host this was written on runs
+// /home/nctiggy/bin/crswd, placed by hand before there was an installer — and
+// against it the old behaviour verified a release, renamed it over a file nothing
+// executes, and exited for systemd to restart the *old* binary. The update
+// reported success and changed nothing.
+//
+// **Must fail when** InstalledPath is composed from an environment variable
+// again. The test proves it by handing over a getenv that fails the test if it is
+// consulted at all: where this daemon renames may not be a guess about how it was
+// installed.
+func TestInstalledPathIsWhatIsRunning(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		name string
-		home string
-		want string
-	}{
-		{name: "an ordinary home", home: "/home/operator", want: "/home/operator/.local/bin/crswd"},
-		{name: "a trailing newline", home: "/home/operator\n", want: "/home/operator/.local/bin/crswd"},
-		{name: "no home at all", home: "", want: ""},
-		{name: "a relative home", home: "somewhere", want: ""},
-		{name: "a home that is only whitespace", home: "   ", want: ""},
+	self, err := os.Executable()
+	if err != nil {
+		t.Skipf("this platform cannot name its own executable: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(self)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", self, err)
 	}
 
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-
-			if got := InstalledPath(func(name string) string {
-				if name != envHome {
-					t.Fatalf("the installed binary was resolved from %s", name)
-				}
-				return c.home
-			}); got != c.want {
-				t.Fatalf("installed path %q, want %q", got, c.want)
-			}
-		})
+	got := InstalledPath(func(name string) string {
+		t.Fatalf("the installed binary was resolved from the environment (%s) rather than from the running process", name)
+		return ""
+	})
+	if got != want {
+		t.Fatalf("installed path %q, want the running binary %q", got, want)
+	}
+	if !filepath.IsAbs(got) {
+		t.Fatalf("installed path %q is not absolute; which file is renamed over may not depend on a working directory", got)
 	}
 }
 
