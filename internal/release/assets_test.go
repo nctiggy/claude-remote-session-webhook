@@ -23,8 +23,12 @@ package release_test
 // ~/.config — with nothing to check them against, which reads as verified.
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"debug/elf"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -71,9 +75,12 @@ var deployed = map[string]string{
 }
 
 // generated is the rest of the seven names contracts/release.md fixes: assets
-// the workflow computes rather than builds or copies. SHA256SUMS.sig joins it
-// at T014, which cannot run until the operator holds a signing key.
-var generated = []string{"SHA256SUMS"}
+// the workflow computes rather than builds or copies.
+//
+// The signature belongs to the same set and is the one whose absence is silent:
+// a release missing it looks complete on the page and is refused by every
+// installer and every daemon that meets it.
+var generated = []string{"SHA256SUMS", "SHA256SUMS.sig"}
 
 func readWorkflow(t *testing.T) string {
 	t.Helper()
@@ -156,7 +163,7 @@ func TestReleaseCarriesEveryAsset(t *testing.T) {
 	}
 	for name := range got {
 		if !want[name] {
-			t.Errorf("%s publishes %s, which is not one of the assets this test knows about.\nIf a release now carries it, add it here and to contracts/release.md — \"every asset\" holds only while this list is the whole list.\nSHA256SUMS.sig arrives with T014 and belongs in `generated` then", workflowPath, name)
+			t.Errorf("%s publishes %s, which is not one of the assets this test knows about.\nIf a release now carries it, add it here and to contracts/release.md — \"every asset\" holds only while this list is the whole list", workflowPath, name)
 		}
 	}
 
@@ -348,6 +355,226 @@ func TestEveryAssetHasAChecksum(t *testing.T) {
 	check.Dir = dist
 	if out, err := check.CombinedOutput(); err != nil {
 		t.Errorf("`sha256sum -c SHA256SUMS` beside the assets: %v\n%s", err, out)
+	}
+}
+
+// committedKeysPath is the file the release checks its own signing key against:
+// the one the daemon embeds and install.sh copies its RELEASE_KEYS block from.
+// Relative to the checkout, because the step reads it that way and the replay
+// below then reads the copy the test wrote instead of the operator's.
+const committedKeysPath = "internal/updater/release_key.txt"
+
+// TestReleaseIsSigned replays the signing step against a key made here, and
+// checks what came out the way the daemon will: ed25519 over the exact bytes of
+// SHA256SUMS.
+//
+// The failure it exists for is a release published without a signature, or with
+// one nothing can verify. Neither is visible on the release page — every asset
+// is there and every checksum is right — and both are refused by every host
+// that meets them. A checksum file travels with the assets it describes, so on
+// its own it says only that the two arrived together; an unsigned release is
+// not a weaker release, it is a release with nothing at all behind it.
+func TestReleaseIsSigned(t *testing.T) {
+	t.Parallel()
+
+	wf := readWorkflow(t)
+
+	const (
+		checksumStep = "Checksum every asset"
+		signStep     = "Sign SHA256SUMS"
+		publishStep  = "Publish"
+	)
+
+	// Both orderings fail quietly. Signing above the checksum step signs
+	// whatever SHA256SUMS held before this run — on a fresh runner nothing, so
+	// it reads as a missing file rather than as a wrong order. Signing below
+	// Publish leaves the release on the page without the one asset that makes
+	// the rest of it mean anything, and the run is green either way.
+	if stepAt(t, wf, signStep) < stepAt(t, wf, checksumStep) {
+		t.Fatalf("%s signs before it takes checksums, so SHA256SUMS.sig covers whatever the file held beforehand rather than this release", workflowPath)
+	}
+	if stepAt(t, wf, signStep) > stepAt(t, wf, publishStep) {
+		t.Fatalf("%s publishes before it signs, so the release carries no SHA256SUMS.sig.\nThe daemon and install.sh both refuse a release without one, and `latest` resolves to it — which stops installing altogether rather than shipping one release people can skip", workflowPath)
+	}
+
+	// The name the operator is told to use, in keygen's own output and in the
+	// handover. A name that drifts from those is an empty value here, and an
+	// empty value is a release refused for the absence of a secret nobody
+	// created under that spelling.
+	if secret := find(t, wf, "the `RELEASE_SIGNING_KEY` secret", regexp.MustCompile(`RELEASE_SIGNING_KEY: \$\{\{ secrets\.(\w+) \}\}`)); secret != "RELEASE_SIGNING_KEY" {
+		t.Errorf("%s signs with the secret %s; `crswd keygen` and %s both tell the operator to create RELEASE_SIGNING_KEY", workflowPath, secret, committedKeysPath)
+	}
+
+	keys := find(t, wf, "the `PUBLIC_KEYS` the step checks its own key against", regexp.MustCompile(`PUBLIC_KEYS: (\S+)`))
+	if keys != committedKeysPath {
+		t.Errorf("%s checks the signing key against %s, but the daemon embeds %s and install.sh copies its lines from there.\nA release checked against some third file can be signed by a key neither of them accepts", workflowPath, keys, committedKeysPath)
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, keys)); err != nil {
+		t.Errorf("%s reads %s, which is not in the working tree: %v\nThe step fails in CI, after the build has already succeeded", workflowPath, keys, err)
+	}
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate a release key: %v", err)
+	}
+	// A second pair, for the two cases about a key that is not the one the
+	// release is checked against. Both halves are ephemeral and neither leaves
+	// this process: the repository holds no private key, which is the whole
+	// reason T013 stopped for a human.
+	otherPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate a second key: %v", err)
+	}
+
+	script := stepScript(t, wf, signStep)
+
+	// The DER header the step wraps the seed in, derived rather than typed. With
+	// any other 16 bytes openssl reads a different key or refuses the file, and
+	// the difference between those two outcomes is the difference between a
+	// release signed by nobody and a release that does not publish. Asserted
+	// before the replay, so it still holds where openssl is absent.
+	pkcs8, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		t.Fatalf("marshal a PKCS#8 private key: %v", err)
+	}
+	if header := base64.StdEncoding.EncodeToString(pkcs8[:len(pkcs8)-ed25519.SeedSize]); !strings.Contains(script, "'"+header+"'") {
+		t.Errorf("the %q step does not wrap the seed with %q.\nThat is the PKCS#8 header openssl reads an ed25519 private key from, and it is the only shape it reads one in", signStep, header)
+	}
+
+	needsOpenSSL(t)
+
+	// What the checksum step writes, in the format `sha256sum -c` reads. The
+	// signature is over these bytes exactly, so what they say matters only in
+	// that a signature over anything else is distinguishable from one over this.
+	sums := []byte(fmt.Sprintf("%x  crswd_v0.0-test_linux_amd64.tar.gz\n%x  crswd.service\n",
+		sha256.Sum256([]byte("a tarball")), sha256.Sum256([]byte("a unit"))))
+
+	line := func(key ed25519.PublicKey) string { return base64.StdEncoding.EncodeToString(key) }
+
+	for _, tc := range []struct {
+		name   string
+		secret string // what RELEASE_SIGNING_KEY holds
+		keys   string // what the committed key file holds
+		signs  bool
+		says   string // for a refusal, part of what it has to say about it
+	}{
+		{
+			name:   "signs with the key the release is verified against",
+			secret: base64.StdEncoding.EncodeToString(priv),
+			keys:   "# a comment, and a blank line\n\n" + line(pub) + "\n",
+			signs:  true,
+		},
+		{
+			// Rotation is additive: the file carries every key a release still
+			// worth installing might be signed by, so the one signing today is
+			// one of the lines rather than the only line.
+			name:   "signs while the file still carries a retired key",
+			secret: base64.StdEncoding.EncodeToString(priv),
+			keys:   line(otherPub) + "\n" + line(pub) + "\n",
+			signs:  true,
+		},
+		{
+			// The state before the operator creates the secret, and the state
+			// after somebody deletes it. Publishing here is the failure the
+			// whole task is about: an unsigned release is one nobody can
+			// install, and it would be what `latest` resolves to.
+			name:   "refuses to publish when there is no secret to sign with",
+			secret: "",
+			keys:   line(pub) + "\n",
+			says:   "RELEASE_SIGNING_KEY is not set",
+		},
+		{
+			// Rotation done in the wrong order: the secret replaced before the
+			// new public line was committed. Every install and every update
+			// then refuses a release that looks perfect.
+			name:   "refuses a key whose public half is committed nowhere",
+			secret: base64.StdEncoding.EncodeToString(priv),
+			keys:   line(otherPub) + "\n",
+			says:   "is not one",
+		},
+		{
+			// Step 5 of the rotation in release_key.txt is retiring a key, and
+			// commenting the line out is how somebody retires one without
+			// deleting it. install.sh skips a commented line, so a release
+			// signed by that key is refused by every installer — the key has to
+			// be a line of its own here, not merely somewhere in the file.
+			name:   "refuses a key the file has commented out",
+			secret: base64.StdEncoding.EncodeToString(priv),
+			keys:   "# retired 2026-08-08: " + line(pub) + "\n",
+			says:   "is not one",
+		},
+		{
+			// The two halves of what keygen prints are adjacent in its output,
+			// and the public one is what goes in a file. A secret holding 32
+			// bytes is the paste that took the wrong line.
+			name:   "refuses a secret that is not a whole private key",
+			secret: base64.StdEncoding.EncodeToString(priv.Seed()),
+			keys:   line(pub) + "\n",
+			says:   "64 bytes",
+		},
+		{
+			name:   "refuses a secret that is not base64 at all",
+			secret: "paste the line, not the sentence",
+			keys:   line(pub) + "\n",
+			says:   "not base64",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			dist := filepath.Join(dir, "dist")
+			if err := os.MkdirAll(dist, 0o750); err != nil {
+				t.Fatalf("make dist/: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(dist, "SHA256SUMS"), sums, 0o600); err != nil {
+				t.Fatalf("write dist/SHA256SUMS: %v", err)
+			}
+			if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(committedKeysPath)), 0o750); err != nil {
+				t.Fatalf("make %s: %v", filepath.Dir(committedKeysPath), err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, committedKeysPath), []byte(tc.keys), 0o600); err != nil {
+				t.Fatalf("write %s: %v", committedKeysPath, err)
+			}
+
+			// `bash -e`, which is what GitHub runs a `run:` block with when the
+			// step names no shell, and the step's own `env:` supplied here
+			// because stepScript returns the script and not the block around it.
+			replay := exec.Command("bash", "-e", "-c", script) //nolint:gosec // G204: the script is this repository's own committed workflow.
+			replay.Dir = dir
+			replay.Env = append(os.Environ(),
+				"RELEASE_SIGNING_KEY="+tc.secret,
+				"PUBLIC_KEYS="+committedKeysPath,
+			)
+			out, replayErr := replay.CombinedOutput()
+			sig, readErr := os.ReadFile(filepath.Join(dist, "SHA256SUMS.sig")) //nolint:gosec // G304: dist is this test's own t.TempDir.
+
+			if !tc.signs {
+				if replayErr == nil {
+					t.Fatalf("the %q step signed this release and let the run continue to Publish:\n%s", signStep, out)
+				}
+				if readErr == nil {
+					t.Errorf("the %q step refused and left a %d-byte dist/SHA256SUMS.sig behind.\nPublish uploads whatever is at that path, so a refusal that writes one publishes a signature nothing can verify", signStep, len(sig))
+				}
+				if !strings.Contains(string(out), tc.says) {
+					t.Errorf("the %q step refused with:\n%s\nwhich says nothing about %q — and this message is all the operator gets", signStep, out, tc.says)
+				}
+				return
+			}
+
+			if replayErr != nil {
+				t.Fatalf("replay of the %q step: %v\n%s", signStep, replayErr, out)
+			}
+			if readErr != nil {
+				t.Fatalf("the %q step wrote no dist/SHA256SUMS.sig, which Publish then uploads: %v\n%s", signStep, readErr, out)
+			}
+			if len(sig) != ed25519.SignatureSize {
+				t.Fatalf("dist/SHA256SUMS.sig is %d bytes; a detached ed25519 signature is %d, and the daemon reads it as those bytes and nothing else", len(sig), ed25519.SignatureSize)
+			}
+			if !ed25519.Verify(pub, sums, sig) {
+				t.Errorf("dist/SHA256SUMS.sig is not a signature over dist/SHA256SUMS by the key that made it.\nThat is the call internal/updater makes and what install.sh hands openssl, so a signature over anything else is a release refused everywhere")
+			}
+		})
 	}
 }
 

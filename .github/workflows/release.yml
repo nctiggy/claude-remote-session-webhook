@@ -123,6 +123,102 @@ jobs:
           printf '%s\n' "$sums" > SHA256SUMS
           cat SHA256SUMS
 
+      - name: Sign SHA256SUMS
+        # What makes the checksums mean anything. SHA256SUMS travels with the
+        # assets it describes, so on its own it says only that the two arrived
+        # together — anyone able to serve a tampered tarball can serve a checksum
+        # that matches it. The signature is made with a key that exists only in
+        # the operator's hands and in this secret, and it is checked against a
+        # copy of the public half that the daemon embedded when it was built: the
+        # trust decision was made at install time, before any attacker was
+        # involved, rather than at download time by the host serving the download.
+        #
+        # It runs before Publish, and that ordering is the failure this step
+        # exists to prevent. Both the daemon and install.sh refuse a release
+        # carrying no SHA256SUMS.sig, so publishing one anyway would create a
+        # version nobody can install and that the `latest` pointer then resolves
+        # to — which breaks installing entirely, rather than shipping one release
+        # people can skip. A release that cannot be signed must not exist.
+        env:
+          # The private half. `crswd keygen` prints it and writes nothing to
+          # disk, so this secret and the operator's terminal are the only two
+          # places it has ever been.
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          # The public halves, read from the file the daemon embeds and install.sh
+          # copies its RELEASE_KEYS block from. Named here rather than written
+          # into the script below so that a test can replay this step against a
+          # key of its own — signing cannot be checked with the operator's key,
+          # because nothing outside this runner has the half that signs.
+          PUBLIC_KEYS: internal/updater/release_key.txt
+        run: |
+          [ -n "$RELEASE_SIGNING_KEY" ] || {
+            echo "RELEASE_SIGNING_KEY is not set, so there is nothing to sign this release with." >&2
+            echo "It is the private half of a key in $PUBLIC_KEYS; that file says how one is made." >&2
+            exit 1
+          }
+
+          # 0600 on everything written below, in a directory that goes away with
+          # the step. The private half has to reach the disk because openssl(1)
+          # reads a key from a file and from nowhere else.
+          umask 077
+          work=$(mktemp -d)
+          trap 'rm -rf -- "$work"' EXIT
+
+          # The secret is base64 of the 64 bytes `crswd keygen` prints: a 32-byte
+          # seed, then the public half.
+          printf '%s' "$RELEASE_SIGNING_KEY" | base64 -d > "$work/key.raw" || {
+            echo "RELEASE_SIGNING_KEY is not base64 — refusing" >&2
+            exit 1
+          }
+          [ "$(wc -c < "$work/key.raw")" -eq 64 ] || {
+            echo "RELEASE_SIGNING_KEY does not hold the 64 bytes of an ed25519 private key — refusing" >&2
+            exit 1
+          }
+
+          # The public half of the key about to sign, spelled the way the
+          # committed file spells one. A signature by a key neither the daemon
+          # nor install.sh carries verifies nowhere: every install and every
+          # update refuses it, and nothing about the release looks wrong. That is
+          # exactly what replacing the secret before committing the new public
+          # line produces, so it is refused here — where it costs a red run
+          # instead of a version no host can move to.
+          public=$(tail -c 32 "$work/key.raw" | base64 -w0)
+          grep -Fqx -- "$public" "$PUBLIC_KEYS" || {
+            echo "the key in RELEASE_SIGNING_KEY is not one $PUBLIC_KEYS carries, so nothing" >&2
+            echo "could verify this release: the daemon embeds that file and install.sh carries" >&2
+            echo "the same lines. Rotation is additive and in this order — commit the new public" >&2
+            echo "line to both, and only then replace the secret." >&2
+            exit 1
+          }
+
+          # openssl reads a private key as PKCS#8 and nothing else. The DER header
+          # for ed25519 is 16 constant bytes, written here as the base64 that
+          # decodes to them so no hex tool is needed, and joined to the seed as
+          # bytes: 16 is not a multiple of three, so these two cannot be
+          # concatenated as base64 the way install.sh concatenates the 12-byte
+          # public header — and a wrong header fails exactly like a wrong key,
+          # with every release refusing and nothing saying why.
+          #
+          # Handed over as DER rather than wrapped in PEM, which openssl would
+          # only decode again. It also keeps the shape of a private key out of
+          # this file: cmd/crswd's sweep for committed key material reports a PEM
+          # banner wherever it finds one, because a PEM-wrapped key is 48 bytes
+          # and too short for the check that recognises key material by decoding
+          # it. A workflow that assembles the banner teaches that sweep to be
+          # narrower, and it is the only thing standing between this repository
+          # and a key pasted into a file.
+          {
+            printf '%s' 'MC4CAQAwBQYDK2VwBCIEIA==' | base64 -d
+            head -c 32 "$work/key.raw"
+          } > "$work/key.der"
+
+          # -rawin because ed25519 signs the message itself. There is no
+          # pre-hashed form of it to hand a signer instead.
+          openssl pkeyutl -sign -inkey "$work/key.der" -keyform DER -rawin \
+            -in dist/SHA256SUMS -out dist/SHA256SUMS.sig
+
+          ls -l dist/SHA256SUMS.sig
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -137,7 +233,8 @@ jobs:
             "dist/crswd.service" \
             "dist/cloudflared.example.yml" \
             "dist/crswd-api" \
-            "dist/SHA256SUMS"
+            "dist/SHA256SUMS" \
+            "dist/SHA256SUMS.sig"
 
       - name: Prune old releases
         # Bounded history, minus two refusals that pruning by age alone gets
