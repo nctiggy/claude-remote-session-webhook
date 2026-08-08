@@ -78,7 +78,7 @@ environment where they cannot fail.
 
 - [x] T011 [US3] Add the clobber refusal to `install.sh`, comparing the installed unit against the hash recorded at T010: matching → replace; differing → **leave it and say so**; **no record → leave it and say so**. Tests: `TestInstallNeverOverwritesConfig`, `TestInstallNeverOverwritesEditedUnit`, `TestInstallLeavesNoRecordAlone`. **Must fail when** absence of a record is read as permission — that third case is every host deployed before this milestone, including the operator's own.
 
-- [ ] T012 [US3] Add a `verify-install` job to `.github/workflows/release.yml` on **`ubuntu-latest`** — GitHub-hosted, **not** the self-hosted runners, which are this operator's machines and carry his home directory. It runs after the release, against **the published release**, with a fresh `HOME`, and runs the installer **twice**: once to prove it installs, once (after editing the config and unit) to prove it does not overwrite. It asserts `systemctl --user is-active crswd` reports `inactive`. **Must fail when** the installer is only ever run where the project is already installed — a green run on the author's machine proves nothing, because every precondition the installer creates is already true there.
+- [!] T012 [US3] **[BLOCKED behind T013/T014 — see `ralph/PROGRESS.md`, Iteration 12]** Add a `verify-install` job to `.github/workflows/release.yml` on **`ubuntu-latest`** — GitHub-hosted, **not** the self-hosted runners, which are this operator's machines and carry his home directory. It runs after the release, against **the published release**, with a fresh `HOME`, and runs the installer **twice**: once to prove it installs, once (after editing the config and unit) to prove it does not overwrite. It asserts `systemctl --user is-active crswd` reports `inactive`. **Must fail when** the installer is only ever run where the project is already installed — a green run on the author's machine proves nothing, because every precondition the installer creates is already true there.
 
 ---
 
@@ -108,7 +108,7 @@ environment where they cannot fail.
 
 ## Phase 6: US5 — The rain says something (P5, independent)
 
-- [ ] T020 [P] [US5] Draw occasional messages on the existing rain canvas in `web/static/crswd.js`, with the messages defined beside the rain rather than in a template, and add `aria-hidden="true"` to the canvas in `web/templates/partials/header.html`. Nothing may run when the rain does not. Tests in `internal/httpapi/partials_test.go`: `TestRainCanvasIsAriaHidden`, `TestNoMessageInRenderedMarkup`, `TestNothingRunsUnderReducedMotion`, `TestMessagesAreNotServerSupplied`. **Must fail when** messages are inserted as DOM nodes, which puts them in the accessibility tree — a message that appeared on a still page would be the one part of this feature reaching someone who asked for stillness.
+- [x] T020 [P] [US5] Draw occasional messages on the existing rain canvas in `web/static/crswd.js`, with the messages defined beside the rain rather than in a template, and add `aria-hidden="true"` to the canvas in `web/templates/partials/header.html`. Nothing may run when the rain does not. Tests in `internal/httpapi/partials_test.go`: `TestRainCanvasIsAriaHidden`, `TestNoMessageInRenderedMarkup`, `TestNothingRunsUnderReducedMotion`, `TestMessagesAreNotServerSupplied`. **Must fail when** messages are inserted as DOM nodes, which puts them in the accessibility tree — a message that appeared on a still page would be the one part of this feature reaching someone who asked for stillness.
 
 ---
 

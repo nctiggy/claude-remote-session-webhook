@@ -866,3 +866,108 @@ instruction. T013 remains BLOCKED-ON-HUMAN.
 10. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
 11. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
 12. **No ad-hoc defects observed** in the code touched.
+
+---
+
+## Iteration 12 — 2026-08-08 00:31
+
+**Did:** Marked **T012 blocked** (`- [!]` in both the plan and `tasks.md`) and took **T020**
+instead, which is the plan's own instruction for while T013/T014 wait on a human. The rain now
+occasionally says something: five strings and two constants beside the rain in
+`web/static/crswd.js`, drawn by `saying(field)` from inside `paint` and nowhere else. Four
+tests in `internal/httpapi/partials_test.go` — `TestRainCanvasIsAriaHidden`,
+`TestNoMessageInRenderedMarkup`, `TestNothingRunsUnderReducedMotion`,
+`TestMessagesAreNotServerSupplied`. Gate green: build, vet, `go test ./...`, `golangci-lint run`
+(2.12.2, 0 issues), `gofmt -l` empty, **`-tags quickstart ./cmd/crswd` (31s, real)**, `go.sum`
+still absent.
+
+**Learned:**
+
+- **T012 is blocked and it is verifiable in one line, so stop re-deriving it.**
+  `install.sh:151` — `[ -n "$found" ] || die "this installer carries no release key…"` — and
+  `release_keys()` is an empty heredoc. **The installer refuses every release today,
+  unconditionally.** T012 installs from *the published release* on a fresh runner, so the job
+  would fail on every merge to `main` until the operator's key exists and T014 signs. Iterations
+  9, 10 and 11 each rediscovered this from scratch; it is now written into the plan and
+  `tasks.md` beside the task so a fresh context reads it before opening `install.sh`.
+- **T020's own instruction to "add `aria-hidden="true"` to the canvas in `header.html`" was
+  already satisfied and not by that file.** The canvas lives in `partials/rain.html`
+  (`header.html` only does `{{ template "rain" }}`) and has carried the attribute since
+  milestone 1, asserted by `TestTheRainCarriesNoInformationAndStaysOffReadingContent`. So
+  `TestRainCanvasIsAriaHidden` was written to claim something the existing test does not: every
+  `<canvas>` on every *page*, not the partial in isolation. It catches a page that renders a
+  second canvas of its own. **A task naming a file is not always naming the file the thing is
+  in — check before editing the one it names.**
+- **Go cannot execute this file, so FR-032 is a structural claim, and the region boundary is
+  the whole trick.** `TestNothingRunsUnderReducedMotion` slices `crswd.js` from `const GLYPHS =`
+  to `const watch = (pane) =>` — the rain's half — asserts both markers exist, then requires
+  every occurrence of `MESSAGES`, `SAYING_FRAMES`, `SAYING_ODDS`, `saying` and `saidFor` to fall
+  inside it. That is what catches a message path added anywhere else, **including one added as a
+  listener rather than a timer**, which a `setTimeout`/`setInterval` blocklist would have missed
+  entirely. The timer blocklist is still there for the in-region case.
+- **Mutation 4 had to be run twice and the first attempt is the lesson.** A `setInterval` message
+  path inserted just above `const watch` is *inside* the slice, so it was caught by the timer
+  check rather than by the confinement check — the right answer for the wrong reason. Re-run with
+  the mutation in the file's last IIFE, the confinement check fired on both `MESSAGES` reads.
+  **When mutating to test a region boundary, check which side of it the mutation landed on.**
+- **All seven mutations were run and each fails with the right message**: `aria-hidden` removed
+  from the canvas (fires on all four pages and on both canvases of the two that have two); a
+  `<p>Wake Up</p>` in `rain.html` (fires in both message tests, and the **case-insensitive**
+  match is what caught the title-cased copy); `saying(field)` moved from `paint` into `tick`;
+  a message path outside the rain; the `still.matches` guard removed from `start()`;
+  `MESSAGES` emptied (both sweeps *fatal* rather than passing vacuously — that guard is the
+  point); and a `rainSaying` constant added to `internal/httpapi/dashboard.go`.
+- **A Go mutation has to go after the imports.** `const rainSaying = …` placed above the `import`
+  block is `syntax error: imports must appear before other declarations` — a build failure, which
+  is not a mutation and proves nothing about the test.
+- **`os.ReadFile` over a name from `os.ReadDir(".")` is gosec G304** and needs a `//nolint`, unlike
+  iteration 8's read of a path joined from constants. Iteration 6 hit the `MkdirAll`/`WriteFile`
+  mode rules; this is the third distinct gosec rule this package's tests have tripped.
+- **The messages must stay distinctive strings.** Both sweeps are substring matches over whole
+  rendered pages and over every Go file in the package, so a message like "running" or "sessions"
+  would fail against correct code. The five chosen are unmistakably decoration, which is also
+  what the contract asks for on its own grounds.
+- **`-tags quickstart` was run even though no route changed**, because `web/` is embedded into
+  the real binary the suite builds and serves. It passed; `tmux`, `jq` and `127.0.0.1:8765` were
+  all available, as in iteration 8.
+
+**Left:** T012 (`- [!]`, blocked), T013 (BLOCKED-ON-HUMAN), T014–T019, and **T021**, which is
+the only unblocked task remaining and is next. T021 has real material waiting for it in these
+findings: the `crswd-api` file mode (iteration 5), `quickstart.md`'s installer grep (iteration 9),
+and rolling back with `crswd.previous`. **After T021 the loop has nothing left it may do** —
+everything else waits on the operator running `crswd keygen`, adding `RELEASE_SIGNING_KEY`, and
+committing the public line to `internal/updater/release_key.txt` *and* to the `RELEASE_KEYS`
+heredoc in `install.sh`.
+
+**Findings:**
+
+1. **⚠️ The operator's key is now the critical path for six of the seven remaining tasks.**
+   T012, T013, T014, T015, T016 and T017 all wait on it directly or behind it; only T021 does
+   not. This is no longer "T013 stops for a human" — it is most of the milestone. Worth saying
+   plainly at the next handover rather than as a footnote.
+2. **Iteration 11's finding about CI linting no shell outside `.claude/hooks/`, `ralph/loop.sh`,
+   `.claude/statusline.sh` and `.github/scripts/` still stands, and T012 was its planned home.**
+   With T012 blocked, `install.sh` has no scheduled linting at all. It is a two-word change to
+   `ci.yml`'s two path lists — **now squarely a fix-lane one-liner rather than something to wait
+   for.** `shellcheck` is at `~/.local/bin/shellcheck` but running it was refused by the sandbox
+   again, the fourth iteration running.
+3. **Iteration 11's finding that nothing tests "unit absent, record present" still stands.**
+4. **⚠️ Iteration 10's findings 1 and 2 still stand** — `deploy/crswd.example.service` has
+   `ExecStart=%h/bin/crswd` and a required `EnvironmentFile=%h/.config/crswd/env`, while the
+   installer places `~/.local/bin/crswd` and `~/.config/crswd/config`. A fresh install still ends
+   with a unit that cannot start. **T012 was the thing that would have caught it and T012 is now
+   blocked**, which makes the fix-lane PR more urgent, not less.
+5. **Iteration 9's finding about `quickstart.md`'s `grep -iE 'nctiggy|/home/[a-z]'` check still
+   stands** (T021).
+6. **Iteration 7's finding about `gh release list --limit 1000` still stands.**
+7. **Iteration 6's finding about `data-model.md`/`contracts/release.md` and `SHA256SUMS.sig`
+   still stands** — T015's verifier must expect the sums file to cover five names, not seven.
+8. **Iteration 5's finding about `crswd-api` arriving non-executable still stands** (T021's
+   README).
+9. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
+10. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
+11. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
+12. **No ad-hoc defects observed** in the code touched. `contracts/rain-messages.md` also names
+    `internal/httpapi/stylesheet_test.go` in its **Tests** line; nothing was added there, because
+    all four tests it lists belong in `partials_test.go` and the two existing rain assertions in
+    `stylesheet_test.go` still pass unchanged.
