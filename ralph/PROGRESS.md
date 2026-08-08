@@ -1354,3 +1354,31 @@ spelling of it. Gate green: build, vet, `go test ./...`, `-race` on the new pack
 
 **No `RALPH_COMPLETE`.** T012 and T014 wait on the operator's key. T015–T017 and T019 are open,
 and finding 1 above is the decision the next iteration has to make first.
+
+---
+
+## Handover complete — T013's halt is satisfied
+
+**The operator generated the key pair, holds the private half in the `RELEASE_SIGNING_KEY`
+repository secret, and supplied the public half. It is committed to both places that need it:
+`internal/updater/release_key.txt` and the `RELEASE_KEYS` block in `install.sh`, checked to be
+identical.**
+
+- **T013 is done.** It did exactly what it was asked to: built `crswd keygen`, committed an
+  empty key file, and halted rather than improvising a key. That halt was the task, not a
+  failure of it.
+- **T012 is unblocked** — it was waiting only on a key existing, so the installer had something
+  to verify against.
+
+Two things the next iterations should know:
+
+1. **Committing the key broke `TestInstallVerifiesBeforeExecutable`, and the break was
+   correct.** Its "carries no key at all" case read the real `install.sh` and asserted the
+   empty-block message, so its premise was the state of the repository rather than anything the
+   case established. Fixed in `2ae9307`: it strips the key block itself now. **If another test
+   reads `install.sh` and depends on it being empty of something, it has the same bug.**
+2. **The two key locations agree because a human checked once.** A key added to one and not the
+   other is a release the daemon installs and the installer refuses, or the reverse — worse
+   than either failing outright, because it looks like it works. **A test pinning the two
+   copies together is still owed**, the same way the asset names got one. Whichever task next
+   touches either file should add it.

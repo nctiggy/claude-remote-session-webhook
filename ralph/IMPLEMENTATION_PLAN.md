@@ -134,14 +134,14 @@ re-litigate these** — if one looks wrong, write it in `PROGRESS.md` under
 - [x] T009 Detect, download, and verify **before** anything is executable
 - [x] T010 Place the binary, the unit, the recorded hash, and a config only if absent
 - [x] T011 Refuse to clobber: an edited unit, and one we have no record of
-- [!] T012 The `verify-install` job on a GitHub-hosted runner — **not optional**, and
+- [ ] T012 The `verify-install` job on a GitHub-hosted runner — **not optional**, and
       **blocked behind T013/T014**: it installs from the published release, which carries no
       `SHA256SUMS.sig` until the operator's key exists, and `install.sh` refuses an unsigned
       release by design. Added today it would fail on every merge to `main`. See Iteration 12.
 
 ### The signing key — ⛔ STOPS FOR A HUMAN
 
-- [!] T013 🔒 `crswd keygen` and an **empty** `release_key.txt` — **both built and committed**;
+- [x] T013 🔒 `crswd keygen` and an **empty** `release_key.txt` — **both built and committed**;
       **halted at the key itself**, which only the operator may generate. See Iteration 14.
 - [ ] T014 Sign `SHA256SUMS` in CI — **waits on the operator's key**
 
