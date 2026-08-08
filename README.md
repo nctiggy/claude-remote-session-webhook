@@ -40,12 +40,14 @@ edited, or one you wrote by hand before this installer existed, is left alone an
 said so. There is no record to read for a unit it did not write, and no record is
 read as "leave it", never as permission.
 
-> **The line above refuses every release today, and that is the design working
-> rather than a bug.** A release is installed only if it is signed by a key this
-> installer carries, and the key list is empty until the operator runs
-> `crswd keygen`, keeps the private half as a repository secret, and commits the
-> public half. Until then, build from a clone — see
-> [Working in this repo](#working-in-this-repo).
+> **A release is installed only if it is signed by a key this installer
+> carries.** The checksum alone proves nothing: it is fetched from the same place
+> as the binary, so anyone able to serve one can serve the other. The signature is
+> verified against a key committed to this repository, which means the trust
+> decision was made when you installed — before any attacker was involved.
+>
+> An installer carrying no key refuses every release rather than skipping the
+> check. That is the intended failure, not an oversight.
 
 ### Updating, and rolling back
 

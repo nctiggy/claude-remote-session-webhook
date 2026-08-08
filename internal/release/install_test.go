@@ -1135,3 +1135,64 @@ func TestInstallerCarriesTheCommittedKeys(t *testing.T) {
 		t.Errorf("%s accepts releases signed by:\n%s\n%s accepts:\n%s\nA key in one and not the other is a release the daemon will install and the installer will refuse, or the other way round", installerPath, got, committedKeys, want)
 	}
 }
+
+// TestKeyListsAgree pins the two places a release key has to live.
+//
+// The daemon embeds internal/updater/release_key.txt; install.sh carries the
+// same lines in its RELEASE_KEYS block, because it is fetched on its own and has
+// no checkout to read from. Neither can import the other — one is Go, one is
+// shell — so the duplication is unavoidable.
+//
+// The drift is not, and it is worse than either file being wrong alone. A key in
+// the daemon and not the installer is a release an existing host updates to and
+// a new host refuses to install; the reverse is a release a new host installs and
+// no existing host will take. Both look like the system working until somebody
+// compares two machines.
+//
+// This exists because a human compared them once, by hand, and that is not a
+// mechanism.
+func TestKeyListsAgree(t *testing.T) {
+	t.Parallel()
+
+	keyPath := filepath.Join("..", "updater", "release_key.txt")
+	blob, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", keyPath, err)
+	}
+	embedded := keyLines(t, string(blob))
+
+	script := readInstaller(t)
+	open := strings.Index(script, keyBlockOpen)
+	if open < 0 {
+		t.Fatalf("%s no longer opens its key list with %q", installerPath, keyBlockOpen)
+	}
+	rest := open + len(keyBlockOpen)
+	end := strings.Index(script[rest:], keyBlockClose)
+	if end < 0 {
+		t.Fatalf("%s no longer closes its key list with %q", installerPath, keyBlockClose)
+	}
+	carried := keyLines(t, script[rest:rest+end])
+
+	if strings.Join(embedded, "\n") != strings.Join(carried, "\n") {
+		t.Errorf("the daemon and the installer trust different keys.\n"+
+			"internal/updater/release_key.txt: %v\ninstall.sh RELEASE_KEYS:         %v\n"+
+			"A key in one and not the other is a release one of them installs and the other refuses.",
+			embedded, carried)
+	}
+}
+
+// keyLines is the parse both readers agree on: comments and blanks dropped,
+// everything else significant and in order.
+func keyLines(t *testing.T, blob string) []string {
+	t.Helper()
+
+	var out []string
+	for _, line := range strings.Split(blob, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
