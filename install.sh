@@ -70,6 +70,7 @@ die() {
 # person who is supposed to hold it proves nothing about who signed a release.
 release_keys() {
   cat <<'RELEASE_KEYS'
+49NjabDTQvOEX7mTi/4ksAhsG/34ICzfqRe9wHZO9UY=
 RELEASE_KEYS
 }
 
