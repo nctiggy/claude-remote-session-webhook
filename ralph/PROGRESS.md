@@ -767,3 +767,102 @@ that does or does not exist. T013 remains BLOCKED-ON-HUMAN; T014 and after wait 
 10. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
 11. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
 12. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
+
+---
+
+## Iteration 11 — 2026-08-08 00:18
+
+**Did:** T011, the clobber refusal, finishing every part of US3 that can be done off a
+GitHub-hosted runner. `place_unit` in `install.sh` compares the installed unit against the
+hash `record_unit` wrote: matching → replace, differing → `has been modified — leaving it
+alone`, no record → `was not written by this installer — leaving it alone`, and **nothing is
+recorded on either refusal**. Three tests in `internal/release/install_test.go`:
+`TestInstallNeverOverwritesConfig`, `TestInstallNeverOverwritesEditedUnit` (two cases),
+`TestInstallLeavesNoRecordAlone`. Gate green: build, vet, `go test ./...`, `golangci-lint run`
+(2.12.2, 0 issues), `gofmt -l` empty, `go.sum` still absent.
+
+**Learned:**
+
+- **Every question in this task needs the installer run *twice against one home*, which the
+  harness could not do**, so `runInstaller` now delegates to `runInstallerIn(t, home, …)` and
+  `twice(t, between, seed…)` sits on top: install, let the caller be an operator (or a later
+  release), install again. **The event log had to move out of `$HOME`** — with both runs
+  appending to `$HOME/events`, run 2 reads as run 1 having done everything twice, and every
+  ordering assertion in `TestInstallVerifiesBeforeExecutable` would have been evaluated against
+  a doubled log. It is now `t.TempDir()/events`, one per run.
+- **A test that reads the filesystem *after* `twice` returns cannot see anything the second run
+  changed**, because both runs share a home and the read happens once, at the end. That is not
+  hypothetical: the record-unchanged assertion was written as `placed(first)` vs `placed(second)`
+  and it **passed against an installer that called `record_unit` on the leave path** — the exact
+  defect it was written for, comparing two reads of one file. Anything that must not change
+  **has to be read inside `between`**. Any later test using `twice` inherits this trap.
+- **The edited-unit case cannot tell the two possible comparisons apart**, and that is why the
+  second subtest exists. Comparing against the freshly downloaded `crswd.service` leaves an
+  edited unit alone exactly as comparing against the record does; the two differ only when the
+  release publishes a *new* unit onto a host that never touched the old one — where the shipped
+  copy reading refuses forever and no host ever receives a corrected unit. Hence
+  `release.republish(t)`, which re-sums and re-signs whatever the release directory now holds:
+  a test can change an asset and still be a *release* rather than a tampered download.
+  `fakeRelease` now ends with it instead of building the sums inline.
+- **Six mutations were run and five failed first time; the sixth is the one above.** The list:
+  no record read as permission (the `-f` guard folded into the outer `if`); comparison against
+  the shipped `$UNIT_ASSET`; the unit placed unconditionally, i.e. T010's own behaviour; the
+  leave path calling `record_unit`; `write_config`'s if-absent branch removed; and the `say` on
+  the modified branch deleted. `cp install.sh .ralph-tmp/install.sh.good` and restoring from it
+  is the harness — `git checkout` cannot be used to revert a mutation while the task's own work
+  is uncommitted.
+- **A record that cannot be read is treated as no record, not as a mismatch.** `[ -f ] && [ -r ]`
+  before the `cat`, because under `set -eu` a failing `cat` in a command substitution ends the
+  script with a message about `cat` rather than about the unit — and "we cannot show we wrote
+  this" is exactly the third row anyway.
+- **The record is compared as a whole string against `${current%% *}`.** Any malformed record —
+  empty, truncated, carrying a filename the way `sha256sum -c` lines do — compares unequal and
+  therefore leaves the unit alone, which is the safe direction by construction rather than by a
+  special case.
+- **No tagged suite was needed.** Nothing here is behind a build tag; `internal/release` is
+  test-only in the default build, and neither `cmd/crswd` nor `deploy/` was touched.
+  `install.sh` has no Go reader outside `internal/release`.
+
+**Left:** T012–T021. **T012 is next in the plan but cannot go green yet** — see finding 1; it
+runs against the published release, which carries no `SHA256SUMS.sig` until T014, which waits on
+T013's human step. **T020 and T021 are the work to take meanwhile**, per the plan's own
+instruction. T013 remains BLOCKED-ON-HUMAN.
+
+**Findings:**
+
+1. **T012 still cannot go green before the operator's key, and it is now the only unproven part
+   of US3.** T009–T011 are all implemented and all of them are proven only here, where every
+   precondition the installer creates is already true. The three cases most worth a fresh runner
+   are the two below, which no test in the working tree can see.
+2. **⚠️ Iteration 10's findings 1 and 2 still stand and T011 has made the first one reachable
+   twice over.** `deploy/crswd.example.service` — published as the `crswd.service` asset — has
+   `ExecStart=%h/bin/crswd` and a required `EnvironmentFile=%h/.config/crswd/env`, while the
+   installer places the binary at `~/.local/bin/crswd` and the configuration at
+   `~/.config/crswd/config`. A fresh install still ends with a unit that cannot start (203/EXEC,
+   or a missing `EnvironmentFile`). **What is new: now that a unit this installer wrote is
+   replaced when the release publishes a different one, the fix genuinely reaches installed
+   hosts** — one PR to `deploy/crswd.example.service` and every host that has not edited its
+   unit takes it on the next run. Before this task, no host would ever have received it. Still
+   out of scope here (AR-008, and the file is live on the operator's own host), still worth a
+   fix-lane PR before T012 or T021.
+3. **Nothing tests the case where the unit is absent but a record is present** — an operator who
+   deleted the unit and re-ran the line. The code places and re-records, which is right, but the
+   contract's table has three rows and says nothing about that fourth state, so no test asserts
+   it. Worth one case if anyone extends `TestInstallNeverOverwritesEditedUnit`.
+4. **Iteration 9's finding about `quickstart.md`'s `grep -iE 'nctiggy|/home/[a-z]'` check still
+   stands** (T021).
+5. **Iteration 9's finding about CI linting no shell outside `.claude/hooks/`, `ralph/loop.sh`,
+   `.claude/statusline.sh` and `.github/scripts/` still stands.** `install.sh` grew again here
+   and is still linted by nothing — `shellcheck` was refused by the sandbox for the third
+   iteration running. Its syntax is exercised for real (the suite runs the whole file under bash
+   more than twenty times) but no linter has read it. **T012 edits `ci.yml`'s neighbour and is
+   the cheapest place to add it to both lists.**
+6. **Iteration 7's finding about `gh release list --limit 1000` still stands.**
+7. **Iteration 6's finding about `data-model.md`/`contracts/release.md` and `SHA256SUMS.sig`
+   still stands** — T015's verifier must expect the sums file to cover five names, not seven.
+8. **Iteration 5's finding about `crswd-api` arriving non-executable still stands** (T021's
+   README).
+9. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
+10. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
+11. **Iteration 2's finding about `AGENTS.md`'s quickstart row still stands.**
+12. **No ad-hoc defects observed** in the code touched.
