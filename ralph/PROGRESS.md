@@ -1227,3 +1227,130 @@ Then T014 (sign in CI) → T012 (`verify-install`) and T015–T019 unblock in pl
 **No `RALPH_COMPLETE`.** T012–T019 remain open and every one of them is behind the operator's
 key. A fresh iteration has nothing it may take: read the handover above, confirm
 `internal/updater/release_key.txt` still holds no key line, and stop.
+
+> **Iteration 15 corrects the last sentence.** T018 was not behind the key and never had been.
+> The key file was confirmed unchanged — it still holds no key line — and the handover above
+> still stands for T012 and T014.
+
+---
+
+## Iteration 15 — 2026-08-08 01:20
+
+**Did:** **T018**, `internal/updater/fetch.go` — the first Go file in that package. `NewFetcher`
+asks the GitHub API what a release published (`/releases/latest`, or `/releases/tags/<version>`
+for the named rollback) and returns exactly one asset by exact name, over a client carrying its
+own `CheckRedirect`. Refusals, each with a sentinel: `ErrRedirectRefused` (a host outside
+`releaseHosts`), `ErrInsecureTransport` (any URL that is not https, **including the ones the API
+hands back**), `ErrAssetNotFound` (a name that is not the whole name), `ErrMalformedVersion` (a
+version that is not `^v[0-9]+(\.[0-9]+)*$`, refused **before** a request is built). It verifies
+nothing and writes nothing — T015 and T016. Seven tests in `internal/updater/fetch_test.go`,
+and `internal/release`'s `tarballName` now calls `updater.AssetName` instead of holding a fourth
+spelling of it. Gate green: build, vet, `go test ./...`, `-race` on the new package,
+`golangci-lint run` (2.12.2, 0 issues), `gofmt -l` empty, and `go vet` under all three tags.
+`go.sum` still absent.
+
+**Learned:**
+
+- **⚠️ The loop was not finished, and the plan's own summary was what said it was.** The plan
+  header read "there is no unblocked task left"; `tasks.md` draws **no** dependency into T018,
+  lists it under *Parallel opportunities* as "a different file that adds no verification", and
+  `contracts/self-update.md` closes with "**Task 1 must leave a daemon that can download and
+  verify nothing installed** — if it can swap, verification is being built after the thing it
+  protects". Three iterations read the summary and stopped. **The plan says `tasks.md` supersedes
+  anything it summarises; that includes its own stop signs.** Header corrected in both files.
+- **`httptest`'s certificate is issued for `example.com` as well as `127.0.0.1`**, which is what
+  makes a cross-host test possible without relaxing TLS. The transport is
+  `srv.Client().Transport.(*http.Transport).Clone()` with a `DialContext` that sends
+  `example.com:*` to the test server's address and dials everything else for real. So the good
+  host is a *name*, the far host is `127.0.0.1:<port>` — genuinely different hosts, both
+  cert-valid, and the shipped `CheckRedirect` is the one under test rather than a copy.
+- **Test the refusal by giving the wrong answer a real server.** `TestCrossHostRedirectRefused`'s
+  far end records what it was asked for, so the mutation "drop `CheckRedirect`" does not fail
+  differently — it *succeeds*, and the test prints the bytes that arrived from a host no release
+  comes from. It also asserts a **same-host** redirect is followed, because every real download
+  is one: a client that refuses every redirect passes the headline case and can never update.
+- **⚠️ A size limit checked after the read is not a limit, and my first test could not see the
+  difference.** `io.ReadAll(resp.Body)` followed by `if len(body) > limit` refuses exactly the
+  same responses as `io.LimitReader` does — a gigabyte later, after the allocation the far end
+  chose. The mutation passed. The test now serves one byte past the limit and then **never
+  finishes**: bounded reading returns at once, unbounded reading is still waiting, and the
+  assertion is on which. Same shape as Iteration 14's leak: the mutation is what found it.
+- **`Host`, not `Hostname()`.** A redirect to another port on a host a release does come from is
+  not a release either, and comparing hostnames would let it through. It is also what lets the
+  test distinguish two `127.0.0.1` servers if a later one needs to.
+- **`DisallowUnknownFields` is wrong at this boundary** and this is the exception to
+  `docs/security.md` §2, noted in the file: GitHub answers with dozens of fields and adds more
+  without telling anybody, so a strict decoder fails against a release that is perfectly fine.
+  What is constrained instead is what is *read* — two strings, neither reaching a filesystem or
+  a command line.
+- **The version is validated here rather than at the route**, because this is where it becomes a
+  URL path. `v0.42?draft=true` was the sharp mutation case: with the check removed it did not
+  error at all, it fetched `/releases/tags/v0.42` with a query nobody asked for. T019 takes this
+  value from a form field, so `ErrMalformedVersion` is named for it to answer 400 with.
+- **GitHub 403s an API request with no `User-Agent`**, which would read as "this release is not
+  there". Set per request from `buildinfo.Version`, for the reason `version.go` gives for reading
+  it per request rather than at construction.
+- **Nine mutations were run and each fails with the right message**: `CheckRedirect` dropped
+  (three tests, one of them printing the downloaded bytes); asset matched by suffix; the same by
+  prefix; the scheme check dropped; the scheme check applied to redirects only; version
+  validation dropped; the unbounded read (which **passed** until the test was rewritten);
+  `NewFetcher` given no hosts and a transport of its own; the asset name respelled with dashes;
+  and `repoPath` pointed at a repository one letter different. The harness lived in `.ralph-tmp/`
+  (gitignored, removed after), as in iterations 10, 11, 13 and 14.
+- **`errcheck` runs with `check-blank: true` here**, so `_, _ = w.Write(...)` in a test handler
+  is an error like any other — the house idiom is `if _, err := w.Write(b); err != nil`. And
+  **gosec's G705 fires on a test server that echoes its own request path** into the response;
+  the fix was to make the server answer only from a map of what the release published, which is
+  a better fake anyway — a handler that builds its answer from the request serves every name
+  equally well, including the ones that have to come back as a refusal.
+
+**Left:** T012 (`- [!]`), T013 (`- [!]`, halted at the key), T014, T015, T016, T017, T019.
+
+**Findings:**
+
+1. **⚠️ Whoever takes the next task must decide whether T015 is really blocked, and should not
+   take "the plan says so" for an answer.** *For blocked*: `tasks.md`'s graph draws
+   T013 → T014 → T015, and says "T014 and everything after it wait on a human". *Against*: a
+   verifier is testable with ephemeral pairs generated in the test (which is how `install_test.go`
+   already tests signature refusal), an empty `release_key.txt` is the **documented** "refuse
+   every release" state rather than an unfinished one, and T015's own entry names no dependency
+   on a signature existing anywhere. The same is then true of T016, T017 and T019 in order. **I
+   did not take it** — one task per iteration, and this one is a judgement the plan asks to be
+   made deliberately. What is certainly still blocked: **T014** (signs with a secret nobody
+   holds) and **T012** (installs from a release that carries no signature until T014 runs).
+2. **⚠️ `releaseHosts` names two githubusercontent hosts that could not be checked from here.**
+   Outbound network calls are refused in this sandbox, so `objects.githubusercontent.com` and
+   `release-assets.githubusercontent.com` are written from knowledge of where GitHub redirects
+   release asset downloads, not from an observed redirect. **The failure mode is a refusal that
+   names the host it refused**, which is the safe direction and is why it was written this way
+   rather than as a wildcard — but it means the first real `POST /dashboard/update` may refuse
+   with "a release comes from …" and need one line added. **T012's `verify-install` job is where
+   this would be caught**, and T012 is blocked; an operator can also confirm it in one command:
+   `curl -sI <a release asset URL> | grep -i ^location`.
+3. **⚠️ Iteration 14's finding 2 still stands and is still the most urgent fix-lane PR.**
+   `deploy/crswd.example.service` — published as the `crswd.service` asset — has
+   `ExecStart=%h/bin/crswd` and a required `EnvironmentFile=%h/.config/crswd/env`, while
+   `install.sh` places `~/.local/bin/crswd` and `~/.config/crswd/config`. **A fresh install still
+   ends with a unit that cannot start**, and the README's first instruction is that install line.
+4. **Iteration 14's finding 1 still stands**: `quickstart.md`'s SC-009 check greps for the
+   *name* of the `RELEASE_SIGNING_KEY` secret and calls a match a failure, which `install.sh` and
+   `keygen.go` both legitimately produce. Worth fixing before the operator runs the quickstart.
+5. **Iteration 12's finding about CI linting no shell outside `.claude/hooks/`, `ralph/loop.sh`,
+   `.claude/statusline.sh` and `.github/scripts/` still stands.** `install.sh` is linted by
+   nothing; `shellcheck` was refused by the sandbox again.
+6. **Iteration 14's finding 3 still stands**: an empty zero-byte `/tmp/crswd-keygen-probe` is
+   still there; the sandbox refuses to remove it. It holds nothing.
+7. **Iteration 11's finding that nothing tests "unit absent, record present" still stands.**
+8. **Iteration 7's finding about `gh release list --limit 1000` still stands.**
+9. **Iteration 6's finding about `data-model.md`/`contracts/release.md` and `SHA256SUMS.sig`
+   still stands** — T015's verifier must expect the sums file to cover five names, not seven.
+   `ChecksumsAsset`/`SignatureAsset` are now constants in `internal/updater` for it to use.
+10. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
+11. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
+12. **Iteration 13's finding that the README describes `POST /dashboard/update` before it exists
+    still stands** — T019 should delete the qualifier above that section.
+13. **No ad-hoc defects observed** in the code touched. The one defect found here was in this
+    iteration's own size-limit test, found by mutation, and fixed above rather than logged.
+
+**No `RALPH_COMPLETE`.** T012 and T014 wait on the operator's key. T015–T017 and T019 are open,
+and finding 1 above is the decision the next iteration has to make first.
