@@ -1723,3 +1723,124 @@ on any failure, and sweep the staging directory at startup.
     separator, hex or duplicate branches, and nothing pinned the order of the two steps.
 
 **No `RALPH_COMPLETE`.** T016, T017 and T019 are open.
+
+---
+
+## Iteration 19 — 2026-08-08 02:36
+
+**Did:** **T016**, staging. `internal/updater/stage.go`: `Stager{dir, verify}` over
+`~/.local/share/crswd/staging`, `Stage(version, name, asset, sums, signature)` — write the asset at
+**`0600`**, refuse if it is executable, `Verify`, unpack the one `crswd` member, rewrite at `0600`,
+`chmod 0700`; every failure removes the candidate through one deferred cleanup. `Sweep()` empties
+the directory and `cmd/crswd`'s `run()` calls it before `newDaemon`, fatally. Four sentinels
+(`ErrNoStagingDir`, `ErrUnreadableRelease`, `ErrNoReleaseBinary`, `ErrStagedFileIsExecutable`).
+`stage_test.go` carries the three tests `tasks.md` names plus `TestStagedBinaryIsTheReleaseBinary`,
+`TestStagerVerifiesWithTheCommittedKey`, `TestStagingDirIsTheDocumentedPath` and
+`TestStagedNameCannotEscapeTheStagingDirectory`. Gate green: build, vet, `go test ./...` (11
+packages), `golangci-lint run` (2.12.2, 0 issues), `gofmt -l` empty, `go vet` under all three tags.
+`go.sum` still absent.
+
+**Learned:**
+
+- **⚠️ The contract and two existing comments disagree about when the bytes hit the disk, and the
+  contract wins.** `contracts/self-update.md` numbers it write-at-0600 → checksum → signature →
+  chmod, and `tasks.md` says "download to … at mode `0600`, chmod to `0700` **only after**
+  verification passes". But `fetch.go`'s `Asset` and `verify.go`'s `Verify` both say in prose that
+  nothing reaches the filesystem "before something has decided the bytes are the published ones",
+  which reads as verify-then-write. **Resolved in favour of `tasks.md` + the contract** — they are
+  the source of truth and a code comment is not — and the middle ground is what shipped: the raw
+  bytes are written at `0600` before verification, and **nothing parses them until after**. A
+  tampered tarball never reaches `archive/tar`. If a later reader thinks those comments were
+  contradicted, this is why.
+- **⚠️ `TestStagedFileIsNotExecutableBeforeVerification` cannot be a post-condition, and writing it
+  as one is the trap.** Hoist the `chmod` above the signature check and *every* after-the-fact
+  assertion still passes, because the failure path removes the file it just made executable. The
+  test observes from inside the `verify` seam instead. Mutation confirmed: hoisting the chmod goes
+  red only because of that, and green under any check made after `Stage` returns.
+- **The staged path is written twice, deliberately.** The asset is a `tar.gz` and the thing renamed
+  over `~/.local/bin/crswd` is the member inside it, so between the signature check and the chmod
+  the candidate is replaced by what it carried. One path rather than two because a second name in
+  that directory is a second thing to remove on failure, and the forgotten one is what gets left.
+- **`O_CREATE`'s mode says nothing about a file that already exists**, and that file exists more
+  often than it looks: a verified candidate whose swap did not happen is a `0700` file at exactly
+  the staged name, and staging that version again writes through it. Without the explicit
+  `f.Chmod(stagedMode)` the second candidate inherits the first one's execute bit. Caught by a
+  subtest that stages twice — and caught *by the `refuseIfExecutable` guard*, which is what that
+  otherwise-unreachable stat is for: it turns a reordering into a refusal of a correct release
+  rather than a silent loss of the invariant.
+- **The version reaches a filename, so it is matched against `versionShape` here too.** It arrives
+  as data twice over — the form field T019 reads, and the API's own `tag_name` — and `../../.bashrc`
+  is a name this would otherwise write and then exec. With the check removed, that exact string
+  stages successfully outside the directory. Same regexp `fetch.go` pastes into a URL path; the
+  boundary that builds the path is the one that checks it.
+- **The archive's own mode is read and discarded.** A tar header states the permissions it wants,
+  and honouring it is how a bit chosen by whoever built the archive lands on a file this daemon
+  renames over its own binary. Every test fixture writes `0777` members so a stage that honoured
+  them shows up in an assertion rather than in review.
+- **`HOME` only — `XDG_DATA_HOME` is deliberately not consulted**, unlike `internal/config`. The
+  installer writes `$HOME/.local/share/crswd/crswd.service.sha256` and staging is its sibling; one
+  arrangement both halves agree on beats a variable nobody in this project sets. No absolute `HOME`
+  means no staging directory: `Sweep` is a no-op and `Stage` refuses, so a container configured
+  entirely by environment variables cannot self-update, which is correct — its binary is its image.
+- **The startup caller is asserted with `go/parser`, not `strings.Contains`.** Iteration 17's
+  lesson generalises: `run()` is heavily commented and a grep for `Sweep` is satisfied by prose
+  about sweeping. The AST is given no comments to be fooled by, and the test also requires the
+  `Sweep` call to precede the `Listen` call.
+- **`if false { … }` is not a usable mutation in this repo.** `go test` runs vet's unreachable
+  analyser, so the test binary fails to build and the run reports nothing rather than red. Mutate by
+  deleting the statement or by inverting a condition into something reachable.
+- **Eleven mutations, every one caught**: the chmod hoisted above verification; the unpack step
+  removed so the tarball stays staged; the failure cleanup skipped; the startup `Sweep` call
+  removed; `RemoveAll` weakened to `Remove`; the version-shape check removed; the explicit
+  `f.Chmod` removed; the verified mode widened to `0777`; the duplicate-member guard removed; the
+  regular-file check removed; and verification dropped from `Stage` entirely.
+
+**Left:** **T017 → T019**, both security-critical. T017 is the topmost open task: exec the staged
+binary with `--version`, require **exactly** the expected string, then `os.Rename` over
+`~/.local/bin/crswd` keeping `crswd.previous`, then exit 0. `Stage` hands it a `0700` path and that
+path is the whole interface between the two.
+
+**Findings:**
+
+1. **⚠️ `Stage` and `Fetcher` have no production caller, and `updater.Verify` and `Stager.Sweep`
+   now do.** T016 closed two of the four — `Stage` calls `Verify`, `run()` calls `Sweep` — and
+   opened one. **T019 is the task that has to close `Stage` and `Fetcher`**, and its test has to
+   assert the route reaches fetch, verify *and* stage rather than that the handler exists. T017
+   will owe the same for the swap it writes. Written into the plan as well as here.
+2. **⚠️ Iteration 14's finding 2 still stands and is still the most likely thing to make the next
+   release run red.** `deploy/crswd.example.service` — published as the `crswd.service` asset — has
+   `ExecStart=%h/bin/crswd` and a required `EnvironmentFile=%h/.config/crswd/env`, while
+   `install.sh` places `~/.local/bin/crswd` and `~/.config/crswd/config`. A fresh install still ends
+   with a unit that cannot start. Still a fix-lane PR nobody has opened; not re-checked this
+   iteration, since nothing here touched either file.
+3. **⚠️ Nothing in `verify-install` has ever run** (Iteration 17, finding 2), and the signing step
+   has never met the real secret (Iteration 16, finding 1). The first merge to `main` is the first
+   execution of both. Read what they printed before changing anything.
+4. **Iteration 16's finding 4 still stands and is still urgent**: `quickstart.md`'s SC-009 check
+   greps for the *name* of the `RELEASE_SIGNING_KEY` secret and calls a match a failure, which
+   `install.sh`, `keygen.go` and `release.yml` all legitimately produce.
+5. **Iteration 12's finding still stands**: CI shellchecks nothing outside `.claude/hooks/`,
+   `ralph/loop.sh`, `.claude/statusline.sh` and `.github/scripts/`. **`install.sh` is linted by
+   nothing**, and a CI job now runs it twice per release. One line in `ci.yml`.
+6. **Iteration 14's finding 3 still stands**: an empty zero-byte `/tmp/crswd-keygen-probe` is still
+   there; the sandbox refuses to remove it. It holds nothing.
+7. **Iteration 11's finding that nothing tests "unit absent, record present" still stands.**
+8. **Iteration 7's finding about `gh release list --limit 1000` still stands.**
+9. **Iteration 4's finding about `plan.md`'s "tag-triggered" line still stands.**
+10. **Iteration 3's finding about `internal/audit/audit_test.go`'s action table still stands.**
+11. **Iteration 13's finding that the README describes `POST /dashboard/update` before it exists
+    still stands** — T019 should delete the qualifier above that section.
+12. **`-tags quickstart` could not be run here and was vetted instead.** `cmd/crswd` was touched, so
+    the plan asks for it, but `127.0.0.1:8765` is held by the deployed daemon and two startup cases
+    bind that exact port. `go vet -tags quickstart ./...` passes, which `AGENTS.md` names as the
+    cheap check when the environment is not available. **Nothing in this iteration's behaviour is
+    covered by that suite** — the sweep's caller is asserted structurally instead — but a future
+    task that wants the sweep proven end to end needs a host where that port is free.
+13. **`internal/updater` now has no `ErrStagedFileIsExecutable` path any test can reach on its own.**
+    It fires only under a mutation, which is what it is for. Noted so it is not deleted as dead code.
+14. **No ad-hoc defects observed** in the code touched. Two gaps in this iteration's own tests were
+    found by mutation and closed rather than noted: nothing exercised the duplicate-member branch,
+    and nothing covered a candidate written over an executable one — the case the explicit chmod
+    exists for.
+
+**No `RALPH_COMPLETE`.** T017 and T019 are open.

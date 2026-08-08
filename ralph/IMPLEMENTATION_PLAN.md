@@ -149,7 +149,7 @@ re-litigate these** — if one looks wrong, write it in `PROGRESS.md` under
 ### US4 — Update without rebuilding (cannot start before US1)
 
 - [x] T015 🔒 Verify: checksum **then** signature; a missing signature refuses. See Iteration 18
-- [ ] T016 🔒 Stage: `0600` until verified, swept at startup
+- [x] T016 🔒 Stage: `0600` until verified, swept at startup. See Iteration 19
 - [ ] T017 🔒 Swap: **smoke-test the staged binary**, then rename, then exit
 - [x] T018 Fetch: TLS, no cross-host redirect, exact asset name — **the one task in US4
       that never needed the key**; see Iteration 15
@@ -176,15 +176,19 @@ because fetching is the one step of US4 that carries no verification and so neve
 T014 came next, once the key turned out to have been committed three iterations earlier, and
 T012 after it.
 
-**What is left is US4, in one chain: T016 → T017 → T019.** Each is security-critical and each
-depends on the one before it — staging before the swap, the swap before a route that asks for one.
-Nothing is blocked.
+**What is left is US4, in one chain: T017 → T019.** Both are security-critical and the second
+depends on the first — the swap before a route that asks for one. Nothing is blocked.
 
-**T015 landed the verification the rest of the chain rests on, and nothing calls it yet.** That is
-the deliberate order — verification before the thing it protects — but it is also this repo's
-oldest failure mode. `updater.Verify` and `Fetcher` are both waiting for a caller, and **T019 is
-the task that finally has to be one.** A test that asserts the route reaches both is what closes
-it; code that merely exists is not done.
+**T016 closed `updater.Verify`'s caller gap and opened its own.** `Stager.Stage` calls `Verify`,
+and `Stager.Sweep` is called by `cmd/crswd`'s startup sequence — so the verifier is now reached and
+the sweep is now run. **`Stage` itself is what nothing calls**, along with `Fetcher`, and **T019 is
+the task that has to close both.** A test that asserts the route reaches fetch, verify *and* stage
+is what closes it; code that merely exists is not done. T017 inherits the same obligation for the
+swap it writes.
+
+**`Stage` returns the path of a staged binary at `0700` and stops there.** T017 execs it with
+`--version`, requires the exact string back, and only then renames — the staged path is the whole
+of the interface between the two.
 
 ---
 
