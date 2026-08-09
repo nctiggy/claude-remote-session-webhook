@@ -1555,3 +1555,21 @@ func TestSettingsOffersCheckBeforeUpdate(t *testing.T) {
 		t.Error("an update button was offered before anything had been checked")
 	}
 }
+
+// TestSettingsCarriesTheToastRegion is not about toasts.
+//
+// crswd.js's submit module returns at the top when #action-toast is absent, and
+// that module is what intercepts a form posting to /dashboard/. Without this
+// element the update form did an ordinary browser submit: the address became
+// /dashboard/update and a navigation happened where a spinner was meant to.
+//
+// **Must fail when** the region goes missing from this page. The symptom is not
+// a missing toast — it is the update navigating, which took three fixes before
+// the cause turned out to be one element.
+func TestSettingsCarriesTheToastRegion(t *testing.T) {
+	t.Parallel()
+
+	if page := settingsDefaultBody(t, newFleet(t)); !strings.Contains(page, `id="action-toast"`) {
+		t.Errorf("the settings page carries no action-toast, so crswd.js will not intercept the update form and it will navigate:\n%s", page)
+	}
+}

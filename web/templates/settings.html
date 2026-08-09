@@ -87,7 +87,7 @@
 <h2 class="settings-title">Updates</h2>
 <p class="updating" role="status" aria-live="polite" data-becoming="{{ .Becoming }}">
 <span class="spinner" aria-hidden="true"></span>
-Installing {{ .Becoming }}. This daemon is restarting into it — the page will reload by itself when it answers again. Sessions survive it.
+Installing {{ .Becoming }}…
 </p>
 </section>{{ else }}{{ if eq .Shown "Updates" }}{{ with .Update }}<section class="settings-section">
 <h2 class="settings-title">Updates</h2>
@@ -180,5 +180,15 @@ Installing {{ .Becoming }}. This daemon is restarting into it — the page will 
 </div>
 </div>
 </main>
+{{/*
+  The action toast, which this page needs for a reason that is not about toasts.
+
+  crswd.js's submit module bails at the top when this element is absent, and that
+  module is what intercepts a form posting to /dashboard/. Without it here, the
+  update form did an ordinary browser submit: the address became
+  /dashboard/update and the operator watched a navigation where a spinner was
+  meant to appear. Three fixes went into that answer before the reason turned out
+  to be a missing element on this page.
+*/}}<output class="action-toast" id="action-toast" role="status" aria-live="polite" hidden></output>
 </body>
 </html>
