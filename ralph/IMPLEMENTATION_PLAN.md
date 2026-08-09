@@ -216,7 +216,7 @@ needs to re-argue them.
 
 ### Ship it
 
-- [ ] **T016** Update the pane and settings-menu prose in `docs/components.md`.
+- [x] **T016** Update the pane and settings-menu prose in `docs/components.md`.
 - [ ] **T017** Re-read `docs/mobile-open-questions.md` and confirm all three questions are **still UNANSWERED** with their fallbacks intact. **This task verifies; it does not answer.** If any has been ticked, un-tick it and record what happened in `PROGRESS.md`.
 
 ---

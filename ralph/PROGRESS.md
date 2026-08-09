@@ -1171,3 +1171,100 @@ are **still UNANSWERED** and must not answer them. 2 of 17 open; US7 is complete
    need the templates parsed for tag names, which `html/template` can do and no test here does.
    That is a real guard someone could write — G5's missing half — and it is out of scope for a
    CSS task in a milestone that is closing.
+
+---
+
+## Iteration 16 — 2026-08-09 10:01
+
+**Did:** T016. `docs/components.md` reconciled with what milestone 7 actually built. The two
+edits the task names — the pane's scroll container and wrap trade, and the settings menu as a
+bar/scrolling row with its cost recorded — plus the five items iterations 3, 10, 11, 12 and 13
+each deferred to this task (button and action-row geometry, input scale, the padded listbox
+option, card truncation, the masthead's gutter and identity flex) and the false settings-page
+paragraph iterations 9 and 15 nominated. One file, one commit, no test added — the contract's
+verification is `TestTheComponentsDocumentNamesThePickerTheSwitchAndTheHeader` *staying* green.
+
+**Learned, so the next iteration does not rediscover it:**
+
+- **The document's fix for staleness is a pointer, not a list, and that is now written into it.**
+  Every geometry in `components.md` is stated as the desktop one, with the two conditions named
+  up front (`max-width: 780px` → layout, `pointer: coarse` → ergonomics) and the rule-by-rule
+  enumerations left in `docs/design-system.md`, which is the copy carrying the "a rule adds a
+  row" obligation. Iterations 4 and 7 fixed exactly this duplication in the stylesheet's own
+  comment; re-creating it here would have re-created the defect. **A future task adding a rule
+  to either block owes design-system.md a row and owes this file nothing** — unless the rule
+  changes what a *component* is, which is a different sentence.
+- **G6's regex reads the whole document as prose, so a plural is a failure.**
+  `documentedComponentClass` is `\.(combo|switch|masthead)[\w-]*` and `[\w-]*` swallows a
+  trailing `s`, so writing "`.masthead-link`s" in a sentence names a class the stylesheet does
+  not style and fails the second direction of the sweep. That is the negative I proved
+  (`.masthead-links` → fails by name, restored with `Edit`). Anything writing about these three
+  families must keep the class in backticks and the plural outside them.
+- **The settings page's `.setting-input` was undocumented, and the Form section already had
+  three other spellings in it.** `components.md` named `.field`, `.field-label`, `.field-input`
+  and nothing for the settings row's form. G5 could not see it (it is rendered and styled), G6
+  does not cover it, so a fourth text-entry spelling was one iteration away from being invented
+  on purpose. It is named now, with `.setting-form` and `.setting-save`.
+- **Two claims I had to check rather than transcribe.** (a) `.settings-panel` is *not* "the
+  page's one horizontal scroll container" — `.settings-menu-list` also takes `overflow-x: auto`
+  below the breakpoint, so the honest phrasing is which element pans when a table is too wide.
+  (b) The menu is "seven sections" only because `sectionOrder` (`settings.go:456`) holds six and
+  Updates makes the seventh; sections with no rows are dropped, so seven is the normal case and
+  not a guarantee. The existing artifacts (`crswd.css`, `design-system.md`) both say seven and
+  this one now agrees with them.
+- **Renaming a heading breaks the cross-references to it, and there was one.** The Header
+  section's last rule pointed at "The settings page has no component of its own" *and* repeated
+  its false conclusion ("no way to write"). Fixed in the same commit, because a dangling
+  pointer to a heading this commit deleted is this commit's defect. `grep` found no other
+  reference outside `PROGRESS.md`'s own history.
+- All gate commands green; linter is **2.12.2**, so the green is real. `go test -count=1 ./...`
+  clean, `golangci-lint run` 0 issues, all three tagged suites compile
+  (`go vet -tags tmux|quickstart|dev`). `-tags quickstart` was not *run*: one Markdown file, no
+  Go at all.
+
+**Left:** T017, the last task. Re-read `docs/mobile-open-questions.md` and confirm all three
+questions are **still UNANSWERED** with their fallbacks intact — **it verifies, it does not
+answer**, and a milestone closing with all three open is correct and expected. It also asks for
+one final full-gate run and a confirmation that `docs/design-system.md`, `docs/components.md`
+and the stylesheet agree. 1 of 17 open.
+
+**Findings — noticed, not fixed:**
+
+1. **`docs/components.md` says Toast has "no section and no use", and `.action-toast` is
+   shipped on all three pages.** `crswd.css:1087` styles a fixed, floating, `--toast-max`-wide
+   region; `dashboard.html:204`, `session.html:89` and `settings.html:210` each render
+   `<output class="action-toast" role="status" aria-live="polite" hidden>`; `crswd.js:852`
+   fills it. The document's "Specified here, not built" list claims the opposite, and the same
+   paragraph argues this dashboard answers in place "rather than in something that floats away
+   on a timer" — which is a design position the code stopped holding. **This is the same class
+   of defect T016 just fixed for the settings page, in a section T016 does not name**, and no
+   iteration nominated it, so it was left. It is a fix-lane item: either document the toast as
+   a component or explain why the shipped one is not the Toast the section refuses. Nothing
+   guards it — G5 passes (it is rendered *and* styled) and G6's families do not include it.
+2. **Two Go comments still carry the read-only settings claim, one of them contradicts the
+   function it sits on, and neither has a task.** Iteration 9 recorded them and they are
+   unchanged — re-verified this iteration: `server.go:569-578` ("no mutating verb is registered
+   on the path at all", "editing the operator's file from a browser is out of scope this
+   milestone") and `settings.go:3` ("the read-only account"). The sharpest one is
+   `settings.go:390`: *"It mints no page token, and that is a decision rather than an
+   omission"* — and `settings.go:415`, twenty-five lines below it in the same function, is
+   `editToken, _ := s.mintPageToken(r, operator)`. T009 fixed the template, T016 fixed the
+   document, and these are the remaining copies of a sentence that has been false since #103.
+   **This is the last iteration that could plausibly have picked them up** — T017 verifies open
+   questions and touches nothing else — so they need a fix-lane line in `docs/fixes-log.md` or
+   a task in the next milestone.
+3. **Nothing reads this document's prose, and that is now load-bearing in a new way.** G6 checks
+   which *class names* appear in `components.md`; no guard reads a sentence. Every conditional
+   note added here — the wrap trade, the pointer sizes, the card's truncation — is true today
+   because I read the stylesheet, and will go stale exactly as silently as the settings
+   paragraph did if a later change moves a declaration. The mitigation chosen was to state
+   relationships rather than values (the masthead "takes the page's gutters", not "`--s4`") and
+   to leave the numbers in the one document with a stated update obligation. That reduces the
+   surface; it does not close it, and the notebook has now recorded a document with no guard
+   behind it four times (iterations 1, 2, 4 and here).
+4. **The pane note says "reverting is two declarations" and the plan says "one-line revert".**
+   `docs/mobile-open-questions.md:53-56` is the artifact with the detail — it names both
+   `white-space: pre-wrap` and `overflow-wrap: anywhere` — and `IMPLEMENTATION_PLAN.md:71`
+   compresses that to one line. Same disagreement shape as iteration 14's token/line-number
+   finding: **the plan's one-line summary is the compression, the contract or the doc is the
+   artifact with the reasoning.** Followed the doc.
