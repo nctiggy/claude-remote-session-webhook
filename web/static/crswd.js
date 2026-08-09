@@ -1534,6 +1534,9 @@
  * lying: it would look identical whether the restart was slow or the new
  * binary would not start at all.
  */
+// Where an update comes back to. A POST's own address is not a page.
+const UPDATES_PAGE = '/settings?section=Updates';
+
 const WAIT_MS = 1000;
 const WAIT_CEILING = 120;
 
@@ -1561,7 +1564,20 @@ const waitOutTheUpdate = () => {
       .then((answer) => (answer.ok ? answer.json() : null))
       .then((said) => {
         if (said && said.version === becoming) {
-          window.location.reload();
+          /*
+           * Go to the settings page, rather than reloading whatever this is.
+           *
+           * When the form posts without being intercepted, the browser is at
+           * /dashboard/update — the action it submitted to — and the answer is
+           * rendered there. Reloading that address repeats it as a GET, which
+           * this daemon has no route for, so the operator's successful update
+           * ended on a not-found page.
+           *
+           * Naming where to go is right in both paths: intercepted, the address
+           * is already /settings and this changes nothing; not intercepted, it
+           * is the only way back.
+           */
+          window.location.assign(UPDATES_PAGE);
           return;
         }
         window.setTimeout(ask, WAIT_MS);
