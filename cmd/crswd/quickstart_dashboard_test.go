@@ -449,8 +449,10 @@ func TestDashboardQuickstartStory1Fleet(t *testing.T) {
 func TestDashboardQuickstartStory1Adopted(t *testing.T) {
 	h := newHost(t)
 	e := newEdge(t)
-	addr := freePort(t)
-	d := h.startDashboard(e, map[string]string{"CRSW_LISTEN": addr})
+	// The address the first daemon actually bound, not one picked ahead of it:
+	// the restart below has to reach the same tmux server, and freePort can only
+	// promise a port *was* free (#123).
+	d := h.startDashboard(e, nil)
 
 	c := d.createSession("outlives-the-daemon")
 	d.waitForPane(c.ID, c.Token, shimReady)
@@ -462,7 +464,7 @@ func TestDashboardQuickstartStory1Adopted(t *testing.T) {
 		t.Fatal("the session did not outlive the crash, so there is nothing to adopt")
 	}
 
-	restarted := h.startDashboard(e, map[string]string{"CRSW_LISTEN": addr})
+	restarted := h.startDashboard(e, map[string]string{"CRSW_LISTEN": d.addr})
 	page := string(restarted.browse("/", e.mint(e.operatorClaims())).Body)
 
 	if !strings.Contains(page, "outlives-the-daemon") {
@@ -938,9 +940,7 @@ func TestDashboardQuickstartStory3Sweep(t *testing.T) {
 func TestDashboardQuickstartStory3FailsClosed(t *testing.T) {
 	h := newHost(t)
 	e := newEdge(t)
-	addr := freePort(t)
-
-	d := h.startDashboard(e, map[string]string{"CRSW_LISTEN": addr})
+	d := h.startDashboard(e, nil)
 	jwt := e.mint(e.operatorClaims())
 	served := d.browse("/", jwt)
 	if served.Status != http.StatusOK {
@@ -954,7 +954,12 @@ func TestDashboardQuickstartStory3FailsClosed(t *testing.T) {
 	if err := d.stop(syscall.SIGTERM); err != nil {
 		t.Fatalf("stop the daemon: %v", err)
 	}
-	restarted := h.startDashboard(e, map[string]string{"CRSW_LISTEN": addr})
+	// Back on the address the first one bound. Nothing here depends on it being
+	// the same — this case creates no session — but a restart that moved would be
+	// a second daemon rather than the same one coming back, and that is not the
+	// thing being asserted. Read off the daemon rather than picked in advance, for
+	// the reason freePort now spells out (#123).
+	restarted := h.startDashboard(e, map[string]string{"CRSW_LISTEN": d.addr})
 
 	done := make(chan response, 1)
 	go func() { done <- restarted.browse("/", jwt) }()

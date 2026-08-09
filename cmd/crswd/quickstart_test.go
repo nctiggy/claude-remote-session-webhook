@@ -127,6 +127,14 @@ type host struct {
 
 	// roots is CRSW_ALLOWED_ROOTS: $HOME/code, exactly as quickstart.md sets it.
 	roots string
+
+	// pickPort is where a start that was given no CRSW_LISTEN of its own gets
+	// one. It is a field rather than a call to freePort so that startBinary's
+	// retry can be reached at all: nothing a test can do makes the kernel hand
+	// back a port that is already taken, and a retry no test can exercise is the
+	// defect this repository keeps shipping — the reaper with no caller, the
+	// dependency probe nothing called.
+	pickPort func(t *testing.T) string
 }
 
 func newHost(t *testing.T) *host {
@@ -138,12 +146,13 @@ func newHost(t *testing.T) *host {
 
 	dir := t.TempDir()
 	h := &host{
-		t:       t,
-		dir:     dir,
-		bin:     filepath.Join(dir, "crswd"),
-		tmuxDir: filepath.Join(dir, "tmux"),
-		shimDir: filepath.Join(dir, "bin"),
-		secret:  newSecret(t),
+		t:        t,
+		dir:      dir,
+		bin:      filepath.Join(dir, "crswd"),
+		tmuxDir:  filepath.Join(dir, "tmux"),
+		shimDir:  filepath.Join(dir, "bin"),
+		secret:   newSecret(t),
+		pickPort: freePort,
 	}
 
 	// tmux refuses a socket directory anyone else can write to. The tmux-$UID
@@ -423,6 +432,28 @@ func (h *host) hasSession(name string) bool {
 
 // freePort asks the kernel for one and gives it straight back. CRSW_LISTEN takes
 // no port 0, so the address has to be decided before the daemon starts.
+//
+// It returns a port that *was* free, and there is no version of this function
+// that returns one that still is (#123). That is the whole shape of the problem:
+// the daemon binds its own listener, so the one opened here has to be closed
+// before the address is handed out, and in the milliseconds between that Close
+// and the daemon's bind anything on the host can take it — another package's
+// test binary, a browser, the ephemeral port the kernel hands the next dialler.
+// The daemon then dies on `bind: address already in use`, and the symptom is a
+// red run every few dozen builds in a different test each time, which is the
+// kind of failure a suite learns to re-run instead of read.
+//
+// Closing the window would take a daemon change — a listener passed in on a file
+// descriptor, or a CRSW_LISTEN that accepts port 0 and reports back what it got —
+// and this is a harness. So the race is *lost* rather than avoided: startBinary
+// picks a port here, and if the daemon reports it could not take that exact
+// address, picks another.
+//
+// A caller that pins CRSW_LISTEN by hand opts out of the retry, and the two
+// kinds that do are deliberate. A restart has to land on the address its tmux
+// server is named after, so it reuses the one a daemon has already bound
+// successfully. The startup-refusal cases hand over an address nothing is ever
+// expected to bind, and are asserting about that address itself.
 func freePort(t *testing.T) string {
 	t.Helper()
 
@@ -487,20 +518,76 @@ func (h *host) start(over map[string]string) *daemon {
 	return h.startBinary(h.bin, over)
 }
 
+// portAttempts bounds the re-picking below. Losing the race freePort describes
+// once is ordinary on a busy host; losing it eight times running is a host with
+// something else wrong, and a harness that retried for ever would hang the run
+// rather than fail it.
+const portAttempts = 8
+
+// lostPort is the one way of failing to come up that another address would fix:
+// the daemon could not take the port this harness picked for it. Every other
+// failure — a refused configuration, a listener that bound and then never
+// accepted — happens at every address alike and is reported as it always was.
+type lostPort struct {
+	addr  string
+	trail string
+}
+
+func (e *lostPort) Error() string {
+	return fmt.Sprintf("the daemon could not bind %s:\n%s", e.addr, e.trail)
+}
+
 // startBinary is start with the artifact named, because milestone 2's story 5
 // runs a second one: the -tags dev build, with a flag the shipping binary does
 // not define. Every story here still goes through start and so through h.bin.
+//
+// It also owns the answer to #123. freePort cannot hand back a port that is
+// still free at the moment the daemon binds it, so the loop below treats a start
+// that died on that exact address as a lost race and takes another one.
 func (h *host) startBinary(bin string, over map[string]string, args ...string) *daemon {
 	h.t.Helper()
 
-	addr, ok := over["CRSW_LISTEN"]
-	if !ok {
-		addr = freePort(h.t)
-		if over == nil {
-			over = map[string]string{}
+	// An address the caller named is the caller's. A restart must land on the
+	// one its tmux server is named after, or it adopts nothing; the refusal
+	// cases are asserting about that address itself. Re-picking either would be
+	// answering a different question, so a pinned start fails as it used to.
+	if _, pinned := over["CRSW_LISTEN"]; pinned {
+		d, err := h.startOnce(bin, over, args...)
+		if err != nil {
+			h.t.Fatal(err)
 		}
-		over["CRSW_LISTEN"] = addr
+		return d
 	}
+
+	if over == nil {
+		over = map[string]string{}
+	}
+	for attempt := 1; ; attempt++ {
+		over["CRSW_LISTEN"] = h.pickPort(h.t)
+
+		d, err := h.startOnce(bin, over, args...)
+		if err == nil {
+			return d
+		}
+		lost, ok := err.(*lostPort)
+		if !ok || attempt == portAttempts {
+			h.t.Fatal(err)
+		}
+		// Logged rather than swallowed: a run that re-picks on every start is a
+		// host with something sitting in the ephemeral range, and that is worth
+		// seeing under `go test -v` instead of paying for it in wall clock.
+		h.t.Logf("attempt %d: %s was taken between being handed out and being bound; picking another", attempt, lost.addr)
+	}
+}
+
+// startOnce is one attempt at the above: it starts the daemon on whatever
+// CRSW_LISTEN names and waits for it to accept. Returning an error rather than
+// failing the test is the whole point — the caller is the only one that knows
+// whether another address is allowed to be tried.
+func (h *host) startOnce(bin string, over map[string]string, args ...string) (*daemon, error) {
+	h.t.Helper()
+
+	addr := over["CRSW_LISTEN"]
 
 	trail := filepath.Join(h.dir, fmt.Sprintf("trail-%d.jsonl", time.Now().UnixNano()))
 	f, err := os.Create(trail)
@@ -529,11 +616,20 @@ func (h *host) startBinary(bin string, over map[string]string, args ...string) *
 	}()
 
 	h.t.Cleanup(func() { d.stop(syscall.SIGKILL) })
-	d.waitUntilServing()
-	return d
+	return d, d.waitUntilServing()
 }
 
-func (d *daemon) waitUntilServing() {
+// waitUntilServing polls until *this* daemon is answering on its address, and
+// tells the two ways it can fail to apart.
+//
+// "This daemon" is the whole of the difference, and it is #123's second half.
+// Whatever wins the port in freePort's gap is usually a listener too — another
+// test binary's `:0` — so a bare dial succeeds on the very first poll,
+// milliseconds before this daemon has finished reading its configuration, and
+// every assertion in the story that follows runs against a stranger's server.
+// This probe used to be that dial. It reported the stand-in as a start, and the
+// retry below could never fire because nothing ever looked like a loss.
+func (d *daemon) waitUntilServing() error {
 	d.t.Helper()
 
 	deadline := time.Now().Add(waitBudget)
@@ -541,18 +637,71 @@ func (d *daemon) waitUntilServing() {
 		select {
 		case err := <-d.done:
 			d.done <- err
-			d.t.Fatalf("the daemon exited before it served (%v):\n%s", err, d.readTrail())
+			trail := d.readTrail()
+			// The daemon's own frame, not the operating system's wording of
+			// EADDRINUSE. `httpapi: bind <addr>:` is written by this repository
+			// (internal/httpapi/server.go) and says exactly what the caller needs
+			// to know — the listener never came up on the address it was given.
+			// Matching the errno text instead would make the retry a property of
+			// whatever this platform's strerror happens to say.
+			if strings.Contains(trail, "httpapi: bind "+d.addr+":") {
+				return &lostPort{addr: d.addr, trail: trail}
+			}
+			return fmt.Errorf("the daemon exited before it served (%v):\n%s", err, trail)
 		default:
 		}
 
+		// Dialled first because it is free and answers "nothing is there yet" for
+		// almost every poll of a normal start; the request below is only worth
+		// sending once something is.
 		conn, err := net.DialTimeout("tcp", d.addr, 200*time.Millisecond)
 		if err == nil {
 			_ = conn.Close()
-			return
+			if d.answeredForItself() {
+				return nil
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	d.t.Fatalf("the daemon never accepted on %s:\n%s", d.addr, d.readTrail())
+	return fmt.Errorf("the daemon never accepted on %s:\n%s", d.addr, d.readTrail())
+}
+
+// answeredForItself sends one unsigned request and then looks for the refusal in
+// *this* daemon's audit trail.
+//
+// A 401 on the wire proves only that something answered. The trail is a file
+// this process created and handed to one child, so a record arriving in it names
+// which listener replied — which is the only question worth asking of an address
+// that may have been taken from under the daemon. FR-041 counts an
+// unauthenticated request like any other, so an unsigned GET is enough to ask
+// with: no credential, no session, and nothing in the record but a rejection.
+func (d *daemon) answeredForItself() bool {
+	d.t.Helper()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(mustRequest(d.t, http.MethodGet, "http://"+d.addr+"/sessions"))
+	if err != nil {
+		// Including the squatter that accepts and never speaks, which is what a
+		// port lost to a bare net.Listen looks like from here.
+		return false
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	// The record is written before the response is, but the write and the read
+	// are two processes; waited for rather than raced, the way story 6 does.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		for _, rec := range d.records() {
+			if rec.Action == "auth.reject" {
+				return true
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // stop signals the daemon and waits for it to go, returning its exit error.
@@ -847,6 +996,97 @@ func TestQuickstartPrerequisites(t *testing.T) {
 			version = strings.TrimSpace(string(out))
 		}
 		t.Logf("%-14s %s", tool.name, version)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The harness itself
+// ---------------------------------------------------------------------------
+
+// TestStartRecoversFromAPortTakenInTheGap is #123's guard, and the only thing
+// that keeps startBinary's retry from being decoration.
+//
+// freePort hands back a port that *was* free; on a busy host the daemon's bind
+// lands after something else has taken it, and the run goes red in whichever
+// story started next. That is a failure a suite learns to re-run rather than
+// read, so it is worth a test — but a lost race cannot be waited for, so this
+// one is staged. h.pickPort offers the first start an address this test is
+// holding open, which is byte for byte what the daemon sees when it loses.
+//
+// **Must fail when** startBinary stops re-picking: with one attempt only,
+// waitUntilServing's error is the end of the test.
+func TestStartRecoversFromAPortTakenInTheGap(t *testing.T) {
+	h := newHost(t)
+
+	// Held for the whole test rather than closed once its address is read. This
+	// is the port that got away, and it has to still be gone when the daemon
+	// tries for it — a listener closed here would just be freePort again.
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("hold a port: %v", err)
+	}
+	defer func() { _ = taken.Close() }()
+
+	lost := taken.Addr().String()
+	picks := 0
+	h.pickPort = func(t *testing.T) string {
+		picks++
+		if picks == 1 {
+			return lost
+		}
+		return freePort(t)
+	}
+
+	d := h.start(nil)
+
+	if picks < 2 {
+		t.Error("the daemon came up on its first pick, so the taken address was never offered")
+	}
+	if d.addr == lost {
+		t.Errorf("the daemon reports serving on %s, which this test is holding", lost)
+	}
+
+	// Serving, not merely started: a retry that handed back a daemon nobody can
+	// reach would satisfy every assertion above it.
+	if resp := d.call(http.MethodGet, "/sessions", "", ""); resp.Status != http.StatusOK {
+		t.Errorf("GET /sessions on the re-picked address = %d, want 200: %s", resp.Status, resp.Body)
+	}
+}
+
+// TestAPinnedAddressIsNeverRepicked is the other half, and it is the one that
+// stops the retry from doing harm. A caller that names CRSW_LISTEN is asserting
+// about that address — a restart adopting from the tmux server it is named
+// after, a refusal that has to leave it free — so a start that quietly moved to
+// another port would leave those cases green while testing something else.
+//
+// **Must fail when** the pinned branch is dropped: re-picking would consult
+// pickPort a second time and land the restart somewhere the first daemon never
+// was.
+func TestAPinnedAddressIsNeverRepicked(t *testing.T) {
+	h := newHost(t)
+
+	picks := 0
+	h.pickPort = func(t *testing.T) string {
+		picks++
+		return freePort(t)
+	}
+
+	// The shape every restart story here uses: one daemon on an address the
+	// harness chose, then a second pinned to the one it bound.
+	d := h.start(nil)
+	if picks != 1 {
+		t.Fatalf("a start with no CRSW_LISTEN picked %d addresses, want 1", picks)
+	}
+	if err := d.stop(syscall.SIGTERM); err != nil {
+		t.Fatalf("stop the first daemon: %v\n%s", err, d.readTrail())
+	}
+
+	restarted := h.start(map[string]string{"CRSW_LISTEN": d.addr})
+	if picks != 1 {
+		t.Errorf("a start that named CRSW_LISTEN picked an address anyway (%d picks in all)", picks)
+	}
+	if restarted.addr != d.addr {
+		t.Errorf("the restart is serving on %s, not the %s it was pinned to", restarted.addr, d.addr)
 	}
 }
 
@@ -1261,8 +1501,12 @@ func TestQuickstartStory3Isolation(t *testing.T) {
 
 func TestQuickstartStory4Restart(t *testing.T) {
 	h := newHost(t)
-	addr := freePort(t)
-	d := h.start(map[string]string{"CRSW_LISTEN": addr})
+	// The restart has to land on the tmux server the address names it after, or
+	// there is nothing of the first daemon's for it to adopt. So the address is
+	// the one that daemon actually bound rather than one chosen up front: a port
+	// freePort hands out is only known to have been free, and the start below is
+	// where that is settled (#123).
+	d := h.start(nil)
 
 	c := d.createSession("survivor")
 	d.waitForPane(c.ID, c.Token, shimReady)
@@ -1281,7 +1525,7 @@ func TestQuickstartStory4Restart(t *testing.T) {
 		t.Fatalf("plant the lookalike: %v: %s", err, out)
 	}
 
-	restarted := h.start(map[string]string{"CRSW_LISTEN": addr})
+	restarted := h.start(map[string]string{"CRSW_LISTEN": d.addr})
 
 	list := restarted.call(http.MethodGet, "/sessions", "", "")
 	if list.Status != http.StatusOK {
