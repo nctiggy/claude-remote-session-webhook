@@ -23,3 +23,25 @@ package config
 func IsSecret(key string) bool {
 	return key == "shared_secret" || key == "access_allowed_emails"
 }
+
+// IsBool reports whether a configuration key holds a true/false setting.
+//
+// Two things ask, and the second is why the answer has to be narrow. The
+// settings page renders these as a switch rather than a text field; and because
+// an unchecked checkbox submits *nothing at all*, the edit handler reads an
+// absent value for one of these keys as `false`. A request that arrives
+// truncated must therefore be able to turn a boolean off and clear nothing
+// else — a key wrongly reported here is a setting a malformed POST can wipe.
+//
+// The keys are the callers of loadBool, restated rather than derived because Go
+// cannot ask a function who calls it. What stops the restatement drifting is
+// TestIsBoolNamesEveryBooleanLoaded, which parses this package, resolves the
+// constant each loadBool call is passed, and holds this list to that set in both
+// directions. A third boolean added to the loader and forgotten here fails the
+// suite instead of appearing on the page as the one text box among the switches.
+//
+// Keys are the file spelling, as IsSecret's are and for the same reason: it is
+// the spelling the callers hold.
+func IsBool(key string) bool {
+	return key == "discover_roots" || key == "destroy_on_shutdown"
+}
