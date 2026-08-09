@@ -183,6 +183,23 @@ type settingRow struct {
 	// existed.
 	Editable bool
 
+	// Boolean is whether the key holds a true/false setting, which is
+	// config.IsBool's answer and not a second one. It decides the control the row
+	// offers — a checkbox rather than a text field — and it is deliberately the
+	// same predicate settings_edit.go asks when it reads an absent value as
+	// `false`. Two lists would disagree the day one was edited, and the shape of
+	// that disagreement is a key rendered as a box the handler will not read as a
+	// box: the operator unticks it and the setting is cleared instead of turned
+	// off.
+	Boolean bool
+
+	// On is whether that box is ticked, and it is read off Value rather than off
+	// the Config a second time. The page's account of a setting and the state of
+	// the control it offers for it are then one answer: a switch that disagreed
+	// with the value column would be this page telling an operator two things
+	// about the same key.
+	On bool
+
 	// Value is the effective value, or — for a secret — one of the two words
 	// below and nothing else.
 	Value string
@@ -229,10 +246,17 @@ func settingsOf(cfg *config.Config) []settingRow {
 	rows := make([]settingRow, 0, len(config.Vars()))
 	for _, name := range config.Vars() {
 		key := config.KeyForVar(name)
+		boolean := config.IsBool(key)
+		value := settingText(cfg, name, key)
 		rows = append(rows, settingRow{
 			Key:      key,
 			Editable: config.Editable(key),
-			Value:    settingText(cfg, name, key),
+			Boolean:  boolean,
+			// Guarded by the predicate rather than by the spelling alone: a
+			// non-boolean key whose value happens to read `true` is a text field,
+			// and nothing about it is ticked.
+			On:    boolean && value == boolOn,
+			Value: value,
 			// The shim's own record, read by the name it keyed it under. A key
 			// nothing ever looked up is absent from the map and reads
 			// SourceDefault, which is the zero value precisely so that "nothing

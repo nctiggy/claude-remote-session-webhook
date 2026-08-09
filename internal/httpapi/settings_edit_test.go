@@ -241,3 +241,34 @@ func TestEditKeepsWhatItReplaced(t *testing.T) {
 		t.Error("the backup is not what the file held before the edit")
 	}
 }
+
+// TestTheTickedSwitchIsAValueTheLoaderAccepts closes the loop the two tests
+// above open: an unchecked box turns a setting off, and this is the tick.
+//
+// What it submits is lifted out of the rendered markup rather than typed here,
+// so the value under test is the one a browser would actually send. That is the
+// whole assertion. A checkbox with no `value` submits `on`, ParseBool refuses
+// `on`, Validate refuses the candidate file — and the operator ticks a box,
+// presses Save, and watches nothing happen, with the daemon reporting a refusal
+// about a value they never chose.
+//
+// **Must fail when** the template's `value="true"` is dropped or misspelled.
+func TestTheTickedSwitchIsAValueTheLoaderAccepts(t *testing.T) {
+	f := editable(t)
+
+	control := settingControl(t, settingsEverySection(t, f), "discover_roots")
+	found := settingControlValue.FindStringSubmatch(control)
+	if found == nil {
+		t.Fatalf("the switch carries no value at all: %q", control)
+	}
+
+	editPost(t, f, editForm(t, f, "discover_roots", found[1]))
+
+	after, err := os.ReadFile(f.cfg.FilePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", f.cfg.FilePath, err)
+	}
+	if !strings.Contains(string(after), "discover_roots = "+boolOn) {
+		t.Errorf("what the ticked box submits (%q) did not turn the setting on; the loader would not take it:\n%s", found[1], after)
+	}
+}

@@ -54,6 +54,20 @@ var (
 	errSettingUnwritable  = errors.New("the configuration file could not be replaced")
 )
 
+// boolOn is what a ticked box submits, and it is the settings page's checkbox
+// `value` rather than the `on` a browser sends when a checkbox carries none.
+//
+// The difference is not cosmetic. Whatever that field holds is written into the
+// operator's file verbatim, and strconv.ParseBool is what reads it back at the
+// next load — it accepts `true` and refuses `on`. A box left with the browser's
+// default would tick, submit, and be turned away by Validate, so the control
+// would look right and change nothing.
+//
+// It lives beside boolOff because the two are this page's whole vocabulary for a
+// boolean: one spelling the browser sends and one the handler invents when
+// nothing was sent. A test holds the template's literal to this constant.
+const boolOn = "true"
+
 // boolOff is what a box the operator unticked is written as.
 //
 // It is spelled out rather than left empty. loadBool reads both the same way

@@ -10,8 +10,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo"
-	"github.com/nctiggy/claude-remote-session-webhook/internal/updater"
 	"html"
 	"maps"
 	"net/http"
@@ -23,6 +21,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/updater"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
@@ -1571,5 +1572,128 @@ func TestSettingsCarriesTheToastRegion(t *testing.T) {
 
 	if page := settingsDefaultBody(t, newFleet(t)); !strings.Contains(page, `id="action-toast"`) {
 		t.Errorf("the settings page carries no action-toast, so crswd.js will not intercept the update form and it will navigate:\n%s", page)
+	}
+}
+
+// --- T003: the boolean rows are switches -------------------------------------
+
+// settingControlPattern is the one input a row offers for its value, whichever
+// kind it is.
+//
+// Anchored on the class rather than on the tag, so the hidden token and key
+// fields beside it are not candidates: those are the form's machinery, and a
+// sweep that counted them could never say a row offers exactly one control.
+var settingControlPattern = regexp.MustCompile(`<input class="(?:setting-input|switch-input)"[^>]*>`)
+
+// settingControlValue is what that input submits.
+var settingControlValue = regexp.MustCompile(`value="([^"]*)"`)
+
+// settingControl is the control one settings row offers, read out of the markup
+// a browser was handed.
+//
+// Reading the rendered page rather than the view behind it is the whole point of
+// the assertions below. Milestone 4 shipped three green tasks about a control an
+// operator never saw change, because every one of them asserted what the handler
+// accepted; the only thing that catches a template nobody edited is reading the
+// template's output.
+func settingControl(t *testing.T, page, key string) string {
+	t.Helper()
+
+	row := settingsRowFor(t, page, key)
+	found := settingControlPattern.FindAllString(row, -1)
+	if len(found) != 1 {
+		t.Fatalf("the %s row offers %d value controls; a row edits one setting with one control:\n%s", key, len(found), row)
+	}
+	return found[0]
+}
+
+// TestEveryBooleanRowIsASwitchAndNothingElseIs is the operator's request read at
+// the markup: "all true/false settings should be check boxes".
+//
+// It sweeps every editable key rather than naming the two booleans, so it states
+// the rule in both directions and cannot go stale. A third boolean added to the
+// loader arrives here as a text field and fails; a key wrongly reported boolean
+// arrives as a box and fails too — and that second direction is the one that
+// matters, because a box is the control whose absence the edit route reads as
+// `false`.
+//
+// **Must fail when** the template renders one control for every row, which is
+// what it did before this task and what a task marked done by its handler alone
+// would have left it doing.
+func TestEveryBooleanRowIsASwitchAndNothingElseIs(t *testing.T) {
+	t.Parallel()
+
+	page := settingsEverySection(t, newFleet(t))
+
+	swept := 0
+	for _, name := range config.Vars() {
+		key := config.KeyForVar(name)
+		if !config.Editable(key) {
+			continue
+		}
+		swept++
+		control := settingControl(t, page, key)
+		if config.IsBool(key) {
+			if !strings.Contains(control, `type="checkbox"`) {
+				t.Errorf("%s is a true/false setting and its row offers %q; an operator is asked to type `true` where a box belongs", key, control)
+			}
+			continue
+		}
+		if !strings.Contains(control, `type="text"`) {
+			t.Errorf("%s is not a boolean and its row offers %q; a box on that row submits nothing when it is cleared, and the route reads nothing as `false` only for the keys config.IsBool names", key, control)
+		}
+	}
+	if swept == 0 {
+		t.Fatal("no editable row was reached, so this sweep asserted nothing about any control")
+	}
+}
+
+// TestTheSwitchReflectsTheSetting is FR-018a's discipline applied to a control:
+// a box that always rendered unticked would tell an operator their setting is
+// off, and be believed.
+//
+// Both states and both keys. One direction is not interesting on its own — an
+// always-unticked box passes any assertion made against a setting that is
+// already off, which is the shape of a test that cannot fail.
+func TestTheSwitchReflectsTheSetting(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		key string
+		set func(*config.Config, bool)
+	}{
+		{"discover_roots", func(cfg *config.Config, on bool) { cfg.DiscoverRoots = on }},
+		{"destroy_on_shutdown", func(cfg *config.Config, on bool) { cfg.DestroyOnShutdown = on }},
+	} {
+		for _, on := range []bool{true, false} {
+			f := settingsOn(t, func(cfg *config.Config) { tc.set(cfg, on) })
+			control := settingControl(t, settingsEverySection(t, f), tc.key)
+			if strings.Contains(control, " checked") != on {
+				t.Errorf("%s is %v and its box renders %q; the control states the setting or it misinforms about it", tc.key, on, control)
+			}
+		}
+	}
+}
+
+// TestTheSwitchSubmitsTheSpellingThisPageWrites holds the template's literal to
+// boolOn, the constant the rest of this page is written in terms of.
+//
+// The value a checkbox submits is one of the few things in this tree spelled
+// twice — a template parsed with no function map cannot reach a Go constant — so
+// this is the arrangement `confirm=yes` already has on the card.
+//
+// **Must fail when** the attribute is dropped, which leaves the browser's own
+// `on`. TestTheTickedSwitchIsAValueTheLoaderAccepts is what says why that
+// matters.
+func TestTheSwitchSubmitsTheSpellingThisPageWrites(t *testing.T) {
+	t.Parallel()
+
+	control := settingControl(t, settingsEverySection(t, newFleet(t)), "discover_roots")
+	found := settingControlValue.FindStringSubmatch(control)
+	if found == nil {
+		t.Fatalf("the switch carries no value at all, so a tick submits the browser's own `on`: %q", control)
+	}
+	if found[1] != boolOn {
+		t.Errorf("a ticked switch submits %q and this page writes %q; the file would carry a word its own loader refuses", found[1], boolOn)
 	}
 }

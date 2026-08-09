@@ -200,7 +200,34 @@ Installing {{ .Becoming }}…
 <form class="setting-form" method="post" action="/settings/edit">
 <input type="hidden" name="crsw_page_token" value="{{ $.Token }}">
 <input type="hidden" name="key" value="{{ .Key }}">
-<input class="setting-input" id="set-{{ .Key }}" type="text" name="value" value="{{ .Value }}" aria-label="{{ .Key }}">
+{{/*
+  A true/false setting is a checkbox; everything else keeps the text field it
+  always had. config.IsBool is the one predicate behind both, and it is the same
+  one settings_edit.go asks — so the control this page offers and the reading the
+  route makes cannot disagree about which keys are booleans. They must not: an
+  unchecked box submits **nothing at all**, so "off" arrives as a request with no
+  value field, and a key rendered as a box the handler does not know is boolean
+  would be cleared rather than turned off.
+
+  That absence is byte for byte how a truncated request arrives too, which is why
+  the handler's reading of it is narrow rather than general. The reasoning is at
+  submittedValue and it is the security half of this control.
+
+  `value="true"` and not the `on` a browser sends by default. What this field
+  holds is written into the operator's file verbatim and read back by
+  strconv.ParseBool, which refuses `on` — the box would tick, the save would be
+  refused, and the operator would watch a control do nothing. The spelling is
+  boolOn in Go and a test holds the two together.
+
+  It is .switch-input, the switch this design system already defines for the
+  create form's one checkbox, rather than a second control that looks like it.
+
+  No visible <label>, for the same reason the text field beside it has none: the
+  row header already says the key, and a second copy is the same word twice to
+  anybody reading it aloud (docs/components.md, "The settings page"). What that
+  costs is the label's share of the pointer target, which the switch on the
+  create form has and this one does not.
+*/}}{{ if .Boolean }}<input class="switch-input" id="set-{{ .Key }}" type="checkbox" name="value" value="true"{{ if .On }} checked{{ end }} aria-label="{{ .Key }}">{{ else }}<input class="setting-input" id="set-{{ .Key }}" type="text" name="value" value="{{ .Value }}" aria-label="{{ .Key }}">{{ end }}
 <button class="button setting-save" type="submit">Save</button>
 </form>
 </td>{{ else }}<td>{{ .Value }}</td>{{ end }}
