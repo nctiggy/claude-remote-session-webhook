@@ -421,3 +421,85 @@ X", which is false for a restart, and the poll's first tick is at 1s against an 
   sweep does not name this route (nor the update, nor the settings edit), there is no
   rate limit on it, and `update.go`'s "this handler does not return in production" is
   stale.
+
+---
+
+## Iteration 6 — 2026-08-09 22:32 — T006
+
+**Did:** The submit handler's waiting branch is now
+`form.matches('.update-form, [action="/dashboard/restart"]')`, so a restart swaps in
+the daemon's waiting markup and polls instead of answering with a toast. The wait's
+ceiling sentence moved out of the script into `data-ceiling` on the waiting block,
+which branches on `.Restarting`. Four guards, each shown failing first.
+
+**Learned:**
+
+- **Iteration 5's reading of the widening was right and is now proven both ways.**
+  There is no second class to widen to, so the selector's other half is the address.
+  `waitingBranchPattern` reads the selector *out of* the source and anchors on
+  `swapUpdatesSection(` — a literal `strings.Contains` cannot tell a selector widened
+  to the restart from one narrowed away from the update, and both mutations were run:
+  `.update-form` alone fails the restart's test only, the action alone fails the
+  update's test only.
+- **The cross-file half is the one worth having.** The restart test asserts the
+  selector's address against the form the page really renders, not against a literal
+  beside it. Renaming the action in the template alone fails it (shown: the rendered
+  page carries 0 forms posting to `/dashboard/restart`) — that is a script matching an
+  address nothing posts to, which is silent everywhere else until an operator presses
+  the button.
+- **The ceiling sentence was the reachable lie this task created.** Before T006 a
+  restart never started the poll at all (the settings page carries no `[data-becoming]`
+  until a route renders the waiting state), so the script's hard-coded "has not
+  answered since it began installing X" was unreachable for a restart. Widening the
+  branch makes it the last thing that operator ever reads. It is the template's now,
+  read with `.combo-status`'s exact guard (`if (!sentence) return;`), so a missing
+  attribute stops the poll silently rather than writing `undefined` into a live region.
+- **`wantRestartingPage` and `wantUpdatingPage` were the right homes for the page
+  half.** Both already assert what the waiting page must say; the ceiling is the same
+  claim about the last sentence rather than the first. Every caller inherited it, which
+  is why dropping `data-ceiling` fails five tests across two files rather than one.
+- **The word check in `wantRestartingPage` is case-sensitive (`"Installing"`) and my
+  ceiling copy is lowercase**, so the pre-existing assertion would *not* have caught an
+  unbranched ceiling. The new one lowercases before comparing. Worth knowing before
+  adding a third sentence to that block.
+- **`golangci-lint` is 2.12.2 here** — checked again per #26; 0 issues. `go vet` under
+  all three build tags compiles clean, `-tags dev` passes, and nothing in `cmd/crswd`
+  mentions the settings page, so the quickstart suite is untouched.
+
+**Left:** nothing. Every task in the plan is checked and the tree is green.
+
+**Findings:**
+
+- **The poll's first tick is at 1s and the exit is at 250ms, and for a restart that
+  gap is the only thing keeping the page honest.** A restart comes back as the version
+  it went down as, so the old daemon can answer its own `becoming` — if `exitGrace`
+  ever grew past `WAIT_MS`, the first poll would succeed against the daemon that has
+  not gone down yet and the operator would be sent to a settings page announcing a
+  restart that had not happened. The update cannot have this bug (it is becoming a
+  *different* version). **The honest fix** is for the restart's wait to require seeing
+  the daemon fail to answer at least once before accepting a success — which is a state
+  machine change on a path the update shares, and is why it is written here. Left open
+  by iteration 4 and still open.
+- **The scriptless operator still has no signposted way back**, which is iteration 5's
+  finding and is unchanged. They land on `/dashboard/restart` — a POST-only path where
+  a reload is a 404 — in front of a spinner nothing will resolve. It is milder than it
+  reads: the answer is the whole settings page, so the masthead's Settings link is
+  right there, and the ceiling sentence this iteration fixed is the scripted path's
+  only. But two comments (settings.html's block comment, `update.go`'s "it says to
+  reload in a moment") still claim a sentence that block does not render. **The honest
+  fix** is one line in the waiting block — a link to `/settings?section=Updates`, which
+  is where the script sends them anyway — plus deleting the two claims. Not done here:
+  it changes what the update's shipped page says, and T006 is a script task.
+- **`.update-form` now has two readers with different rights.** The stylesheet's rule
+  and the class sweep own the name; the script only borrows it, and the moment a third
+  form joins that branch the selector will want to be a name of its own. That is the
+  same observation iteration 5 made about the missing `gap: var(--s3)`, arriving from
+  the other side — the section has two forms of one shape and the shape is named after
+  one of them.
+- The three findings from iteration 4 remain open, unchanged: `registeredPatterns` does
+  not sweep this route (nor the update, nor the settings edit), there is no rate limit
+  on it, and `update.go`'s "this handler does not return in production" is stale.
+
+---
+
+RALPH_COMPLETE
