@@ -106,3 +106,67 @@ reports, and test that a non-boolean with no value is still refused.
 is out of scope under AR-008, and it would move the file `secret_test.go` exempts by
 name (`classifierFile = "secret.go"`), which is a change worth its own task rather
 than a drive-by.
+
+---
+
+## Iteration 2 — 2026-08-09 21:47 — T002
+
+**Did:** `submittedValue(form, key)` in `internal/httpapi/settings_edit.go` reads an
+absent value field as `false` for `config.IsBool` keys and as the empty value for
+every other key, plus two tests: an unchecked box turning `discover_roots` off, and
+the narrowness that keeps `false` out of everything else.
+
+**Learned:**
+
+- **The plan's wording for the second test does not hold, and the fix is sharper than
+  the wording.** "A non-boolean with no value is still refused" is not true of any key
+  that could carry the test: an absent value writes `key = ` (empty), and the loader
+  reads empty as *unset*, so `max_sessions` falls back to its default and
+  `allowed_roots` falls back to the built-in `$HOME` root — both **accepted**. Nothing
+  is refused. What the test asserts instead is what the plan's own body asks for: an
+  absent value for a non-boolean behaves **exactly as it does today**, and never
+  becomes `false`.
+- **The bytes-only assertion would have been decoration.** Against the over-broad
+  reading, the candidate is `max_sessions = false`, `config.Validate` refuses it, and
+  the file is left *unchanged* — so "the file does not contain `max_sessions = false`"
+  passes against the very defect it names. The assertion that actually fires is the
+  other one: the file must carry `max_sessions = ` (with the newline, since
+  `"max_sessions = "` is a prefix of the line being refused). Shown failing by
+  dropping `&& config.IsBool(key)` and restoring it.
+- **`allowed_roots` cannot host that test at all**, which is worth knowing before
+  someone reaches for the most security-shaped key. Empty and `false` are both
+  refused-or-accepted identically from the outside — `false` fails the absolute-path
+  check, empty falls back to the default root — so the over-broad reading is invisible
+  through it. `max_sessions` is the key where the two readings diverge observably.
+- **For today's two keys this changes nothing the daemon does.** `loadBool` already
+  reads empty as false, so unticking a box "worked" before this task by coincidence.
+  What it changes is the operator's file (`discover_roots = false`, not a half-finished
+  line) and the coincidence itself: a boolean defaulting to *true* would have been
+  turned on by an unticked box. That is why T002 is worth its iteration even though the
+  suite would have gone green without the production change.
+- **`editForm` re-renders the settings section each time to lift a page token**, so a
+  test can post twice against one fleet (on, then off) without minting anything itself.
+- **`golangci-lint` is 2.12.2 here** — checked again per #26. `go vet` under all three
+  build tags compiles clean; none of them was touched.
+
+**Left:** T003–T006. T003 is next: render the two boolean rows as switches in
+`web/templates/settings.html`, reusing `.switch-input`/`.switch-label`, introducing no
+new class, and asserting against the *rendered markup* that a boolean row carries a
+checkbox and a non-boolean row still carries a text input. The checked box must submit
+`value=true`; unchecked submits nothing, which is what this iteration made safe.
+
+**Findings:**
+
+- **A truncated edit POST silently resets a setting to its default, and always has.**
+  A request naming `allowed_roots` with no value field writes `allowed_roots = `, the
+  loader reads that as unset, and the containment allowlist becomes the built-in
+  `$HOME` root — accepted, written, and audited as an ordinary edit. Same shape for
+  `max_sessions` (back to the default cap). This is pre-existing behaviour, out of
+  T002's scope under AR-008, and T002 deliberately pins it rather than changing it. It
+  is worth its own task: the honest fix is for the handler to refuse a request whose
+  value field is absent for a key that is not boolean, rather than treating absence as
+  "clear it". Constitution VI is the reason — both keys are containment bounds.
+- `submittedValue` is package-level rather than a method for testability of the pure
+  reading, but nothing tests it directly; both guards go through the route. That is the
+  right way round per `docs/conventions.md` ("assert the caller"), noted only so a later
+  iteration does not add a unit test for it and think it has covered the route.
