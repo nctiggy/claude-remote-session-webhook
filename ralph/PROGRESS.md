@@ -1083,3 +1083,91 @@ US7 is half done.
    several of them twice. Nothing in the contracts records it. T016 is a `docs/components.md`
    task, so this belongs to the contract files rather than to it; the note is here because
    the contracts are read once per task by a fresh context that will hit it again.
+
+---
+
+## Iteration 15 — 2026-08-09 09:51
+
+**Did:** T015, the risky deletion. `.settings caption` and `.settings table` removed from
+`web/static/crswd.css`; `.settings th, .settings td` and `.settings p` kept, each checked
+against `web/templates/settings.html` first and the verdicts written into the commit message as
+the task asked. Two tests shipped — `TestNoRuleTargetsACaption` (the contract's) and
+`TestTheSettingsTableCarriesItsOwnLayout` (not the contract's; see below) at
+`stylesheet_test.go:3120` onward. Two files, one commit, no template touched, no doc row owed.
+
+**Learned, so the next iteration does not rediscover it:**
+
+- **The blindness this task is about is now demonstrated rather than asserted.** Mutation C
+  deleted `.settings th, .settings td` outright — the sole source of the settings table's
+  padding, its border grid, and the `font-weight: 400` / `text-align: start` that undo the
+  browser's own `th` defaults — and **the entire suite stayed green**. That is what "an unstyled
+  page is invisible to the class sweep" means concretely, and it is the reason the task says do
+  not delete on suspicion. Any future rule-retirement in this file has the same hole.
+- **The contract's four-row inventory is right about what *matches* and says nothing about what
+  is *load-bearing*, and for `.settings p` those differ.** `contracts/hygiene.md:143` records it
+  as "still matches `.settings-source`" — true, and irrelevant: for `.settings-source` and
+  `.updating` it duplicates their declarations exactly, so it decides nothing there. What it
+  actually decides is **`.update-caution`'s bottom margin**. `.settings p` is `(0,1,1)`,
+  `.update-caution` is `(0,1,0)`, so `margin-block: 0 var(--s5)` beats that rule's own
+  `margin: 0` per-longhand regardless of source order, and the caution has carried an `--s5` gap
+  it never asked for. **Specificity, not matching, is what makes a descendant rule
+  load-bearing** — check the classes it overrides, not just the elements it selects.
+- **`.settings table` was safe to delete for a reason that lives in another rule**, and that
+  premise was unguarded. `.settings-table` (`crswd.css:1190`) sets `inline-size: 100%` and
+  `border-collapse: collapse` on the very same element — the only `<table>` in the tree, and it
+  carries the class — so the element rule was byte-for-byte redundant. Strip either declaration
+  from `.settings-table` later and nothing sets it any more. That is why
+  `TestTheSettingsTableCarriesItsOwnLayout` exists beyond the contract's single named test:
+  a deletion justified by a fact about a different rule needs that fact held somewhere.
+- **`.settings thead th` (`crswd.css:1159`) is a fifth pre-#103 element rule and the contract's
+  inventory omits it.** It still matches (`<thead><tr><th scope="col">`) and it is load-bearing
+  on a desktop — sole source of the dim uppercase column headers; the narrow block clips
+  `thead` away entirely, so it is a desktop-only effect. No action was taken: it is not one of
+  the four rules T015 names and AR-008 forbids the drive-by. Recording it so a later sweep does
+  not have to re-derive that it is *both* omitted and *fine*.
+- **`ruleFor`'s own doc comment cited `.settings table` as its worked example** of a selector
+  `.settings` is a prefix of (`stylesheet_test.go:2373`). The deletion falsified it, so it now
+  cites `.settings p`. One word, and it is the kind of stale comment T009 and T014 were about.
+- Both negatives proved by mutation, with `Edit` and undone with `Edit`, per iterations 3–14:
+  (a) the caption rule restored fails `TestNoRuleTargetsACaption` **and nothing else**, which is
+  itself the proof that no existing guard could see it; (b) `.settings-table` stripped of the
+  two declarations fails `TestTheSettingsTableCarriesItsOwnLayout` naming both. Mutation C
+  above is the third, and it is the one that fails nothing.
+- All gate commands green; linter is **2.12.2**, so the green is real. `go test -count=1 ./...`
+  clean, `golangci-lint run` 0 issues, all three tagged suites compile
+  (`go vet -tags tmux|quickstart|dev`). `-tags quickstart` was not *run*: two deleted CSS rules,
+  two tests, no `cmd/crswd`.
+
+**Left:** T016 and T017 — the last two. T016 is `docs/components.md` prose and **five prior
+iterations have logged scope for it** (iterations 3, 10, 11, 12, 13): the pane's scroll
+container and its wrap trade, button/action-row geometry, input scale, card truncation, and the
+masthead's gutter and identity flex. Its title names two prose edits; read it as "reconcile the
+document with everything milestone 7 made conditional". T017 verifies the three open questions
+are **still UNANSWERED** and must not answer them. 2 of 17 open; US7 is complete.
+
+**Findings — noticed, not fixed:**
+
+1. **`docs/components.md:56-62` says the settings page "is the header partial and a plain
+   `<table>`".** It has not been a plain table since #103 — it is a section menu, a panel, a
+   table per section, an update form and a live region. That paragraph is the same claim T009
+   found in `settings.html`'s own header comment and rewrote; the doc's copy survived because
+   T009's scope was the template. **T016 is the task in that file**, and this is a sixth item
+   for it — the largest one, because it is wrong rather than merely incomplete.
+2. **`.update-caution` asks for `margin: 0` and does not get it**, per the specificity note
+   above. Recorded in the comment on `.settings p` rather than fixed: making the caution's own
+   rule win is a visible spacing change to the update form and this task was retiring superseded
+   rules, not re-spacing a form. It is a two-line fix-lane item for whoever wants it — either
+   drop `margin: 0` from `.update-caution` (accepting the gap) or raise its specificity
+   (accepting the change).
+3. **Three of the four rules T015 examined were still doing work, and the milestone's own risk
+   note predicted the opposite.** `IMPLEMENTATION_PLAN.md:96-98` frames T015 as "deleting the
+   superseded settings rules" plural; the honest outcome is one dead rule, one redundant rule,
+   and two that hold the page up. Nothing was wrong with the plan's caution — it is the reason
+   each was checked — but a fresh context reading the title alone would expect a bigger
+   deletion and be tempted to find one.
+4. **The stylesheet still has no way to ask "does this rule match anything the tree renders?"
+   for an element selector**, which is the general form of both this task and its blindness.
+   `renderedClasses` walks templates for `class="..."`; the element-selector equivalent would
+   need the templates parsed for tag names, which `html/template` can do and no test here does.
+   That is a real guard someone could write — G5's missing half — and it is out of scope for a
+   CSS task in a milestone that is closing.

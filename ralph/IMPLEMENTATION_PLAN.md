@@ -212,7 +212,7 @@ needs to re-argue them.
 ### US7 — What the sweep found (P3)
 
 - [x] **T014** Replace `background: var(--glow)` with `var(--surface)` and `var(--surface-lift)` at `crswd.css:1339` and `1352`. Add `TestNoBackgroundSpendsAShadowToken`. Update the comment above them to record the gap.
-- [ ] **T015** 🔒 Delete `.settings caption` (verified dead — zero captions rendered). Check `.settings table`, `.settings th/td` and `.settings p` against the template; keep what is load-bearing and say which in the commit message.
+- [x] **T015** 🔒 Delete `.settings caption` (verified dead — zero captions rendered). Check `.settings table`, `.settings th/td` and `.settings p` against the template; keep what is load-bearing and say which in the commit message.
 
 ### Ship it
 
