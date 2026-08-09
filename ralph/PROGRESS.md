@@ -356,3 +356,73 @@ the surface the operator actually reported. 12 of 17 tasks open.
    because T005 completes the pane's test coverage, and "every pane task is green" is exactly
    the moment a later iteration might read the phase as settled. It is not: green proves five
    declarations exist, and nothing in this repository has a thumb.
+
+---
+
+## Iteration 6 — 2026-08-09 08:46
+
+**Did:** T006. Deleted the whole `.settings { overflow-x: auto }` rule (was `crswd.css:1165`)
+and added `overflow-x: auto` to `.settings-panel` (now `crswd.css:1394`), unconditionally.
+Shipped `TestWideSettingsPanTheirOwnPanel` (`stylesheet_test.go:2317`) asserting both halves.
+Nothing in the 780px block was touched, so the design-system enumeration table owes no row.
+
+**Learned, so the next iteration does not rediscover it:**
+
+- **There are THREE rules whose selector is exactly `.settings`, and the plan's line numbers
+  only name two of them.** `crswd.css:1079` (inside the 780px block, `grid-template-columns:
+  1fr`), the deleted one at 1165, and `1335` — the grid wrapper proper, `display: grid` with
+  the menu/panel columns. The one at 1165 was a header for the *element-selector* block
+  (`.settings table`, `.settings th/td`, `.settings caption`, `.settings p`) and sat 170 lines
+  above the rule that actually creates the wrapper. **T015 is the task that goes through those
+  element selectors**, and it should know that their shared comment block is now the first
+  thing under that heading, because this task removed the rule it was attached to.
+- **`blockFor(t, source, ".settings")` returns the media-block rule, not either top-level
+  one** — 1079 is the first occurrence in the file. That is why the new test sweeps `cssRules`
+  and compares the comma-split selector to `.settings` exactly, the same shape
+  `TestThePaneDoesNotTrapVerticalScrolling` uses. Any later assertion about "the settings
+  wrapper" must do the same or it will silently be reading the breakpoint override. **T007
+  reads `.settings-menu` and `.settings-menu-list` from inside the 780px block and should use
+  the two-step `blockFor(media)` → `blockFor(selector)` nesting T004 established, not
+  `blockFor` on the bare selector.**
+- **`blockFor(t, source, ".settings-panel")` is safe and stays safe**, because `stylesheet()`
+  strips comments before anything reads it (`cssComment`, `stylesheet_test.go:74`) — so the
+  new comment above `.settings table`, which now names `.settings-panel` in prose, cannot be
+  what `strings.Index` finds. Worth knowing generally: prose in this file is invisible to
+  every guard, in both directions.
+- **Both negatives proved.** Adding `overflow-x` back to the `.settings` grid rule at 1335
+  while leaving the panel's copy in place fails the sweep half naming the wrapper's body —
+  that is the mutation the contract calls out, because it renders identically to before the
+  task and fixes nothing. Removing it from the panel fails the other half. Temporary
+  mutations done with `Edit` and undone with `Edit`, per iterations 3–5.
+- All gate commands green; linter is **2.12.2**, so the green is real. `go test ./...` clean,
+  all three tagged suites compile (`go vet -tags tmux|quickstart|dev`). `-tags quickstart` was
+  not *run*: this task touches one CSS file and one test file, no `cmd/crswd`.
+
+**Left:** T007 next (the section menu becomes a scrolling row, inside the 780px block — and it
+owes the design-system enumeration table a row, which T004 is the precedent for). 11 of 17
+tasks open.
+
+**Findings — noticed, not fixed:**
+
+1. **The stale comment above the 780px block that iteration 4 flagged is still stale, and
+   T006 was not the task to fix it** — this task added no rule to that block. T007, T008, T012
+   and T013 all do. The first of them to open that block should either delete the enumeration
+   from the comment or point it at the design-system table. Restating it because it has now
+   survived two iterations that each had a reason not to be the one.
+2. **`.settings-menu` sets `background: var(--glow)` at `crswd.css:1386` — the same live bug
+   T014 fixes at 1339 and 1352.** T014's task text names two line numbers and this is a third
+   occurrence of the identical defect (a shadow list spent as a background is dropped at
+   computed-value time, so the menu bar has never had a surface). The plan's Resolved
+   decisions section says "the settings menu has never had a surface", so this is known — but
+   the *task* names `1339` and `1352`, which are `.settings-menu-link[aria-current]` and
+   `.settings-menu`'s neighbours, and after this commit every line number in T014 has shifted
+   by +6. **T014 must find these by selector, not by line.** Its own
+   `TestNoBackgroundSpendsAShadowToken` will catch any it misses, provided that test sweeps
+   the file rather than the two rules named.
+3. **Nothing asserts that the panel's scroll container is inside the grid rather than around
+   it.** The new test proves `.settings-panel` scrolls and `.settings` does not, but a future
+   edit that moved the menu inside the panel would satisfy both assertions and reintroduce the
+   exact fault. That is a template change and G5 would not see it either — no new class is
+   involved. It is a theoretical regression rather than a likely one, and the honest note is
+   that this guard checks which *rule* carries the property, never which elements the rule
+   ends up wrapping.
