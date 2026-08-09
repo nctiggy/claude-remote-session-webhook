@@ -1472,6 +1472,21 @@ body {
   .card-actions {
     gap: var(--s3);
   }
+
+  /* A mobile browser zooms the page when a field smaller than 16px takes focus,
+     and every input here is --fs-body. So renaming a session, creating one or
+     editing a setting zooms and pans the layout, and the operator pinches back
+     out afterwards — every time. The threshold is the browser's, not a size
+     anyone chose, which is why --fs-input carries it rather than the body scale
+     being raised to meet it.
+
+     Both selectors, because they are different forms: .field-input is create
+     and rename, .setting-input is settings editing. One of the two would leave
+     half the forms zooming while the fix reads as done. */
+  .field-input,
+  .setting-input {
+    font-size: var(--fs-input);
+  }
 }
 
 /* The single breakpoint. One operator, a laptop and a phone — two breakpoints

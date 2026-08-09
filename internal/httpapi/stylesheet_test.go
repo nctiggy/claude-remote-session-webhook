@@ -2827,3 +2827,43 @@ func TestDestroyIsSeparatedFromCompact(t *testing.T) {
 		t.Errorf("the pointer block respells the gap the action row already has (%s), so the declaration reads as a change and is not one", base[1])
 	}
 }
+
+// inputZoomSize is a font-size spending the one token that names the browser
+// threshold. The token rather than the number, because 16px written inline is
+// what the value sweep exists to fail — and because the reason a field is that
+// size is a browser's behaviour, not a judgement about how it looks.
+var inputZoomSize = regexp.MustCompile(`(?i)(?:^|[;{\s])font-size\s*:\s*var\(--fs-input\)`)
+
+// TestInputsDoNotTriggerFocusZoom holds FR-015 at both of the forms it is about.
+//
+// A mobile browser zooms the page when an input below 16px takes focus, and
+// every field here is --fs-body. The cost is not the zoom: it is that the layout
+// pans away from what the operator was aiming at and they pinch back out
+// afterwards, on every rename, every create and every settings edit.
+//
+// Asserted per selector rather than by finding the token once in the block,
+// because the two are different forms — .field-input is create and rename,
+// .setting-input is settings editing — and covering one leaves half the forms
+// zooming while the diff reads as done. A selector list satisfies both, which is
+// how the file spells it; two separate rules would satisfy it too, since what is
+// being asserted is the declaration reaching each selector.
+//
+// **Must fail when** one of the two is missed.
+func TestInputsDoNotTriggerFocusZoom(t *testing.T) {
+	t.Parallel()
+
+	coarse := blockFor(t, stylesheet(t), coarsePrelude)
+	for _, selector := range []string{".field-input", ".setting-input"} {
+		var sized bool
+		for _, rule := range cssRules(coarse) {
+			for _, one := range strings.Split(rule.selector, ",") {
+				if strings.TrimSpace(one) == selector && inputZoomSize.MatchString(rule.body) {
+					sized = true
+				}
+			}
+		}
+		if !sized {
+			t.Errorf("the pointer block sets no font-size: var(--fs-input) on %s, so a touch keyboard opening on that field zooms the page and pans the layout away from it: %q", selector, coarse)
+		}
+	}
+}

@@ -289,6 +289,7 @@ Everything inside `@media (pointer: coarse)`:
 | `.masthead-link` | `padding-block: var(--s3)` + `margin-block: calc(var(--s3) * -1)` | The hit area grows and the bar's height does not — the margin gives the layout back what the padding took. It is a flex item, so both apply |
 | `.field-switch` | `min-block-size: var(--tap)` | The row is the target: the checkbox and its label are one control, and the box alone is `--s4` square |
 | `.card-actions` | `gap: var(--s3)` | Destroy sits beside Compact and a thumb covers both. Enlarging the buttons without moving them apart makes that worse, not better |
+| `.field-input`, `.setting-input` | `font-size: var(--fs-input)` | Below `16px` a mobile browser zooms the page on focus, so every rename, create and settings edit zoomed and panned and the operator pinched back out. Both, because they are different forms — create/rename and settings editing — and one of the two leaves half of them zooming |
 
 **Adding a rule to that block adds a row to this table, in the same commit** — the
 same obligation the width block carries, for the same reason.
