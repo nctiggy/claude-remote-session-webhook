@@ -133,6 +133,18 @@ const (
 	outcomeUpdateNotFetched outcome = "update-not-fetched"
 	outcomeUpdateUnverified outcome = "update-unverified"
 	outcomeUpdateRefused    outcome = "update-refused"
+
+	// The restart's two refusals (milestone 9). It has no success code: an
+	// accepted restart answers with the waiting page rather than with a redirect,
+	// for the reason the update does, so there is no fleet for a banner to be
+	// rendered on. A code nothing chooses is a sentence no route can produce,
+	// which is what TestEveryOutcomeThisPackageSpellsHasASentence counts.
+	//
+	// They are the restart's own rather than the update's, which is this file's
+	// rule throughout: each says what was *not* done, and an operator told that
+	// nothing was downloaded has been told about the wrong action.
+	outcomeRestartUnconfirmed outcome = "restart-unconfirmed"
+	outcomeRestartRefused     outcome = "restart-refused"
 )
 
 // queryOutcome is the query parameter the fleet reads its banner from, spelled
@@ -352,6 +364,16 @@ var banners = map[outcome]outcomeView{
 	},
 	outcomeUpdateRefused: {
 		Message: "The update was refused, so this daemon is still running what it was running. The audit trail says which step refused it.",
+	},
+
+	// The restart's two, and both end on the fact an operator needs from a
+	// restart that did not happen: this daemon is the one they were already
+	// talking to, and every session on it is where it was.
+	outcomeRestartUnconfirmed: {
+		Message: "This restart was not confirmed, so nothing was stopped and every session is as it was.",
+	},
+	outcomeRestartRefused: {
+		Message: "The restart was refused, so this daemon is still running and every session is as it was. The audit trail says why.",
 	},
 }
 

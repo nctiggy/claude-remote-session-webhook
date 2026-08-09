@@ -10,8 +10,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo"
-	"github.com/nctiggy/claude-remote-session-webhook/internal/updater"
 	"html"
 	"maps"
 	"net/http"
@@ -23,6 +21,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/updater"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
@@ -1571,5 +1572,260 @@ func TestSettingsCarriesTheToastRegion(t *testing.T) {
 
 	if page := settingsDefaultBody(t, newFleet(t)); !strings.Contains(page, `id="action-toast"`) {
 		t.Errorf("the settings page carries no action-toast, so crswd.js will not intercept the update form and it will navigate:\n%s", page)
+	}
+}
+
+// --- T003: the boolean rows are switches -------------------------------------
+
+// settingControlPattern is the one input a row offers for its value, whichever
+// kind it is.
+//
+// Anchored on the class rather than on the tag, so the hidden token and key
+// fields beside it are not candidates: those are the form's machinery, and a
+// sweep that counted them could never say a row offers exactly one control.
+var settingControlPattern = regexp.MustCompile(`<input class="(?:setting-input|switch-input)"[^>]*>`)
+
+// settingControlValue is what that input submits.
+var settingControlValue = regexp.MustCompile(`value="([^"]*)"`)
+
+// settingControl is the control one settings row offers, read out of the markup
+// a browser was handed.
+//
+// Reading the rendered page rather than the view behind it is the whole point of
+// the assertions below. Milestone 4 shipped three green tasks about a control an
+// operator never saw change, because every one of them asserted what the handler
+// accepted; the only thing that catches a template nobody edited is reading the
+// template's output.
+func settingControl(t *testing.T, page, key string) string {
+	t.Helper()
+
+	row := settingsRowFor(t, page, key)
+	found := settingControlPattern.FindAllString(row, -1)
+	if len(found) != 1 {
+		t.Fatalf("the %s row offers %d value controls; a row edits one setting with one control:\n%s", key, len(found), row)
+	}
+	return found[0]
+}
+
+// TestEveryBooleanRowIsASwitchAndNothingElseIs is the operator's request read at
+// the markup: "all true/false settings should be check boxes".
+//
+// It sweeps every editable key rather than naming the two booleans, so it states
+// the rule in both directions and cannot go stale. A third boolean added to the
+// loader arrives here as a text field and fails; a key wrongly reported boolean
+// arrives as a box and fails too — and that second direction is the one that
+// matters, because a box is the control whose absence the edit route reads as
+// `false`.
+//
+// **Must fail when** the template renders one control for every row, which is
+// what it did before this task and what a task marked done by its handler alone
+// would have left it doing.
+func TestEveryBooleanRowIsASwitchAndNothingElseIs(t *testing.T) {
+	t.Parallel()
+
+	page := settingsEverySection(t, newFleet(t))
+
+	swept := 0
+	for _, name := range config.Vars() {
+		key := config.KeyForVar(name)
+		if !config.Editable(key) {
+			continue
+		}
+		swept++
+		control := settingControl(t, page, key)
+		if config.IsBool(key) {
+			if !strings.Contains(control, `type="checkbox"`) {
+				t.Errorf("%s is a true/false setting and its row offers %q; an operator is asked to type `true` where a box belongs", key, control)
+			}
+			continue
+		}
+		if !strings.Contains(control, `type="text"`) {
+			t.Errorf("%s is not a boolean and its row offers %q; a box on that row submits nothing when it is cleared, and the route reads nothing as `false` only for the keys config.IsBool names", key, control)
+		}
+	}
+	if swept == 0 {
+		t.Fatal("no editable row was reached, so this sweep asserted nothing about any control")
+	}
+}
+
+// TestTheSwitchReflectsTheSetting is FR-018a's discipline applied to a control:
+// a box that always rendered unticked would tell an operator their setting is
+// off, and be believed.
+//
+// Both states and both keys. One direction is not interesting on its own — an
+// always-unticked box passes any assertion made against a setting that is
+// already off, which is the shape of a test that cannot fail.
+func TestTheSwitchReflectsTheSetting(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		key string
+		set func(*config.Config, bool)
+	}{
+		{"discover_roots", func(cfg *config.Config, on bool) { cfg.DiscoverRoots = on }},
+		{"destroy_on_shutdown", func(cfg *config.Config, on bool) { cfg.DestroyOnShutdown = on }},
+	} {
+		for _, on := range []bool{true, false} {
+			f := settingsOn(t, func(cfg *config.Config) { tc.set(cfg, on) })
+			control := settingControl(t, settingsEverySection(t, f), tc.key)
+			if strings.Contains(control, " checked") != on {
+				t.Errorf("%s is %v and its box renders %q; the control states the setting or it misinforms about it", tc.key, on, control)
+			}
+		}
+	}
+}
+
+// TestTheSwitchSubmitsTheSpellingThisPageWrites holds the template's literal to
+// boolOn, the constant the rest of this page is written in terms of.
+//
+// The value a checkbox submits is one of the few things in this tree spelled
+// twice — a template parsed with no function map cannot reach a Go constant — so
+// this is the arrangement `confirm=yes` already has on the card.
+//
+// **Must fail when** the attribute is dropped, which leaves the browser's own
+// `on`. TestTheTickedSwitchIsAValueTheLoaderAccepts is what says why that
+// matters.
+func TestTheSwitchSubmitsTheSpellingThisPageWrites(t *testing.T) {
+	t.Parallel()
+
+	control := settingControl(t, settingsEverySection(t, newFleet(t)), "discover_roots")
+	found := settingControlValue.FindStringSubmatch(control)
+	if found == nil {
+		t.Fatalf("the switch carries no value at all, so a tick submits the browser's own `on`: %q", control)
+	}
+	if found[1] != boolOn {
+		t.Errorf("a ticked switch submits %q and this page writes %q; the file would carry a word its own loader refuses", found[1], boolOn)
+	}
+}
+
+// --- T005: the restart control -----------------------------------------------
+
+// restartFormPattern is the form on this page that posts to the restart route,
+// opening tag and all.
+var restartFormPattern = regexp.MustCompile(`(?s)<form[^>]*action="` + wantRestartPath + `"[^>]*>.*?</form>`)
+
+// hiddenFormField is a field the page sends without the operator typing it: the
+// token that authorises the write and the confirming step that says it was meant.
+var hiddenFormField = regexp.MustCompile(`<input type="hidden" name="([^"]*)" value="([^"]*)">`)
+
+// restartFormIn isolates that form, which is settingsRowFor's discipline and
+// matters more here than anywhere else on this page.
+//
+// The update form sits three lines above it carrying a page token, a confirming
+// step and a sentence ending "Sessions survive it" of its own. Every assertion
+// below would therefore pass, word for word, against a page that offers no
+// restart control at all — which is precisely the state #103 found and the state
+// this task exists to leave behind.
+func restartFormIn(t *testing.T, page string) string {
+	t.Helper()
+
+	found := restartFormPattern.FindAllString(page, -1)
+	if len(found) != 1 {
+		t.Fatalf("the settings page carries %d forms posting to %s; want exactly 1 — none is a route no operator can reach, and two is a page asking the same question twice:\n%s",
+			len(found), wantRestartPath, page)
+	}
+	return found[0]
+}
+
+// TestSettingsOffersTheRestart is #103's rule read against T004: a route that
+// ends this daemon and a page that offers no way to ask for it is a milestone of
+// green tests and a feature nobody can use.
+//
+// It reads the section *before* anything has been checked, and that is the second
+// claim rather than a convenience. A restart has nothing to do with what a
+// release feed says; an operator restarting a wedged daemon on a host with no
+// network must not be made to ask GitHub a question first.
+//
+// **Must fail when** the Updates section renders no restart control, when it
+// renders one only after a check, or when the control it renders is missing
+// either half of what the route reads.
+func TestSettingsOffersTheRestart(t *testing.T) {
+	t.Parallel()
+
+	form := restartFormIn(t, settingsSectionBody(t, newFleet(t), sectionUpdates))
+
+	if !strings.Contains(form, `method="post"`) {
+		t.Errorf("the restart form declares no post method; a GET on that path is a route this daemon does not serve:\n%s", form)
+	}
+	if !strings.Contains(form, `type="submit"`) {
+		t.Errorf("the restart form carries no control that submits it, so it is markup rather than a button:\n%s", form)
+	}
+
+	fields := make(map[string]string)
+	for _, field := range hiddenFormField.FindAllStringSubmatch(form, -1) {
+		fields[field[1]] = field[2]
+	}
+	if fields[fieldPageToken] == "" {
+		t.Errorf("the restart form carries no page token, so the gate refuses it uniformly and the operator is told nothing at all:\n%s", form)
+	}
+	if got := fields[fieldConfirm]; got != confirmYes {
+		t.Errorf("the restart form's confirming step is %q and the route reads %q; a control certain to be turned away is worse than no control", got, confirmYes)
+	}
+}
+
+// TestTheRestartSaysSessionsSurviveIt is the half of this control that is copy,
+// and it is the half the operator's decision actually rests on.
+//
+// A restart that might take every session on the host with it is a button nobody
+// presses. This one does not — they are tmux windows on this host rather than
+// children of this process (#63) — and a page that knows that and does not say it
+// has left the operator to guess about unsandboxed shells they cannot get back.
+//
+// **Must fail when** the control ships without the sentence beside it. Asserted
+// inside the form for restartFormIn's reason: the update's own caution says the
+// same four words a little way up the page.
+func TestTheRestartSaysSessionsSurviveIt(t *testing.T) {
+	t.Parallel()
+
+	form := restartFormIn(t, settingsSectionBody(t, newFleet(t), sectionUpdates))
+
+	if !strings.Contains(form, "Sessions survive it") {
+		t.Errorf("the restart control never says sessions survive it, so an operator weighing it has to assume they do not:\n%s", form)
+	}
+	if !strings.Contains(form, `class="update-caution"`) {
+		t.Errorf("the restart's sentence is not the caution line this section already has, which is a second spelling for what the update above says in one:\n%s", form)
+	}
+}
+
+// TestTheRenderedRestartFormIsAcceptedByTheRoute is the only assertion about this
+// control that says it *works*.
+//
+// Everything above reads markup and everything in restart_test.go builds a form
+// in Go, and between the two sits the gap milestone 4 shipped three green tasks
+// across: a page and a handler that each satisfy their own tests and disagree
+// about a field. So this takes the fields the page rendered, posts exactly those
+// and nothing else, and asks the daemon what it did about it.
+//
+// The one server renders and receives, which is what makes the token real: a
+// token minted by one fixture and posted to another proves only that two test
+// servers were built differently.
+//
+// **Must fail when** the rendered form is refused by the route it names — a
+// missing token, a confirming step spelled some other way, or a method that route
+// does not serve.
+func TestTheRenderedRestartFormIsAcceptedByTheRoute(t *testing.T) {
+	t.Parallel()
+
+	d := newRestartDoor(t)
+
+	page := d.send(t, http.MethodGet, settingsPath+"?"+querySection+"="+sectionUpdates, secFetchSiteSameOrigin, nil)
+	if page.Code != http.StatusOK {
+		t.Fatalf("GET the Updates section = %d (%s); want %d", page.Code, page.Body.String(), http.StatusOK)
+	}
+
+	submitted := url.Values{}
+	for _, field := range hiddenFormField.FindAllStringSubmatch(restartFormIn(t, page.Body.String()), -1) {
+		// Unescaped because a browser submits the value, not the attribute: what
+		// html/template wrote here is escaped for an attribute context, and posting
+		// that verbatim would be this test typing something no operator can.
+		submitted.Set(field[1], html.UnescapeString(field[2]))
+	}
+
+	w := d.send(t, http.MethodPost, wantRestartPath, secFetchSiteSameOrigin, submitted)
+
+	wantRestartingPage(t, w)
+	d.steps.waitForExit(t)
+	if got := d.steps.count(); got != 1 {
+		t.Errorf("the form this page rendered ended the process %d times; want exactly 1 — a control its own route refuses is a button that does nothing and says nothing", got)
 	}
 }

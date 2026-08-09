@@ -1039,8 +1039,23 @@
        * handler above turned that page into a toast, which is a sentence where
        * a spinner was wanted. This is the third attempt and the first one that
        * leaves the operator looking at what they were looking at.
+       *
+       * The restart is the same kind of thing and takes the same branch rather
+       * than a second copy of it. It installs nothing, but the daemon it was
+       * asked of is about to stop answering all the same, so a sentence in the
+       * toast would be an answer about a host that is no longer there — and six
+       * seconds later that sentence goes, leaving a settings page that looks
+       * untouched while the process behind it is down.
+       *
+       * The selector's second half is the route rather than a class, and that
+       * is deliberate. `.update-form` is the name of the form above it, not a
+       * shape a second form may wear, and the restart form carries no class of
+       * its own on purpose (docs/components.md, "The settings page"). What
+       * these two forms share is not a layout — it is the address they post to,
+       * which is the thing that makes the answer special: it is about to stop
+       * being served.
        */
-      if (form.matches('.update-form')) {
+      if (form.matches('.update-form, [action="/dashboard/restart"]')) {
         swapUpdatesSection(said);
         return;
       }
@@ -1553,10 +1568,19 @@ const waitOutTheUpdate = () => {
     if (asked > WAIT_CEILING) {
       // Said rather than spun. The spinner goes because it was claiming
       // progress this page can no longer vouch for.
-      note.textContent =
-        'This daemon has not answered since it began installing ' +
-        becoming +
-        '. It may still be starting, or it may have failed to. Check the service on the host.';
+      //
+      // The sentence is the template's rather than this file's, because two
+      // routes render this element and only one of them is installing
+      // anything: a restart giving up with "since it began installing 0.9.0"
+      // would be describing a thing this daemon never did, to an operator who
+      // is at that moment trying to work out what it did do. What the
+      // interface says to a person belongs to a template — the rule
+      // `.combo-status` follows below, with the same guard, because a missing
+      // attribute must stop the poll silently rather than write `undefined`
+      // into a live region.
+      if (note.dataset.ceiling) {
+        note.textContent = note.dataset.ceiling;
+      }
       return;
     }
 

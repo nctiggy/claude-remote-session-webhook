@@ -29,6 +29,7 @@ var spelledOutcomes = []outcome{
 	"teardown-unverified",
 	"create-failed", "destroy-failed", "rename-failed", "compact-failed", "mode-failed",
 	"update-not-fetched", "update-unverified", "update-refused",
+	"restart-unconfirmed", "restart-refused",
 	"setting-written", "setting-refused",
 }
 

@@ -26,10 +26,11 @@
   This page acts as well as reads. It carries mutating forms, the page token
   inside each of them, the controls that submit them, and the live region at the
   foot of this file — the three things every actionable page in this tree carries,
-  and the forms they exist for. Two routes receive them: POST /settings/edit for
-  one configuration key, and POST /dashboard/update for the binary. `GET /settings`
-  is still the only verb registered on this path itself, which is why the header's
-  link to it is a link to a page and nothing more.
+  and the forms they exist for. Three routes receive them: POST /settings/edit for
+  one configuration key, POST /dashboard/update for the binary, and
+  POST /dashboard/restart for the process running it. `GET /settings` is still the
+  only verb registered on this path itself, which is why the header's link to it is
+  a link to a page and nothing more.
 
   It was once read-only, and the absence of a route was the safeguard. That is no
   longer where the safety comes from, so do not restore it by deleting a form:
@@ -115,11 +116,26 @@
 
   aria-live so somebody who cannot see the spinner is told; role="status"
   because it is worth saying at the next pause and never worth interrupting.
+
+  Two sentences, because two routes answer with this block and only one of them
+  is installing anything. A restart comes back as the version it went down as,
+  so data-becoming is the same either way and the script polls for it the same
+  way — but a restart that told the operator it was installing that version
+  would be claiming a thing this daemon did not do, which is the care every
+  outcome sentence in this product takes.
+
+  data-ceiling is what the script says when it gives up waiting, and it is here
+  for that same reason rather than in the script that writes it. The waiting has
+  an end — a daemon that never comes back is a thing an operator has to know
+  about, and a page spinning forever looks identical whether the restart was
+  slow or the new binary would not start at all — so this sentence is the last
+  thing this page ever says, and it must be true of the route that rendered it.
+  Both spellings end the same way because what to do about it is the same.
 */}}{{ if .Becoming }}<section class="settings-section">
 <h2 class="settings-title">Updates</h2>
-<p class="updating" role="status" aria-live="polite" data-becoming="{{ .Becoming }}">
+<p class="updating" role="status" aria-live="polite" data-becoming="{{ .Becoming }}" data-ceiling="{{ if .Restarting }}This daemon has not answered since it began restarting.{{ else }}This daemon has not answered since it began installing {{ .Becoming }}.{{ end }} It may still be starting, or it may have failed to. Check the service on the host.">
 <span class="spinner" aria-hidden="true"></span>
-Installing {{ .Becoming }}…
+{{ if .Restarting }}Restarting…{{ else }}Installing {{ .Becoming }}…{{ end }}
 </p>
 </section>{{ else }}{{ if eq .Shown "Updates" }}{{ with .Update }}<section class="settings-section">
 <h2 class="settings-title">Updates</h2>
@@ -167,6 +183,45 @@ Installing {{ .Becoming }}…
 <button class="button button-primary" type="submit">Update to {{ .Available }}</button>
 <p class="update-caution">This replaces the running binary and restarts the daemon. Sessions survive it.</p>
 </form>{{ end }}
+
+{{/*
+  Restart, last in the section because it is the least of the three things here:
+  Check looks at somebody else's API, Update replaces this binary with one off
+  the internet, and this runs the binary that is already installed. It is offered
+  whether or not a check has happened, because it has nothing to do with what a
+  release feed says — an operator restarting a wedged daemon on a host with no
+  network must not be asked to check for updates first.
+
+  Not .button-primary: exactly one primary per view and the update above owns it.
+  Not .button-danger either — that is the spelling for an action that ends an
+  unsandboxed shell (docs/components.md, Button), and this ends none. The plain
+  .button is the ordinary action it is.
+
+  This form carries no class of its own, and that is a decision. .update-form is
+  the shape of the form above and this is not that form; a second element wearing
+  its name would tell every reader, and every sweep that finds the update by it,
+  something untrue. What it costs is that form's grid gap between the button and
+  the sentence under it, which is recorded in ralph/PROGRESS.md rather than paid
+  for with a spelling the design system does not have.
+
+  The confirming step is a hidden field the page sends deliberately, which is how
+  every confirmation in this tree is spelled and never a modal: a <dialog> needs
+  script for an action that needs none. The route reads this field before it does
+  anything at all, and refuses without exactly this value.
+
+  The sentence is not decoration and it is the reason this control is safe to
+  offer. An operator who does not know their sessions survive will not press it,
+  and the reason they survive is worth saying rather than asserting: they are tmux
+  windows on this host rather than children of this process, so a process that
+  ends does not reach them (#63). That is also why the shutdown teardown does not
+  fire — the restart is os.Exit, not a graceful stop — but that belongs in the
+  journal rather than on a button's caption.
+*/}}<form method="post" action="/dashboard/restart">
+<input type="hidden" name="crsw_page_token" value="{{ .Token }}">
+<input type="hidden" name="confirm" value="yes">
+<button class="button" type="submit">Restart the daemon</button>
+<p class="update-caution">This stops this daemon and starts it again, running the binary already installed. Sessions survive it: they are tmux windows on this host rather than children of this process.</p>
+</form>
 </section>{{ end }}{{ end }}{{ end }}
 
 {{ range .Sections }}{{ if eq $.Shown .Title }}<section class="settings-section">
@@ -200,7 +255,34 @@ Installing {{ .Becoming }}…
 <form class="setting-form" method="post" action="/settings/edit">
 <input type="hidden" name="crsw_page_token" value="{{ $.Token }}">
 <input type="hidden" name="key" value="{{ .Key }}">
-<input class="setting-input" id="set-{{ .Key }}" type="text" name="value" value="{{ .Value }}" aria-label="{{ .Key }}">
+{{/*
+  A true/false setting is a checkbox; everything else keeps the text field it
+  always had. config.IsBool is the one predicate behind both, and it is the same
+  one settings_edit.go asks — so the control this page offers and the reading the
+  route makes cannot disagree about which keys are booleans. They must not: an
+  unchecked box submits **nothing at all**, so "off" arrives as a request with no
+  value field, and a key rendered as a box the handler does not know is boolean
+  would be cleared rather than turned off.
+
+  That absence is byte for byte how a truncated request arrives too, which is why
+  the handler's reading of it is narrow rather than general. The reasoning is at
+  submittedValue and it is the security half of this control.
+
+  `value="true"` and not the `on` a browser sends by default. What this field
+  holds is written into the operator's file verbatim and read back by
+  strconv.ParseBool, which refuses `on` — the box would tick, the save would be
+  refused, and the operator would watch a control do nothing. The spelling is
+  boolOn in Go and a test holds the two together.
+
+  It is .switch-input, the switch this design system already defines for the
+  create form's one checkbox, rather than a second control that looks like it.
+
+  No visible <label>, for the same reason the text field beside it has none: the
+  row header already says the key, and a second copy is the same word twice to
+  anybody reading it aloud (docs/components.md, "The settings page"). What that
+  costs is the label's share of the pointer target, which the switch on the
+  create form has and this one does not.
+*/}}{{ if .Boolean }}<input class="switch-input" id="set-{{ .Key }}" type="checkbox" name="value" value="true"{{ if .On }} checked{{ end }} aria-label="{{ .Key }}">{{ else }}<input class="setting-input" id="set-{{ .Key }}" type="text" name="value" value="{{ .Value }}" aria-label="{{ .Key }}">{{ end }}
 <button class="button setting-save" type="submit">Save</button>
 </form>
 </td>{{ else }}<td>{{ .Value }}</td>{{ end }}

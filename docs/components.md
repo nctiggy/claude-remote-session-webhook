@@ -85,11 +85,11 @@ one row per key, with the layer that supplied each value beside it.
 
 **It acts as well as reads, and it carries all three of the things every
 actionable page in this tree carries** — a page token inside every mutating form,
-the controls that submit them, and a live region at the foot of the file. Two
-routes receive them: `POST /settings/edit` for one configuration key, and
-`POST /dashboard/update` for the binary. `GET /settings` is still the only verb
-registered on the path itself, which is why the header's link to it is a link to a
-page and nothing more.
+the controls that submit them, and a live region at the foot of the file. Three
+routes receive them: `POST /settings/edit` for one configuration key,
+`POST /dashboard/update` for the binary, and `POST /dashboard/restart` for the
+process running it. `GET /settings` is still the only verb registered on the path
+itself, which is why the header's link to it is a link to a page and nothing more.
 
 That paragraph replaced one asserting the opposite — no page token, no action row,
 no live region, and no route for a form to be received by. It was written when the
@@ -103,7 +103,13 @@ text it always had: a control certain to be turned away is not offered, which is
 the discipline that builds a card with no actions rather than actions that fail.
 
 Its controls are this document's — `.button`, `.button-primary`, and the
-page-token partial. Its own vocabulary is the names nothing else uses:
+page-token partial. The Updates section's three — Check, Update, Restart — are
+that vocabulary and nothing else: Restart is a plain `.button`, because exactly
+one primary per view is the rule above and the update owns it here, and because
+`.button-danger` is for an action that ends an unsandboxed shell and a restart
+ends none. Its form carries no class at all rather than a second spelling of the
+update's, which is the same discipline the rest of this page follows. Its own
+vocabulary is the names nothing else uses:
 `.settings-menu`, `.settings-panel`, `.settings-table`, and the per-row edit form
 (`.setting-form`, `.setting-input`, `.setting-save`). A further spelling for a
 text entry on this page is the defect this document exists to prevent. The row's
@@ -407,11 +413,16 @@ Rules:
   cost is worth stating plainly: down the scripted path this region is the only
   place the operator is told anything at all, the alarming outcome included, and
   six seconds later it is gone.
-- **The update form is the one action that gets no sentence here.** It replaces
-  the settings panel with the daemon's own waiting markup instead, because an
-  update is not an action with an outcome — the daemon has begun replacing itself
-  and is about to stop answering, so what is useful is the page staying put. See
-  "The settings page".
+- **Two forms get no sentence here, and they are the two that post to a daemon
+  about to stop answering.** The update and the restart replace the settings
+  panel with the daemon's own waiting markup instead, because neither is an
+  action with an outcome — the process is going down, so what is useful is the
+  page staying put, and a sentence that expires six seconds later would leave an
+  untouched-looking page in front of a host that is not there. The script
+  singles the two out by the address they post to and not by a class:
+  `.update-form` is the name of one of them rather than a shape the other may
+  wear, and the restart form deliberately carries no class at all. See "The
+  settings page".
 - **Every value in the rule is a token**, `--toast-max` included, and the copy is
   sans: a sentence a person reads was written by one (see `design-system.md`).
 - **It ships `hidden` and is revealed as it is written, which is not the shape

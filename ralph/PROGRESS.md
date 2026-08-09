@@ -21,420 +21,485 @@ When the whole plan is done and green, append a line containing exactly
 
 ---
 
-## Iteration 0 — the guard-gap backlog begins
+## Iteration 0 — two operator requests
 
-**Did:** Archived milestone 7 and opened a fresh notebook.
+**Did:** Archived milestone 8, opened a fresh notebook.
 
-**Left:** five tasks, each closing a gap that milestone 7 surfaced by tripping over it.
+**Left:** six tasks, from two requests: *"All true/false settings should be check
+boxes"* and *"can we have a way to restart the daemon from within the UI?"*
 
-**Findings:** Every task in this list exists because **something in this repository
-stated an invariant that nothing enforced**. That is the shape to look for, and it
-recurs:
+**Findings, all verified before the plan was written:**
 
-- `designTokens` says it transcribes `docs/design-system.md`. No test opens that file.
-- `settings.go` says no mutating verb reaches the config. `POST /settings/edit` does.
-- `components.md` says the Toast "has no section and no use". It ships in three templates.
-- The class sweep says it holds the stylesheet and the markup to the same names. It
-  cannot see an element selector, which is how four dead rules survived two milestones.
-- `freePort` says it returns a free port. It returns a port that *was* free.
-
-Four of the five are a **document or a comment that is confidently wrong**, and in a
-pipeline whose executor reads comments as contract, that is not tidiness — it is a
-defect that costs an iteration or, worse, is believed.
-
-The fifth (#123) is the one to be most careful with: it is the only change here that
-touches a test harness rather than a document, and a wrong fix makes the suite flaky
-in a new way instead of the old one.
-
-**T003 is the task most likely to grow.** Once the sweep can see element selectors it
-may report rules nobody has looked at since #103. Anything it finds must be checked
-against the templates before deletion — T015 of milestone 7 kept two of four rules it
-was expected to delete, and deleting either would have left an unstyled page no guard
-could report.
-
----
-
-## Iteration 1 — 2026-08-09
-
-**Did:** T001 (#116). `TestTheTranscriptionIsTheDocumentItTranscribes` in
-`internal/httpapi/stylesheet_test.go` now reads `docs/design-system.md` and compares it
-with the `designTokens` map in both directions. Only that test file changed; the
-document and the stylesheet are byte-identical to before.
-
-**Learned:**
-
-- **The document declares tokens in three shapes, not one.** The map's old comment said
-  "every token that document declares as CSS", and that was already wrong when it was
-  written. Fenced CSS blocks carry 22 of them; the **state table** carries the four
-  `--state-*` tokens in two cells and never as CSS; and `--pane-h: 30rem` is a single
-  inline code span in one sentence of the Layout section. A sweep that read only the
-  fences would have reported the four state tokens as fabrications and missed `--pane-h`
-  entirely — wrong in both directions at once.
-- **`--pane-h` was a live instance of the very drift the map exists to catch.** It is
-  declared in the document (line 217) and in the stylesheet, and the map omitted it, so
-  nothing held one to the other. It is in the map now.
-- **Two regex traps, both silent.** A token *reference* looks like a declaration: the
-  pointer-coarse table is full of `var(--tap)` and `var(--s3)`. What separates them is
-  the character before — `(` is not admitted by the leading class — and the colon. And
-  the inline declaration is delimited by backticks on **both** sides, so the value class
-  has to exclude a backtick or `--pane-h`'s value swallows the rest of the sentence, and
-  the leading class has to *admit* one or the declaration is never found at all. The
-  first attempt got the value right and the lead wrong, and the symptom was `--pane-h`
-  reported as a fabrication rather than any parse error.
-- **The state-table parse anchors on the second cell being nothing but a backticked
-  token.** That is what keeps it off the breakpoint and pointer tables, whose second cell
-  is a declaration made *about* a selector (`` `min-block-size: var(--tap)` ``) rather
-  than a token being declared. It is shape-based and therefore brittle by nature, so
-  `designSystemTokens` fatals if any of `documentedStates`' four tokens is missing from
-  the table parse — a parser that has gone blind must not read as a map that invented
-  the palette.
-- **Breaking it is cheap here and worth doing all four ways.** Direction 1 was proved by
-  adding a token to the stylesheet *and* the map: `TestTheTokenBlockIsTheDesignSystem`
-  stays green on that, which is precisely the hole. Watch out for name collisions when
-  doing this — `--glow` is already declared further down `crswd.css`, which muddies the
-  proof; `--halo` is free.
-
-**Left:** T002 (#117), T003 (#118), T004 (#119), T005 (#123).
-
-**Findings (noticed, not fixed — no code changed for any of these):**
-
-- **The stylesheet declares ~20 tokens the design system never names**, and nothing
-  reports it: `--fs-brand`, `--fs-nano`, `--fs-micro`, `--fs-eyebrow`, `--fs-body`,
-  `--lh-body`, `--fs-prose`, `--fs-label`, `--fs-pane`, `--lh-pane`, `--tuck`,
-  `--ls-brand`, `--ls-eyebrow`, `--ls-label`, `--focus-width`, `--focus-offset`,
-  `--shell-max`, `--field-min`, `--menu-min`, `--menu-max`, `--card-min`, `--toast-max`,
-  `--combo-h`, `--rain-wipe`, `--glow`. Most are legitimate — the design system gives
-  typography and layout in tables *without* token names, and each declaration carries a
-  comment saying so. But that is an argument made in comments, not a rule anything holds,
-  and it is the same shape as every task in this milestone: **the third direction of
-  this sweep, stylesheet → document, does not exist.** Note the tension before opening
-  it — closing it either means naming two dozen tokens in the design system or writing
-  down an explicit exemption list, and an exemption list nobody prunes is how a
-  fabricated token hides. Not in scope for T001, which was about the map.
-- **`--focus-width: 2px` / `--focus-offset: 2px` are the closest thing to a real gap in
-  that list.** The design system gives the focus rule verbatim as CSS
-  (`outline: 2px solid var(--phosphor); outline-offset: 2px;`), so unlike the typography
-  table those two lengths *are* in the document — just spelled as literals inside a rule
-  rather than as tokens. `designSystemTokens` correctly does not read them, because they
-  are not declarations of a `--name`. A future task could hold the focus rule's two
-  lengths to the document the way the breakpoint's `780px` already is.
-- **The design system's Layout section is the one place a token is declared in prose.**
-  If that sentence is ever rewritten to drop the value, the new test reports `--pane-h`
-  as a fabrication in the map rather than a document that stopped saying something. The
-  message names the file, so it should not cost more than a minute — but it is the
-  failure mode of reading a value out of English.
+- **There are exactly two boolean keys**: `discover_roots` and
+  `destroy_on_shutdown`, the two callers of `loadBool`. Neither is a secret, so both
+  are already `Editable`.
+- **Neither feature needs a new component or a new class.** The switch
+  (`.switch-input`, `.switch-label`) exists and is documented; the restart reuses
+  `.updating` and `.spinner`. That keeps both class sweeps and the components-doc
+  guard out of the risk surface entirely.
+- **The trap in the checkbox work is not CSS, it is HTTP.** An unchecked checkbox
+  submits **nothing at all**. The handler currently reads
+  `r.PostForm.Get(fieldSettingValue)`, so an unchecked box is indistinguishable from
+  a cleared field. The fix is not the hidden-input trick — with both fields sharing a
+  name, `.Get` returns the first, which is the wrong one. It is for the handler to
+  know the key is boolean and read an absent value as `false`, and **only** for keys
+  it knows are boolean. A truncated request must never clear a setting that is not
+  one.
+- **The restart needs almost no new machinery.** `ExitForRestart()` and `exitGrace`
+  already exist for the update, and the reason for the goroutine and the grace period
+  is written above them: exiting before the response flushes is what turned an
+  earlier update into a Cloudflare 502.
+- **Restart is strictly less dangerous than update**, which already goes through the
+  browser door. Update installs code from the internet; restart runs the binary that
+  is already installed. The argument the operator won on #66 covers this a fortiori.
 
 ---
 
-## Iteration 2 — 2026-08-09
+## Iteration 1 — 2026-08-09 21:39 — T001
 
-**Did:** T002 (#117). Rewrote `internal/httpapi/settings.go`'s header comment: it now
-describes the two doors this page has — `GET /settings` here, `POST /settings/edit` in
-`settings_edit.go` — the action gate in front of the write, and why the write is a
-separate pattern rather than a verb on this path. Comment-only; no executable change.
+**Did:** Added `config.IsBool(key)` in `internal/config/secret.go`, next to
+`IsSecret`, plus `bool_test.go` — a behavioural table and a structural test that
+parses the package and holds the list to loadBool's call sites in both directions.
 
 **Learned:**
 
-- **The false claim was in the same file twice, and the issue names only one of them.**
-  Besides the header, `settings`' own doc comment said *"It mints no page token, and
-  that is a decision rather than an omission. A page token authorises a write, this page
-  offers none"* — while the handler four lines below calls `s.mintPageToken`, and
-  `updatePanelFor` mints a second one. Both are fixed. If a comment in this repo asserts
-  an absence, grep the file for the thing it says is absent before believing it.
-- **`web/templates/settings.html` and `docs/components.md` already tell the true story**,
-  and told it well: the template's header has the "it was once read-only, and the absence
-  of a route was the safeguard — do not restore it by deleting a form" paragraph, and
-  components.md has the matching one. They were the model for the new text, so the three
-  now agree. Read those two before writing anything about this page.
-- **The narrow invariant is still real and still enforced.** `GET /settings` genuinely is
-  the only verb registered on that path, and `TestNoMutatingVerbRegistered`
-  (`settings_test.go:217`) holds POST/PUT/PATCH/DELETE to it to the unknown-route answer.
-  What was wrong was the *conclusion drawn from it* — that no browser route writes the
-  config — not the assertion itself. Do not delete that test while fixing its prose.
-- **The write's real justification is in `git log 0cb587d`**, the #106 commit, and in
-  `internal/config/write.go`'s `Editable`. Neither is linked from anywhere obvious; that
-  commit message is the best account of why five of issue #49's six settings became
-  editable and the shared secret did not.
+- **Deriving the keys at runtime is not reachable**, so the plan's fallback applies:
+  the list is a literal next to `IsSecret`'s. Go cannot ask a function who calls it,
+  and populating a registry *from* `loadBool` does not work either — it only runs
+  during a load, so the set would be empty before the first one and the settings
+  page asks before that.
+- **The AST walk is the repo's existing answer to exactly this**, so no new technique
+  was invented: `secret_test.go` walks the package for a second secrecy classifier,
+  `envexample_test.go`'s `declaredVars` parses config.go's constants, and
+  `TestVarsNamesEveryDeclaredVariable` pins a hand-written list to them. T001 reuses
+  `packageFiles` from `secret_test.go` directly — it is in `package config_test`, so
+  it is already in scope from a new file in that package.
+- **`declaredVars` returns values only** (`map[value]bool`), and resolving a call site
+  needs the other direction, name→value. I added `varConstants` rather than widening
+  `declaredVars`, per AR-008. If a later task needs both, that is the moment to merge
+  them, not now.
+- **The reverse direction is checked over `config.Vars()`, not over IsBool's own string
+  literals.** Vars() is the whole universe of keys a file may set or the page may
+  render, so a key wrongly claimed boolean is caught exactly where it could do harm,
+  and the check stays behavioural instead of asserting how `IsBool` happens to be
+  written. A later rewrite of `IsBool` into a map or a switch will not break it.
+- **Both directions were shown failing before the commit**, per the plan's rule. A:
+  dropping `destroy_on_shutdown` → *"is loaded with loadBool and config.IsBool(...) is
+  false"*. B: adding `listen` → *"no loadBool call reads CRSW_LISTEN, so a request that
+  omits its value would write `false` over a setting that is not a boolean"*. B is the
+  direction T002 depends on.
+- **`golangci-lint` is 2.12.2 here**, so the #26 fake-green does not apply to this
+  machine. Worth re-checking each iteration anyway; it is one command.
+- **Adding `IsBool` to `secret.go` does not trip `TestIsSecretIsTheOnlyClassifier`.**
+  Its `decidesSecrecy` accuses only a declaration whose name contains "secret" *and*
+  which is `(string) bool`; `IsBool` has the shape but not the name. The literal walk
+  matches the two secret keys exactly, and the new keys are not those. If a later task
+  adds a third classifier there, check both halves again — the shape alone is not
+  enough to be accused, which is what makes the file safe to grow.
 
-**Left:** T003 (#118), T004 (#119), T005 (#123).
+**Left:** T002–T006. T002 is next and is the security-relevant half: teach
+`settings_edit.go` that an absent value means `false` **only** for keys `IsBool`
+reports, and test that a non-boolean with no value is still refused.
 
-**Findings (noticed, not fixed — no code changed for any of these):**
-
-- **`docs/security.md` carries the same falsehood, and it is binding.** Two places:
-  line 216, *"**Nothing in the daemon writes the operator's file.** `crswd config
-  migrate` is the only code in this repository that writes a configuration file"* —
-  `editSetting` writes it through `config.WriteFile`, and has since #106. And lines
-  233–237, *"**No mutating verb is registered on `/settings` at all.** … Writing the
-  operator's configuration file from a browser is the highest-consequence surface in
-  the product; a route that does not exist cannot be exploited"* — the first sentence is
-  still literally true of that path, but the paragraph reads as "the write does not
-  exist", and it does, at `/settings/edit`. **This is the more serious half of #117**:
-  the constitution makes this document the gate every plan is checked against, so a
-  planner reading it will conclude the browser cannot write the config file. Not fixed
-  here because AR-005/AR-008 scope T002 to `settings.go`, and because a binding security
-  document deserves its own reviewed change rather than a paragraph slipped into a
-  comment fix. It wants an issue.
-- **`internal/httpapi/server.go:571–577`** — the registration comment above
-  `s.handleBrowser(patternSettings, …)` still says *"no mutating verb is registered on
-  the path at all. Editing the operator's file from a browser is out of scope this
-  milestone, and the absence of a POST is the safeguard rather than a POST that
-  refuses"*. Fifty lines below it, `s.handleAction(patternSettingsEdit, …)` registers the
-  POST. Same defect, different file.
-- **`internal/httpapi/settings_test.go:195–216`** — `TestNoMutatingVerbRegistered`'s doc
-  comment says it is *"the safeguard the spec's Out of Scope section rests on: editing
-  the operator's configuration file from a browser is not in this milestone"* and
-  **"Must fail when an edit route is added"**. An edit route was added, on a sibling
-  path, and the test correctly did not fail. The assertion is right; the reason written
-  above it is two milestones stale.
-- **`gofmt -l ./...` is not clean on `main`.** `internal/httpapi/render.go` has the
-  `buildinfo` import sorted ahead of `bytes` in the same group; `gofmt` wants it after
-  `fmt`. Nothing catches it: the `format-and-lint` hook only touches files an iteration
-  writes, and `golangci-lint run` reports 0 issues, so whichever formatter the config
-  enables does not include this. Pre-existing and unrelated to T002 — but `AGENTS.md`
-  lists `gofmt -w .` as the format command, so the next iteration that runs it as
-  written will produce an unrelated diff in a file it did not touch.
+**Findings:** none new. One thing noted in passing and deliberately not acted on:
+`secret.go` is now a file named for one of the two predicates it holds. Renaming it
+is out of scope under AR-008, and it would move the file `secret_test.go` exempts by
+name (`classifierFile = "secret.go"`), which is a change worth its own task rather
+than a drive-by.
 
 ---
 
-## Iteration 3 — 2026-08-09
+## Iteration 2 — 2026-08-09 21:47 — T002
 
-**Did:** T003 (#118). `TestTheStylesheetStylesNoElementTheMarkupNeverRenders` in
-`internal/httpapi/stylesheet_test.go` holds every element a rule names to a template
-that opens one. Only that test file changed — **nothing was deleted**, because the
-sweep is green against the stylesheet as it stands.
+**Did:** `submittedValue(form, key)` in `internal/httpapi/settings_edit.go` reads an
+absent value field as `false` for `config.IsBool` keys and as the empty value for
+every other key, plus two tests: an unchecked box turning `discover_roots` off, and
+the narrowness that keeps `false` out of everything else.
 
 **Learned:**
 
-- **It found nothing, and that is the correct outcome, not a weak test.** The
-  stylesheet names exactly twelve elements — `body dd dt form html li p summary td th
-  thead tr` — and the templates open all twelve. `.settings caption`, the case the
-  issue was written from, was already deleted by milestone 7's T015; what survived T015
-  (`.settings p`, `.settings th, td`) is load-bearing. So the warning in the plan about
-  the task growing did not fire. **The guard is the deliverable here, not a cleanup.**
-- **Type selectors have to be read at the head of a compound, never anywhere in the
-  selector.** `.card-meta` and `#action-toast` are spelled with letters too, and a sweep
-  matching anywhere reports `card`, `meta` and `action` as elements no template renders
-  — three false failures on the first run. Strip attribute selectors, then pseudos, then
-  split on `[\s>+~,]+`, then take `^[a-zA-Z][\w-]*` of each part.
-- **`@keyframes` needs no special reader beyond skipping the at-rule.** `cssRules` cuts
-  at the *first* `{`, so the chunk's selector is `@keyframes spin` and `to {` lands in
-  its body. `from`/`to`/percentages therefore never reach the element sweep at all.
-  `mediaOpen` has already removed the `@media` preludes by then.
-- **Two ways this reader can go blind, and both had to be made loud.** A pseudo carrying
-  a selector list — `:is()`, `:not()`, `:where()`, `:has()` — hides every element inside
-  it from a reader that strips pseudos by name; there is none in this stylesheet, and
-  one appearing now fails the test outright instead of silently narrowing it. And a
-  reader that regressed to only the head of each selector would still find `html` and
-  `body` and still run green, which is why finding *no* element below a class is fatal:
-  the descendant position is the entire case #118 is about.
-- **Breaking it is what separates the two halves.** Appending `.settings caption` fails
-  the new test and leaves `TestTheStylesheetAndTheMarkupNameTheSameThings` **green** —
-  that green is the hole, demonstrated rather than asserted. Note `git checkout --` is
-  not an approved command in this harness; revert a scratch edit to `crswd.css` with the
-  Edit tool instead, and check `git status --short` before committing.
+- **The plan's wording for the second test does not hold, and the fix is sharper than
+  the wording.** "A non-boolean with no value is still refused" is not true of any key
+  that could carry the test: an absent value writes `key = ` (empty), and the loader
+  reads empty as *unset*, so `max_sessions` falls back to its default and
+  `allowed_roots` falls back to the built-in `$HOME` root — both **accepted**. Nothing
+  is refused. What the test asserts instead is what the plan's own body asks for: an
+  absent value for a non-boolean behaves **exactly as it does today**, and never
+  becomes `false`.
+- **The bytes-only assertion would have been decoration.** Against the over-broad
+  reading, the candidate is `max_sessions = false`, `config.Validate` refuses it, and
+  the file is left *unchanged* — so "the file does not contain `max_sessions = false`"
+  passes against the very defect it names. The assertion that actually fires is the
+  other one: the file must carry `max_sessions = ` (with the newline, since
+  `"max_sessions = "` is a prefix of the line being refused). Shown failing by
+  dropping `&& config.IsBool(key)` and restoring it.
+- **`allowed_roots` cannot host that test at all**, which is worth knowing before
+  someone reaches for the most security-shaped key. Empty and `false` are both
+  refused-or-accepted identically from the outside — `false` fails the absolute-path
+  check, empty falls back to the default root — so the over-broad reading is invisible
+  through it. `max_sessions` is the key where the two readings diverge observably.
+- **For today's two keys this changes nothing the daemon does.** `loadBool` already
+  reads empty as false, so unticking a box "worked" before this task by coincidence.
+  What it changes is the operator's file (`discover_roots = false`, not a half-finished
+  line) and the coincidence itself: a boolean defaulting to *true* would have been
+  turned on by an unticked box. That is why T002 is worth its iteration even though the
+  suite would have gone green without the production change.
+- **`editForm` re-renders the settings section each time to lift a page token**, so a
+  test can post twice against one fleet (on, then off) without minting anything itself.
+- **`golangci-lint` is 2.12.2 here** — checked again per #26. `go vet` under all three
+  build tags compiles clean; none of them was touched.
 
-**Left:** T004 (#119), T005 (#123).
+**Left:** T003–T006. T003 is next: render the two boolean rows as switches in
+`web/templates/settings.html`, reusing `.switch-input`/`.switch-label`, introducing no
+new class, and asserting against the *rendered markup* that a boolean row carries a
+checkbox and a non-boolean row still carries a text input. The checked box must submit
+`value=true`; unchecked submits nothing, which is what this iteration made safe.
 
-**Findings (noticed, not fixed — no code changed for any of these):**
+**Findings:**
 
-- **The element sweep has no third direction either, and the reason is not the same as
-  the class sweep's.** `docs/design-system.md` names no element selectors at all, so
-  there is nothing to hold `.settings thead th` to the way `documentedComponentClass`
-  holds `.combo*`. That is arguably fine — element rules are layout defaults, not
-  components — but it means the twelve elements above are a vocabulary no document
-  mentions.
-- **`renderedElements` counts an element as rendered anywhere in the tree, not under the
-  class the rule scopes it to.** `.settings td` passes because *some* template opens a
-  `<td>`; it does not check that `settings.html` does. Tightening that means resolving
-  which partials compose into which page, which is real work and a different guard.
-  Worth an issue if a scoped-but-dead rule ever shows up — it would pass this sweep.
-- **`web/templates/settings.html` is the file the rendered map names for almost every
-  element**, purely because it is walked late and last write wins. The map's value is
-  "a template that opens one", not "the only one" — do not read a failure message as
-  naming the sole renderer.
-- **Still open from iteration 2, none of it addressed here:** `docs/security.md` lines
-  216 and 233–237 and `internal/httpapi/server.go:571–577` still say no browser route
-  writes the operator's config, and `POST /settings/edit` does. The security document is
-  binding under Principle I, so a planner reading it will conclude the write does not
-  exist. **This wants an issue and a reviewed change of its own.**
-- **`gofmt -l ./...` is still not clean on `main`** (`internal/httpapi/render.go`,
-  import order). Unchanged by this iteration; `gofmt -l` on the one file T003 touched is
-  clean, and `golangci-lint run` (v2.12.2) reports 0 issues.
+- **A truncated edit POST silently resets a setting to its default, and always has.**
+  A request naming `allowed_roots` with no value field writes `allowed_roots = `, the
+  loader reads that as unset, and the containment allowlist becomes the built-in
+  `$HOME` root — accepted, written, and audited as an ordinary edit. Same shape for
+  `max_sessions` (back to the default cap). This is pre-existing behaviour, out of
+  T002's scope under AR-008, and T002 deliberately pins it rather than changing it. It
+  is worth its own task: the honest fix is for the handler to refuse a request whose
+  value field is absent for a key that is not boolean, rather than treating absence as
+  "clear it". Constitution VI is the reason — both keys are containment bounds.
+- `submittedValue` is package-level rather than a method for testability of the pure
+  reading, but nothing tests it directly; both guards go through the route. That is the
+  right way round per `docs/conventions.md` ("assert the caller"), noted only so a later
+  iteration does not add a unit test for it and think it has covered the route.
 
 ---
 
-## Iteration 4 — 2026-08-09
+## Iteration 3 — 2026-08-09 21:56 — T003
 
-**Did:** T004 (#119). `docs/components.md` has a Toast section describing the
-`.action-toast` that has shipped on all three pages since #42, the false "no section
-and no use" clause is gone, and `documentedComponentClass` in
-`internal/httpapi/stylesheet_test.go` now carries `.action-toast*` as a fourth family
-so the claim cannot rot again. Two files; no executable change.
+**Did:** `settings.html` renders a boolean row as `.switch-input` and every other
+editable row as the `.setting-input` it always had, branching on two new
+`settingRow` fields (`Boolean`, `On`) that `settingsOf` fills from `config.IsBool`.
+Four tests read the rendered markup; a fifth drives the box's own value through the
+edit route.
 
 **Learned:**
 
-- **Widening `documentedComponentClass` is the cheapest guard in this file and the
-  proof is two commands.** Edit the regex first, run the test, watch it say *"crswd.css
-  styles `.action-toast` and ../../docs/components.md never names it"*, then write the
-  section. Doing it in that order is what separates a guard from a decoration, and it
-  costs one test run.
-- **The class must appear in the document with its leading dot.** The regex is
-  `\.(combo|switch|masthead|action-toast)[\w-]*`, so the `class="action-toast"` inside
-  the section's code block does **not** satisfy it — only the `.action-toast` row in the
-  class table does. Every section here happens to carry such a table, which is why this
-  has never bitten; a section written as prose alone would fail the guard it is meant to
-  satisfy, and the message would read as the document not naming a class it visibly
-  discusses.
-- **The test name is cited by four archived files**, including
-  `specs/007-make-it-work-on-a-phone/contracts/guards.md` as G6. It was renamed anyway —
-  a test whose name under-states what it sweeps is the defect this milestone is about —
-  and the doc comment now carries the old spelling so a grep from those files lands.
-- **`crswd.js`, `crswd.css` and the three templates already told the whole story**, and
-  between them they are the better source than any spec: `settings.html:216` records the
-  three fixes that went into the update button before a missing `#action-toast` turned
-  out to be the cause, and `crswd.js:825–899` gives the redirect/enhancement split, the
-  `sessionStorage` reason and the `DOMParser` reason. `partials/outcome.html` has the
-  matching paragraph from the other side. Read those five before writing about an
-  action's answer.
-- **The toast is the only place a scripted operator is told anything**, including the
-  alarming "teardown could not be verified" outcome, and it disappears after six
-  seconds. That is in the section as a stated cost rather than a rule, because it is a
-  shipped trade and not a defect anybody has reported.
+- **The value attribute is the whole of this task's real risk, and it is invisible
+  to a markup-only test.** A checkbox with no `value` submits `on`; `loadBool` calls
+  `strconv.ParseBool`, which refuses `on`; `config.Validate` then refuses the whole
+  candidate file. So the operator ticks the box, presses Save, and the file is
+  **unchanged** — a control that looks right and does nothing, reported as a refusal
+  about a value they never chose. Proven by mutation: `value="on"` leaves
+  `discover_roots` absent from the file entirely. `boolOn` now sits beside `boolOff`
+  in `settings_edit.go` as this page's two spellings for a boolean, and
+  `TestTheSwitchSubmitsTheSpellingThisPageWrites` holds the template's literal to it
+  — the arrangement `confirm=yes` already has.
+- **The sweep is over every editable key, not over the two booleans.** Both
+  directions then hold and neither can go stale: a third boolean forgotten in the
+  template fails as a text field, and a key wrongly reported boolean fails as a box.
+  The second direction is the one that matters — a box is the control whose *absence*
+  the route reads as `false`, so a wrongly-boxed key is a setting an untick clears.
+- **`On` is read off `Value`, not off the Config a second time.** The value column
+  and the tick are then one answer. Reading the Config again would let this page state
+  a setting in a cell and contradict it in the control beside it.
+- **All five guards were shown failing first**, per the plan's rule: `{{ if false }}`
+  (the unfixed state — all four fail), `{{ if true }}` (16 non-boolean rows become
+  boxes), no `value`, `value="on"`, and no `{{ if .On }} checked`.
+- **`settingsRowFor` already existed** and is the right isolation for any assertion
+  about one row; `settingControl` builds on it and refuses a row offering more than
+  one input, so "a row edits one setting with one control" is asserted on the way past.
+- **`golangci-lint` is 2.12.2 here** — checked again per #26; 0 issues. `go vet` under
+  all three build tags compiles; none was touched, and no file in `cmd/crswd` mentions
+  the settings page.
 
-**Left:** T005 (#123) — the `freePort` race. One task.
+**Left:** T004–T006, the restart half of the milestone. T004 is next and is the
+security-relevant one: `POST /dashboard/restart` registered through
+`s.handleAction(...)` exactly as destroy and update are, `confirm=yes` via
+`fieldConfirm`/`confirmYes`, audit action `dashboard.restart` written exactly once,
+and `ExitForRestart()` from a goroutine after `exitGrace`.
 
-**Findings (noticed, not fixed — no code changed for any of these):**
+**Findings:**
 
-- **`.card-outcome` is a class this document names three times and nothing in `web/`
-  renders or styles.** `docs/components.md` still says, under Action controls, *"A route
-  answers with `<p class="card-outcome">…</p>`, which replaces what it acted on"*, plus
-  *"each one `.card-outcome` sentence"* in the same section and *"replaces what it acted
-  on with `.card-outcome`, next to the control"* under Form. Milestone 4's T014 replaced
-  that fragment with a 303 and `partials/outcome.html`;
-  `TestTheToastReadsTheBannerTheDaemonRenders` (`stylesheet_test.go:1099`) even asserts
-  the *script* no longer reaches for it. **This is the same defect as #119, in the
-  section next door, and adding `card-outcome` to `documentedComponentClass` would catch
-  it in the reverse direction immediately** — the doc names it, the stylesheet styles
-  nothing by that name. Not done here: fixing the failure means rewriting the Action
-  controls section, which is a second task, and the plan's own warning about T003 is that
-  a task which ends green having rewritten six things on suspicion is worse than one that
-  ends green having rewritten none. **This wants an issue.**
-- **The same section's answer table is stale in the same way.** It gives Destroy as
-  *"`200` and a sentence"*, Create as *"`200` and the new card"*, Rename *"`200` and the
-  renamed card"*, Compact *"`202`"*. `redirectOutcome` (`outcome.go:396`) is how **every**
-  action route answers, and its own comment says so: a 303 to the fleet. Same issue as
-  the bullet above; they should be fixed together, because the table and the prose are
-  one account of what an action answers with.
-- **The toast ships `hidden` and is revealed as it is written; `.fleet-note` ships
-  present and empty on purpose.** `dashboard.html:120–135` gives the reason for the
-  latter — *"a live region has to be in the accessibility tree before its text arrives
-  … a region revealed and written in one go is a region some readers never announce"* —
-  and `crswd.js` sets `toast.textContent` and then `toast.hidden = false`, which is that
-  shape. It may be fine and it may be why an operator using a screen reader is never told
-  an action's outcome; **nothing in this tree can answer that and no one has checked it
-  on a real reader.** Recorded in the new section as an open point rather than asserted
-  either way (Principle II). Wants a real device, like Q1 and Q2 — not an iteration.
-- **Still open and untouched:** `docs/security.md` lines 216 and 233–237 and
-  `internal/httpapi/server.go:571–577` say no browser route writes the operator's config
-  while `POST /settings/edit` does (iterations 2 and 3). `gofmt -l ./...` is still not
-  clean on `main` (`internal/httpapi/render.go`); `gofmt -l` on the one Go file this
-  iteration touched is clean and `golangci-lint run` (v2.12.2) reports 0 issues.
+- **The plan asked for `.switch-label` and this row deliberately has none.** Two
+  binding rules collide on this one control: `docs/components.md`'s Switch section
+  puts the pointer on the label as well as the box, and its "The settings page"
+  section says a row's input is labelled by `aria-label` rather than a visible
+  `<label>`, "because the row header beside it already says the key and a second copy
+  is the same word twice to anybody reading it aloud" — the same sentence is on
+  `.setting-form` in `crswd.css`. The rule specific to *this row* won, and the plan's
+  binding constraint ("introduce no new class") is satisfied either way. `.switch-label`
+  is still rendered by the create form, so no sweep sees a dead rule.
+- **What that costs is a tap target, and it is a real gap rather than a neutral
+  trade.** `.switch-input` is `--s4` square. On the create form the row is
+  `.field-switch`, which the coarse-pointer block sizes to `--tap`; nothing does that
+  for a switch inside `.setting-form`, so on a phone this is a `--s4` box where every
+  button on the page is a thumb. It is CSS and outside a template-only task under
+  AR-008, so it is left here rather than done quietly. **The honest fix is a
+  `.setting-form .switch-input` (or `.setting-save`-style) rule in the
+  `@media (pointer: coarse)` block**, and it is worth its own task — note that
+  `TestTheCoarseBlockChangesNoLayout` forbids `display`/`position` there, so it has to
+  be a size.
+- **A boolean row no longer prints the words `true`/`false` anywhere.**
+  `TestSettingsStatesTheValueOfEveryNonSecretKey` names only non-boolean keys so it
+  stayed green, but the page's claim — "one row per key, with the value beside it" —
+  is now carried for two keys by a tick rather than by text. That is the operator's own
+  request and reads correctly, noted only so a later iteration does not read the
+  absence of the word as a regression.
 
 ---
 
-## Iteration 5 — 2026-08-09
+## Iteration 4 — 2026-08-09 22:09 — T004
 
-**Did:** T005 (#123). `startBinary` now re-picks its port when the daemon reports it
-could not bind the one it was handed, and `waitUntilServing` stopped believing a bare
-dial. Two harness files; no change to anything that ships.
+**Did:** `POST /dashboard/restart` in a new `internal/httpapi/restart.go`, registered
+through `s.handleAction` beside the other six writes, audited as
+`audit.ActionDashboardRestart` (`dashboard.restart`), confirming on
+`fieldConfirm`/`confirmYes`, and calling `ExitForRestart()` from a goroutine after
+`exitGrace`. Six tests in `restart_test.go`; every one of them shown failing first.
 
 **Learned:**
 
-- **The issue body could not be read from this harness.** `gh issue view 123` needs
-  approval and this session is non-interactive, so the "three options" the plan points
-  at were never seen. The plan states the recommendation itself — *"the retry, because
-  it is cheap and this is a harness"* — so this is not a guess, but the next iteration
-  that needs an issue body should know `gh` is unavailable here and that
-  `IMPLEMENTATION_PLAN.md` is the only account of #123 in the tree.
-- **Staging the loss found a second, worse bug in the same helper, and it is the reason
-  this task was worth more than a retry.** `waitUntilServing`'s probe was
-  `net.DialTimeout`, and whatever wins the port in freePort's gap is *usually a listener
-  too*. The dial therefore succeeds against the squatter on the first poll —
-  milliseconds after `cmd.Start()`, before the daemon has finished reading its
-  configuration — so the harness reported a start, every assertion in the story ran
-  against a stranger's server, and **the retry could never fire because nothing ever
-  looked like a loss.** The first run of the new guard showed exactly this: `the daemon
-  reports serving on 127.0.0.1:43361, which this test is holding`. A dial is not a
-  liveness check for a port you may have lost.
-- **The conclusive signal is the audit trail, not the wire.** A 401 proves something
-  answered; a record in the trail proves *which* listener did, because the trail is a
-  file the harness created and handed to one child. So the probe is now one unsigned
-  `GET /sessions` — FR-041 counts an unauthenticated request like any other — followed
-  by a wait for an `auth.reject` record. It costs one extra record at the head of every
-  daemon's trail; nothing counts totals (`TestQuickstartStory6Audit` takes its `before`
-  after the start, and every other counter is per-action), and the suite's wall clock is
-  unchanged at ~36.8s.
-- **Classify on the daemon's own frame, not the OS's.** `httpapi: bind <addr>:` is
-  written by `internal/httpapi/server.go` and `loadListen` returns `CRSW_LISTEN`
-  verbatim, so the string in the trail is byte-identical to what the harness put in the
-  environment. Matching `address already in use` instead would make the retry a property
-  of this platform's strerror.
-- **A retry needs a seam or it cannot be tested.** Nothing a test can do makes the kernel
-  hand back a taken port, so `host.pickPort` is a field defaulting to `freePort`. Both
-  guards were proved by breaking them: `portAttempts = 1` fails
-  `TestStartRecoversFromAPortTakenInTheGap`, and `pinned && false` fails
-  `TestAPinnedAddressIsNeverRepicked` on both of its assertions.
-- **The pinned branch is load-bearing and needed its own guard.** A restart must land on
-  the address its tmux server is named after or it adopts nothing, so re-picking one
-  would turn `TestQuickstartStory4Restart` and `TestDashboardQuickstartStory1Adopted`
-  green while testing something else entirely. Those two, plus
-  `TestDashboardQuickstartStory3FailsClosed`, now pin `d.addr` — the address a daemon
-  really bound — instead of a `freePort` guess made before anything started.
+- **The route has to decide what it answers with, and the plan does not say.** T006
+  makes the restart form take the update's JS branch, which does
+  `swapUpdatesSection(said)` — it parses `.settings-panel` out of the answer — so the
+  answer must be the settings page, not a 303. That also inherits the update's real
+  reason for not redirecting: a 303 points the browser at a daemon in the act of
+  stopping. So the restart renders the settings page in the waiting state, and the
+  template's block gained one branch: `{{ if .Restarting }}Restarting…{{ else }}Installing
+  {{ .Becoming }}…{{ end }}`. A restart installs nothing and the page must not say it
+  does. `settingsView.Restarting` is a field rather than "Becoming equals the running
+  version", because those are also equal when an operator asks to install the version
+  they are already on.
+- **`data-becoming` is set to `buildinfo.Version`** — the version this daemon is coming
+  back *as*. That is what `waitOutTheUpdate` polls for, so T006 gets a working poll for
+  free. **T006 still has two things to fix there**: the ceiling message says "has not
+  answered since it began installing X", which is wrong for a restart; and the poll's
+  first tick is at 1s against an exit at 250ms, so the window where the old daemon could
+  answer its own `becoming` is closed by timing rather than by construction. Worth a
+  look when widening the branch.
+- **`restartable()` asks for the installer alone, not `selfUpdate.wired()`.** The
+  restart never touches the fetcher or the stager, and a refusal blaming a release feed
+  it does not call would be a reason that is not true. It keeps the property that makes
+  the update's arrangement safe: `newServer` wires none of the three, so a test that
+  reaches this route cannot end the process running the suite. **Proven** — dropping the
+  check panics with a nil dereference against every server in the package.
+- **`recordsAtExit` does not prove what it looks like it proves, and the same is true
+  of the update's copy of it.** The exit waits out `exitGrace`; by then the handler has
+  returned and the middleware's deferred emit has written the record either way.
+  Removing `s.emit(...)` from the handler leaves the suite green. What the assertion
+  *does* catch is an exit taken inline — proven, it reports 0 records and an unflushed
+  answer. The handler emits first regardless, because once that goroutine exists the
+  record's write and the process's end are unordered; that is argued at the emit and the
+  test comment now says plainly that it cannot see it. **`update.go`'s comment "this
+  handler does not return in production" is stale** — it stopped being true when the
+  exit moved onto a goroutine.
+- **A method-less pattern is not a cosmetic slip here.** Dropping `POST ` from
+  `patternDashboardRestart` made `PUT /dashboard/restart` return 200 and end the daemon.
+  The catch-all `/` is what otherwise answers a wrong method as a path nothing claims.
+- **`ExitForRestart` is `os.Exit(0)`, so `Shutdown` never runs and
+  `destroy_on_shutdown` never fires.** Sessions survive a restart even on a host that
+  set it — which is what T005's copy needs to say, and is true, but is true for a
+  narrower reason than "sessions survive".
+- **The three lists a new browser action can be missing from**: `spelledOutcomes` in
+  `outcome_test.go` (enforced — the count assertion fails), `banners` in `outcome.go`
+  (same assertion, other direction), and `audit_test.go`'s documented-action map (not
+  enforced; `settings.edit` and `session.mode` are absent from it). Added to all three.
+- **`golangci-lint` is 2.12.2 here** — checked again per #26; 0 issues. `go vet` under
+  all three build tags compiles clean, `-tags dev` passes, and `-race` over the update
+  and restart cases is clean.
 
-**Left:** nothing. Every task in the plan is checked.
+**Left:** T005 and T006, both about the operator actually being able to press this.
+T005 is next: the Restart control in the Updates section of `web/templates/settings.html`,
+with a confirming step in the markup and copy saying sessions survive. The form posts
+`confirm=yes` and the page token to `/dashboard/restart`; the route is already there and
+already refuses without either.
 
-**Findings (noticed, not fixed — no code changed for any of these):**
+**Findings:**
 
-- **The `quickstart` tag is missing from `.golangci.yml`'s `run.build-tags`, so the
-  acceptance suite has never been linted.** The config's own comment says *"A file no
-  linter ever reads is not covered by the gate the definition of done rests on. Any
-  future build tag needs adding here for the same reason"* — and lists only `tmux` and
-  `dev`. `golangci-lint run --build-tags quickstart,tmux,dev ./cmd/crswd/...` reports
-  **31 issues** across `quickstart_test.go`, `quickstart_dashboard_test.go`,
-  `config_cmd_test.go` and `version_test.go`: 21 errcheck (almost all `_ = x.Close()`,
-  which this config makes an issue via `check-blank: true`), 8 gosec, 1 bodyclose, 1
-  staticcheck. None are new — the two lines this iteration added in the same shape
-  (`_ = io.Copy`, `_ = resp.Body.Close`) match `do`'s existing ones exactly. **This is
-  the same defect as the rest of the milestone**: a config that states a rule about
-  every build tag and enforces it for two of three. Fixing it is not a one-liner, since
-  adding the tag turns 31 findings red at once, so it wants an issue and a decision
-  about `check-blank` in test files.
-- **Three "nothing bound" assertions still carry freePort's window, in its other
-  shape.** `TestQuickstartStory1StartupFailures` (`quickstart_test.go:1135`),
-  `TestQuickstartRefusesWithoutTmux` (`:1963` before this change) and
-  `TestConfigCheckDoesNotStart` (`config_cmd_test.go:128`) each take a `freePort`
-  address, run something that must refuse, and then assert `net.Listen(addr)` still
-  succeeds. If anything takes the port in between, the failure reads as "the daemon
-  leaked the port" when it was never bound. Not fixed here for two reasons. The retry
-  does not apply — these deliberately pin an address nothing should bind — and the
-  assertion is close to vacuous as written: `h.run`/`h.runConfig` wait for the process
-  to *exit*, and a listener cannot outlive its process, so the only thing that can fail
-  it is an unrelated squatter. The honest fix is to hold the port open for real and
-  assert the refusal never named a bind, the way `TestQuickstartStory1LoudDefault`
-  already holds a `taken` listener. **Wants an issue.**
-- **`answeredForItself` makes every daemon start send one request before the story
-  does.** That is a real behaviour change to the harness and it was checked against
-  every record assertion in the three quickstart files — all count by action
-  (`dashboard.view`, `stream.open`, `access.reject`, `startup.adopt`) or take their
-  baseline after the start — but a future test that counts *total* records from zero
-  will be off by one and the reason will not be obvious from where it fails.
-- **Still open and untouched from iterations 2–4:** `docs/security.md` lines 216 and
-  233–237 and `internal/httpapi/server.go:571–577` still say no browser route writes the
-  operator's config while `POST /settings/edit` does; `docs/components.md`'s Action
-  controls section still names `.card-outcome`, which nothing renders or styles, and its
-  answer table still gives per-route statuses that `redirectOutcome` replaced with a 303.
-  `gofmt -l ./...` is still not clean on `main` (`internal/httpapi/render.go`, import
-  order); `gofmt -l cmd/crswd/` is clean and `golangci-lint run` (v2.12.2, untagged, as
-  CI runs it) reports 0 issues.
+- **The secret sweep's route table does not name this route — or the update, or the
+  settings edit.** `registeredPatterns` in `settings_test.go` is hand-written for the
+  browser door ("a twelfth would have to be added here by hand, and that is the one gap
+  this arrangement cannot close"), and it stops at the five milestone-3 patterns plus the
+  pages. So three mutating routes are outside the sweep that `docs/security.md` requires
+  be done "swept, not reasoned about". Not fixed here: it is pre-existing, systemic, and
+  a task that closes it should close all three at once rather than grow by one route per
+  milestone. **The honest fix** is to add `patternDashboardUpdate`, `patternSettingsEdit`
+  and `patternDashboardRestart` to that list and drive each in `newSweep` — note that the
+  test fails on any listed pattern nothing drove, and that the sweep's server has no
+  installer, so a restart there refuses at `restartable()` and the *rendered* page would
+  need a fake wired in to be swept at all.
+- **No rate limit on this route, as on every other action but create.** A confirmed
+  restart is cheap and instant where a confirmed update is neither, so a stuck client
+  could hold this daemon in a restart loop. It adds nothing to the threat model — the
+  caller already had the dashboard, which is already code execution — and `RestartSec=5s`
+  bounds the loop. Noted rather than fixed.
+- **`selfUpdate` is now the home of two questions with different answers**
+  (`wired()` and `restartable()`), on a type named for the update. That is the right
+  shape today and worth watching: a third route wanting only one collaborator is the
+  point at which the field should be split rather than the predicates multiplied.
+
+---
+
+## Iteration 5 — 2026-08-09 22:21 — T005
+
+**Did:** The Updates section of `web/templates/settings.html` now carries the restart
+form — page token, `confirm=yes`, a plain `.button`, and an `.update-caution`
+sentence saying sessions survive it and why. Three tests in `settings_test.go`; every
+assertion shown failing first.
+
+**Learned:**
+
+- **The restart form deliberately carries no class, and T006 has to know that before
+  it opens `crswd.js`.** T006 says to widen `form.matches('.update-form')` — there is
+  no second class to widen it *to*, because "introduce no new class" is the plan's own
+  constraint and `.update-form` is the form above's name rather than a shape either
+  form may wear. **The honest hook is the action**, which the submit handler already
+  reads one line earlier (`getAttribute('action')?.startsWith('/dashboard/')`):
+  `form.matches('.update-form, [action="/dashboard/restart"]')` is one widened match
+  rather than a duplicated branch, and it keys the special case on the thing that
+  actually makes it special — the route that is about to stop answering — instead of
+  on a layout class. Note that `TestTheUpdateDoesNotBecomeAToast` asserts the literal
+  string `form.matches('.update-form')`, so widening the selector fails that test until
+  it is updated, which is T006's own instruction arriving as a red test.
+- **The control renders whether or not a check has happened**, which is a claim and not
+  an oversight: a restart has nothing to do with a release feed, and an operator
+  restarting a wedged daemon on a host with no network must not be made to ask GitHub a
+  question first. `TestSettingsOffersTheRestart` reads the *unchecked* section, so
+  nesting the form inside `{{ if and .Checked .Available }}` fails — shown.
+- **The end-to-end test is the one worth copying.** `restartDoor` can serve `GET
+  /settings` and then post its own rendered form back to itself, so the token is real
+  rather than minted by a second fixture. That closes the gap between "the markup looks
+  right" and "the handler accepts it", which is the gap milestone 4 shipped three green
+  tasks across. Two mutations proved it independently of the markup assertions: no
+  confirming step → the route answers 303 to the refusal, no token → the gate answers
+  403.
+- **A test that renders a page before posting cannot use `d.record`/`d.only`** — the
+  GET leaves a record of its own, so those assert 1 and find 2. Assert the exit counter
+  and the answer instead.
+- **Two documents said "Two routes receive them"** — settings.html's header comment and
+  `docs/components.md`'s "The settings page" — and this task makes three. Both updated
+  in the same commit. `TestTheSettingsCommentDescribesThePage` would not have caught
+  either: it sweeps four *denials* ("no form", "no page token", "no action row", "no
+  live region") and a stale count is none of them.
+- **`golangci-lint` is 2.12.2 here** — checked again per #26; 0 issues. `go vet` under
+  all three build tags compiles clean, and `-tags dev` passes. No file in `cmd/crswd`
+  mentions the settings page or the restart route, so the quickstart suite is untouched.
+
+**Left:** T006 only — the restart taking the update's JS branch so the page waits out
+the daemon instead of dropping the answer into a toast. The two fixes iteration 4 left
+for it still stand: the ceiling message says "has not answered since it began installing
+X", which is false for a restart, and the poll's first tick is at 1s against an exit at
+250ms.
+
+**Findings:**
+
+- **The waiting block does not say what to do, and two comments claim it does.**
+  settings.html's comment over that block says "the sentence says what to do", and
+  `update.go`'s says "it says to reload in a moment". What the block actually renders is
+  a spinner and either `Restarting…` or `Installing X…`, and nothing else. So a
+  scriptless operator presses Restart, lands on `/dashboard/restart` — a POST-only path,
+  where a reload is a 404 — and sits in front of a spinner that will never resolve
+  because nothing is polling. **This is the exact shape #119 exists for**: a comment
+  denying, or in this case asserting, what the markup beneath it does. It is
+  pre-existing (the update has had it since milestone 6) and outside a template-only
+  task under AR-008. **The honest fix** is one sentence in that block — "This page will
+  not update itself; reload in a moment" — plus deleting the two claims if it is not
+  added. T006 is already inside that copy for the ceiling message and is the natural
+  place for it.
+- **The restart form has no `data-submit-once`, and that is consistent rather than
+  missed.** The components doc puts the hook on the create form alone, because a second
+  create is a second unsandboxed shell while a second destroy finds no record. A second
+  restart is the same end state, so no hook — but it does write a second audit record
+  for one operator's one intent, within the 250ms grace window. Noted, not fixed.
+- **The restart form loses `.update-form`'s `gap: var(--s3)` between its button and its
+  sentence**, because it carries no class and there is no rule for a bare form in this
+  panel. It is a few pixels and no test can see it. **The honest fix is not a
+  `.restart-form`**: it is that the Updates section has two forms of one shape and the
+  shape is named after one of them. Renaming `.update-form` to something the section
+  owns touches the class sweep, the stylesheet and — until T006 lands — the script's
+  branch, which is three files for a spacing change and is why it is written here
+  instead.
+- The three findings from iteration 4 are all still open: the `registeredPatterns`
+  sweep does not name this route (nor the update, nor the settings edit), there is no
+  rate limit on it, and `update.go`'s "this handler does not return in production" is
+  stale.
+
+---
+
+## Iteration 6 — 2026-08-09 22:32 — T006
+
+**Did:** The submit handler's waiting branch is now
+`form.matches('.update-form, [action="/dashboard/restart"]')`, so a restart swaps in
+the daemon's waiting markup and polls instead of answering with a toast. The wait's
+ceiling sentence moved out of the script into `data-ceiling` on the waiting block,
+which branches on `.Restarting`. Four guards, each shown failing first.
+
+**Learned:**
+
+- **Iteration 5's reading of the widening was right and is now proven both ways.**
+  There is no second class to widen to, so the selector's other half is the address.
+  `waitingBranchPattern` reads the selector *out of* the source and anchors on
+  `swapUpdatesSection(` — a literal `strings.Contains` cannot tell a selector widened
+  to the restart from one narrowed away from the update, and both mutations were run:
+  `.update-form` alone fails the restart's test only, the action alone fails the
+  update's test only.
+- **The cross-file half is the one worth having.** The restart test asserts the
+  selector's address against the form the page really renders, not against a literal
+  beside it. Renaming the action in the template alone fails it (shown: the rendered
+  page carries 0 forms posting to `/dashboard/restart`) — that is a script matching an
+  address nothing posts to, which is silent everywhere else until an operator presses
+  the button.
+- **The ceiling sentence was the reachable lie this task created.** Before T006 a
+  restart never started the poll at all (the settings page carries no `[data-becoming]`
+  until a route renders the waiting state), so the script's hard-coded "has not
+  answered since it began installing X" was unreachable for a restart. Widening the
+  branch makes it the last thing that operator ever reads. It is the template's now,
+  read with `.combo-status`'s exact guard (`if (!sentence) return;`), so a missing
+  attribute stops the poll silently rather than writing `undefined` into a live region.
+- **`wantRestartingPage` and `wantUpdatingPage` were the right homes for the page
+  half.** Both already assert what the waiting page must say; the ceiling is the same
+  claim about the last sentence rather than the first. Every caller inherited it, which
+  is why dropping `data-ceiling` fails five tests across two files rather than one.
+- **The word check in `wantRestartingPage` is case-sensitive (`"Installing"`) and my
+  ceiling copy is lowercase**, so the pre-existing assertion would *not* have caught an
+  unbranched ceiling. The new one lowercases before comparing. Worth knowing before
+  adding a third sentence to that block.
+- **`golangci-lint` is 2.12.2 here** — checked again per #26; 0 issues. `go vet` under
+  all three build tags compiles clean, `-tags dev` passes, and nothing in `cmd/crswd`
+  mentions the settings page, so the quickstart suite is untouched.
+
+**Left:** nothing. Every task in the plan is checked and the tree is green.
+
+**Findings:**
+
+- **The poll's first tick is at 1s and the exit is at 250ms, and for a restart that
+  gap is the only thing keeping the page honest.** A restart comes back as the version
+  it went down as, so the old daemon can answer its own `becoming` — if `exitGrace`
+  ever grew past `WAIT_MS`, the first poll would succeed against the daemon that has
+  not gone down yet and the operator would be sent to a settings page announcing a
+  restart that had not happened. The update cannot have this bug (it is becoming a
+  *different* version). **The honest fix** is for the restart's wait to require seeing
+  the daemon fail to answer at least once before accepting a success — which is a state
+  machine change on a path the update shares, and is why it is written here. Left open
+  by iteration 4 and still open.
+- **The scriptless operator still has no signposted way back**, which is iteration 5's
+  finding and is unchanged. They land on `/dashboard/restart` — a POST-only path where
+  a reload is a 404 — in front of a spinner nothing will resolve. It is milder than it
+  reads: the answer is the whole settings page, so the masthead's Settings link is
+  right there, and the ceiling sentence this iteration fixed is the scripted path's
+  only. But two comments (settings.html's block comment, `update.go`'s "it says to
+  reload in a moment") still claim a sentence that block does not render. **The honest
+  fix** is one line in the waiting block — a link to `/settings?section=Updates`, which
+  is where the script sends them anyway — plus deleting the two claims. Not done here:
+  it changes what the update's shipped page says, and T006 is a script task.
+- **`.update-form` now has two readers with different rights.** The stylesheet's rule
+  and the class sweep own the name; the script only borrows it, and the moment a third
+  form joins that branch the selector will want to be a name of its own. That is the
+  same observation iteration 5 made about the missing `gap: var(--s3)`, arriving from
+  the other side — the section has two forms of one shape and the shape is named after
+  one of them.
+- The three findings from iteration 4 remain open, unchanged: `registeredPatterns` does
+  not sweep this route (nor the update, nor the settings edit), there is no rate limit
+  on it, and `update.go`'s "this handler does not return in production" is stale.
+
+---
 
 RALPH_COMPLETE

@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/nctiggy/claude-remote-session-webhook/internal/updater"
 	"html/template"
 	"net"
 	"net/http"
@@ -27,6 +26,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/updater"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
@@ -626,6 +627,16 @@ func newServer(
 	// admits the bytes is a signature made before the request existed, and the
 	// door does not relax it (FR-029b).
 	s.handleAction(patternDashboardUpdate, audit.ActionDashboardUpdate, s.updateFromBrowser)
+	// The seventh, and the second of the seven about this daemon rather than a
+	// session it manages (milestone 9). It goes through handleAction like the six
+	// above, and it is registered by the same call rather than by hand for the
+	// reason that call exists: the gate, the record and the uniform refusal are
+	// inherited, and a route that re-implemented them would be free to
+	// re-implement them differently. What a third-party page could do through it
+	// is end this process — less than the update above it, which can make this
+	// host download and execute a binary, and more than enough to be worth the
+	// gate.
+	s.handleAction(patternDashboardRestart, audit.ActionDashboardRestart, s.restartFromBrowser)
 
 	// The settings edit, through the same call every other write uses. The
 	// cross-site gate, the audit record and the ownership check are inherited
