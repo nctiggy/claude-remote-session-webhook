@@ -85,11 +85,11 @@ one row per key, with the layer that supplied each value beside it.
 
 **It acts as well as reads, and it carries all three of the things every
 actionable page in this tree carries** — a page token inside every mutating form,
-the controls that submit them, and a live region at the foot of the file. Two
-routes receive them: `POST /settings/edit` for one configuration key, and
-`POST /dashboard/update` for the binary. `GET /settings` is still the only verb
-registered on the path itself, which is why the header's link to it is a link to a
-page and nothing more.
+the controls that submit them, and a live region at the foot of the file. Three
+routes receive them: `POST /settings/edit` for one configuration key,
+`POST /dashboard/update` for the binary, and `POST /dashboard/restart` for the
+process running it. `GET /settings` is still the only verb registered on the path
+itself, which is why the header's link to it is a link to a page and nothing more.
 
 That paragraph replaced one asserting the opposite — no page token, no action row,
 no live region, and no route for a form to be received by. It was written when the
@@ -103,7 +103,13 @@ text it always had: a control certain to be turned away is not offered, which is
 the discipline that builds a card with no actions rather than actions that fail.
 
 Its controls are this document's — `.button`, `.button-primary`, and the
-page-token partial. Its own vocabulary is the names nothing else uses:
+page-token partial. The Updates section's three — Check, Update, Restart — are
+that vocabulary and nothing else: Restart is a plain `.button`, because exactly
+one primary per view is the rule above and the update owns it here, and because
+`.button-danger` is for an action that ends an unsandboxed shell and a restart
+ends none. Its form carries no class at all rather than a second spelling of the
+update's, which is the same discipline the rest of this page follows. Its own
+vocabulary is the names nothing else uses:
 `.settings-menu`, `.settings-panel`, `.settings-table`, and the per-row edit form
 (`.setting-form`, `.setting-input`, `.setting-save`). A further spelling for a
 text entry on this page is the defect this document exists to prevent. The row's

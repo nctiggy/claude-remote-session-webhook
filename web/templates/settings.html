@@ -26,10 +26,11 @@
   This page acts as well as reads. It carries mutating forms, the page token
   inside each of them, the controls that submit them, and the live region at the
   foot of this file — the three things every actionable page in this tree carries,
-  and the forms they exist for. Two routes receive them: POST /settings/edit for
-  one configuration key, and POST /dashboard/update for the binary. `GET /settings`
-  is still the only verb registered on this path itself, which is why the header's
-  link to it is a link to a page and nothing more.
+  and the forms they exist for. Three routes receive them: POST /settings/edit for
+  one configuration key, POST /dashboard/update for the binary, and
+  POST /dashboard/restart for the process running it. `GET /settings` is still the
+  only verb registered on this path itself, which is why the header's link to it is
+  a link to a page and nothing more.
 
   It was once read-only, and the absence of a route was the safeguard. That is no
   longer where the safety comes from, so do not restore it by deleting a form:
@@ -174,6 +175,45 @@
 <button class="button button-primary" type="submit">Update to {{ .Available }}</button>
 <p class="update-caution">This replaces the running binary and restarts the daemon. Sessions survive it.</p>
 </form>{{ end }}
+
+{{/*
+  Restart, last in the section because it is the least of the three things here:
+  Check looks at somebody else's API, Update replaces this binary with one off
+  the internet, and this runs the binary that is already installed. It is offered
+  whether or not a check has happened, because it has nothing to do with what a
+  release feed says — an operator restarting a wedged daemon on a host with no
+  network must not be asked to check for updates first.
+
+  Not .button-primary: exactly one primary per view and the update above owns it.
+  Not .button-danger either — that is the spelling for an action that ends an
+  unsandboxed shell (docs/components.md, Button), and this ends none. The plain
+  .button is the ordinary action it is.
+
+  This form carries no class of its own, and that is a decision. .update-form is
+  the shape of the form above and this is not that form; a second element wearing
+  its name would tell every reader, and every sweep that finds the update by it,
+  something untrue. What it costs is that form's grid gap between the button and
+  the sentence under it, which is recorded in ralph/PROGRESS.md rather than paid
+  for with a spelling the design system does not have.
+
+  The confirming step is a hidden field the page sends deliberately, which is how
+  every confirmation in this tree is spelled and never a modal: a <dialog> needs
+  script for an action that needs none. The route reads this field before it does
+  anything at all, and refuses without exactly this value.
+
+  The sentence is not decoration and it is the reason this control is safe to
+  offer. An operator who does not know their sessions survive will not press it,
+  and the reason they survive is worth saying rather than asserting: they are tmux
+  windows on this host rather than children of this process, so a process that
+  ends does not reach them (#63). That is also why the shutdown teardown does not
+  fire — the restart is os.Exit, not a graceful stop — but that belongs in the
+  journal rather than on a button's caption.
+*/}}<form method="post" action="/dashboard/restart">
+<input type="hidden" name="crsw_page_token" value="{{ .Token }}">
+<input type="hidden" name="confirm" value="yes">
+<button class="button" type="submit">Restart the daemon</button>
+<p class="update-caution">This stops this daemon and starts it again, running the binary already installed. Sessions survive it: they are tmux windows on this host rather than children of this process.</p>
+</form>
 </section>{{ end }}{{ end }}{{ end }}
 
 {{ range .Sections }}{{ if eq $.Shown .Title }}<section class="settings-section">
