@@ -989,3 +989,97 @@ US5/US6 is complete.
    gutter and the identity's flex). Five notes, one task. T016's title names two prose edits;
    read it as "reconcile the document with everything milestone 7 made conditional" or it will
    ship a document that describes a desktop.
+
+---
+
+## Iteration 14 — 2026-08-09 09:43
+
+**Did:** T014. `background: var(--glow)` replaced with `var(--surface)` on `.settings-menu`
+(`crswd.css:1358`) and `var(--surface-lift)` on `.settings-menu-link[aria-current="page"]`
+(`crswd.css:1345`), the comment above them rewritten to record both defects and name the gap,
+and both contract tests shipped — `TestNoBackgroundSpendsAShadowToken` and
+`TestTheSettingsMenuHasASurface` (`stylesheet_test.go:3033` onward). Two files, one commit, no
+media block touched, no doc row owed.
+
+**Learned, so the next iteration does not rediscover it:**
+
+- **The plan's T014 line pairs the two tokens with the two line numbers in the wrong order, and
+  `tasks.md` is the one to believe.** `IMPLEMENTATION_PLAN.md:214` reads "replace with
+  `var(--surface)` and `var(--surface-lift)` at `crswd.css:1339` and `1352`", and in the file
+  the aria-current rule comes **first** — so read positionally it puts `--surface` on the chip
+  and `--surface-lift` on the bar, which inverts the elevation and makes the marked item the
+  one that recedes. `specs/007-.../tasks.md:657` and `contracts/hygiene.md:86` both spell the
+  fix as CSS with the selectors attached, and they say the opposite. Line numbers were also
+  stale by 9 (real: 1330 and 1343 pre-edit). **When the plan's one-line summary and the
+  contract disagree, the contract is the artifact with the reasoning in it.**
+- **`blockFor(t, source, ".settings-menu")` returns the wrong rule, and the contract asks for
+  it by name.** `contracts/hygiene.md:176` specifies `blockFor(.settings-menu)`; `blockFor`
+  matches the first prelude *containing* the marker and `.settings-menu-list` is declared 40
+  lines earlier, so it answers with the list. `ruleFor` is the exact-match sibling that exists
+  for precisely this — its own doc comment at `stylesheet_test.go:2369` names
+  `.settings-menu` as the example. Used `ruleFor` over `source[:strings.Index(source,
+  breakpointPrelude)]`, per iteration 12, because `.settings-menu` is declared twice.
+- **The sweep and the positive assertion are not redundant, and mutation 2 is the proof.**
+  Deleting the `background` line outright makes `TestNoBackgroundSpendsAShadowToken` pass —
+  it sweeps for a bad value, and there is now no value. That mutation leaves the page in the
+  exact state this task was fixing, and only `TestTheSettingsMenuHasASurface` catches it. Any
+  future "no rule spends X" guard has this hole; it needs a partner that says what the rule
+  *must* have.
+- **The background regex is anchored on a boundary before the property because
+  `transition: background var(--transition)` appears three times** (`crswd.css:417`, `554`,
+  `700`). Verified rather than asserted: the pattern finds 22 declarations in the file and
+  none of them is a `transition` line (`grep -Po` with the same expression). It matches
+  `background[a-z-]*` rather than the two spellings FR-021 names, because
+  `background-image` drops a shadow list identically and a test called
+  "NoBackgroundSpendsAShadowToken" that knew only two spellings would over-promise.
+- **All three negatives proved by mutation**, with `Edit` and undone with `Edit` per iterations
+  3–13: (a) `var(--glow)` restored on `.settings-menu` fails **both** tests naming the
+  selector; (b) the declaration deleted fails only the positive one, fatally; (c) `var(--glow)`
+  restored on the aria-current link alone — the half-fix — fails the sweep naming
+  `.settings-menu-link[aria-current="page"]` while the menu test stays green.
+- **`TestTheCurrentSectionIsNotColourAlone` was unaffected**, because it reads the border and
+  not the background. That is the same redundancy that let both bugs survive, now working in
+  the other direction: the test that would have caught a missing marker could not see a
+  missing tint.
+- All gate commands green; linter is **2.12.2**, so the green is real. `go test -count=1 ./...`
+  clean, `golangci-lint run` 0 issues, all three tagged suites compile
+  (`go vet -tags tmux|quickstart|dev`). `-tags quickstart` was not *run*: two CSS
+  declarations, two tests, no `cmd/crswd`.
+
+**Left:** T015 next — the risky one. Delete `.settings caption` (verified dead) and check
+`.settings table`, `.settings th/td` and `.settings p` against `settings.html`, keeping what is
+load-bearing and **saying which in the commit message**. The class sweep cannot see any of
+them, because they are element selectors under a class. Then T016 and T017. 3 of 17 open;
+US7 is half done.
+
+**Findings — noticed, not fixed:**
+
+1. **This is the only milestone-7 change a desktop reader will see, and it is the only one
+   whose "green" means something visual actually happened.** Every prior iteration's note ended
+   with "nothing in this repository has a thumb". This one renders on the machine the operator
+   is reading the plan on — the settings menu now has a filled bar and a lifted current chip
+   where there was flat ground. It is still unreviewed by an eye: `--surface` on
+   `--ground` is a 5-unit lift in each channel and nothing here measures whether that bar is
+   visible rather than merely declared. `docs/design-system.md` requires new *pairings* to be
+   measured; this is a surface, not a text pairing, so no rule was broken — but it is the
+   nearest this milestone comes to one.
+2. **`docs/design-system.md`'s elevation sentence is now true for the first time in this
+   region.** "Elevation comes from `--surface-lift` and borders, never shadows" — the settings
+   menu was spending a *shadow token* on a background, which is neither of the two allowed
+   mechanisms and not the forbidden one either. No doc edit is owed (the rule was always right;
+   the stylesheet was wrong), but it is worth knowing the sentence had a live counter-example
+   under it.
+3. **`TestNoBackgroundSpendsAShadowToken` names one token, and the general defect has no
+   guard.** A future `border-color: var(--glow)`, `outline: var(--glow)` or a second shadow
+   token spent as a background all fail the same way and pass everything here. The contract
+   said narrow on purpose and I kept it narrow — but the honest boundary is "one token, one
+   property family", not "shadow tokens cannot be misused". The generalisable version needs
+   the token block to declare each token's *kind*, which is a design-system change and not a
+   CSS one.
+4. **`contracts/hygiene.md` has now been wrong twice in one milestone about which helper to
+   use.** It said `blockFor(.settings-menu)` here; iteration 12 recorded the equivalent
+   positional hazard for `ruleFor` over the whole file. Both are the same underlying fact —
+   the settings page's class names are prefixes of each other and this milestone declares
+   several of them twice. Nothing in the contracts records it. T016 is a `docs/components.md`
+   task, so this belongs to the contract files rather than to it; the note is here because
+   the contracts are read once per task by a fresh context that will hit it again.
