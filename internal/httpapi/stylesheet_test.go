@@ -554,6 +554,10 @@ func styledClasses(t *testing.T) map[string]bool {
 // The state pills are the documented exception in the second direction. Their
 // class is composed at render time from the display state, so no template
 // carries the literal, and two of the four cannot occur yet by design.
+//
+// It reads a selector by its dots and nothing else, so an element selector is
+// invisible to it in both directions.
+// TestTheStylesheetStylesNoElementTheMarkupNeverRenders is that half (#118).
 func TestTheStylesheetAndTheMarkupNameTheSameThings(t *testing.T) {
 	t.Parallel()
 
@@ -572,6 +576,158 @@ func TestTheStylesheetAndTheMarkupNameTheSameThings(t *testing.T) {
 			continue
 		}
 		t.Errorf("crswd.css styles %q and no template renders it; a rule for markup that does not exist is how a second component starts", name)
+	}
+}
+
+// elementSelectorAttr is an attribute selector. What it holds is a name and a
+// value, and neither is an element: `[aria-selected="true"]` names no
+// `aria-selected` element and no `true` one.
+var elementSelectorAttr = regexp.MustCompile(`\[[^\]]*\]`)
+
+// elementSelectorPseudo is a pseudo-class or a pseudo-element. `:root` is a
+// document, `:hover` is a state and `::before` is a generated box — none of them
+// is a tag a template could open, and all three are spelled like one.
+var elementSelectorPseudo = regexp.MustCompile(`::?[a-zA-Z][\w-]*`)
+
+// functionalPseudo is a pseudo carrying a selector list — `:is()`, `:not()`,
+// `:where()`, `:has()`. The reader below strips a pseudo by name and cannot see
+// inside one, so an element named only in an argument would be swept as though
+// it were absent. There is none in this stylesheet. Its arrival has to stop this
+// test rather than quietly narrow it, which is #118 again one level down.
+var functionalPseudo = regexp.MustCompile(`::?[a-zA-Z][\w-]*\(`)
+
+// selectorCombinator separates one compound selector from the next: a descendant
+// space, a child, either sibling, or the comma between two selectors in a list.
+var selectorCombinator = regexp.MustCompile(`[\s>+~,]+`)
+
+// typeSelector is the element a compound names, and it has to be at the *start*
+// of one. `.card-meta` and `#action-toast` are spelled with letters too, and a
+// sweep that matched anywhere would read `card`, `meta` and `action` as elements
+// no template renders — every one of them a false failure.
+var typeSelector = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9-]*`)
+
+// styledElements is every element the stylesheet selects on, and the selectors
+// that do it. Keyed lowercase because an element name is case-insensitive in
+// HTML, so `<DIV>` and `div` are the same tag and must not read as two.
+func styledElements(t *testing.T) map[string][]string {
+	t.Helper()
+
+	out := make(map[string][]string)
+	descendants := 0
+	for _, rule := range cssRules(stylesheet(t)) {
+		// @keyframes is the one at-rule left once cssRules has stripped the media
+		// preludes. Its own selectors are `from`, `to` and percentages rather than
+		// elements, and they sit in this chunk's body rather than its selector, so
+		// skipping the prelude is the whole of it.
+		if strings.HasPrefix(rule.selector, "@") {
+			continue
+		}
+		if arg := functionalPseudo.FindString(rule.selector); arg != "" {
+			t.Errorf("crswd.css selects with %s in %q and this sweep cannot read inside a selector list; teach it before using one, or an element named in there is swept as though it were absent", arg, rule.selector)
+			continue
+		}
+		bare := elementSelectorPseudo.ReplaceAllString(elementSelectorAttr.ReplaceAllString(rule.selector, ""), "")
+		for i, compound := range selectorCombinator.Split(bare, -1) {
+			name := typeSelector.FindString(compound)
+			if name == "" {
+				continue
+			}
+			name = strings.ToLower(name)
+			out[name] = append(out[name], rule.selector)
+			if i > 0 {
+				descendants++
+			}
+		}
+	}
+
+	if len(out) == 0 {
+		t.Fatal("crswd.css selects on no element at all, so this comparison asserts nothing")
+	}
+	// html and body are the two elements this file names on their own, so a reader
+	// that had regressed to the head of each selector would still find both and
+	// still run green. `.settings caption` was invisible precisely because it sat
+	// *after* a class — that is the shape #118 is about, and a sweep that has
+	// stopped seeing it has to say so rather than report a clean stylesheet.
+	if descendants == 0 {
+		t.Fatal("this sweep found no element below a class; the case it exists for is a rule like `.settings caption`, so it is reading only the head of each selector")
+	}
+	return out
+}
+
+// renderedElement is an element a template opens. Anchored on `<` and a letter,
+// so `<!doctype` and every closing tag are read past: the opening tag is where
+// the name is, and an element that is only ever closed was never rendered.
+var renderedElement = regexp.MustCompile(`<([a-zA-Z][a-zA-Z0-9-]*)`)
+
+// renderedElements is every element the embedded templates open, plus every one
+// the action routes write themselves — the same two doors renderedClasses reads,
+// for the same reason: both are markup a browser is handed.
+func renderedElements(t *testing.T) map[string]string {
+	t.Helper()
+
+	out := make(map[string]string)
+	fromTemplates := 0
+
+	err := fs.WalkDir(web.Templates, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		source, err := fs.ReadFile(web.Templates, p)
+		if err != nil {
+			return err
+		}
+		// An action is dropped rather than collapsed to a marker as renderedClasses
+		// needs it to be: no element in this tree has its tag composed at render
+		// time, and a `<` inside an action is a string being printed, not markup.
+		markup := templateAction.ReplaceAll(templateComment.ReplaceAll(source, nil), []byte(" "))
+		for _, tag := range renderedElement.FindAllStringSubmatch(string(markup), -1) {
+			out[strings.ToLower(tag[1])], fromTemplates = p, fromTemplates+1
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the embedded template tree: %v", err)
+	}
+	if fromTemplates == 0 {
+		t.Fatal("the templates open no element at all, so this comparison asserts nothing")
+	}
+
+	// Folded in after the count, exactly as renderedClasses does it: a template
+	// tree that stopped rendering must fail above rather than be covered by
+	// whatever a route composed in Go.
+	for what, fragment := range actionFragments {
+		for _, tag := range renderedElement.FindAllStringSubmatch(string(fragment), -1) {
+			out[strings.ToLower(tag[1])] = what
+		}
+	}
+	return out
+}
+
+// TestTheStylesheetStylesNoElementTheMarkupNeverRenders is the half of the sweep
+// above that reading a selector by its dots cannot see (#118).
+//
+// TestTheStylesheetAndTheMarkupNameTheSameThings holds every class in the
+// stylesheet to a template that renders it, and a class is all it looks for. So
+// `.settings caption` read to it as "something about `.settings`" — a rule for an
+// element this daemon has never rendered, invisible to the one guard whose whole
+// job is to report a rule for markup that does not exist. Four such rules
+// survived two milestones inside that blind spot, and the class sweep was green
+// for every one of them.
+//
+// One direction only, and on purpose. The reverse is not a defect: almost every
+// element in this tree is styled through a class or not at all, so "an element
+// with no rule of its own" is the ordinary case rather than an unstyled page.
+//
+// **Must fail when** a rule names an element no template in the tree opens.
+func TestTheStylesheetStylesNoElementTheMarkupNeverRenders(t *testing.T) {
+	t.Parallel()
+
+	rendered := renderedElements(t)
+	for element, selectors := range styledElements(t) {
+		if rendered[element] != "" {
+			continue
+		}
+		t.Errorf("crswd.css styles <%s> (%s) and no template in web/templates opens one; a rule for an element that is never rendered is dead weight the class sweep reads as a rule about the class beside it", element, strings.Join(selectors, ", "))
 	}
 }
 
