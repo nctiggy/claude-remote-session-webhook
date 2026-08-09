@@ -117,9 +117,17 @@ needed, inline it as a `@font-face` data URI and embed it via `go:embed`.
 | Body | `14px / 1.5` | mono, `--text` |
 | Prose / help | `.86rem` | **sans**, `--dim` |
 | Label / pill | `.64–.68rem` | uppercase, `letter-spacing: .14em` |
-| Pane output | `12.5px / 1.45` | mono, `white-space: pre`, `tab-size: 4` |
+| Pane output | `12.5px / 1.45` | mono, `white-space: pre`; `pre-wrap` under the breakpoint, `tab-size: 4` |
 
 Pane output sets `font-variant-ligatures: none` — ligatures misrepresent terminal text.
+
+`pre-wrap` below `780px` is a **trade, not a fix**: it costs the alignment of
+Claude Code's own box borders and dividers, and buys reading prose without a
+horizontal pan per line — the dominant phone task, which otherwise fails outright.
+Shrink-to-fit was rejected with arithmetic: 80 columns in a 390px viewport needs a
+~6.9px font. Whether the wrapped chrome is acceptable is
+[an open question](mobile-open-questions.md) whose fallback is deleting two
+declarations.
 
 ## Spacing scale
 
@@ -202,9 +210,6 @@ session grid.
 Shell max-width `1160px`, gutters `--s5`. Session grid is
 `repeat(auto-fill, minmax(310px, 1fr))`.
 
-Breakpoint at `780px`: summary drops to two columns, the brand tagline hides. Two
-breakpoints is enough for one operator on a laptop and a phone.
-
 Wide content — panes, tables — scrolls inside its own `overflow-x: auto` container.
 The page body never scrolls sideways.
 
@@ -212,3 +217,48 @@ The pane viewer is that container in both axes: a fixed block size of
 `--pane-h: 30rem` with `overflow: auto`, so a screen scrolls inside the pane and
 never moves the page around it (`components.md`: the container scrolls, the page
 does not).
+
+### One width breakpoint, at `780px`
+
+**There is exactly one**, and `TestTheDashboardHasExactlyOneBreakpoint` enforces
+both the count and the value. One operator with a laptop and a phone needs one
+threshold; each additional one is a layout nobody looks at until it is already
+wrong. Everything that varies with width varies at the same place.
+
+Everything inside `@media (max-width: 780px)`:
+
+| Selector | Change | Why |
+|---|---|---|
+| `.shell` | gutters `--s5` → `--s4` | A phone cannot spend `--s5` on each edge and still hold a card |
+| `.summary` | two columns | Four state pills side by side are unreadable at 390px |
+| `.brand-tag` | hidden | The tagline is the first thing that is decoration, not information |
+| `.settings` | one column | The section menu goes above its panel rather than beside it |
+
+**Adding a rule to that block adds a row to this table, in the same commit.** An
+enumeration that has gone stale is worse than no enumeration — this table already
+said "two effects" once while the block did four things.
+
+Two rules about how it is written:
+
+- **Additions go inside the existing block.** A second `@media` block fails the
+  guard *even at an identical width* — it counts occurrences of a width feature, it
+  does not compare them.
+- **Never range syntax** (`(width <= 780px)`). It slips past the guard's regex
+  while doing exactly what the guard forbids, which is routing around a hook.
+
+### Pointer, not width, for touch
+
+A tablet in landscape is a touch device at a desktop width; a narrow desktop window
+is a mouse. So touch ergonomics are conditioned on the pointer, and:
+
+> A pointer-conditioned block (`@media (pointer: coarse)`) changes **ergonomics —
+> size, spacing, input scale — and never layout.** Layout varies on exactly one
+> axis, and that axis is tested.
+
+`(pointer: coarse)` is not a width feature, so it passes the breakpoint guard
+honestly rather than by evasion. It sits **after** the rules it overrides: at equal
+specificity, order alone decides, and a coarse block placed above them parses
+cleanly, passes every guard, and does nothing.
+
+Questions about the phone layout that no test here can settle live in
+[`mobile-open-questions.md`](mobile-open-questions.md).
