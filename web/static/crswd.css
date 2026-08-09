@@ -61,6 +61,9 @@
      table gives every value but no token name, and rule 1 is about the values. */
   --fs-brand: 1.05rem;
   /* One step below the eyebrow, for the version beside the wordmark. */
+  /* Smaller than the micro eyebrow, for the version tucked against the
+     wordmark: present, readable, and not competing. */
+  --fs-nano: 0.6rem;
   --fs-micro: 0.68rem;
   --fs-eyebrow: .72rem;
   --fs-body: 14px;
@@ -1243,23 +1246,23 @@ body {
    part of the identity — this daemon, this version — which is what it is. Muted
    and small, because it is still not what an operator came for. */
 .brand-version {
-  /* The eyebrow's treatment, one step smaller.
+  /* The eyebrow's treatment, two steps smaller and tucked against the wordmark.
 
      It sits inside the .brand heading, which sets uppercase, the brand's wide
      tracking, weight 700 and a glow. .brand-tag resets three of those and this
-     reset none — so the version rendered as a second wordmark: same casing, same
-     tracking, same glow, differing only in size. Matching the tag is not a
-     preference here, it is the difference between a fact beside the name and a
-     second name.
+     once reset none — so the version rendered as a second wordmark, differing
+     only in size.
 
-     var(--font) was the other half of it. There is no such token, so the
-     declaration resolved to nothing and the family fell back to the brand's —
-     and the stylesheet test that requires a token rather than a literal passed
-     it, because it checks that a var is referenced and not that one exists. */
-  margin-inline-start: var(--s2);
+     vertical-align: baseline is stated rather than left to the default, because
+     the default is what an inline element inherits and this one lives in a
+     flex row whose items are baseline-aligned by their own rule. Saying it here
+     means the version sits on the wordmark's baseline — bottom-aligned with the
+     letters beside it — rather than floating against their middle. */
+  margin-inline-start: var(--s1);
+  vertical-align: baseline;
   color: var(--dim);
   font-family: var(--sans);
-  font-size: var(--fs-micro);
+  font-size: var(--fs-nano);
   font-weight: 600;
   letter-spacing: var(--ls-eyebrow);
   text-shadow: none;
