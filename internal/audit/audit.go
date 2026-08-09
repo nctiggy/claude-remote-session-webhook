@@ -141,6 +141,15 @@ const (
 	// from this, and if one is ever added it will need its own name here.
 	ActionSettingsView Action = "settings.view"
 
+	// ActionSettingsEdit is one setting written to the operator's configuration
+	// file from the settings page.
+	//
+	// The record names the key and never the value. What was set is the
+	// operator's business and may be a path or a bound they would rather not see
+	// in a journal that outlives the process; that a setting changed, and which,
+	// is what an audit trail is for.
+	ActionSettingsEdit Action = "settings.edit"
+
 	// ActionSessionMode is a session's mode changed, or refused, from the
 	// dashboard (T019, contracts/session-mode.md).
 	//

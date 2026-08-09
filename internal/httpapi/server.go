@@ -626,6 +626,11 @@ func newServer(
 	// admits the bytes is a signature made before the request existed, and the
 	// door does not relax it (FR-029b).
 	s.handleAction(patternDashboardUpdate, audit.ActionDashboardUpdate, s.updateFromBrowser)
+
+	// The settings edit, through the same call every other write uses. The
+	// cross-site gate, the audit record and the ownership check are inherited
+	// rather than restated, which is what keeps one door rather than two.
+	s.handleAction(patternSettingsEdit, audit.ActionSettingsEdit, s.editSetting)
 	// One route per embedded asset, so `/static/` names exactly the files the
 	// binary carries and a path that is not one of them is a path nothing claims
 	// (contracts/dashboard.md's route table; see loadAssets for why a wildcard is
