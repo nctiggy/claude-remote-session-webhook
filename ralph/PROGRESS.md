@@ -841,3 +841,75 @@ US3/US4 (touch) is now complete.
    now pointer-conditional** — the same shape as iteration 10's finding 4 about button geometry.
    T016 is the task in that file; its scope is now *two* items larger than written (the pane's
    scroll container, button/action-row geometry, and input scale).
+
+---
+
+## Iteration 12 — 2026-08-09 09:31
+
+**Did:** T012. `.card-name, .card-path { white-space: normal; overflow-wrap: anywhere }` at the
+end of the 780px block, base rule left ellipsizing. Both contract tests shipped —
+`TestCardTextWrapsOnNarrowViewports` and `TestTheCardKeepsItsDesktopTruncation`
+(`stylesheet_test.go:2884` onward) — plus the row the design-system enumeration table owes.
+
+**Learned, so the next iteration does not rediscover it:**
+
+- **The card grid is already one column on a phone, and it is intrinsic rather than a rule.**
+  `.grid` is `repeat(auto-fill, minmax(var(--card-min), 1fr))` with `--card-min: 310px`; two
+  tracks need `310*2 + --s4` = 636px of content, and `.shell` spends `--s4` per edge below the
+  breakpoint, so a second track needs a **~668px viewport**. That is *below* the 780px
+  breakpoint, so between 668 and 780 the cards are still two columns while the wrap is
+  live — harmless, because a grid row sizes to its tallest track, but it means "one column
+  makes variable heights harmless" (the wording in `contracts/hygiene.md`) is only true under
+  668px. The comment in the file says what is actually true. **T013 is in the same region and
+  the same arithmetic applies to the masthead's alignment claim** — `.shell` at `--s4` is what
+  `.masthead-bar` is being brought into line with.
+- **`ruleFor` over the whole file was the wrong tool for the base rule and the right one for
+  the narrow rule.** As of this commit `.card-name` is declared twice, so the desktop test
+  reads `source[:strings.Index(source, breakpointPrelude)]` — iteration 10's `.card-actions`
+  lesson, applied before being bitten this time rather than after. The wrap test uses
+  `ruleFor(t, narrow, sel)`, which fatals if the declaration were written at the top level
+  instead, so "wrong place entirely" is caught for free (iteration 8's note).
+- **Asserting per selector rather than on the selector list is what makes the half-fix fail.**
+  Dropping `.card-name` and keeping `.card-path` fails naming `.card-name` exactly —
+  the same shape `TestInputsDoNotTriggerFocusZoom` needed for its two forms. A single
+  `blockFor` on the rule body would have passed that mutation.
+- **All three negatives proved by mutation.** (a) The base rule edited instead of overridden —
+  `white-space: normal` + `overflow-wrap: anywhere` moved up to line 450 — fails
+  `TestTheCardKeepsItsDesktopTruncation` naming both selectors **while the wrap test stays
+  green**, which is the whole point: that mutation renders identically on a phone and costs
+  every desktop card its row height. (b) `white-space: normal` alone — the plausible half-fix —
+  fails the second assertion, because a working-directory path has no break opportunity in it.
+  (c) One selector covered, the other missed — fails by name. Mutations done with `Edit` and
+  undone with `Edit`, per iterations 3–11.
+- All gate commands green; linter is **2.12.2**, so the green is real. `go test ./...` clean
+  first time, all three tagged suites compile (`go vet -tags tmux|quickstart|dev`).
+  `-tags quickstart` was not *run*: one CSS rule, one test file, one doc row, no `cmd/crswd`.
+
+**Left:** T013 next — `padding-inline: var(--s4)` on `.masthead-bar` and `flex: 1 1 0` on
+`.operator`, inside the same block, and it owes that table two more rows. It is the last of the
+reachability phase. 5 of 17 tasks open.
+
+**Findings — noticed, not fixed:**
+
+1. **This is the fifth milestone-7 rule pair, and the first one that got its desktop-side
+   guard.** Iteration 11's finding 1 named four pairs with no assertion that the narrow
+   declaration is absent from the base rule (`.pane` — which does have one — plus
+   `.settings-table tr`, `.button`, and the two inputs). `contracts/hygiene.md` specified
+   `TestTheCardKeepsItsDesktopTruncation` for this pair, so it exists here by contract rather
+   than by invention. The gap is unchanged for the other three, and **FR-016 still has no
+   assertion anywhere in the milestone**. Worth noting *why* the cards got one and the coarse
+   block did not: the contract that specified the touch block did not ask for it. That is a
+   contract gap, not a discipline gap, and it is fixable in one sweep as iteration 11
+   described.
+2. **The `title` attribute is now redundant on a phone and still load-bearing on a desktop, and
+   nothing says so.** `session-card.html:67` and `:116` render `title="{{ .Name }}"` /
+   `title="{{ .WorkDir }}"`. Below the breakpoint the visible text is the whole value, so the
+   tooltip duplicates what is on screen — harmless, but a future reader may take the attribute
+   as the reason the truncation is acceptable and not notice it stops applying at 780px. A
+   template comment would say it; T012 is a CSS task and AR-008 says not from here.
+3. **`docs/components.md` describes the session card's name and path as truncated, full stop.**
+   Same shape as iterations 3, 10 and 11: T016 is the task in that file and its scope is now
+   *three* items larger than written (the pane's scroll container, button/action-row geometry,
+   input scale, and now card text truncation). That is four notes pointing at one task; T016
+   should be read as "reconcile the document with everything milestone 7 made conditional",
+   not as the two prose edits its title names.
