@@ -965,6 +965,32 @@
    * not exist when the page loaded, which is the only kind this page has after
    * its first update.
    */
+  /*
+   * Puts the daemon's own updating markup where the form was.
+   *
+   * The answer to an accepted update is the settings page with its Updates
+   * section in the waiting state, so this takes that section and nothing else:
+   * the operator's menu position, scroll and anything half-typed elsewhere on
+   * the page are theirs and survive.
+   *
+   * waitOutTheUpdate is called again afterwards because the element it watches
+   * for did not exist when the page loaded — it has just arrived.
+   */
+  const swapUpdatesSection = (markup) => {
+    const fresh = new DOMParser()
+      .parseFromString(markup, 'text/html')
+      .querySelector('.settings-panel');
+    const here = document.querySelector('.settings-panel');
+    if (!fresh || !here) {
+      // Nothing to swap into: say it rather than leave a pressed button and a
+      // page that did not change.
+      show('The update was accepted. Reload to see how it is going.');
+      return;
+    }
+    here.replaceWith(document.importNode(fresh, true));
+    window.waitOutTheUpdate?.();
+  };
+
   document.addEventListener('submit', async (event) => {
     const form = event.target;
     if (!(form instanceof HTMLFormElement) || !form.getAttribute('action')?.startsWith('/dashboard/')) {
@@ -996,7 +1022,30 @@
         // to the one value the daemon admits.
         credentials: 'same-origin',
       });
-      show(sentence(await answer.text()) || 'The host answered without a message.');
+      const said = await answer.text();
+
+      /*
+       * The update is not an action with an outcome, so it does not get one.
+       *
+       * Every other form here does something the daemon finishes and reports on
+       * — a session destroyed, a name changed — and a sentence in the toast is
+       * the whole answer. An update is different in kind: the daemon has begun
+       * replacing itself and is about to stop answering, so the useful thing is
+       * not a sentence but the page staying put and waiting.
+       *
+       * It used to answer with a redirect, which sent the browser to fetch a
+       * page from a daemon in the act of stopping — the operator watched their
+       * own update turn into a 404. Then it rendered in place and the shared
+       * handler above turned that page into a toast, which is a sentence where
+       * a spinner was wanted. This is the third attempt and the first one that
+       * leaves the operator looking at what they were looking at.
+       */
+      if (form.matches('.update-form')) {
+        swapUpdatesSection(said);
+        return;
+      }
+
+      show(sentence(said) || 'The host answered without a message.');
       reenable();
       if (form.matches('.create-form')) {
         form.reset();
@@ -1527,5 +1576,9 @@ const waitOutTheUpdate = () => {
 
   window.setTimeout(ask, WAIT_MS);
 };
+  // Exposed so the submit handler can start it after swapping the section in:
+  // the element this watches for did not exist when the page loaded.
+  window.waitOutTheUpdate = waitOutTheUpdate;
+
   waitOutTheUpdate();
 })();

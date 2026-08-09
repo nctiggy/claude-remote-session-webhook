@@ -2068,3 +2068,34 @@ func TestEveryTokenReferencedExists(t *testing.T) {
 		}
 	}
 }
+
+// TestTheUpdateDoesNotBecomeAToast is the third attempt at this route's answer,
+// pinned so there is not a fourth.
+//
+// It began as a redirect, which sent the browser to fetch a page from a daemon
+// in the act of stopping — the operator watched their own update turn into a
+// 404. It was then rendered in place, and the shared submit handler turned that
+// page into a toast, which is a sentence where a spinner was wanted.
+//
+// **Must fail when** the update form falls through to the toast path. Every
+// other form here does something the daemon finishes and reports on; an update
+// has begun replacing the daemon and is about to stop answering, so the useful
+// thing is the page staying put and waiting.
+func TestTheUpdateDoesNotBecomeAToast(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	if !strings.Contains(source, "form.matches('.update-form')") {
+		t.Error("the submit handler does not single out the update form, so an update answers with a sentence where a spinner was wanted")
+	}
+	if !strings.Contains(source, "swapUpdatesSection") {
+		t.Error("nothing puts the daemon's updating markup where the form was")
+	}
+
+	// The swap must come before the toast, or the toast wins and the special
+	// case is unreachable.
+	if at, toast := strings.Index(source, "swapUpdatesSection(said)"), strings.Index(source, "show(sentence(said)"); at < 0 || toast < 0 || at > toast {
+		t.Error("the update's branch does not precede the toast, so it can never be taken")
+	}
+}
