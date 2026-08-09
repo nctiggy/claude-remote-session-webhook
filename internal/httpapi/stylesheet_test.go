@@ -2313,3 +2313,50 @@ func TestNoPageClampsTheZoom(t *testing.T) {
 		t.Fatal("no template carries a viewport meta at all, so this sweep asserted nothing — and every page is being laid out at a desktop width and scaled down")
 	}
 }
+
+// TestWideSettingsPanTheirOwnPanel puts the settings page's horizontal scroll
+// on the content rather than on the index sitting beside it.
+//
+// `overflow-x: auto` was declared on `.settings`, which is the grid wrapper
+// holding the section menu *and* the panel. A table wider than the viewport
+// therefore panned both: reaching a Save button dragged the list of sections
+// off the screen with it, so the operator lost their place in the page to touch
+// the control they came for. On a phone every settings table is wider than the
+// viewport, which makes this the ordinary case there rather than an edge one.
+//
+// Both halves are asserted together because either alone is satisfiable without
+// changing anything a reader would see. Every rule whose selector is `.settings`
+// is swept rather than the first one `blockFor` would return: the wrapper is
+// declared twice at the top level and again inside the breakpoint, and the
+// property does the same damage from any of them.
+//
+// **Must fail when** the panel gains the property without the wrapper losing
+// it, which renders exactly as it does today.
+func TestWideSettingsPanTheirOwnPanel(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+	pans := regexp.MustCompile(`(?i)overflow-x\s*:`)
+
+	if panel := blockFor(t, source, ".settings-panel"); !pans.MatchString(panel) {
+		t.Errorf("the settings panel is not its own scroll container, so a table wider than the viewport has nothing to scroll inside and moves the page instead: %q", panel)
+	}
+
+	var swept int
+	for _, rule := range cssRules(source) {
+		selectors := strings.Split(rule.selector, ",")
+		for i, one := range selectors {
+			selectors[i] = strings.TrimSpace(one)
+		}
+		if !slices.Contains(selectors, ".settings") {
+			continue
+		}
+		swept++
+		if pans.MatchString(rule.body) {
+			t.Errorf("the .settings grid wrapper scrolls horizontally, so wide content pans the section menu along with the panel and the operator loses the index to reach a Save button: %q", rule.body)
+		}
+	}
+	if swept == 0 {
+		t.Fatal("crswd.css has no .settings wrapper rule at all, so the half of this test that matters asserted nothing")
+	}
+}

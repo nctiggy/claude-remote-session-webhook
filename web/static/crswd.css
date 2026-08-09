@@ -1155,17 +1155,14 @@ body {
 }
 
 /* The settings table — the read-only account of how this daemon was configured.
-   Wide content scrolls inside its own container rather than moving the page
-   sideways, which is the rule docs/design-system.md gives panes and tables
-   alike. No rain sits behind it: a table of values an operator is reading is
-   reading content.
+   Wide content still scrolls inside its own container rather than moving the
+   page sideways, which is the rule docs/design-system.md gives panes and tables
+   alike — but that container is .settings-panel, not the grid wrapper that used
+   to carry it here. No rain sits behind it: a table of values an operator is
+   reading is reading content.
    Element selectors under one class rather than a class per cell. The table is
    the whole of this page's structure, and a class on every cell would be a
    component docs/components.md never defined. */
-.settings {
-  overflow-x: auto;
-}
-
 .settings table {
   inline-size: 100%;
   border-collapse: collapse;
@@ -1388,9 +1385,16 @@ body {
   top: var(--s6);
 }
 
+/* The panel is the scroll container, and the wrapper above it is not.
+   overflow-x lived on .settings, which holds the menu as well as the panel, so
+   a table wider than the viewport panned the section index along with the
+   content: reaching a Save button dragged the operator's place in the page off
+   the screen. Unconditional, because it is as right on a desktop as on a phone
+   — a desktop is only wide enough that nothing overflows to prove it. */
 .settings-panel {
   min-inline-size: 0;
   padding-inline-start: var(--s2);
+  overflow-x: auto;
 }
 
 /* Editing one setting, in its own row.
