@@ -526,3 +526,80 @@ recipe). T006 has landed, so its ordering constraint is satisfied. 10 of 17 task
    `docs/mobile-open-questions.md` (does the scrolling menu disorient when the current chip
    starts offscreen?) is now a question about something that actually happens rather than a
    hypothetical. It must stay UNANSWERED; T017 verifies that.
+
+---
+
+## Iteration 8 — 2026-08-09 09:03
+
+**Did:** T008. Setting rows stack below the breakpoint — `.settings-table tr { display: grid;
+grid-template-columns: minmax(0, 1fr) }`, `.settings-table thead` clipped with
+`position: absolute; clip-path: inset(50%); overflow: hidden`, and `overflow-wrap: anywhere`
+on the cells. All three inside the existing 780px block, after the menu rules, before its
+closing brace. Two contract tests shipped: `TestSettingRowsStackOnNarrowViewports` and
+`TestTheHeadersAreHiddenAccessiblyNotRemoved` (`stylesheet_test.go:2527` onward). Three rows
+added to the design-system enumeration table, per the obligation T004 and T007 set.
+
+**Learned, so the next iteration does not rediscover it:**
+
+- **The `1px` trap is real and fires exactly as the plan says.** Mutating the thead rule to
+  the conventional visually-hidden recipe (`inline-size: 1px; block-size: 1px`) fails
+  `TestNoRuleCarriesAValueThatBelongsInAToken` naming `"1px"` — from *inside* a media block,
+  which is the part that is easy to assume is exempt. `inset(50%)` passes because `%` is
+  absent from the sweep's unit list (`forbiddenInRules`, `stylesheet_test.go:166`). Confirmed
+  by mutation, not by reading the regex.
+- **`ruleFor(t, narrow, selector)` — T007's helper — is the whole pattern for a task like
+  this**, and it does something worth naming: because it reads the *narrow block's* rules, it
+  fatals if the declaration was written at the top level instead. So "I put the rule in the
+  wrong place entirely" is caught for free. What it does **not** catch is the rule existing in
+  both places; see finding 1.
+- **`.settings-table` was already a rendered class, so G5 never came near this.** Verified
+  against `settings.html:143` before writing a selector, per the contract's instruction to
+  confirm the class name. The three new selectors are that class plus *element* selectors, so
+  nothing new enters `styledClasses` — which is the same blindness T015 is warned about from
+  the other direction.
+- **`TestHiddenAlwaysWins`'s trailing-`display` regex is anchored on `\n\.`**, so `display:
+  grid` on an indented `.settings-table tr` inside the media block cannot trip it. Iteration 7
+  established this; T008 is the first task to actually put a `display` in that block since,
+  and it holds.
+- **`border-collapse: collapse` on `.settings-table` stops applying to a row that is
+  `display: grid`.** The per-cell `border-block-end` on `.settings th/td` is what draws the
+  separation in the stacked layout, and it happens to be the right thing — each of key, value
+  and source gets an underline, so the three lines read as three fields rather than a
+  paragraph. That is a consequence, not a decision anyone made; it is worth knowing before
+  someone "tidies" the base border rules.
+- All gate commands green; linter is **2.12.2**, so the green is real. `go test ./...` clean,
+  all three tagged suites compile (`go vet -tags tmux|quickstart|dev`). `-tags quickstart` was
+  not *run*: this task touches one CSS file, one test file and one doc, no `cmd/crswd`.
+
+**Left:** T009 next (rewrite `settings.html`'s header comment, which claims the page has no
+form, no token, no action row and no live region — it has all four). That is the last task of
+the settings phase, and the plan's "Shippable at T009" line means the reported surface is
+complete after it. 9 of 17 tasks open.
+
+**Findings — noticed, not fixed:**
+
+1. **Nothing stops these rules being declared at the top level *as well*, which would take the
+   desktop table apart.** The pane pair got `TestThePaneKeepsItsDesktopAlignment` for exactly
+   this (iteration 4: the misplaced declaration renders identically on a phone and costs every
+   desktop reader). `contracts/settings.md` lists two tests for part 3 and neither is that one,
+   so I did not invent a third — the constitution's second principle. The shape of the fix if
+   anyone wants it is one `ruleFor`-style sweep asserting no top-level `.settings-table tr`
+   rule sets `display`. This is now the **second** milestone-7 rule pair with no
+   desktop-side guard.
+2. **`TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` (`stream_test.go:991`) is flaky
+   under load.** It failed once during this iteration — *"the opening screen arrived 17ms after
+   the open, which is past the 10ms interval"* — then passed on a plain re-run of the full
+   suite and five consecutive `-count=5` runs in isolation. It is a wall-clock assertion with a
+   10ms budget, so a loaded machine fails it and nothing is wrong with the daemon. Unrelated to
+   this task (CSS and a test file cannot affect stream timing except as load). Worth a real fix
+   — the budget should be relative to the interval rather than an absolute 10ms — but that is
+   `internal/httpapi/stream_test.go` and outside this milestone. **If a future iteration sees
+   this fail, re-run before believing it.**
+3. **The stacked layout makes open question 2 concrete, the way iteration 7 made question 3
+   concrete.** *"Does a bare provenance word read as part of the value once rows stack?"* was
+   hypothetical until this commit; `default` or `file` now literally sits on its own line
+   beneath a value with its column header clipped away. The `th` still carries the name for a
+   screen reader — that is what `inset(50%)` buys — but a sighted operator gets no label at
+   all. Its fallback (render an explicit label in the row) is specced and not built, and the
+   question must stay UNANSWERED. T017 verifies that; this iteration did not touch
+   `docs/mobile-open-questions.md`.
