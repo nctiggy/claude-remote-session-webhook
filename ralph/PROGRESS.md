@@ -774,3 +774,70 @@ smallest task remaining; the doc table owes it a row. 7 of 17 tasks open.
    component prose gives sizes as though there is one. T016 is the task in that file and its
    scope is one item larger than written, which is the same note iteration 3 left about the
    pane's scroll container.
+
+---
+
+## Iteration 11 — 2026-08-09 09:26
+
+**Did:** T011, the second half of T010's contract. `font-size: var(--fs-input)` on
+`.field-input` **and** `.setting-input` inside the `@media (pointer: coarse)` block, plus
+`TestInputsDoNotTriggerFocusZoom` (`stylesheet_test.go:2831` onward) and the row the pointer
+table in `docs/design-system.md` owes for it. Three files, one commit, no template touched.
+
+**Learned, so the next iteration does not rediscover it:**
+
+- **Iteration 10's warning about a second `.field-input`/`.setting-input` did not bite, and it
+  is worth knowing why rather than assuming it went away.** Nothing in the suite reads either
+  base rule — `grep` finds them only in `partials_test.go:1998`, as markup. So the positional
+  `ruleFor` hazard iteration 10 hit on `.card-actions` had no equivalent here. **It is still
+  loaded for the next task that wants a base `.field-input` rule**: the file now declares each
+  of these twice, and `ruleFor` on the whole source returns whichever comes first.
+- **The value sweep does double duty on this task and catches the plausible wrong answer for
+  free.** Spelling the rule `font-size: 16px` fails `TestNoRuleCarriesAValueThatBelongsInAToken`
+  *and* `TestInputsDoNotTriggerFocusZoom`, because the latter matches on `var(--fs-input)` and
+  not on the property. So a respell of the number cannot pass as the token — no separate
+  "is it the token" assertion was needed, unlike `TestDestroyIsSeparatedFromCompact`, which had
+  to compare against the base rule because `gap: var(--s2)` and `gap: var(--s3)` are both
+  tokens.
+- **`.field-input` sets the `font` shorthand and the override is the `font-size` longhand.**
+  That works only on order, and order is what holds it: `propertiesCollide` reads
+  `font`/`font-size` as a collision by its prefix test, so if a base `.field-input` rule is ever
+  added *below* the pointer block, `TestTheCoarseBlockOverridesRatherThanPrecedes` fires rather
+  than the size silently reverting. Checked, not assumed.
+- **Neither selector appears in the width block**, so the pointer block's placement immediately
+  before it stayed free — no property collision to arbitrate, unlike `.settings-menu-link`.
+- Both negatives proved by mutation: dropping `.setting-input` fails naming `.setting-input`;
+  dropping `.field-input` and inlining `16px` fails naming `.field-input`, `.setting-input`
+  *and* the sweep. All gate commands green; linter is **2.12.2**, so the green is real.
+  `go test -count=1 ./internal/httpapi` clean after the restore, all three tagged suites
+  compile. `-tags quickstart` was not *run*: one CSS block, one test, one doc row, no
+  `cmd/crswd`.
+
+**Left:** T012 next — wrap `.card-name` / `.card-path` inside the 780px block, because a `title`
+attribute needs a hover a phone does not have. T013 is parallel to it. 6 of 17 tasks open;
+US3/US4 (touch) is now complete.
+
+**Findings — noticed, not fixed:**
+
+1. **This closes the touch phase, and every finding iteration 10 left about it still stands
+   unchanged.** In particular finding 2 — nothing stops a `font-size: var(--fs-input)` being
+   added to the *base* `.field-input` as well, which would give every mouse user a 16px field
+   and pass all six tests in the coarse suite. That is now the fourth milestone-7 rule pair with
+   no desktop-side guard (`.pane`, `.settings-table tr`, `.button`, and these two inputs), and
+   FR-016 is the requirement it maps to: *"Control sizes and input sizes MUST be unchanged on a
+   mouse-operated pointer."* **No task in this milestone asserts FR-016 at all.** One sweep —
+   for each selector the coarse block names, the base rule must not set the property the block
+   sets to the same value — would cover all four at once. It has no task; it is either a T016-
+   adjacent addition or a fix-lane item, and it is the largest hole this phase leaves.
+2. **The commit message claims a behaviour change on a device nothing here has.** Third in a
+   row: iteration 7's one-column collapse, iteration 10's target sizes, and now every text input
+   on a phone. Green means the declaration exists in the right block below the rules it
+   overrides. Whether a 16px mono field in a 390px viewport still fits the working-directory
+   paths it is asked to hold is not something this repository can find out. None of the three
+   open questions is about input scale, so `docs/mobile-open-questions.md` was not touched —
+   but the create form's `.field-input` is the widest content on the narrowest page, and that is
+   the nearest thing to a fourth question the milestone has produced.
+3. **`docs/components.md:311-316` shows a `.field-input` example with no note that its size is
+   now pointer-conditional** — the same shape as iteration 10's finding 4 about button geometry.
+   T016 is the task in that file; its scope is now *two* items larger than written (the pane's
+   scroll container, button/action-row geometry, and input scale).
