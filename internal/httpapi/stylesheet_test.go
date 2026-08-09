@@ -2462,8 +2462,17 @@ func TestTheSettingsMenuIsARowOnNarrowViewports(t *testing.T) {
 
 	narrow := blockFor(t, stylesheet(t), breakpointPrelude)
 
-	if list := ruleFor(t, narrow, ".settings-menu-list"); !regexp.MustCompile(`(?i)grid-auto-flow\s*:\s*column`).MatchString(list) {
-		t.Errorf("the section menu still flows as a column below the breakpoint, so seven links fill the phone's first screen and the panel starts under them: %q", list)
+	// This asserted `grid-auto-flow: column` until the operator read the page on a
+	// phone. That was Q3 of docs/mobile-open-questions.md, answered badly and
+	// exactly as the spec predicted: a scrolling row of seven chips in a 358px
+	// window shows two, and the rest need a swipe nothing advertises. It only
+	// showed in portrait, because a phone on its side is wider than this
+	// breakpoint and gets the sidebar instead.
+	//
+	// Wrapping is what stops a section being unreachable. The disclosure above it
+	// is what keeps the menu one line when it is not being used.
+	if list := ruleFor(t, narrow, ".settings-menu-list"); !regexp.MustCompile(`(?i)flex-wrap\s*:\s*wrap`).MatchString(list) {
+		t.Errorf("the section menu does not wrap below the breakpoint, so a section past the viewport's edge is reachable only by a horizontal swipe nothing advertises — the failure the operator reported: %q", list)
 	}
 
 	if menu := ruleFor(t, narrow, ".settings-menu"); !regexp.MustCompile(`(?i)position\s*:\s*static`).MatchString(menu) {
@@ -3184,5 +3193,47 @@ func TestTheSettingsTableCarriesItsOwnLayout(t *testing.T) {
 		if !strings.Contains(table, want) {
 			t.Errorf("the settings table's own rule no longer sets %s, and the .settings table rule that also set it has been deleted as redundant — so nothing sets it now: %q", want, table)
 		}
+	}
+}
+
+// TestTheSectionsCollapseToOneLine is the operator's other request in the same
+// report: the header was loose, and seven chips above a panel is most of why.
+//
+// The disclosure carries `open` in the markup deliberately. There is one markup
+// shape and no script, so a <details> is open everywhere or closed everywhere —
+// and closed-by-default would need CSS to force it open above the breakpoint,
+// which browsers now resist with content-visibility on ::details-content rather
+// than a display a rule could beat. Open, with the summary hidden on a desktop,
+// needs no override: the sidebar is what it always was.
+//
+// **Must fail when** the summary is rendered on a desktop, where there is
+// nothing to disclose and it becomes a control that collapses a sidebar with
+// room to spare — or when it stops being shown on a phone, which is the whole
+// affordance.
+func TestTheSectionsCollapseToOneLine(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+
+	if base := ruleFor(t, source, ".settings-sections-summary"); !regexp.MustCompile(`(?i)display\s*:\s*none`).MatchString(base) {
+		t.Errorf("the sections summary renders above the breakpoint, where the sidebar already shows every section: %q", base)
+	}
+
+	narrow := blockFor(t, source, breakpointPrelude)
+	if s := ruleFor(t, narrow, ".settings-sections-summary"); !regexp.MustCompile(`(?i)display\s*:\s*block`).MatchString(s) {
+		t.Errorf("the sections summary stays hidden below the breakpoint, so there is no way to collapse the menu and nothing was tightened: %q", s)
+	}
+
+	// The markup half. A disclosure that is not open renders a desktop with its
+	// sidebar shut, and no rule here can reopen it.
+	page, err := fs.ReadFile(web.Templates, "templates/settings.html")
+	if err != nil {
+		t.Fatalf("read the settings page: %v", err)
+	}
+	if !regexp.MustCompile(`<details[^>]*\bopen\b`).Match(page) {
+		t.Error("the sections disclosure does not carry `open`, so a desktop renders with its section list shut and CSS cannot reliably reopen it")
+	}
+	if !regexp.MustCompile(`(?s)<summary[^>]*settings-sections-summary`).Match(page) {
+		t.Error("the disclosure renders no summary, so it cannot be operated at all")
 	}
 }

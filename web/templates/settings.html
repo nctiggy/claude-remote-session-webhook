@@ -79,11 +79,25 @@
   
   aria-current marks where the operator is, which is the thing a highlight says
   visually and says to nobody otherwise.
+  The disclosure is open in the markup, and that is a decision rather than a
+  default. There is one markup shape and no script, so a <details> is either open
+  everywhere or closed everywhere — and closed-by-default would need CSS to force
+  it open on a desktop. Browsers now hide a closed disclosure's content with
+  `content-visibility` on ::details-content, which a `display` override does not
+  reliably beat. Open, with the summary hidden above the breakpoint, needs no
+  override at all: the desktop sees the sidebar it always had, and a phone gets a
+  control that collapses seven sections to one line.
+
+  The summary names the section being shown, so collapsed it still answers "where
+  am I" rather than only "there is a menu here".
 */}}<nav class="settings-menu" aria-label="Settings sections">
+<details class="settings-sections" open>
+<summary class="settings-sections-summary">{{ .Shown }}</summary>
 <ul class="settings-menu-list">
 <li><a class="settings-menu-link" href="/settings?section=Updates"{{ if eq .Shown "Updates" }} aria-current="page"{{ end }}>Updates</a></li>
 {{ range .Sections }}<li><a class="settings-menu-link" href="/settings?section={{ .Title }}"{{ if eq $.Shown .Title }} aria-current="page"{{ end }}>{{ .Title }}</a></li>
 {{ end }}</ul>
+</details>
 </nav>
 
 <div class="settings-panel">

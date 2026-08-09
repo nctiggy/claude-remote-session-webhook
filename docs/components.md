@@ -106,13 +106,15 @@ state and nowhere else, and a table of values is content being read.
 
 #### The section menu
 
-A bar beside the panel on a desktop; one scrolling row of the same links on a
+A bar beside the panel on a desktop; a collapsible disclosure of the same links on a
 phone.
 
 | Class | What it is |
 |---|---|
 | `.settings-menu` | The `<nav>`. A surface and a border, so an edge says "this is the index, that is the content" before any text is read. `position: sticky` above the breakpoint, `static` below it |
-| `.settings-menu-list` | The sections. A column beside the panel; `grid-auto-flow: column` below the breakpoint |
+| `.settings-menu-list` | The sections. A column beside the panel; a wrapping row below the breakpoint, so no section sits off screen |
+| `.settings-sections` | The `<details>` the list sits in. Carries `open` in the markup — one markup shape and no script means it is open everywhere or closed everywhere, and closed-by-default would need CSS to reopen it on a desktop, which `content-visibility` on `::details-content` resists |
+| `.settings-sections-summary` | The disclosure's control, naming the section being shown so it answers "where am I" while collapsed. Hidden above the breakpoint, where the sidebar has room for all seven |
 | `.settings-menu-link` | One section — a real `<a>` to `/settings?section=…`, carrying `aria-current="page"` when it is the one being shown |
 | `.settings-panel` | What the chosen section renders into, and the element that pans when a table is wider than the viewport — deliberately not the wrapper that holds the menu as well |
 
