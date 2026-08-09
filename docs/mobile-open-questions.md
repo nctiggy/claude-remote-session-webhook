@@ -36,7 +36,23 @@ open is **correct and expected**.
 
 ## Q1 — Does the wrapped pane read acceptably against Claude Code's real TUI chrome?
 
-**Status: UNANSWERED**
+**Status: ANSWERED — 2026-08-09, by the operator, on a phone with a live session.**
+
+> *"I think Claude renders ok in it."*
+
+Recorded with the hedge, because the hedge is part of the answer. This is "good
+enough to keep", not "no cost" — the cost was known and priced when the wrap
+shipped: Claude Code draws its chrome at full terminal width, so box borders and
+dividers wrap into a line plus a stub, and anything whose meaning is its alignment
+is misrepresented. What the answer settles is that reading what Claude said, which
+is the dominant task on a phone, is worth that.
+
+**The wrap stays.** The fallback below is not taken, and it remains one revert of
+two declarations if a later session changes the verdict.
+
+**What this does NOT settle**: whether an operator reaches for pinch-zoom often
+enough to want a wrap toggle (#121). That needs the wrap used in anger, not a
+first look. #121 is unblocked by this answer and is still not evidenced.
 
 Below 780px the pane wraps (`white-space: pre-wrap`, `overflow-wrap: anywhere`).
 This is a known trade, not a fix: Claude Code draws box borders, rules and dividers
