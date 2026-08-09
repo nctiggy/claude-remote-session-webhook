@@ -3238,3 +3238,80 @@ func TestTheSettingsMenuIsStillLinks(t *testing.T) {
 		}
 	}
 }
+
+// The four absences settings.html's header comment asserted, each paired with
+// what the markup under that comment actually renders.
+//
+// The pairing is the whole test. "There is no form here" is a fine thing for a
+// comment to say about a page that has no form, and this file was that page
+// once; what makes it a defect is a denial standing over a file that does the
+// opposite. So each claim is only read when its half of the page is present.
+//
+// The denials are the phrasings the false comment used, which is as far as a
+// regex can honestly go — "carries no token" would evade this and mean the same
+// thing. It catches the sentence coming back, not every way of writing it.
+var settingsHeaderClaims = []struct {
+	what    string
+	renders *regexp.Regexp
+	denies  *regexp.Regexp
+}{
+	{"a mutating form", regexp.MustCompile(`(?i)<form[^>]*method="post"`), regexp.MustCompile(`(?i)there is no form|\bno form (here|on this page|at all)\b`)},
+	{"the page token", regexp.MustCompile(`name="` + fieldPageToken + `"`), regexp.MustCompile(`(?i)\bno page token\b`)},
+	{"a control that submits one", regexp.MustCompile(`(?i)<button[^>]*type="submit"`), regexp.MustCompile(`(?i)\bno action row\b`)},
+	{"a live region", regexp.MustCompile(`(?i)\baria-live=`), regexp.MustCompile(`(?i)\bno live region\b`)},
+}
+
+// TestTheSettingsCommentDescribesThePage is the one assertion in this milestone
+// that is about a comment, and it is here because of what this pipeline is: a
+// fresh context reads the file's own account of itself before it reads the file.
+// This header stated that the page carries no form, no page token, no action row
+// and no live region, for a milestone after all four landed — an executor that
+// believed it would have "restored" the read-only page by deleting the operator's
+// only way to edit a setting from a browser, and the denial it would have trusted
+// was about whether a mutating form carries its token.
+//
+// Comments are stripped before a template renders and before every other sweep
+// in this file reads one, so nothing else here can ever see this class of defect.
+//
+// **Must fail when** the header denies something the markup beneath it does.
+func TestTheSettingsCommentDescribesThePage(t *testing.T) {
+	t.Parallel()
+
+	source, err := fs.ReadFile(web.Templates, "templates/settings.html")
+	if err != nil {
+		t.Fatalf("read the settings template: %v", err)
+	}
+
+	// The header comment is the one above the doctype. Splitting there rather
+	// than sweeping every comment in the file keeps the per-row and per-section
+	// notes out of it — several of them say "no token" truthfully, about the GET
+	// that checks for a release.
+	doctype := strings.Index(strings.ToLower(string(source)), "<!doctype")
+	if doctype < 0 {
+		t.Fatal("settings.html renders no doctype, so there was no line to split its header comment from its markup on")
+	}
+	header := templateComment.FindString(string(source)[:doctype])
+	if header == "" {
+		t.Fatal("settings.html carries no header comment above its doctype, so this read the page's own account of itself out of nothing")
+	}
+	// Unwrapped before anything is matched against it, because this comment is
+	// wrapped prose: "carries no page / token" is one sentence to a reader and two
+	// lines to a regex, and the claim would hide in the break. Proved by mutation
+	// — the false paragraph restored verbatim evades the token denial without it.
+	header = strings.Join(strings.Fields(header), " ")
+	markup := string(source)[doctype:]
+
+	present := 0
+	for _, claim := range settingsHeaderClaims {
+		if !claim.renders.MatchString(markup) {
+			continue
+		}
+		present++
+		if denial := claim.denies.FindString(header); denial != "" {
+			t.Errorf("settings.html renders %s and its header comment says %q; the next fresh context reads that comment as the contract and acts on it", claim.what, denial)
+		}
+	}
+	if present == 0 {
+		t.Fatal("settings.html renders no form, no token, no submit control and no live region, so every denial above was read against nothing; if the page really did become read-only again, this test and that comment are rewritten together")
+	}
+}
