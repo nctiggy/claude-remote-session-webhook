@@ -2523,3 +2523,78 @@ func TestTheCurrentSectionIsNotColourAlone(t *testing.T) {
 		t.Error("the current section is styled at one width only; below the breakpoint the menu is a row, and the desktop's start-edge bar reads there as a divider between chips rather than a mark on one")
 	}
 }
+
+// TestSettingRowsStackOnNarrowViewports is the second half of the reported
+// surface: the panel the menu now gets out of the way of.
+//
+// A settings row is key, value and source. Three columns do not fit ~358px, and
+// the row that makes it matter is the editable one — .setting-form carries a
+// minimum-width input and a Save button, so the row an operator came to change
+// is the widest one on the page and changing it means typing inside a
+// horizontal pan. Stacked, the input and its button have the whole width.
+//
+// Both declarations are asserted because either alone leaves the page in a
+// state nobody chose: rows that stack while the headers still occupy a row of
+// their own, or headers clipped away from a table that is still three columns.
+//
+// **Must fail when** the rows stay three columns, which is the page as
+// reported.
+func TestSettingRowsStackOnNarrowViewports(t *testing.T) {
+	t.Parallel()
+
+	narrow := blockFor(t, stylesheet(t), breakpointPrelude)
+
+	if row := ruleFor(t, narrow, ".settings-table tr"); !regexp.MustCompile(`(?i)display\s*:\s*grid`).MatchString(row) {
+		t.Errorf("a setting row is still laid out as a table row below the breakpoint, so key, value and Save button share ~358px and editing a setting means typing inside a horizontal pan: %q", row)
+	}
+
+	if head := ruleFor(t, narrow, ".settings-table thead"); !regexp.MustCompile(`(?i)clip-path\s*:`).MatchString(head) {
+		t.Errorf("the column headers are still laid out below the breakpoint, where each row is a stack and a header row above it labels nothing: %q", head)
+	}
+}
+
+// TestTheHeadersAreHiddenAccessiblyNotRemoved is the constraint on *how* the
+// headers go away, and it is the half a reader cannot see.
+//
+// Stacking takes a value away from its column, so the column name is carried by
+// the th alone — and the reader with the least other context for a bare
+// `default` sitting under a value is exactly the one a screen reader is
+// narrating to. `clip-path: inset(50%)` collapses the element on screen and
+// leaves it in the accessibility tree. `display: none` and `visibility: hidden`
+// look identical to a sighted operator and take the name away from that reader
+// entirely; they are the same defect in two spellings, which is why both are
+// swept rather than the one the contract names.
+//
+// The recipe is also load-bearing for a reason that is not accessibility: the
+// conventional visually-hidden block sizes the element in absolute lengths, and
+// TestNoRuleCarriesAValueThatBelongsInAToken fails a literal length inside a
+// media query as readily as outside one. A percentage is not on its unit list.
+//
+// **Must fail when** the headers are removed from the accessibility tree rather
+// than clipped, which is the failure the recipe exists to avoid.
+func TestTheHeadersAreHiddenAccessiblyNotRemoved(t *testing.T) {
+	t.Parallel()
+
+	var swept int
+	for _, rule := range cssRules(stylesheet(t)) {
+		for _, one := range strings.Split(rule.selector, ",") {
+			if strings.TrimSpace(one) != ".settings-table thead" {
+				continue
+			}
+			swept++
+
+			if !strings.Contains(rule.body, "clip-path:") {
+				t.Errorf(".settings-table thead is hidden by some other means than clipping: %q", rule.body)
+			}
+			for _, gone := range []string{`display\s*:\s*none`, `visibility\s*:\s*hidden`} {
+				if regexp.MustCompile(`(?i)` + gone).MatchString(rule.body) {
+					t.Errorf(".settings-table thead carries a declaration matching %s, which takes the column name out of the accessibility tree as well as off the screen — a stacked value then reads to a screen reader as an unlabelled word: %q", gone, rule.body)
+				}
+			}
+		}
+	}
+
+	if swept == 0 {
+		t.Fatal("crswd.css hides no settings table header anywhere, so this asserted nothing about how they are hidden")
+	}
+}

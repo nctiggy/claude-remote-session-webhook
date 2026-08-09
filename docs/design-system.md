@@ -238,6 +238,9 @@ Everything inside `@media (max-width: 780px)`:
 | `.settings-menu-list` | `grid-auto-flow: column` + `justify-content: start` + `overflow-x: auto` | Stacked, seven sections are ~300px of links above the thing the operator opened the page to read |
 | `.settings-menu-link` | `white-space: nowrap` | A chip that wraps is two rows of one entry |
 | `.settings-menu-link[aria-current="page"]` | marker moves to `border-block-end` | A start-edge bar reads as a divider between chips rather than a mark on one. Still a border as well as a colour |
+| `.settings-table thead` | `position: absolute` + `clip-path: inset(50%)` + `overflow: hidden` | Once a row is a stack there is no column for a header to head. Clipped rather than `display: none` so the column name stays in the accessibility tree — a stacked value has lost its column and the `th` is the only thing still carrying its name. `inset(50%)` is also the only spelling this file can afford: the conventional visually-hidden recipe sizes in absolute lengths, and the value sweep fails a literal length inside a media query too |
+| `.settings-table tr` | `display: grid` + `grid-template-columns: minmax(0, 1fr)` | Key, value and source do not fit ~358px. The editable row is why it matters rather than the width alone — its input and Save button make it the widest row on the page, so changing a setting meant typing inside a horizontal pan |
+| `.settings-table th`, `.settings-table td` | `overflow-wrap: anywhere` | A config key is one unbroken token with no column beside it left to give way |
 
 **Adding a rule to that block adds a row to this table, in the same commit.** An
 enumeration that has gone stale is worse than no enumeration — this table already

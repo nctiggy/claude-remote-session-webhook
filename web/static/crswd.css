@@ -1513,6 +1513,44 @@ body {
     border-inline-start: none;
     border-block-end: var(--edge-width) solid var(--edge-bright);
   }
+
+  /* Key, value and source stop being three columns and become three lines.
+
+     Width alone would not be enough to justify it — a narrow table can scroll.
+     The editable row is the reason: .setting-form carries a minimum-width input
+     and a Save button beside it, so a row an operator can actually change is
+     wider than the rest and changing a setting means typing inside a horizontal
+     pan. Stacked, the input and its button have the row's whole width.
+
+     Each cell keeps its scope attribute and its reading order, so what a screen
+     reader announces does not change; only how many of them fit on a line does.
+
+     The headers are hidden accessibly rather than removed. inset(50%) clips the
+     element away while leaving it in the accessibility tree, so a th still has
+     the column name a stacked value has lost — which matters most to the reader
+     with the least other context for a bare word sitting under a value.
+     display: none would take it from them. It is also the spelling this
+     stylesheet can afford: the conventional visually-hidden recipe sizes the
+     element in absolute lengths, and a length outside the token block fails the
+     value sweep inside a media query as readily as anywhere else. A percentage
+     is not a length the sweep tokenises. */
+  .settings-table thead {
+    position: absolute;
+    clip-path: inset(50%);
+    overflow: hidden;
+  }
+
+  .settings-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* A config key is one unbroken token and there is no longer a column beside
+     it to give way, so it breaks rather than widening the row it is in. */
+  .settings-table th,
+  .settings-table td {
+    overflow-wrap: anywhere;
+  }
 }
 
 /* The hidden attribute has to win (#77).
