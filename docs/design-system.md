@@ -234,18 +234,31 @@ Everything inside `@media (max-width: 780px)`:
 | `.brand-tag` | hidden | The tagline is the first thing that is decoration, not information |
 | `.settings` | one column | The section menu goes above its panel rather than beside it |
 | `.pane` | `white-space: pre-wrap` + `overflow-wrap: anywhere` | 80 columns through a 44-character window is a pan per line. The trade is described under Typography; the base rule keeps `pre` |
+| `.settings-menu` | `position: static` | Sticky has no travel room in a one-column grid, so it does nothing — said rather than left to lapse |
+| `.settings-menu-list` | `grid-auto-flow: column` + `justify-content: start` + `overflow-x: auto` | Stacked, seven sections are ~300px of links above the thing the operator opened the page to read |
+| `.settings-menu-link` | `white-space: nowrap` | A chip that wraps is two rows of one entry |
+| `.settings-menu-link[aria-current="page"]` | marker moves to `border-block-end` | A start-edge bar reads as a divider between chips rather than a mark on one. Still a border as well as a colour |
 
 **Adding a rule to that block adds a row to this table, in the same commit.** An
 enumeration that has gone stale is worse than no enumeration — this table already
 said "two effects" once while the block did four things.
 
-Two rules about how it is written:
+Three rules about how it is written:
 
 - **Additions go inside the existing block.** A second `@media` block fails the
   guard *even at an identical width* — it counts occurrences of a width feature, it
   does not compare them.
 - **Never range syntax** (`(width <= 780px)`). It slips past the guard's regex
   while doing exactly what the guard forbids, which is routing around a hook.
+- **The block sits after every rule it overrides**, which is why it is the last
+  thing in the stylesheet before `[hidden]`. A media query adds no specificity, so
+  `.settings` inside it and `.settings` at the top level are a tie broken by source
+  order alone. The block spent milestone 6 declared *above* the settings rules,
+  where the one-column collapse parsed, passed every guard and lost to the
+  two-column rule 250 lines further down — the settings page was never one column
+  on a phone. `TestTheBreakpointOverridesRatherThanPrecedes` now holds it, per
+  selector rather than per block, because the hazard is a base rule declared low
+  in the file rather than the block having moved.
 
 ### Pointer, not width, for touch
 

@@ -1055,46 +1055,6 @@ body {
   outline-offset: var(--focus-offset);
 }
 
-/* The single breakpoint: the summary drops to two columns and the tagline
-   hides. One operator, a laptop and a phone — two breakpoints would be one
-   more than either needs. */
-@media (max-width: 780px) {
-  .shell {
-    padding: var(--s4);
-  }
-
-  .summary {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .brand-tag {
-    display: none;
-  }
-
-  /* The settings menu goes above its panel rather than beside it. One column is
-     the only sensible arrangement for a menu and a table on a phone, and this
-     shares the stylesheet's single breakpoint rather than inventing a second —
-     docs/design-system.md gives it one. */
-  .settings {
-    grid-template-columns: 1fr;
-  }
-
-  /* 80 columns through a 44-character window is a horizontal pan per line, and
-     most of what a session prints is prose. Wrapping trades the alignment of
-     tables and TUI chrome for the ability to read a paragraph at all — a trade,
-     not a fix, and the one the pinch-zoom this page never clamps mitigates.
-     Safe because captures are right-trimmed — capture-pane carries no -N — so
-     blank padding does not wrap into a line of its own. `anywhere` rather than
-     `break-word` because an unbroken run is what a real terminal breaks at its
-     column edge, and because `break-word` leaves the run overflowing until the
-     line has something else on it. */
-  .pane {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-}
-
 /* Removed entirely rather than slowed: the canvas leaves the layout, so the
    shared animation loop finds nothing to draw into and the message the rain sat
    behind is all that remains. */
@@ -1464,6 +1424,95 @@ body {
    as though it were one of them. */
 .check-line {
   margin-block: 0 var(--s5);
+}
+
+/* The single breakpoint. One operator, a laptop and a phone — two breakpoints
+   would be one more than either needs.
+
+   What it changes is enumerated in docs/design-system.md and deliberately not
+   here. The same list in two places is how the copy nobody has an obligation to
+   keep current goes stale, and this comment already had: it described two
+   effects while the block did five.
+
+   It sits at the end of the file, after every rule it overrides, and that is
+   load-bearing rather than tidy. A media query adds no specificity, so
+   `.settings` in here and `.settings` below are a tie broken by source order
+   alone. This block used to sit above the settings rules, where the one-column
+   collapse parsed, passed every guard, and lost to the two-column rule 250
+   lines further down — the settings page has never been one column on a phone,
+   which is the surface the operator reported as the worst of it. Anything added
+   here must stay below what it overrides;
+   TestTheBreakpointOverridesRatherThanPrecedes holds that. */
+@media (max-width: 780px) {
+  .shell {
+    padding: var(--s4);
+  }
+
+  .summary {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .brand-tag {
+    display: none;
+  }
+
+  /* The settings menu goes above its panel rather than beside it. One column is
+     the only sensible arrangement for a menu and a table on a phone, and this
+     shares the stylesheet's single breakpoint rather than inventing a second —
+     docs/design-system.md gives it one. */
+  .settings {
+    grid-template-columns: 1fr;
+  }
+
+  /* 80 columns through a 44-character window is a horizontal pan per line, and
+     most of what a session prints is prose. Wrapping trades the alignment of
+     tables and TUI chrome for the ability to read a paragraph at all — a trade,
+     not a fix, and the one the pinch-zoom this page never clamps mitigates.
+     Safe because captures are right-trimmed — capture-pane carries no -N — so
+     blank padding does not wrap into a line of its own. `anywhere` rather than
+     `break-word` because an unbroken run is what a real terminal breaks at its
+     column edge, and because `break-word` leaves the run overflowing until the
+     line has something else on it. */
+  .pane {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* The menu becomes one scrolling row so the panel starts on the first screen.
+     Stacked, seven entries are about 300px of links above the thing the
+     operator came to read, and every section is a fresh GET landing at the top
+     — so choosing one means scrolling past the whole menu again to see what it
+     did.
+
+     Same markup, same real links, same aria-current: a phone gets a different
+     shape, not a different mechanism.
+
+     Sticky is dropped rather than left to lapse. In a one-column grid the
+     menu's area is its own height, so it has no travel room and sticky does
+     nothing — saying static is better than relying on that geometry to keep
+     being true. */
+  .settings-menu {
+    position: static;
+  }
+
+  .settings-menu-list {
+    grid-auto-flow: column;
+    justify-content: start;
+    overflow-x: auto;
+  }
+
+  .settings-menu-link {
+    white-space: nowrap;
+  }
+
+  /* A start-edge bar reads as a divider between chips rather than a mark on
+     one, so the marker moves to the bottom edge. Still a border as well as a
+     colour — never hue alone. */
+  .settings-menu-link[aria-current="page"] {
+    border-inline-start: none;
+    border-block-end: var(--edge-width) solid var(--edge-bright);
+  }
 }
 
 /* The hidden attribute has to win (#77).

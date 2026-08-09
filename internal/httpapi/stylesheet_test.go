@@ -2360,3 +2360,166 @@ func TestWideSettingsPanTheirOwnPanel(t *testing.T) {
 		t.Fatal("crswd.css has no .settings wrapper rule at all, so the half of this test that matters asserted nothing")
 	}
 }
+
+// breakpointPrelude is the stylesheet's one width query, spelled as the file
+// spells it. TestTheDashboardHasExactlyOneBreakpoint is what holds that there is
+// only one of these to find.
+const breakpointPrelude = "@media (max-width: 780px)"
+
+// ruleFor is blockFor's exact-match sibling: the body of the rule whose selector
+// list contains selector *exactly*, rather than the first block whose prelude
+// merely contains it as a substring.
+//
+// The settings page is why it exists. `.settings` is a prefix of `.settings
+// table`, `.settings-menu` and `.settings-panel`; `.settings-menu` is a prefix
+// of both `.settings-menu-list` and `.settings-menu-link`. A substring search
+// therefore returns whichever of them the file happens to declare first, which
+// is a positional bet that has already changed answer once in this milestone.
+func ruleFor(t *testing.T, source, selector string) string {
+	t.Helper()
+
+	for _, rule := range cssRules(source) {
+		for _, one := range strings.Split(rule.selector, ",") {
+			if strings.TrimSpace(one) == selector {
+				return rule.body
+			}
+		}
+	}
+	t.Fatalf("crswd.css declares no rule whose selector is exactly %s", selector)
+	return ""
+}
+
+// TestTheBreakpointOverridesRatherThanPrecedes is the offset assertion the width
+// query needed and did not have.
+//
+// A media query adds no specificity. `.settings` inside the breakpoint and
+// `.settings` at the top level are a tie, and a tie is broken by source order
+// alone — so a width rule declared above the rule it is meant to override
+// parses, passes every other guard in this file, and does nothing. That is not
+// hypothetical: this block sat above the settings rules for the whole of
+// milestone 6, where `grid-template-columns: 1fr` lost to the two-column
+// declaration 250 lines below it and the settings page was never one column on
+// a phone.
+//
+// It is asserted structurally rather than as "the block is last", because what
+// matters is not the position of the block but the position of each selector it
+// names. A future rule for a component declared even further down the file
+// would break this while the block itself had not moved.
+//
+// **Must fail when** a width-conditional rule is added for a selector whose
+// base rule is declared below the breakpoint, which is a rule with no effect
+// wearing a stylesheet.
+func TestTheBreakpointOverridesRatherThanPrecedes(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+	// The body is a long unique substring, so finding it again is enough to say
+	// where the block ends without counting braces a second time.
+	body := blockFor(t, source, breakpointPrelude)
+	after := source[strings.Index(source, body)+len(body):]
+
+	inside := make(map[string]bool)
+	for _, rule := range cssRules(body) {
+		for _, one := range strings.Split(rule.selector, ",") {
+			if selector := strings.TrimSpace(one); selector != "" {
+				inside[selector] = true
+			}
+		}
+	}
+	if len(inside) == 0 {
+		t.Fatal("the width breakpoint declares no rule at all, so this asserted nothing about the order of anything")
+	}
+
+	for _, rule := range cssRules(after) {
+		for _, one := range strings.Split(rule.selector, ",") {
+			selector := strings.TrimSpace(one)
+			if !inside[selector] {
+				continue
+			}
+			t.Errorf("%s is declared again below the width breakpoint, so at equal specificity the later rule wins and the narrow one has no effect on a phone: %q", selector, rule.body)
+		}
+	}
+}
+
+// TestTheSettingsMenuIsARowOnNarrowViewports is the reported surface, and it is
+// the first screen of it.
+//
+// At one column the seven-entry menu stacks above the panel and takes roughly
+// 300px — the whole first screen of a phone. Every section is a fresh GET
+// landing at the top, so choosing one means scrolling past the entire menu again
+// to read what it did. Flowed as a row the menu is one line and the panel starts
+// where the operator is already looking.
+//
+// `position: static` is asserted alongside the flow because sticky is what the
+// menu carries at every other width, and a sticky element in a one-column grid
+// has no travel room: it does nothing, silently, for as long as that geometry
+// holds and then surprises somebody when it stops holding.
+//
+// **Must fail when** the menu keeps stacking, so the panel still starts below a
+// full screen of links.
+func TestTheSettingsMenuIsARowOnNarrowViewports(t *testing.T) {
+	t.Parallel()
+
+	narrow := blockFor(t, stylesheet(t), breakpointPrelude)
+
+	if list := ruleFor(t, narrow, ".settings-menu-list"); !regexp.MustCompile(`(?i)grid-auto-flow\s*:\s*column`).MatchString(list) {
+		t.Errorf("the section menu still flows as a column below the breakpoint, so seven links fill the phone's first screen and the panel starts under them: %q", list)
+	}
+
+	if menu := ruleFor(t, narrow, ".settings-menu"); !regexp.MustCompile(`(?i)position\s*:\s*static`).MatchString(menu) {
+		t.Errorf("the section menu keeps its sticky position below the breakpoint, where a one-column grid gives it no travel room, so it is a declaration that does nothing and reads as though it does: %q", menu)
+	}
+}
+
+// currentSectionBorder is a declaration that draws an edge, with its value.
+// Grouped rather than matched whole because the value is the point: an edge set
+// to `none` is the marker being taken away, not given.
+var currentSectionBorder = regexp.MustCompile(`(?i)(border[a-z-]*)\s*:\s*([^;}]+)`)
+
+// TestTheCurrentSectionIsNotColourAlone is the design system's fifth
+// non-negotiable read at the one control this task reshapes.
+//
+// The marker moves edges below the breakpoint — a start-edge bar reads as a
+// divider between chips once the menu is a row — and moving it is exactly when
+// it can be dropped instead. The narrow override spells `border-inline-start:
+// none` to clear the desktop bar, and a hand that stopped there would leave the
+// current section marked by its text colour and nothing else.
+//
+// Every rule for the selector is swept, at both widths, because the failure is
+// not that the marker is missing everywhere: it is that it is present at the
+// width nobody tests on and absent at the width this milestone exists for.
+// border-radius is excluded — it rounds a corner and draws no edge.
+//
+// **Must fail when** the narrow override clears the desktop bar without putting
+// a bottom one in its place.
+func TestTheCurrentSectionIsNotColourAlone(t *testing.T) {
+	t.Parallel()
+
+	var swept int
+	for _, rule := range cssRules(stylesheet(t)) {
+		if !strings.Contains(rule.selector, ".settings-menu-link") || !strings.Contains(rule.selector, "[aria-current") {
+			continue
+		}
+		swept++
+
+		var marked bool
+		for _, decl := range currentSectionBorder.FindAllStringSubmatch(rule.body, -1) {
+			if strings.Contains(decl[1], "radius") {
+				continue
+			}
+			if strings.TrimSpace(decl[2]) != "none" {
+				marked = true
+			}
+		}
+		if !marked {
+			t.Errorf("%s marks the operator's place with colour and nothing else, which is the one thing docs/design-system.md says a state may never be: %q", rule.selector, rule.body)
+		}
+	}
+
+	switch swept {
+	case 0:
+		t.Fatal("crswd.css styles no current section at all, so aria-current is the only thing saying where the operator is and it says it to nobody looking at the screen")
+	case 1:
+		t.Error("the current section is styled at one width only; below the breakpoint the menu is a row, and the desktop's start-edge bar reads there as a divider between chips rather than a mark on one")
+	}
+}

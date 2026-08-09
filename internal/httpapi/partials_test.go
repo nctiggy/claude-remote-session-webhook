@@ -3180,3 +3180,61 @@ func TestEveryPageShowsTheVersion(t *testing.T) {
 		t.Error("the header does not call the version function; a hardcoded string renders perfectly and is wrong from the next release onward")
 	}
 }
+
+// settingsMenuElement is the settings page's section index, matched as the
+// element rather than by its links, so what the assertions below read is the
+// menu and never a control that happens to sit elsewhere on the page.
+var settingsMenuElement = regexp.MustCompile(`(?s)<nav class="settings-menu"[^>]*>(.*?)</nav>`)
+
+// TestTheSettingsMenuIsStillLinks is the mechanism the phone layout is not
+// allowed to trade away.
+//
+// Below the breakpoint the menu is restyled into a scrolling row, and a row of
+// choices is precisely the shape somebody reaches for a <select> or a <details>
+// to build. Each of those was argued and priced in research.md R8 and rejected:
+// a real link is a GET this daemon answers, so the menu works with no script at
+// all, a section can be linked to and bookmarked, and the back button behaves.
+// The reflow is CSS over the markup that already exists — a different shape, not
+// a different mechanism.
+//
+// It lives here rather than beside the two stylesheet assertions this task also
+// ships, because it reads rendered markup and that is the division this file and
+// stylesheet_test.go are split on.
+//
+// **Must fail when** the menu is rebuilt as a control that needs JavaScript,
+// which is what SC-009 is about and what no stylesheet assertion can see.
+func TestTheSettingsMenuIsStillLinks(t *testing.T) {
+	t.Parallel()
+
+	page := renderComponent(t, "settings", settingsView{
+		Operator: &access.VerifiedOperator{Email: "operator@example.com"},
+		Shown:    "Limits",
+		Sections: []settingSection{
+			{Title: "Listening", Settings: []settingRow{{Key: "listen", Value: loopbackListen, Source: "default"}}},
+			{Title: "Limits", Settings: []settingRow{{Key: "max_sessions", Value: "4", Source: "file"}}},
+		},
+	})
+
+	match := settingsMenuElement.FindStringSubmatch(page)
+	if match == nil {
+		t.Fatalf("the settings page renders no section menu at all, so this asserted nothing about what the menu is made of:\n%s", page)
+	}
+	menu := match[1]
+
+	// Updates is rendered outside the range over .Sections, so it is the entry a
+	// menu rebuilt from that loop alone would quietly drop.
+	for _, title := range []string{"Updates", "Listening", "Limits"} {
+		if _, ok := anchorTo(menu, settingsPath+"?section="+title); !ok {
+			t.Errorf("the menu offers no link to the %s section, so reaching it needs either a script or a typed address:\n%s", title, menu)
+		}
+	}
+
+	// A button is in this list with the scripted controls: inside a menu it is
+	// either a form's submit or something only a script can act on, and a section
+	// entry is meant to be neither.
+	for _, scripted := range []string{"<select", "<form", "<button", "onclick", "onchange"} {
+		if strings.Contains(menu, scripted) {
+			t.Errorf("the section menu renders %s, which needs a script or a POST where the page promises a bookmarkable GET per section that works with no JavaScript (SC-009):\n%s", scripted, menu)
+		}
+	}
+}
