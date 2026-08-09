@@ -193,3 +193,70 @@ separate pattern rather than a verb on this path. Comment-only; no executable ch
   enables does not include this. Pre-existing and unrelated to T002 — but `AGENTS.md`
   lists `gofmt -w .` as the format command, so the next iteration that runs it as
   written will produce an unrelated diff in a file it did not touch.
+
+---
+
+## Iteration 3 — 2026-08-09
+
+**Did:** T003 (#118). `TestTheStylesheetStylesNoElementTheMarkupNeverRenders` in
+`internal/httpapi/stylesheet_test.go` holds every element a rule names to a template
+that opens one. Only that test file changed — **nothing was deleted**, because the
+sweep is green against the stylesheet as it stands.
+
+**Learned:**
+
+- **It found nothing, and that is the correct outcome, not a weak test.** The
+  stylesheet names exactly twelve elements — `body dd dt form html li p summary td th
+  thead tr` — and the templates open all twelve. `.settings caption`, the case the
+  issue was written from, was already deleted by milestone 7's T015; what survived T015
+  (`.settings p`, `.settings th, td`) is load-bearing. So the warning in the plan about
+  the task growing did not fire. **The guard is the deliverable here, not a cleanup.**
+- **Type selectors have to be read at the head of a compound, never anywhere in the
+  selector.** `.card-meta` and `#action-toast` are spelled with letters too, and a sweep
+  matching anywhere reports `card`, `meta` and `action` as elements no template renders
+  — three false failures on the first run. Strip attribute selectors, then pseudos, then
+  split on `[\s>+~,]+`, then take `^[a-zA-Z][\w-]*` of each part.
+- **`@keyframes` needs no special reader beyond skipping the at-rule.** `cssRules` cuts
+  at the *first* `{`, so the chunk's selector is `@keyframes spin` and `to {` lands in
+  its body. `from`/`to`/percentages therefore never reach the element sweep at all.
+  `mediaOpen` has already removed the `@media` preludes by then.
+- **Two ways this reader can go blind, and both had to be made loud.** A pseudo carrying
+  a selector list — `:is()`, `:not()`, `:where()`, `:has()` — hides every element inside
+  it from a reader that strips pseudos by name; there is none in this stylesheet, and
+  one appearing now fails the test outright instead of silently narrowing it. And a
+  reader that regressed to only the head of each selector would still find `html` and
+  `body` and still run green, which is why finding *no* element below a class is fatal:
+  the descendant position is the entire case #118 is about.
+- **Breaking it is what separates the two halves.** Appending `.settings caption` fails
+  the new test and leaves `TestTheStylesheetAndTheMarkupNameTheSameThings` **green** —
+  that green is the hole, demonstrated rather than asserted. Note `git checkout --` is
+  not an approved command in this harness; revert a scratch edit to `crswd.css` with the
+  Edit tool instead, and check `git status --short` before committing.
+
+**Left:** T004 (#119), T005 (#123).
+
+**Findings (noticed, not fixed — no code changed for any of these):**
+
+- **The element sweep has no third direction either, and the reason is not the same as
+  the class sweep's.** `docs/design-system.md` names no element selectors at all, so
+  there is nothing to hold `.settings thead th` to the way `documentedComponentClass`
+  holds `.combo*`. That is arguably fine — element rules are layout defaults, not
+  components — but it means the twelve elements above are a vocabulary no document
+  mentions.
+- **`renderedElements` counts an element as rendered anywhere in the tree, not under the
+  class the rule scopes it to.** `.settings td` passes because *some* template opens a
+  `<td>`; it does not check that `settings.html` does. Tightening that means resolving
+  which partials compose into which page, which is real work and a different guard.
+  Worth an issue if a scoped-but-dead rule ever shows up — it would pass this sweep.
+- **`web/templates/settings.html` is the file the rendered map names for almost every
+  element**, purely because it is walked late and last write wins. The map's value is
+  "a template that opens one", not "the only one" — do not read a failure message as
+  naming the sole renderer.
+- **Still open from iteration 2, none of it addressed here:** `docs/security.md` lines
+  216 and 233–237 and `internal/httpapi/server.go:571–577` still say no browser route
+  writes the operator's config, and `POST /settings/edit` does. The security document is
+  binding under Principle I, so a planner reading it will conclude the write does not
+  exist. **This wants an issue and a reviewed change of its own.**
+- **`gofmt -l ./...` is still not clean on `main`** (`internal/httpapi/render.go`,
+  import order). Unchanged by this iteration; `gofmt -l` on the one file T003 touched is
+  clean, and `golangci-lint run` (v2.12.2) reports 0 issues.
