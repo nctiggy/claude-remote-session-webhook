@@ -90,7 +90,7 @@ reasonable control to offer rather than a foot-gun.
 
 ## Tasks
 
-- [ ] **T001** Add a way to ask whether a config key is a boolean, in `internal/config/`. The two keys are `discover_roots` and `destroy_on_shutdown` — derive them from the `loadBool` call sites rather than hand-listing them somewhere that can drift, if that is reachable; otherwise list them next to `IsSecret`'s list and say why. Test that both are reported boolean, that a secret is not, and that an unknown key is not.
+- [x] **T001** Add a way to ask whether a config key is a boolean, in `internal/config/`. The two keys are `discover_roots` and `destroy_on_shutdown` — derive them from the `loadBool` call sites rather than hand-listing them somewhere that can drift, if that is reachable; otherwise list them next to `IsSecret`'s list and say why. Test that both are reported boolean, that a secret is not, and that an unknown key is not.
 
 - [ ] **T002** 🔒 Teach `internal/httpapi/settings_edit.go` that a boolean key's absent value means `false`. **Only for keys T001 reports as boolean.** A missing value for any other key must behave exactly as it does today. Test both halves: an unchecked boolean saves `false`, and a non-boolean with no value is still refused. **The second test is the security-relevant one** — without it, a truncated request clears a setting.
 
