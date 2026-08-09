@@ -335,3 +335,89 @@ already refuses without either.
   (`wired()` and `restartable()`), on a type named for the update. That is the right
   shape today and worth watching: a third route wanting only one collaborator is the
   point at which the field should be split rather than the predicates multiplied.
+
+---
+
+## Iteration 5 — 2026-08-09 22:21 — T005
+
+**Did:** The Updates section of `web/templates/settings.html` now carries the restart
+form — page token, `confirm=yes`, a plain `.button`, and an `.update-caution`
+sentence saying sessions survive it and why. Three tests in `settings_test.go`; every
+assertion shown failing first.
+
+**Learned:**
+
+- **The restart form deliberately carries no class, and T006 has to know that before
+  it opens `crswd.js`.** T006 says to widen `form.matches('.update-form')` — there is
+  no second class to widen it *to*, because "introduce no new class" is the plan's own
+  constraint and `.update-form` is the form above's name rather than a shape either
+  form may wear. **The honest hook is the action**, which the submit handler already
+  reads one line earlier (`getAttribute('action')?.startsWith('/dashboard/')`):
+  `form.matches('.update-form, [action="/dashboard/restart"]')` is one widened match
+  rather than a duplicated branch, and it keys the special case on the thing that
+  actually makes it special — the route that is about to stop answering — instead of
+  on a layout class. Note that `TestTheUpdateDoesNotBecomeAToast` asserts the literal
+  string `form.matches('.update-form')`, so widening the selector fails that test until
+  it is updated, which is T006's own instruction arriving as a red test.
+- **The control renders whether or not a check has happened**, which is a claim and not
+  an oversight: a restart has nothing to do with a release feed, and an operator
+  restarting a wedged daemon on a host with no network must not be made to ask GitHub a
+  question first. `TestSettingsOffersTheRestart` reads the *unchecked* section, so
+  nesting the form inside `{{ if and .Checked .Available }}` fails — shown.
+- **The end-to-end test is the one worth copying.** `restartDoor` can serve `GET
+  /settings` and then post its own rendered form back to itself, so the token is real
+  rather than minted by a second fixture. That closes the gap between "the markup looks
+  right" and "the handler accepts it", which is the gap milestone 4 shipped three green
+  tasks across. Two mutations proved it independently of the markup assertions: no
+  confirming step → the route answers 303 to the refusal, no token → the gate answers
+  403.
+- **A test that renders a page before posting cannot use `d.record`/`d.only`** — the
+  GET leaves a record of its own, so those assert 1 and find 2. Assert the exit counter
+  and the answer instead.
+- **Two documents said "Two routes receive them"** — settings.html's header comment and
+  `docs/components.md`'s "The settings page" — and this task makes three. Both updated
+  in the same commit. `TestTheSettingsCommentDescribesThePage` would not have caught
+  either: it sweeps four *denials* ("no form", "no page token", "no action row", "no
+  live region") and a stale count is none of them.
+- **`golangci-lint` is 2.12.2 here** — checked again per #26; 0 issues. `go vet` under
+  all three build tags compiles clean, and `-tags dev` passes. No file in `cmd/crswd`
+  mentions the settings page or the restart route, so the quickstart suite is untouched.
+
+**Left:** T006 only — the restart taking the update's JS branch so the page waits out
+the daemon instead of dropping the answer into a toast. The two fixes iteration 4 left
+for it still stand: the ceiling message says "has not answered since it began installing
+X", which is false for a restart, and the poll's first tick is at 1s against an exit at
+250ms.
+
+**Findings:**
+
+- **The waiting block does not say what to do, and two comments claim it does.**
+  settings.html's comment over that block says "the sentence says what to do", and
+  `update.go`'s says "it says to reload in a moment". What the block actually renders is
+  a spinner and either `Restarting…` or `Installing X…`, and nothing else. So a
+  scriptless operator presses Restart, lands on `/dashboard/restart` — a POST-only path,
+  where a reload is a 404 — and sits in front of a spinner that will never resolve
+  because nothing is polling. **This is the exact shape #119 exists for**: a comment
+  denying, or in this case asserting, what the markup beneath it does. It is
+  pre-existing (the update has had it since milestone 6) and outside a template-only
+  task under AR-008. **The honest fix** is one sentence in that block — "This page will
+  not update itself; reload in a moment" — plus deleting the two claims if it is not
+  added. T006 is already inside that copy for the ceiling message and is the natural
+  place for it.
+- **The restart form has no `data-submit-once`, and that is consistent rather than
+  missed.** The components doc puts the hook on the create form alone, because a second
+  create is a second unsandboxed shell while a second destroy finds no record. A second
+  restart is the same end state, so no hook — but it does write a second audit record
+  for one operator's one intent, within the 250ms grace window. Noted, not fixed.
+- **The restart form loses `.update-form`'s `gap: var(--s3)` between its button and its
+  sentence**, because it carries no class and there is no rule for a bare form in this
+  panel. It is a few pixels and no test can see it. **The honest fix is not a
+  `.restart-form`**: it is that the Updates section has two forms of one shape and the
+  shape is named after one of them. Renaming `.update-form` to something the section
+  owns touches the class sweep, the stylesheet and — until T006 lands — the script's
+  branch, which is three files for a spacing change and is why it is written here
+  instead.
+- The three findings from iteration 4 are all still open: the `registeredPatterns`
+  sweep does not name this route (nor the update, nor the settings edit), there is no
+  rate limit on it, and `update.go`'s "this handler does not return in production" is
+  stale.

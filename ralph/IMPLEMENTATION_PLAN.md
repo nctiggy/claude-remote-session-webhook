@@ -98,7 +98,7 @@ reasonable control to offer rather than a foot-gun.
 
 - [x] **T004** 🔒 Add `POST /dashboard/restart`, registered through `s.handleAction(...)` exactly as destroy and update are. Confirming field `confirm` must equal `yes` — reuse `fieldConfirm`/`confirmYes`. Audit action `dashboard.restart`, exactly one record. It calls the same `ExitForRestart()` the update uses, from a goroutine after `exitGrace`, for the reason written above that constant: exiting before the response flushes is what made an earlier update arrive as a Cloudflare 502. Test the confirming step, both cross-site halves independently, and that exactly one audit record is written.
 
-- [ ] **T005** Put a Restart control on the settings page, in the Updates section, reusing `.updating` and `.spinner`. It needs a confirming step in the markup and must say what it does — sessions survive a restart, and an operator who does not know that will not press it. **No new class.**
+- [x] **T005** Put a Restart control on the settings page, in the Updates section, reusing `.updating` and `.spinner`. It needs a confirming step in the markup and must say what it does — sessions survive a restart, and an operator who does not know that will not press it. **No new class.**
 
 - [ ] **T006** Make the restart wait out the daemon in `web/static/crswd.js`, reusing the update's path. The submit handler branches on `form.matches('.update-form')` at line ~1043; the restart form should take the same branch. Widen the match rather than duplicating the branch, and keep the ordering the existing test pins — the swap must precede the toast, or the toast wins and the special case is unreachable. Update `TestTheUpdateDoesNotBecomeAToast` or add its sibling so both forms are held to it.
 
