@@ -375,6 +375,22 @@ func settingsEverySection(t *testing.T, f *fleet) string {
 	return all.String()
 }
 
+// settingsChecked is the Updates section after the operator has pressed Check.
+//
+// The feed is not consulted on an ordinary render (#103's sequel): looking costs
+// a request to somebody else's API, and this page's first job is reporting local
+// configuration. So a test about what the check found has to ask for it, exactly
+// as an operator does.
+func settingsChecked(t *testing.T, f *fleet) string {
+	t.Helper()
+
+	w := f.open(t, settingsPath+"?"+querySection+"="+sectionUpdates+"&"+queryCheck+"=1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET the checked Updates section = %d (%s); want %d", w.Code, w.Body.String(), http.StatusOK)
+	}
+	return w.Body.String()
+}
+
 // settingsSectionBody is one section as the menu reaches it.
 func settingsSectionBody(t *testing.T, f *fleet, section string) string {
 	t.Helper()
@@ -1330,7 +1346,7 @@ func TestSettingsOffersTheUpdate(t *testing.T) {
 	f.releaseFeed = func(context.Context) (*updater.Release, error) {
 		return &updater.Release{Version: "v9.99", Notes: "## What's Changed\nthings"}, nil
 	}
-	page := settingsBody(t, f)
+	page := settingsChecked(t, f)
 
 	for _, want := range []string{
 		`action="/dashboard/update"`,
@@ -1378,12 +1394,16 @@ func TestSettingsSurvivesAnUnreachableFeed(t *testing.T) {
 	f.releaseFeed = func(context.Context) (*updater.Release, error) {
 		return nil, errors.New("the release feed is unreachable")
 	}
-	page := settingsEverySection(t, f)
+	page := settingsChecked(t, f)
 
 	if !strings.Contains(page, "could not reach the release feed") {
 		t.Errorf("the page does not say it could not look, which is a different fact from being current:\n%s", page)
 	}
-	if !strings.Contains(page, "allowed_roots") {
+	// The configuration is still reachable from the same page, which is the
+	// claim: a feed that could not be reached costs the Updates section and
+	// nothing else. Asked for through the menu, because that is how the page is
+	// arranged now — one section at a time.
+	if !strings.Contains(settingsSectionBody(t, f, "What it may touch"), "allowed_roots") {
 		t.Error("an unreachable feed cost the page its configuration, which needs no network at all")
 	}
 }
@@ -1484,5 +1504,54 @@ func TestSettingsMenuNeedsNoScript(t *testing.T) {
 	}
 	if !strings.Contains(page, `<a class="settings-menu-link" href="/settings?section=`) {
 		t.Errorf("the menu is not made of real links:\n%s", page)
+	}
+}
+
+// TestSettingsDoesNotCheckUnlessAsked is why Check exists as a button.
+//
+// **Must fail when** composing this page reaches the release feed on an ordinary
+// render. That makes the settings page only as fast and as available as somebody
+// else's API, on behalf of an operator who may have come to read a root — and it
+// asks GitHub once per page view for a fact that changes on merges.
+func TestSettingsDoesNotCheckUnlessAsked(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	var asked int
+	f.releaseFeed = func(context.Context) (*updater.Release, error) {
+		asked++
+		return &updater.Release{Version: "v9.99"}, nil
+	}
+
+	if body := settingsSectionBody(t, f, sectionUpdates); strings.Contains(body, "v9.99") {
+		t.Error("the page named a release it was never asked to look for")
+	}
+	if asked != 0 {
+		t.Errorf("composing the page asked the release feed %d times; want 0 until the operator presses Check", asked)
+	}
+
+	if body := settingsChecked(t, f); !strings.Contains(body, "v9.99") {
+		t.Errorf("pressing Check did not reach the feed:\n%s", body)
+	}
+	if asked != 1 {
+		t.Errorf("Check asked the feed %d times; want exactly 1", asked)
+	}
+}
+
+// TestSettingsOffersCheckBeforeUpdate is the two-step the operator asked for.
+//
+// **Must fail when** an update button appears before anything has looked. It
+// would be offering a version the page has no reason to believe exists.
+func TestSettingsOffersCheckBeforeUpdate(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	before := settingsSectionBody(t, f, sectionUpdates)
+
+	if !strings.Contains(before, "Check for updates") {
+		t.Errorf("the Updates section offers no way to look:\n%s", before)
+	}
+	if strings.Contains(before, `action="/dashboard/update"`) {
+		t.Error("an update button was offered before anything had been checked")
 	}
 }

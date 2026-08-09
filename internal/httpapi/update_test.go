@@ -293,6 +293,33 @@ func (d *updateDoor) reported() string {
 // exited on its way out would take both with it, and the operator would be left
 // with a request that never answered and an update with nothing in the journal
 // to say it happened.
+// wantUpdatingPage is the update's answer, which is a page rather than a
+// redirect.
+//
+// Every other action on this door answers 303, and this one deliberately does
+// not. A redirect tells the browser to go and ask for a page from a daemon that
+// is in the act of stopping: the redirect arrives, the browser follows it, and
+// the operator watches their own update turn into a connection error at the one
+// moment they most need to be told it is working.
+//
+// So the answer is the page they asked from, carrying the version being
+// installed. The script polls for a daemon answering with that version and
+// reloads; with no script it is still a page, and it says to reload in a moment.
+func wantUpdatingPage(t *testing.T, w *httptest.ResponseRecorder, version string) {
+	t.Helper()
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s); want %d — an update answers in place, because a redirect points at a daemon about to stop existing",
+			w.Code, w.Body.String(), http.StatusOK)
+	}
+	if got := w.Header().Get(headerLocation); got != "" {
+		t.Errorf("%s = %q; want none — this answer is the page, not somewhere to go", headerLocation, got)
+	}
+	if body := w.Body.String(); !strings.Contains(body, `data-becoming="`+version+`"`) {
+		t.Errorf("the page does not name the version it is installing, so nothing can wait for it:\n%s", body)
+	}
+}
+
 func TestUpdateInstallsTheReleaseAndExitsForRestart(t *testing.T) {
 	t.Parallel()
 
@@ -311,7 +338,7 @@ func TestUpdateInstallsTheReleaseAndExitsForRestart(t *testing.T) {
 
 	w := d.post(t, d.confirmed(t))
 
-	wantOutcome(t, w, wantUpdatedOutcome)
+	wantUpdatingPage(t, w, fixtureVersion)
 
 	// Step 1: the latest release, and exactly the three assets it takes to
 	// install one.
@@ -363,8 +390,16 @@ func TestUpdateInstallsTheReleaseAndExitsForRestart(t *testing.T) {
 	if d.steps.exits != 1 {
 		t.Fatalf("exited %d times; want exactly 1 — an update that does not exit leaves systemd running the binary it replaced", d.steps.exits)
 	}
-	if statusAtExit != http.StatusSeeOther {
-		t.Errorf("the response was %d when the process was allowed to end; want %d written first", statusAtExit, http.StatusSeeOther)
+	// 200 and a page, not a redirect.
+	//
+	// It was a 303, which told the browser to go and ask for a page from a
+	// daemon that was in the act of stopping. The redirect arrived, the browser
+	// followed it, and the operator watched their own update turn into a
+	// connection error at the one moment they most needed to be told it was
+	// working. The answer is now the page they asked from, carrying the version
+	// being installed, and it waits.
+	if statusAtExit != http.StatusOK {
+		t.Errorf("the response was %d when the process was allowed to end; want %d written first — a redirect points at a daemon that is about to stop existing", statusAtExit, http.StatusOK)
 	}
 	if !flushedAtExit {
 		t.Errorf("the redirect had not been flushed when the process was allowed to end; the operator's browser would be waiting on a connection that is about to close")
@@ -392,7 +427,7 @@ func TestUpdateNamesTheVersionForARollback(t *testing.T) {
 
 	w := d.post(t, form)
 
-	wantOutcome(t, w, wantUpdatedOutcome)
+	wantUpdatingPage(t, w, fixtureVersion)
 	if got, want := d.steps.askedVersions, "v0.41"; len(got) != 1 || got[0] != want {
 		t.Fatalf("asked for releases %v; want exactly one, %q", got, want)
 	}

@@ -84,6 +84,7 @@
   const SAYING_FRAMES = 28;
   const SAYING_ODDS = 0.0012;
 
+
   const still = window.matchMedia('(prefers-reduced-motion: reduce)');
 
   let fields = [];
@@ -1450,4 +1451,81 @@
       event.preventDefault();
     }
   });
+})();
+
+/*
+ * Waiting out an update.
+ *
+ * Its own module, and not the rain's. It shares nothing with the rain but a
+ * file, and living inside it would make a reduced-motion preference — which
+ * stops the rain — also stop a page from coming back after a restart. Those are
+ * not the same kind of thing: one is decoration, the other is the operator
+ * finding out whether their daemon returned.
+ */
+(() => {
+  'use strict';
+
+/*
+ * Waiting out an update (the operator's report, and issue #103's sequel).
+ *
+ * The update route used to answer with a redirect, which sent the browser to
+ * ask a page of a daemon that was in the act of stopping. The operator watched
+ * their own update turn into a 404 at the one moment they most needed to be
+ * told it was working.
+ *
+ * So the page stays and this waits. It asks for the version, which is the
+ * smallest thing this daemon serves and the only fact worth having: when a
+ * daemon answers carrying the version being installed, the new one is up and a
+ * reload shows it. Anything else — a refusal, a connection error, the old
+ * version still answering — is "not yet", and not yet is the ordinary case for
+ * the first several seconds.
+ *
+ * A ceiling rather than forever. A daemon that never comes back is a thing an
+ * operator has to know about, and a page spinning indefinitely is a page
+ * lying: it would look identical whether the restart was slow or the new
+ * binary would not start at all.
+ */
+const WAIT_MS = 1000;
+const WAIT_CEILING = 120;
+
+const waitOutTheUpdate = () => {
+  const note = document.querySelector('[data-becoming]');
+  if (!note) {
+    return;
+  }
+  const becoming = note.dataset.becoming;
+  let asked = 0;
+
+  const ask = () => {
+    asked += 1;
+    if (asked > WAIT_CEILING) {
+      // Said rather than spun. The spinner goes because it was claiming
+      // progress this page can no longer vouch for.
+      note.textContent =
+        'This daemon has not answered since it began installing ' +
+        becoming +
+        '. It may still be starting, or it may have failed to. Check the service on the host.';
+      return;
+    }
+
+    fetch('/dashboard/version', { credentials: 'same-origin', cache: 'no-store' })
+      .then((answer) => (answer.ok ? answer.json() : null))
+      .then((said) => {
+        if (said && said.version === becoming) {
+          window.location.reload();
+          return;
+        }
+        window.setTimeout(ask, WAIT_MS);
+      })
+      .catch(() => {
+        // The expected case for the first few seconds: the daemon is down, so
+        // the request fails. That is not an error to report, it is the thing
+        // being waited out.
+        window.setTimeout(ask, WAIT_MS);
+      });
+  };
+
+  window.setTimeout(ask, WAIT_MS);
+};
+  waitOutTheUpdate();
 })();

@@ -69,13 +69,55 @@
 </nav>
 
 <div class="settings-panel">
-{{ if eq .Shown "Updates" }}{{ with .Update }}<section class="settings-section">
+{{/*
+  What the page says while the daemon is replacing itself.
+
+  It renders instead of the update form, not beside it: the button has been
+  pressed and offering it again is an invitation to press it twice.
+
+  data-becoming is what the script polls for. Without a script this is still a
+  page rather than a connection error, and the sentence says what to do — which
+  is the whole reason this route stopped answering with a redirect. A 303 sent
+  the browser to ask a daemon that was about to stop existing, and the operator
+  watched their own update turn into a 404.
+
+  aria-live so somebody who cannot see the spinner is told; role="status"
+  because it is worth saying at the next pause and never worth interrupting.
+*/}}{{ if .Becoming }}<section class="settings-section">
+<h2 class="settings-title">Updates</h2>
+<p class="updating" role="status" aria-live="polite" data-becoming="{{ .Becoming }}">
+<span class="spinner" aria-hidden="true"></span>
+Installing {{ .Becoming }}. This daemon is restarting into it — the page will reload by itself when it answers again. Sessions survive it.
+</p>
+</section>{{ else }}{{ if eq .Shown "Updates" }}{{ with .Update }}<section class="settings-section">
 <h2 class="settings-title">Updates</h2>
 
 <dl class="version-facts">
 <dt>Running now</dt><dd>{{ .Installed }}</dd>
-{{ if .Reachable }}{{ if .Available }}<dt>Available</dt><dd>{{ .Available }}</dd>{{ else }}<dt>Available</dt><dd>nothing newer</dd>{{ end }}{{ else }}<dt>Available</dt><dd>could not reach the release feed</dd>{{ end }}
+{{/*
+  Three answers, and they are three because two of them are not the same
+  reassurance. "Nothing newer" is a fact about the releases; "could not reach the
+  feed" is the absence of one. A page that showed the first when it meant the
+  second would be telling an operator they are current on no evidence.
+
+  Before the check has been asked for there is no third row at all, because the
+  page has not looked and has nothing to say.
+*/}}{{ if .Checked }}{{ if .Reachable }}{{ if .Available }}<dt>Available</dt><dd>{{ .Available }}</dd>{{ else }}<dt>Available</dt><dd>nothing newer</dd>{{ end }}{{ else }}<dt>Available</dt><dd>could not reach the release feed</dd>{{ end }}{{ end }}
 </dl>
+
+{{/*
+  Check first, update second — the operator's shape, and the right one.
+
+  Looking costs a request to somebody else's API, so it is asked for rather than
+  done on every render: this page's first job is reporting local configuration,
+  and an operator who came to read a root should not wait on GitHub to do it.
+
+  A link rather than a form, because looking changes nothing here. It carries no
+  token for the same reason: the cross-site gate exists to stop a hostile page
+  causing a *change*, and a GET that reads a version is not one.
+*/}}{{ if not .Checked }}<p class="check-line">
+<a class="button" href="/settings?section=Updates&amp;check=1">Check for updates</a>
+</p>{{ end }}
 
 {{/*
   Rendered as text, never as markup. Whoever can publish a release writes this
@@ -86,14 +128,14 @@
 <pre class="release-notes-body">{{ .AvailableNotes }}</pre>
 </details>{{ end }}
 
-{{ if and .Reachable .Available }}<form class="update-form" method="post" action="/dashboard/update">
+{{ if and .Checked .Available }}<form class="update-form" method="post" action="/dashboard/update">
 <input type="hidden" name="crsw_page_token" value="{{ .Token }}">
 <input type="hidden" name="version" value="{{ .Available }}">
 <input type="hidden" name="confirm" value="yes">
 <button class="button button-primary" type="submit">Update to {{ .Available }}</button>
 <p class="update-caution">This replaces the running binary and restarts the daemon. Sessions survive it.</p>
 </form>{{ end }}
-</section>{{ end }}{{ end }}
+</section>{{ end }}{{ end }}{{ end }}
 
 {{ range .Sections }}{{ if eq $.Shown .Title }}<section class="settings-section">
 <h2 class="settings-title">{{ .Title }}</h2>
