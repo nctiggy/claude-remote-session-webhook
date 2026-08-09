@@ -63,7 +63,7 @@
   /* One step below the eyebrow, for the version beside the wordmark. */
   /* Smaller than the micro eyebrow, for the version tucked against the
      wordmark: present, readable, and not competing. */
-  --fs-nano: 0.6rem;
+  --fs-nano: 0.5rem;
   --fs-micro: 0.68rem;
   --fs-eyebrow: .72rem;
   --fs-body: 14px;
@@ -72,6 +72,10 @@
   --fs-label: .66rem; /* the table gives a .64–.68rem range; this is inside it */
   --fs-pane: 12.5px;
   --lh-pane: 1.45;
+  /* How far the version tucks under the wordmark's last letter. An em, so it
+     tracks the size it is set at rather than a fixed distance that would drift
+     the moment either font-size moved. */
+  --tuck: 0.1em;
   --ls-brand: .22em;
   --ls-eyebrow: .2em;
   --ls-label: .14em;
@@ -1271,6 +1275,14 @@ body {
      flex row whose items are baseline-aligned by their own rule. Saying it here
      means the version sits on the wordmark's baseline — bottom-aligned with the
      letters beside it — rather than floating against their middle. */
+  /* Pulled the last of the way in.
+     
+     Cancelling the wordmark's trailing tracking closed the gap CSS had added;
+     this closes what the glyphs leave. A version that sits a hair inside the D's
+     right edge reads as part of the word rather than as the next thing along,
+     which is what "against the D" means when the D is set in a display face at
+     the largest size on the page. */
+  margin-inline-start: calc(var(--tuck) * -1);
   vertical-align: baseline;
   color: var(--dim);
   font-family: var(--sans);
