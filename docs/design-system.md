@@ -276,6 +276,22 @@ is a mouse. So touch ergonomics are conditioned on the pointer, and:
 honestly rather than by evasion. It sits **after** the rules it overrides: at equal
 specificity, order alone decides, and a coarse block placed above them parses
 cleanly, passes every guard, and does nothing.
+`TestTheCoarseBlockOverridesRatherThanPrecedes` holds that, per selector and then
+per property, because the block can be wrong either by being placed early or by a
+base rule arriving below it later.
+
+Everything inside `@media (pointer: coarse)`:
+
+| Selector | Change | Why |
+|---|---|---|
+| `.button` | `min-block-size: var(--tap)` | Padding alone gives a button roughly half the published minimum. On the component rather than on Destroy, so the next button inherits the size rather than needing it |
+| `.settings-menu-link`, `.combo-list li`, `.rename-summary`, `.release-notes summary` | `padding-block: var(--s3)` | Four controls that are a line of text tall. A disclosure and a listbox option are as tappable as a button and get none of a button's box |
+| `.masthead-link` | `padding-block: var(--s3)` + `margin-block: calc(var(--s3) * -1)` | The hit area grows and the bar's height does not — the margin gives the layout back what the padding took. It is a flex item, so both apply |
+| `.field-switch` | `min-block-size: var(--tap)` | The row is the target: the checkbox and its label are one control, and the box alone is `--s4` square |
+| `.card-actions` | `gap: var(--s3)` | Destroy sits beside Compact and a thumb covers both. Enlarging the buttons without moving them apart makes that worse, not better |
+
+**Adding a rule to that block adds a row to this table, in the same commit** — the
+same obligation the width block carries, for the same reason.
 
 The two values that block spends are declared here, because rule 1 makes this file
 the only door a value comes through:

@@ -2598,3 +2598,232 @@ func TestTheHeadersAreHiddenAccessiblyNotRemoved(t *testing.T) {
 		t.Fatal("crswd.css hides no settings table header anywhere, so this asserted nothing about how they are hidden")
 	}
 }
+
+// coarsePrelude is the pointer query, spelled as the file spells it. It is not a
+// width feature, so TestTheDashboardHasExactlyOneBreakpoint does not count it —
+// which is the point of conditioning touch on the pointer rather than evading
+// the guard with range syntax.
+const coarsePrelude = "@media (pointer: coarse)"
+
+// declaredProperties is the property names a rule body sets, in the order it
+// sets them. Values are dropped: what an override collides with is the property,
+// whatever it happens to be spending on it.
+func declaredProperties(body string) []string {
+	var out []string
+	for _, decl := range strings.Split(body, ";") {
+		property, _, ok := strings.Cut(decl, ":")
+		if !ok {
+			continue
+		}
+		if property = strings.TrimSpace(property); property != "" {
+			out = append(out, property)
+		}
+	}
+	return out
+}
+
+// propertiesCollide says whether one declaration can take another's effect
+// away. Equality is the obvious half; the other is the shorthand, which is why
+// it is a prefix test in both directions. `.settings-menu-link` sets `padding`
+// and the pointer block sets `padding-block` on it — a later `padding` would
+// reset the longhand entirely while sharing not one character of its name.
+func propertiesCollide(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+"-") || strings.HasPrefix(b, a+"-")
+}
+
+// TestTheCoarseBlockOverridesRatherThanPrecedes is the assertion that makes the
+// pointer block real rather than merely present.
+//
+// A media query adds no specificity. `.button` inside the pointer block and
+// `.button` at the top level are a tie, and a tie is broken by source order
+// alone — so the whole block, declared above the rules it overrides, parses
+// cleanly, passes every other test in this file, and changes nothing on the
+// device it exists for. That is not a hypothesis: the width breakpoint spent
+// milestone 6 in exactly that position, and `--bright` and `--glow` are the same
+// failure spelled as a value.
+//
+// It is asserted in two halves because the block can be wrong in two ways.
+// Either it sits above a base rule — caught by that selector being declared
+// below the block and nowhere above it — or a new base rule is added below it
+// later, which the first half cannot see because the selector is declared in
+// both places. The second half is therefore per property rather than per
+// selector: `.settings-menu-link { white-space: nowrap }` in the width block is
+// not a collision with `padding-block` and must not read as one.
+//
+// **Must fail when** the block is placed early, parses, passes every other
+// guard, and has no effect.
+func TestTheCoarseBlockOverridesRatherThanPrecedes(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+	// The body is a long unique substring, so finding it again says where the
+	// block sits without counting braces a second time.
+	body := blockFor(t, source, coarsePrelude)
+	at := strings.Index(source, body)
+	before, after := source[:at], source[at+len(body):]
+
+	sets := make(map[string]map[string]bool)
+	for _, rule := range cssRules(body) {
+		for _, one := range strings.Split(rule.selector, ",") {
+			selector := strings.TrimSpace(one)
+			if selector == "" {
+				continue
+			}
+			if sets[selector] == nil {
+				sets[selector] = make(map[string]bool)
+			}
+			for _, property := range declaredProperties(rule.body) {
+				sets[selector][property] = true
+			}
+		}
+	}
+	if len(sets) == 0 {
+		t.Fatal("the pointer block declares no rule at all, so this asserted nothing about the order of anything")
+	}
+
+	declaredIn := func(section, selector string) bool {
+		for _, rule := range cssRules(section) {
+			for _, one := range strings.Split(rule.selector, ",") {
+				if strings.TrimSpace(one) == selector {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	var grounded int
+	for selector := range sets {
+		switch {
+		case declaredIn(before, selector):
+			grounded++
+		case declaredIn(after, selector):
+			t.Errorf("%s is declared below the pointer block and nowhere above it, so at equal specificity the base rule wins and the touch size is a declaration that renders on nothing", selector)
+		}
+	}
+	if grounded == 0 {
+		t.Fatal("no selector the pointer block names has a rule above it, so the block overrides nothing and this asserted nothing about the order of anything")
+	}
+
+	for _, rule := range cssRules(after) {
+		for _, one := range strings.Split(rule.selector, ",") {
+			selector := strings.TrimSpace(one)
+			for _, property := range declaredProperties(rule.body) {
+				for coarse := range sets[selector] {
+					if propertiesCollide(property, coarse) {
+						t.Errorf("%s sets %s below the pointer block, which sets %s on it; at equal specificity the later rule wins and the touch size has no effect: %q", selector, property, coarse, rule.body)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestTouchTargetsFollowThePointerNotTheWidth is the decision this whole block
+// rests on, held as code.
+//
+// A tablet in landscape is a touch device at 1024px and the width breakpoint
+// never reaches it; a narrow desktop window is a mouse and would get inflated
+// controls if the same rules were hung off the viewport. So the width block is
+// swept as well as the pointer block: sizing a target at 780px is the plausible
+// wrong answer, not an omission, and it looks right on the one device whoever
+// wrote it was holding.
+//
+// **Must fail when** targets are sized inside the 780px block instead.
+func TestTouchTargetsFollowThePointerNotTheWidth(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+
+	if coarse := blockFor(t, source, coarsePrelude); !strings.Contains(coarse, "var(--tap)") {
+		t.Errorf("the pointer block spends no var(--tap), so nothing in it is sized to a thumb at all: %q", coarse)
+	}
+
+	for _, rule := range cssRules(blockFor(t, source, breakpointPrelude)) {
+		if strings.Contains(rule.body, "var(--tap)") {
+			t.Errorf("%s is sized to a thumb inside the width breakpoint, where a tablet in landscape never reaches it and a narrow desktop window gets it with a mouse: %q", rule.selector, rule.body)
+		}
+	}
+}
+
+// layoutProperty is a declaration that moves something rather than sizing it.
+var layoutProperty = regexp.MustCompile(`(?i)(^|[;{\s])(display|position|flex-direction|grid-template-[a-z]+)\s*:`)
+
+// TestTheCoarseBlockChangesNoLayout is the policy docs/design-system.md states
+// and nothing else can enforce.
+//
+// The pointer block passes TestTheDashboardHasExactlyOneBreakpoint honestly:
+// `(pointer: coarse)` is not a width feature, so the count stays at one. But
+// that guard's subject is layout varying by condition, and the honesty depends
+// on this block never carrying layout. A `display` or a `grid-template-*` here
+// gives the page a second layout axis, conditioned on something no test in this
+// file models, while every existing guard stays green.
+//
+// **Must fail when** the pointer block starts carrying layout.
+func TestTheCoarseBlockChangesNoLayout(t *testing.T) {
+	t.Parallel()
+
+	coarse := blockFor(t, stylesheet(t), coarsePrelude)
+	for _, rule := range cssRules(coarse) {
+		if match := layoutProperty.FindString(rule.body); match != "" {
+			t.Errorf("%s sets %q inside the pointer block, which changes ergonomics and never layout; layout varies on exactly one axis and that axis is the one that is tested", rule.selector, strings.TrimSpace(match))
+		}
+	}
+}
+
+// TestEveryButtonIsThumbSized is FR-011 read at the control that ends a shell.
+//
+// Asserted on `.button` rather than on the destructive variant, because the
+// component is where the size belongs: a Destroy sized to a thumb beside a
+// Compact that is not is a row whose two controls disagree about how big a
+// target is, and the next button anyone adds inherits the fix rather than
+// needing it.
+//
+// **Must fail when** only some controls are enlarged.
+func TestEveryButtonIsThumbSized(t *testing.T) {
+	t.Parallel()
+
+	coarse := blockFor(t, stylesheet(t), coarsePrelude)
+	if button := ruleFor(t, coarse, ".button"); !regexp.MustCompile(`(?i)min-block-size\s*:\s*var\(--tap\)`).MatchString(button) {
+		t.Errorf("a button keeps whatever height its padding gives it under a coarse pointer, which is roughly half the published minimum: %q", button)
+	}
+}
+
+// gapDecl is a gap and the token it spends.
+var gapDecl = regexp.MustCompile(`(?i)(?:^|[;{\s])gap\s*:\s*(var\(--[a-z0-9-]+\))`)
+
+// TestDestroyIsSeparatedFromCompact is the other half of a mis-tap, and the half
+// a bigger button makes worse rather than better.
+//
+// Destroy sits beside Compact in the card's action row. Enlarging both without
+// moving them apart puts two thumb-sized targets a thumb's gap apart, and the
+// one that ends an unsandboxed shell is the right-hand of the pair. The gap is
+// compared against the base rule's rather than merely found: a coarse block that
+// respells the value it already had is the silent no-op this milestone keeps
+// finding, in one more place.
+//
+// The base rule is read from the file *above* the pointer block rather than
+// from the whole of it. ruleFor returns the first match, and once .card-actions
+// is declared twice "first" is a position rather than a meaning — the ordering
+// is what the rule above holds, so this reads the base rule by the same measure.
+//
+// **Must fail when** the two stay as close as they are with a mouse.
+func TestDestroyIsSeparatedFromCompact(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+	coarse := blockFor(t, source, coarsePrelude)
+
+	touched := gapDecl.FindStringSubmatch(ruleFor(t, coarse, ".card-actions"))
+	if touched == nil {
+		t.Fatal("the pointer block sets no gap on .card-actions, so Destroy stays as close to Compact as it is under a mouse and a thumb covers both")
+	}
+
+	base := gapDecl.FindStringSubmatch(ruleFor(t, source[:strings.Index(source, coarse)], ".card-actions"))
+	if base == nil {
+		t.Fatal("the action row spends no spacing token on its gap at all, so there is nothing here for the pointer block to be wider than")
+	}
+	if touched[1] == base[1] {
+		t.Errorf("the pointer block respells the gap the action row already has (%s), so the declaration reads as a change and is not one", base[1])
+	}
+}

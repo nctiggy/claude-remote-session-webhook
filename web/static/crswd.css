@@ -1426,6 +1426,54 @@ body {
   margin-block: 0 var(--s5);
 }
 
+/* Touch ergonomics, conditioned on the pointer rather than the viewport. A
+   tablet in landscape is a touch device at a desktop width and the breakpoint
+   below never reaches it; a narrow desktop window is a mouse and would get
+   inflated controls if it did. Target size is a property of the thumb, not of
+   the window it is pointing at.
+
+   This block changes size, spacing and input scale and never layout. Layout
+   varies on exactly one axis and that axis is tested — a `display` or a
+   `grid-template-*` in here would put a second one where nothing is looking.
+   That policy is stated in docs/design-system.md and no guard enforces it.
+
+   Like the breakpoint, it sits after the rules it overrides, and for the same
+   reason: these are single-class overrides of single-class rules, so
+   specificity is a tie and source order alone decides. Placed above .button
+   this parses, passes every other test in this file, and does nothing —
+   TestTheCoarseBlockOverridesRatherThanPrecedes is what holds it here. */
+@media (pointer: coarse) {
+  .button {
+    min-block-size: var(--tap);
+  }
+
+  .settings-menu-link,
+  .combo-list li,
+  .rename-summary,
+  .release-notes summary {
+    padding-block: var(--s3);
+  }
+
+  /* Padded to a thumb without changing the bar's height: the extra hit area is
+     taken back from the layout with a negative margin, so the masthead is the
+     size it always was and the target inside it is not. */
+  .masthead-link {
+    padding-block: var(--s3);
+    margin-block: calc(var(--s3) * -1);
+  }
+
+  .field-switch {
+    min-block-size: var(--tap);
+  }
+
+  /* Destroy sits beside Compact, and a thumb covers both. The labels already
+     distinguish them; this makes the geometry agree, so a mis-tap costs a
+     thumb's width rather than a shell. */
+  .card-actions {
+    gap: var(--s3);
+  }
+}
+
 /* The single breakpoint. One operator, a laptop and a phone — two breakpoints
    would be one more than either needs.
 
