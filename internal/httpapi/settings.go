@@ -86,6 +86,14 @@ type settingsView struct {
 	// changed, because it looks like it could.
 	Token string
 
+	// Becoming is the version an accepted update is installing, and is empty on
+	// every ordinary render.
+	//
+	// It is what turns this page into the one an operator watches while the
+	// daemon restarts underneath them: the script polls for a daemon answering
+	// with this version and reloads when one does.
+	Becoming string
+
 	// Update is what this daemon is and what it could become. Nil when the
 	// release feed could not be reached, which is deliberately not an error: this
 	// page's first job is reporting local configuration, and that needs no

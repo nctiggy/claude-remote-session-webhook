@@ -69,7 +69,27 @@
 </nav>
 
 <div class="settings-panel">
-{{ if eq .Shown "Updates" }}{{ with .Update }}<section class="settings-section">
+{{/*
+  What the page says while the daemon is replacing itself.
+
+  It renders instead of the update form, not beside it: the button has been
+  pressed and offering it again is an invitation to press it twice.
+
+  data-becoming is what the script polls for. Without a script this is still a
+  page rather than a connection error, and the sentence says what to do — which
+  is the whole reason this route stopped answering with a redirect. A 303 sent
+  the browser to ask a daemon that was about to stop existing, and the operator
+  watched their own update turn into a 404.
+
+  aria-live so somebody who cannot see the spinner is told; role="status"
+  because it is worth saying at the next pause and never worth interrupting.
+*/}}{{ if .Becoming }}<section class="settings-section">
+<h2 class="settings-title">Updates</h2>
+<p class="updating" role="status" aria-live="polite" data-becoming="{{ .Becoming }}">
+<span class="spinner" aria-hidden="true"></span>
+Installing {{ .Becoming }}. This daemon is restarting into it — the page will reload by itself when it answers again. Sessions survive it.
+</p>
+</section>{{ else }}{{ if eq .Shown "Updates" }}{{ with .Update }}<section class="settings-section">
 <h2 class="settings-title">Updates</h2>
 
 <dl class="version-facts">
@@ -93,7 +113,7 @@
 <button class="button button-primary" type="submit">Update to {{ .Available }}</button>
 <p class="update-caution">This replaces the running binary and restarts the daemon. Sessions survive it.</p>
 </form>{{ end }}
-</section>{{ end }}{{ end }}
+</section>{{ end }}{{ end }}{{ end }}
 
 {{ range .Sections }}{{ if eq $.Shown .Title }}<section class="settings-section">
 <h2 class="settings-title">{{ .Title }}</h2>

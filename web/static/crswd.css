@@ -60,6 +60,8 @@
   /* The roles in the design system's typography table. Named here because that
      table gives every value but no token name, and rule 1 is about the values. */
   --fs-brand: 1.05rem;
+  /* One step below the eyebrow, for the version beside the wordmark. */
+  --fs-micro: 0.68rem;
   --fs-eyebrow: .72rem;
   --fs-body: 14px;
   --lh-body: 1.5;
@@ -1054,6 +1056,11 @@ body {
   *::before,
   *::after {
     transition: none;
+    /* animation as well as transition, and the omission was real until a
+       spinner arrived to expose it. "Universal so the next fade is covered by
+       construction" only holds if it covers both ways of moving something —
+       and the one that was missing is the one a waiting indicator uses. */
+    animation: none;
   }
 }
 
@@ -1236,8 +1243,13 @@ body {
    part of the identity — this daemon, this version — which is what it is. Muted
    and small, because it is still not what an operator came for. */
 .brand-version {
+  /* The tag's font, one step smaller, and tight against the wordmark: it is part
+     of the name — this daemon, this version — rather than a separate fact
+     competing with the one beside it. */
+  margin-inline-start: calc(var(--s2) * -1);
   color: var(--dim);
-  font-size: var(--fs-eyebrow);
+  font-family: var(--font);
+  font-size: var(--fs-micro);
   font-weight: normal;
 }
 
@@ -1283,12 +1295,24 @@ body {
   background: var(--glow);
 }
 
+/* A bar, not a list floating beside a panel.
+
+   The operator asked for a bar, and they are right that it reads better: an
+   edge and a background say "this is the index, that is the content" before any
+   text is read, which is the whole job of a sidebar. */
 .settings-menu {
   min-inline-size: 0;
+  padding: var(--s4) var(--s3);
+  border: var(--edge-width) solid var(--edge);
+  border-radius: var(--r);
+  background: var(--glow);
+  position: sticky;
+  top: var(--s6);
 }
 
 .settings-panel {
   min-inline-size: 0;
+  padding-inline-start: var(--s2);
 }
 
 /* Editing one setting, in its own row.
@@ -1322,6 +1346,36 @@ body {
 
 .setting-save {
   flex: 0 0 auto;
+}
+
+/* Waiting out an update.
+
+   The spinner is the one animation on this interface, and it earns it by saying
+   something no text can: that time is passing and the page has not given up. It
+   stops entirely under a reduced-motion preference — the sentence beside it
+   carries the whole meaning, which is why the sentence is not optional. */
+.updating {
+  display: flex;
+  gap: var(--s3);
+  align-items: baseline;
+  margin-block: 0 var(--s5);
+  color: var(--dim);
+}
+
+.spinner {
+  flex: 0 0 auto;
+  inline-size: var(--s3);
+  block-size: var(--s3);
+  border: var(--edge-width) solid var(--edge);
+  border-block-start-color: var(--edge-bright);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
 }
 
 /* The hidden attribute has to win (#77).

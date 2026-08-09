@@ -931,8 +931,23 @@ func TestTheFleetUpdatesInPlaceRatherThanReloading(t *testing.T) {
 
 	source := script(t)
 
-	if n := len(regexp.MustCompile(`location\.reload\(`).FindAllString(source, -1)); n != 1 {
-		t.Errorf("crswd.js reloads the page in %d places; want exactly 1 — the fallback, never the answer to a session appearing or vanishing (issue #51)", n)
+	// Two, and they are different in kind — which is why this counts rather than
+	// forbids.
+	//
+	// One is the fleet's fallback: a shape this script cannot compose, where
+	// asking the daemon again is the honest answer. The other is the update
+	// waiter, which reloads after the daemon has restarted into a new binary —
+	// not an answer to a session appearing or leaving, but the moment the page it
+	// is showing genuinely stopped being current.
+	//
+	// **Must fail when** a third appears. A reload is how this page loses a
+	// half-typed working directory, the scroll position and the caret, so each
+	// one has to be argued for.
+	if n := len(regexp.MustCompile(`location\.reload\(`).FindAllString(source, -1)); n != 2 {
+		t.Errorf("crswd.js reloads the page in %d places; want exactly 2 — the fleet's fallback and the update waiter", n)
+	}
+	if !strings.Contains(source, "waitOutTheUpdate") {
+		t.Error("the second reload is not the update waiter, so it is a reload nobody argued for")
 	}
 
 	// The two shapes it switches between, both of them the daemon's own markup.

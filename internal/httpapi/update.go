@@ -226,7 +226,19 @@ func (s *Server) updateFromBrowser(w http.ResponseWriter, r *http.Request) {
 	// the stream emits its own: this handler does not return in production. The
 	// emit is guarded against a second one, so the deferred emit on the way out —
 	// which is what runs in a test, where the exit is a fake — writes nothing more.
-	s.redirectOutcome(w, r, outcomeUpdated)
+	// Answered in place rather than with a redirect, and that is the whole of
+	// this change.
+	//
+	// A 303 told the browser to go and ask for a page from a daemon that was
+	// about to stop existing. The redirect was delivered, the browser followed
+	// it, and the operator watched their own update turn into a connection
+	// error — the one moment they most need to be told it is working.
+	//
+	// So the answer is a page that stays where it is and waits. It carries the
+	// version it is becoming, and the script polls until a daemon answers with
+	// that version and then reloads. With no script it is still a page rather
+	// than an error, and it says to reload in a moment.
+	s.renderUpdating(w, r, version)
 	s.emit(AuditFrom(r.Context()))
 	if err := http.NewResponseController(w).Flush(); err != nil { //nolint:bodyclose // false positive: a ResponseController is not a response and has no body to close.
 		// Reported and not acted on. The rename has already happened, so the
@@ -344,4 +356,32 @@ func (s *Server) refuseBrowserUpdate(w http.ResponseWriter, r *http.Request, err
 		s.report(err)
 		s.redirectOutcome(w, r, outcomeUpdateRefused)
 	}
+}
+
+// renderUpdating answers an accepted update with the page it was asked from.
+//
+// It renders the settings page in one extra state rather than a page of its own,
+// because everything an operator wants while waiting — what is running, what it
+// is becoming — is already there, and a second page would have to say it again.
+func (s *Server) renderUpdating(w http.ResponseWriter, r *http.Request, version string) {
+	operator, ok := OperatorFrom(r.Context())
+	if !ok {
+		// Unreachable through the gate, which is why this is a refusal rather
+		// than a nil dereference waiting to be found.
+		AuditFrom(r.Context()).Deny(errDashboardNoOperator.Error())
+		s.refuseAction(w)
+		return
+	}
+
+	rows := settingsOf(s.cfg)
+	sections := sectioned(rows)
+	s.renderPage(w, r, http.StatusOK, "settings", settingsView{
+		Operator:   operator,
+		Settings:   rows,
+		Sections:   sections,
+		Shown:      sectionUpdates,
+		ConfigFile: s.cfg.FilePath,
+		Update:     s.updatePanelFor(r, operator),
+		Becoming:   version,
+	})
 }
