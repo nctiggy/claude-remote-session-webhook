@@ -128,6 +128,14 @@ func writeAndSync(f *os.File, data []byte, mode os.FileMode) error {
 // weaker would let a page write a file that only fails at the next restart —
 // which is the worst time to find out, because by then nobody is watching.
 //
+// The candidate is layered under the environment and over nothing. WithoutConfigFile
+// is what stops the loader reaching for the operator's file on disk, which would
+// make this question unanswerable: the candidate IS that file, so its old
+// contents would supply anything the new ones dropped and a removed key would
+// validate as safe. It is also what made this pass on the author's machine and
+// fail in CI, which is the second time in one evening that a check borrowed
+// something from his home directory and called it a result.
+//
 // The environment is layered over the file exactly as LoadFrom layers it, which
 // is the only arrangement that answers the question actually being asked. A file
 // checked in isolation refuses every edit on a daemon that takes any part of its
@@ -147,6 +155,6 @@ func Validate(contents []byte, getenv func(string) string) error {
 			return v
 		}
 		return ""
-	}, io.Discard)
+	}, io.Discard, WithoutConfigFile())
 	return err
 }

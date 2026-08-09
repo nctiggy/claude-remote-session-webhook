@@ -23,7 +23,20 @@ func editable(t *testing.T) *fleet {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "config")
-	contents := "# a configuration this test may rewrite\nmax_sessions = 4\n"
+	// Complete, because Validate no longer borrows anything from a file on disk
+	// (config.WithoutConfigFile). An incomplete fixture would refuse every edit
+	// and the tests would pass for the wrong reason — which is exactly how this
+	// suite passed on the author's machine and failed in CI.
+	contents := strings.Join([]string{
+		"# a configuration this test may rewrite",
+		"shared_secret = " + strings.Repeat("k", 32),
+		"allowed_roots = " + t.TempDir(),
+		"access_team_domain = example.cloudflareaccess.com",
+		"access_aud = " + strings.Repeat("a", 64),
+		"access_allowed_emails = operator@example.com",
+		"max_sessions = 4",
+		"",
+	}, "\n")
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}

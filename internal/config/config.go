@@ -473,7 +473,26 @@ func (c Config) GoString() string { return c.String() }
 // answer.
 type Option func(*loadOptions)
 
-type loadOptions struct{ accessBypassed bool }
+type loadOptions struct {
+	accessBypassed bool
+
+	// noFile stops the loader consulting the operator's configuration file.
+	//
+	// It exists for Validate, which is asking whether a *candidate* would load.
+	// Layering the file on disk underneath it makes that question unanswerable:
+	// the candidate is the same file, so its old contents would supply anything
+	// the new ones dropped, and removing a key would validate as safe.
+	//
+	// It is also what made the edit tests pass on the author's machine and fail
+	// in CI. Validate borrowed the secret from his real file and called the
+	// candidate loadable; a runner with no such file called it what it was.
+	noFile bool
+}
+
+// WithoutConfigFile evaluates the environment alone, with no file underneath.
+func WithoutConfigFile() Option {
+	return func(o *loadOptions) { o.noFile = true }
+}
 
 // WithAccessBypassActive stops the loader demanding the three layer-1 values
 // (FR-042). It says the operator has *activated* the development bypass — a
@@ -518,6 +537,9 @@ func LoadFrom(getenv func(string) string, warn io.Writer, opts ...Option) (*Conf
 	// surface as a bound that means one thing in a test and another in
 	// production.
 	path := DefaultPath(getenv)
+	if o.noFile {
+		path = ""
+	}
 	var file *File
 	var err error
 	if path != "" {
