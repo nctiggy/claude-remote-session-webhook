@@ -105,3 +105,59 @@ tasks open.
    transcription against its source. A token could be deleted from the document and every
    test would stay green. That is a real gap and it is exactly what makes T002 risky; it is
    not in this milestone's scope to close.
+
+---
+
+## Iteration 2 — 2026-08-09 08:29
+
+**Did:** T002. `--tap: 44px` and `--fs-input: 16px` in all three files in one commit —
+`docs/design-system.md` (declared as CSS inside the pointer-coarse section, with the reason
+each number is what it is), the `crswd.css` token block, and `designTokens`. Nothing spends
+them yet; T010 and T011 do.
+
+**Learned, so the next iteration does not rediscover it:**
+
+- **No test requires a declared token to be referenced.** `TestEveryTokenReferencedExists`
+  (`stylesheet_test.go:2076`) sweeps `var(--x)` references and checks each is defined — the
+  other direction is not held anywhere. That is why T002 could land two tokens ahead of the
+  block that spends them without going red, and it is also a gap: a token nothing uses will
+  sit in the block forever without a complaint.
+- **The `designTokens` comment already draws the line T002 needed and does not need
+  amending.** It says the typography and layout values are absent *because the document gives
+  them in tables without token names*. `--fs-input` is a font size and it belongs in the map
+  anyway, because design-system.md now declares it as CSS with its name. Table-without-a-name
+  → out; declared-as-CSS → in. A future token should be added to the document in a ```css
+  block, not as a table row, or that distinction stops being readable.
+- **Finding 2 from iteration 1 is resolved: `--pane-h: 30rem` is correct.** The token block
+  at `crswd.css:113` declares exactly that. The Layout prose in design-system.md was accurate.
+  T004 does not need to check it.
+- **The negative case is cheap to prove here and worth proving.** Deleting the two
+  declarations from `crswd.css` and running `TestTheTokenBlockIsTheDesignSystem` fails naming
+  both tokens. Doing that took one edit and four seconds, and it is the only evidence that a
+  guard this milestone leans on actually fires.
+- All five gate commands green; linter is 2.12.2, so the green is real. `-tags quickstart`
+  took 33s and found `127.0.0.1:8765` free again.
+
+**Left:** T003 next (the pane's `overscroll-behavior-x`), then everything after. 15 of 17
+tasks open.
+
+**Findings — noticed, not fixed:**
+
+1. **T002's third-file obligation is still unenforced, and now it has an accomplice.** The
+   commit is the only thing that checked the document. A future token added to the stylesheet
+   and the map alone would pass every test — the same gap iteration 1 recorded, confirmed
+   from the other side now that a token has actually gone through it. What would close it is
+   a test that parses the ```css blocks out of `docs/design-system.md` and compares them to
+   `designTokens`; that is a new guard and out of scope here, but it is the concrete shape of
+   the fix if anyone wants it.
+2. **The token block has no ordering rule and is drifting toward one.** I put the two touch
+   tokens after the focus pair and before `--shell-max`, matching the document's section
+   order, but nothing says that is where they go and nothing would have complained if they
+   had landed between `--s7` and `--r`. There are now nine loose groups in that rule
+   separated only by blank lines and comments. Not worth a task on its own; worth knowing
+   before someone adds the tenth.
+3. **`--fs-nano` at `crswd.css:66` carries two comments describing the same token**, one of
+   which appears to be a leftover from an earlier edit ("One step below the eyebrow, for the
+   version beside the wordmark." immediately followed by a longer comment saying the same
+   thing differently). Cosmetic, in a file this milestone touches repeatedly, and a one-line
+   deletion for whoever is next in that region — but AR-008 says not from inside T002.

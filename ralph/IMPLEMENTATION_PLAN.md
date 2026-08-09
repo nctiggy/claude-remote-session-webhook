@@ -184,7 +184,7 @@ needs to re-argue them.
 
 ### Foundational — blocking
 
-- [ ] **T002** 🔒 Add `--tap: 44px` and `--fs-input: 16px` to **all three** of `docs/design-system.md`, the token block in `web/static/crswd.css`, and the `designTokens` map at `internal/httpapi/stylesheet_test.go:31`, in ONE commit.
+- [x] **T002** 🔒 Add `--tap: 44px` and `--fs-input: 16px` to **all three** of `docs/design-system.md`, the token block in `web/static/crswd.css`, and the `designTokens` map at `internal/httpapi/stylesheet_test.go:31`, in ONE commit.
 
 ### US1 — Read what Claude said, from a phone (P1)
 
