@@ -115,6 +115,15 @@ type settingSection struct {
 // page can say "you are current" rather than "we could not tell", which are not
 // the same reassurance.
 type updatePanel struct {
+	// Checked is whether this render asked the release feed at all.
+	//
+	// It did not, unless the operator pressed Check. Composing a page that
+	// reaches somebody else's API every time it is opened makes the settings
+	// page as slow and as fallible as GitHub, on a page whose first job is
+	// reporting local configuration — and it asks on behalf of an operator who
+	// may only have come to read a root.
+	Checked bool
+
 	Installed      string
 	InstalledNotes string
 	Available      string
@@ -500,6 +509,10 @@ var errNoReleaseFeed = errors.New("this server was built with no release feed")
 // the whole arrangement: the section is missing and the rest of the page is
 // exactly as it was, because a settings page that failed to render because
 // GitHub was slow would be reporting on this daemon by asking somebody else.
+// queryCheck is how the Check button asks for the one thing that costs a
+// network request.
+const queryCheck = "check"
+
 func (s *Server) updatePanelFor(r *http.Request, operator *access.VerifiedOperator) *updatePanel {
 	token, minted := s.mintPageToken(r, operator)
 	if !minted {
@@ -509,6 +522,14 @@ func (s *Server) updatePanelFor(r *http.Request, operator *access.VerifiedOperat
 	}
 
 	panel := &updatePanel{Installed: buildinfo.Version, Token: token}
+
+	// Asked for, never assumed. Without this the page is only as fast and as
+	// available as somebody else's API, on behalf of an operator who may have
+	// come to read a root.
+	if r.URL.Query().Get(queryCheck) == "" {
+		return panel
+	}
+	panel.Checked = true
 
 	ctx, cancel := context.WithTimeout(r.Context(), releaseFeedTimeout)
 	defer cancel()

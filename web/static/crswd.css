@@ -1378,6 +1378,12 @@ body {
   }
 }
 
+/* The Check button's own line, so it does not sit against the facts above it
+   as though it were one of them. */
+.check-line {
+  margin-block: 0 var(--s5);
+}
+
 /* The hidden attribute has to win (#77).
    `[hidden] { display: none }` is a user-agent rule, so any class that sets
    `display` outranks it — .empty, .grid, .summary and .empty-action all do, and
