@@ -196,6 +196,19 @@ body {
    unaffected either way: the global :focus-visible outline is the ring, and it
    is untouched here. */
 .brand-link {
+  /* Cancels the tracking that trails the final D.
+     
+     .brand sets letter-spacing, which CSS applies after every character
+     including the last, so the wordmark carries .22em of empty space on its
+     right edge. The version is meant to sit against the D and that space put it
+     a quarter of a letter away.
+     
+     Negated here rather than on .brand-version because em resolves against the
+     element's own font-size: on the version, which is several steps smaller,
+     the same number would cancel a fraction of the gap. Here it is the brand's
+     own em and cancels exactly what the brand added. The markup lost its space
+     character in the same change — a gap CSS cannot close. */
+  margin-inline-end: calc(var(--ls-brand) * -1);
   color: inherit;
   text-decoration: none;
   transition: text-shadow var(--transition);
@@ -1258,7 +1271,6 @@ body {
      flex row whose items are baseline-aligned by their own rule. Saying it here
      means the version sits on the wordmark's baseline — bottom-aligned with the
      letters beside it — rather than floating against their middle. */
-  margin-inline-start: var(--s1);
   vertical-align: baseline;
   color: var(--dim);
   font-family: var(--sans);
