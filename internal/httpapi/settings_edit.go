@@ -30,6 +30,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"os"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
@@ -53,10 +54,52 @@ var (
 	errSettingUnwritable  = errors.New("the configuration file could not be replaced")
 )
 
+// boolOff is what a box the operator unticked is written as.
+//
+// It is spelled out rather than left empty. loadBool reads both the same way
+// today, so this changes nothing the daemon does; it changes what the operator's
+// own file says, and `discover_roots = false` is a setting where
+// `discover_roots =` is a line somebody left half-finished. The coincidence is
+// also not one to build on: the next boolean added to the loader may default to
+// true, and an empty value would then turn it on rather than off.
+const boolOff = "false"
+
+// submittedValue is what the form said the key should hold, and it exists for
+// one fact about HTML: **an unchecked checkbox submits nothing at all.**
+//
+// So a boolean turned off arrives as a request with no value field — which is
+// byte for byte a request whose value field was lost, truncated, stripped, or
+// never sent. Those two are indistinguishable here and always will be, which is
+// the whole reason this reading is narrow: it applies only where the state that
+// absence has to mean is already known, and config.IsBool is the one predicate
+// that says where. Every other key keeps the empty value it has always had, and
+// whatever the loader already makes of that.
+//
+// Widening it to all keys is the tempting one-word edit and it is the defect.
+// A request that merely arrived incomplete would write `false` over a
+// containment root, a cap, or an allowlist; config.Validate refuses only the
+// ones where `false` happens not to load, which is not a property to rely on and
+// not one anybody would notice being lost.
+//
+// The hidden-input trick is the other tempting fix and it is worse. A hidden
+// `false` and a checkbox sharing one name submit two values when ticked, Get
+// returns the first, and every boolean becomes unsettable — silently, and with a
+// test on the unticked case still green.
+//
+// The form is read directly rather than through Get for the reason
+// offersRemoteControlState reads its field that way: Get flattens absent and
+// present-but-empty to the same "", and absence is precisely the state being
+// read here.
+func submittedValue(form url.Values, key string) string {
+	if _, present := form[fieldSettingValue]; !present && config.IsBool(key) {
+		return boolOff
+	}
+	return form.Get(fieldSettingValue)
+}
+
 // editSetting writes one key and redirects back to the section it came from.
 func (s *Server) editSetting(w http.ResponseWriter, r *http.Request) {
 	key := r.PostForm.Get(fieldSettingKey)
-	value := r.PostForm.Get(fieldSettingValue)
 
 	if !config.Editable(key) {
 		// Uniform, and deliberately not naming what was asked for: the values
@@ -65,6 +108,11 @@ func (s *Server) editSetting(w http.ResponseWriter, r *http.Request) {
 		s.refuseAction(w)
 		return
 	}
+
+	// Read after the check above, so no absence is interpreted for a key this
+	// page may not write at all: what a request meant is a question worth asking
+	// only about a request that is going to be carried out.
+	value := submittedValue(r.PostForm, key)
 
 	path := s.cfg.FilePath
 	if path == "" {

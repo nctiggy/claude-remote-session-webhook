@@ -67,6 +67,21 @@ func editForm(t *testing.T, f *fleet, key, value string) url.Values {
 	}
 }
 
+// editFormWithoutValue is what an unchecked checkbox submits: the token, the
+// key, and no value field at all.
+//
+// It is built by deleting the field rather than by setting it empty, because
+// those are the two states this task is about and url.Values.Encode is what
+// tells them apart on the wire. A form carrying `value=` would exercise the
+// branch that was already there.
+func editFormWithoutValue(t *testing.T, f *fleet, key string) url.Values {
+	t.Helper()
+
+	form := editForm(t, f, key, "")
+	form.Del(fieldSettingValue)
+	return form
+}
+
 // editPost submits the way the page's form does: a genuine assertion, a
 // same-origin initiator, and the token the page carried.
 //
@@ -145,6 +160,68 @@ func TestEditRefusesAValueThatWouldNotLoad(t *testing.T) {
 	after, _ := os.ReadFile(f.cfg.FilePath) //nolint:errcheck // same.
 	if string(before) != string(after) {
 		t.Errorf("a value the loader rejects was written anyway:\n%s", after)
+	}
+}
+
+// TestEditTurnsABooleanOffWithNoValue is the checkbox's one HTTP fact, end to
+// end: an unchecked box submits nothing at all.
+//
+// It turns the setting on and then off through the same route two clicks use,
+// because the off is only interesting against an on — a fixture that was already
+// false would pass whatever the handler did with the absence, which is the shape
+// of a test that cannot fail.
+//
+// **Must fail when** the absence is read as an empty value: the file then ends
+// at `discover_roots =`, a line loadBool happens to read as false today and no
+// operator would write. The next boolean added to the loader is one whose
+// default may not be false, and by then the coincidence is load-bearing.
+func TestEditTurnsABooleanOffWithNoValue(t *testing.T) {
+	f := editable(t)
+
+	editPost(t, f, editForm(t, f, "discover_roots", "true"))
+	editPost(t, f, editFormWithoutValue(t, f, "discover_roots"))
+
+	after, err := os.ReadFile(f.cfg.FilePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", f.cfg.FilePath, err)
+	}
+	if !strings.Contains(string(after), "discover_roots = false") {
+		t.Errorf("an unchecked box did not turn the setting off:\n%s", after)
+	}
+}
+
+// TestEditInventsFalseForNothingButABoolean is the half of this that is about
+// security rather than about a checkbox.
+//
+// `false` is a value the handler invents, and a request that arrives without its
+// value field — truncated, stripped by a proxy, or hand-built — is
+// indistinguishable from an unchecked box. So the invention stops at the keys
+// whose only other state *is* false. max_sessions is the cap the daemon refuses
+// past rather than degrading the host (constitution VI); nothing that merely
+// omitted a field may write a word into it.
+//
+// **Must fail when** the absence is read as `false` for every key. The candidate
+// is then `max_sessions = false`, which Validate refuses — so the over-broad
+// reading is caught by the outcome as well as by the bytes, and the assertion
+// below on the empty value is what makes the difference visible at all.
+func TestEditInventsFalseForNothingButABoolean(t *testing.T) {
+	f := editable(t)
+
+	editPost(t, f, editFormWithoutValue(t, f, "max_sessions"))
+
+	after, err := os.ReadFile(f.cfg.FilePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", f.cfg.FilePath, err)
+	}
+	if strings.Contains(string(after), "max_sessions = false") {
+		t.Errorf("a request with no value wrote a word into a setting that is not a boolean:\n%s", after)
+	}
+	// The other direction, and the reason the assertion above is not enough on
+	// its own: an absent value must still reach the loader as the empty one it
+	// has always reached it as. Spelled with the newline because
+	// "max_sessions = " is a prefix of the line this test exists to refuse.
+	if !strings.Contains(string(after), "max_sessions = \n") {
+		t.Errorf("a missing value stopped behaving as an empty one:\n%s", after)
 	}
 }
 
