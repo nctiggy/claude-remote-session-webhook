@@ -76,7 +76,29 @@ wrong order.
 
 ## Q3 — Does the scrolling section menu disorient when the current chip starts offscreen?
 
-**Status: UNANSWERED**
+**Status: ANSWERED — 2026-08-09, by the operator, on a phone. The answer was yes.**
+
+> *"In portrait mode the settings are off the screen. Landscape is ok."*
+
+Worse than the question anticipated. It asked whether the *current* chip might
+start out of view; what happened is that most of the seven were unreachable —
+about two fit a 358px window and the rest needed a horizontal swipe nothing
+advertised.
+
+**Portrait only, and that is the tell.** A phone on its side is roughly 844px,
+which is wider than the 780px breakpoint, so landscape got the desktop sidebar
+and looked fine. The failure lived entirely in the layout this milestone added.
+
+**The fallback was taken**, and it was already written down: the scrolling row is
+now a `<details>` disclosure, and the row inside it wraps so nothing is off screen
+once it is open. The operator asked for the same thing independently — *"maybe we
+fold settings into a pancake menu to tighten up the header"* — which is the
+fallback and the request meeting in the middle.
+
+Shipped in `fix/settings-menu-disclosure`. The question stays in this file,
+answered rather than deleted: what it recorded is that this was foreseen, priced,
+and left for a device to settle, and removing it would erase the evidence that the
+mechanism worked.
 
 Below 780px the settings section menu reflows from a column beside the panel into a
 horizontally scrolling row above it, and the links stay links. If the operator is

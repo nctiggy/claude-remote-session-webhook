@@ -1309,6 +1309,22 @@ body {
   text-decoration: none;
 }
 
+/* The sections disclosure. Above the breakpoint there is nothing to disclose —
+   the sidebar has room for all seven — so the summary is hidden and the
+   <details> renders as the plain list it always was. It carries `open` in the
+   markup, which is why hiding the summary is enough: nothing here has to
+   override a browser's closed-state hiding, and that hiding is now
+   content-visibility on ::details-content rather than a display a rule could
+   beat. */
+.settings-sections-summary {
+  display: none;
+  padding: var(--s2) var(--s3);
+  border: var(--edge-width) solid var(--edge);
+  border-radius: var(--r);
+  color: var(--text);
+  cursor: pointer;
+}
+
 .settings-menu-link:hover {
   color: var(--text);
 }
@@ -1462,6 +1478,7 @@ body {
   }
 
   .settings-menu-link,
+  .settings-sections-summary,
   .combo-list li,
   .rename-summary,
   .release-notes summary {
@@ -1573,14 +1590,30 @@ body {
     position: static;
   }
 
-  .settings-menu-list {
-    grid-auto-flow: column;
-    justify-content: start;
-    overflow-x: auto;
+  /* This was a horizontally scrolling row, and the operator reported the failure
+     the spec had already written down as Q3: seven chips in a 358px window means
+     two are visible and the rest need a swipe nothing advertises. Landscape hid
+     it, because a phone on its side is wider than this breakpoint and gets the
+     sidebar.
+
+     Wrapping is the half that fixes it — every section is on screen once the
+     disclosure is open, and nothing scrolls sideways. The disclosure is the half
+     that answers the operator's other request: collapsed, the whole menu is one
+     line, so the panel starts immediately below it. */
+  /* Only the display flips here. Everything else the summary looks like lives
+     in its base rule, because the pointer block sits after this one and owns
+     padding-block — a shorthand here would silently reset the touch size. */
+  .settings-sections-summary {
+    display: block;
   }
 
-  .settings-menu-link {
-    white-space: nowrap;
+  .settings-sections[open] .settings-sections-summary {
+    margin-block-end: var(--s2);
+  }
+
+  .settings-menu-list {
+    display: flex;
+    flex-wrap: wrap;
   }
 
   /* A start-edge bar reads as a divider between chips rather than a mark on
