@@ -2197,3 +2197,62 @@ func TestThePaneDoesNotTrapVerticalScrolling(t *testing.T) {
 		t.Fatal("crswd.css has no .pane rule at all, so this test is checking nothing")
 	}
 }
+
+// whiteSpaceDecl is a wrapping mode and the keyword it is set to. The value is
+// captured rather than matched, because `pre` is a prefix of `pre-wrap` and the
+// two rules below want opposite answers from the same property.
+var whiteSpaceDecl = regexp.MustCompile(`(?i)white-space\s*:\s*([a-z-]+)`)
+
+// TestThePaneWrapsOnlyOnNarrowViewports is the trade the milestone makes, held
+// to the half of the stylesheet that is allowed to make it.
+//
+// A session prints 80 columns. A 390px phone shows about 44 of them, so reading
+// one paragraph of prose is eleven pans right and back — the dominant phone task
+// failing outright. Wrapping fixes that and costs the alignment of Claude Code's
+// own box borders, dividers and tables, which wrap into a line plus a stub.
+// research.md priced the alternative: shrink-to-fit needs a ~6.9px font.
+//
+// `overflow-wrap: anywhere` rather than `break-word` because the run this has to
+// break is a path or a hash with no break opportunity in it, which is exactly
+// what a real terminal breaks at its column edge.
+//
+// The assertion reads the rule inside the breakpoint block rather than
+// `blockFor(".pane")`, which returns the base rule — the first `.pane` in the
+// file — and would be unsatisfiable against a base rule that must say `pre`.
+//
+// **Must fail when** wrapping is added to the base rule, so a desktop loses
+// column alignment to fix a phone.
+func TestThePaneWrapsOnlyOnNarrowViewports(t *testing.T) {
+	t.Parallel()
+
+	narrow := blockFor(t, stylesheet(t), "@media (max-width: 780px)")
+	pane := blockFor(t, narrow, ".pane")
+
+	if got := whiteSpaceDecl.FindStringSubmatch(pane); got == nil || got[1] != "pre-wrap" {
+		t.Errorf("the pane does not wrap below the breakpoint, so reading a paragraph on a phone is a horizontal pan per line: %q", pane)
+	}
+	if !regexp.MustCompile(`(?i)overflow-wrap\s*:\s*anywhere`).MatchString(pane) {
+		t.Errorf("the pane wraps but an unbroken run — a path, a hash — still overflows the viewport with nothing to break it: %q", pane)
+	}
+}
+
+// TestThePaneKeepsItsDesktopAlignment is the other side of that trade, and the
+// side with no visible symptom.
+//
+// Overriding `white-space` inside the breakpoint and changing it in the base
+// rule look identical on a phone. They differ on every desktop, where the pane
+// is wide enough for 80 columns and alignment is the whole point of a terminal:
+// a base-rule change would take diffs, tables and TUI chrome away from every
+// reader who never had the problem, silently, to fix one who did.
+//
+// **Must fail when** the base declaration is changed rather than overridden, and
+// every desktop reader loses alignment silently.
+func TestThePaneKeepsItsDesktopAlignment(t *testing.T) {
+	t.Parallel()
+
+	pane := blockFor(t, stylesheet(t), ".pane")
+
+	if got := whiteSpaceDecl.FindStringSubmatch(pane); got == nil || got[1] != "pre" {
+		t.Errorf("the base pane rule no longer sets `white-space: pre`, so a desktop wide enough for 80 columns wraps them anyway and every alignment-dependent screen is misrepresented: %q", pane)
+	}
+}

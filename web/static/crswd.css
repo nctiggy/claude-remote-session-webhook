@@ -1079,6 +1079,20 @@ body {
   .settings {
     grid-template-columns: 1fr;
   }
+
+  /* 80 columns through a 44-character window is a horizontal pan per line, and
+     most of what a session prints is prose. Wrapping trades the alignment of
+     tables and TUI chrome for the ability to read a paragraph at all — a trade,
+     not a fix, and the one the pinch-zoom this page never clamps mitigates.
+     Safe because captures are right-trimmed — capture-pane carries no -N — so
+     blank padding does not wrap into a line of its own. `anywhere` rather than
+     `break-word` because an unbroken run is what a real terminal breaks at its
+     column edge, and because `break-word` leaves the run overflowing until the
+     line has something else on it. */
+  .pane {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
 }
 
 /* Removed entirely rather than slowed: the canvas leaves the layout, so the

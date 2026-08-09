@@ -233,6 +233,7 @@ Everything inside `@media (max-width: 780px)`:
 | `.summary` | two columns | Four state pills side by side are unreadable at 390px |
 | `.brand-tag` | hidden | The tagline is the first thing that is decoration, not information |
 | `.settings` | one column | The section menu goes above its panel rather than beside it |
+| `.pane` | `white-space: pre-wrap` + `overflow-wrap: anywhere` | 80 columns through a 44-character window is a pan per line. The trade is described under Typography; the base rule keeps `pre` |
 
 **Adding a rule to that block adds a row to this table, in the same commit.** An
 enumeration that has gone stale is worse than no enumeration — this table already
