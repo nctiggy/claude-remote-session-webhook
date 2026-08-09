@@ -195,7 +195,7 @@ needs to re-argue them.
 ### US2 — Read and change a setting, from a phone (P1) — the reported surface
 
 - [x] **T006** Delete `overflow-x: auto` from `.settings` (`crswd.css:1131`, the grid wrapper) and add it to `.settings-panel`. **Must land before T008.**
-- [ ] **T007** Reflow `.settings-menu-list` to `grid-auto-flow: column` with `position: static` on `.settings-menu`, inside the 780px block. Move the `aria-current` marker to `border-block-end`. Links stay links.
+- [x] **T007** Reflow `.settings-menu-list` to `grid-auto-flow: column` with `position: static` on `.settings-menu`, inside the 780px block. Move the `aria-current` marker to `border-block-end`. Links stay links.
 - [ ] **T008** 🔒 Stack `.settings-table` rows inside the 780px block. `clip-path: inset(50%)` for the headers — **never** the `1px` recipe.
 - [ ] **T009** Rewrite `web/templates/settings.html`'s header comment, which claims the page has no form, no token, no action row and no live region. It has all four.
 

@@ -426,3 +426,103 @@ tasks open.
    involved. It is a theoretical regression rather than a likely one, and the honest note is
    that this guard checks which *rule* carries the property, never which elements the rule
    ends up wrapping.
+
+---
+
+## Iteration 7 — 2026-08-09 08:57
+
+**Did:** T007. The section menu is a scrolling row below the breakpoint —
+`.settings-menu { position: static }`, `.settings-menu-list { grid-auto-flow: column;
+justify-content: start; overflow-x: auto }`, `.settings-menu-link { white-space: nowrap }`,
+and the `aria-current` marker moved from `border-inline-start` to `border-block-end`. Four
+rows added to the design-system enumeration table, plus a third "how it is written" rule.
+Three contract tests shipped, plus a fourth that had to exist first — see below.
+
+**AND: the `@media (max-width: 780px)` block was moved, unchanged, to the end of the
+stylesheet.** This was not optional decoration and it is the headline of the iteration.
+
+**Learned, so the next iteration does not rediscover it:**
+
+- **THE BLOCK WAS ABOVE THE RULES IT OVERRIDES, AND HALF OF IT HAS NEVER DONE ANYTHING.**
+  A media query adds **no specificity**. At HEAD the block sat at `crswd.css:1061` and every
+  settings rule was below it — `.settings` at 1332, `.settings-menu-list` 1339,
+  `.settings-menu-link` 1347, `[aria-current]` 1367, `.settings-menu` 1378. So
+  `.settings { grid-template-columns: 1fr }` inside the breakpoint lost the tie to
+  `grid-template-columns: minmax(var(--menu-min), var(--menu-max)) 1fr` 250 lines further
+  down. **The settings page has never been one column on a phone**: it has been rendering a
+  10rem-minimum menu column beside the table in a 390px viewport. That is very likely the
+  whole of *"seeing settings is tricky right now as well"*. `.shell`, `.summary`,
+  `.brand-tag` and `.pane` were unaffected — their base rules are at 235, 290, 378 and 910,
+  all above 1061 — which is exactly why this survived: **four of the five rules worked, so
+  the block looked fine.**
+- **T007 as written would have been inert in the same way.** `position: static` would have
+  lost to `position: sticky` at 1378, and `border-inline-start: none` to the base marker at
+  1367. Both would have parsed, passed every guard in the milestone, and changed nothing —
+  the failure the plan names for T010 and the notebook has recorded four times.
+- **The fix is to move the block, not to fight it.** Relocating it below `.check-line` and
+  above `[hidden]` keeps *one* width query, so `TestTheDashboardHasExactlyOneBreakpoint`
+  is untouched, and the rules inside are byte-identical. Checked before moving: no test
+  calls `blockFor(".settings")` (which used to return the media-block rule and now would
+  return `.settings table`'s), `blockFor(".pane")` still finds the base rule at 910, and
+  `TestHiddenAlwaysWins`'s trailing-`display` regex is anchored on `\n\.` so indented rules
+  inside a media block never match it.
+- **`TestTheBreakpointOverridesRatherThanPrecedes` is the guard this needed and did not
+  have.** It is written **per selector, not per block**: it collects the selectors declared
+  inside the breakpoint and fails if any of them is declared again *after* the block. That
+  catches the real hazard, which is a base rule declared low in the file rather than the
+  block having moved. Proved by mutation two ways — a stray `.settings-menu { position:
+  sticky }` after the block, and a faithful reconstruction of the historical layout (a
+  duplicate two-column `.settings` after the block), which fails naming `.settings` and the
+  exact declaration that beat it.
+- **T010 inherits this problem and iteration 1's note about it is now wrong.** Iteration 1
+  said the coarse block "goes after 1067's closing brace" (the reduced-motion block). That
+  would put it **above** `.setting-input` (now ~1417), `.field-input` and the button rules
+  it is meant to override — inert, exactly as this was. **T010's coarse block belongs at the
+  end of the file, next to the width block.** Its own
+  `TestTheCoarseBlockOverridesRatherThanPrecedes` should be written the same per-selector way
+  rather than as "after the reduced-motion block", which is an assertion about the wrong
+  thing.
+- **`ruleFor(t, source, selector)` is new, in `stylesheet_test.go`, and is blockFor's
+  exact-match sibling.** `blockFor` takes the first `strings.Index` of a marker, and on this
+  page that is a coin toss: `.settings` is a prefix of `.settings table`, `.settings-menu`
+  and `.settings-panel`; `.settings-menu` is a prefix of `.settings-menu-list` and
+  `-link`. Iterations 3, 4 and 6 each had to reason about this by hand. Use `ruleFor` for
+  any settings selector.
+- **`TestTheSettingsMenuIsStillLinks` went in `partials_test.go`, not `stylesheet_test.go`**,
+  against the contract's file list. It reads rendered markup, `partials_test.go` already
+  owns `renderComponent`/`anchorTo`/`cardAnchor`, and iteration 5's finding 1 asked for the
+  division to be respected going forward. Reusing those helpers was the deciding factor.
+- All gate commands green; linter is **2.12.2**, so the green is real. `go test ./...` clean,
+  all three tagged suites compile. `-tags quickstart` was not *run*: CSS, two test files and
+  one doc, no `cmd/crswd`.
+
+**Left:** T008 next (stack the setting rows — `clip-path: inset(50%)`, **never** the `1px`
+recipe). T006 has landed, so its ordering constraint is satisfied. 10 of 17 tasks open.
+
+**Findings — noticed, not fixed:**
+
+1. **`crswd.js` may have a scroll assumption that the sticky menu used to satisfy, and nobody
+   checked.** T007 removes `position: sticky` below 780px. I did not read `crswd.js` for
+   anything keyed to the menu's position, because nothing in the contract suggested one and
+   the class sweep says the menu is styled from CSS only. If a later task touches the script,
+   it is worth a grep for `settings-menu`.
+2. **The stale comment above the 780px block that iterations 4 and 6 both flagged is now
+   fixed** — it no longer enumerates and points at the design-system table instead, which is
+   the copy with an obligation attached. Recording it here so a third iteration does not go
+   looking for it. The enumeration duplication is gone, so the "adding a rule adds a row"
+   rule now has exactly one place to be obeyed.
+3. **`TestTheBreakpointOverridesRatherThanPrecedes` compares selectors as strings, so it
+   cannot see a *more specific* rule declared later.** `.settings-panel .settings-menu` after
+   the block would beat the narrow rule and this guard would not notice, because the selector
+   text differs. Real cascade specificity is not something a regex sweep can compute. The
+   guard covers the exact-tie case, which is the one that has actually happened here twice
+   (`.settings`, and `.pane` narrowly avoided in iteration 4). Worth knowing before someone
+   trusts it further than that.
+4. **The one-column collapse is now live for the first time, and no human has seen it.** This
+   iteration changed what the settings page *renders* on a phone in a way no previous
+   milestone-7 task did — T003–T006 added or moved declarations that were already reachable.
+   Nothing in this repository renders CSS. The menu row, the stacked panel and the marker on
+   the bottom edge are all unverified against a real device, and question 3 in
+   `docs/mobile-open-questions.md` (does the scrolling menu disorient when the current chip
+   starts offscreen?) is now a question about something that actually happens rather than a
+   hypothetical. It must stay UNANSWERED; T017 verifies that.
