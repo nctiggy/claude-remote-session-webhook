@@ -180,7 +180,7 @@ needs to re-argue them.
 
 ### Setup — the docs everything else transcribes from
 
-- [ ] **T001** Create `docs/mobile-open-questions.md` (three questions, three fallbacks, all UNANSWERED) and correct the breakpoint section of `docs/design-system.md` — it says "Two breakpoints is enough" while the stylesheet has one and the test enforces one. Add the pointer-coarse policy and amend the pane's typography row.
+- [x] **T001** Create `docs/mobile-open-questions.md` (three questions, three fallbacks, all UNANSWERED) and correct the breakpoint section of `docs/design-system.md` — it says "Two breakpoints is enough" while the stylesheet has one and the test enforces one. Add the pointer-coarse policy and amend the pane's typography row.
 
 ### Foundational — blocking
 

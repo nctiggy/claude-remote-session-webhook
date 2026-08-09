@@ -66,7 +66,7 @@ outstanding. Check the version; do not assume it.
 
 ## Phase 1: Setup
 
-- [ ] **T001** Create `docs/mobile-open-questions.md` and correct the breakpoint section of `docs/design-system.md`
+- [x] **T001** Create `docs/mobile-open-questions.md` and correct the breakpoint section of `docs/design-system.md`
 
   **Part A — the open questions file.** Create `docs/mobile-open-questions.md`
   listing exactly three questions, each marked **UNANSWERED**, each with its
