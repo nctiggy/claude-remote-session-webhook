@@ -913,3 +913,79 @@ reachability phase. 5 of 17 tasks open.
    input scale, and now card text truncation). That is four notes pointing at one task; T016
    should be read as "reconcile the document with everything milestone 7 made conditional",
    not as the two prose edits its title names.
+
+---
+
+## Iteration 13 — 2026-08-09 09:37
+
+**Did:** T013, the last of the reachability phase. `.masthead-bar { padding-inline: var(--s4) }`
+and `.operator { flex: 1 1 0; min-inline-size: 0; text-align: end }` at the end of the 780px
+block, plus both contract tests — `TestTheMastheadAlignsWithThePage` and
+`TestALongIdentityDoesNotWrapTheBar` (`stylesheet_test.go:2945` onward) — and the two rows the
+design-system enumeration table owes. Three files, one commit, no template touched.
+
+**Learned, so the next iteration does not rediscover it:**
+
+- **The alignment assertion reads `.shell`'s own narrow gutter instead of naming `var(--s4)`,
+  and that is the difference between holding a relationship and holding a number.** "The header
+  is in line with the page" is only true relative to whatever gutter the page spends; a test
+  that names the token passes forever if `.shell` later moves to `--s3`. It reads the narrow
+  `.shell` rule, `t.Fatal`s if that value has stopped being a single field (the premise it
+  compares against would be gone), and otherwise requires the same string. Worth copying for
+  any future pair of rules that must agree rather than each be correct.
+- **The two rules are spelled with different properties on purpose and the test has to bridge
+  it.** `.shell` sets the `padding` shorthand and `.masthead-bar` sets the `padding-inline`
+  longhand — the longhand is the right rule here because the block padding must survive, and
+  the shorthand would reset it. Two regexes, one per spelling; comparing their *text* would
+  have compared nothing.
+- **`.operator`'s `min-inline-size: 0` is redundant today and was still written**, because the
+  base rule's `overflow: hidden` is what currently disables a flex item's automatic minimum
+  size. It is in the contract, and the comment says which property is doing the work — so a
+  future change to `overflow` does not silently floor the basis back up to a full email. It is
+  deliberately **not** asserted: a test on it would fail a correct simplification.
+- **`text-align: end` is asserted, and it is not decoration.** Basis 0 grows the item to fill
+  the bar, so without it the address starts at the *left* edge of a box spanning the header —
+  `docs/design-system.md`'s second non-negotiable (top-right is always identity) is what the
+  wrap fix would otherwise have cost. That mutation passes the flex assertion on its own.
+- **Neither selector collides with anything the pointer block names**, so the width block's
+  position below it stayed free: `TestTheCoarseBlockOverridesRatherThanPrecedes`'s per-property
+  half only looks at selectors the coarse block itself declares, and it declares
+  `.masthead-link`, not `.masthead-bar`. Checked rather than assumed — the `.settings-menu-link`
+  collision iteration 10 hit is the same shape.
+- All three negatives proved by mutation: `var(--s5)` for the gutter fails naming both values;
+  `flex: 1 1 auto` with `text-align` dropped fails **both** `.operator` assertions separately;
+  renaming the selector so the rule is not in the block fatals in `ruleFor`, which is how "wrote
+  it at the top level instead" is caught for free. Mutations done with `Edit` and undone with
+  `Edit`, per iterations 3–12.
+- All gate commands green; linter is **2.12.2**, so the green is real. `go test ./...` clean,
+  all three tagged suites compile (`go vet -tags tmux|quickstart|dev`). `-tags quickstart` was
+  not *run*: two CSS rules, two tests, two doc rows, no `cmd/crswd`.
+
+**Left:** T014 next — replace `background: var(--glow)` with `var(--surface)` /
+`var(--surface-lift)` at the two settings-menu rules, add `TestNoBackgroundSpendsAShadowToken`,
+and update the comment above them. It is the only task in this milestone that fixes a bug
+visible on a **desktop**. Then T015 (delete the dead settings rules), T016, T017. 4 of 17 open;
+US5/US6 is complete.
+
+**Findings — noticed, not fixed:**
+
+1. **This is the sixth milestone-7 rule pair and the first where the desktop side is genuinely
+   unreachable by a guard.** The pattern iterations 11 and 12 tracked — nothing asserts the
+   narrow declaration is *absent* from the base rule — does not apply cleanly here: a base
+   `.masthead-bar { padding-inline: var(--s4) }` would not be a silent regression, it would be
+   a visible 8px change on every desktop. So FR-016's gap is unchanged at four pairs
+   (`.settings-table tr`, `.button`, `.field-input`, `.setting-input`) rather than five, and
+   the one-sweep fix iteration 11 described still covers all of them.
+2. **`.operator` now grows to fill on a phone, and `margin-inline-start: auto` on its base rule
+   has nothing left to do there.** The auto margin is what puts identity at the end of a bar
+   `space-between` was written for two children; with basis 0 the item takes the free space
+   itself and `text-align` positions the text inside it. Both are correct, neither is wrong to
+   keep, and the comment at `crswd.css:247` explains the margin as though it is the only
+   mechanism. Harmless — but a reader debugging the bar below 780px will find two things
+   claiming the same job. AR-008 says not from a CSS task whose scope is the media block.
+3. **`docs/components.md:74-80` gives the masthead's classes with no note that two of them
+   change below the breakpoint** — the fourth item now pointing at T016 (the pane's scroll
+   container, button/action-row geometry, input scale, card truncation, and now the header's
+   gutter and the identity's flex). Five notes, one task. T016's title names two prose edits;
+   read it as "reconcile the document with everything milestone 7 made conditional" or it will
+   ship a document that describes a desktop.

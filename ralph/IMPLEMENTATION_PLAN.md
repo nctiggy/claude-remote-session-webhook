@@ -207,7 +207,7 @@ needs to re-argue them.
 ### US5 + US6 — Content reachability (P3)
 
 - [x] **T012** Wrap `.card-name` / `.card-path` inside the 780px block. The `title` attribute needs a hover a phone does not have.
-- [ ] **T013** `padding-inline: var(--s4)` on `.masthead-bar` and `flex: 1 1 0` on `.operator`, inside the 780px block.
+- [x] **T013** `padding-inline: var(--s4)` on `.masthead-bar` and `flex: 1 1 0` on `.operator`, inside the 780px block.
 
 ### US7 — What the sweep found (P3)
 
