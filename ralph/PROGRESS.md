@@ -260,3 +260,82 @@ sweep is green against the stylesheet as it stands.
 - **`gofmt -l ./...` is still not clean on `main`** (`internal/httpapi/render.go`,
   import order). Unchanged by this iteration; `gofmt -l` on the one file T003 touched is
   clean, and `golangci-lint run` (v2.12.2) reports 0 issues.
+
+---
+
+## Iteration 4 — 2026-08-09
+
+**Did:** T004 (#119). `docs/components.md` has a Toast section describing the
+`.action-toast` that has shipped on all three pages since #42, the false "no section
+and no use" clause is gone, and `documentedComponentClass` in
+`internal/httpapi/stylesheet_test.go` now carries `.action-toast*` as a fourth family
+so the claim cannot rot again. Two files; no executable change.
+
+**Learned:**
+
+- **Widening `documentedComponentClass` is the cheapest guard in this file and the
+  proof is two commands.** Edit the regex first, run the test, watch it say *"crswd.css
+  styles `.action-toast` and ../../docs/components.md never names it"*, then write the
+  section. Doing it in that order is what separates a guard from a decoration, and it
+  costs one test run.
+- **The class must appear in the document with its leading dot.** The regex is
+  `\.(combo|switch|masthead|action-toast)[\w-]*`, so the `class="action-toast"` inside
+  the section's code block does **not** satisfy it — only the `.action-toast` row in the
+  class table does. Every section here happens to carry such a table, which is why this
+  has never bitten; a section written as prose alone would fail the guard it is meant to
+  satisfy, and the message would read as the document not naming a class it visibly
+  discusses.
+- **The test name is cited by four archived files**, including
+  `specs/007-make-it-work-on-a-phone/contracts/guards.md` as G6. It was renamed anyway —
+  a test whose name under-states what it sweeps is the defect this milestone is about —
+  and the doc comment now carries the old spelling so a grep from those files lands.
+- **`crswd.js`, `crswd.css` and the three templates already told the whole story**, and
+  between them they are the better source than any spec: `settings.html:216` records the
+  three fixes that went into the update button before a missing `#action-toast` turned
+  out to be the cause, and `crswd.js:825–899` gives the redirect/enhancement split, the
+  `sessionStorage` reason and the `DOMParser` reason. `partials/outcome.html` has the
+  matching paragraph from the other side. Read those five before writing about an
+  action's answer.
+- **The toast is the only place a scripted operator is told anything**, including the
+  alarming "teardown could not be verified" outcome, and it disappears after six
+  seconds. That is in the section as a stated cost rather than a rule, because it is a
+  shipped trade and not a defect anybody has reported.
+
+**Left:** T005 (#123) — the `freePort` race. One task.
+
+**Findings (noticed, not fixed — no code changed for any of these):**
+
+- **`.card-outcome` is a class this document names three times and nothing in `web/`
+  renders or styles.** `docs/components.md` still says, under Action controls, *"A route
+  answers with `<p class="card-outcome">…</p>`, which replaces what it acted on"*, plus
+  *"each one `.card-outcome` sentence"* in the same section and *"replaces what it acted
+  on with `.card-outcome`, next to the control"* under Form. Milestone 4's T014 replaced
+  that fragment with a 303 and `partials/outcome.html`;
+  `TestTheToastReadsTheBannerTheDaemonRenders` (`stylesheet_test.go:1099`) even asserts
+  the *script* no longer reaches for it. **This is the same defect as #119, in the
+  section next door, and adding `card-outcome` to `documentedComponentClass` would catch
+  it in the reverse direction immediately** — the doc names it, the stylesheet styles
+  nothing by that name. Not done here: fixing the failure means rewriting the Action
+  controls section, which is a second task, and the plan's own warning about T003 is that
+  a task which ends green having rewritten six things on suspicion is worse than one that
+  ends green having rewritten none. **This wants an issue.**
+- **The same section's answer table is stale in the same way.** It gives Destroy as
+  *"`200` and a sentence"*, Create as *"`200` and the new card"*, Rename *"`200` and the
+  renamed card"*, Compact *"`202`"*. `redirectOutcome` (`outcome.go:396`) is how **every**
+  action route answers, and its own comment says so: a 303 to the fleet. Same issue as
+  the bullet above; they should be fixed together, because the table and the prose are
+  one account of what an action answers with.
+- **The toast ships `hidden` and is revealed as it is written; `.fleet-note` ships
+  present and empty on purpose.** `dashboard.html:120–135` gives the reason for the
+  latter — *"a live region has to be in the accessibility tree before its text arrives
+  … a region revealed and written in one go is a region some readers never announce"* —
+  and `crswd.js` sets `toast.textContent` and then `toast.hidden = false`, which is that
+  shape. It may be fine and it may be why an operator using a screen reader is never told
+  an action's outcome; **nothing in this tree can answer that and no one has checked it
+  on a real reader.** Recorded in the new section as an open point rather than asserted
+  either way (Principle II). Wants a real device, like Q1 and Q2 — not an iteration.
+- **Still open and untouched:** `docs/security.md` lines 216 and 233–237 and
+  `internal/httpapi/server.go:571–577` say no browser route writes the operator's config
+  while `POST /settings/edit` does (iterations 2 and 3). `gofmt -l ./...` is still not
+  clean on `main` (`internal/httpapi/render.go`); `gofmt -l` on the one Go file this
+  iteration touched is clean and `golangci-lint run` (v2.12.2) reports 0 issues.
