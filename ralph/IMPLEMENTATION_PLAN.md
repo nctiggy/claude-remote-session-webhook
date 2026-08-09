@@ -81,7 +81,7 @@ than one that ends green having deleted none.
 
 ## Tasks
 
-- [ ] **T001** (#116) Make `docs/design-system.md` the thing `designTokens` is checked against. Parse the document's declared tokens and compare with the map at `internal/httpapi/stylesheet_test.go:31` in **both** directions — a token in the map the document does not declare is a fabricated transcription; a token the document declares that the map omits is the drift the map exists to catch. **Prove it by breaking it**: add a token to the stylesheet and the map only, and watch the new test fail.
+- [x] **T001** (#116) Make `docs/design-system.md` the thing `designTokens` is checked against. Parse the document's declared tokens and compare with the map at `internal/httpapi/stylesheet_test.go:31` in **both** directions — a token in the map the document does not declare is a fabricated transcription; a token the document declares that the map omits is the drift the map exists to catch. **Prove it by breaking it**: add a token to the stylesheet and the map only, and watch the new test fail.
 
 - [ ] **T002** (#117) Rewrite the header comment of `internal/httpapi/settings.go` (lines 3 and 12–18). It says *"No mutating verb is registered on this path"* and *"Writing the operator's configuration file from a browser is the highest-consequence surface in the product (spec, Out of Scope)"*. The first is true only of `GET /settings`; `internal/httpapi/settings_edit.go:39` registers `POST /settings/edit` and `settings.html` renders forms that post to it. Describe the doors that exist: a GET that renders, a separate POST that writes, what gates it, and **why the write is a different pattern rather than a verb on the same one** — that is a good decision and it should be stated on purpose.
 

@@ -18,16 +18,24 @@ import (
 	"github.com/nctiggy/claude-remote-session-webhook/web"
 )
 
-// designTokens is docs/design-system.md's own CSS, transcribed here rather than
-// read from the stylesheet it checks — the same reason securityHeaders in
-// render_test.go writes the policy out by hand. A test that compared the file
-// against its own spelling would still pass on a palette that had quietly
-// drifted, which is precisely the drift Principle VII forbids.
+// designTokens is docs/design-system.md's own declarations, transcribed here
+// rather than read from the stylesheet it checks — the same reason
+// securityHeaders in render_test.go writes the policy out by hand. A test that
+// compared the file against its own spelling would still pass on a palette that
+// had quietly drifted, which is precisely the drift Principle VII forbids.
 //
-// The typography and layout values are deliberately absent: the design system
-// gives those in tables, without token names, so the stylesheet names them and
-// only their absence from a rule is testable. What is here is every token that
-// document declares as CSS.
+// A hand transcription is only worth its bytes if something holds it to the
+// document, and until #116 nothing did: this map claimed to be that file and no
+// test had ever opened it. TestTheTranscriptionIsTheDocumentItTranscribes is
+// that check now, which is also why the set below is every token the document
+// declares *anywhere* rather than only the ones inside a fenced CSS block. The
+// four state tokens are a table and `--pane-h` is a sentence of prose, and a
+// transcription defined as "the ones somebody remembered" is not a set anything
+// can be compared against.
+//
+// Still deliberately absent: the typography and layout values the document
+// gives in tables without naming a token. The stylesheet names those itself, so
+// only their absence from a rule is testable.
 var designTokens = map[string]string{
 	"--ground":        "#050705",
 	"--surface":       "#0a0f0a",
@@ -53,6 +61,7 @@ var designTokens = map[string]string{
 	"--r":             "3px",
 	"--edge-width":    "1px",
 	"--transition":    ".12s ease",
+	"--pane-h":        "30rem",
 	"--tap":           "44px",
 	"--fs-input":      "16px",
 }
@@ -146,6 +155,109 @@ func TestTheTokenBlockIsTheDesignSystem(t *testing.T) {
 		}
 		if got != want {
 			t.Errorf("%s is %q; docs/design-system.md says %q", name, got, want)
+		}
+	}
+}
+
+// designSystemPath is docs/design-system.md, which AGENTS.md names as the file
+// to load before touching anything visual and Principle VII makes binding. Its
+// twin is componentsDocPath, further down: the other half of the same vocabulary
+// and read by a test for the same reason.
+const designSystemPath = "../../docs/design-system.md"
+
+// docTokenDecl is a token declared as CSS in that document.
+//
+// A backtick opens and closes a declaration as well as a line break or a
+// semicolon does, because one of them is written inline in a sentence rather
+// than inside a fence — and the rest of that sentence is prose, not part of a
+// length.
+//
+// A reference is not a declaration: `var(--tap)` is preceded by `(`, which the
+// leading class does not admit, and carries no colon of its own. That is what
+// keeps the pointer table's cells from reading as a second declaration of the
+// tokens they spend.
+var docTokenDecl = regexp.MustCompile("(?m)(?:^|[;{`\\s])(--[a-z0-9-]+)\\s*:\\s*([^;}\\n`]+)")
+
+// docTokenRow is a token the document declares in a table instead. The state
+// table gives the name in one cell and the value in the next and never as CSS,
+// so a sweep that read only the fenced blocks would report all four of them as
+// invented here.
+//
+// Anchored on the second cell being nothing but a backticked token. That is what
+// keeps it off the breakpoint and pointer tables, whose second cell is a
+// declaration made *about* a selector rather than a token being declared.
+var docTokenRow = regexp.MustCompile("(?m)^\\|[^|]*\\|\\s*`(--[a-z0-9-]+)`\\s*\\|\\s*`([^`|]+)`\\s*\\|")
+
+// designSystemTokens is every token docs/design-system.md declares, read out of
+// the document rather than out of anything that transcribes it.
+func designSystemTokens(t *testing.T) map[string]string {
+	t.Helper()
+
+	raw, err := os.ReadFile(designSystemPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", designSystemPath, err)
+	}
+	// Comments stripped first, for cssComment's own reason: a token named in the
+	// commentary beside a declaration is prose about the palette rather than a
+	// second declaration of it.
+	source := cssComment.ReplaceAllString(string(raw), "")
+
+	out := make(map[string]string)
+	for _, decl := range docTokenDecl.FindAllStringSubmatch(source, -1) {
+		out[decl[1]] = strings.TrimSpace(decl[2])
+	}
+	for _, row := range docTokenRow.FindAllStringSubmatch(source, -1) {
+		out[row[1]] = strings.TrimSpace(row[2])
+	}
+
+	// The table is the shape most likely to be reformatted by someone who is not
+	// thinking about this sweep, and a row it silently stopped matching would
+	// read below as four tokens the document no longer declares — the map
+	// accused of inventing the palette by a parser that had gone blind. So the
+	// blindness is the failure, said here.
+	for _, token := range documentedStates {
+		if out[token] == "" {
+			t.Fatalf("no row of the state table in %s declares %s; this reads the token from the second cell and the value from the third, and a table reshaped away from that reports every token in it as fabricated", designSystemPath, token)
+		}
+	}
+	return out
+}
+
+// TestTheTranscriptionIsTheDocumentItTranscribes closes the loop designTokens
+// has stood open in since it was written (#116).
+//
+// The map is checked against the stylesheet and the stylesheet against the map,
+// and neither direction opens docs/design-system.md. So the pair rests entirely
+// on a transcription nothing has read since it was typed: a value mistyped into
+// both the map and the stylesheet is green, and so is a token the design system
+// gained that the map never learned.
+//
+// Both directions, failing for different reasons. A token in the map the
+// document does not declare is a fabrication — the stylesheet is being held to a
+// value the design system does not have, which is the palette drifting with a
+// test agreeing. A token the document declares that the map omits is the drift
+// the map exists to catch, arriving unwatched.
+//
+// **Must fail when** either side gains a token the other has not, or the two
+// spell one token's value differently.
+func TestTheTranscriptionIsTheDocumentItTranscribes(t *testing.T) {
+	t.Parallel()
+
+	declared := designSystemTokens(t)
+
+	for name, want := range designTokens {
+		got, ok := declared[name]
+		if !ok {
+			t.Errorf("designTokens carries %s and %s declares no such token; the stylesheet is being held to a value the design system does not have", name, designSystemPath)
+			continue
+		}
+		if got != want {
+			t.Errorf("designTokens says %s is %q; %s says %q", name, want, designSystemPath, got)
+		}
+	}
+	for name := range declared {
+		if _, ok := designTokens[name]; !ok {
+			t.Errorf("%s declares %s and designTokens omits it, so nothing holds the stylesheet to it", designSystemPath, name)
 		}
 	}
 }
