@@ -682,3 +682,95 @@ open.
    provenance word under a value with its header clipped — so the comment is accurate about the
    markup and silent about whether it reads. Deliberate: a comment is not where an unanswered
    question gets answered. `docs/mobile-open-questions.md` was not touched.
+
+---
+
+## Iteration 10 — 2026-08-09 09:21
+
+**Did:** T010, the milestone's flagged-riskiest task. The `@media (pointer: coarse)` block —
+`.button` and `.field-switch` to `min-block-size: var(--tap)`; `padding-block: var(--s3)` on
+`.settings-menu-link`, `.combo-list li`, `.rename-summary` and `.release-notes summary`;
+`.masthead-link` padded with the height given back by a negative `margin-block`;
+`.card-actions` gap widened to `--s3`. Placed **after `.check-line` and before the width
+block**, so it is below every rule it overrides. Five contract tests shipped
+(`stylesheet_test.go:2634` onward) plus an enumeration table in the pointer section of
+`docs/design-system.md`, carrying the same "a rule adds a row" obligation the width table does.
+
+**Learned, so the next iteration does not rediscover it:**
+
+- **The coarse block cannot go after the width block, and iteration 9's note stopped one step
+  short of saying so.** Iteration 9 correctly said "end of the file, beside the width block"
+  rather than after reduced-motion. But *which side* matters:
+  `TestTheBreakpointOverridesRatherThanPrecedes` fails if any selector the width block declares
+  is declared again below it, and the coarse block declares `.settings-menu-link` — which the
+  width block also declares, for `white-space`. So coarse goes **immediately before** the width
+  block. Both are then below every base rule, and the two blocks share no property on that
+  selector, so the order between them is behaviourally free.
+- **That collision is also why the new offset assertion is per *property* and not only per
+  selector.** A copy of `TestTheBreakpointOverridesRatherThanPrecedes`'s exact shape would have
+  failed on `.settings-menu-link` on the day it was written. `TestTheCoarseBlockOverrides
+  RatherThanPrecedes` is therefore two halves: (a) per selector — a selector the block names
+  that is declared below it and *nowhere above* is the block sitting too high; (b) per property
+  — a rule below that sets a property the block set. They are complementary: (a) cannot see a
+  new base rule added below because the selector exists in both places, and (b) cannot see a
+  selector whose only rule moved below without a property clash.
+- **`propertiesCollide` is a prefix test in both directions, and it is load-bearing rather than
+  fussy.** `.settings-menu-link` sets `padding` and the block sets `padding-block` on it — a
+  later `padding` resets the longhand entirely while sharing not one character of its name. A
+  plain string equality would have read that as no collision. Proved: adding
+  `.settings-menu-link { padding: var(--s2) var(--s3) }` inside the width block fails, naming
+  both properties.
+- **The headline negative was proved with the real mutation.** Moving the whole block (comment
+  and all) above `.masthead` fails naming **all seven** selectors and then fatals on the
+  vacuity guard — "no selector the pointer block names has a rule above it". Three more
+  proved: `display: grid` in the block fails `TestTheCoarseBlockChangesNoLayout`;
+  `min-block-size: var(--tap)` on `.card-name` inside the **width** block fails
+  `TestTouchTargetsFollowThePointerNotTheWidth` (the plausible wrong answer, which looks right
+  on whatever phone the author was holding); and a `.button` rule that sizes something else
+  fails `TestEveryButtonIsThumbSized`.
+- **`ruleFor(t, source, sel)` on the whole file is a positional bet the moment a selector is
+  declared twice, and this task created the second one.** During the move-the-block proof
+  `TestDestroyIsSeparatedFromCompact` failed for the *wrong reason*: `ruleFor` returned the
+  coarse `.card-actions` as "the base rule" and compared it to itself. Fixed by reading the
+  base from `source[:strings.Index(source, coarse)]`. **T011 adds a second `.field-input` and a
+  second `.setting-input`** — any assertion about their base rules has exactly this hole.
+- **`.masthead-link` is a flex item, so `padding-block` and the negative `margin-block` both do
+  what the comment claims.** It is an `<a>` and vertical padding on an *inline* box grows the
+  paint area without moving layout, which would have made the negative margin a no-op; but
+  `.masthead-bar` is `display: flex` (`crswd.css:177`), so the link is blockified and the two
+  declarations cancel as described. Checked rather than assumed.
+- All gate commands green; linter is **2.12.2**, so the green is real. `go test ./...` clean
+  first time, all three tagged suites compile (`go vet -tags tmux|quickstart|dev`).
+  `-tags quickstart` was not *run*: one CSS file, one test file, one doc, no `cmd/crswd`.
+
+**Left:** T011 next — `font-size: var(--fs-input)` for `.field-input` **and** `.setting-input`
+in the block this iteration created. It is the second half of the same contract and the
+smallest task remaining; the doc table owes it a row. 7 of 17 tasks open.
+
+**Findings — noticed, not fixed:**
+
+1. **`TestTheCoarseBlockChangesNoLayout` reads the block's declarations, not what they do.**
+   `min-block-size` is on its allow-list and is a sizing property by name — but on a flex or
+   grid *container* a minimum size changes how its children are distributed, which is layout by
+   any honest reading. `.field-switch` is `grid-auto-flow: column` and now carries a minimum
+   height. The policy the test enforces is "no layout *property*"; the policy
+   `docs/design-system.md` states is "changes no layout". Those are not the same sentence, and
+   the gap is not closable by a regex. Worth knowing before someone reads a green as proof the
+   policy holds.
+2. **Two milestone-7 rule pairs still have no desktop-side guard, and this task adds a third
+   kind.** Iterations 4 and 8 recorded that `.pane` and `.settings-table tr` have no assertion
+   that the narrow declaration is *absent* from the base rule. The coarse block's equivalent is
+   that nothing stops `min-block-size: var(--tap)` being added to the base `.button` as well,
+   which would give every mouse user a 44px button and pass all five new tests. The shape of
+   the fix is the same one-rule sweep in all three places.
+3. **The block is now the second thing in this milestone that changes what a phone renders and
+   that no human has seen** — iteration 7's one-column settings collapse was the first. Every
+   control on a touch device is a different size as of this commit. None of the three open
+   questions is about target size, so this does not touch
+   `docs/mobile-open-questions.md`; but "green" here means five declarations exist in the right
+   order, and nothing in this repository has a thumb.
+4. **`docs/components.md` now describes button and action-row geometry that is conditional.**
+   G6 was satisfied because every name the block spends is already documented — but the
+   component prose gives sizes as though there is one. T016 is the task in that file and its
+   scope is one item larger than written, which is the same note iteration 3 left about the
+   pane's scroll container.

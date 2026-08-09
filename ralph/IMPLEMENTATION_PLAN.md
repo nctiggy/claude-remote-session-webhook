@@ -201,7 +201,7 @@ needs to re-argue them.
 
 ### US3 + US4 — Touch (P2)
 
-- [ ] **T010** 🔒 Add the `@media (pointer: coarse)` block **after** the reduced-motion block and **before** `[hidden]`. Include `TestTheCoarseBlockOverridesRatherThanPrecedes` — the offset assertion.
+- [x] **T010** 🔒 Add the `@media (pointer: coarse)` block **after** the reduced-motion block and **before** `[hidden]`. Include `TestTheCoarseBlockOverridesRatherThanPrecedes` — the offset assertion.
 - [ ] **T011** Add `font-size: var(--fs-input)` for `.field-input` **and** `.setting-input` to the same coarse block.
 
 ### US5 + US6 — Content reachability (P3)
