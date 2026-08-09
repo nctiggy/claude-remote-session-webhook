@@ -2036,3 +2036,35 @@ func TestComboClassesAppearInRenderedMarkup(t *testing.T) {
 		})
 	}
 }
+
+// TestEveryTokenReferencedExists closes the gap that let a broken declaration
+// through.
+//
+// TestNoRuleCarriesAValueThatBelongsInAToken requires a rule to reference a
+// token rather than a literal, and it is satisfied by referencing one that does
+// not exist. `font-family: var(--font)` passed it and resolved to nothing, so the
+// version beside the wordmark quietly inherited the brand's font — a rule that
+// looked correct, passed the guard, and did nothing.
+//
+// **Must fail when** a rule names a token the block does not define. That is a
+// declaration with no effect, and the failure is silent by construction: CSS
+// drops what it cannot resolve and renders whatever was inherited.
+func TestEveryTokenReferencedExists(t *testing.T) {
+	t.Parallel()
+
+	sheet := stylesheet(t)
+
+	defined := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^\s*(--[a-z0-9-]+)\s*:`).FindAllStringSubmatch(sheet, -1) {
+		defined[m[1]] = true
+	}
+	if len(defined) == 0 {
+		t.Fatal("no tokens were found at all; this test is not checking anything")
+	}
+
+	for _, m := range regexp.MustCompile(`var\(\s*(--[a-z0-9-]+)`).FindAllStringSubmatch(sheet, -1) {
+		if !defined[m[1]] {
+			t.Errorf("a rule references %s and the token block does not define it; the declaration resolves to nothing and the property falls back to whatever was inherited", m[1])
+		}
+	}
+}

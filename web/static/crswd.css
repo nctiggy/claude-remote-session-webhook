@@ -1170,7 +1170,7 @@ body {
 .settings-title {
   margin-block: 0 var(--s4);
   font-size: var(--fs-label);
-  color: var(--bright);
+  color: var(--text);
 }
 
 .settings-source {
@@ -1243,14 +1243,26 @@ body {
    part of the identity — this daemon, this version — which is what it is. Muted
    and small, because it is still not what an operator came for. */
 .brand-version {
-  /* The tag's font, one step smaller, and tight against the wordmark: it is part
-     of the name — this daemon, this version — rather than a separate fact
-     competing with the one beside it. */
-  margin-inline-start: calc(var(--s2) * -1);
+  /* The eyebrow's treatment, one step smaller.
+
+     It sits inside the .brand heading, which sets uppercase, the brand's wide
+     tracking, weight 700 and a glow. .brand-tag resets three of those and this
+     reset none — so the version rendered as a second wordmark: same casing, same
+     tracking, same glow, differing only in size. Matching the tag is not a
+     preference here, it is the difference between a fact beside the name and a
+     second name.
+
+     var(--font) was the other half of it. There is no such token, so the
+     declaration resolved to nothing and the family fell back to the brand's —
+     and the stylesheet test that requires a token rather than a literal passed
+     it, because it checks that a var is referenced and not that one exists. */
+  margin-inline-start: var(--s2);
   color: var(--dim);
-  font-family: var(--font);
+  font-family: var(--sans);
   font-size: var(--fs-micro);
-  font-weight: normal;
+  font-weight: 600;
+  letter-spacing: var(--ls-eyebrow);
+  text-shadow: none;
 }
 
 /* Settings as a menu beside a panel (#103).
@@ -1284,13 +1296,19 @@ body {
 }
 
 .settings-menu-link:hover {
-  color: var(--bright);
+  color: var(--text);
 }
 
 /* Where the operator is. A border as well as a colour, because state is never
-   conveyed by hue alone — and aria-current says it to everybody else. */
+   conveyed by hue alone — and aria-current says it to everybody else.
+
+   That rule earned its keep here. The colour was var(--bright), which is not a
+   token this stylesheet defines, so it resolved to nothing and the current
+   section was never tinted at all. The border and aria-current carried the whole
+   marker and nobody noticed, which is exactly what "not by hue alone" is for:
+   the redundant cue was the working one. */
 .settings-menu-link[aria-current="page"] {
-  color: var(--bright);
+  color: var(--text);
   border-inline-start: var(--edge-width) solid var(--edge-bright);
   background: var(--glow);
 }
@@ -1340,7 +1358,7 @@ body {
   border-radius: var(--r);
   background: transparent;
   color: inherit;
-  font-family: var(--font);
+  font-family: var(--sans);
   font-size: var(--fs-body);
 }
 
