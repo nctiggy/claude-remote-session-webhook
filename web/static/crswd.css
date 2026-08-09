@@ -897,9 +897,19 @@ body {
    It is its own scroll container in both axes (the layout rule for wide
    content, and components.md's fixed height), so the screen scrolls and the
    page does not. Ligatures are off because they misrepresent terminal text, and
-   the tab stop is the terminal's rather than the browser's default. */
+   the tab stop is the terminal's rather than the browser's default.
+
+   The horizontal axis contains its overscroll and the vertical axis
+   deliberately does not. Panning past the right edge of 80 columns otherwise
+   chains into the browser's own back gesture, which throws the reader off the
+   page mid-session — a trackpad does this too, which is why the declaration is
+   unconditional. Containing the vertical axis would cost far more than it
+   buys: this element is 30rem of a ~660px phone, so a flick that began inside
+   it would stop at its end rather than scrolling the page, and the reader is
+   sealed into a box filling their display. */
 .pane {
   overflow: auto;
+  overscroll-behavior-x: contain;
   max-block-size: var(--pane-h);
   margin: 0;
   padding: var(--s3);

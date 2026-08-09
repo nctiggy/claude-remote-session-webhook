@@ -2125,3 +2125,75 @@ func TestTheUpdateDoesNotBecomeAToast(t *testing.T) {
 		t.Error("the update's branch does not precede the toast, so it can never be taken")
 	}
 }
+
+// TestThePaneDoesNotChainItsOverscroll holds the pane's horizontal scroll
+// inside the pane.
+//
+// A session prints 80 columns into an element that is narrower than that on
+// every phone and on plenty of desktops. When the reader pans to the right edge
+// and keeps going, the gesture chains to the page, and the browser reads a
+// horizontal swipe against a page that does not scroll sideways as its own
+// back-navigation gesture: the reader is taken off the session they were
+// reading, mid-read, by scrolling.
+//
+// It is asserted on the base rule because it is unconditional. Scroll chaining
+// is not a phone behaviour — a trackpad does it — and even where the pane wraps,
+// an unbroken run longer than the viewport still scrolls in this axis.
+//
+// **Must fail when** a pan at the scroll edge chains into the browser's
+// navigation gesture and throws the reader off the page mid-session.
+func TestThePaneDoesNotChainItsOverscroll(t *testing.T) {
+	t.Parallel()
+
+	pane := blockFor(t, stylesheet(t), ".pane")
+
+	if !regexp.MustCompile(`(?i)overscroll-behavior-x\s*:\s*contain`).MatchString(pane) {
+		t.Errorf("the pane does not contain its horizontal overscroll, so a pan past its right edge chains to the page and the browser navigates away from the session being read: %q", pane)
+	}
+}
+
+// TestThePaneDoesNotTrapVerticalScrolling is the other half of the axis
+// decision, and it exists because the symmetry is the trap.
+//
+// Containing one axis reads as half a job, and the obvious tidy-up — the bare
+// property, or the matching `-y` — is a regression that no rendering test here
+// would catch. The pane is `max-block-size: var(--pane-h)`, 30rem, against a
+// phone viewport of roughly 660px: it is most of the screen. Contain that axis
+// and a flick which started inside the pane stops at the pane's end instead of
+// carrying on into the page, so the reader is sealed inside a box that fills
+// their display with no way out but a gesture that begins somewhere else.
+//
+// The horizontal axis has no such cost, because the page does not scroll
+// horizontally at all — there is nothing on that axis for the pane to be
+// stealing.
+//
+// Every `.pane` rule is swept, not just the base one: the declaration would do
+// the same damage from inside the breakpoint block, where the wrap lives.
+//
+// **Must fail when** the vertical axis is contained too, trapping the reader in
+// a box that fills most of their screen.
+func TestThePaneDoesNotTrapVerticalScrolling(t *testing.T) {
+	t.Parallel()
+
+	// Bare or `-y`. `-x` is what the rule above requires, so it is the one
+	// spelling this expression must not match.
+	trapped := regexp.MustCompile(`(?i)overscroll-behavior(-y)?\s*:`)
+
+	var swept int
+	for _, rule := range cssRules(stylesheet(t)) {
+		selectors := strings.Split(rule.selector, ",")
+		for i, one := range selectors {
+			selectors[i] = strings.TrimSpace(one)
+		}
+		if !slices.Contains(selectors, ".pane") {
+			continue
+		}
+		swept++
+		if trapped.MatchString(rule.body) {
+			t.Errorf("a .pane rule contains its vertical overscroll; the pane is 30rem of a phone screen, so a flick begun inside it would stop at its end rather than scrolling the page: %q", rule.body)
+		}
+	}
+	if swept == 0 {
+		t.Fatal("crswd.css has no .pane rule at all, so this test is checking nothing")
+	}
+}
