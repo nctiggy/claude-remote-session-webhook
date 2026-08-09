@@ -1268,3 +1268,95 @@ and the stylesheet agree. 1 of 17 open.
    compresses that to one line. Same disagreement shape as iteration 14's token/line-number
    finding: **the plan's one-line summary is the compression, the contract or the doc is the
    artifact with the reasoning.** Followed the doc.
+
+---
+
+## Iteration 17 — 2026-08-09 10:05
+
+**Did:** T017, the last task. Verified `docs/mobile-open-questions.md`: all three questions
+still listed, all three still `Status: UNANSWERED`, all three still carrying their named
+fallbacks, and nothing anywhere in the repo claims otherwise. Ran the full gate one final time
+and confirmed `docs/design-system.md`, `docs/components.md` and the stylesheet agree.
+**No question was answered and the file was not edited.** Milestone 7 closes with all three
+open, which the plan, both contracts and the file itself each say is correct and expected.
+
+**Learned, so the next iteration does not rediscover it:**
+
+- **The strongest proof this task can offer is `git log`, and editing the file would have
+  destroyed it.** `docs/mobile-open-questions.md` has exactly **one** commit — `6be10b3`,
+  T001's — so "no task in this milestone marked a question resolved" is a property of the
+  history rather than a claim in a notebook. That is a better artifact than any prose
+  assertion, and it is the reason the wording nit in finding 2 below was left alone: a T017
+  commit touching that file would trade a checkable fact for an unverifiable one, permanently.
+  **A future closing task should verify the same way** — `git log -- docs/mobile-open-questions.md`
+  before reading a word of it.
+- **The verification is four commands, and the fourth is the one that matters.**
+  `grep -n "Status:"` → three UNANSWERED. `grep -n "Fallback if the answer is bad"` → three.
+  `git log --oneline -- docs/mobile-open-questions.md` → one commit. And
+  `grep -rn "ANSWERED" docs/ specs/ web/ internal/ | grep -v UNANSWERED` → **empty**, which is
+  the only one that covers a question being ticked *somewhere else* on this file's behalf —
+  in a contract, a spec, or a comment. Reading the file alone cannot catch that.
+- **The doc/stylesheet agreement check reduces to two counts, and both matched.**
+  `@media (max-width: 780px)` (`crswd.css:1523`) holds **15** rules and design-system.md's
+  enumeration table has **15** rows in the same order; `@media (pointer: coarse)` (1459) holds
+  **6** and its table has **6**. Three `@media` blocks exist in total — reduced-motion, coarse,
+  width — so the one-breakpoint premise holds by inspection as well as by test. `--tap` and
+  `--fs-input` are present in all three of the doc, the stylesheet and the `designTokens` map,
+  which is T002's three-file obligation still intact eleven tasks later.
+- **That agreement check is entirely manual and iteration 4 already said so.** Its finding 2
+  ("nothing enforces that the design-system enumeration table matches the block") is what made
+  this step ten minutes of counting instead of a test invocation. The counts agree *today*
+  because two people counted them; nothing will notice when they stop.
+- Gate: linter is **2.12.2**, so the green is real (#26). `go build ./...`, `go vet ./...`,
+  `go test -count=1 ./...` all clean, `golangci-lint run` **0 issues**, and all three tagged
+  suites compile (`go vet -tags tmux|quickstart|dev`). The tagged suites were compiled and not
+  run: this iteration changed no Go and no CSS.
+
+**Left:** Nothing in the plan. **17 of 17 checked, tree green.** Milestone 7 ships with Q1, Q2
+and Q3 open, waiting on an operator, a phone and a live session — which is the designed
+outcome, not a shortfall. The findings below outlive the milestone and have no task; they need
+a fix-lane line or a place in the next milestone's planning.
+
+**Findings — noticed, not fixed:**
+
+1. **`specs/007-make-it-work-on-a-phone/tasks.md` says 1 of 17 done while the milestone
+   closes.** The loop ticks `ralph/IMPLEMENTATION_PLAN.md` (16 → now 17 `- [x]`) because
+   `PROMPT.md` step 9 names only that file; `tasks.md` was ticked once, by T001, and never
+   again — it stands at 1 ticked and 16 open. The hazard is concrete rather than cosmetic: a
+   later `/speckit-implement` reads `tasks.md`, not the plan, and would find sixteen shipped
+   tasks presented as undone. Not fixed here because sixteen checkbox edits in the milestone's
+   verification task is exactly the "it is small so I will also do the next one" drift
+   `PROMPT.md` step 4 warns about, and AR-008 forbids. **Whoever opens milestone 8 should
+   reconcile it first**, or amend step 9 to name both files.
+2. **"One-line revert" vs "two declarations" — and the origin is the contract, which corrects
+   iteration 16's attribution.** Iteration 16 recorded this as the plan compressing the doc.
+   It is not: `contracts/pane.md:116` itself says *"One-line revert"* while naming both
+   `white-space: pre-wrap` and `overflow-wrap: anywhere` in the sentence above, and
+   `docs/mobile-open-questions.md` inherited **both** spellings — ":29" says a two-line revert,
+   ":56" says one-line. `components.md:415` and `design-system.md:129` both say two. So
+   iteration 16's rule ("believe the contract, not the plan") does not resolve this one; the
+   disagreement is *inside* the contract. Nothing substantive turns on it — every artifact that
+   enumerates the fallback names the same two declarations — so the count is a phrasing slip in
+   six places, worth one fix-lane line and not worth a commit against the file T017 certifies
+   as untouched.
+3. **Carry-forward: four items nobody has a task for, still live and re-verified today.**
+   (a) `docs/components.md:50-54` says Toast has "no section" and no call site, while
+   `.action-toast` renders on all three pages (`dashboard.html:204`, `settings.html:210`,
+   `session.html:89`) — same defect class T016 fixed for the settings page, in a section T016
+   did not name. (b) `internal/httpapi/settings.go:390` says *"It mints no page token, and that
+   is a decision rather than an omission"* twenty-five lines above `settings.go:415`'s
+   `editToken, _ := s.mintPageToken(r, operator)`; `settings.go:3` still calls it "the
+   read-only account"; `server.go:569-578` still says no mutating verb is registered. False
+   since #103, recorded by iterations 9 and 16, re-verified here. (c) `.update-caution` asks
+   for `margin: 0` and loses on specificity (iteration 15). (d) The element-selector half of G5
+   — nothing can ask whether a rule like `.settings th` matches anything the templates render,
+   which is why the dead-rule sweep is blind to exactly the rules T015 had to check by hand.
+4. **The three open questions are the real handoff, and they are the one thing here no
+   iteration could have moved.** Q1 needs a live session's TUI chrome read on a phone; Q2 needs
+   a settings row whose provenance is `file` and one whose provenance is `default`; Q3 needs
+   the last section in the menu. Each fallback is specced and priced in advance, so a bad
+   answer is a decision rather than a redesign — and two of the three are template changes
+   deliberately not built, which is the order that keeps the heavier answer from being built
+   before the lighter one is known to be inadequate.
+
+RALPH_COMPLETE
