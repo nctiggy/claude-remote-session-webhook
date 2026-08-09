@@ -2867,3 +2867,77 @@ func TestInputsDoNotTriggerFocusZoom(t *testing.T) {
 		}
 	}
 }
+
+// cardText is the two spans whose full value the card puts in a title
+// attribute. They are asserted one at a time rather than as the selector list
+// the file happens to spell, because what is being held is the declaration
+// reaching each of them: the name answers *which session* and the path answers
+// *which checkout*, and a card that truncates either without a hover to recover
+// it has lost that answer, not merely shortened it.
+var cardText = []string{".card-name", ".card-path"}
+
+// TestCardTextWrapsOnNarrowViewports holds FR-017: the ellipsis is only half a
+// design, and on a phone the other half is missing.
+//
+// `text-overflow: ellipsis` is honest about hiding something, and the template
+// renders the whole value into a `title` so nothing is lost — on a device with
+// a hover. A touch device has none. So the full session name and the full
+// working directory are not truncated on a phone, they are unreachable, which
+// is data loss rather than styling.
+//
+// Read out of the breakpoint block per selector rather than with
+// `blockFor(".card-name")`, which returns the base rule — the first occurrence
+// in the file — and would be unsatisfiable against a rule that must say
+// `nowrap`.
+//
+// **Must fail when** the ellipsis stays below the breakpoint, leaving both
+// values behind a hover the reader does not have.
+func TestCardTextWrapsOnNarrowViewports(t *testing.T) {
+	t.Parallel()
+
+	narrow := blockFor(t, stylesheet(t), breakpointPrelude)
+	for _, selector := range cardText {
+		rule := ruleFor(t, narrow, selector)
+
+		if got := whiteSpaceDecl.FindStringSubmatch(rule); got == nil || got[1] != "normal" {
+			t.Errorf("%s still does not wrap below the breakpoint, so its full value stays in a title attribute that needs a hover a phone does not have: %q", selector, rule)
+		}
+		if !regexp.MustCompile(`(?i)overflow-wrap\s*:\s*anywhere`).MatchString(rule) {
+			t.Errorf("%s wraps but an unbroken run — a path with no space in it, which is the usual case — has no break opportunity and overflows the card anyway: %q", selector, rule)
+		}
+	}
+}
+
+// TestTheCardKeepsItsDesktopTruncation is the other side of that, and the side
+// with no symptom on the device the change was made for.
+//
+// Editing the base rule and overriding it inside the breakpoint render
+// identically on a phone. They differ on every desktop, where the grid lays
+// cards in tracks and the ellipsis is what keeps a 64-character name or a deep
+// checkout path from setting a card's height for everything in its row. A base
+// rule change would spend that on every reader who never had the problem.
+//
+// The base rule is read from the source *above* the breakpoint rather than with
+// `ruleFor` over the whole file: `.card-name` is declared twice as of this
+// task, and `ruleFor` returns whichever comes first, which is a positional bet
+// that has already changed answer once in this milestone.
+//
+// **Must fail when** the wrap is written into the base rule instead of the
+// override, so every desktop card grows to fit its longest path.
+func TestTheCardKeepsItsDesktopTruncation(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+	above := source[:strings.Index(source, breakpointPrelude)]
+
+	for _, selector := range cardText {
+		rule := ruleFor(t, above, selector)
+
+		if got := whiteSpaceDecl.FindStringSubmatch(rule); got == nil || got[1] != "nowrap" {
+			t.Errorf("the base %s rule no longer holds its text to one line, so a desktop card grows to fit its longest value and takes its whole grid row with it: %q", selector, rule)
+		}
+		if !regexp.MustCompile(`(?i)text-overflow\s*:\s*ellipsis`).MatchString(rule) {
+			t.Errorf("the base %s rule clips without an ellipsis, so a truncated value on a desktop no longer says that it was truncated: %q", selector, rule)
+		}
+	}
+}

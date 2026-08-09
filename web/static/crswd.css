@@ -1614,6 +1614,23 @@ body {
   .settings-table td {
     overflow-wrap: anywhere;
   }
+
+  /* The ellipsis is only half a design: the full value lives in the title
+     attribute the template renders, and a title needs a hover a touch device
+     does not have. So on a phone the session's full name and its full working
+     directory are not truncated, they are unreachable — the card stops being
+     able to answer which session this is. What it costs is a card's fixed
+     height, and the grid absorbs that — a row sizes to its tallest track, so a
+     card that grows a line pushes nothing sideways. On a phone there is not
+     even that to absorb: `auto-fill, minmax(--card-min, 1fr)` needs 636px of
+     content for a second track, so under ~668px every card is its own row.
+     `anywhere` because a path is one unbroken run with no break opportunity in
+     it. */
+  .card-name,
+  .card-path {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }
 
 /* The hidden attribute has to win (#77).
