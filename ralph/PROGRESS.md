@@ -170,3 +170,77 @@ checkbox and a non-boolean row still carries a text input. The checked box must 
   reading, but nothing tests it directly; both guards go through the route. That is the
   right way round per `docs/conventions.md` ("assert the caller"), noted only so a later
   iteration does not add a unit test for it and think it has covered the route.
+
+---
+
+## Iteration 3 — 2026-08-09 21:56 — T003
+
+**Did:** `settings.html` renders a boolean row as `.switch-input` and every other
+editable row as the `.setting-input` it always had, branching on two new
+`settingRow` fields (`Boolean`, `On`) that `settingsOf` fills from `config.IsBool`.
+Four tests read the rendered markup; a fifth drives the box's own value through the
+edit route.
+
+**Learned:**
+
+- **The value attribute is the whole of this task's real risk, and it is invisible
+  to a markup-only test.** A checkbox with no `value` submits `on`; `loadBool` calls
+  `strconv.ParseBool`, which refuses `on`; `config.Validate` then refuses the whole
+  candidate file. So the operator ticks the box, presses Save, and the file is
+  **unchanged** — a control that looks right and does nothing, reported as a refusal
+  about a value they never chose. Proven by mutation: `value="on"` leaves
+  `discover_roots` absent from the file entirely. `boolOn` now sits beside `boolOff`
+  in `settings_edit.go` as this page's two spellings for a boolean, and
+  `TestTheSwitchSubmitsTheSpellingThisPageWrites` holds the template's literal to it
+  — the arrangement `confirm=yes` already has.
+- **The sweep is over every editable key, not over the two booleans.** Both
+  directions then hold and neither can go stale: a third boolean forgotten in the
+  template fails as a text field, and a key wrongly reported boolean fails as a box.
+  The second direction is the one that matters — a box is the control whose *absence*
+  the route reads as `false`, so a wrongly-boxed key is a setting an untick clears.
+- **`On` is read off `Value`, not off the Config a second time.** The value column
+  and the tick are then one answer. Reading the Config again would let this page state
+  a setting in a cell and contradict it in the control beside it.
+- **All five guards were shown failing first**, per the plan's rule: `{{ if false }}`
+  (the unfixed state — all four fail), `{{ if true }}` (16 non-boolean rows become
+  boxes), no `value`, `value="on"`, and no `{{ if .On }} checked`.
+- **`settingsRowFor` already existed** and is the right isolation for any assertion
+  about one row; `settingControl` builds on it and refuses a row offering more than
+  one input, so "a row edits one setting with one control" is asserted on the way past.
+- **`golangci-lint` is 2.12.2 here** — checked again per #26; 0 issues. `go vet` under
+  all three build tags compiles; none was touched, and no file in `cmd/crswd` mentions
+  the settings page.
+
+**Left:** T004–T006, the restart half of the milestone. T004 is next and is the
+security-relevant one: `POST /dashboard/restart` registered through
+`s.handleAction(...)` exactly as destroy and update are, `confirm=yes` via
+`fieldConfirm`/`confirmYes`, audit action `dashboard.restart` written exactly once,
+and `ExitForRestart()` from a goroutine after `exitGrace`.
+
+**Findings:**
+
+- **The plan asked for `.switch-label` and this row deliberately has none.** Two
+  binding rules collide on this one control: `docs/components.md`'s Switch section
+  puts the pointer on the label as well as the box, and its "The settings page"
+  section says a row's input is labelled by `aria-label` rather than a visible
+  `<label>`, "because the row header beside it already says the key and a second copy
+  is the same word twice to anybody reading it aloud" — the same sentence is on
+  `.setting-form` in `crswd.css`. The rule specific to *this row* won, and the plan's
+  binding constraint ("introduce no new class") is satisfied either way. `.switch-label`
+  is still rendered by the create form, so no sweep sees a dead rule.
+- **What that costs is a tap target, and it is a real gap rather than a neutral
+  trade.** `.switch-input` is `--s4` square. On the create form the row is
+  `.field-switch`, which the coarse-pointer block sizes to `--tap`; nothing does that
+  for a switch inside `.setting-form`, so on a phone this is a `--s4` box where every
+  button on the page is a thumb. It is CSS and outside a template-only task under
+  AR-008, so it is left here rather than done quietly. **The honest fix is a
+  `.setting-form .switch-input` (or `.setting-save`-style) rule in the
+  `@media (pointer: coarse)` block**, and it is worth its own task — note that
+  `TestTheCoarseBlockChangesNoLayout` forbids `display`/`position` there, so it has to
+  be a size.
+- **A boolean row no longer prints the words `true`/`false` anywhere.**
+  `TestSettingsStatesTheValueOfEveryNonSecretKey` names only non-boolean keys so it
+  stayed green, but the page's claim — "one row per key, with the value beside it" —
+  is now carried for two keys by a tick rather than by text. That is the operator's own
+  request and reads correctly, noted only so a later iteration does not read the
+  absence of the word as a regression.
