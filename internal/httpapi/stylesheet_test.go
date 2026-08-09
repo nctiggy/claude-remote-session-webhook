@@ -3029,3 +3029,89 @@ func TestALongIdentityDoesNotWrapTheBar(t *testing.T) {
 		t.Errorf("the identity fills the bar and its text is left where it starts, so the top right of the page stops being where the operator's account is — the one thing this design system says never varies: %q", operator)
 	}
 }
+
+// backgroundDeclaration reads any background* declaration as its property and
+// its value. The prefix is deliberate rather than the two spellings FR-021
+// names: `background`, `background-color` and `background-image` are all
+// dropped whole when handed a value they cannot parse, so a sweep that knew
+// only two of them would be a test whose name promised more than it checked.
+//
+// Anchored on a boundary before the property so that `transition: background
+// var(--transition)` is not read as a background — it is a transition naming one,
+// and the colon is what tells them apart.
+var backgroundDeclaration = regexp.MustCompile(`(?i)(?:^|[;{\s])(background[a-z-]*)\s*:\s*([^;}]+)`)
+
+// TestNoBackgroundSpendsAShadowToken holds FR-021, which is the only defect this
+// milestone fixes that was never about a phone.
+//
+// --glow is `0 0 var(--s2) var(--phosphor)` — a shadow list. Spent as a
+// background it computes to `background: 0 0 .5rem #00ff41`, which is invalid at
+// computed-value time, so the whole declaration is dropped. The settings menu
+// had no surface and the current section had no tint on every device, desktop
+// included, and had never had one.
+//
+// It survived because no guard here could see it. TestEveryTokenReferencedExists
+// was added for var(--bright) and asks whether a referenced token exists; --glow
+// exists. The missing question is whether a token is of a *kind* the property
+// spending it accepts, and CSS offers nothing to ask that with in general. So
+// this is narrow on purpose: one token, named, swept out of one property family.
+// It closes the instance rather than pretending to a type system.
+//
+// **Must fail when** a shadow list is used as a background — a declaration that
+// reads correctly, references a real token, passes every other guard in this
+// file, and renders nothing.
+func TestNoBackgroundSpendsAShadowToken(t *testing.T) {
+	t.Parallel()
+
+	var swept int
+	for _, rule := range cssRules(stylesheet(t)) {
+		for _, decl := range backgroundDeclaration.FindAllStringSubmatch(rule.body, -1) {
+			swept++
+			if strings.Contains(decl[2], "var(--glow)") {
+				t.Errorf("%s paints %s with var(--glow), which is a shadow list: the declaration computes to something the property cannot take, is dropped whole, and the surface never renders on any device — %s: %s", rule.selector, decl[1], decl[1], strings.TrimSpace(decl[2]))
+			}
+		}
+	}
+
+	if swept == 0 {
+		t.Fatal("crswd.css sets no background anywhere, so this sweep found nothing to check and would pass whatever the stylesheet did")
+	}
+}
+
+// TestTheSettingsMenuHasASurface is the positive half of the same fix, and it is
+// needed because the negative half is satisfied by deleting the declaration.
+//
+// The menu is a bar — an edge and a background saying "this is the index, that
+// is the content" before a word of it is read. Removing `background` rather than
+// correcting it passes the sweep above and leaves the page in the state that was
+// being fixed, which for two milestones looked deliberate to everyone who saw it.
+//
+// A surface token rather than a named one: --surface and --surface-lift are both
+// right answers depending on what the panel beside it becomes, and pinning the
+// exact value here would fail a legitimate re-weighting of the two.
+//
+// The base rule is read from the source above the breakpoint, and with ruleFor
+// rather than blockFor: `.settings-menu` is a prefix of both
+// `.settings-menu-list` and `.settings-menu-link`, which are declared first, so
+// a substring search answers with a different rule entirely.
+//
+// **Must fail when** the menu is left with no background at all.
+func TestTheSettingsMenuHasASurface(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+	at := strings.Index(source, breakpointPrelude)
+	if at < 0 {
+		t.Fatalf("crswd.css has no %s block, so there is no base half of the file to read the desktop rule from", breakpointPrelude)
+	}
+
+	menu := ruleFor(t, source[:at], ".settings-menu")
+
+	decl := backgroundDeclaration.FindStringSubmatch(menu)
+	if decl == nil {
+		t.Fatalf("the settings menu has no background, so the bar the operator asked for is an outline around the page's own ground and the index does not read as one: %q", menu)
+	}
+	if !strings.Contains(decl[2], "var(--surface") {
+		t.Errorf("the settings menu's background is %q rather than a surface token; elevation in this design system comes from --surface and --surface-lift, and a value that is neither is either a literal or the wrong kind of token again", strings.TrimSpace(decl[2]))
+	}
+}

@@ -1319,28 +1319,45 @@ body {
 /* Where the operator is. A border as well as a colour, because state is never
    conveyed by hue alone — and aria-current says it to everybody else.
 
-   That rule earned its keep here. The colour was var(--bright), which is not a
-   token this stylesheet defines, so it resolved to nothing and the current
-   section was never tinted at all. The border and aria-current carried the whole
-   marker and nobody noticed, which is exactly what "not by hue alone" is for:
-   the redundant cue was the working one. */
+   That rule has now earned its keep twice, against the same class of defect
+   wearing two different disguises. First the colour was var(--bright), a token
+   this stylesheet does not define, so the declaration resolved to nothing. Then
+   the background was var(--glow), which *is* defined — and is a shadow list, so
+   `background: 0 0 .5rem #00ff41` was dropped at computed-value time. Both times
+   the current section was never tinted at all, both times the border and
+   aria-current carried the whole marker, and both times nobody noticed. That is
+   what "never by hue alone" buys: the redundant cue was the working one.
+
+   The gap the second one came through is worth naming, because it is not
+   closable by the guard that caught the first. TestEveryTokenReferencedExists
+   was written for --bright and asks whether a referenced token *exists* — not
+   whether it is of a kind the property spending it accepts. A token can exist,
+   be spelled correctly, and still be silently wrong for the property it is
+   handed to. TestNoBackgroundSpendsAShadowToken closes this instance of that,
+   and only this instance; CSS has no type system here to appeal to.
+
+   The tint is --surface-lift rather than --surface because the chip sits inside
+   the menu bar below, which is --surface: a mark on the current item has to be
+   the raised one or the operator's own place is the one thing that recedes. */
 .settings-menu-link[aria-current="page"] {
   color: var(--text);
   border-inline-start: var(--edge-width) solid var(--edge-bright);
-  background: var(--glow);
+  background: var(--surface-lift);
 }
 
 /* A bar, not a list floating beside a panel.
 
    The operator asked for a bar, and they are right that it reads better: an
    edge and a background say "this is the index, that is the content" before any
-   text is read, which is the whole job of a sidebar. */
+   text is read, which is the whole job of a sidebar. The background is only
+   true as of this commit — it was var(--glow) and rendered nothing, so the edge
+   said it alone on every device including a desktop. See above. */
 .settings-menu {
   min-inline-size: 0;
   padding: var(--s4) var(--s3);
   border: var(--edge-width) solid var(--edge);
   border-radius: var(--r);
-  background: var(--glow);
+  background: var(--surface);
   position: sticky;
   top: var(--s6);
 }
