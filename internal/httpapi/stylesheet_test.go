@@ -2941,3 +2941,91 @@ func TestTheCardKeepsItsDesktopTruncation(t *testing.T) {
 		}
 	}
 }
+
+// gutterDecl reads what a rule spends on its inline edges, from either spelling.
+// The two rules this milestone has to keep in line are written differently —
+// .shell sets the `padding` shorthand and .masthead-bar sets the longhand — so a
+// comparison of their text would have compared nothing.
+var (
+	shellGutter    = regexp.MustCompile(`(?i)(?:^|[;{\s])padding\s*:\s*([^;}]+)`)
+	mastheadGutter = regexp.MustCompile(`(?i)padding-inline\s*:\s*([^;}]+)`)
+)
+
+// TestTheMastheadAlignsWithThePage holds FR-019, and it is a relationship rather
+// than a value: the header is in line with the page when it spends the *same*
+// gutter the page does, whatever that gutter becomes.
+//
+// .shell narrows to var(--s4) below the breakpoint and .masthead-bar did not, so
+// the sticky bar's contents sat 8px outside every card and table under them. It
+// is the one element on the screen at all times, which is what makes a small
+// misalignment worth a rule: it is visible beside everything.
+//
+// The page's own gutter is read rather than named, so the assertion cannot go
+// quietly stale — if .shell is ever given a different narrow gutter, this fails
+// naming both instead of continuing to check the masthead against a number
+// nothing else uses any more.
+//
+// **Must fail when** the header keeps its desktop gutters and sits out of line
+// with the content beneath it.
+func TestTheMastheadAlignsWithThePage(t *testing.T) {
+	t.Parallel()
+
+	narrow := blockFor(t, stylesheet(t), breakpointPrelude)
+
+	shell := ruleFor(t, narrow, ".shell")
+	page := shellGutter.FindStringSubmatch(shell)
+	if page == nil || len(strings.Fields(page[1])) != 1 {
+		t.Fatalf("the page's narrow gutter is no longer one value, so what the masthead has to line up with is no longer a single thing this test can name: %q", shell)
+	}
+
+	bar := ruleFor(t, narrow, ".masthead-bar")
+	got := mastheadGutter.FindStringSubmatch(bar)
+	if got == nil {
+		t.Fatalf("the masthead keeps its desktop gutters below the breakpoint, so the one band on every screen sits outside every card and table beneath it: %q", bar)
+	}
+	if want := strings.TrimSpace(page[1]); strings.TrimSpace(got[1]) != want {
+		t.Errorf("the masthead's narrow gutter is %s and the page's is %s, so the header is in line with nothing it sits above", strings.TrimSpace(got[1]), want)
+	}
+}
+
+// operatorFlex is the shorthand, read as its three parts. The basis is the one
+// that matters and it is the one a shorthand hides: `flex: 1 1 auto` and
+// `flex: 1 1 0` differ by one character and by whether the bar wraps.
+var operatorFlex = regexp.MustCompile(`(?i)(?:^|[;{\s])flex\s*:\s*([^;}]+)`)
+
+// TestALongIdentityDoesNotWrapTheBar holds FR-020, which is a fault of flex
+// layout rather than of width.
+//
+// A flex line wraps on its items' *hypothetical* sizes — what each item's
+// content wants before any shrinking is considered. .operator's content is the
+// full Google address, so a long identity wrapped the sticky header to two rows
+// and the ellipsis it already carries only helped afterwards, on a bar that had
+// already grown. A basis of 0 makes the hypothetical size zero, so the address
+// takes the room the brand and the settings link leave it and truncates inside
+// that, which is what the ellipsis was for.
+//
+// text-align is asserted with it because basis 0 also makes the item grow to
+// fill: left to itself the address then starts at the left edge of a box
+// spanning the bar, and docs/design-system.md's second non-negotiable is that
+// the top right is always identity. The fix for the wrap must not cost that.
+//
+// **Must fail when** the basis stays auto, so the bar wraps to two rows on a
+// long email and the ellipsis only helps afterwards.
+func TestALongIdentityDoesNotWrapTheBar(t *testing.T) {
+	t.Parallel()
+
+	operator := ruleFor(t, blockFor(t, stylesheet(t), breakpointPrelude), ".operator")
+
+	flex := operatorFlex.FindStringSubmatch(operator)
+	if flex == nil {
+		t.Fatalf("the identity is still laid out on its content's own width below the breakpoint, so a long address wraps the sticky bar to two rows before the ellipsis is ever reached: %q", operator)
+	}
+	parts := strings.Fields(flex[1])
+	if len(parts) != 3 || parts[2] != "0" {
+		t.Errorf("the identity's flex basis is %q rather than 0, so the bar still wraps on the hypothetical width of a full email address and shrinks only once it has: %q", strings.TrimSpace(flex[1]), operator)
+	}
+
+	if !regexp.MustCompile(`(?i)text-align\s*:\s*(end|right)`).MatchString(operator) {
+		t.Errorf("the identity fills the bar and its text is left where it starts, so the top right of the page stops being where the operator's account is — the one thing this design system says never varies: %q", operator)
+	}
+}

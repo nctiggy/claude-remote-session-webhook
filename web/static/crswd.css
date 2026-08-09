@@ -1631,6 +1631,37 @@ body {
     white-space: normal;
     overflow-wrap: anywhere;
   }
+
+  /* The header kept desktop gutters after the page narrowed. .shell drops to
+     --s4 here and this did not, so the sticky bar's contents sat 8px outside
+     every card, table and heading beneath them — the one element visible on
+     every screen was the one thing not lining up with the page. */
+  .masthead-bar {
+    padding-inline: var(--s4);
+  }
+
+  /* The identity is the other half of the same bar. It is a flex item, and a
+     flex line wraps on its items' *hypothetical* sizes — the width the content
+     wants before any shrinking is considered — so a long address wrapped the
+     bar to two rows and only then let the ellipsis help. A basis of 0 makes the
+     hypothetical size zero: the address takes the space the brand and the link
+     leave and truncates inside it, which is what the ellipsis on the base rule
+     was always for.
+
+     min-inline-size says out loud what the base rule's overflow: hidden already
+     buys — a flex item's automatic minimum is its min-content size unless its
+     overflow is something other than visible — so the basis is not floored back
+     up to a full email by a property somewhere else.
+
+     text-align because growing to fill is what basis 0 does: without it the
+     address starts at the left edge of a box that now spans the bar, and the
+     top right stops being where identity is, which this design system does not
+     allow to vary. */
+  .operator {
+    flex: 1 1 0;
+    min-inline-size: 0;
+    text-align: end;
+  }
 }
 
 /* The hidden attribute has to win (#77).
