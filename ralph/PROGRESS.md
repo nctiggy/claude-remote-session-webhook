@@ -244,3 +244,94 @@ and `ExitForRestart()` from a goroutine after `exitGrace`.
   is now carried for two keys by a tick rather than by text. That is the operator's own
   request and reads correctly, noted only so a later iteration does not read the
   absence of the word as a regression.
+
+---
+
+## Iteration 4 — 2026-08-09 22:09 — T004
+
+**Did:** `POST /dashboard/restart` in a new `internal/httpapi/restart.go`, registered
+through `s.handleAction` beside the other six writes, audited as
+`audit.ActionDashboardRestart` (`dashboard.restart`), confirming on
+`fieldConfirm`/`confirmYes`, and calling `ExitForRestart()` from a goroutine after
+`exitGrace`. Six tests in `restart_test.go`; every one of them shown failing first.
+
+**Learned:**
+
+- **The route has to decide what it answers with, and the plan does not say.** T006
+  makes the restart form take the update's JS branch, which does
+  `swapUpdatesSection(said)` — it parses `.settings-panel` out of the answer — so the
+  answer must be the settings page, not a 303. That also inherits the update's real
+  reason for not redirecting: a 303 points the browser at a daemon in the act of
+  stopping. So the restart renders the settings page in the waiting state, and the
+  template's block gained one branch: `{{ if .Restarting }}Restarting…{{ else }}Installing
+  {{ .Becoming }}…{{ end }}`. A restart installs nothing and the page must not say it
+  does. `settingsView.Restarting` is a field rather than "Becoming equals the running
+  version", because those are also equal when an operator asks to install the version
+  they are already on.
+- **`data-becoming` is set to `buildinfo.Version`** — the version this daemon is coming
+  back *as*. That is what `waitOutTheUpdate` polls for, so T006 gets a working poll for
+  free. **T006 still has two things to fix there**: the ceiling message says "has not
+  answered since it began installing X", which is wrong for a restart; and the poll's
+  first tick is at 1s against an exit at 250ms, so the window where the old daemon could
+  answer its own `becoming` is closed by timing rather than by construction. Worth a
+  look when widening the branch.
+- **`restartable()` asks for the installer alone, not `selfUpdate.wired()`.** The
+  restart never touches the fetcher or the stager, and a refusal blaming a release feed
+  it does not call would be a reason that is not true. It keeps the property that makes
+  the update's arrangement safe: `newServer` wires none of the three, so a test that
+  reaches this route cannot end the process running the suite. **Proven** — dropping the
+  check panics with a nil dereference against every server in the package.
+- **`recordsAtExit` does not prove what it looks like it proves, and the same is true
+  of the update's copy of it.** The exit waits out `exitGrace`; by then the handler has
+  returned and the middleware's deferred emit has written the record either way.
+  Removing `s.emit(...)` from the handler leaves the suite green. What the assertion
+  *does* catch is an exit taken inline — proven, it reports 0 records and an unflushed
+  answer. The handler emits first regardless, because once that goroutine exists the
+  record's write and the process's end are unordered; that is argued at the emit and the
+  test comment now says plainly that it cannot see it. **`update.go`'s comment "this
+  handler does not return in production" is stale** — it stopped being true when the
+  exit moved onto a goroutine.
+- **A method-less pattern is not a cosmetic slip here.** Dropping `POST ` from
+  `patternDashboardRestart` made `PUT /dashboard/restart` return 200 and end the daemon.
+  The catch-all `/` is what otherwise answers a wrong method as a path nothing claims.
+- **`ExitForRestart` is `os.Exit(0)`, so `Shutdown` never runs and
+  `destroy_on_shutdown` never fires.** Sessions survive a restart even on a host that
+  set it — which is what T005's copy needs to say, and is true, but is true for a
+  narrower reason than "sessions survive".
+- **The three lists a new browser action can be missing from**: `spelledOutcomes` in
+  `outcome_test.go` (enforced — the count assertion fails), `banners` in `outcome.go`
+  (same assertion, other direction), and `audit_test.go`'s documented-action map (not
+  enforced; `settings.edit` and `session.mode` are absent from it). Added to all three.
+- **`golangci-lint` is 2.12.2 here** — checked again per #26; 0 issues. `go vet` under
+  all three build tags compiles clean, `-tags dev` passes, and `-race` over the update
+  and restart cases is clean.
+
+**Left:** T005 and T006, both about the operator actually being able to press this.
+T005 is next: the Restart control in the Updates section of `web/templates/settings.html`,
+with a confirming step in the markup and copy saying sessions survive. The form posts
+`confirm=yes` and the page token to `/dashboard/restart`; the route is already there and
+already refuses without either.
+
+**Findings:**
+
+- **The secret sweep's route table does not name this route — or the update, or the
+  settings edit.** `registeredPatterns` in `settings_test.go` is hand-written for the
+  browser door ("a twelfth would have to be added here by hand, and that is the one gap
+  this arrangement cannot close"), and it stops at the five milestone-3 patterns plus the
+  pages. So three mutating routes are outside the sweep that `docs/security.md` requires
+  be done "swept, not reasoned about". Not fixed here: it is pre-existing, systemic, and
+  a task that closes it should close all three at once rather than grow by one route per
+  milestone. **The honest fix** is to add `patternDashboardUpdate`, `patternSettingsEdit`
+  and `patternDashboardRestart` to that list and drive each in `newSweep` — note that the
+  test fails on any listed pattern nothing drove, and that the sweep's server has no
+  installer, so a restart there refuses at `restartable()` and the *rendered* page would
+  need a fake wired in to be swept at all.
+- **No rate limit on this route, as on every other action but create.** A confirmed
+  restart is cheap and instant where a confirmed update is neither, so a stuck client
+  could hold this daemon in a restart loop. It adds nothing to the threat model — the
+  caller already had the dashboard, which is already code execution — and `RestartSec=5s`
+  bounds the loop. Noted rather than fixed.
+- **`selfUpdate` is now the home of two questions with different answers**
+  (`wired()` and `restartable()`), on a type named for the update. That is the right
+  shape today and worth watching: a third route wanting only one collaborator is the
+  point at which the field should be split rather than the predicates multiplied.
