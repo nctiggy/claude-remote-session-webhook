@@ -53,6 +53,8 @@ var designTokens = map[string]string{
 	"--r":             "3px",
 	"--edge-width":    "1px",
 	"--transition":    ".12s ease",
+	"--tap":           "44px",
+	"--fs-input":      "16px",
 }
 
 // documentedStates is the design system's state table: the four display states
@@ -2121,5 +2123,1066 @@ func TestTheUpdateDoesNotBecomeAToast(t *testing.T) {
 	// case is unreachable.
 	if at, toast := strings.Index(source, "swapUpdatesSection(said)"), strings.Index(source, "show(sentence(said)"); at < 0 || toast < 0 || at > toast {
 		t.Error("the update's branch does not precede the toast, so it can never be taken")
+	}
+}
+
+// TestThePaneDoesNotChainItsOverscroll holds the pane's horizontal scroll
+// inside the pane.
+//
+// A session prints 80 columns into an element that is narrower than that on
+// every phone and on plenty of desktops. When the reader pans to the right edge
+// and keeps going, the gesture chains to the page, and the browser reads a
+// horizontal swipe against a page that does not scroll sideways as its own
+// back-navigation gesture: the reader is taken off the session they were
+// reading, mid-read, by scrolling.
+//
+// It is asserted on the base rule because it is unconditional. Scroll chaining
+// is not a phone behaviour — a trackpad does it — and even where the pane wraps,
+// an unbroken run longer than the viewport still scrolls in this axis.
+//
+// **Must fail when** a pan at the scroll edge chains into the browser's
+// navigation gesture and throws the reader off the page mid-session.
+func TestThePaneDoesNotChainItsOverscroll(t *testing.T) {
+	t.Parallel()
+
+	pane := blockFor(t, stylesheet(t), ".pane")
+
+	if !regexp.MustCompile(`(?i)overscroll-behavior-x\s*:\s*contain`).MatchString(pane) {
+		t.Errorf("the pane does not contain its horizontal overscroll, so a pan past its right edge chains to the page and the browser navigates away from the session being read: %q", pane)
+	}
+}
+
+// TestThePaneDoesNotTrapVerticalScrolling is the other half of the axis
+// decision, and it exists because the symmetry is the trap.
+//
+// Containing one axis reads as half a job, and the obvious tidy-up — the bare
+// property, or the matching `-y` — is a regression that no rendering test here
+// would catch. The pane is `max-block-size: var(--pane-h)`, 30rem, against a
+// phone viewport of roughly 660px: it is most of the screen. Contain that axis
+// and a flick which started inside the pane stops at the pane's end instead of
+// carrying on into the page, so the reader is sealed inside a box that fills
+// their display with no way out but a gesture that begins somewhere else.
+//
+// The horizontal axis has no such cost, because the page does not scroll
+// horizontally at all — there is nothing on that axis for the pane to be
+// stealing.
+//
+// Every `.pane` rule is swept, not just the base one: the declaration would do
+// the same damage from inside the breakpoint block, where the wrap lives.
+//
+// **Must fail when** the vertical axis is contained too, trapping the reader in
+// a box that fills most of their screen.
+func TestThePaneDoesNotTrapVerticalScrolling(t *testing.T) {
+	t.Parallel()
+
+	// Bare or `-y`. `-x` is what the rule above requires, so it is the one
+	// spelling this expression must not match.
+	trapped := regexp.MustCompile(`(?i)overscroll-behavior(-y)?\s*:`)
+
+	var swept int
+	for _, rule := range cssRules(stylesheet(t)) {
+		selectors := strings.Split(rule.selector, ",")
+		for i, one := range selectors {
+			selectors[i] = strings.TrimSpace(one)
+		}
+		if !slices.Contains(selectors, ".pane") {
+			continue
+		}
+		swept++
+		if trapped.MatchString(rule.body) {
+			t.Errorf("a .pane rule contains its vertical overscroll; the pane is 30rem of a phone screen, so a flick begun inside it would stop at its end rather than scrolling the page: %q", rule.body)
+		}
+	}
+	if swept == 0 {
+		t.Fatal("crswd.css has no .pane rule at all, so this test is checking nothing")
+	}
+}
+
+// whiteSpaceDecl is a wrapping mode and the keyword it is set to. The value is
+// captured rather than matched, because `pre` is a prefix of `pre-wrap` and the
+// two rules below want opposite answers from the same property.
+var whiteSpaceDecl = regexp.MustCompile(`(?i)white-space\s*:\s*([a-z-]+)`)
+
+// TestThePaneWrapsOnlyOnNarrowViewports is the trade the milestone makes, held
+// to the half of the stylesheet that is allowed to make it.
+//
+// A session prints 80 columns. A 390px phone shows about 44 of them, so reading
+// one paragraph of prose is eleven pans right and back — the dominant phone task
+// failing outright. Wrapping fixes that and costs the alignment of Claude Code's
+// own box borders, dividers and tables, which wrap into a line plus a stub.
+// research.md priced the alternative: shrink-to-fit needs a ~6.9px font.
+//
+// `overflow-wrap: anywhere` rather than `break-word` because the run this has to
+// break is a path or a hash with no break opportunity in it, which is exactly
+// what a real terminal breaks at its column edge.
+//
+// The assertion reads the rule inside the breakpoint block rather than
+// `blockFor(".pane")`, which returns the base rule — the first `.pane` in the
+// file — and would be unsatisfiable against a base rule that must say `pre`.
+//
+// **Must fail when** wrapping is added to the base rule, so a desktop loses
+// column alignment to fix a phone.
+func TestThePaneWrapsOnlyOnNarrowViewports(t *testing.T) {
+	t.Parallel()
+
+	narrow := blockFor(t, stylesheet(t), "@media (max-width: 780px)")
+	pane := blockFor(t, narrow, ".pane")
+
+	if got := whiteSpaceDecl.FindStringSubmatch(pane); got == nil || got[1] != "pre-wrap" {
+		t.Errorf("the pane does not wrap below the breakpoint, so reading a paragraph on a phone is a horizontal pan per line: %q", pane)
+	}
+	if !regexp.MustCompile(`(?i)overflow-wrap\s*:\s*anywhere`).MatchString(pane) {
+		t.Errorf("the pane wraps but an unbroken run — a path, a hash — still overflows the viewport with nothing to break it: %q", pane)
+	}
+}
+
+// TestThePaneKeepsItsDesktopAlignment is the other side of that trade, and the
+// side with no visible symptom.
+//
+// Overriding `white-space` inside the breakpoint and changing it in the base
+// rule look identical on a phone. They differ on every desktop, where the pane
+// is wide enough for 80 columns and alignment is the whole point of a terminal:
+// a base-rule change would take diffs, tables and TUI chrome away from every
+// reader who never had the problem, silently, to fix one who did.
+//
+// **Must fail when** the base declaration is changed rather than overridden, and
+// every desktop reader loses alignment silently.
+func TestThePaneKeepsItsDesktopAlignment(t *testing.T) {
+	t.Parallel()
+
+	pane := blockFor(t, stylesheet(t), ".pane")
+
+	if got := whiteSpaceDecl.FindStringSubmatch(pane); got == nil || got[1] != "pre" {
+		t.Errorf("the base pane rule no longer sets `white-space: pre`, so a desktop wide enough for 80 columns wraps them anyway and every alignment-dependent screen is misrepresented: %q", pane)
+	}
+}
+
+// viewportMeta is the element that tells a phone how wide to pretend to be. It
+// is counted rather than parsed: what this test forbids is a spelling, and the
+// count is only here so a tree that stopped carrying viewports altogether fails
+// loudly instead of passing vacuously.
+var viewportMeta = regexp.MustCompile(`(?i)<meta[^>]*name="viewport"[^>]*>`)
+
+// zoomClamp is the two ways a page takes pinch-zoom away. `maximum-scale` is
+// forbidden at any value, not just 1: a ceiling is a ceiling, and the operator
+// zooming into a wrapped diff is already past whatever number looked generous
+// when it was written.
+var zoomClamp = regexp.MustCompile(`(?i)maximum-scale|user-scalable\s*=\s*["']?\s*(no|0)`)
+
+// TestNoPageClampsTheZoom keeps the escape hatch open for the trade the pane
+// makes below the breakpoint.
+//
+// Wrapping the pane misrepresents everything alignment-dependent Claude Code
+// prints — box borders, dividers, tables, diffs. The mitigation is that the
+// reader can pinch into it, and that mitigation exists only for as long as no
+// page clamps the scale. Disabling zoom is also the standard reflex reached for
+// when a mobile layout misbehaves, so the moment this milestone introduced a
+// reason to reach for it is the moment it needs a guard.
+//
+// The whole embedded tree is swept, not the four pages by name: a fifth page,
+// or a partial that grew a meta of its own, would otherwise ship unguarded. The
+// sweep is on the markup rather than inside the viewport meta, so a clamp in a
+// second meta element is caught by the same expression.
+//
+// **Must fail when** someone "fixes" the layout by disabling zoom, removing the
+// only mitigation for the trade the pane's wrap makes.
+func TestNoPageClampsTheZoom(t *testing.T) {
+	t.Parallel()
+
+	viewports := 0
+	err := fs.WalkDir(web.Templates, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		source, err := fs.ReadFile(web.Templates, p)
+		if err != nil {
+			return err
+		}
+		markup := string(templateComment.ReplaceAll(source, nil))
+
+		viewports += len(viewportMeta.FindAllString(markup, -1))
+		for _, clamp := range zoomClamp.FindAllString(markup, -1) {
+			t.Errorf("web/%s clamps the visual viewport (%q); the pane wraps below the breakpoint and pinch-zoom is the only way left to read a diff or a box border on a phone", p, clamp)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the embedded template tree: %v", err)
+	}
+	if viewports == 0 {
+		t.Fatal("no template carries a viewport meta at all, so this sweep asserted nothing — and every page is being laid out at a desktop width and scaled down")
+	}
+}
+
+// TestWideSettingsPanTheirOwnPanel puts the settings page's horizontal scroll
+// on the content rather than on the index sitting beside it.
+//
+// `overflow-x: auto` was declared on `.settings`, which is the grid wrapper
+// holding the section menu *and* the panel. A table wider than the viewport
+// therefore panned both: reaching a Save button dragged the list of sections
+// off the screen with it, so the operator lost their place in the page to touch
+// the control they came for. On a phone every settings table is wider than the
+// viewport, which makes this the ordinary case there rather than an edge one.
+//
+// Both halves are asserted together because either alone is satisfiable without
+// changing anything a reader would see. Every rule whose selector is `.settings`
+// is swept rather than the first one `blockFor` would return: the wrapper is
+// declared twice at the top level and again inside the breakpoint, and the
+// property does the same damage from any of them.
+//
+// **Must fail when** the panel gains the property without the wrapper losing
+// it, which renders exactly as it does today.
+func TestWideSettingsPanTheirOwnPanel(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+	pans := regexp.MustCompile(`(?i)overflow-x\s*:`)
+
+	if panel := blockFor(t, source, ".settings-panel"); !pans.MatchString(panel) {
+		t.Errorf("the settings panel is not its own scroll container, so a table wider than the viewport has nothing to scroll inside and moves the page instead: %q", panel)
+	}
+
+	var swept int
+	for _, rule := range cssRules(source) {
+		selectors := strings.Split(rule.selector, ",")
+		for i, one := range selectors {
+			selectors[i] = strings.TrimSpace(one)
+		}
+		if !slices.Contains(selectors, ".settings") {
+			continue
+		}
+		swept++
+		if pans.MatchString(rule.body) {
+			t.Errorf("the .settings grid wrapper scrolls horizontally, so wide content pans the section menu along with the panel and the operator loses the index to reach a Save button: %q", rule.body)
+		}
+	}
+	if swept == 0 {
+		t.Fatal("crswd.css has no .settings wrapper rule at all, so the half of this test that matters asserted nothing")
+	}
+}
+
+// breakpointPrelude is the stylesheet's one width query, spelled as the file
+// spells it. TestTheDashboardHasExactlyOneBreakpoint is what holds that there is
+// only one of these to find.
+const breakpointPrelude = "@media (max-width: 780px)"
+
+// ruleFor is blockFor's exact-match sibling: the body of the rule whose selector
+// list contains selector *exactly*, rather than the first block whose prelude
+// merely contains it as a substring.
+//
+// The settings page is why it exists. `.settings` is a prefix of `.settings p`,
+// `.settings-menu` and `.settings-panel`; `.settings-menu` is a prefix
+// of both `.settings-menu-list` and `.settings-menu-link`. A substring search
+// therefore returns whichever of them the file happens to declare first, which
+// is a positional bet that has already changed answer once in this milestone.
+func ruleFor(t *testing.T, source, selector string) string {
+	t.Helper()
+
+	for _, rule := range cssRules(source) {
+		for _, one := range strings.Split(rule.selector, ",") {
+			if strings.TrimSpace(one) == selector {
+				return rule.body
+			}
+		}
+	}
+	t.Fatalf("crswd.css declares no rule whose selector is exactly %s", selector)
+	return ""
+}
+
+// TestTheBreakpointOverridesRatherThanPrecedes is the offset assertion the width
+// query needed and did not have.
+//
+// A media query adds no specificity. `.settings` inside the breakpoint and
+// `.settings` at the top level are a tie, and a tie is broken by source order
+// alone — so a width rule declared above the rule it is meant to override
+// parses, passes every other guard in this file, and does nothing. That is not
+// hypothetical: this block sat above the settings rules for the whole of
+// milestone 6, where `grid-template-columns: 1fr` lost to the two-column
+// declaration 250 lines below it and the settings page was never one column on
+// a phone.
+//
+// It is asserted structurally rather than as "the block is last", because what
+// matters is not the position of the block but the position of each selector it
+// names. A future rule for a component declared even further down the file
+// would break this while the block itself had not moved.
+//
+// **Must fail when** a width-conditional rule is added for a selector whose
+// base rule is declared below the breakpoint, which is a rule with no effect
+// wearing a stylesheet.
+func TestTheBreakpointOverridesRatherThanPrecedes(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+	// The body is a long unique substring, so finding it again is enough to say
+	// where the block ends without counting braces a second time.
+	body := blockFor(t, source, breakpointPrelude)
+	after := source[strings.Index(source, body)+len(body):]
+
+	inside := make(map[string]bool)
+	for _, rule := range cssRules(body) {
+		for _, one := range strings.Split(rule.selector, ",") {
+			if selector := strings.TrimSpace(one); selector != "" {
+				inside[selector] = true
+			}
+		}
+	}
+	if len(inside) == 0 {
+		t.Fatal("the width breakpoint declares no rule at all, so this asserted nothing about the order of anything")
+	}
+
+	for _, rule := range cssRules(after) {
+		for _, one := range strings.Split(rule.selector, ",") {
+			selector := strings.TrimSpace(one)
+			if !inside[selector] {
+				continue
+			}
+			t.Errorf("%s is declared again below the width breakpoint, so at equal specificity the later rule wins and the narrow one has no effect on a phone: %q", selector, rule.body)
+		}
+	}
+}
+
+// TestTheSettingsMenuIsARowOnNarrowViewports is the reported surface, and it is
+// the first screen of it.
+//
+// At one column the seven-entry menu stacks above the panel and takes roughly
+// 300px — the whole first screen of a phone. Every section is a fresh GET
+// landing at the top, so choosing one means scrolling past the entire menu again
+// to read what it did. Flowed as a row the menu is one line and the panel starts
+// where the operator is already looking.
+//
+// `position: static` is asserted alongside the flow because sticky is what the
+// menu carries at every other width, and a sticky element in a one-column grid
+// has no travel room: it does nothing, silently, for as long as that geometry
+// holds and then surprises somebody when it stops holding.
+//
+// **Must fail when** the menu keeps stacking, so the panel still starts below a
+// full screen of links.
+func TestTheSettingsMenuIsARowOnNarrowViewports(t *testing.T) {
+	t.Parallel()
+
+	narrow := blockFor(t, stylesheet(t), breakpointPrelude)
+
+	if list := ruleFor(t, narrow, ".settings-menu-list"); !regexp.MustCompile(`(?i)grid-auto-flow\s*:\s*column`).MatchString(list) {
+		t.Errorf("the section menu still flows as a column below the breakpoint, so seven links fill the phone's first screen and the panel starts under them: %q", list)
+	}
+
+	if menu := ruleFor(t, narrow, ".settings-menu"); !regexp.MustCompile(`(?i)position\s*:\s*static`).MatchString(menu) {
+		t.Errorf("the section menu keeps its sticky position below the breakpoint, where a one-column grid gives it no travel room, so it is a declaration that does nothing and reads as though it does: %q", menu)
+	}
+}
+
+// currentSectionBorder is a declaration that draws an edge, with its value.
+// Grouped rather than matched whole because the value is the point: an edge set
+// to `none` is the marker being taken away, not given.
+var currentSectionBorder = regexp.MustCompile(`(?i)(border[a-z-]*)\s*:\s*([^;}]+)`)
+
+// TestTheCurrentSectionIsNotColourAlone is the design system's fifth
+// non-negotiable read at the one control this task reshapes.
+//
+// The marker moves edges below the breakpoint — a start-edge bar reads as a
+// divider between chips once the menu is a row — and moving it is exactly when
+// it can be dropped instead. The narrow override spells `border-inline-start:
+// none` to clear the desktop bar, and a hand that stopped there would leave the
+// current section marked by its text colour and nothing else.
+//
+// Every rule for the selector is swept, at both widths, because the failure is
+// not that the marker is missing everywhere: it is that it is present at the
+// width nobody tests on and absent at the width this milestone exists for.
+// border-radius is excluded — it rounds a corner and draws no edge.
+//
+// **Must fail when** the narrow override clears the desktop bar without putting
+// a bottom one in its place.
+func TestTheCurrentSectionIsNotColourAlone(t *testing.T) {
+	t.Parallel()
+
+	var swept int
+	for _, rule := range cssRules(stylesheet(t)) {
+		if !strings.Contains(rule.selector, ".settings-menu-link") || !strings.Contains(rule.selector, "[aria-current") {
+			continue
+		}
+		swept++
+
+		var marked bool
+		for _, decl := range currentSectionBorder.FindAllStringSubmatch(rule.body, -1) {
+			if strings.Contains(decl[1], "radius") {
+				continue
+			}
+			if strings.TrimSpace(decl[2]) != "none" {
+				marked = true
+			}
+		}
+		if !marked {
+			t.Errorf("%s marks the operator's place with colour and nothing else, which is the one thing docs/design-system.md says a state may never be: %q", rule.selector, rule.body)
+		}
+	}
+
+	switch swept {
+	case 0:
+		t.Fatal("crswd.css styles no current section at all, so aria-current is the only thing saying where the operator is and it says it to nobody looking at the screen")
+	case 1:
+		t.Error("the current section is styled at one width only; below the breakpoint the menu is a row, and the desktop's start-edge bar reads there as a divider between chips rather than a mark on one")
+	}
+}
+
+// TestSettingRowsStackOnNarrowViewports is the second half of the reported
+// surface: the panel the menu now gets out of the way of.
+//
+// A settings row is key, value and source. Three columns do not fit ~358px, and
+// the row that makes it matter is the editable one — .setting-form carries a
+// minimum-width input and a Save button, so the row an operator came to change
+// is the widest one on the page and changing it means typing inside a
+// horizontal pan. Stacked, the input and its button have the whole width.
+//
+// Both declarations are asserted because either alone leaves the page in a
+// state nobody chose: rows that stack while the headers still occupy a row of
+// their own, or headers clipped away from a table that is still three columns.
+//
+// **Must fail when** the rows stay three columns, which is the page as
+// reported.
+func TestSettingRowsStackOnNarrowViewports(t *testing.T) {
+	t.Parallel()
+
+	narrow := blockFor(t, stylesheet(t), breakpointPrelude)
+
+	if row := ruleFor(t, narrow, ".settings-table tr"); !regexp.MustCompile(`(?i)display\s*:\s*grid`).MatchString(row) {
+		t.Errorf("a setting row is still laid out as a table row below the breakpoint, so key, value and Save button share ~358px and editing a setting means typing inside a horizontal pan: %q", row)
+	}
+
+	if head := ruleFor(t, narrow, ".settings-table thead"); !regexp.MustCompile(`(?i)clip-path\s*:`).MatchString(head) {
+		t.Errorf("the column headers are still laid out below the breakpoint, where each row is a stack and a header row above it labels nothing: %q", head)
+	}
+}
+
+// TestTheHeadersAreHiddenAccessiblyNotRemoved is the constraint on *how* the
+// headers go away, and it is the half a reader cannot see.
+//
+// Stacking takes a value away from its column, so the column name is carried by
+// the th alone — and the reader with the least other context for a bare
+// `default` sitting under a value is exactly the one a screen reader is
+// narrating to. `clip-path: inset(50%)` collapses the element on screen and
+// leaves it in the accessibility tree. `display: none` and `visibility: hidden`
+// look identical to a sighted operator and take the name away from that reader
+// entirely; they are the same defect in two spellings, which is why both are
+// swept rather than the one the contract names.
+//
+// The recipe is also load-bearing for a reason that is not accessibility: the
+// conventional visually-hidden block sizes the element in absolute lengths, and
+// TestNoRuleCarriesAValueThatBelongsInAToken fails a literal length inside a
+// media query as readily as outside one. A percentage is not on its unit list.
+//
+// **Must fail when** the headers are removed from the accessibility tree rather
+// than clipped, which is the failure the recipe exists to avoid.
+func TestTheHeadersAreHiddenAccessiblyNotRemoved(t *testing.T) {
+	t.Parallel()
+
+	var swept int
+	for _, rule := range cssRules(stylesheet(t)) {
+		for _, one := range strings.Split(rule.selector, ",") {
+			if strings.TrimSpace(one) != ".settings-table thead" {
+				continue
+			}
+			swept++
+
+			if !strings.Contains(rule.body, "clip-path:") {
+				t.Errorf(".settings-table thead is hidden by some other means than clipping: %q", rule.body)
+			}
+			for _, gone := range []string{`display\s*:\s*none`, `visibility\s*:\s*hidden`} {
+				if regexp.MustCompile(`(?i)` + gone).MatchString(rule.body) {
+					t.Errorf(".settings-table thead carries a declaration matching %s, which takes the column name out of the accessibility tree as well as off the screen — a stacked value then reads to a screen reader as an unlabelled word: %q", gone, rule.body)
+				}
+			}
+		}
+	}
+
+	if swept == 0 {
+		t.Fatal("crswd.css hides no settings table header anywhere, so this asserted nothing about how they are hidden")
+	}
+}
+
+// coarsePrelude is the pointer query, spelled as the file spells it. It is not a
+// width feature, so TestTheDashboardHasExactlyOneBreakpoint does not count it —
+// which is the point of conditioning touch on the pointer rather than evading
+// the guard with range syntax.
+const coarsePrelude = "@media (pointer: coarse)"
+
+// declaredProperties is the property names a rule body sets, in the order it
+// sets them. Values are dropped: what an override collides with is the property,
+// whatever it happens to be spending on it.
+func declaredProperties(body string) []string {
+	var out []string
+	for _, decl := range strings.Split(body, ";") {
+		property, _, ok := strings.Cut(decl, ":")
+		if !ok {
+			continue
+		}
+		if property = strings.TrimSpace(property); property != "" {
+			out = append(out, property)
+		}
+	}
+	return out
+}
+
+// propertiesCollide says whether one declaration can take another's effect
+// away. Equality is the obvious half; the other is the shorthand, which is why
+// it is a prefix test in both directions. `.settings-menu-link` sets `padding`
+// and the pointer block sets `padding-block` on it — a later `padding` would
+// reset the longhand entirely while sharing not one character of its name.
+func propertiesCollide(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+"-") || strings.HasPrefix(b, a+"-")
+}
+
+// TestTheCoarseBlockOverridesRatherThanPrecedes is the assertion that makes the
+// pointer block real rather than merely present.
+//
+// A media query adds no specificity. `.button` inside the pointer block and
+// `.button` at the top level are a tie, and a tie is broken by source order
+// alone — so the whole block, declared above the rules it overrides, parses
+// cleanly, passes every other test in this file, and changes nothing on the
+// device it exists for. That is not a hypothesis: the width breakpoint spent
+// milestone 6 in exactly that position, and `--bright` and `--glow` are the same
+// failure spelled as a value.
+//
+// It is asserted in two halves because the block can be wrong in two ways.
+// Either it sits above a base rule — caught by that selector being declared
+// below the block and nowhere above it — or a new base rule is added below it
+// later, which the first half cannot see because the selector is declared in
+// both places. The second half is therefore per property rather than per
+// selector: `.settings-menu-link { white-space: nowrap }` in the width block is
+// not a collision with `padding-block` and must not read as one.
+//
+// **Must fail when** the block is placed early, parses, passes every other
+// guard, and has no effect.
+func TestTheCoarseBlockOverridesRatherThanPrecedes(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+	// The body is a long unique substring, so finding it again says where the
+	// block sits without counting braces a second time.
+	body := blockFor(t, source, coarsePrelude)
+	at := strings.Index(source, body)
+	before, after := source[:at], source[at+len(body):]
+
+	sets := make(map[string]map[string]bool)
+	for _, rule := range cssRules(body) {
+		for _, one := range strings.Split(rule.selector, ",") {
+			selector := strings.TrimSpace(one)
+			if selector == "" {
+				continue
+			}
+			if sets[selector] == nil {
+				sets[selector] = make(map[string]bool)
+			}
+			for _, property := range declaredProperties(rule.body) {
+				sets[selector][property] = true
+			}
+		}
+	}
+	if len(sets) == 0 {
+		t.Fatal("the pointer block declares no rule at all, so this asserted nothing about the order of anything")
+	}
+
+	declaredIn := func(section, selector string) bool {
+		for _, rule := range cssRules(section) {
+			for _, one := range strings.Split(rule.selector, ",") {
+				if strings.TrimSpace(one) == selector {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	var grounded int
+	for selector := range sets {
+		switch {
+		case declaredIn(before, selector):
+			grounded++
+		case declaredIn(after, selector):
+			t.Errorf("%s is declared below the pointer block and nowhere above it, so at equal specificity the base rule wins and the touch size is a declaration that renders on nothing", selector)
+		}
+	}
+	if grounded == 0 {
+		t.Fatal("no selector the pointer block names has a rule above it, so the block overrides nothing and this asserted nothing about the order of anything")
+	}
+
+	for _, rule := range cssRules(after) {
+		for _, one := range strings.Split(rule.selector, ",") {
+			selector := strings.TrimSpace(one)
+			for _, property := range declaredProperties(rule.body) {
+				for coarse := range sets[selector] {
+					if propertiesCollide(property, coarse) {
+						t.Errorf("%s sets %s below the pointer block, which sets %s on it; at equal specificity the later rule wins and the touch size has no effect: %q", selector, property, coarse, rule.body)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestTouchTargetsFollowThePointerNotTheWidth is the decision this whole block
+// rests on, held as code.
+//
+// A tablet in landscape is a touch device at 1024px and the width breakpoint
+// never reaches it; a narrow desktop window is a mouse and would get inflated
+// controls if the same rules were hung off the viewport. So the width block is
+// swept as well as the pointer block: sizing a target at 780px is the plausible
+// wrong answer, not an omission, and it looks right on the one device whoever
+// wrote it was holding.
+//
+// **Must fail when** targets are sized inside the 780px block instead.
+func TestTouchTargetsFollowThePointerNotTheWidth(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+
+	if coarse := blockFor(t, source, coarsePrelude); !strings.Contains(coarse, "var(--tap)") {
+		t.Errorf("the pointer block spends no var(--tap), so nothing in it is sized to a thumb at all: %q", coarse)
+	}
+
+	for _, rule := range cssRules(blockFor(t, source, breakpointPrelude)) {
+		if strings.Contains(rule.body, "var(--tap)") {
+			t.Errorf("%s is sized to a thumb inside the width breakpoint, where a tablet in landscape never reaches it and a narrow desktop window gets it with a mouse: %q", rule.selector, rule.body)
+		}
+	}
+}
+
+// layoutProperty is a declaration that moves something rather than sizing it.
+var layoutProperty = regexp.MustCompile(`(?i)(^|[;{\s])(display|position|flex-direction|grid-template-[a-z]+)\s*:`)
+
+// TestTheCoarseBlockChangesNoLayout is the policy docs/design-system.md states
+// and nothing else can enforce.
+//
+// The pointer block passes TestTheDashboardHasExactlyOneBreakpoint honestly:
+// `(pointer: coarse)` is not a width feature, so the count stays at one. But
+// that guard's subject is layout varying by condition, and the honesty depends
+// on this block never carrying layout. A `display` or a `grid-template-*` here
+// gives the page a second layout axis, conditioned on something no test in this
+// file models, while every existing guard stays green.
+//
+// **Must fail when** the pointer block starts carrying layout.
+func TestTheCoarseBlockChangesNoLayout(t *testing.T) {
+	t.Parallel()
+
+	coarse := blockFor(t, stylesheet(t), coarsePrelude)
+	for _, rule := range cssRules(coarse) {
+		if match := layoutProperty.FindString(rule.body); match != "" {
+			t.Errorf("%s sets %q inside the pointer block, which changes ergonomics and never layout; layout varies on exactly one axis and that axis is the one that is tested", rule.selector, strings.TrimSpace(match))
+		}
+	}
+}
+
+// TestEveryButtonIsThumbSized is FR-011 read at the control that ends a shell.
+//
+// Asserted on `.button` rather than on the destructive variant, because the
+// component is where the size belongs: a Destroy sized to a thumb beside a
+// Compact that is not is a row whose two controls disagree about how big a
+// target is, and the next button anyone adds inherits the fix rather than
+// needing it.
+//
+// **Must fail when** only some controls are enlarged.
+func TestEveryButtonIsThumbSized(t *testing.T) {
+	t.Parallel()
+
+	coarse := blockFor(t, stylesheet(t), coarsePrelude)
+	if button := ruleFor(t, coarse, ".button"); !regexp.MustCompile(`(?i)min-block-size\s*:\s*var\(--tap\)`).MatchString(button) {
+		t.Errorf("a button keeps whatever height its padding gives it under a coarse pointer, which is roughly half the published minimum: %q", button)
+	}
+}
+
+// gapDecl is a gap and the token it spends.
+var gapDecl = regexp.MustCompile(`(?i)(?:^|[;{\s])gap\s*:\s*(var\(--[a-z0-9-]+\))`)
+
+// TestDestroyIsSeparatedFromCompact is the other half of a mis-tap, and the half
+// a bigger button makes worse rather than better.
+//
+// Destroy sits beside Compact in the card's action row. Enlarging both without
+// moving them apart puts two thumb-sized targets a thumb's gap apart, and the
+// one that ends an unsandboxed shell is the right-hand of the pair. The gap is
+// compared against the base rule's rather than merely found: a coarse block that
+// respells the value it already had is the silent no-op this milestone keeps
+// finding, in one more place.
+//
+// The base rule is read from the file *above* the pointer block rather than
+// from the whole of it. ruleFor returns the first match, and once .card-actions
+// is declared twice "first" is a position rather than a meaning — the ordering
+// is what the rule above holds, so this reads the base rule by the same measure.
+//
+// **Must fail when** the two stay as close as they are with a mouse.
+func TestDestroyIsSeparatedFromCompact(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+	coarse := blockFor(t, source, coarsePrelude)
+
+	touched := gapDecl.FindStringSubmatch(ruleFor(t, coarse, ".card-actions"))
+	if touched == nil {
+		t.Fatal("the pointer block sets no gap on .card-actions, so Destroy stays as close to Compact as it is under a mouse and a thumb covers both")
+	}
+
+	base := gapDecl.FindStringSubmatch(ruleFor(t, source[:strings.Index(source, coarse)], ".card-actions"))
+	if base == nil {
+		t.Fatal("the action row spends no spacing token on its gap at all, so there is nothing here for the pointer block to be wider than")
+	}
+	if touched[1] == base[1] {
+		t.Errorf("the pointer block respells the gap the action row already has (%s), so the declaration reads as a change and is not one", base[1])
+	}
+}
+
+// inputZoomSize is a font-size spending the one token that names the browser
+// threshold. The token rather than the number, because 16px written inline is
+// what the value sweep exists to fail — and because the reason a field is that
+// size is a browser's behaviour, not a judgement about how it looks.
+var inputZoomSize = regexp.MustCompile(`(?i)(?:^|[;{\s])font-size\s*:\s*var\(--fs-input\)`)
+
+// TestInputsDoNotTriggerFocusZoom holds FR-015 at both of the forms it is about.
+//
+// A mobile browser zooms the page when an input below 16px takes focus, and
+// every field here is --fs-body. The cost is not the zoom: it is that the layout
+// pans away from what the operator was aiming at and they pinch back out
+// afterwards, on every rename, every create and every settings edit.
+//
+// Asserted per selector rather than by finding the token once in the block,
+// because the two are different forms — .field-input is create and rename,
+// .setting-input is settings editing — and covering one leaves half the forms
+// zooming while the diff reads as done. A selector list satisfies both, which is
+// how the file spells it; two separate rules would satisfy it too, since what is
+// being asserted is the declaration reaching each selector.
+//
+// **Must fail when** one of the two is missed.
+func TestInputsDoNotTriggerFocusZoom(t *testing.T) {
+	t.Parallel()
+
+	coarse := blockFor(t, stylesheet(t), coarsePrelude)
+	for _, selector := range []string{".field-input", ".setting-input"} {
+		var sized bool
+		for _, rule := range cssRules(coarse) {
+			for _, one := range strings.Split(rule.selector, ",") {
+				if strings.TrimSpace(one) == selector && inputZoomSize.MatchString(rule.body) {
+					sized = true
+				}
+			}
+		}
+		if !sized {
+			t.Errorf("the pointer block sets no font-size: var(--fs-input) on %s, so a touch keyboard opening on that field zooms the page and pans the layout away from it: %q", selector, coarse)
+		}
+	}
+}
+
+// cardText is the two spans whose full value the card puts in a title
+// attribute. They are asserted one at a time rather than as the selector list
+// the file happens to spell, because what is being held is the declaration
+// reaching each of them: the name answers *which session* and the path answers
+// *which checkout*, and a card that truncates either without a hover to recover
+// it has lost that answer, not merely shortened it.
+var cardText = []string{".card-name", ".card-path"}
+
+// TestCardTextWrapsOnNarrowViewports holds FR-017: the ellipsis is only half a
+// design, and on a phone the other half is missing.
+//
+// `text-overflow: ellipsis` is honest about hiding something, and the template
+// renders the whole value into a `title` so nothing is lost — on a device with
+// a hover. A touch device has none. So the full session name and the full
+// working directory are not truncated on a phone, they are unreachable, which
+// is data loss rather than styling.
+//
+// Read out of the breakpoint block per selector rather than with
+// `blockFor(".card-name")`, which returns the base rule — the first occurrence
+// in the file — and would be unsatisfiable against a rule that must say
+// `nowrap`.
+//
+// **Must fail when** the ellipsis stays below the breakpoint, leaving both
+// values behind a hover the reader does not have.
+func TestCardTextWrapsOnNarrowViewports(t *testing.T) {
+	t.Parallel()
+
+	narrow := blockFor(t, stylesheet(t), breakpointPrelude)
+	for _, selector := range cardText {
+		rule := ruleFor(t, narrow, selector)
+
+		if got := whiteSpaceDecl.FindStringSubmatch(rule); got == nil || got[1] != "normal" {
+			t.Errorf("%s still does not wrap below the breakpoint, so its full value stays in a title attribute that needs a hover a phone does not have: %q", selector, rule)
+		}
+		if !regexp.MustCompile(`(?i)overflow-wrap\s*:\s*anywhere`).MatchString(rule) {
+			t.Errorf("%s wraps but an unbroken run — a path with no space in it, which is the usual case — has no break opportunity and overflows the card anyway: %q", selector, rule)
+		}
+	}
+}
+
+// TestTheCardKeepsItsDesktopTruncation is the other side of that, and the side
+// with no symptom on the device the change was made for.
+//
+// Editing the base rule and overriding it inside the breakpoint render
+// identically on a phone. They differ on every desktop, where the grid lays
+// cards in tracks and the ellipsis is what keeps a 64-character name or a deep
+// checkout path from setting a card's height for everything in its row. A base
+// rule change would spend that on every reader who never had the problem.
+//
+// The base rule is read from the source *above* the breakpoint rather than with
+// `ruleFor` over the whole file: `.card-name` is declared twice as of this
+// task, and `ruleFor` returns whichever comes first, which is a positional bet
+// that has already changed answer once in this milestone.
+//
+// **Must fail when** the wrap is written into the base rule instead of the
+// override, so every desktop card grows to fit its longest path.
+func TestTheCardKeepsItsDesktopTruncation(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+	above := source[:strings.Index(source, breakpointPrelude)]
+
+	for _, selector := range cardText {
+		rule := ruleFor(t, above, selector)
+
+		if got := whiteSpaceDecl.FindStringSubmatch(rule); got == nil || got[1] != "nowrap" {
+			t.Errorf("the base %s rule no longer holds its text to one line, so a desktop card grows to fit its longest value and takes its whole grid row with it: %q", selector, rule)
+		}
+		if !regexp.MustCompile(`(?i)text-overflow\s*:\s*ellipsis`).MatchString(rule) {
+			t.Errorf("the base %s rule clips without an ellipsis, so a truncated value on a desktop no longer says that it was truncated: %q", selector, rule)
+		}
+	}
+}
+
+// gutterDecl reads what a rule spends on its inline edges, from either spelling.
+// The two rules this milestone has to keep in line are written differently —
+// .shell sets the `padding` shorthand and .masthead-bar sets the longhand — so a
+// comparison of their text would have compared nothing.
+var (
+	shellGutter    = regexp.MustCompile(`(?i)(?:^|[;{\s])padding\s*:\s*([^;}]+)`)
+	mastheadGutter = regexp.MustCompile(`(?i)padding-inline\s*:\s*([^;}]+)`)
+)
+
+// TestTheMastheadAlignsWithThePage holds FR-019, and it is a relationship rather
+// than a value: the header is in line with the page when it spends the *same*
+// gutter the page does, whatever that gutter becomes.
+//
+// .shell narrows to var(--s4) below the breakpoint and .masthead-bar did not, so
+// the sticky bar's contents sat 8px outside every card and table under them. It
+// is the one element on the screen at all times, which is what makes a small
+// misalignment worth a rule: it is visible beside everything.
+//
+// The page's own gutter is read rather than named, so the assertion cannot go
+// quietly stale — if .shell is ever given a different narrow gutter, this fails
+// naming both instead of continuing to check the masthead against a number
+// nothing else uses any more.
+//
+// **Must fail when** the header keeps its desktop gutters and sits out of line
+// with the content beneath it.
+func TestTheMastheadAlignsWithThePage(t *testing.T) {
+	t.Parallel()
+
+	narrow := blockFor(t, stylesheet(t), breakpointPrelude)
+
+	shell := ruleFor(t, narrow, ".shell")
+	page := shellGutter.FindStringSubmatch(shell)
+	if page == nil || len(strings.Fields(page[1])) != 1 {
+		t.Fatalf("the page's narrow gutter is no longer one value, so what the masthead has to line up with is no longer a single thing this test can name: %q", shell)
+	}
+
+	bar := ruleFor(t, narrow, ".masthead-bar")
+	got := mastheadGutter.FindStringSubmatch(bar)
+	if got == nil {
+		t.Fatalf("the masthead keeps its desktop gutters below the breakpoint, so the one band on every screen sits outside every card and table beneath it: %q", bar)
+	}
+	if want := strings.TrimSpace(page[1]); strings.TrimSpace(got[1]) != want {
+		t.Errorf("the masthead's narrow gutter is %s and the page's is %s, so the header is in line with nothing it sits above", strings.TrimSpace(got[1]), want)
+	}
+}
+
+// operatorFlex is the shorthand, read as its three parts. The basis is the one
+// that matters and it is the one a shorthand hides: `flex: 1 1 auto` and
+// `flex: 1 1 0` differ by one character and by whether the bar wraps.
+var operatorFlex = regexp.MustCompile(`(?i)(?:^|[;{\s])flex\s*:\s*([^;}]+)`)
+
+// TestALongIdentityDoesNotWrapTheBar holds FR-020, which is a fault of flex
+// layout rather than of width.
+//
+// A flex line wraps on its items' *hypothetical* sizes — what each item's
+// content wants before any shrinking is considered. .operator's content is the
+// full Google address, so a long identity wrapped the sticky header to two rows
+// and the ellipsis it already carries only helped afterwards, on a bar that had
+// already grown. A basis of 0 makes the hypothetical size zero, so the address
+// takes the room the brand and the settings link leave it and truncates inside
+// that, which is what the ellipsis was for.
+//
+// text-align is asserted with it because basis 0 also makes the item grow to
+// fill: left to itself the address then starts at the left edge of a box
+// spanning the bar, and docs/design-system.md's second non-negotiable is that
+// the top right is always identity. The fix for the wrap must not cost that.
+//
+// **Must fail when** the basis stays auto, so the bar wraps to two rows on a
+// long email and the ellipsis only helps afterwards.
+func TestALongIdentityDoesNotWrapTheBar(t *testing.T) {
+	t.Parallel()
+
+	operator := ruleFor(t, blockFor(t, stylesheet(t), breakpointPrelude), ".operator")
+
+	flex := operatorFlex.FindStringSubmatch(operator)
+	if flex == nil {
+		t.Fatalf("the identity is still laid out on its content's own width below the breakpoint, so a long address wraps the sticky bar to two rows before the ellipsis is ever reached: %q", operator)
+	}
+	parts := strings.Fields(flex[1])
+	if len(parts) != 3 || parts[2] != "0" {
+		t.Errorf("the identity's flex basis is %q rather than 0, so the bar still wraps on the hypothetical width of a full email address and shrinks only once it has: %q", strings.TrimSpace(flex[1]), operator)
+	}
+
+	if !regexp.MustCompile(`(?i)text-align\s*:\s*(end|right)`).MatchString(operator) {
+		t.Errorf("the identity fills the bar and its text is left where it starts, so the top right of the page stops being where the operator's account is — the one thing this design system says never varies: %q", operator)
+	}
+}
+
+// backgroundDeclaration reads any background* declaration as its property and
+// its value. The prefix is deliberate rather than the two spellings FR-021
+// names: `background`, `background-color` and `background-image` are all
+// dropped whole when handed a value they cannot parse, so a sweep that knew
+// only two of them would be a test whose name promised more than it checked.
+//
+// Anchored on a boundary before the property so that `transition: background
+// var(--transition)` is not read as a background — it is a transition naming one,
+// and the colon is what tells them apart.
+var backgroundDeclaration = regexp.MustCompile(`(?i)(?:^|[;{\s])(background[a-z-]*)\s*:\s*([^;}]+)`)
+
+// TestNoBackgroundSpendsAShadowToken holds FR-021, which is the only defect this
+// milestone fixes that was never about a phone.
+//
+// --glow is `0 0 var(--s2) var(--phosphor)` — a shadow list. Spent as a
+// background it computes to `background: 0 0 .5rem #00ff41`, which is invalid at
+// computed-value time, so the whole declaration is dropped. The settings menu
+// had no surface and the current section had no tint on every device, desktop
+// included, and had never had one.
+//
+// It survived because no guard here could see it. TestEveryTokenReferencedExists
+// was added for var(--bright) and asks whether a referenced token exists; --glow
+// exists. The missing question is whether a token is of a *kind* the property
+// spending it accepts, and CSS offers nothing to ask that with in general. So
+// this is narrow on purpose: one token, named, swept out of one property family.
+// It closes the instance rather than pretending to a type system.
+//
+// **Must fail when** a shadow list is used as a background — a declaration that
+// reads correctly, references a real token, passes every other guard in this
+// file, and renders nothing.
+func TestNoBackgroundSpendsAShadowToken(t *testing.T) {
+	t.Parallel()
+
+	var swept int
+	for _, rule := range cssRules(stylesheet(t)) {
+		for _, decl := range backgroundDeclaration.FindAllStringSubmatch(rule.body, -1) {
+			swept++
+			if strings.Contains(decl[2], "var(--glow)") {
+				t.Errorf("%s paints %s with var(--glow), which is a shadow list: the declaration computes to something the property cannot take, is dropped whole, and the surface never renders on any device — %s: %s", rule.selector, decl[1], decl[1], strings.TrimSpace(decl[2]))
+			}
+		}
+	}
+
+	if swept == 0 {
+		t.Fatal("crswd.css sets no background anywhere, so this sweep found nothing to check and would pass whatever the stylesheet did")
+	}
+}
+
+// TestTheSettingsMenuHasASurface is the positive half of the same fix, and it is
+// needed because the negative half is satisfied by deleting the declaration.
+//
+// The menu is a bar — an edge and a background saying "this is the index, that
+// is the content" before a word of it is read. Removing `background` rather than
+// correcting it passes the sweep above and leaves the page in the state that was
+// being fixed, which for two milestones looked deliberate to everyone who saw it.
+//
+// A surface token rather than a named one: --surface and --surface-lift are both
+// right answers depending on what the panel beside it becomes, and pinning the
+// exact value here would fail a legitimate re-weighting of the two.
+//
+// The base rule is read from the source above the breakpoint, and with ruleFor
+// rather than blockFor: `.settings-menu` is a prefix of both
+// `.settings-menu-list` and `.settings-menu-link`, which are declared first, so
+// a substring search answers with a different rule entirely.
+//
+// **Must fail when** the menu is left with no background at all.
+func TestTheSettingsMenuHasASurface(t *testing.T) {
+	t.Parallel()
+
+	source := stylesheet(t)
+	at := strings.Index(source, breakpointPrelude)
+	if at < 0 {
+		t.Fatalf("crswd.css has no %s block, so there is no base half of the file to read the desktop rule from", breakpointPrelude)
+	}
+
+	menu := ruleFor(t, source[:at], ".settings-menu")
+
+	decl := backgroundDeclaration.FindStringSubmatch(menu)
+	if decl == nil {
+		t.Fatalf("the settings menu has no background, so the bar the operator asked for is an outline around the page's own ground and the index does not read as one: %q", menu)
+	}
+	if !strings.Contains(decl[2], "var(--surface") {
+		t.Errorf("the settings menu's background is %q rather than a surface token; elevation in this design system comes from --surface and --surface-lift, and a value that is neither is either a literal or the wrong kind of token again", strings.TrimSpace(decl[2]))
+	}
+}
+
+// captionSelector matches `caption` used as a *type* selector — the element —
+// and not a class or an id that happens to be named after one. The combinators
+// and the comma are in the leading set because a type selector can follow any of
+// them, and `^` because it can also open the list.
+var captionSelector = regexp.MustCompile(`(?:^|[\s>+~,])caption\b`)
+
+// TestNoRuleTargetsACaption holds FR-022, which is the half of stylesheet
+// hygiene no other guard in this file can reach.
+//
+// TestTheStylesheetAndTheMarkupNameTheSameThings sweeps class names, and a rule
+// like `.settings caption` carries none of its own: the class in it is the
+// wrapper,
+// which the page very much does render. So an element selector under a class is
+// invisible to the sweep in both directions — it cannot report a rule for markup
+// that has gone, and it would not report the page going unstyled if the rule
+// were removed while it was still doing work. That blindness is why the settings
+// page's pre-#103 flat-table styling outlived the flat table by two milestones.
+//
+// The caption is the one of those rules that was provably dead rather than
+// merely superseded: settings.html renders no <caption> element, and neither
+// does any other template in the tree. It named the table for a screen reader in
+// the design this page had before #103 gave it sections and headings.
+//
+// **Must fail when** a rule is written for an element this tree does not render,
+// where it will sit for as long as it takes somebody to read the whole
+// stylesheet against the whole template set by eye.
+func TestNoRuleTargetsACaption(t *testing.T) {
+	t.Parallel()
+
+	var swept int
+	for _, rule := range cssRules(stylesheet(t)) {
+		swept++
+		if captionSelector.MatchString(rule.selector) {
+			t.Errorf("%s styles a <caption>, and no template in this tree renders one — the class sweep cannot see an element selector under a class, so a rule for markup that no longer exists lives here until somebody reads the file: %q", rule.selector, rule.selector)
+		}
+	}
+
+	if swept == 0 {
+		t.Fatal("crswd.css parsed to no rules at all, so this sweep found nothing to check and would pass whatever the stylesheet contained")
+	}
+}
+
+// TestTheSettingsTableCarriesItsOwnLayout is the premise the other deletion
+// rested on, written down where a change to it fails.
+//
+// `.settings table` was removed as superseded, not as dead — it still matched
+// the one table this page renders. What made removing it free is that
+// .settings-table sets the same inline-size and the same border-collapse on that
+// same element, so the element rule decided nothing. That is a fact about a
+// *different* rule, and nothing was holding it: strip either declaration from
+// .settings-table and the settings table silently stops filling its panel or
+// grows a double border grid, with the rule that used to cover for it gone.
+//
+// The class sweep cannot see this either, for the same reason it could not see
+// the element rules — .settings-table is still declared and still rendered. It
+// is the declarations inside it that are load-bearing now.
+//
+// **Must fail when** the table's own rule loses the layout it inherited
+// responsibility for.
+func TestTheSettingsTableCarriesItsOwnLayout(t *testing.T) {
+	t.Parallel()
+
+	table := ruleFor(t, stylesheet(t), ".settings-table")
+
+	for _, want := range []string{"inline-size: 100%", "border-collapse: collapse"} {
+		if !strings.Contains(table, want) {
+			t.Errorf("the settings table's own rule no longer sets %s, and the .settings table rule that also set it has been deleted as redundant — so nothing sets it now: %q", want, table)
+		}
 	}
 }

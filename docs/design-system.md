@@ -117,9 +117,17 @@ needed, inline it as a `@font-face` data URI and embed it via `go:embed`.
 | Body | `14px / 1.5` | mono, `--text` |
 | Prose / help | `.86rem` | **sans**, `--dim` |
 | Label / pill | `.64–.68rem` | uppercase, `letter-spacing: .14em` |
-| Pane output | `12.5px / 1.45` | mono, `white-space: pre`, `tab-size: 4` |
+| Pane output | `12.5px / 1.45` | mono, `white-space: pre`; `pre-wrap` under the breakpoint, `tab-size: 4` |
 
 Pane output sets `font-variant-ligatures: none` — ligatures misrepresent terminal text.
+
+`pre-wrap` below `780px` is a **trade, not a fix**: it costs the alignment of
+Claude Code's own box borders and dividers, and buys reading prose without a
+horizontal pan per line — the dominant phone task, which otherwise fails outright.
+Shrink-to-fit was rejected with arithmetic: 80 columns in a 390px viewport needs a
+~6.9px font. Whether the wrapped chrome is acceptable is
+[an open question](mobile-open-questions.md) whose fallback is deleting two
+declarations.
 
 ## Spacing scale
 
@@ -202,9 +210,6 @@ session grid.
 Shell max-width `1160px`, gutters `--s5`. Session grid is
 `repeat(auto-fill, minmax(310px, 1fr))`.
 
-Breakpoint at `780px`: summary drops to two columns, the brand tagline hides. Two
-breakpoints is enough for one operator on a laptop and a phone.
-
 Wide content — panes, tables — scrolls inside its own `overflow-x: auto` container.
 The page body never scrolls sideways.
 
@@ -212,3 +217,99 @@ The pane viewer is that container in both axes: a fixed block size of
 `--pane-h: 30rem` with `overflow: auto`, so a screen scrolls inside the pane and
 never moves the page around it (`components.md`: the container scrolls, the page
 does not).
+
+### One width breakpoint, at `780px`
+
+**There is exactly one**, and `TestTheDashboardHasExactlyOneBreakpoint` enforces
+both the count and the value. One operator with a laptop and a phone needs one
+threshold; each additional one is a layout nobody looks at until it is already
+wrong. Everything that varies with width varies at the same place.
+
+Everything inside `@media (max-width: 780px)`:
+
+| Selector | Change | Why |
+|---|---|---|
+| `.shell` | gutters `--s5` → `--s4` | A phone cannot spend `--s5` on each edge and still hold a card |
+| `.summary` | two columns | Four state pills side by side are unreadable at 390px |
+| `.brand-tag` | hidden | The tagline is the first thing that is decoration, not information |
+| `.settings` | one column | The section menu goes above its panel rather than beside it |
+| `.pane` | `white-space: pre-wrap` + `overflow-wrap: anywhere` | 80 columns through a 44-character window is a pan per line. The trade is described under Typography; the base rule keeps `pre` |
+| `.settings-menu` | `position: static` | Sticky has no travel room in a one-column grid, so it does nothing — said rather than left to lapse |
+| `.settings-menu-list` | `grid-auto-flow: column` + `justify-content: start` + `overflow-x: auto` | Stacked, seven sections are ~300px of links above the thing the operator opened the page to read |
+| `.settings-menu-link` | `white-space: nowrap` | A chip that wraps is two rows of one entry |
+| `.settings-menu-link[aria-current="page"]` | marker moves to `border-block-end` | A start-edge bar reads as a divider between chips rather than a mark on one. Still a border as well as a colour |
+| `.settings-table thead` | `position: absolute` + `clip-path: inset(50%)` + `overflow: hidden` | Once a row is a stack there is no column for a header to head. Clipped rather than `display: none` so the column name stays in the accessibility tree — a stacked value has lost its column and the `th` is the only thing still carrying its name. `inset(50%)` is also the only spelling this file can afford: the conventional visually-hidden recipe sizes in absolute lengths, and the value sweep fails a literal length inside a media query too |
+| `.settings-table tr` | `display: grid` + `grid-template-columns: minmax(0, 1fr)` | Key, value and source do not fit ~358px. The editable row is why it matters rather than the width alone — its input and Save button make it the widest row on the page, so changing a setting meant typing inside a horizontal pan |
+| `.settings-table th`, `.settings-table td` | `overflow-wrap: anywhere` | A config key is one unbroken token with no column beside it left to give way |
+| `.card-name`, `.card-path` | `white-space: normal` + `overflow-wrap: anywhere` | The ellipsis puts the full value in a `title`, and a `title` needs a hover a touch device does not have — so both were unreachable rather than shortened. The base rule keeps `nowrap`: on a desktop the ellipsis is what stops one long path setting the height of a whole grid row |
+| `.masthead-bar` | gutters `--s5` → `--s4` | `.shell` narrows here and the header did not, so the one band on every screen sat 8px outside every card and table beneath it. The rule is the page's gutter rather than a number of its own, and the test reads `.shell` rather than naming a token, so the two cannot drift apart quietly |
+| `.operator` | `flex: 1 1 0` + `min-inline-size: 0` + `text-align: end` | A flex line wraps on its items' *hypothetical* sizes, so a long address wrapped the sticky bar to two rows and the ellipsis already on the identity only helped after it had. Basis `0` makes that hypothetical size zero and the ellipsis does the work instead. `min-inline-size` says what the base rule's `overflow: hidden` already buys; `text-align` is because basis `0` grows the item to fill, and identity at the top right is the second non-negotiable of this file |
+
+**Adding a rule to that block adds a row to this table, in the same commit.** An
+enumeration that has gone stale is worse than no enumeration — this table already
+said "two effects" once while the block did four things.
+
+Three rules about how it is written:
+
+- **Additions go inside the existing block.** A second `@media` block fails the
+  guard *even at an identical width* — it counts occurrences of a width feature, it
+  does not compare them.
+- **Never range syntax** (`(width <= 780px)`). It slips past the guard's regex
+  while doing exactly what the guard forbids, which is routing around a hook.
+- **The block sits after every rule it overrides**, which is why it is the last
+  thing in the stylesheet before `[hidden]`. A media query adds no specificity, so
+  `.settings` inside it and `.settings` at the top level are a tie broken by source
+  order alone. The block spent milestone 6 declared *above* the settings rules,
+  where the one-column collapse parsed, passed every guard and lost to the
+  two-column rule 250 lines further down — the settings page was never one column
+  on a phone. `TestTheBreakpointOverridesRatherThanPrecedes` now holds it, per
+  selector rather than per block, because the hazard is a base rule declared low
+  in the file rather than the block having moved.
+
+### Pointer, not width, for touch
+
+A tablet in landscape is a touch device at a desktop width; a narrow desktop window
+is a mouse. So touch ergonomics are conditioned on the pointer, and:
+
+> A pointer-conditioned block (`@media (pointer: coarse)`) changes **ergonomics —
+> size, spacing, input scale — and never layout.** Layout varies on exactly one
+> axis, and that axis is tested.
+
+`(pointer: coarse)` is not a width feature, so it passes the breakpoint guard
+honestly rather than by evasion. It sits **after** the rules it overrides: at equal
+specificity, order alone decides, and a coarse block placed above them parses
+cleanly, passes every guard, and does nothing.
+`TestTheCoarseBlockOverridesRatherThanPrecedes` holds that, per selector and then
+per property, because the block can be wrong either by being placed early or by a
+base rule arriving below it later.
+
+Everything inside `@media (pointer: coarse)`:
+
+| Selector | Change | Why |
+|---|---|---|
+| `.button` | `min-block-size: var(--tap)` | Padding alone gives a button roughly half the published minimum. On the component rather than on Destroy, so the next button inherits the size rather than needing it |
+| `.settings-menu-link`, `.combo-list li`, `.rename-summary`, `.release-notes summary` | `padding-block: var(--s3)` | Four controls that are a line of text tall. A disclosure and a listbox option are as tappable as a button and get none of a button's box |
+| `.masthead-link` | `padding-block: var(--s3)` + `margin-block: calc(var(--s3) * -1)` | The hit area grows and the bar's height does not — the margin gives the layout back what the padding took. It is a flex item, so both apply |
+| `.field-switch` | `min-block-size: var(--tap)` | The row is the target: the checkbox and its label are one control, and the box alone is `--s4` square |
+| `.card-actions` | `gap: var(--s3)` | Destroy sits beside Compact and a thumb covers both. Enlarging the buttons without moving them apart makes that worse, not better |
+| `.field-input`, `.setting-input` | `font-size: var(--fs-input)` | Below `16px` a mobile browser zooms the page on focus, so every rename, create and settings edit zoomed and panned and the operator pinched back out. Both, because they are different forms — create/rename and settings editing — and one of the two leaves half of them zooming |
+
+**Adding a rule to that block adds a row to this table, in the same commit** — the
+same obligation the width block carries, for the same reason.
+
+The two values that block spends are declared here, because rule 1 makes this file
+the only door a value comes through:
+
+```css
+--tap: 44px;       /* the published platform minimum for a touch target */
+--fs-input: 16px;  /* at or above this, a mobile browser does not zoom on focus */
+```
+
+Both are named rather than spelled inline so the *reason* travels with the number:
+`44px` is a figure the platforms publish, and `16px` is a browser threshold, not a
+size anyone chose for how it looks. They stay **two** tokens — one length, one font
+size — because collapsing them would make the next change to either a change to
+both.
+
+Questions about the phone layout that no test here can settle live in
+[`mobile-open-questions.md`](mobile-open-questions.md).

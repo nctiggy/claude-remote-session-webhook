@@ -1,12 +1,15 @@
 {{/*
   The settings page — GET /settings (contracts/settings-page.md). It is the
-  read-only account of how this daemon was configured, and it is the page that
-  makes the configuration file legible: an operator who edited a file and saw
-  nothing change reads here which layer actually supplied each value.
+  account of how this daemon was configured, and it is the page that makes the
+  configuration file legible: an operator who edited a file and saw nothing
+  change reads here which layer actually supplied each value.
 
-  What it holds is the same header every other page carries and a table of what
-  this daemon is configured to do: one row per key config.go declares, in that
-  order, with the layer that supplied it beside the value.
+  What it holds is the same header every other page carries, a menu of sections,
+  and, for the section being shown, a table of what this daemon is configured to
+  do: one row per key config.go declares, in that order, with the layer that
+  supplied it beside the value. Updates is the one section shaped differently —
+  it reports what this daemon is running rather than what it was told — and it
+  belongs here because that is a fact about how it was configured too.
 
   Above the table is the file those values were read from, or the sentence saying
   none was (FR-018). It is first because it qualifies everything under it — the
@@ -20,12 +23,27 @@
   credential than it was handed, and no way to add a "helpful" masked form without
   editing the projection that a test reads.
 
-  There is no form here, and there is not going to be one. No mutating verb is
-  registered on this path (spec, Out of Scope), so this page carries no page
-  token, no action row and no live region — the three things every actionable
-  page in this tree carries and this one must not. A form rendered here would be a
-  form the daemon has no route to receive, which is the one shape of dead control
-  the design system cannot show an operator is dead.
+  This page acts as well as reads. It carries mutating forms, the page token
+  inside each of them, the controls that submit them, and the live region at the
+  foot of this file — the three things every actionable page in this tree carries,
+  and the forms they exist for. Two routes receive them: POST /settings/edit for
+  one configuration key, and POST /dashboard/update for the binary. `GET /settings`
+  is still the only verb registered on this path itself, which is why the header's
+  link to it is a link to a page and nothing more.
+
+  It was once read-only, and the absence of a route was the safeguard. That is no
+  longer where the safety comes from, so do not restore it by deleting a form:
+  what bounds this page now is the action gate the two routes sit behind and
+  config.Editable, whose reasoning is written at the top of settings_edit.go.
+
+  What gets a field is config.Editable's answer and nothing else, and it answers
+  no for every secret — so the form that would put a credential in a page, in the
+  browser's history and in a POST body cannot be rendered from here. A row it
+  refuses, and every row when no token could be minted, renders the text it always
+  had: a control certain to be turned away is not offered at all, which is the
+  same discipline that builds a card with no actions rather than actions that
+  fail. The controls sit in the row or the panel they act on; a `.card-actions`
+  row is the dashboard's shape and not this page's.
 
   Load-bearing, and the same three absences the other three pages carry: no
   inline <script>, no inline <style>, and no external origin. The policy in

@@ -3180,3 +3180,138 @@ func TestEveryPageShowsTheVersion(t *testing.T) {
 		t.Error("the header does not call the version function; a hardcoded string renders perfectly and is wrong from the next release onward")
 	}
 }
+
+// settingsMenuElement is the settings page's section index, matched as the
+// element rather than by its links, so what the assertions below read is the
+// menu and never a control that happens to sit elsewhere on the page.
+var settingsMenuElement = regexp.MustCompile(`(?s)<nav class="settings-menu"[^>]*>(.*?)</nav>`)
+
+// TestTheSettingsMenuIsStillLinks is the mechanism the phone layout is not
+// allowed to trade away.
+//
+// Below the breakpoint the menu is restyled into a scrolling row, and a row of
+// choices is precisely the shape somebody reaches for a <select> or a <details>
+// to build. Each of those was argued and priced in research.md R8 and rejected:
+// a real link is a GET this daemon answers, so the menu works with no script at
+// all, a section can be linked to and bookmarked, and the back button behaves.
+// The reflow is CSS over the markup that already exists — a different shape, not
+// a different mechanism.
+//
+// It lives here rather than beside the two stylesheet assertions this task also
+// ships, because it reads rendered markup and that is the division this file and
+// stylesheet_test.go are split on.
+//
+// **Must fail when** the menu is rebuilt as a control that needs JavaScript,
+// which is what SC-009 is about and what no stylesheet assertion can see.
+func TestTheSettingsMenuIsStillLinks(t *testing.T) {
+	t.Parallel()
+
+	page := renderComponent(t, "settings", settingsView{
+		Operator: &access.VerifiedOperator{Email: "operator@example.com"},
+		Shown:    "Limits",
+		Sections: []settingSection{
+			{Title: "Listening", Settings: []settingRow{{Key: "listen", Value: loopbackListen, Source: "default"}}},
+			{Title: "Limits", Settings: []settingRow{{Key: "max_sessions", Value: "4", Source: "file"}}},
+		},
+	})
+
+	match := settingsMenuElement.FindStringSubmatch(page)
+	if match == nil {
+		t.Fatalf("the settings page renders no section menu at all, so this asserted nothing about what the menu is made of:\n%s", page)
+	}
+	menu := match[1]
+
+	// Updates is rendered outside the range over .Sections, so it is the entry a
+	// menu rebuilt from that loop alone would quietly drop.
+	for _, title := range []string{"Updates", "Listening", "Limits"} {
+		if _, ok := anchorTo(menu, settingsPath+"?section="+title); !ok {
+			t.Errorf("the menu offers no link to the %s section, so reaching it needs either a script or a typed address:\n%s", title, menu)
+		}
+	}
+
+	// A button is in this list with the scripted controls: inside a menu it is
+	// either a form's submit or something only a script can act on, and a section
+	// entry is meant to be neither.
+	for _, scripted := range []string{"<select", "<form", "<button", "onclick", "onchange"} {
+		if strings.Contains(menu, scripted) {
+			t.Errorf("the section menu renders %s, which needs a script or a POST where the page promises a bookmarkable GET per section that works with no JavaScript (SC-009):\n%s", scripted, menu)
+		}
+	}
+}
+
+// The four absences settings.html's header comment asserted, each paired with
+// what the markup under that comment actually renders.
+//
+// The pairing is the whole test. "There is no form here" is a fine thing for a
+// comment to say about a page that has no form, and this file was that page
+// once; what makes it a defect is a denial standing over a file that does the
+// opposite. So each claim is only read when its half of the page is present.
+//
+// The denials are the phrasings the false comment used, which is as far as a
+// regex can honestly go — "carries no token" would evade this and mean the same
+// thing. It catches the sentence coming back, not every way of writing it.
+var settingsHeaderClaims = []struct {
+	what    string
+	renders *regexp.Regexp
+	denies  *regexp.Regexp
+}{
+	{"a mutating form", regexp.MustCompile(`(?i)<form[^>]*method="post"`), regexp.MustCompile(`(?i)there is no form|\bno form (here|on this page|at all)\b`)},
+	{"the page token", regexp.MustCompile(`name="` + fieldPageToken + `"`), regexp.MustCompile(`(?i)\bno page token\b`)},
+	{"a control that submits one", regexp.MustCompile(`(?i)<button[^>]*type="submit"`), regexp.MustCompile(`(?i)\bno action row\b`)},
+	{"a live region", regexp.MustCompile(`(?i)\baria-live=`), regexp.MustCompile(`(?i)\bno live region\b`)},
+}
+
+// TestTheSettingsCommentDescribesThePage is the one assertion in this milestone
+// that is about a comment, and it is here because of what this pipeline is: a
+// fresh context reads the file's own account of itself before it reads the file.
+// This header stated that the page carries no form, no page token, no action row
+// and no live region, for a milestone after all four landed — an executor that
+// believed it would have "restored" the read-only page by deleting the operator's
+// only way to edit a setting from a browser, and the denial it would have trusted
+// was about whether a mutating form carries its token.
+//
+// Comments are stripped before a template renders and before every other sweep
+// in this file reads one, so nothing else here can ever see this class of defect.
+//
+// **Must fail when** the header denies something the markup beneath it does.
+func TestTheSettingsCommentDescribesThePage(t *testing.T) {
+	t.Parallel()
+
+	source, err := fs.ReadFile(web.Templates, "templates/settings.html")
+	if err != nil {
+		t.Fatalf("read the settings template: %v", err)
+	}
+
+	// The header comment is the one above the doctype. Splitting there rather
+	// than sweeping every comment in the file keeps the per-row and per-section
+	// notes out of it — several of them say "no token" truthfully, about the GET
+	// that checks for a release.
+	doctype := strings.Index(strings.ToLower(string(source)), "<!doctype")
+	if doctype < 0 {
+		t.Fatal("settings.html renders no doctype, so there was no line to split its header comment from its markup on")
+	}
+	header := templateComment.FindString(string(source)[:doctype])
+	if header == "" {
+		t.Fatal("settings.html carries no header comment above its doctype, so this read the page's own account of itself out of nothing")
+	}
+	// Unwrapped before anything is matched against it, because this comment is
+	// wrapped prose: "carries no page / token" is one sentence to a reader and two
+	// lines to a regex, and the claim would hide in the break. Proved by mutation
+	// — the false paragraph restored verbatim evades the token denial without it.
+	header = strings.Join(strings.Fields(header), " ")
+	markup := string(source)[doctype:]
+
+	present := 0
+	for _, claim := range settingsHeaderClaims {
+		if !claim.renders.MatchString(markup) {
+			continue
+		}
+		present++
+		if denial := claim.denies.FindString(header); denial != "" {
+			t.Errorf("settings.html renders %s and its header comment says %q; the next fresh context reads that comment as the contract and acts on it", claim.what, denial)
+		}
+	}
+	if present == 0 {
+		t.Fatal("settings.html renders no form, no token, no submit control and no live region, so every denial above was read against nothing; if the page really did become read-only again, this test and that comment are rewritten together")
+	}
+}

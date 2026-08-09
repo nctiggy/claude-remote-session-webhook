@@ -97,6 +97,16 @@
   --focus-width: 2px;
   --focus-offset: 2px;
 
+  /* Touch ergonomics, spent by the pointer-coarse block. 44px is the minimum
+     touch target the platforms publish; 16px is the size at or above which a
+     mobile browser does not zoom the page when an input takes focus. Named so
+     the reason travels with the number — neither is a size anyone chose for how
+     it looks, and digits in a rule cannot say that. Two tokens rather than one
+     because a length and a font size collapsed together would make the next
+     change to either a change to both. */
+  --tap: 44px;
+  --fs-input: 16px;
+
   --shell-max: 1160px;
   /* The settings menu's width. A token because docs/design-system.md keeps
      every length in one place, and because a menu narrower than its longest
@@ -887,9 +897,19 @@ body {
    It is its own scroll container in both axes (the layout rule for wide
    content, and components.md's fixed height), so the screen scrolls and the
    page does not. Ligatures are off because they misrepresent terminal text, and
-   the tab stop is the terminal's rather than the browser's default. */
+   the tab stop is the terminal's rather than the browser's default.
+
+   The horizontal axis contains its overscroll and the vertical axis
+   deliberately does not. Panning past the right edge of 80 columns otherwise
+   chains into the browser's own back gesture, which throws the reader off the
+   page mid-session — a trackpad does this too, which is why the declaration is
+   unconditional. Containing the vertical axis would cost far more than it
+   buys: this element is 30rem of a ~660px phone, so a flick that began inside
+   it would stop at its end rather than scrolling the page, and the reader is
+   sealed into a box filling their display. */
 .pane {
   overflow: auto;
+  overscroll-behavior-x: contain;
   max-block-size: var(--pane-h);
   margin: 0;
   padding: var(--s3);
@@ -1035,32 +1055,6 @@ body {
   outline-offset: var(--focus-offset);
 }
 
-/* The single breakpoint: the summary drops to two columns and the tagline
-   hides. One operator, a laptop and a phone — two breakpoints would be one
-   more than either needs. */
-@media (max-width: 780px) {
-  .shell {
-    padding: var(--s4);
-  }
-
-  .summary {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .brand-tag {
-    display: none;
-  }
-
-  /* The settings menu goes above its panel rather than beside it. One column is
-     the only sensible arrangement for a menu and a table on a phone, and this
-     shares the stylesheet's single breakpoint rather than inventing a second —
-     docs/design-system.md gives it one. */
-  .settings {
-    grid-template-columns: 1fr;
-  }
-}
-
 /* Removed entirely rather than slowed: the canvas leaves the layout, so the
    shared animation loop finds nothing to draw into and the message the rain sat
    behind is all that remains. */
@@ -1120,41 +1114,35 @@ body {
   text-transform: uppercase;
 }
 
-/* The settings table — the read-only account of how this daemon was configured.
-   Wide content scrolls inside its own container rather than moving the page
-   sideways, which is the rule docs/design-system.md gives panes and tables
-   alike. No rain sits behind it: a table of values an operator is reading is
+/* The settings page's paragraphs and cells, by element under one class rather
+   than a class per cell. The table is the whole of this page's structure, and a
+   class on every cell would be a component docs/components.md never defined. No
+   rain sits behind any of it: a table of values an operator is reading is
    reading content.
-   Element selectors under one class rather than a class per cell. The table is
-   the whole of this page's structure, and a class on every cell would be a
-   component docs/components.md never defined. */
-.settings {
-  overflow-x: auto;
-}
 
-.settings table {
-  inline-size: 100%;
-  border-collapse: collapse;
-}
+   Two rules that lived here are gone, and which two is the part worth keeping.
+   Neither was visible to the class sweep — a rule that selects an element under
+   a class carries no class name for the sweep to miss — which is how both
+   outlived the flat table they were written for (#103).
+
+   .settings caption was dead: settings.html renders no <caption> at all, and has
+   not since the page became sections. .settings table was superseded rather than
+   dead — it still matched the one table this page renders, and spent the same
+   inline-size and border-collapse that .settings-table sets on that very
+   element, so it decided nothing. What is left below is here because deleting it
+   would change what is on the screen. */
 
 /* The file the values were read from, above the table it qualifies. Dim, because
    it is the provenance of the whole page rather than a setting on it — and mono
-   by inheritance, since a path is what the machine calls a file. */
+   by inheritance, since a path is what the machine calls a file.
+
+   It is also what gives .update-caution its bottom margin: that rule asks for
+   `margin: 0` one class lighter than this selector and loses the longhand to it.
+   Recorded rather than settled — letting the caution's own rule win is a spacing
+   change to the update form, which is not what retiring a superseded rule is. */
 .settings p {
   margin-block: 0 var(--s5);
   color: var(--dim);
-}
-
-/* The table's accessible name, where a heading would only repeat the masthead.
-   Aligned to the start rather than centred: a centred caption over a table this
-   narrow reads as a title for the page instead of for the table. */
-.settings caption {
-  margin-block-end: var(--s3);
-  color: var(--dim);
-  font-size: var(--fs-eyebrow);
-  letter-spacing: var(--ls-eyebrow);
-  text-align: start;
-  text-transform: uppercase;
 }
 
 /* A key is what the machine calls the setting, so both columns stay in mono and
@@ -1328,35 +1316,59 @@ body {
 /* Where the operator is. A border as well as a colour, because state is never
    conveyed by hue alone — and aria-current says it to everybody else.
 
-   That rule earned its keep here. The colour was var(--bright), which is not a
-   token this stylesheet defines, so it resolved to nothing and the current
-   section was never tinted at all. The border and aria-current carried the whole
-   marker and nobody noticed, which is exactly what "not by hue alone" is for:
-   the redundant cue was the working one. */
+   That rule has now earned its keep twice, against the same class of defect
+   wearing two different disguises. First the colour was var(--bright), a token
+   this stylesheet does not define, so the declaration resolved to nothing. Then
+   the background was var(--glow), which *is* defined — and is a shadow list, so
+   `background: 0 0 .5rem #00ff41` was dropped at computed-value time. Both times
+   the current section was never tinted at all, both times the border and
+   aria-current carried the whole marker, and both times nobody noticed. That is
+   what "never by hue alone" buys: the redundant cue was the working one.
+
+   The gap the second one came through is worth naming, because it is not
+   closable by the guard that caught the first. TestEveryTokenReferencedExists
+   was written for --bright and asks whether a referenced token *exists* — not
+   whether it is of a kind the property spending it accepts. A token can exist,
+   be spelled correctly, and still be silently wrong for the property it is
+   handed to. TestNoBackgroundSpendsAShadowToken closes this instance of that,
+   and only this instance; CSS has no type system here to appeal to.
+
+   The tint is --surface-lift rather than --surface because the chip sits inside
+   the menu bar below, which is --surface: a mark on the current item has to be
+   the raised one or the operator's own place is the one thing that recedes. */
 .settings-menu-link[aria-current="page"] {
   color: var(--text);
   border-inline-start: var(--edge-width) solid var(--edge-bright);
-  background: var(--glow);
+  background: var(--surface-lift);
 }
 
 /* A bar, not a list floating beside a panel.
 
    The operator asked for a bar, and they are right that it reads better: an
    edge and a background say "this is the index, that is the content" before any
-   text is read, which is the whole job of a sidebar. */
+   text is read, which is the whole job of a sidebar. The background is only
+   true as of this commit — it was var(--glow) and rendered nothing, so the edge
+   said it alone on every device including a desktop. See above. */
 .settings-menu {
   min-inline-size: 0;
   padding: var(--s4) var(--s3);
   border: var(--edge-width) solid var(--edge);
   border-radius: var(--r);
-  background: var(--glow);
+  background: var(--surface);
   position: sticky;
   top: var(--s6);
 }
 
+/* The panel is the scroll container, and the wrapper above it is not.
+   overflow-x lived on .settings, which holds the menu as well as the panel, so
+   a table wider than the viewport panned the section index along with the
+   content: reaching a Save button dragged the operator's place in the page off
+   the screen. Unconditional, because it is as right on a desktop as on a phone
+   — a desktop is only wide enough that nothing overflows to prove it. */
 .settings-panel {
   min-inline-size: 0;
   padding-inline-start: var(--s2);
+  overflow-x: auto;
 }
 
 /* Editing one setting, in its own row.
@@ -1426,6 +1438,244 @@ body {
    as though it were one of them. */
 .check-line {
   margin-block: 0 var(--s5);
+}
+
+/* Touch ergonomics, conditioned on the pointer rather than the viewport. A
+   tablet in landscape is a touch device at a desktop width and the breakpoint
+   below never reaches it; a narrow desktop window is a mouse and would get
+   inflated controls if it did. Target size is a property of the thumb, not of
+   the window it is pointing at.
+
+   This block changes size, spacing and input scale and never layout. Layout
+   varies on exactly one axis and that axis is tested — a `display` or a
+   `grid-template-*` in here would put a second one where nothing is looking.
+   That policy is stated in docs/design-system.md and no guard enforces it.
+
+   Like the breakpoint, it sits after the rules it overrides, and for the same
+   reason: these are single-class overrides of single-class rules, so
+   specificity is a tie and source order alone decides. Placed above .button
+   this parses, passes every other test in this file, and does nothing —
+   TestTheCoarseBlockOverridesRatherThanPrecedes is what holds it here. */
+@media (pointer: coarse) {
+  .button {
+    min-block-size: var(--tap);
+  }
+
+  .settings-menu-link,
+  .combo-list li,
+  .rename-summary,
+  .release-notes summary {
+    padding-block: var(--s3);
+  }
+
+  /* Padded to a thumb without changing the bar's height: the extra hit area is
+     taken back from the layout with a negative margin, so the masthead is the
+     size it always was and the target inside it is not. */
+  .masthead-link {
+    padding-block: var(--s3);
+    margin-block: calc(var(--s3) * -1);
+  }
+
+  .field-switch {
+    min-block-size: var(--tap);
+  }
+
+  /* Destroy sits beside Compact, and a thumb covers both. The labels already
+     distinguish them; this makes the geometry agree, so a mis-tap costs a
+     thumb's width rather than a shell. */
+  .card-actions {
+    gap: var(--s3);
+  }
+
+  /* A mobile browser zooms the page when a field smaller than 16px takes focus,
+     and every input here is --fs-body. So renaming a session, creating one or
+     editing a setting zooms and pans the layout, and the operator pinches back
+     out afterwards — every time. The threshold is the browser's, not a size
+     anyone chose, which is why --fs-input carries it rather than the body scale
+     being raised to meet it.
+
+     Both selectors, because they are different forms: .field-input is create
+     and rename, .setting-input is settings editing. One of the two would leave
+     half the forms zooming while the fix reads as done. */
+  .field-input,
+  .setting-input {
+    font-size: var(--fs-input);
+  }
+}
+
+/* The single breakpoint. One operator, a laptop and a phone — two breakpoints
+   would be one more than either needs.
+
+   What it changes is enumerated in docs/design-system.md and deliberately not
+   here. The same list in two places is how the copy nobody has an obligation to
+   keep current goes stale, and this comment already had: it described two
+   effects while the block did five.
+
+   It sits at the end of the file, after every rule it overrides, and that is
+   load-bearing rather than tidy. A media query adds no specificity, so
+   `.settings` in here and `.settings` below are a tie broken by source order
+   alone. This block used to sit above the settings rules, where the one-column
+   collapse parsed, passed every guard, and lost to the two-column rule 250
+   lines further down — the settings page has never been one column on a phone,
+   which is the surface the operator reported as the worst of it. Anything added
+   here must stay below what it overrides;
+   TestTheBreakpointOverridesRatherThanPrecedes holds that. */
+@media (max-width: 780px) {
+  .shell {
+    padding: var(--s4);
+  }
+
+  .summary {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .brand-tag {
+    display: none;
+  }
+
+  /* The settings menu goes above its panel rather than beside it. One column is
+     the only sensible arrangement for a menu and a table on a phone, and this
+     shares the stylesheet's single breakpoint rather than inventing a second —
+     docs/design-system.md gives it one. */
+  .settings {
+    grid-template-columns: 1fr;
+  }
+
+  /* 80 columns through a 44-character window is a horizontal pan per line, and
+     most of what a session prints is prose. Wrapping trades the alignment of
+     tables and TUI chrome for the ability to read a paragraph at all — a trade,
+     not a fix, and the one the pinch-zoom this page never clamps mitigates.
+     Safe because captures are right-trimmed — capture-pane carries no -N — so
+     blank padding does not wrap into a line of its own. `anywhere` rather than
+     `break-word` because an unbroken run is what a real terminal breaks at its
+     column edge, and because `break-word` leaves the run overflowing until the
+     line has something else on it. */
+  .pane {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* The menu becomes one scrolling row so the panel starts on the first screen.
+     Stacked, seven entries are about 300px of links above the thing the
+     operator came to read, and every section is a fresh GET landing at the top
+     — so choosing one means scrolling past the whole menu again to see what it
+     did.
+
+     Same markup, same real links, same aria-current: a phone gets a different
+     shape, not a different mechanism.
+
+     Sticky is dropped rather than left to lapse. In a one-column grid the
+     menu's area is its own height, so it has no travel room and sticky does
+     nothing — saying static is better than relying on that geometry to keep
+     being true. */
+  .settings-menu {
+    position: static;
+  }
+
+  .settings-menu-list {
+    grid-auto-flow: column;
+    justify-content: start;
+    overflow-x: auto;
+  }
+
+  .settings-menu-link {
+    white-space: nowrap;
+  }
+
+  /* A start-edge bar reads as a divider between chips rather than a mark on
+     one, so the marker moves to the bottom edge. Still a border as well as a
+     colour — never hue alone. */
+  .settings-menu-link[aria-current="page"] {
+    border-inline-start: none;
+    border-block-end: var(--edge-width) solid var(--edge-bright);
+  }
+
+  /* Key, value and source stop being three columns and become three lines.
+
+     Width alone would not be enough to justify it — a narrow table can scroll.
+     The editable row is the reason: .setting-form carries a minimum-width input
+     and a Save button beside it, so a row an operator can actually change is
+     wider than the rest and changing a setting means typing inside a horizontal
+     pan. Stacked, the input and its button have the row's whole width.
+
+     Each cell keeps its scope attribute and its reading order, so what a screen
+     reader announces does not change; only how many of them fit on a line does.
+
+     The headers are hidden accessibly rather than removed. inset(50%) clips the
+     element away while leaving it in the accessibility tree, so a th still has
+     the column name a stacked value has lost — which matters most to the reader
+     with the least other context for a bare word sitting under a value.
+     display: none would take it from them. It is also the spelling this
+     stylesheet can afford: the conventional visually-hidden recipe sizes the
+     element in absolute lengths, and a length outside the token block fails the
+     value sweep inside a media query as readily as anywhere else. A percentage
+     is not a length the sweep tokenises. */
+  .settings-table thead {
+    position: absolute;
+    clip-path: inset(50%);
+    overflow: hidden;
+  }
+
+  .settings-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* A config key is one unbroken token and there is no longer a column beside
+     it to give way, so it breaks rather than widening the row it is in. */
+  .settings-table th,
+  .settings-table td {
+    overflow-wrap: anywhere;
+  }
+
+  /* The ellipsis is only half a design: the full value lives in the title
+     attribute the template renders, and a title needs a hover a touch device
+     does not have. So on a phone the session's full name and its full working
+     directory are not truncated, they are unreachable — the card stops being
+     able to answer which session this is. What it costs is a card's fixed
+     height, and the grid absorbs that — a row sizes to its tallest track, so a
+     card that grows a line pushes nothing sideways. On a phone there is not
+     even that to absorb: `auto-fill, minmax(--card-min, 1fr)` needs 636px of
+     content for a second track, so under ~668px every card is its own row.
+     `anywhere` because a path is one unbroken run with no break opportunity in
+     it. */
+  .card-name,
+  .card-path {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  /* The header kept desktop gutters after the page narrowed. .shell drops to
+     --s4 here and this did not, so the sticky bar's contents sat 8px outside
+     every card, table and heading beneath them — the one element visible on
+     every screen was the one thing not lining up with the page. */
+  .masthead-bar {
+    padding-inline: var(--s4);
+  }
+
+  /* The identity is the other half of the same bar. It is a flex item, and a
+     flex line wraps on its items' *hypothetical* sizes — the width the content
+     wants before any shrinking is considered — so a long address wrapped the
+     bar to two rows and only then let the ellipsis help. A basis of 0 makes the
+     hypothetical size zero: the address takes the space the brand and the link
+     leave and truncates inside it, which is what the ellipsis on the base rule
+     was always for.
+
+     min-inline-size says out loud what the base rule's overflow: hidden already
+     buys — a flex item's automatic minimum is its min-content size unless its
+     overflow is something other than visible — so the basis is not floored back
+     up to a full email by a property somewhere else.
+
+     text-align because growing to fill is what basis 0 does: without it the
+     address starts at the left edge of a box that now spans the bar, and the
+     top right stops being where identity is, which this design system does not
+     allow to vary. */
+  .operator {
+    flex: 1 1 0;
+    min-inline-size: 0;
+    text-align: end;
+  }
 }
 
 /* The hidden attribute has to win (#77).

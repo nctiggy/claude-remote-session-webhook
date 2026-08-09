@@ -16,6 +16,20 @@ rain, reads panes and follows the fleet stream; every control that changes
 something is a plain form post that works with the script switched off. Adding a
 library is a decision for a PR, not a convenience.
 
+**Everything below describes the desktop.** Two conditions change it, and both are
+enumerated rule by rule, with the reason for each, in `design-system.md`:
+
+- `@media (max-width: 780px)` — the one width breakpoint. **Layout**, and only
+  layout: what stacks, what wraps, what hides.
+- `@media (pointer: coarse)` — a touch pointer at any width. **Ergonomics** —
+  size, spacing and input scale — and never layout. A tablet in landscape is a
+  touch device at a desktop width; a narrow desktop window is a mouse.
+
+A section here says what a condition does to *that* component and why. It does not
+repeat the list: the same enumeration in two places is how the copy nobody has an
+obligation to keep current goes stale, and the copy with the obligation attached
+is the one in `design-system.md`.
+
 ## Canonical inventory
 
 These exist. Use them.
@@ -53,17 +67,81 @@ template set is parsed with no function map**, so there is no `dict` to call —
 partial takes the dot, and a value it needs is a field on the view the handler
 built. A new partial follows that, not the sketch.
 
-### The settings page has no component of its own
+### The settings page
 
-`web/templates/settings.html` is the header partial and a plain `<table>` — one
-row per configuration key, with the layer that supplied it beside the value. It
-introduces no primitive, and it deliberately carries **none** of the three things
-every actionable page in this tree carries: no page token, no action row, no live
-region. `GET /settings` is the only verb registered on that path, so a form
-rendered there would be a form the daemon has no route to receive — the one shape
-of dead control this design system cannot show an operator is dead. No rain sits
-behind it either: the effect is permitted behind the header and in the empty state
-and nowhere else, and a table of values is content being read.
+`web/templates/settings.html` is the header partial, a menu of sections, and the
+panel one section renders into: a table of what this daemon is configured to do,
+one row per key, with the layer that supplied each value beside it.
+
+**It acts as well as reads, and it carries all three of the things every
+actionable page in this tree carries** — a page token inside every mutating form,
+the controls that submit them, and a live region at the foot of the file. Two
+routes receive them: `POST /settings/edit` for one configuration key, and
+`POST /dashboard/update` for the binary. `GET /settings` is still the only verb
+registered on the path itself, which is why the header's link to it is a link to a
+page and nothing more.
+
+That paragraph replaced one asserting the opposite — no page token, no action row,
+no live region, and no route for a form to be received by. It was written when the
+page was read-only and it outlived the milestone that gave it forms, here and in
+the template's own header comment. **The absence of a route is no longer what
+bounds this page.** What bounds it now is the action gate those two routes sit
+behind, together with `config.Editable`, which answers no for every secret — so
+the form that would put a credential in a page cannot be rendered from here at
+all. A row it refuses, and every row when no token could be minted, renders the
+text it always had: a control certain to be turned away is not offered, which is
+the discipline that builds a card with no actions rather than actions that fail.
+
+Its controls are this document's — `.button`, `.button-primary`, and the
+page-token partial. Its own vocabulary is the names nothing else uses:
+`.settings-menu`, `.settings-panel`, `.settings-table`, and the per-row edit form
+(`.setting-form`, `.setting-input`, `.setting-save`). A further spelling for a
+text entry on this page is the defect this document exists to prevent. The row's
+input is labelled by `aria-label` rather than a visible `<label>`, because the row
+header beside it already says the key and a second copy is the same word twice to
+anybody reading it aloud.
+
+No rain sits behind it: the effect is permitted behind the header and in the empty
+state and nowhere else, and a table of values is content being read.
+
+#### The section menu
+
+A bar beside the panel on a desktop; one scrolling row of the same links on a
+phone.
+
+| Class | What it is |
+|---|---|
+| `.settings-menu` | The `<nav>`. A surface and a border, so an edge says "this is the index, that is the content" before any text is read. `position: sticky` above the breakpoint, `static` below it |
+| `.settings-menu-list` | The sections. A column beside the panel; `grid-auto-flow: column` below the breakpoint |
+| `.settings-menu-link` | One section — a real `<a>` to `/settings?section=…`, carrying `aria-current="page"` when it is the one being shown |
+| `.settings-panel` | What the chosen section renders into, and the element that pans when a table is wider than the viewport — deliberately not the wrapper that holds the menu as well |
+
+Rules:
+- **Same markup, same real links, same `aria-current`, and no JavaScript either
+  way.** A phone gets a different shape, not a different mechanism. The
+  alternatives were priced and rejected in `research.md` R8 — a `<select>` in a
+  GET form, a `<details>` disclosure, an accordion — because each replaces a list
+  of links with a widget, on the one page an operator reaches when something is
+  already confusing.
+- **The marker is a border as well as a colour, and which edge it sits on follows
+  the shape.** A start-edge bar on a column; the bottom edge on a row, where a
+  start edge reads as a divider *between* chips rather than a mark *on* one. Never
+  hue alone, in either shape.
+- **The cost of the row is that it scrolls and nothing scrolls it back.** Seven
+  sections do not fit a phone's width, so the current chip can start offscreen,
+  and with no script on this page nothing can bring it into view. That is
+  [an open question](mobile-open-questions.md) rather than a settled trade, and
+  its fallback is the `<details>` disclosure — specced and not built.
+- **The panel pans; the grid wrapper holding both of them does not.** `overflow-x`
+  lived on that wrapper, so content wider than the viewport dragged the section
+  index off the screen along with it, and reaching a Save button cost the operator
+  their place in the page. It is unconditional: a desktop is only wide enough that
+  nothing overflows to prove it.
+- **Below the breakpoint the menu sits above the panel**, and each section's table
+  stacks — key, value and source become three lines, with the column headers
+  clipped rather than removed so a `th` still carries the name a stacked value has
+  lost. Whether a bare provenance word reads as part of the value it now sits
+  under is the second [open question](mobile-open-questions.md).
 
 ## Header
 
@@ -90,9 +168,26 @@ Rules:
   The bar is `space-between`; a third child without it puts the identity in the
   centre, which is a different component from the one this document describes.
   Nothing in the markup can see that, so it is written down here.
+- **Below the breakpoint the bar's gutters are the page's gutters.** `.shell`
+  narrows there and this band did not, so the one element visible on every screen
+  was the one thing not lining up with the cards and tables beneath it. It is
+  written as the page's gutter rather than as a number of its own, and the test
+  reads `.shell` rather than naming a token, so the two cannot drift apart
+  quietly.
+- **`.operator` grows to fill the bar below the breakpoint**, with `text-align:
+  end` keeping identity at the end of it. A flex line wraps on its items'
+  *hypothetical* sizes, so a long address broke the bar into two rows before the
+  ellipsis the identity already carries could help; a basis of `0` makes that
+  hypothetical size zero and the ellipsis does the work instead. The auto margin
+  above is what does the same job at a desktop width — two mechanisms, one per
+  side of the breakpoint, and neither is redundant where it applies.
+- **`.masthead-link` is padded to a thumb on a touch pointer, and the bar does not
+  grow**: the padding's height is handed back with a negative margin, so the hit
+  area is bigger and the header is the size it always was.
 - The link is a link to a page and nothing more. `GET /settings` is the only verb
-  registered on that path, so reaching it from every page adds a route to read
-  and no way to write — see "The settings page has no component of its own".
+  registered on that path, so reaching it from every page adds a route to read and
+  nothing that acts. What the page it leads to can change, and what bounds that,
+  is under "The settings page" above — it is not this link.
 - The header renders from the verified operator, never from the request. No
   request-supplied value is in scope in that template, so there is nothing for a
   future edit to reach for by accident.
@@ -117,6 +212,12 @@ Rules:
   and deliberately nowhere else: a second create is a second unsandboxed shell,
   while a second destroy finds no record, a second rename is the same end state,
   and a second compact is a second delivery the operator asked for.
+- **On a touch pointer every button is at least `--tap` tall, and the card's
+  action row spreads to match.** Padding alone gives a button roughly half the
+  published minimum, and enlarging Destroy and Compact without moving them apart
+  would make a mis-tap more likely rather than less. The size is on the component,
+  so the next button inherits it rather than needing it — and it follows the
+  pointer, never the viewport.
 - Destructive actions use `.button-danger` **and** a confirming step. That step is
   a hidden field the page sends deliberately (`confirm=yes`), **not a modal** —
   there is no Modal partial, and a `<dialog>` would need script for an action that
@@ -171,6 +272,12 @@ Rules:
   rather than by script.
 - Working directory renders as text, truncated with a `title` attribute — it is
   caller-supplied (see `security.md`).
+- **Below the breakpoint the name and the path wrap rather than truncate.** The
+  ellipsis is only half a design: the whole value lives in that `title`, and a
+  `title` needs a hover a touch device does not have — so on a phone both were
+  unreachable rather than shortened, and the card stopped being able to answer
+  which session it is. The desktop keeps the ellipsis, because it is what stops
+  one long path setting the height of a whole grid row.
 - An absent name or working directory renders as a sentence saying the value is
   unknown, in dim sans. Never a placeholder that reads like a real name or a real
   path: a card showing an invented directory tells an operator something false
@@ -291,7 +398,28 @@ Rules — these are security rules as much as design rules:
 - **Text nodes only.** Never `safeHTML`, never `template.HTML`, never `innerHTML`,
   and never an htmx swap that treats the payload as markup.
 - ANSI is stripped server-side before it reaches the template.
-- The container scrolls, the page does not. Fixed height, `overflow-y: auto`.
+- **The container scrolls, the page does not.** A fixed `max-block-size` and
+  `overflow: auto`, and the horizontal axis contains its overscroll: panning past
+  column 80 otherwise chains into the browser's own back gesture and throws the
+  reader off the page mid-session. That is unconditional, because a trackpad does
+  it too. **The vertical axis is deliberately left alone** — the pane is most of a
+  phone's display, so containing it would seal the reader into a box instead of
+  letting a flick that began inside it scroll the page.
+- **Below the breakpoint the pane wraps, and it is a trade rather than a fix.**
+  `white-space: pre-wrap` with `overflow-wrap: anywhere` there; the base rule
+  keeps `white-space: pre`. What it costs is alignment: Claude Code's own box
+  borders and dividers wrap into a line plus a stub, and any output that depends
+  on columns is misrepresented on a phone. What it buys is that reading a
+  paragraph stops requiring a horizontal pan per line — the dominant phone task,
+  which fails outright without it. Shrinking to fit was priced instead and needs a
+  ~6.9px font. **Reverting is two declarations**, and whether the trade reads
+  against a real session's chrome is the first
+  [open question](mobile-open-questions.md).
+- **Pinch-zoom is the escape hatch, so no page in this tree may clamp it.** A
+  reader who needs the columns back zooms out to them. `maximum-scale` at any
+  value and `user-scalable=no` are both refused by `TestNoPageClampsTheZoom`,
+  across every template — a clamp is cheap to add and it removes the one
+  mitigation the wrap has.
 - **The pane shows the live screen, not scrollback.** A repainting screen has no
   "bottom" to follow, so an update must never move the viewport for the reader.
   History is what `tmux attach` is for, and the interface should say so rather
@@ -334,6 +462,13 @@ Rules:
   in the markup.
 - Disable submit while in flight where a double submit is a real event — see
   Button.
+- **On a touch pointer a text entry is set at `--fs-input`.** Below that a mobile
+  browser zooms the page when a field takes focus, so creating a session, renaming
+  one or editing a setting zoomed and panned and the operator pinched back out —
+  every time. The threshold is the browser's, not a size anyone chose, which is
+  why it is a token of its own rather than a raised body scale. It applies to
+  `.field-input` **and** to the settings page's `.setting-input`: covering one
+  leaves half the forms zooming while the fix reads as done.
 
 ### Working-directory picker
 
@@ -391,6 +526,9 @@ Rules:
   is presentation; the approved roots are the control. See `security.md`.
 - Suggestions are written with `textContent`, never `innerHTML`: they are
   directory names off a filesystem walk, which is the same rule the pane follows.
+- **An option is a tap target on a touch pointer** and is padded accordingly. A
+  listbox option is as tappable as a button and gets none of a button's box; left
+  alone it is one line of text tall.
 
 ### Switch
 
@@ -422,6 +560,9 @@ Rules:
 - The pointer is on the label as well as the box. They are one control, and a
   checkbox is a small target for what starts an unsandboxed shell in the more
   privileged mode.
+- **The row is the target on a touch pointer**, sized to `--tap` — the box alone
+  is `--s4` square. Sizing the row rather than the box is the same statement the
+  bullet above makes, in geometry.
 
 ## Modal
 
