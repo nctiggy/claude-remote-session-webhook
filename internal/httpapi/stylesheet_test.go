@@ -53,6 +53,8 @@ var designTokens = map[string]string{
 	"--r":             "3px",
 	"--edge-width":    "1px",
 	"--transition":    ".12s ease",
+	"--tap":           "44px",
+	"--fs-input":      "16px",
 }
 
 // documentedStates is the design system's state table: the four display states

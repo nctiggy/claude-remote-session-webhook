@@ -97,6 +97,16 @@
   --focus-width: 2px;
   --focus-offset: 2px;
 
+  /* Touch ergonomics, spent by the pointer-coarse block. 44px is the minimum
+     touch target the platforms publish; 16px is the size at or above which a
+     mobile browser does not zoom the page when an input takes focus. Named so
+     the reason travels with the number — neither is a size anyone chose for how
+     it looks, and digits in a rule cannot say that. Two tokens rather than one
+     because a length and a font size collapsed together would make the next
+     change to either a change to both. */
+  --tap: 44px;
+  --fs-input: 16px;
+
   --shell-max: 1160px;
   /* The settings menu's width. A token because docs/design-system.md keeps
      every length in one place, and because a menu narrower than its longest

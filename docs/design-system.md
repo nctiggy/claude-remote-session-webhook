@@ -260,5 +260,19 @@ honestly rather than by evasion. It sits **after** the rules it overrides: at eq
 specificity, order alone decides, and a coarse block placed above them parses
 cleanly, passes every guard, and does nothing.
 
+The two values that block spends are declared here, because rule 1 makes this file
+the only door a value comes through:
+
+```css
+--tap: 44px;       /* the published platform minimum for a touch target */
+--fs-input: 16px;  /* at or above this, a mobile browser does not zoom on focus */
+```
+
+Both are named rather than spelled inline so the *reason* travels with the number:
+`44px` is a figure the platforms publish, and `16px` is a browser threshold, not a
+size anyone chose for how it looks. They stay **two** tokens — one length, one font
+size — because collapsing them would make the next change to either a change to
+both.
+
 Questions about the phone layout that no test here can settle live in
 [`mobile-open-questions.md`](mobile-open-questions.md).
