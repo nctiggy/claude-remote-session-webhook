@@ -224,3 +224,73 @@ enumeration table a row). 14 of 17 tasks open.
    assertion named for it. The 780px block already sits below `.pane` in the file, so T004 is
    fine as long as it goes where the plan says; it is only a hazard if a later task moves a
    rule rather than adding one.
+
+---
+
+## Iteration 4 — 2026-08-09 08:37
+
+**Did:** T004. `white-space: pre-wrap` + `overflow-wrap: anywhere` on `.pane` inside the
+existing 780px block (`crswd.css`, after `.settings`, before the closing brace), base rule
+left at `white-space: pre`. Both contract tests shipped with it —
+`TestThePaneWrapsOnlyOnNarrowViewports` and `TestThePaneKeepsItsDesktopAlignment`
+(`stylesheet_test.go:2207` onward). Added the row the design-system enumeration table owes
+for a new rule in that block.
+
+**Learned, so the next iteration does not rediscover it:**
+
+- **Iteration 3's warning about `blockFor` was right, and the fix is the nesting pattern that
+  already exists in this file.** `blockFor(t, stylesheet(t), "@media (max-width: 780px)")`
+  then `blockFor(t, narrow, ".pane")` — exactly how `TestReducedMotionRemovesTheRain`
+  (`stylesheet_test.go:252`) reads the reduced-motion block. No new helper was needed. The
+  inner call is safe because nothing earlier in the media block contains the substring
+  `.pane`; `.settings-panel` is not in there. **T007, T008, T012 and T013 all add rules to
+  this same block and can use the same two lines.**
+- **`pre` is a prefix of `pre-wrap`, so a `MatchString` on either is a false pass.** Both
+  tests capture the keyword with one shared expression (`whiteSpaceDecl`) and compare it,
+  rather than matching a pattern. `\b` does not help here — `-` is a non-word character, so
+  `white-space:\s*pre\b` matches `pre-wrap` happily. This will bite anything asserting a
+  keyword that is another keyword's prefix.
+- **The negative that matters is not the missing declaration, it is the misplaced one.**
+  Moving the wrap into the base rule and deleting the media rule renders *identically on a
+  phone* and takes alignment away from every desktop reader. Proved it: that mutation fails
+  `TestThePaneKeepsItsDesktopAlignment` naming the base rule. Also proved dropping
+  `overflow-wrap` alone fails the second assertion. Temporary mutations done with `Edit` and
+  undone with `Edit`, per iteration 3 — `sed -i` is still refused by the permission layer.
+- All five gate commands green; linter is **2.12.2**, so the green is real. `go test ./...`
+  clean, and all three tagged suites compile (`go vet -tags tmux|quickstart|dev`).
+  `-tags quickstart` was not *run*: this task touches no Go outside a test file and no
+  `cmd/crswd`.
+- **The pane's typography row in `docs/design-system.md` is now true.** Iteration 1's finding
+  1 is half-resolved — the `pre`/`pre-wrap` claim landed. The pointer-coarse policy in that
+  same document still describes a block that does not exist until T010.
+
+**Left:** T005 next (`TestNoPageClampsTheZoom`, walking `web.Templates`) — and it is the
+guard that protects the trade this iteration just made, so it is not optional decoration.
+13 of 17 tasks open.
+
+**Findings — noticed, not fixed:**
+
+1. **The comment above the 780px block is stale and this task made it staler.** It says "the
+   summary drops to two columns and the tagline hides" while the block now does five things
+   — `.shell`, `.summary`, `.brand-tag`, `.settings` and `.pane`. It was already wrong before
+   this iteration (it never mentioned `.shell` or `.settings`), so fixing it is adjacent
+   churn under AR-008 and the constitution's fourth principle, not part of T004. Whoever
+   takes T007, T008, T012 or T013 will be editing that block anyway — one of them should
+   either delete the enumeration from the comment or replace it with a pointer to the
+   design-system table, which is the copy that has an obligation attached to keeping it
+   current. Enumerating the same list in two places is what made this stale in the first
+   place.
+2. **Nothing enforces that the design-system enumeration table matches the block.** The
+   obligation is prose in the document; the only thing that checked it this iteration was me
+   reading it. Same shape as iteration 2's finding 1 about the token document. A guard that
+   parsed the selectors out of the 780px block and compared them to that table's first column
+   would close both this and the "adding a rule adds a row" rule in one test — out of scope
+   here, but it is the third time the notebook has recorded a document with no guard behind
+   it, and the plan has four more tasks that add rules to this block.
+3. **`TestThePaneWrapsOnlyOnNarrowViewports` asserts the declarations exist, not that they
+   win.** Iteration 3's finding 3 is now live rather than pending: two `.pane` rules exist at
+   identical specificity and order alone decides. The media block is below the base rule, so
+   it is correct today, and no test would notice if a future edit moved the base rule down —
+   the exact failure mode T010 has a named offset assertion for
+   (`TestTheCoarseBlockOverridesRatherThanPrecedes`) and this pair does not. Cheap to add by
+   comparing `strings.Index` of the two rules, if anyone wants the symmetry.
