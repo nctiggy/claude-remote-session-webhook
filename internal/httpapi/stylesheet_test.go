@@ -18,16 +18,24 @@ import (
 	"github.com/nctiggy/claude-remote-session-webhook/web"
 )
 
-// designTokens is docs/design-system.md's own CSS, transcribed here rather than
-// read from the stylesheet it checks — the same reason securityHeaders in
-// render_test.go writes the policy out by hand. A test that compared the file
-// against its own spelling would still pass on a palette that had quietly
-// drifted, which is precisely the drift Principle VII forbids.
+// designTokens is docs/design-system.md's own declarations, transcribed here
+// rather than read from the stylesheet it checks — the same reason
+// securityHeaders in render_test.go writes the policy out by hand. A test that
+// compared the file against its own spelling would still pass on a palette that
+// had quietly drifted, which is precisely the drift Principle VII forbids.
 //
-// The typography and layout values are deliberately absent: the design system
-// gives those in tables, without token names, so the stylesheet names them and
-// only their absence from a rule is testable. What is here is every token that
-// document declares as CSS.
+// A hand transcription is only worth its bytes if something holds it to the
+// document, and until #116 nothing did: this map claimed to be that file and no
+// test had ever opened it. TestTheTranscriptionIsTheDocumentItTranscribes is
+// that check now, which is also why the set below is every token the document
+// declares *anywhere* rather than only the ones inside a fenced CSS block. The
+// four state tokens are a table and `--pane-h` is a sentence of prose, and a
+// transcription defined as "the ones somebody remembered" is not a set anything
+// can be compared against.
+//
+// Still deliberately absent: the typography and layout values the document
+// gives in tables without naming a token. The stylesheet names those itself, so
+// only their absence from a rule is testable.
 var designTokens = map[string]string{
 	"--ground":        "#050705",
 	"--surface":       "#0a0f0a",
@@ -53,6 +61,7 @@ var designTokens = map[string]string{
 	"--r":             "3px",
 	"--edge-width":    "1px",
 	"--transition":    ".12s ease",
+	"--pane-h":        "30rem",
 	"--tap":           "44px",
 	"--fs-input":      "16px",
 }
@@ -146,6 +155,109 @@ func TestTheTokenBlockIsTheDesignSystem(t *testing.T) {
 		}
 		if got != want {
 			t.Errorf("%s is %q; docs/design-system.md says %q", name, got, want)
+		}
+	}
+}
+
+// designSystemPath is docs/design-system.md, which AGENTS.md names as the file
+// to load before touching anything visual and Principle VII makes binding. Its
+// twin is componentsDocPath, further down: the other half of the same vocabulary
+// and read by a test for the same reason.
+const designSystemPath = "../../docs/design-system.md"
+
+// docTokenDecl is a token declared as CSS in that document.
+//
+// A backtick opens and closes a declaration as well as a line break or a
+// semicolon does, because one of them is written inline in a sentence rather
+// than inside a fence — and the rest of that sentence is prose, not part of a
+// length.
+//
+// A reference is not a declaration: `var(--tap)` is preceded by `(`, which the
+// leading class does not admit, and carries no colon of its own. That is what
+// keeps the pointer table's cells from reading as a second declaration of the
+// tokens they spend.
+var docTokenDecl = regexp.MustCompile("(?m)(?:^|[;{`\\s])(--[a-z0-9-]+)\\s*:\\s*([^;}\\n`]+)")
+
+// docTokenRow is a token the document declares in a table instead. The state
+// table gives the name in one cell and the value in the next and never as CSS,
+// so a sweep that read only the fenced blocks would report all four of them as
+// invented here.
+//
+// Anchored on the second cell being nothing but a backticked token. That is what
+// keeps it off the breakpoint and pointer tables, whose second cell is a
+// declaration made *about* a selector rather than a token being declared.
+var docTokenRow = regexp.MustCompile("(?m)^\\|[^|]*\\|\\s*`(--[a-z0-9-]+)`\\s*\\|\\s*`([^`|]+)`\\s*\\|")
+
+// designSystemTokens is every token docs/design-system.md declares, read out of
+// the document rather than out of anything that transcribes it.
+func designSystemTokens(t *testing.T) map[string]string {
+	t.Helper()
+
+	raw, err := os.ReadFile(designSystemPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", designSystemPath, err)
+	}
+	// Comments stripped first, for cssComment's own reason: a token named in the
+	// commentary beside a declaration is prose about the palette rather than a
+	// second declaration of it.
+	source := cssComment.ReplaceAllString(string(raw), "")
+
+	out := make(map[string]string)
+	for _, decl := range docTokenDecl.FindAllStringSubmatch(source, -1) {
+		out[decl[1]] = strings.TrimSpace(decl[2])
+	}
+	for _, row := range docTokenRow.FindAllStringSubmatch(source, -1) {
+		out[row[1]] = strings.TrimSpace(row[2])
+	}
+
+	// The table is the shape most likely to be reformatted by someone who is not
+	// thinking about this sweep, and a row it silently stopped matching would
+	// read below as four tokens the document no longer declares — the map
+	// accused of inventing the palette by a parser that had gone blind. So the
+	// blindness is the failure, said here.
+	for _, token := range documentedStates {
+		if out[token] == "" {
+			t.Fatalf("no row of the state table in %s declares %s; this reads the token from the second cell and the value from the third, and a table reshaped away from that reports every token in it as fabricated", designSystemPath, token)
+		}
+	}
+	return out
+}
+
+// TestTheTranscriptionIsTheDocumentItTranscribes closes the loop designTokens
+// has stood open in since it was written (#116).
+//
+// The map is checked against the stylesheet and the stylesheet against the map,
+// and neither direction opens docs/design-system.md. So the pair rests entirely
+// on a transcription nothing has read since it was typed: a value mistyped into
+// both the map and the stylesheet is green, and so is a token the design system
+// gained that the map never learned.
+//
+// Both directions, failing for different reasons. A token in the map the
+// document does not declare is a fabrication — the stylesheet is being held to a
+// value the design system does not have, which is the palette drifting with a
+// test agreeing. A token the document declares that the map omits is the drift
+// the map exists to catch, arriving unwatched.
+//
+// **Must fail when** either side gains a token the other has not, or the two
+// spell one token's value differently.
+func TestTheTranscriptionIsTheDocumentItTranscribes(t *testing.T) {
+	t.Parallel()
+
+	declared := designSystemTokens(t)
+
+	for name, want := range designTokens {
+		got, ok := declared[name]
+		if !ok {
+			t.Errorf("designTokens carries %s and %s declares no such token; the stylesheet is being held to a value the design system does not have", name, designSystemPath)
+			continue
+		}
+		if got != want {
+			t.Errorf("designTokens says %s is %q; %s says %q", name, want, designSystemPath, got)
+		}
+	}
+	for name := range declared {
+		if _, ok := designTokens[name]; !ok {
+			t.Errorf("%s declares %s and designTokens omits it, so nothing holds the stylesheet to it", designSystemPath, name)
 		}
 	}
 }
@@ -442,6 +554,10 @@ func styledClasses(t *testing.T) map[string]bool {
 // The state pills are the documented exception in the second direction. Their
 // class is composed at render time from the display state, so no template
 // carries the literal, and two of the four cannot occur yet by design.
+//
+// It reads a selector by its dots and nothing else, so an element selector is
+// invisible to it in both directions.
+// TestTheStylesheetStylesNoElementTheMarkupNeverRenders is that half (#118).
 func TestTheStylesheetAndTheMarkupNameTheSameThings(t *testing.T) {
 	t.Parallel()
 
@@ -463,28 +579,192 @@ func TestTheStylesheetAndTheMarkupNameTheSameThings(t *testing.T) {
 	}
 }
 
+// elementSelectorAttr is an attribute selector. What it holds is a name and a
+// value, and neither is an element: `[aria-selected="true"]` names no
+// `aria-selected` element and no `true` one.
+var elementSelectorAttr = regexp.MustCompile(`\[[^\]]*\]`)
+
+// elementSelectorPseudo is a pseudo-class or a pseudo-element. `:root` is a
+// document, `:hover` is a state and `::before` is a generated box — none of them
+// is a tag a template could open, and all three are spelled like one.
+var elementSelectorPseudo = regexp.MustCompile(`::?[a-zA-Z][\w-]*`)
+
+// functionalPseudo is a pseudo carrying a selector list — `:is()`, `:not()`,
+// `:where()`, `:has()`. The reader below strips a pseudo by name and cannot see
+// inside one, so an element named only in an argument would be swept as though
+// it were absent. There is none in this stylesheet. Its arrival has to stop this
+// test rather than quietly narrow it, which is #118 again one level down.
+var functionalPseudo = regexp.MustCompile(`::?[a-zA-Z][\w-]*\(`)
+
+// selectorCombinator separates one compound selector from the next: a descendant
+// space, a child, either sibling, or the comma between two selectors in a list.
+var selectorCombinator = regexp.MustCompile(`[\s>+~,]+`)
+
+// typeSelector is the element a compound names, and it has to be at the *start*
+// of one. `.card-meta` and `#action-toast` are spelled with letters too, and a
+// sweep that matched anywhere would read `card`, `meta` and `action` as elements
+// no template renders — every one of them a false failure.
+var typeSelector = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9-]*`)
+
+// styledElements is every element the stylesheet selects on, and the selectors
+// that do it. Keyed lowercase because an element name is case-insensitive in
+// HTML, so `<DIV>` and `div` are the same tag and must not read as two.
+func styledElements(t *testing.T) map[string][]string {
+	t.Helper()
+
+	out := make(map[string][]string)
+	descendants := 0
+	for _, rule := range cssRules(stylesheet(t)) {
+		// @keyframes is the one at-rule left once cssRules has stripped the media
+		// preludes. Its own selectors are `from`, `to` and percentages rather than
+		// elements, and they sit in this chunk's body rather than its selector, so
+		// skipping the prelude is the whole of it.
+		if strings.HasPrefix(rule.selector, "@") {
+			continue
+		}
+		if arg := functionalPseudo.FindString(rule.selector); arg != "" {
+			t.Errorf("crswd.css selects with %s in %q and this sweep cannot read inside a selector list; teach it before using one, or an element named in there is swept as though it were absent", arg, rule.selector)
+			continue
+		}
+		bare := elementSelectorPseudo.ReplaceAllString(elementSelectorAttr.ReplaceAllString(rule.selector, ""), "")
+		for i, compound := range selectorCombinator.Split(bare, -1) {
+			name := typeSelector.FindString(compound)
+			if name == "" {
+				continue
+			}
+			name = strings.ToLower(name)
+			out[name] = append(out[name], rule.selector)
+			if i > 0 {
+				descendants++
+			}
+		}
+	}
+
+	if len(out) == 0 {
+		t.Fatal("crswd.css selects on no element at all, so this comparison asserts nothing")
+	}
+	// html and body are the two elements this file names on their own, so a reader
+	// that had regressed to the head of each selector would still find both and
+	// still run green. `.settings caption` was invisible precisely because it sat
+	// *after* a class — that is the shape #118 is about, and a sweep that has
+	// stopped seeing it has to say so rather than report a clean stylesheet.
+	if descendants == 0 {
+		t.Fatal("this sweep found no element below a class; the case it exists for is a rule like `.settings caption`, so it is reading only the head of each selector")
+	}
+	return out
+}
+
+// renderedElement is an element a template opens. Anchored on `<` and a letter,
+// so `<!doctype` and every closing tag are read past: the opening tag is where
+// the name is, and an element that is only ever closed was never rendered.
+var renderedElement = regexp.MustCompile(`<([a-zA-Z][a-zA-Z0-9-]*)`)
+
+// renderedElements is every element the embedded templates open, plus every one
+// the action routes write themselves — the same two doors renderedClasses reads,
+// for the same reason: both are markup a browser is handed.
+func renderedElements(t *testing.T) map[string]string {
+	t.Helper()
+
+	out := make(map[string]string)
+	fromTemplates := 0
+
+	err := fs.WalkDir(web.Templates, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		source, err := fs.ReadFile(web.Templates, p)
+		if err != nil {
+			return err
+		}
+		// An action is dropped rather than collapsed to a marker as renderedClasses
+		// needs it to be: no element in this tree has its tag composed at render
+		// time, and a `<` inside an action is a string being printed, not markup.
+		markup := templateAction.ReplaceAll(templateComment.ReplaceAll(source, nil), []byte(" "))
+		for _, tag := range renderedElement.FindAllStringSubmatch(string(markup), -1) {
+			out[strings.ToLower(tag[1])], fromTemplates = p, fromTemplates+1
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the embedded template tree: %v", err)
+	}
+	if fromTemplates == 0 {
+		t.Fatal("the templates open no element at all, so this comparison asserts nothing")
+	}
+
+	// Folded in after the count, exactly as renderedClasses does it: a template
+	// tree that stopped rendering must fail above rather than be covered by
+	// whatever a route composed in Go.
+	for what, fragment := range actionFragments {
+		for _, tag := range renderedElement.FindAllStringSubmatch(string(fragment), -1) {
+			out[strings.ToLower(tag[1])] = what
+		}
+	}
+	return out
+}
+
+// TestTheStylesheetStylesNoElementTheMarkupNeverRenders is the half of the sweep
+// above that reading a selector by its dots cannot see (#118).
+//
+// TestTheStylesheetAndTheMarkupNameTheSameThings holds every class in the
+// stylesheet to a template that renders it, and a class is all it looks for. So
+// `.settings caption` read to it as "something about `.settings`" — a rule for an
+// element this daemon has never rendered, invisible to the one guard whose whole
+// job is to report a rule for markup that does not exist. Four such rules
+// survived two milestones inside that blind spot, and the class sweep was green
+// for every one of them.
+//
+// One direction only, and on purpose. The reverse is not a defect: almost every
+// element in this tree is styled through a class or not at all, so "an element
+// with no rule of its own" is the ordinary case rather than an unstyled page.
+//
+// **Must fail when** a rule names an element no template in the tree opens.
+func TestTheStylesheetStylesNoElementTheMarkupNeverRenders(t *testing.T) {
+	t.Parallel()
+
+	rendered := renderedElements(t)
+	for element, selectors := range styledElements(t) {
+		if rendered[element] != "" {
+			continue
+		}
+		t.Errorf("crswd.css styles <%s> (%s) and no template in web/templates opens one; a rule for an element that is never rendered is dead weight the class sweep reads as a rule about the class beside it", element, strings.Join(selectors, ", "))
+	}
+}
+
 // componentsDocPath is docs/components.md, which AGENTS.md names as the file to
 // load before touching a control and Principle VII makes binding.
 const componentsDocPath = "../../docs/components.md"
 
 // documentedComponentClass is the classes that document is answerable for *by
-// name*: the working-directory picker, the switch, and the header the settings
-// link sits in — the three controls milestone 5 built or changed. Matched by
-// prefix on the class itself, so a rule added for any of them is swept without
-// this expression being edited.
+// name*: the working-directory picker, the switch, the header the settings link
+// sits in — the three controls milestone 5 built or changed — and the action
+// toast. Matched by prefix on the class itself, so a rule added for any of them
+// is swept without this expression being edited.
+//
+// The toast is here because it is the family that already rotted (#119). It
+// shipped on all three pages with issue #42 and docs/components.md went on
+// saying it had "no section and no use" for four milestones, because being
+// rendered *and* styled satisfies both of the sweeps above — the drift a
+// document-facing direction is the only thing that can see. Nothing widens by
+// itself: the whole point of this expression is that adding a family is a
+// deliberate edit with the document's side of it in the same commit.
 //
 // It is a near-twin of comboSelector and deliberately not the same variable.
 // That one is the set of rules T009 is answerable for the *styling* of, and
 // widening it to carry the masthead would quietly widen four assertions about
 // colour and focus that were written about a picker.
-var documentedComponentClass = regexp.MustCompile(`\.(combo|switch|masthead)[\w-]*`)
+var documentedComponentClass = regexp.MustCompile(`\.(combo|switch|masthead|action-toast)[\w-]*`)
 
-// TestTheComponentsDocumentNamesThePickerTheSwitchAndTheHeader is the third
-// direction of the sweep above, and it exists because the first two cannot see
-// this one. A class can be rendered and styled and still be undocumented, which
-// is how a second version of a control gets built: the next person writes the
-// markup they need because the vocabulary they were told to reuse does not
+// TestTheComponentsDocumentNamesThePickerTheSwitchTheHeaderAndTheToast is the
+// third direction of the sweep above, and it exists because the first two cannot
+// see this one. A class can be rendered and styled and still be undocumented,
+// which is how a second version of a control gets built: the next person writes
+// the markup they need because the vocabulary they were told to reuse does not
 // mention the one that is already there.
+//
+// It is G6 in specs/007-make-it-work-on-a-phone/contracts/guards.md, which names
+// it by its former spelling — ...ThePickerTheSwitchAndTheHeader, before the toast
+// joined the families it sweeps.
 //
 // Both directions, for the same reasons the markup sweep gives. A class the
 // document omits is a control someone reimplements; a class it invents is a
@@ -496,9 +776,9 @@ var documentedComponentClass = regexp.MustCompile(`\.(combo|switch|masthead)[\w-
 // one of them is a bug the next themed control over a native one would otherwise
 // ship.
 //
-// **Must fail when** a `.combo*`, `.switch*` or `.masthead*` rule exists that
-// docs/components.md never names, or the reverse.
-func TestTheComponentsDocumentNamesThePickerTheSwitchAndTheHeader(t *testing.T) {
+// **Must fail when** a `.combo*`, `.switch*`, `.masthead*` or `.action-toast*`
+// rule exists that docs/components.md never names, or the reverse.
+func TestTheComponentsDocumentNamesThePickerTheSwitchTheHeaderAndTheToast(t *testing.T) {
 	t.Parallel()
 
 	// Comments stripped first, unlike cssRules' own reading: a class named in a
@@ -512,7 +792,7 @@ func TestTheComponentsDocumentNamesThePickerTheSwitchAndTheHeader(t *testing.T) 
 		}
 	}
 	if len(styled) == 0 {
-		t.Fatal("crswd.css styles no picker, switch or masthead class at all, so this test is checking nothing")
+		t.Fatal("crswd.css styles no picker, switch, masthead or toast class at all, so this test is checking nothing")
 	}
 
 	raw, err := os.ReadFile(componentsDocPath)

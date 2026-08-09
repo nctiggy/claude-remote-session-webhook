@@ -47,13 +47,23 @@ These exist. Use them.
 
 ### Specified here, not built
 
-Button, Field, Form, Modal and Toast are named by this document and have **no
-partial on disk**. They were written as an inventory before there was anything to
-put in one: milestone 2's dashboard could only read, so it needed no control, and
+Button, Field, Form and Modal are named by this document and have **no partial on
+disk**. They were written as an inventory before there was anything to put in
+one: milestone 2's dashboard could only read, so it needed no control, and
 milestone 3's four actions each needed a fragment of markup rather than a
-component with a call site. Field is covered by Form below; Toast has no section
-and no use — this dashboard answers an action in place, next to the control, with
-`.card-outcome`, rather than in something that floats away on a timer.
+component with a call site. Field is covered by Form below.
+
+**Toast has left this list**, and what it left behind is worth keeping. The
+clause that stood here said the Toast had "no section and no use" — that this
+dashboard answers an action in place, next to the control, rather than in
+something that floats away on a timer. That was a design position written down as
+a fact, and it had been false since issue #42: `.action-toast` is rendered by
+`dashboard.html`, `session.html` and `settings.html`, styled in `crswd.css`, and
+filled by `crswd.js` on every action an operator takes with the script running.
+Being rendered *and* styled is why no sweep reported it for four milestones — the
+drift was between the code and this document, which is the one direction only
+this document's own guard can see (#119). It has a section of its own below;
+having no partial is now the only thing it still shares with the names above it.
 
 That is not permission to invent a second vocabulary. The class names in those
 sections are the ones the shipped templates already use — `.button`,
@@ -334,6 +344,85 @@ Rules — these are security rules as much as design rules:
 - Each button is `aria-describedby` its session's identifier. A fleet of adopted
   sessions has no names, so without it a screen reader hears a column of controls
   announcing the same word, each acting on a different shell.
+
+## Toast
+
+Where an action's answer lands when the script is running. There is no partial:
+each page renders the region itself, as the last element in its body.
+
+```gotemplate
+{{/* On dashboard.html, session.html and settings.html. The id is a contract and
+     not decoration — see the rules. */}}
+<output class="action-toast" id="action-toast" role="status" aria-live="polite" hidden></output>
+```
+
+| Class | What it is |
+|---|---|
+| `.action-toast` | The region. Fixed to the foot of the viewport, `--toast-max` wide, centred by an auto inline margin, and `pointer-events: none` so it can never sit between an operator and the card underneath it |
+
+Rules:
+- **It is the enhancement over the redirect, never the thing that makes an action
+  work.** Every action form is a real form posting to a real route, and every one
+  of those routes answers `303` (`redirectOutcome`). A browser running no script
+  follows that redirect and reads the outcome banner on the fleet it lands on
+  (`partials/outcome.html`). The script posts the form instead, follows the same
+  redirect, and lifts that banner's sentence into this region — one vocabulary
+  (`internal/httpapi/outcome.go`) down both paths, so what an operator is told
+  does not depend on which one they came down.
+- **It floats because nothing navigated**, and that is the whole of when it is
+  used instead of an answer in place. The scripted path deliberately does not
+  throw the page away, so there is no page arriving for the sentence to be first
+  on. It is fixed to the viewport because that is where the eye is after a click,
+  and inert to the pointer because an answer must never become an obstacle.
+- **`#action-toast` must be in the page's markup, and the id is the half that
+  bites.** `crswd.js` looks this element up once, by id, and returns immediately
+  when it is absent — and the delegated submit handler is inside that module. So
+  a page without it does not lose its toast, it loses the interception: every
+  form on that page does an ordinary browser submit and navigates. That is what
+  the settings page's update button did, and three fixes went into the navigation
+  before the cause turned out to be an element the page did not carry. The region
+  is the page's, like every other live region here, and never created by the
+  script.
+- **One per page.** `getElementById` answers with one, so a second
+  `#action-toast` is markup nothing will ever write to.
+- **Text, never markup.** The answer is parsed into an inert document with
+  `DOMParser` and read with `textContent`. The banner is daemon-authored today,
+  so that costs nothing today; it is what keeps this region safe on the day an
+  outcome carries a name or a path. Same rule as the pane, for the same reason.
+- **One line, and only the banner out of the page it received.** The script reads
+  `.outcome`, or the alarming outcome's `.outcome-heading` and `.outcome-body`
+  joined — both halves, because reducing "Teardown could not be verified" to its
+  body is the flattening that shape exists to prevent. An answer carrying neither
+  becomes a fixed sentence saying the host answered without a message. It never
+  renders what it received: an entire card landed in here once, when a create
+  answered with one (#78).
+- **The message outlives the reload it is reporting.** A destroy or a create
+  changes the fleet's shape, and the live half reloads the page — which wiped the
+  toast a moment after it appeared. The sentence is written to `sessionStorage`
+  before it is painted, and repainted on the page the reload lands on. Per tab,
+  never sent to the daemon, and a tab that refuses storage still gets the toast,
+  just not across the reload.
+- **It expires, and the next action clears it.** Six seconds, and a second submit
+  cancels the earlier timer so one answer never stands under a later one. The
+  cost is worth stating plainly: down the scripted path this region is the only
+  place the operator is told anything at all, the alarming outcome included, and
+  six seconds later it is gone.
+- **The update form is the one action that gets no sentence here.** It replaces
+  the settings panel with the daemon's own waiting markup instead, because an
+  update is not an action with an outcome — the daemon has begun replacing itself
+  and is about to stop answering, so what is useful is the page staying put. See
+  "The settings page".
+- **Every value in the rule is a token**, `--toast-max` included, and the copy is
+  sans: a sentence a person reads was written by one (see `design-system.md`).
+- **It ships `hidden` and is revealed as it is written, which is not the shape
+  `.fleet-note` uses** — and the difference is recorded here rather than settled.
+  The Accessibility floor gives the rule that note follows: a live region has to
+  be in the accessibility tree before its text arrives, which is why it renders
+  present and empty. This one is `hidden` until there is an answer, and the
+  script writes the text before it clears `hidden`. Whether a region revealed
+  that way is announced by a real screen reader is not something any test in this
+  tree can answer and it has not been checked on one, so it is an open point
+  about a component that works rather than a defect anybody has seen.
 
 ## Pane viewer
 
@@ -623,9 +712,15 @@ Non-negotiable, applies to everything above:
 - Nothing else is announced, and the boundary is deliberate. The pane itself is
   **not** a live region — announcing every terminal line is unusable — and neither
   is the card grid: a card that changed state or name is replaced in place, and
-  narrating every one of those on a busy host is the same noise. An outcome the
-  operator just caused needs no live region either; it replaces the control they
-  used, where focus already is.
+  narrating every one of those on a busy host is the same noise. An outcome is
+  the one that moved: `partials/outcome.html` carries no live region on either
+  shape, because a scriptless operator arrives on a new page and the banner is
+  the first thing on it — position doing the work of an announcement. The
+  scripted path never navigates, so its sentence has to be announced where it
+  lands, and that is the Toast above. This bullet used to end by saying an
+  outcome needs no live region at all, because it replaced the control the
+  operator had just used; the fragment that did the replacing has not existed
+  since the actions began answering `303`.
 
 ## Empty state
 

@@ -1,21 +1,53 @@
 package httpapi
 
-// settings.go is GET /settings — the read-only account of how this daemon was
-// configured, and the page that makes US1 legible: an operator who edited a file
-// and saw nothing change reads here which layer actually supplied each value.
+// settings.go is GET /settings — the account of how this daemon was configured,
+// and the page that makes US1 legible: an operator who edited a file and saw
+// nothing change reads here which layer actually supplied each value.
 //
-// It reads the Config the server was built from and nothing else. Every value on
-// it was resolved once, at startup, by the one shim in internal/config that
-// decides precedence — so the page cannot infer a provenance the loader did not
-// record, and cannot disagree with the daemon it describes (research R4). There
-// is no re-read, no lookup of the environment, and no path taken from the
-// request.
+// This handler reads the Config the server was built from and nothing else.
+// Every value on the page was resolved once, at startup, by the one shim in
+// internal/config that decides precedence — so the page cannot infer a
+// provenance the loader did not record, and cannot disagree with the daemon it
+// describes (research R4). There is no re-read, no lookup of the environment,
+// and no path taken from the request.
 //
-// **No mutating verb is registered on this path, and that absence is the
-// safeguard rather than a handler that refuses.** Writing the operator's
-// configuration file from a browser is the highest-consequence surface in the
-// product (spec, Out of Scope); a route that does not exist cannot be exploited,
-// mis-gated, or reached by a future refactor that forgets which door it is on.
+// # It reads here and writes on another route, deliberately
+//
+// The page is not read-only, and this comment claimed it was for a milestone
+// after it stopped being true (#117). The forms it renders post to two other
+// routes: POST /settings/edit, in settings_edit.go, which writes one key into
+// the operator's configuration file, and POST /dashboard/update for the binary.
+// This handler mints the token each of them carries. Both are registered
+// through s.handleAction, which is layer 1 plus the two checks a write needs —
+// the cross-site refusal, where an absent Sec-Fetch-Site refuses as well as a
+// wrong one, and a page token bound to the identity layer 1 verified — and both
+// run before the handler does, therefore before anything is written.
+//
+// `GET /settings` is nevertheless still the only verb registered on this path.
+// The write being a separate pattern rather than a POST on this one is a
+// decision, and it is worth stating on purpose:
+//
+//   - **The gate is chosen per registration, and the path is what a reader
+//     checks it against.** A read is authorised by an identity alone; a write
+//     must also establish that the operator asked for it, because the browser's
+//     credential is an ambient cookie that a hostile page can cause to be sent.
+//     A path on which every registered verb reads is one nobody has to consult
+//     the mux to reason about.
+//   - **A mutating verb here stays a path nothing claims**, which is what
+//     TestNoMutatingVerbRegistered asserts for POST, PUT, PATCH and DELETE
+//     alike. A write registered on this path by mistake is then a failing test
+//     rather than a review comment somebody did not make.
+//   - **The write is one of the dashboard's actions rather than a shape of its
+//     own.** On its own path it reaches the mux through the same s.handleAction
+//     call the destroy, rename, compact, mode and update writes use, so the
+//     cross-site check, the page token and the trail's own name for the request
+//     are inherited rather than restated — one door, not a second one that has
+//     to be kept in step with the first.
+//
+// The absence of a route was the whole safeguard once, and stopped being it when
+// the edit shipped (#106). What bounds the write now is that gate together with
+// config.Editable, which answers no for every secret; the reasoning is at the
+// top of settings_edit.go. Deleting a form does not bring the old sentence back.
 
 import (
 	"context"
@@ -387,10 +419,17 @@ func secretConfigured(cfg *config.Config, name string) (configured, known bool) 
 
 // settings serves GET /settings (FR-016 … FR-020, contracts/settings-page.md).
 //
-// It mints no page token, and that is a decision rather than an omission. A page
-// token authorises a write, this page offers none, and the one on a rendered page
-// is a value worth not minting where nothing can spend it — the fleet and the
-// session view each carry one because each carries forms.
+// It mints a page token, which this request has no use for and the next one
+// does: a token authorises a write, and the forms this page renders are received
+// by two routes that will not act without one. It is minted here for the reason
+// the fleet and the session view mint theirs — a page that carries forms carries
+// the token they submit — and this comment said the opposite for a milestone
+// after the forms arrived (#117).
+//
+// A token that could not be minted is the empty string rather than a failed
+// render, because everything above the forms is still true and still worth
+// reading; the template draws no form it could not authorise, which is the same
+// discipline as a card with no actions rather than actions certain to be refused.
 func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	operator, ok := OperatorFrom(r.Context())
 	if !ok {
