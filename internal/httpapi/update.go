@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/updater"
 )
@@ -248,8 +249,34 @@ func (s *Server) updateFromBrowser(w http.ResponseWriter, r *http.Request) {
 		// avoid.
 		s.report(fmt.Errorf("flush the answer to an update of %s before exiting: %w", version, err))
 	}
-	s.updates.installer.ExitForRestart()
+	// Exit after the handler returns, not inside it.
+	//
+	// Flush pushes the body into the socket; os.Exit then kills the process
+	// before net/http has finished the response and before the connection closes
+	// cleanly. What arrives at the other end is a severed connection, so a proxy
+	// answers 502 and a fetch lands in its error path — the operator watched
+	// their own update turn into a Cloudflare error page even though the update
+	// had already succeeded.
+	//
+	// A goroutine and a short grace period let the response complete first.
+	// Nothing is waited on: the rename has already happened, so the binary at
+	// ExecStart is the new one whether or not this answer arrives, and the exit
+	// must not become conditional on a browser still being there.
+	go func() {
+		time.Sleep(exitGrace)
+		s.updates.installer.ExitForRestart()
+	}()
 }
+
+// exitGrace is how long the response has to finish before this process ends.
+//
+// Long enough for a flushed body to leave a loopback socket and reach the proxy
+// in front of it, short enough that an operator does not notice. It is not a
+// correctness guarantee — nothing here can prove the far end received anything —
+// and it does not need to be: the update is already installed, so the worst a
+// missed answer costs is a page that has to be reloaded rather than one that
+// reloads itself.
+const exitGrace = 250 * time.Millisecond
 
 // updateTo is steps 1 to 6, in the order contracts/self-update.md numbers them,
 // and it returns the version that is now installed.

@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -85,6 +86,8 @@ type swapCall struct {
 // returned — and three fakes recording into three places would make that
 // sequence something a test has to reassemble.
 type fakeUpdatePath struct {
+	mu sync.Mutex
+
 	// dir is where a staged candidate is claimed to be. A real file, because the
 	// production swapper is handed a path and this fake's caller must not be able
 	// to tell the difference by looking.
@@ -165,10 +168,47 @@ func (f *fakeUpdatePath) Swap(_ context.Context, staged, version string) error {
 }
 
 func (f *fakeUpdatePath) ExitForRestart() {
+	// Guarded, because the exit now happens on its own goroutine after the
+	// handler has returned: os.Exit inside the handler severed the connection
+	// before net/http finished the response, and what reached the far end was a
+	// broken socket rather than a page.
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	f.exits++
 	if f.atExit != nil {
 		f.atExit()
 	}
+}
+
+// waitForExit blocks until the deferred exit has happened, or says it never did.
+//
+// The wait is what the goroutine costs a test. It is bounded so a path that
+// stopped exiting fails here rather than hanging the suite — an update that does
+// not exit leaves systemd running the binary it just replaced, which is the one
+// state this whole sequence exists to avoid.
+func (f *fakeUpdatePath) waitForExit(t *testing.T) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		f.mu.Lock()
+		done := f.exits > 0
+		f.mu.Unlock()
+		if done {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the update never exited; systemd would still be running the binary it replaced")
+}
+
+// count reads a field the exit goroutine also writes.
+func (f *fakeUpdatePath) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.exits
 }
 
 // reached is the whole sequence as one sentence, for a failure message. A case
@@ -387,8 +427,9 @@ func TestUpdateInstallsTheReleaseAndExitsForRestart(t *testing.T) {
 	}
 
 	// Step 7, and what had to be true before it.
-	if d.steps.exits != 1 {
-		t.Fatalf("exited %d times; want exactly 1 — an update that does not exit leaves systemd running the binary it replaced", d.steps.exits)
+	d.steps.waitForExit(t)
+	if d.steps.count() != 1 {
+		t.Fatalf("exited %d times; want exactly 1 — an update that does not exit leaves systemd running the binary it replaced", d.steps.count())
 	}
 	// 200 and a page, not a redirect.
 	//
