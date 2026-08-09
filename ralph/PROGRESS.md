@@ -123,3 +123,73 @@ document and the stylesheet are byte-identical to before.
   as a fabrication in the map rather than a document that stopped saying something. The
   message names the file, so it should not cost more than a minute — but it is the
   failure mode of reading a value out of English.
+
+---
+
+## Iteration 2 — 2026-08-09
+
+**Did:** T002 (#117). Rewrote `internal/httpapi/settings.go`'s header comment: it now
+describes the two doors this page has — `GET /settings` here, `POST /settings/edit` in
+`settings_edit.go` — the action gate in front of the write, and why the write is a
+separate pattern rather than a verb on this path. Comment-only; no executable change.
+
+**Learned:**
+
+- **The false claim was in the same file twice, and the issue names only one of them.**
+  Besides the header, `settings`' own doc comment said *"It mints no page token, and
+  that is a decision rather than an omission. A page token authorises a write, this page
+  offers none"* — while the handler four lines below calls `s.mintPageToken`, and
+  `updatePanelFor` mints a second one. Both are fixed. If a comment in this repo asserts
+  an absence, grep the file for the thing it says is absent before believing it.
+- **`web/templates/settings.html` and `docs/components.md` already tell the true story**,
+  and told it well: the template's header has the "it was once read-only, and the absence
+  of a route was the safeguard — do not restore it by deleting a form" paragraph, and
+  components.md has the matching one. They were the model for the new text, so the three
+  now agree. Read those two before writing anything about this page.
+- **The narrow invariant is still real and still enforced.** `GET /settings` genuinely is
+  the only verb registered on that path, and `TestNoMutatingVerbRegistered`
+  (`settings_test.go:217`) holds POST/PUT/PATCH/DELETE to it to the unknown-route answer.
+  What was wrong was the *conclusion drawn from it* — that no browser route writes the
+  config — not the assertion itself. Do not delete that test while fixing its prose.
+- **The write's real justification is in `git log 0cb587d`**, the #106 commit, and in
+  `internal/config/write.go`'s `Editable`. Neither is linked from anywhere obvious; that
+  commit message is the best account of why five of issue #49's six settings became
+  editable and the shared secret did not.
+
+**Left:** T003 (#118), T004 (#119), T005 (#123).
+
+**Findings (noticed, not fixed — no code changed for any of these):**
+
+- **`docs/security.md` carries the same falsehood, and it is binding.** Two places:
+  line 216, *"**Nothing in the daemon writes the operator's file.** `crswd config
+  migrate` is the only code in this repository that writes a configuration file"* —
+  `editSetting` writes it through `config.WriteFile`, and has since #106. And lines
+  233–237, *"**No mutating verb is registered on `/settings` at all.** … Writing the
+  operator's configuration file from a browser is the highest-consequence surface in
+  the product; a route that does not exist cannot be exploited"* — the first sentence is
+  still literally true of that path, but the paragraph reads as "the write does not
+  exist", and it does, at `/settings/edit`. **This is the more serious half of #117**:
+  the constitution makes this document the gate every plan is checked against, so a
+  planner reading it will conclude the browser cannot write the config file. Not fixed
+  here because AR-005/AR-008 scope T002 to `settings.go`, and because a binding security
+  document deserves its own reviewed change rather than a paragraph slipped into a
+  comment fix. It wants an issue.
+- **`internal/httpapi/server.go:571–577`** — the registration comment above
+  `s.handleBrowser(patternSettings, …)` still says *"no mutating verb is registered on
+  the path at all. Editing the operator's file from a browser is out of scope this
+  milestone, and the absence of a POST is the safeguard rather than a POST that
+  refuses"*. Fifty lines below it, `s.handleAction(patternSettingsEdit, …)` registers the
+  POST. Same defect, different file.
+- **`internal/httpapi/settings_test.go:195–216`** — `TestNoMutatingVerbRegistered`'s doc
+  comment says it is *"the safeguard the spec's Out of Scope section rests on: editing
+  the operator's configuration file from a browser is not in this milestone"* and
+  **"Must fail when an edit route is added"**. An edit route was added, on a sibling
+  path, and the test correctly did not fail. The assertion is right; the reason written
+  above it is two milestones stale.
+- **`gofmt -l ./...` is not clean on `main`.** `internal/httpapi/render.go` has the
+  `buildinfo` import sorted ahead of `bytes` in the same group; `gofmt` wants it after
+  `fmt`. Nothing catches it: the `format-and-lint` hook only touches files an iteration
+  writes, and `golangci-lint run` reports 0 issues, so whichever formatter the config
+  enables does not include this. Pre-existing and unrelated to T002 — but `AGENTS.md`
+  lists `gofmt -w .` as the format command, so the next iteration that runs it as
+  written will produce an unrelated diff in a file it did not touch.
