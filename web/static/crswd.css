@@ -1114,38 +1114,35 @@ body {
   text-transform: uppercase;
 }
 
-/* The settings table — the read-only account of how this daemon was configured.
-   Wide content still scrolls inside its own container rather than moving the
-   page sideways, which is the rule docs/design-system.md gives panes and tables
-   alike — but that container is .settings-panel, not the grid wrapper that used
-   to carry it here. No rain sits behind it: a table of values an operator is
-   reading is reading content.
-   Element selectors under one class rather than a class per cell. The table is
-   the whole of this page's structure, and a class on every cell would be a
-   component docs/components.md never defined. */
-.settings table {
-  inline-size: 100%;
-  border-collapse: collapse;
-}
+/* The settings page's paragraphs and cells, by element under one class rather
+   than a class per cell. The table is the whole of this page's structure, and a
+   class on every cell would be a component docs/components.md never defined. No
+   rain sits behind any of it: a table of values an operator is reading is
+   reading content.
+
+   Two rules that lived here are gone, and which two is the part worth keeping.
+   Neither was visible to the class sweep — a rule that selects an element under
+   a class carries no class name for the sweep to miss — which is how both
+   outlived the flat table they were written for (#103).
+
+   .settings caption was dead: settings.html renders no <caption> at all, and has
+   not since the page became sections. .settings table was superseded rather than
+   dead — it still matched the one table this page renders, and spent the same
+   inline-size and border-collapse that .settings-table sets on that very
+   element, so it decided nothing. What is left below is here because deleting it
+   would change what is on the screen. */
 
 /* The file the values were read from, above the table it qualifies. Dim, because
    it is the provenance of the whole page rather than a setting on it — and mono
-   by inheritance, since a path is what the machine calls a file. */
+   by inheritance, since a path is what the machine calls a file.
+
+   It is also what gives .update-caution its bottom margin: that rule asks for
+   `margin: 0` one class lighter than this selector and loses the longhand to it.
+   Recorded rather than settled — letting the caution's own rule win is a spacing
+   change to the update form, which is not what retiring a superseded rule is. */
 .settings p {
   margin-block: 0 var(--s5);
   color: var(--dim);
-}
-
-/* The table's accessible name, where a heading would only repeat the masthead.
-   Aligned to the start rather than centred: a centred caption over a table this
-   narrow reads as a title for the page instead of for the table. */
-.settings caption {
-  margin-block-end: var(--s3);
-  color: var(--dim);
-  font-size: var(--fs-eyebrow);
-  letter-spacing: var(--ls-eyebrow);
-  text-align: start;
-  text-transform: uppercase;
 }
 
 /* A key is what the machine calls the setting, so both columns stay in mono and

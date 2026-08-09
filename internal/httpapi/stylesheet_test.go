@@ -2370,8 +2370,8 @@ const breakpointPrelude = "@media (max-width: 780px)"
 // list contains selector *exactly*, rather than the first block whose prelude
 // merely contains it as a substring.
 //
-// The settings page is why it exists. `.settings` is a prefix of `.settings
-// table`, `.settings-menu` and `.settings-panel`; `.settings-menu` is a prefix
+// The settings page is why it exists. `.settings` is a prefix of `.settings p`,
+// `.settings-menu` and `.settings-panel`; `.settings-menu` is a prefix
 // of both `.settings-menu-list` and `.settings-menu-link`. A substring search
 // therefore returns whichever of them the file happens to declare first, which
 // is a positional bet that has already changed answer once in this milestone.
@@ -3113,5 +3113,76 @@ func TestTheSettingsMenuHasASurface(t *testing.T) {
 	}
 	if !strings.Contains(decl[2], "var(--surface") {
 		t.Errorf("the settings menu's background is %q rather than a surface token; elevation in this design system comes from --surface and --surface-lift, and a value that is neither is either a literal or the wrong kind of token again", strings.TrimSpace(decl[2]))
+	}
+}
+
+// captionSelector matches `caption` used as a *type* selector — the element —
+// and not a class or an id that happens to be named after one. The combinators
+// and the comma are in the leading set because a type selector can follow any of
+// them, and `^` because it can also open the list.
+var captionSelector = regexp.MustCompile(`(?:^|[\s>+~,])caption\b`)
+
+// TestNoRuleTargetsACaption holds FR-022, which is the half of stylesheet
+// hygiene no other guard in this file can reach.
+//
+// TestTheStylesheetAndTheMarkupNameTheSameThings sweeps class names, and a rule
+// like `.settings caption` carries none of its own: the class in it is the
+// wrapper,
+// which the page very much does render. So an element selector under a class is
+// invisible to the sweep in both directions — it cannot report a rule for markup
+// that has gone, and it would not report the page going unstyled if the rule
+// were removed while it was still doing work. That blindness is why the settings
+// page's pre-#103 flat-table styling outlived the flat table by two milestones.
+//
+// The caption is the one of those rules that was provably dead rather than
+// merely superseded: settings.html renders no <caption> element, and neither
+// does any other template in the tree. It named the table for a screen reader in
+// the design this page had before #103 gave it sections and headings.
+//
+// **Must fail when** a rule is written for an element this tree does not render,
+// where it will sit for as long as it takes somebody to read the whole
+// stylesheet against the whole template set by eye.
+func TestNoRuleTargetsACaption(t *testing.T) {
+	t.Parallel()
+
+	var swept int
+	for _, rule := range cssRules(stylesheet(t)) {
+		swept++
+		if captionSelector.MatchString(rule.selector) {
+			t.Errorf("%s styles a <caption>, and no template in this tree renders one — the class sweep cannot see an element selector under a class, so a rule for markup that no longer exists lives here until somebody reads the file: %q", rule.selector, rule.selector)
+		}
+	}
+
+	if swept == 0 {
+		t.Fatal("crswd.css parsed to no rules at all, so this sweep found nothing to check and would pass whatever the stylesheet contained")
+	}
+}
+
+// TestTheSettingsTableCarriesItsOwnLayout is the premise the other deletion
+// rested on, written down where a change to it fails.
+//
+// `.settings table` was removed as superseded, not as dead — it still matched
+// the one table this page renders. What made removing it free is that
+// .settings-table sets the same inline-size and the same border-collapse on that
+// same element, so the element rule decided nothing. That is a fact about a
+// *different* rule, and nothing was holding it: strip either declaration from
+// .settings-table and the settings table silently stops filling its panel or
+// grows a double border grid, with the rule that used to cover for it gone.
+//
+// The class sweep cannot see this either, for the same reason it could not see
+// the element rules — .settings-table is still declared and still rendered. It
+// is the declarations inside it that are load-bearing now.
+//
+// **Must fail when** the table's own rule loses the layout it inherited
+// responsibility for.
+func TestTheSettingsTableCarriesItsOwnLayout(t *testing.T) {
+	t.Parallel()
+
+	table := ruleFor(t, stylesheet(t), ".settings-table")
+
+	for _, want := range []string{"inline-size: 100%", "border-collapse: collapse"} {
+		if !strings.Contains(table, want) {
+			t.Errorf("the settings table's own rule no longer sets %s, and the .settings table rule that also set it has been deleted as redundant — so nothing sets it now: %q", want, table)
+		}
 	}
 }
