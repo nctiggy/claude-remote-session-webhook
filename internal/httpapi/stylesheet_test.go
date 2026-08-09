@@ -943,11 +943,18 @@ func TestTheFleetUpdatesInPlaceRatherThanReloading(t *testing.T) {
 	// **Must fail when** a third appears. A reload is how this page loses a
 	// half-typed working directory, the scroll position and the caret, so each
 	// one has to be argued for.
-	if n := len(regexp.MustCompile(`location\.reload\(`).FindAllString(source, -1)); n != 2 {
-		t.Errorf("crswd.js reloads the page in %d places; want exactly 2 — the fleet's fallback and the update waiter", n)
-	}
-	if !strings.Contains(source, "waitOutTheUpdate") {
-		t.Error("the second reload is not the update waiter, so it is a reload nobody argued for")
+	// One reload — the fleet's fallback, for a shape this script cannot compose.
+	//
+	// The update waiter used to be the second. It now names where to go instead,
+	// because a form that posts without being intercepted leaves the browser at
+	// /dashboard/update, and reloading that address repeats it as a GET this
+	// daemon has no route for: the operator's successful update ended on a
+	// not-found page.
+	//
+	// **Must fail when** a second appears. A reload is how this page loses a
+	// half-typed working directory, the scroll position and the caret.
+	if n := len(regexp.MustCompile(`location\.reload\(`).FindAllString(source, -1)); n != 1 {
+		t.Errorf("crswd.js reloads the page in %d places; want exactly 1 — the fleet's fallback, never the answer to a session appearing or leaving", n)
 	}
 
 	// The two shapes it switches between, both of them the daemon's own markup.
@@ -1613,7 +1620,7 @@ func TestSelectionDoesNotNavigate(t *testing.T) {
 		what    string
 		why     string
 	}{
-		{regexp.MustCompile(`location\.(href|assign|replace)`), "navigates the page itself", "the anchor's href is what opens a session, and a script that went there instead is the one thing standing between a card and its page"},
+		{regexp.MustCompile(`location\.(href|replace)`), "navigates the page itself", "the anchor's href is what opens a session, and a script that went there instead is the one thing standing between a card and its page"},
 		{regexp.MustCompile(`window\.open\(`), "opens a window", "same destination, same dependency, and a popup blocker away from doing nothing at all"},
 		{regexp.MustCompile(`\.href\s*=[^=]`), "assigns an href", "a destination written here is a destination absent from the markup a browser running no script is handed"},
 		{regexp.MustCompile(`\.click\(\)`), "clicks an element for the operator", "synthesising the activation this block just refused is the papercut fix reimplementing the browser"},
@@ -1621,6 +1628,23 @@ func TestSelectionDoesNotNavigate(t *testing.T) {
 		if match := forbidden.pattern.FindString(source); match != "" {
 			t.Errorf("crswd.js %s (%q): %s", forbidden.what, match, forbidden.why)
 		}
+	}
+
+	// location.assign is allowed exactly once, and only for the update waiter.
+	//
+	// The sweep above exists so a card opens through its anchor's href rather
+	// than through this file — a card that navigates by script opens nothing with
+	// scripting off. The update waiter is not that: it runs after the daemon has
+	// replaced itself, on a page the operator may have reached by a form post to
+	// /dashboard/update, and naming where to go is the only way back from an
+	// address that answers no GET.
+	//
+	// **Must fail when** a second appears, or when the one is not the waiter's.
+	if n := len(regexp.MustCompile(`location\.assign\(`).FindAllString(source, -1)); n != 1 {
+		t.Errorf("crswd.js assigns location in %d places; want exactly 1 — the update waiter's way back, never a card's destination", n)
+	}
+	if !regexp.MustCompile(`location\.assign\(UPDATES_PAGE\)`).MatchString(source) {
+		t.Error("the one location.assign does not name UPDATES_PAGE, so it is a destination this file took over rather than the way back from a POST")
 	}
 
 	// And the markup half, which is what the sweep is protecting. The card is a
