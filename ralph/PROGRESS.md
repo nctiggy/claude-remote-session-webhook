@@ -294,3 +294,65 @@ guard that protects the trade this iteration just made, so it is not optional de
    the exact failure mode T010 has a named offset assertion for
    (`TestTheCoarseBlockOverridesRatherThanPrecedes`) and this pair does not. Cheap to add by
    comparing `strings.Index` of the two rules, if anyone wants the symmetry.
+
+---
+
+## Iteration 5 — 2026-08-09 08:41
+
+**Did:** T005. `TestNoPageClampsTheZoom` (`stylesheet_test.go:2275` onward), walking the whole
+`web.Templates` tree and failing on `maximum-scale` at any value or `user-scalable=no`. No
+CSS, no template, no doc changed — the four pages already carry a clean
+`width=device-width, initial-scale=1`, so this task is purely the guard that keeps them that
+way now that T004 has given someone a reason to reach for the clamp.
+
+**Learned, so the next iteration does not rediscover it:**
+
+- **The sweep is on the whole markup, not inside the viewport meta.** `viewportMeta` is used
+  only to *count* — the vacuity guard — while `zoomClamp` runs over the file. That way a clamp
+  in a second meta element, or in a partial that grows one, is caught by the same expression
+  without the test having to model where a meta may legally appear. The two regexes are
+  adjacent to the test at the end of the file.
+- **All three negatives were proved.** `maximum-scale=1` in `session.html` fails naming the
+  file and the match; `user-scalable=no` likewise; and renaming the attribute in **all four**
+  pages hits the `viewports == 0` fatal rather than passing green. The third is the one worth
+  the effort — a sweep with nothing to sweep is this repo's recorded failure mode, and the
+  guard fires.
+- **`git checkout -- <path>` is refused by the permission layer**, the same way iteration 3
+  found `sed -i` refused. Undo a temporary mutation with a second `Edit`, then confirm with
+  `git status --short` that only the intended file is modified. That confirmation is not
+  optional when the mutation touched four files.
+- **`templateComment` (`partials_test.go:1510`) is reusable from `stylesheet_test.go`** — same
+  package, internal test — and `renderedClasses` already uses it. A `{{/* … */}}` comment
+  naming `maximum-scale` is therefore not a failure, which is right: the comment cannot reach
+  a browser.
+- All five gate commands green; linter is **2.12.2**, so the green is real. `go test ./...`
+  clean, all three tagged suites compile. `-tags quickstart` was not *run*: this task touches
+  one test file and no `cmd/crswd`.
+
+**Left:** T006 next — delete `overflow-x: auto` from `.settings` and add it to
+`.settings-panel`. It **must land before T008**, and it starts the settings phase, which is
+the surface the operator actually reported. 12 of 17 tasks open.
+
+**Findings — noticed, not fixed:**
+
+1. **This test lives in `stylesheet_test.go` and that file's header says it does not do
+   this.** The header (line 1) draws the division as "partials_test.go sweeps the embedded
+   template tree; this one covers the other embedded tree" — and `TestNoPageClampsTheZoom`
+   walks templates. I put it beside the four other pane assertions because `contracts/pane.md`
+   names `stylesheet_test.go` in its file list and lists all five tests together, and because
+   a reader auditing the wrap trade should find its mitigation next to it. `renderedClasses`
+   already crosses the same line. But the header comment is now inaccurate by two callers, and
+   whoever next edits that header should either widen it or move this test to
+   `partials_test.go`. Not worth a commit on its own.
+2. **Nothing asserts that a page has a viewport meta — only that the tree has at least one.**
+   A new page shipping without one would lay out at desktop width on a phone and this guard
+   would stay green on the strength of the other four. The per-page version already has a
+   pattern to copy: `TestEveryPageLoadsTheLoopThatDrivesItsRain` (`partials_test.go:1615`)
+   filters `path.Dir(p) != "templates"` to get pages rather than partials. I did not add it
+   because T005 specifies the clamp and the constitution's second principle says not to invent
+   the rest — but it is a one-line addition to this test whenever someone decides that rule.
+3. **The trade this guard protects is still unverified on a real device.** Question 1 in
+   `docs/mobile-open-questions.md` is UNANSWERED and must stay so. Worth restating here
+   because T005 completes the pane's test coverage, and "every pane task is green" is exactly
+   the moment a later iteration might read the phase as settled. It is not: green proves five
+   declarations exist, and nothing in this repository has a thumb.

@@ -190,7 +190,7 @@ needs to re-argue them.
 
 - [x] **T003** Add `overscroll-behavior-x: contain` to `.pane` (`crswd.css:891`), unconditionally. Do NOT add the vertical axis.
 - [x] **T004** Add `white-space: pre-wrap` and `overflow-wrap: anywhere` to `.pane` INSIDE the 780px block. Leave `white-space: pre` in the base rule.
-- [ ] **T005** Add `TestNoPageClampsTheZoom`, walking `web.Templates` for `maximum-scale` / `user-scalable=no`.
+- [x] **T005** Add `TestNoPageClampsTheZoom`, walking `web.Templates` for `maximum-scale` / `user-scalable=no`.
 
 ### US2 — Read and change a setting, from a phone (P1) — the reported surface
 
