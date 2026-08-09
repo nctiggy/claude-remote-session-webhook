@@ -355,8 +355,16 @@ func wantUpdatingPage(t *testing.T, w *httptest.ResponseRecorder, version string
 	if got := w.Header().Get(headerLocation); got != "" {
 		t.Errorf("%s = %q; want none — this answer is the page, not somewhere to go", headerLocation, got)
 	}
-	if body := w.Body.String(); !strings.Contains(body, `data-becoming="`+version+`"`) {
+	body := w.Body.String()
+	if !strings.Contains(body, `data-becoming="`+version+`"`) {
 		t.Errorf("the page does not name the version it is installing, so nothing can wait for it:\n%s", body)
+	}
+	// What the wait says when it gives up, which this route renders and the
+	// script only writes. An operator told that a daemon never came back needs
+	// the version it was coming back as: that is what they will go looking for
+	// on the host.
+	if ceiling := waitingCeiling(t, body); !strings.Contains(ceiling, version) {
+		t.Errorf("the sentence this page gives up with does not name the version it was installing (%q); the operator is told their daemon is missing without being told what it was becoming", ceiling)
 	}
 }
 

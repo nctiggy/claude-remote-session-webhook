@@ -413,11 +413,16 @@ Rules:
   cost is worth stating plainly: down the scripted path this region is the only
   place the operator is told anything at all, the alarming outcome included, and
   six seconds later it is gone.
-- **The update form is the one action that gets no sentence here.** It replaces
-  the settings panel with the daemon's own waiting markup instead, because an
-  update is not an action with an outcome — the daemon has begun replacing itself
-  and is about to stop answering, so what is useful is the page staying put. See
-  "The settings page".
+- **Two forms get no sentence here, and they are the two that post to a daemon
+  about to stop answering.** The update and the restart replace the settings
+  panel with the daemon's own waiting markup instead, because neither is an
+  action with an outcome — the process is going down, so what is useful is the
+  page staying put, and a sentence that expires six seconds later would leave an
+  untouched-looking page in front of a host that is not there. The script
+  singles the two out by the address they post to and not by a class:
+  `.update-form` is the name of one of them rather than a shape the other may
+  wear, and the restart form deliberately carries no class at all. See "The
+  settings page".
 - **Every value in the rule is a token**, `--toast-max` included, and the copy is
   sans: a sentence a person reads was written by one (see `design-system.md`).
 - **It ships `hidden` and is revealed as it is written, which is not the shape

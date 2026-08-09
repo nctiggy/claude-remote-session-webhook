@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -145,6 +146,38 @@ func wantRestartingPage(t *testing.T, w *httptest.ResponseRecorder) {
 	if !strings.Contains(body, "Restarting") {
 		t.Errorf("the page never says what is happening, so an operator with no script is looking at a spinner and nothing else:\n%s", body)
 	}
+
+	// The same care, applied to the last thing this page will ever say. The
+	// waiting has an end — a daemon that never came back is a thing the operator
+	// has to be told about — and the sentence at that end is rendered here, by
+	// the route that knows which of the two things is happening.
+	ceiling := strings.ToLower(waitingCeiling(t, body))
+	if strings.Contains(ceiling, "installing") {
+		t.Errorf("the sentence this page gives up with claims an installation (%q); a restart runs the binary that is already here, and an operator diagnosing a daemon that did not come back would be looking for a version that was never fetched", ceiling)
+	}
+	if !strings.Contains(ceiling, "restarting") {
+		t.Errorf("the sentence this page gives up with never says what it was waiting for (%q)", ceiling)
+	}
+}
+
+// waitingCeilingPattern is the sentence the waiting page hands the script for
+// the moment it stops waiting.
+var waitingCeilingPattern = regexp.MustCompile(`data-ceiling="([^"]*)"`)
+
+// waitingCeiling is that sentence, read out of a page rendered in the waiting
+// state.
+//
+// It is asserted on the answer rather than on the template's bytes because one
+// block serves both routes and the branch inside it is the whole point: what
+// that template *can* say is not what this route did say.
+func waitingCeiling(t *testing.T, body string) string {
+	t.Helper()
+
+	found := waitingCeilingPattern.FindStringSubmatch(body)
+	if found == nil {
+		t.Fatalf("the waiting page hands the script no sentence for the moment it gives up, so a daemon that never comes back leaves a spinner claiming progress this page can no longer vouch for:\n%s", body)
+	}
+	return found[1]
 }
 
 // TestRestartEndsTheProcessAfterAnsweringAndRecording is the whole of T004's

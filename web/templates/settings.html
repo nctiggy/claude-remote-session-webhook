@@ -123,9 +123,17 @@
   way — but a restart that told the operator it was installing that version
   would be claiming a thing this daemon did not do, which is the care every
   outcome sentence in this product takes.
+
+  data-ceiling is what the script says when it gives up waiting, and it is here
+  for that same reason rather than in the script that writes it. The waiting has
+  an end — a daemon that never comes back is a thing an operator has to know
+  about, and a page spinning forever looks identical whether the restart was
+  slow or the new binary would not start at all — so this sentence is the last
+  thing this page ever says, and it must be true of the route that rendered it.
+  Both spellings end the same way because what to do about it is the same.
 */}}{{ if .Becoming }}<section class="settings-section">
 <h2 class="settings-title">Updates</h2>
-<p class="updating" role="status" aria-live="polite" data-becoming="{{ .Becoming }}">
+<p class="updating" role="status" aria-live="polite" data-becoming="{{ .Becoming }}" data-ceiling="{{ if .Restarting }}This daemon has not answered since it began restarting.{{ else }}This daemon has not answered since it began installing {{ .Becoming }}.{{ end }} It may still be starting, or it may have failed to. Check the service on the host.">
 <span class="spinner" aria-hidden="true"></span>
 {{ if .Restarting }}Restarting…{{ else }}Installing {{ .Becoming }}…{{ end }}
 </p>

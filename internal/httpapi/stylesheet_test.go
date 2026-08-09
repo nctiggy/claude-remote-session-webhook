@@ -2392,17 +2392,95 @@ func TestTheUpdateDoesNotBecomeAToast(t *testing.T) {
 
 	source := script(t)
 
-	if !strings.Contains(source, "form.matches('.update-form')") {
-		t.Error("the submit handler does not single out the update form, so an update answers with a sentence where a spinner was wanted")
-	}
-	if !strings.Contains(source, "swapUpdatesSection") {
-		t.Error("nothing puts the daemon's updating markup where the form was")
+	if selector := waitingSelector(t); !strings.Contains(selector, ".update-form") {
+		t.Errorf("the branch that waits out the daemon is %q and names no update form, so an update answers with a sentence where a spinner was wanted", selector)
 	}
 
 	// The swap must come before the toast, or the toast wins and the special
 	// case is unreachable.
 	if at, toast := strings.Index(source, "swapUpdatesSection(said)"), strings.Index(source, "show(sentence(said)"); at < 0 || toast < 0 || at > toast {
 		t.Error("the update's branch does not precede the toast, so it can never be taken")
+	}
+}
+
+// waitingBranchPattern is the submit handler's one branch into the waiting
+// state, with the selector that reaches it captured.
+//
+// It is read out of the source rather than compared against a literal, because
+// this branch now serves two forms and a literal cannot tell a selector widened
+// to the second from one narrowed away from the first. Anchoring on
+// swapUpdatesSection is what makes it *this* branch: the handler matches forms
+// elsewhere, and a selector naming the update form somewhere that leads to a
+// toast would satisfy a plain substring check and change nothing.
+var waitingBranchPattern = regexp.MustCompile(`form\.matches\('([^']*)'\)\)\s*\{\s*swapUpdatesSection\(`)
+
+// waitingSelector is the selector on that branch.
+func waitingSelector(t *testing.T) string {
+	t.Helper()
+
+	found := waitingBranchPattern.FindStringSubmatch(script(t))
+	if found == nil {
+		t.Fatal("no branch in the submit handler leads to swapUpdatesSection, so every form on this page answers with a toast — including the two posting to a daemon that is about to stop answering")
+	}
+	return found[1]
+}
+
+// TestTheRestartDoesNotBecomeAToastEither is T006: the restart joins the
+// update's branch rather than getting a copy of it, and joins it by the one
+// thing the two forms actually share.
+//
+// A toast is the wrong answer here for the update's own reason and one more of
+// its own. The daemon is about to stop answering, so a sentence about what it
+// did is a report on a host that is no longer there — and the toast expires
+// after six seconds, which leaves an untouched-looking settings page in front of
+// an operator whose daemon is down.
+//
+// The selector's second half is asserted against the form the page really
+// renders, not against a literal here. `.update-form` is the name of the form
+// above it and the restart form deliberately carries no class at all, so what
+// the branch keys on is the address — and an address is exactly the kind of
+// thing that can be renamed in a template while a script goes on matching the
+// old one, silently, with no failure anywhere until an operator presses the
+// button.
+//
+// **Must fail when** the restart form falls through to the toast path, or when
+// the selector names an address this page does not post to.
+func TestTheRestartDoesNotBecomeAToastEither(t *testing.T) {
+	t.Parallel()
+
+	selector := waitingSelector(t)
+	if want := `[action="` + wantRestartPath + `"]`; !strings.Contains(selector, want) {
+		t.Errorf("the branch that waits out the daemon is %q and does not name %s; a restart answers with a sentence that expires while the daemon it reported on is still coming back up", selector, want)
+	}
+
+	form := restartFormIn(t, settingsSectionBody(t, newFleet(t), sectionUpdates))
+	if !strings.Contains(form, `action="`+wantRestartPath+`"`) {
+		t.Errorf("the restart form does not post to %s, so the selector above matches nothing this page renders:\n%s", wantRestartPath, form)
+	}
+}
+
+// TestTheWaitingSentenceIsTheTemplatesAndNotTheScripts holds the one sentence
+// this page ever says after it stops being able to see the daemon.
+//
+// The wait has a ceiling, and what it says at the ceiling used to be built in
+// the script out of the version being installed. Two routes render that element
+// now and only one of them installs anything, so a restart that gave up saying
+// it had begun installing the version it was already running would be describing
+// a thing this daemon never did — to the one operator who is at that moment
+// trying to work out what it did do.
+//
+// **Must fail when** the script writes a ceiling sentence of its own rather than
+// the one the template rendered for the route that is waiting.
+func TestTheWaitingSentenceIsTheTemplatesAndNotTheScripts(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	if !strings.Contains(source, "note.dataset.ceiling") {
+		t.Error("the wait's ceiling does not read the sentence off the element it is watching, so what it says cannot depend on which route rendered it")
+	}
+	if strings.Contains(strings.ToLower(source), "began installing") {
+		t.Error("the script carries the ceiling's copy; what the interface says to a person belongs to a template, and this sentence is false for one of the two routes that reach it")
 	}
 }
 
