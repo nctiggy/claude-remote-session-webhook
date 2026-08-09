@@ -1,94 +1,156 @@
 # Implementation Plan
 
-> Worked top-to-bottom by `ralph/loop.sh` — one task per iteration.
->
-> **This is milestone 6, the last of the backlog.** Milestones 1 through 5 are complete,
-> reviewed, and deployed; their task lists are archived under [`archive/`](archive/) and the
-> notebook at [`archive/progress-milestones-1-5.md`](archive/progress-milestones-1-5.md).
+**Milestone 7 — Make it work on a phone.**
+
+Spec: `specs/007-make-it-work-on-a-phone/`
+Contracts: `specs/007-make-it-work-on-a-phone/contracts/`
+
+---
 
 ## Status: generated from the spec
 
-Generated from [`specs/006-ship-it-to-someone-else/tasks.md`](../specs/006-ship-it-to-someone-else/tasks.md),
-which is the single source of truth. `spec.md`, `plan.md`, `research.md`, `data-model.md` and
-the six files in `contracts/` supersede anything this file summarises.
+17 tasks, from a Fable 5 audit of every page, partial and rule at a 390px
+viewport. The operator's own report, verbatim: *"Right now mobile is rough"* and
+*"Seeing settings is tricky right now as well"*.
 
-**Before starting a task, read its matching `T0NN` entry in `tasks.md`.**
+---
 
-## ✅ THE KEY HAS ARRIVED — nothing in this milestone waits on a human any more
+## ⚠️ THE RISK HERE IS THE GUARDS, NOT THE DESIGN
 
-**The operator generated the pair and completed all three steps of the handover** (commit
-`c606df3`, before Iteration 15): the private half is the `RELEASE_SIGNING_KEY` repository
-secret, and the public half is committed to **both** `internal/updater/release_key.txt` and
-`install.sh`'s `RELEASE_KEYS` block. `TestInstallerCarriesTheCommittedKeys` holds them together.
+This milestone is a stylesheet, two comments, and documentation. No new route, no
+new state, **no new class**.
 
-**Still true, forever: do not generate a key. Do not commit one. Do not put an "example" key in
-a fixture** — an example key that happens to be valid is a real key in the repository. Tests that
-need a signature generate an ephemeral pair in the process and never write it down; that is what
-`install_test.go` and `TestReleaseIsSigned` do. Rotation is the operator's too, and additive:
-commit the new public line to both files **first**, then replace the secret. The signing step
-refuses the other order rather than publishing a release that verifies nowhere.
+So the danger is not getting the design wrong. It is that a **correct-looking CSS
+change fails a test you did not know existed**, and most of these failures are
+invisible from the rule itself:
 
-**This heading has cost two iterations more than the tasks under it did.** Iteration 15 found
-T018 was never blocked by it. Worse, the key landed in `c606df3` **before Iteration 15 ran**, and
-that iteration's notebook still recorded the file as holding no key line — a fact it stated
-rather than checked. **A summary does not block a task; `tasks.md`, the contract, and the tree
-do.** Before believing a heading, look at the thing it describes:
-`git log -1 -- internal/updater/release_key.txt` settles this one in a second.
+- A rule in the wrong **position** parses fine and does nothing.
+- A value spelled **directly instead of as a token** fails a sweep in another file.
+- A second media query at an **identical width** fails a count.
 
-## ⚠️ Nothing about the installer can be proven on this host
+**Every task carries its guards inline.** You should not need to open
+`contracts/guards.md` — but it holds the full inventory of all nine if you want it.
 
-The project is installed here, a config exists, `~/.local/bin` is on `PATH`, and the unit is in
-place. **Every precondition the installer exists to create is already true**, so a green run
-here demonstrates nothing.
+### The four rules that apply to every CSS task
 
-**T012 moved that verification off this host** (Iteration 17): `verify-install` in `release.yml`
-installs the release the same run published, on `ubuntu-latest`, twice. **It has never run** —
-the first merge to `main` after this is its first execution, and the first time anything about
-`install.sh` is demonstrated rather than asserted.
+1. **All width-conditional rules go INSIDE the existing `@media (max-width:
+   780px)` block at `web/static/crswd.css:1041`.** A second block fails
+   `TestTheDashboardHasExactlyOneBreakpoint` **even at an identical width** — the
+   guard counts occurrences, it does not compare them.
+2. **Every value is `var(--token)`.** `TestNoRuleCarriesAValueThatBelongsInAToken`
+   fails a literal length or colour **inside media blocks too**. Its pattern is
+   `\d+(\.\d+)?(px|rem|em|pt|ch|ex|vh|vw)\b` — `%` is **not** in it, so
+   `inset(50%)` is legal and `1px` is not.
+3. **New rules go before the terminal `[hidden]` rule**, or `TestHiddenAlwaysWins`
+   fails.
+4. **Never use range syntax** (`(width <= 780px)`). It slips past the breakpoint
+   guard's regex while doing exactly what the guard forbids — routing around a
+   hook, which `AGENTS.md` prohibits by name.
 
-Where a task carries *"it was only ever run where the project is already installed"*, that
-phrasing is the point.
+### Every assertion reads the PARSED stylesheet
 
-## 🔒 Four tasks are security-critical, in this order of risk
+Use `blockFor(t, source, marker)` (`stylesheet_test.go:1729`) or `cssRules`
+(1796) — the **block the declaration lives in**, never a substring of the file.
 
-| Task | Why |
+```go
+pane := blockFor(t, stylesheet(t), ".pane")          // CORRECT
+if !strings.Contains(stylesheet(t), "pre-wrap") { }  // WRONG
+```
+
+**Milestone 4 shipped three green tasks while the control they were about went
+unchanged.** The wrong form is how. `stylesheet()` strips comments, so no guard
+can ever be satisfied by writing the declaration in prose beside the rule.
+
+---
+
+## 🚫 THREE QUESTIONS SHIP OPEN. THE LOOP MUST NOT ANSWER THEM.
+
+`docs/mobile-open-questions.md` is created by **T001** and verified by **T017**.
+
+| Question | Fallback |
 |---|---|
-| **T015** verify | Checksum **then** signature, and a missing signature is a refusal, not a skip. Get this wrong and signing is decorative. |
-| **T016** stage | Nothing executable before both checks pass; staging swept at startup. |
-| ~~**T017** swap~~ | ✅ Iteration 20. Smoke test before the rename; any failure leaves the daemon on what it was running. |
-| **T013** keygen | Writes nothing to disk. The operator holds the private half. |
+| Does the wrapped pane read against Claude Code's real TUI chrome? | Delete two declarations from the 780px block. One-line revert. |
+| Does a bare provenance word read as part of the value once rows stack? | Render an explicit label in the row (template change, specced, not built). |
+| Does the scrolling menu disorient when the current chip starts offscreen? | Replace it with a `<details>` disclosure (template change, specced, not built). |
+
+**Nothing in this repository renders CSS and nothing in it has a thumb.** Every
+task here lands green, and green proves a declaration exists — not that a page is
+usable on a phone.
+
+**A question is answered by the operator's report replacing it, never by a task
+deciding everything looks fine.** T017 verifies they survived; it does not resolve
+them. A milestone closing with all three still open is **correct and expected**.
+
+---
+
+## 🔒 Four tasks are risky, in this order
+
+1. **T010 — the `@media (pointer: coarse)` block.** Placed before the rules it
+   overrides, it parses, passes every guard, and **does nothing**. Identical
+   specificity means order alone decides.
+   `TestTheCoarseBlockOverridesRatherThanPrecedes` is the only assertion in this
+   milestone that catches a change which is syntactically perfect and
+   behaviourally absent.
+2. **T015 — deleting the superseded settings rules.** A removed rule that was
+   doing work is an unstyled page, and the class sweep **cannot see it**: these
+   are *element* selectors under a class, and `styledClasses` collects only class
+   names. That blindness is why they survived #103. Check each against the
+   template; do not delete on suspicion.
+3. **T002 — the two tokens.** Three files or the premise breaks. The
+   `designTokens` map is a transcription of `docs/design-system.md`, **not** a
+   read of the stylesheet. Landing two of three passes every test and breaks what
+   the map is for.
+4. **T008 — stacked table rows.** Weakens table semantics. Use
+   `clip-path: inset(50%)`, **never** the conventional `1px` visually-hidden
+   recipe, which the value sweep fails.
+
+---
 
 ## What is already running
 
-Milestones 1 through 5 are **live**:
+`crswd v0.71` on this host, from a config file at `~/.config/crswd/config`,
+updated through the browser. The deployment is not part of this milestone; the
+milestone ends with a release the operator can update into.
 
-| | |
-|---|---|
-| Service | `crswd.service`, systemd user unit, loopback `127.0.0.1:8765` |
-| Public | `https://crswd.craigcloud.io` via the `crswd` Cloudflare Tunnel |
-| Daemon | Config file, settings page, mode toggle, PRG, themed picker, dependency probe |
-| Audit | `journalctl --user -u crswd -o cat \| grep '^{' \| jq .` |
-| CI | `go test`, `-tags tmux`, `-tags quickstart`, all on self-hosted runners (#87) |
-
-**There is no release, no version, and no installer.** That is this milestone.
+---
 
 ## Resolved decisions
 
-Settled in [`research.md`](../specs/006-ship-it-to-someone-else/research.md). **Do not
-re-litigate these** — if one looks wrong, write it in `PROGRESS.md` under
-`NEEDS CLARIFICATION` and stop.
+From `specs/007-make-it-work-on-a-phone/research.md` — settled, so no iteration
+needs to re-argue them.
 
-| Question | Decision | Consequence |
-|---|---|---|
-| How does the version reach the binary? | One variable, `internal/buildinfo.Version`, default `"dev"`, stamped with `-ldflags -X` | A package rather than `main`, because httpapi must read the same string. **The default is the sentinel**: forgetting to stamp cannot make a working tree claim to be a release |
-| Where does the build number come from? | `git rev-list --count HEAD` | Monotonic and **derived from the repository itself**. `github.run_number` resets when a workflow is recreated, which would make an older release outrank a newer one and break both "is this newer" and retention |
-| What are the asset names? | `crswd_<version>_linux_<arch>.tar.gz`, plus `SHA256SUMS` and `SHA256SUMS.sig` | Built in YAML, shell and Go, which cannot share a constant. The duplication is unavoidable; the drift is not, so a test asserts they agree. A drift is a 404 while somebody is installing |
-| Who holds the signing key? | **The operator.** `crswd keygen` prints both halves and writes nothing | A key written to a file is a key that gets committed by accident. The public half is **committed, not fetched** — a key retrieved from the host that serves the release is the same factor twice |
-| How does rotation work? | Additive: one key per line, any may verify, retire the old only once every retained release is signed by the new | A rotation that deletes first strands every release an operator might roll back to |
-| How does a daemon replace its own binary? | Stage → checksum → signature → chmod → **smoke test** → atomic rename → exit for systemd | The smoke test is the non-obvious step: a checksum proves the bytes are the published bytes and says nothing about whether they *run here*. An arm64 build on amd64 passes every cryptographic check and then fails to exec — after it is installed |
-| What does "staged" mean? | `~/.local/share/crswd/staging/`, mode `0600` until verified, swept at startup | Nothing is executable before both checks pass. Swept because the process that vouched for those bytes did not live to say so |
-| How does the installer know a unit was edited? | It records the hash of what it wrote; **no record means leave it alone** | The third case is every host deployed before this milestone, including the operator's own |
-| Why no automatic rollback? | A daemon that cannot start cannot decide to replace itself | It would need a supervisor this project does not have. The previous binary is kept and the failure is made loud instead |
+- **The pane wraps below the breakpoint, and it is a TRADE.** Claude Code's own
+  box borders and dividers wrap into a line plus a stub; alignment-dependent
+  output is misrepresented on a phone. What it buys is that reading prose stops
+  requiring a horizontal pan per line — the dominant phone task, which today fails
+  outright. Rejected with arithmetic: shrink-to-fit needs a ~6.9px font.
+  **Reverting is one declaration.**
+- **Safe because captures are right-trimmed.** `capture-pane -p -t <target>`
+  carries no `-N`, so tmux strips trailing spaces and blank padding does not wrap.
+  Verified in `internal/tmuxctl/exec.go`, not assumed.
+- **`overscroll-behavior-x` is unconditional; the vertical axis is deliberately
+  left alone.** Containing vertical scroll on an element that is most of the
+  screen traps the reader in a box.
+- **One width breakpoint stays one.** Everything triggers at the same threshold,
+  and the layouts that do not need it are already intrinsic.
+- **Touch ergonomics follow the POINTER, not the viewport.** A tablet in landscape
+  is a touch device at a desktop width; a narrow desktop window is a mouse.
+  `(pointer: coarse)` is not a width feature, so it passes the breakpoint guard
+  honestly. **Policy: a pointer block changes ergonomics, never layout.**
+- **The settings menu stays real links**, reflowed into a scrolling row. Rejected:
+  a `<select>` in a GET form, a `<details>` disclosure, an accordion — each
+  argued and priced in research.md R8.
+- **No template change is needed for any layout fix.** Confirmed selector by
+  selector. Because no new class is introduced, **two of the nine guards cannot
+  fire in this milestone at all**.
+- **`background: var(--glow)` is a live bug on every device.** `--glow` is a
+  shadow list; used as a background it is dropped at computed-value time. The
+  settings menu has never had a surface. The comment above it already describes
+  this exact class of defect for `var(--bright)` — and
+  `TestEveryTokenReferencedExists` cannot catch it, because it checks a token
+  *exists*, not that it is of a *kind the property accepts*.
+
+---
 
 ## Conventions
 
@@ -108,103 +170,85 @@ re-litigate these** — if one looks wrong, write it in `PROGRESS.md` under
 - **A task is not done when the code exists. It is done when something calls it.** This repo
   has shipped that failure four times — a reaper with no caller, `Store.Touch` with no caller,
   a PR-opener no workflow invoked, and `CRSW_DESTROY_ON_SHUTDOWN`, which was false on every
-  daemon that ever ran. **T005 is where that bites**: a config key with no reader is exactly
-  that fourth one again.
+  daemon that ever ran. **In this milestone the equivalent is T010**: a CSS block placed
+  before the rules it overrides is a rule with no effect, which is the same failure wearing
+  a stylesheet.
 
 ---
 
 ## Tasks
 
-### US1 — Know what is running (everything depends on this)
+### Setup — the docs everything else transcribes from
 
-- [x] T001 `internal/buildinfo.Version`, default `"dev"` — the default is the sentinel
-- [x] T002 `--version` on the command line, honest about unreleased builds
-- [x] T003 `GET /dashboard/version`, reading the same variable
+- [ ] **T001** Create `docs/mobile-open-questions.md` (three questions, three fallbacks, all UNANSWERED) and correct the breakpoint section of `docs/design-system.md` — it says "Two breakpoints is enough" while the stylesheet has one and the test enforces one. Add the pointer-coarse policy and amend the pane's typography row.
 
-### US2 — Releases exist
+### Foundational — blocking
 
-- [x] T004 The release workflow: `v0.<count>`, both architectures, `CGO_ENABLED=0`
-- [x] T005 Attach the deployment files, not just the binary
-- [x] T006 `SHA256SUMS` covering every asset
-- [x] T007 Retention: keep 20, never the newest two, never what `latest` resolves to
-- [x] T008 `Restart=always` in the unit — self-update depends on it
+- [ ] **T002** 🔒 Add `--tap: 44px` and `--fs-input: 16px` to **all three** of `docs/design-system.md`, the token block in `web/static/crswd.css`, and the `designTokens` map at `internal/httpapi/stylesheet_test.go:31`, in ONE commit.
 
-### US3 — Install in one line (all of it about another machine)
+### US1 — Read what Claude said, from a phone (P1)
 
-- [x] T009 Detect, download, and verify **before** anything is executable
-- [x] T010 Place the binary, the unit, the recorded hash, and a config only if absent
-- [x] T011 Refuse to clobber: an edited unit, and one we have no record of
-- [x] T012 The `verify-install` job on a GitHub-hosted runner — installs the release the same run
-      published, onto a host asserted to carry none of the four paths `install.sh` writes, twice.
-      See Iteration 17.
+- [ ] **T003** Add `overscroll-behavior-x: contain` to `.pane` (`crswd.css:891`), unconditionally. Do NOT add the vertical axis.
+- [ ] **T004** Add `white-space: pre-wrap` and `overflow-wrap: anywhere` to `.pane` INSIDE the 780px block. Leave `white-space: pre` in the base rule.
+- [ ] **T005** Add `TestNoPageClampsTheZoom`, walking `web.Templates` for `maximum-scale` / `user-scalable=no`.
 
-### The signing key — ✅ THE HUMAN STEP IS DONE
+### US2 — Read and change a setting, from a phone (P1) — the reported surface
 
-- [x] T013 🔒 `crswd keygen` and a `release_key.txt` the operator has since filled in — the
-      private half is the `RELEASE_SIGNING_KEY` secret, the public half is committed to that
-      file **and** to `install.sh`. See Iteration 14 for the build, `c606df3` for the key.
-- [x] T014 Sign `SHA256SUMS` in CI, and refuse to publish a release that cannot be signed or
-      that would be signed by a key nothing carries. See Iteration 16.
+- [ ] **T006** Delete `overflow-x: auto` from `.settings` (`crswd.css:1131`, the grid wrapper) and add it to `.settings-panel`. **Must land before T008.**
+- [ ] **T007** Reflow `.settings-menu-list` to `grid-auto-flow: column` with `position: static` on `.settings-menu`, inside the 780px block. Move the `aria-current` marker to `border-block-end`. Links stay links.
+- [ ] **T008** 🔒 Stack `.settings-table` rows inside the 780px block. `clip-path: inset(50%)` for the headers — **never** the `1px` recipe.
+- [ ] **T009** Rewrite `web/templates/settings.html`'s header comment, which claims the page has no form, no token, no action row and no live region. It has all four.
 
-### US4 — Update without rebuilding (cannot start before US1)
+### US3 + US4 — Touch (P2)
 
-- [x] T015 🔒 Verify: checksum **then** signature; a missing signature refuses. See Iteration 18
-- [x] T016 🔒 Stage: `0600` until verified, swept at startup. See Iteration 19
-- [x] T017 🔒 Swap: **smoke-test the staged binary**, then rename, then exit. See Iteration 20
-- [x] T018 Fetch: TLS, no cross-host redirect, exact asset name — **the one task in US4
-      that never needed the key**; see Iteration 15
-- [x] T019 🔒 `POST /dashboard/update` via `handleAction`, with a confirming step. See Iteration 21
+- [ ] **T010** 🔒 Add the `@media (pointer: coarse)` block **after** the reduced-motion block and **before** `[hidden]`. Include `TestTheCoarseBlockOverridesRatherThanPrecedes` — the offset assertion.
+- [ ] **T011** Add `font-size: var(--fs-input)` for `.field-input` **and** `.setting-input` to the same coarse block.
 
-### US5 — The rain says something (independent)
+### US5 + US6 — Content reachability (P3)
 
-- [x] T020 Messages drawn on the canvas, never inserted into the DOM
+- [ ] **T012** Wrap `.card-name` / `.card-path` inside the 780px block. The `title` attribute needs a hover a phone does not have.
+- [ ] **T013** `padding-inline: var(--s4)` on `.masthead-bar` and `flex: 1 1 0` on `.operator`, inside the 780px block.
+
+### US7 — What the sweep found (P3)
+
+- [ ] **T014** Replace `background: var(--glow)` with `var(--surface)` and `var(--surface-lift)` at `crswd.css:1339` and `1352`. Add `TestNoBackgroundSpendsAShadowToken`. Update the comment above them to record the gap.
+- [ ] **T015** 🔒 Delete `.settings caption` (verified dead — zero captions rendered). Check `.settings table`, `.settings th/td` and `.settings p` against the template; keep what is load-bearing and say which in the commit message.
 
 ### Ship it
 
-- [x] T021 README leads with the one-liner; document rolling back
+- [ ] **T016** Update the pane and settings-menu prose in `docs/components.md`.
+- [ ] **T017** Re-read `docs/mobile-open-questions.md` and confirm all three questions are **still UNANSWERED** with their fallbacks intact. **This task verifies; it does not answer.** If any has been ticked, un-tick it and record what happened in `PROGRESS.md`.
 
 ---
 
-## Shippable at T008
+## Shippable at T009
 
-**US1 and US2 together are the core.** A daemon that can say what it is, and a release someone
-could download by hand. The installer and self-update make it pleasant; releases make it
-possible at all.
+T001, T002 and Phase 4 together ship a settings page usable on a phone — the
+surface the operator actually reported, and the one the audit ranked worst. Every
+task after that is additive, and none of them is required for that to be true.
 
-T020 and T021 were what there was to take while T013/T014 waited on the operator. T018 followed,
-because fetching is the one step of US4 that carries no verification and so never needed a key.
-T014 came next, once the key turned out to have been committed three iterations earlier, and
-T012 after it.
-
-**Nothing is left. T019 closed the plan** (Iteration 21), and with it the caller gap this section
-tracked for four iterations: `Fetcher`, `Stager.Stage` and `Swapper.Swap` all have a production
-caller now, and it is the one route — `POST /dashboard/update`, whose test asserts it reaches fetch,
-stage and swap with what the step before it produced rather than asserting the handler exists.
-
-**What T019 did *not* ship is a button.** The route is registered, gated and audited; no page
-renders a form that posts to it. That is FR-029 satisfied at the route and not on the page, it was
-never in any task's scope, and it is Iteration 21's finding 1 — the first thing a follow-up
-milestone should take.
-
-**The interfaces between the four steps are three values and nothing else.** `Fetcher.Asset`
-returns bytes; `Stage` returns the path of a candidate at `0700`; `Swap` takes that path and the
-version it is meant to be, and returns after the rename. **`ExitForRestart` is separate on purpose**
-— the route has a 303 to write and one audit record to emit before the process may end, and a swap
-that exited on the way out would take both with it.
+The pane (T003–T005) is second only because settings was **reported** and the pane
+was **inferred**. On the audit's own ranking they are both P1.
 
 ---
 
 ## Out of scope
 
-Deliberately NOT in milestone 6:
+No task may wander into these.
 
-- **Automatic updating.** This makes an update possible and verifiable. A daemon that updates
-  itself on a schedule, unasked, is a larger decision
-- **Auto-recovery of a crashed session** (#95). It collides with the rule that refuses to
-  resume where "the last conversation in this directory" could be another session's, and the
-  operator asked to think about it further
-- **Editing settings from the browser.** No mutating verb is registered on `/settings` at all
-- **Windows, and any package manager** — apt, brew, nix. A tarball and an install script
-- **Multi-user support**, the device-code login relay, and the companion skill
-- **Any change to milestone 1's signing procedure, its six operations, or the audit record
-  shape.** The update path is new; the API beside it is not
+- **Resizing the tmux PTY to the reader's viewport.** The correct answer to
+  terminal reflow, and a daemon change with a genuine multiple-concurrent-readers
+  problem — a desktop viewer, the companion skill, and the operator attached on
+  the host may all be watching at different widths. Named as future work.
+- **A wrap/zoom toggle control for the pane.** Permissible later as progressive
+  enhancement; it is a new component, new tokens and new tests for what is
+  currently a guess about a preference. Not before the wrap has been used in
+  anger.
+- **A second width breakpoint**, and any change to
+  `TestTheDashboardHasExactlyOneBreakpoint`.
+- **Native apps, service workers, offline support, install prompts.** This is a
+  website that must work on a phone.
+- **Any change to routing, session semantics, or the security posture.**
+- **Auto-recovery of a crashed session** (#95). Still deliberately unspecified.
+- **Answering the three open questions.** They belong to the operator and a real
+  device.
