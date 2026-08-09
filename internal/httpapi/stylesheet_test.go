@@ -736,23 +736,35 @@ func TestTheStylesheetStylesNoElementTheMarkupNeverRenders(t *testing.T) {
 const componentsDocPath = "../../docs/components.md"
 
 // documentedComponentClass is the classes that document is answerable for *by
-// name*: the working-directory picker, the switch, and the header the settings
-// link sits in — the three controls milestone 5 built or changed. Matched by
-// prefix on the class itself, so a rule added for any of them is swept without
-// this expression being edited.
+// name*: the working-directory picker, the switch, the header the settings link
+// sits in — the three controls milestone 5 built or changed — and the action
+// toast. Matched by prefix on the class itself, so a rule added for any of them
+// is swept without this expression being edited.
+//
+// The toast is here because it is the family that already rotted (#119). It
+// shipped on all three pages with issue #42 and docs/components.md went on
+// saying it had "no section and no use" for four milestones, because being
+// rendered *and* styled satisfies both of the sweeps above — the drift a
+// document-facing direction is the only thing that can see. Nothing widens by
+// itself: the whole point of this expression is that adding a family is a
+// deliberate edit with the document's side of it in the same commit.
 //
 // It is a near-twin of comboSelector and deliberately not the same variable.
 // That one is the set of rules T009 is answerable for the *styling* of, and
 // widening it to carry the masthead would quietly widen four assertions about
 // colour and focus that were written about a picker.
-var documentedComponentClass = regexp.MustCompile(`\.(combo|switch|masthead)[\w-]*`)
+var documentedComponentClass = regexp.MustCompile(`\.(combo|switch|masthead|action-toast)[\w-]*`)
 
-// TestTheComponentsDocumentNamesThePickerTheSwitchAndTheHeader is the third
-// direction of the sweep above, and it exists because the first two cannot see
-// this one. A class can be rendered and styled and still be undocumented, which
-// is how a second version of a control gets built: the next person writes the
-// markup they need because the vocabulary they were told to reuse does not
+// TestTheComponentsDocumentNamesThePickerTheSwitchTheHeaderAndTheToast is the
+// third direction of the sweep above, and it exists because the first two cannot
+// see this one. A class can be rendered and styled and still be undocumented,
+// which is how a second version of a control gets built: the next person writes
+// the markup they need because the vocabulary they were told to reuse does not
 // mention the one that is already there.
+//
+// It is G6 in specs/007-make-it-work-on-a-phone/contracts/guards.md, which names
+// it by its former spelling — ...ThePickerTheSwitchAndTheHeader, before the toast
+// joined the families it sweeps.
 //
 // Both directions, for the same reasons the markup sweep gives. A class the
 // document omits is a control someone reimplements; a class it invents is a
@@ -764,9 +776,9 @@ var documentedComponentClass = regexp.MustCompile(`\.(combo|switch|masthead)[\w-
 // one of them is a bug the next themed control over a native one would otherwise
 // ship.
 //
-// **Must fail when** a `.combo*`, `.switch*` or `.masthead*` rule exists that
-// docs/components.md never names, or the reverse.
-func TestTheComponentsDocumentNamesThePickerTheSwitchAndTheHeader(t *testing.T) {
+// **Must fail when** a `.combo*`, `.switch*`, `.masthead*` or `.action-toast*`
+// rule exists that docs/components.md never names, or the reverse.
+func TestTheComponentsDocumentNamesThePickerTheSwitchTheHeaderAndTheToast(t *testing.T) {
 	t.Parallel()
 
 	// Comments stripped first, unlike cssRules' own reading: a class named in a
@@ -780,7 +792,7 @@ func TestTheComponentsDocumentNamesThePickerTheSwitchAndTheHeader(t *testing.T) 
 		}
 	}
 	if len(styled) == 0 {
-		t.Fatal("crswd.css styles no picker, switch or masthead class at all, so this test is checking nothing")
+		t.Fatal("crswd.css styles no picker, switch, masthead or toast class at all, so this test is checking nothing")
 	}
 
 	raw, err := os.ReadFile(componentsDocPath)
