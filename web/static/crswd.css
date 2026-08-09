@@ -400,7 +400,13 @@ body {
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--card-min), 1fr));
+  /* `minmax(--card-min, 1fr)` alone is the auto-fill overflow footgun: the track
+     floor is a fixed length, so a container narrower than --card-min gets a
+     310px track anyway and the row overflows the page. The operator met that as
+     a card they had to zoom out to read. `min(100%, …)` lets the floor collapse
+     to the container when the container is the smaller of the two, which is the
+     only width at which the floor was ever wrong. */
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--card-min)), 1fr));
   gap: var(--s4);
 }
 
@@ -1677,6 +1683,25 @@ body {
   .card-path {
     white-space: normal;
     overflow-wrap: anywhere;
+  }
+
+  /* The identifier is the one T012 missed, and it is the same defect it fixed
+     twice over: 32 hex characters are a single run with no break opportunity in
+     them, and the rest of it lives in a title attribute a touch device has no
+     hover to reach. The name and the path got this; the line between them did
+     not. */
+  .card-id {
+    overflow-wrap: anywhere;
+  }
+
+  /* The meta list's label column is `max-content`, which is a floor that does
+     not shrink — the widest label sets it and the value gets what is left. That
+     is right beside a panel and wrong on a phone, where "WORKING DIRECTORY" is
+     most of the width before the value has said anything. Label and value stop
+     being two columns and become two lines, which is what the settings table
+     does one breakpoint over for the same reason. */
+  .card-meta {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   /* The header kept desktop gutters after the page narrowed. .shell drops to

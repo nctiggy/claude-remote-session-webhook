@@ -3237,3 +3237,57 @@ func TestTheSectionsCollapseToOneLine(t *testing.T) {
 		t.Error("the disclosure renders no summary, so it cannot be operated at all")
 	}
 }
+
+// TestNoTrackFloorCanOutgrowItsContainer is the operator's requirement stated as
+// a rule: a card fits the screen it is on, with no zooming in either direction.
+//
+// `repeat(auto-fill, minmax(<length>, 1fr))` does not do that. The floor is a
+// fixed length, so a container narrower than the floor still gets a track of the
+// floor's size and the row overflows the page — the failure is invisible on
+// every desktop and total on a phone. `min(100%, <length>)` is the remedy: the
+// floor collapses to the container exactly when the container is smaller, which
+// is the only case it was ever wrong in.
+//
+// **Must fail when** a grid template floors a track at a bare length, so the
+// layout is correct at every width except the narrow ones nobody opens.
+func TestNoTrackFloorCanOutgrowItsContainer(t *testing.T) {
+	t.Parallel()
+
+	floor := regexp.MustCompile(`minmax\(\s*(?:var\(--[a-z0-9-]+\)|[0-9.]+[a-z]+)`)
+	for _, rule := range cssRules(stylesheet(t)) {
+		for _, decl := range regexp.MustCompile(`(?i)grid-template-columns\s*:\s*([^;}]+)`).FindAllStringSubmatch(rule.body, -1) {
+			value := decl[1]
+			if !strings.Contains(value, "auto-fill") && !strings.Contains(value, "auto-fit") {
+				continue
+			}
+			for _, m := range floor.FindAllString(value, -1) {
+				if !strings.Contains(value, "min(100%") {
+					t.Errorf("%s floors a repeating track at %q with no min(100%%, …) around it; a container narrower than that floor overflows the page, which is a card the operator has to zoom out to read: %q", rule.selector, m, value)
+				}
+			}
+		}
+	}
+}
+
+// TestTheCardCarriesNoUnbreakableRun holds the other half. Three values on a
+// card are single runs with no break opportunity in them — a session name, a
+// working directory, and the 32-character identifier — and each keeps its full
+// text in a title attribute, which needs a hover a touch device does not have.
+//
+// T012 fixed two of the three. This is the one it missed, and the omission is
+// the interesting part: nothing failed, because the guard for "can this wrap"
+// did not exist. It does now.
+//
+// **Must fail when** a card value that cannot break is left without a wrap rule
+// below the breakpoint, so it sets a width the card cannot shrink under.
+func TestTheCardCarriesNoUnbreakableRun(t *testing.T) {
+	t.Parallel()
+
+	narrow := blockFor(t, stylesheet(t), breakpointPrelude)
+	for _, selector := range []string{".card-name", ".card-path", ".card-id"} {
+		rule := ruleFor(t, narrow, selector)
+		if !regexp.MustCompile(`(?i)overflow-wrap\s*:\s*anywhere`).MatchString(rule) {
+			t.Errorf("%s holds a value with no break opportunity and no wrap rule below the breakpoint, so it sets a floor the card cannot shrink under and the operator zooms out to read it: %q", selector, rule)
+		}
+	}
+}
