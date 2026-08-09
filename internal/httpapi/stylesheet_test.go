@@ -2256,3 +2256,60 @@ func TestThePaneKeepsItsDesktopAlignment(t *testing.T) {
 		t.Errorf("the base pane rule no longer sets `white-space: pre`, so a desktop wide enough for 80 columns wraps them anyway and every alignment-dependent screen is misrepresented: %q", pane)
 	}
 }
+
+// viewportMeta is the element that tells a phone how wide to pretend to be. It
+// is counted rather than parsed: what this test forbids is a spelling, and the
+// count is only here so a tree that stopped carrying viewports altogether fails
+// loudly instead of passing vacuously.
+var viewportMeta = regexp.MustCompile(`(?i)<meta[^>]*name="viewport"[^>]*>`)
+
+// zoomClamp is the two ways a page takes pinch-zoom away. `maximum-scale` is
+// forbidden at any value, not just 1: a ceiling is a ceiling, and the operator
+// zooming into a wrapped diff is already past whatever number looked generous
+// when it was written.
+var zoomClamp = regexp.MustCompile(`(?i)maximum-scale|user-scalable\s*=\s*["']?\s*(no|0)`)
+
+// TestNoPageClampsTheZoom keeps the escape hatch open for the trade the pane
+// makes below the breakpoint.
+//
+// Wrapping the pane misrepresents everything alignment-dependent Claude Code
+// prints — box borders, dividers, tables, diffs. The mitigation is that the
+// reader can pinch into it, and that mitigation exists only for as long as no
+// page clamps the scale. Disabling zoom is also the standard reflex reached for
+// when a mobile layout misbehaves, so the moment this milestone introduced a
+// reason to reach for it is the moment it needs a guard.
+//
+// The whole embedded tree is swept, not the four pages by name: a fifth page,
+// or a partial that grew a meta of its own, would otherwise ship unguarded. The
+// sweep is on the markup rather than inside the viewport meta, so a clamp in a
+// second meta element is caught by the same expression.
+//
+// **Must fail when** someone "fixes" the layout by disabling zoom, removing the
+// only mitigation for the trade the pane's wrap makes.
+func TestNoPageClampsTheZoom(t *testing.T) {
+	t.Parallel()
+
+	viewports := 0
+	err := fs.WalkDir(web.Templates, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		source, err := fs.ReadFile(web.Templates, p)
+		if err != nil {
+			return err
+		}
+		markup := string(templateComment.ReplaceAll(source, nil))
+
+		viewports += len(viewportMeta.FindAllString(markup, -1))
+		for _, clamp := range zoomClamp.FindAllString(markup, -1) {
+			t.Errorf("web/%s clamps the visual viewport (%q); the pane wraps below the breakpoint and pinch-zoom is the only way left to read a diff or a box border on a phone", p, clamp)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the embedded template tree: %v", err)
+	}
+	if viewports == 0 {
+		t.Fatal("no template carries a viewport meta at all, so this sweep asserted nothing — and every page is being laid out at a desktop width and scaled down")
+	}
+}
