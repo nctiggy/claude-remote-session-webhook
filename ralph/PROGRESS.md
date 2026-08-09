@@ -603,3 +603,82 @@ complete after it. 9 of 17 tasks open.
    all. Its fallback (render an explicit label in the row) is specced and not built, and the
    question must stay UNANSWERED. T017 verifies that; this iteration did not touch
    `docs/mobile-open-questions.md`.
+
+---
+
+## Iteration 9 — 2026-08-09 09:11
+
+**Did:** T009. Rewrote `settings.html`'s header comment: the page acts as well as reads, it
+carries mutating forms with `crsw_page_token` in each, the controls that submit them, and the
+live region at the foot of the file; `POST /settings/edit` and `POST /dashboard/update` are the
+two routes that receive them, while `GET /settings` is still the only verb on the path itself.
+Added the paragraph the rewrite actually needs — the absence of a route *was* the safeguard and
+is not any more, so the bound is the action gate plus `config.Editable`. Shipped
+`TestTheSettingsCommentDescribesThePage` (`partials_test.go:3265` onward), which the contract
+lists and the task text does not. That closes the settings phase: the plan's "Shippable at
+T009" line is now true.
+
+**Learned, so the next iteration does not rediscover it:**
+
+- **A regex over a template comment must unwrap it first, and this is not hypothetical.**
+  Restoring the false paragraph verbatim to prove the negative fired three of four claims —
+  the page-token one evaded it because the sentence wraps as `carries no page\n  token`. One
+  `strings.Join(strings.Fields(header), " ")` and all four fire. **Any future assertion about
+  prose in this repo's templates or docs has this hole**; the comments are hand-wrapped at
+  ~78 columns, so a two-word phrase straddles a line roughly one time in six.
+- **The header comment is separable from the markup at the doctype**, which is why the test
+  does not sweep every `{{/* … */}}` in the file. Two comments further down say "carries no
+  token" *truthfully* — the check-for-updates link is a GET and carries none by design. A sweep
+  of the whole file would have to distinguish those, and it cannot.
+- **The contract and the task text disagree about whether T009 ships a test.**
+  `contracts/settings.md` lists `TestTheSettingsCommentDescribesThePage` in its Contract tests
+  table with a "Must fail when"; `tasks.md:424` says *"Guards: none. Every sweep strips
+  comments, so the suite is inert to this."* Both are right about different things — no
+  *existing* guard can see a comment, which is exactly why this one had to be written. I
+  shipped it: it is named in the contract, so it is not invented (iteration 8 declined a test
+  that was not).
+- **`fieldPageToken` (`browser.go:336`) is the constant to build a token assertion from**, not
+  the literal — `dashboard_test.go:1553` already pins its spelling to `contracts/actions.md`,
+  so a rename fails there once instead of everywhere.
+- All gate commands green; linter is **2.12.2**, so the green is real. `go test ./...` clean on
+  a re-run (see finding 2), all three tagged suites compile. `-tags quickstart` was not *run*:
+  this task touches one template comment and one test file, no `cmd/crswd`.
+
+**Left:** T010 next — the `@media (pointer: coarse)` block, which the plan flags as the
+milestone's riskiest task and which **iteration 7 corrected the placement for**: it goes at the
+**end of the file** beside the width block, *not* after the reduced-motion block as iteration 1
+said, or it sits above `.setting-input`/`.field-input` and is inert. Write its offset assertion
+per-selector, the way `TestTheBreakpointOverridesRatherThanPrecedes` is written. 8 of 17 tasks
+open.
+
+**Findings — noticed, not fixed:**
+
+1. **The same false claim is still live in two Go files and one doc, and T009 did not cover
+   them.** `docs/components.md:56-66` ("The settings page has no component of its own") says the
+   page "deliberately carries **none** of the three things every actionable page in this tree
+   carries: no page token, no action row, no live region" and that "a form rendered there would
+   be a form the daemon has no route to receive". `server.go:569-578` says "no mutating verb is
+   registered on the path at all" and "editing the operator's file from a browser is out of
+   scope this milestone". `settings.go:3` and `:388` call it "the read-only account". All four
+   are the identical defect T009 exists to fix, in files T009 does not name — AR-008 and the
+   constitution's fourth principle say not to fix them from inside this task. **T016 updates
+   `docs/components.md`** and is the natural home for the first; the two Go comments have no
+   task in this milestone and need one, or a fix-lane line in `docs/fixes-log.md`. The new test
+   only reads `settings.html`, so nothing catches these.
+2. **`TestTheLeakSuiteReallyDrivesTheDaemon` (`internal/audit/leak_test.go:1601`) is
+   time-flaky, and the cause is certain rather than suspected.** It failed once during this
+   iteration — *"the card a create rendered back carries no page token"* — then passed three
+   times in isolation and on a full re-run. `pageKey.mint` (`pagetoken.go:156`) builds the token
+   from `now.Add(12h).Unix()`, so **two renders one second apart produce different tokens**, and
+   the test asserts the token from one render appears verbatim in a card from a later one. It
+   passes only while both renders land inside the same wall-clock second. This is the second
+   load-sensitive test the notebook has recorded (iteration 8 found
+   `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval`), and unlike that one it is not a
+   timing budget that could be widened — the fix is to assert the card carries *a* verifiable
+   token rather than the *same* string. Outside this milestone. **Re-run before believing it.**
+3. **The rewritten comment now describes a page whose narrow layout no human has seen.**
+   It says the controls "sit in the row or the panel they act on", which after T008 means a
+   stacked block on a phone. That is the arrangement open question 2 is about — a bare
+   provenance word under a value with its header clipped — so the comment is accurate about the
+   markup and silent about whether it reads. Deliberate: a comment is not where an unanswered
+   question gets answered. `docs/mobile-open-questions.md` was not touched.
