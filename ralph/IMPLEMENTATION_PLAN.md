@@ -188,7 +188,7 @@ needs to re-argue them.
 
 ### US1 — Read what Claude said, from a phone (P1)
 
-- [ ] **T003** Add `overscroll-behavior-x: contain` to `.pane` (`crswd.css:891`), unconditionally. Do NOT add the vertical axis.
+- [x] **T003** Add `overscroll-behavior-x: contain` to `.pane` (`crswd.css:891`), unconditionally. Do NOT add the vertical axis.
 - [ ] **T004** Add `white-space: pre-wrap` and `overflow-wrap: anywhere` to `.pane` INSIDE the 780px block. Leave `white-space: pre` in the base rule.
 - [ ] **T005** Add `TestNoPageClampsTheZoom`, walking `web.Templates` for `maximum-scale` / `user-scalable=no`.
 

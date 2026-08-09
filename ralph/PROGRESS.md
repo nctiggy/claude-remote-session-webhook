@@ -161,3 +161,66 @@ tasks open.
    version beside the wordmark." immediately followed by a longer comment saying the same
    thing differently). Cosmetic, in a file this milestone touches repeatedly, and a one-line
    deletion for whoever is next in that region — but AR-008 says not from inside T002.
+
+---
+
+## Iteration 3 — 2026-08-09 08:33
+
+**Did:** T003. `overscroll-behavior-x: contain` in the base `.pane` rule (now `crswd.css:911`,
+after the comment grew), plus both guards from `contracts/pane.md`:
+`TestThePaneDoesNotChainItsOverscroll` and `TestThePaneDoesNotTrapVerticalScrolling`
+(`stylesheet_test.go:2129` onward). Nothing in the 780px block was touched, so the
+design-system enumeration table is untouched too.
+
+**Learned, so the next iteration does not rediscover it:**
+
+- **`blockFor(t, source, ".pane")` is safe today and is a positional bet.** It takes the
+  **first** `strings.Index` of the marker, so it returns the base rule only because `.pane`
+  appears nowhere earlier — `--fs-pane`, `--lh-pane` and `--pane-h` carry no dot, and
+  `.pane-note` and `.settings-panel` come later or do not match. **T004 adds a second `.pane`
+  rule inside the 780px block, and `blockFor` will keep returning the base one.** That is
+  correct for `TestThePaneKeepsItsDesktopAlignment` and wrong for
+  `TestThePaneWrapsOnlyOnNarrowViewports` — the latter must read the media block, not
+  `blockFor(".pane")`, or it will assert `pre-wrap` against a rule that must say `pre` and be
+  unsatisfiable. Use `blockFor` on the media prelude, or sweep `cssRules`.
+- **`cssRules` is the tool for "every rule with this selector, media block included."** It
+  strips media preludes first, so a rule inside the breakpoint appears as an ordinary chunk.
+  `TestThePaneDoesNotTrapVerticalScrolling` uses it precisely so a stray
+  `overscroll-behavior-y` cannot hide inside the 780px block where T004 is about to add a
+  `.pane` rule. Split `rule.selector` on commas and trim each part — the struct trims the
+  whole selector, not the pieces.
+- **Both negatives were proved, and the second one is the interesting one.** Deleting the
+  declaration fails the chain test; replacing it with the *bare* `overscroll-behavior: contain`
+  fails **both** — the trap test because it contains the vertical axis, and the chain test
+  because the repo's rule is the explicit `-x` spelling, not "some declaration that happens to
+  cover x." That is deliberate: the bare property is the exact tidy-up a future reader will
+  reach for, and it is a regression.
+- The proof itself has a wrinkle worth knowing: `sed -i` on a tracked file was **refused by
+  the permission layer** as part of a compound command. Do the temporary mutation with the
+  `Edit` tool and undo it with a second `Edit` — the format-and-lint hook is fine with that,
+  and there is no backup file to forget to delete.
+- All five gate commands green; linter is **2.12.2**, so the green is real. `go test ./...`
+  ran clean and the three tagged suites compile (`go vet -tags tmux|quickstart|dev`).
+
+**Left:** T004 next (the wrap, inside the 780px block — and it owes the design-system
+enumeration table a row). 14 of 17 tasks open.
+
+**Findings — noticed, not fixed:**
+
+1. **The pane's `overflow: auto` and its contained x-axis now describe a scroll container that
+   `docs/components.md` does not mention at all.** T016 is the task that updates that prose and
+   it is fourteen tasks away; until then the document describes a pane that chains its scroll.
+   Not a defect in the code — a note that T016's scope is now one declaration larger than it
+   was when it was written.
+2. **`TestThePaneDoesNotChainItsOverscroll` cannot see a rule that *overrides* it later.**
+   `overscroll-behavior-x: auto` in the 780px block would restore the exact bug on exactly the
+   device the milestone is for, and the base-rule assertion would stay green. The trap test
+   sweeps every `.pane` rule; this one does not, because the contract specifies `blockFor`.
+   Cheap to widen if anyone wants it — the same `cssRules` loop, asserting no `.pane` rule
+   sets the x-axis to anything but `contain`.
+3. **Two `.pane` rules are about to exist and nothing enforces which one wins.** The base rule
+   and T004's media rule have identical specificity, so order decides — the same failure mode
+   the plan flags for T010's coarse block, in a second place, with no equivalent offset
+   assertion named for it. The 780px block already sits below `.pane` in the file, so T004 is
+   fine as long as it goes where the plan says; it is only a hazard if a later task moves a
+   rule rather than adding one.
