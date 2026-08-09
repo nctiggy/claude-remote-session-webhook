@@ -339,3 +339,102 @@ so the claim cannot rot again. Two files; no executable change.
   while `POST /settings/edit` does (iterations 2 and 3). `gofmt -l ./...` is still not
   clean on `main` (`internal/httpapi/render.go`); `gofmt -l` on the one Go file this
   iteration touched is clean and `golangci-lint run` (v2.12.2) reports 0 issues.
+
+---
+
+## Iteration 5 — 2026-08-09
+
+**Did:** T005 (#123). `startBinary` now re-picks its port when the daemon reports it
+could not bind the one it was handed, and `waitUntilServing` stopped believing a bare
+dial. Two harness files; no change to anything that ships.
+
+**Learned:**
+
+- **The issue body could not be read from this harness.** `gh issue view 123` needs
+  approval and this session is non-interactive, so the "three options" the plan points
+  at were never seen. The plan states the recommendation itself — *"the retry, because
+  it is cheap and this is a harness"* — so this is not a guess, but the next iteration
+  that needs an issue body should know `gh` is unavailable here and that
+  `IMPLEMENTATION_PLAN.md` is the only account of #123 in the tree.
+- **Staging the loss found a second, worse bug in the same helper, and it is the reason
+  this task was worth more than a retry.** `waitUntilServing`'s probe was
+  `net.DialTimeout`, and whatever wins the port in freePort's gap is *usually a listener
+  too*. The dial therefore succeeds against the squatter on the first poll —
+  milliseconds after `cmd.Start()`, before the daemon has finished reading its
+  configuration — so the harness reported a start, every assertion in the story ran
+  against a stranger's server, and **the retry could never fire because nothing ever
+  looked like a loss.** The first run of the new guard showed exactly this: `the daemon
+  reports serving on 127.0.0.1:43361, which this test is holding`. A dial is not a
+  liveness check for a port you may have lost.
+- **The conclusive signal is the audit trail, not the wire.** A 401 proves something
+  answered; a record in the trail proves *which* listener did, because the trail is a
+  file the harness created and handed to one child. So the probe is now one unsigned
+  `GET /sessions` — FR-041 counts an unauthenticated request like any other — followed
+  by a wait for an `auth.reject` record. It costs one extra record at the head of every
+  daemon's trail; nothing counts totals (`TestQuickstartStory6Audit` takes its `before`
+  after the start, and every other counter is per-action), and the suite's wall clock is
+  unchanged at ~36.8s.
+- **Classify on the daemon's own frame, not the OS's.** `httpapi: bind <addr>:` is
+  written by `internal/httpapi/server.go` and `loadListen` returns `CRSW_LISTEN`
+  verbatim, so the string in the trail is byte-identical to what the harness put in the
+  environment. Matching `address already in use` instead would make the retry a property
+  of this platform's strerror.
+- **A retry needs a seam or it cannot be tested.** Nothing a test can do makes the kernel
+  hand back a taken port, so `host.pickPort` is a field defaulting to `freePort`. Both
+  guards were proved by breaking them: `portAttempts = 1` fails
+  `TestStartRecoversFromAPortTakenInTheGap`, and `pinned && false` fails
+  `TestAPinnedAddressIsNeverRepicked` on both of its assertions.
+- **The pinned branch is load-bearing and needed its own guard.** A restart must land on
+  the address its tmux server is named after or it adopts nothing, so re-picking one
+  would turn `TestQuickstartStory4Restart` and `TestDashboardQuickstartStory1Adopted`
+  green while testing something else entirely. Those two, plus
+  `TestDashboardQuickstartStory3FailsClosed`, now pin `d.addr` — the address a daemon
+  really bound — instead of a `freePort` guess made before anything started.
+
+**Left:** nothing. Every task in the plan is checked.
+
+**Findings (noticed, not fixed — no code changed for any of these):**
+
+- **The `quickstart` tag is missing from `.golangci.yml`'s `run.build-tags`, so the
+  acceptance suite has never been linted.** The config's own comment says *"A file no
+  linter ever reads is not covered by the gate the definition of done rests on. Any
+  future build tag needs adding here for the same reason"* — and lists only `tmux` and
+  `dev`. `golangci-lint run --build-tags quickstart,tmux,dev ./cmd/crswd/...` reports
+  **31 issues** across `quickstart_test.go`, `quickstart_dashboard_test.go`,
+  `config_cmd_test.go` and `version_test.go`: 21 errcheck (almost all `_ = x.Close()`,
+  which this config makes an issue via `check-blank: true`), 8 gosec, 1 bodyclose, 1
+  staticcheck. None are new — the two lines this iteration added in the same shape
+  (`_ = io.Copy`, `_ = resp.Body.Close`) match `do`'s existing ones exactly. **This is
+  the same defect as the rest of the milestone**: a config that states a rule about
+  every build tag and enforces it for two of three. Fixing it is not a one-liner, since
+  adding the tag turns 31 findings red at once, so it wants an issue and a decision
+  about `check-blank` in test files.
+- **Three "nothing bound" assertions still carry freePort's window, in its other
+  shape.** `TestQuickstartStory1StartupFailures` (`quickstart_test.go:1135`),
+  `TestQuickstartRefusesWithoutTmux` (`:1963` before this change) and
+  `TestConfigCheckDoesNotStart` (`config_cmd_test.go:128`) each take a `freePort`
+  address, run something that must refuse, and then assert `net.Listen(addr)` still
+  succeeds. If anything takes the port in between, the failure reads as "the daemon
+  leaked the port" when it was never bound. Not fixed here for two reasons. The retry
+  does not apply — these deliberately pin an address nothing should bind — and the
+  assertion is close to vacuous as written: `h.run`/`h.runConfig` wait for the process
+  to *exit*, and a listener cannot outlive its process, so the only thing that can fail
+  it is an unrelated squatter. The honest fix is to hold the port open for real and
+  assert the refusal never named a bind, the way `TestQuickstartStory1LoudDefault`
+  already holds a `taken` listener. **Wants an issue.**
+- **`answeredForItself` makes every daemon start send one request before the story
+  does.** That is a real behaviour change to the harness and it was checked against
+  every record assertion in the three quickstart files — all count by action
+  (`dashboard.view`, `stream.open`, `access.reject`, `startup.adopt`) or take their
+  baseline after the start — but a future test that counts *total* records from zero
+  will be off by one and the reason will not be obvious from where it fails.
+- **Still open and untouched from iterations 2–4:** `docs/security.md` lines 216 and
+  233–237 and `internal/httpapi/server.go:571–577` still say no browser route writes the
+  operator's config while `POST /settings/edit` does; `docs/components.md`'s Action
+  controls section still names `.card-outcome`, which nothing renders or styles, and its
+  answer table still gives per-route statuses that `redirectOutcome` replaced with a 303.
+  `gofmt -l ./...` is still not clean on `main` (`internal/httpapi/render.go`, import
+  order); `gofmt -l cmd/crswd/` is clean and `golangci-lint run` (v2.12.2, untagged, as
+  CI runs it) reports 0 issues.
+
+RALPH_COMPLETE
