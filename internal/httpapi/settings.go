@@ -126,6 +126,16 @@ type settingsView struct {
 	// with this version and reloads when one does.
 	Becoming string
 
+	// Restarting is whether this render is the answer to an accepted restart
+	// rather than to an accepted update, and it decides one sentence.
+	//
+	// It is a second field rather than a comparison of Becoming against the
+	// running version, because the two are equal exactly when a restart is what
+	// happened *and* when an operator asked for the version they are already on —
+	// and a page that inferred it would say a restart was under way while a
+	// release was being installed over it.
+	Restarting bool
+
 	// Update is what this daemon is and what it could become. Nil when the
 	// release feed could not be reached, which is deliberately not an error: this
 	// page's first job is reporting local configuration, and that needs no

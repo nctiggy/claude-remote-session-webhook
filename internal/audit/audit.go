@@ -194,6 +194,22 @@ const (
 	// a field on it; which release was installed is what the version route
 	// answers afterwards.
 	ActionDashboardUpdate Action = "dashboard.update"
+
+	// ActionDashboardRestart is this daemon asked to end so its service manager
+	// starts it again (milestone 9), whether it did or refused.
+	//
+	// It is its own action and deliberately not a second dashboard.update, which
+	// is the tempting reuse: both end with the same call and the same exit, so
+	// the daemon does identical work behind them. What differs is the fact an
+	// operator is auditing. dashboard.update means the binary at ExecStart is not
+	// the one that was there before; dashboard.restart means it is. Collapsing
+	// them would leave the trail unable to answer "did what is running here
+	// change", which is the one question ActionDashboardUpdate exists for.
+	//
+	// It carries no version, for the reason none of the records here carries what
+	// it delivered: the record shape is frozen (FR-016), and what came back up is
+	// what the version route answers afterwards.
+	ActionDashboardRestart Action = "dashboard.restart"
 )
 
 // Decision is the allow/deny outcome, and unlike Action it is closed: two

@@ -262,6 +262,13 @@ func TestEmitAcceptsEveryDocumentedAction(t *testing.T) {
 		// become another one.
 		audit.ActionDashboardVersion: "dashboard.version",
 		audit.ActionDashboardUpdate:  "dashboard.update",
+
+		// Milestone 9's: the running daemon asked to end so its service manager
+		// starts it again. It is here rather than left to the route's own suite
+		// because what an operator greps for is the spelling, and a restart that
+		// arrived in the trail as dashboard.update would leave them unable to ask
+		// whether what is running on this host ever changed.
+		audit.ActionDashboardRestart: "dashboard.restart",
 	}
 	for action, want := range cases {
 		t.Run(want, func(t *testing.T) {

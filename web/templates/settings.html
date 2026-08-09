@@ -115,11 +115,18 @@
 
   aria-live so somebody who cannot see the spinner is told; role="status"
   because it is worth saying at the next pause and never worth interrupting.
+
+  Two sentences, because two routes answer with this block and only one of them
+  is installing anything. A restart comes back as the version it went down as,
+  so data-becoming is the same either way and the script polls for it the same
+  way — but a restart that told the operator it was installing that version
+  would be claiming a thing this daemon did not do, which is the care every
+  outcome sentence in this product takes.
 */}}{{ if .Becoming }}<section class="settings-section">
 <h2 class="settings-title">Updates</h2>
 <p class="updating" role="status" aria-live="polite" data-becoming="{{ .Becoming }}">
 <span class="spinner" aria-hidden="true"></span>
-Installing {{ .Becoming }}…
+{{ if .Restarting }}Restarting…{{ else }}Installing {{ .Becoming }}…{{ end }}
 </p>
 </section>{{ else }}{{ if eq .Shown "Updates" }}{{ with .Update }}<section class="settings-section">
 <h2 class="settings-title">Updates</h2>
