@@ -14,8 +14,17 @@ import (
 )
 
 // The two lifetimes every session is bounded by (FR-038, Principle VI). They are
-// constants rather than configuration on purpose: an operator who could widen
-// them could widen the blast radius the constitution bounds by construction.
+// the daemon's built-in defaults rather than the bound itself: the operator
+// configures both the defaults and their ceilings — CRSW_SESSION_LIFETIME and
+// CRSW_IDLE_TIMEOUT, CRSW_SESSION_LIFETIME_MAX and CRSW_IDLE_TIMEOUT_MAX, handed
+// over by SetLifetimes — and a create may override either for one session under
+// those ceilings, refused above one rather than clamped to it (#37). These are
+// what every one of those falls back to when nothing is configured.
+//
+// What bounds the blast radius is therefore the ceiling, not the constant. Every
+// session still carries both deadlines, the absolute one is never renewed, and
+// there is no way to spell "never" for it — so a relaxed bound is one the
+// operator allowed, never one a caller took.
 const (
 	// AbsoluteLifetime is measured from CreatedAt and is never renewed.
 	AbsoluteLifetime = 24 * time.Hour
