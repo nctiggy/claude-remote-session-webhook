@@ -2333,6 +2333,198 @@ func TestBrowserCreateRefusesAnUnusableName(t *testing.T) {
 	}
 }
 
+// --- The two clocks, asked for from the browser (milestone 10) --------------
+
+// The lifetime overrides as a form carries them. Written out rather than read
+// from fieldLifetime and fieldIdleTimeout, for the reason remoteControlField is:
+// what a browser posts is the spelling the markup and the API door share, and a
+// test that asked the code what it reads could not notice the three parting
+// company.
+const (
+	lifetimeField    = "lifetime"
+	idleTimeoutField = "idle_timeout"
+
+	// The create's own answer to a lifetime it will not grant. Spelled here for
+	// the reason the five above it are.
+	wantCreateBadLifetimeOutcome = outcome("bad-lifetime")
+)
+
+// TestBrowserCreateCarriesTheOperatorsLifetimeChoice is the claim milestone 10
+// exists to make, and the one the code could not make before it: the per-session
+// overrides are reachable from the surface the operator actually uses.
+//
+// The record carried Lifetime and Idle, resolveLifetimes bounded them, the reaper
+// enforced them and the README documented the ceilings — and this handler passed
+// Owner, Name, WorkDir and a start command, so every session a browser started
+// got the defaults and there was no way to ask for anything else. A ceiling on
+// something no operator can request bounds nothing.
+//
+// **Must fail when** the create stops reading either field, which returns the
+// dashboard to exactly that state: the assertions below are about the record the
+// store holds, not about what the page was told.
+//
+// The idle half is asserted through the deadlines rather than through a sweep,
+// because the fixture's manager holds a clock that does not move. IdleDeadline is
+// the method the reaper compares against, so an idle deadline that cannot fall
+// before the absolute one is an idle branch that can never take this session —
+// and the absolute deadline is asserted beside it, because that is the bound this
+// milestone deliberately does not remove.
+func TestBrowserCreateCarriesTheOperatorsLifetimeChoice(t *testing.T) {
+	t.Parallel()
+
+	// Both spellings of "no idle limit": the "0" the control posts, which
+	// parseLifetimeOverrides turns into a negative because zero already means
+	// "unset", and a negative a hand-built form can send directly. One record
+	// state, reached two ways, so neither path can be the only one that works.
+	for what, asked := range map[string]string{
+		"the zero the control posts": "0",
+		"a negative duration":        "-30m",
+	} {
+		t.Run("a longer life and no idle limit, asked for with "+what, func(t *testing.T) {
+			t.Parallel()
+
+			c := newCreator(t)
+			form := c.wellFormed(t)
+			// Inside the fixture's ceilings, which are the daemon's own constants
+			// until an operator raises them: half the absolute lifetime, so the
+			// number asserted below cannot be the default arriving by coincidence.
+			form.Set(lifetimeField, "12h")
+			form.Set(idleTimeoutField, asked)
+
+			wantOutcome(t, c.post(t, form), wantCreatedOutcome)
+
+			owned := c.owned()
+			if len(owned) != 1 {
+				t.Fatalf("the store holds %d records after one create; want exactly 1", len(owned))
+			}
+			live := owned[0]
+
+			if want := 12 * time.Hour; live.Lifetime != want {
+				t.Errorf("the record's lifetime = %v; want %v — the create did not carry the operator's choice", live.Lifetime, want)
+			}
+			if live.Idle >= 0 {
+				t.Errorf("the record's idle = %v; want a negative, which is idle reaping off for this session", live.Idle)
+			}
+
+			// The idle clock can never fire first, which is what "no idle limit"
+			// means to the reaper.
+			if live.IdleDeadline().Before(live.AbsoluteDeadline()) {
+				t.Errorf("the idle deadline (%v) falls before the absolute one (%v); idle reaping is still live for this session",
+					live.IdleDeadline(), live.AbsoluteDeadline())
+			}
+			// And the dashboard says the same thing the reaper does, long after the
+			// default idle threshold would have caught up with it (FR-019c).
+			if got := live.DisplayState(testTime.Add(session.IdleTimeout + time.Hour)); got != session.DisplayRunning {
+				t.Errorf("an hour past the default idle threshold the session reads %q; want %q", got, session.DisplayRunning)
+			}
+
+			// The absolute deadline is still the operator's 12 hours, and still
+			// fires. Turning idle off does not make a session immortal — the bound
+			// is relaxed, not removed, which is why a negative idle is safe and a
+			// negative lifetime is refused.
+			if want := live.CreatedAt.Add(12 * time.Hour); !live.AbsoluteDeadline().Equal(want) {
+				t.Errorf("the absolute deadline = %v; want %v — the deadline that cannot be renewed still applies",
+					live.AbsoluteDeadline(), want)
+			}
+		})
+	}
+
+	t.Run("a form that asks for neither still gets the daemon's defaults", func(t *testing.T) {
+		t.Parallel()
+
+		c := newCreator(t)
+
+		wantOutcome(t, c.post(t, c.wellFormed(t)), wantCreatedOutcome)
+
+		owned := c.owned()
+		if len(owned) != 1 {
+			t.Fatalf("the store holds %d records after one create; want exactly 1", len(owned))
+		}
+		live := owned[0]
+
+		// Zero on the record is "the daemon's configured default", which is what
+		// every create this door made before the fields existed carried. An absent
+		// field must not become a choice.
+		if live.Lifetime != 0 || live.Idle != 0 {
+			t.Errorf("a create naming neither override carries lifetime %v and idle %v; want both zero, which is the daemon's default",
+				live.Lifetime, live.Idle)
+		}
+		if want := live.CreatedAt.Add(session.AbsoluteLifetime); !live.AbsoluteDeadline().Equal(want) {
+			t.Errorf("the absolute deadline = %v; want the default %v", live.AbsoluteDeadline(), want)
+		}
+		if want := live.LastActivity.Add(session.IdleTimeout); !live.IdleDeadline().Equal(want) {
+			t.Errorf("the idle deadline = %v; want the default %v", live.IdleDeadline(), want)
+		}
+	})
+}
+
+// TestBrowserCreateRefusesALifetimeThisDaemonWillNotGrant is the other half of
+// the same change, and the half that keeps Principle VI true: what the operator
+// types is untrusted, and the ceilings are the bound.
+//
+// **Must fail when** the values reach the record without passing resolveLifetimes
+// — a create asking for thirty days on a daemon whose ceiling is one would then
+// start a shell that outlives the bound the operator configured — or when an
+// override past a ceiling is clamped instead of refused, which leaves an operator
+// believing they have thirty days and nothing to tell them otherwise until the
+// session is gone.
+//
+// The negative lifetime is the case worth reading twice. A negative *idle* is the
+// disable and is accepted above; a negative lifetime would remove the deadline
+// that is never renewed, and it is refused on this door exactly as on the other.
+func TestBrowserCreateRefusesALifetimeThisDaemonWillNotGrant(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct{ lifetime, idle string }{
+		// The fixture's manager was never given ceilings, so they are the daemon's
+		// own constants: 24 hours and 60 minutes.
+		"a lifetime past the ceiling":            {lifetime: "720h"},
+		"an idle timeout past the ceiling":       {idle: "90m"},
+		"a negative lifetime":                    {lifetime: "-1h"},
+		"an idle timeout that could never fire":  {lifetime: "30m", idle: "45m"},
+		"a lifetime no clock can read":           {lifetime: "forever"},
+		"an idle timeout no clock can read":      {idle: "a while"},
+		"a lifetime the ceiling would have been": {lifetime: "24h1s"},
+	}
+
+	for what, tc := range cases {
+		t.Run(what, func(t *testing.T) {
+			t.Parallel()
+
+			c := newCreator(t)
+			form := c.wellFormed(t)
+			if tc.lifetime != "" {
+				form.Set(lifetimeField, tc.lifetime)
+			}
+			if tc.idle != "" {
+				form.Set(idleTimeoutField, tc.idle)
+			}
+
+			w := c.post(t, form)
+
+			wantOutcome(t, w, wantCreateBadLifetimeOutcome)
+
+			if owned := c.owned(); len(owned) != 0 {
+				t.Errorf("the store holds %d records after a refused lifetime; want none", len(owned))
+			}
+			if got := c.started(); got != 0 {
+				t.Errorf("the host was asked to start %d sessions; want 0 — a lifetime this daemon will not grant costs no tmux command", got)
+			}
+			if got, want := c.only(t)["reason"], session.ErrInvalidLifetime.Error(); got != want {
+				t.Errorf("reason = %v; want %v", got, want)
+			}
+			// The sentinel and nothing else. The parse refusal quotes what arrived,
+			// and a trail carrying it would be caller-authored text in the
+			// operator's journal (FR-042) — createReason is what keeps it out.
+			for _, sent := range []string{tc.lifetime, tc.idle} {
+				if sent != "" && strings.Contains(c.sink.String(), sent) {
+					t.Errorf("the trail carries the refused value %q:\n%s", sent, c.sink.String())
+				}
+			}
+		})
+	}
+}
+
 // TestStrayResumeValueIsNotExecuted is what has to hold once the conversation
 // field is gone (#95): the name this daemon no longer reads is an unknown field
 // like any other, and an unknown field reaches nothing the host runs.
