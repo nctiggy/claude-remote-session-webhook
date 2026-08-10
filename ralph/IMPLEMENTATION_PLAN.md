@@ -99,7 +99,7 @@ spec and its own argument, not a line added inside a task about something else.
 
 - [x] **T004** Fix the stale comment at `internal/session/session.go:15`. It says the two lifetimes "are constants rather than configuration on purpose: an operator who could widen them could widen the blast radius the constitution bounds by construction." They are configurable — `CRSW_SESSION_LIFETIME` and `CRSW_IDLE_TIMEOUT` — and the constants are now the fallback when nothing is configured. Describe what is actually true: the constants are defaults, the operator's configuration sets the ceiling, and the per-session override operates under that ceiling.
 
-- [ ] **T005** Update `README.md`'s configuration table and any prose that describes the lifetimes. The four keys' descriptions should say that the ceilings bound a per-session choice **the dashboard can now make**, and how an operator who wants effectively-never sets them. Keep the honest note that there is no "never" sentinel and say what to do instead.
+- [x] **T005** Update `README.md`'s configuration table and any prose that describes the lifetimes. The four keys' descriptions should say that the ceilings bound a per-session choice **the dashboard can now make**, and how an operator who wants effectively-never sets them. Keep the honest note that there is no "never" sentinel and say what to do instead.
 
 ---
 

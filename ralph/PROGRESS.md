@@ -328,3 +328,89 @@ task in the milestone.
   (`refuseCreate`, `internal/httpapi/sessions.go`) where `docs/security.md` wants
   a 400 with the uniform body. `internal/httpapi/render.go` is still the only file
   `gofmt -l .` names, on a branch with `golangci-lint run` (v2.12.2) at 0 issues.
+
+---
+
+## Iteration 5 — 2026-08-10
+
+**Did:** T005, the last task. `README.md`'s four lifetime rows now describe a
+per-session override the dashboard can actually reach, and two new notes say the
+two clocks apart and give the effectively-never recipe the operator asked for.
+The closing paragraph now names *why* the `_MAX` ceiling is the bound: the
+ceiling is the operator's, the choice under it is the session's.
+
+**Learned — what a later iteration would otherwise rediscover:**
+
+- **The README's configuration table is pinned by name only.**
+  `internal/config/docs_test.go`'s `readmeVarRow` matches the **first cell** of a
+  row against `config.go`'s declared constants, in both directions. Descriptions
+  are free prose. What must not change: one row per variable, on one line, first
+  cell exactly ``| `CRSW_X` |``.
+- **`cmd/crswd/quickstart_test.go` also reads `README.md`**, but only lines that
+  begin `journalctl` after a leading `#` is stripped (`trailCommands`). A new
+  fenced block is safe as long as no line in it starts with that word.
+  `internal/release/readme_test.go` pins the install one-liner, the "no clone and
+  build above it" rule and the rollback path — all outside the configuration
+  section.
+- **The idle *disable* is not bounded by `CRSW_IDLE_TIMEOUT_MAX`.**
+  `resolveLifetimes` checks `idle > maxIdleAllowed` and `idle > effectiveLife`;
+  a negative passes both. That is deliberate and is the whole asymmetry — the
+  ceiling bounds an idle timeout set *longer*, and what bounds a session with the
+  clock off is the absolute deadline. Prose that says the ceiling bounds the
+  switch is wrong.
+- **Deviation from T005's wording, deliberately.** The task says the four keys
+  should say the ceilings bound a choice "the dashboard can now make". Only the
+  idle half is true: T002 put a control on the idle clock alone, so
+  `CRSW_SESSION_LIFETIME_MAX` still bounds something only the signed API sends.
+  The README says exactly that rather than the plan's sentence — a README that
+  promised a lifetime field the form does not render would be this milestone's
+  own defect, one document over.
+- **No test was added, for iteration 4's reason.** Nothing reads README prose,
+  and the two facts worth pinning are already pinned elsewhere (the variable
+  names here, the form's `idle_timeout` field in `partials_test.go`). A test over
+  the wording would pin the sentence rather than the fact.
+
+**Left:** nothing. T001–T005 are all done and the tree is green —
+`go build ./... && go vet ./... && go test ./... && golangci-lint run` (v2.12.2,
+0 issues), plus `go test -tags quickstart ./cmd/crswd` (36s).
+
+**Findings — noticed, not fixed:**
+
+- **`CRSW_IDLE_TIMEOUT=0` does not disable idle reaping, and the daemon's own
+  error message says it does.** `validateLifetimes` (`internal/config/config.go`)
+  refuses a negative with *"use 0 to disable idle reaping"*. But a configured 0
+  reaches `SetLifetimes` as `defaultIdle = 0`; `resolveLifetimes` reads a zero
+  `req.Idle` as "take the default", gets 0, and the record carries 0 — which
+  `orDefault` resolves to the built-in `IdleTimeout`, **60m**. So an operator
+  following that advice silently gets the very default they were turning off. The
+  disable is a *negative* `Idle`, which only a create can spell. Two lanes: the
+  message is a fix-lane line; making the configured 0 mean the disable
+  (translate to `-1` the way `parseLifetimeOverrides` already does) is a change
+  with a test. **This is why the README's new prose never mentions 0** — it would
+  have documented the bug.
+- **`.env.example` still tells operators the lifetimes are constants.** Its
+  closing *"Not configurable, and named here so nobody goes looking for a knob"*
+  section says the idle timeout (60m) and the absolute lifetime (24h) "are
+  constants in the code, not variables… a deployment that could widen them from
+  an environment file could unbound it". Lines 144–169 of **the same file**
+  document all four variables. That is T004's defect exactly, in the file an
+  operator copies, and it is self-contradicting. One-line fix lane.
+- **The create form's hint points at a page that cannot change it.** T002's
+  `.field-hint` says *"Raise session_lifetime in settings"*; `/settings` is
+  read-only by construction and registers no mutating verb, so the operator who
+  follows it finds a table. The real move is the config file or the unit's
+  environment, then a restart. Copy fix.
+- **`docs/auth-and-sessions.md`'s Lifetimes table is a milestone stale.** It
+  states "Session idle timeout | 60 minutes" and "Session absolute lifetime |
+  24 hours, no renewal" as facts, with no mention of the configuration or the
+  per-session override. It is a binding document under `AGENTS.md`'s progressive
+  disclosure — likelier to be read before a handler change than the README is.
+- **Iteration 1's two findings and iteration 4's one are all still open.** The
+  signed API's **500** on a refused lifetime (`refuseCreate`) where
+  `docs/security.md` wants a 400; `internal/httpapi/render.go` still the only
+  file `gofmt -l .` names; and `internal/config/config.go`'s claim that
+  "config_test pins them equal" about a test that does not exist. Five fix-lane
+  lines are now waiting, four of them about the same thing this milestone was
+  about: a document that describes code it has outlived.
+
+RALPH_COMPLETE
