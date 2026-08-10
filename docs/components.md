@@ -258,13 +258,13 @@ session that reads as green is a bug.
 
 ## Session card
 
-One session: name, state pill, identifier, working directory, age, and its
-action row.
+One session: name, state pill, identifier, start command, mode, working
+directory, age, both of its deadlines, and its action row.
 
 ```gotemplate
-{{/* The dot is one card's view — ID, Name, DisplayState, WorkDir, Age,
-     PageToken — built by cardOf() in internal/httpapi. An empty PageToken
-     renders no action row. */}}
+{{/* The dot is one card's view — ID, Name, DisplayState, StartCommand, Mode,
+     WorkDir, Age, IdleDeadline, AbsoluteDeadline, PageToken — built by cardOf()
+     in internal/httpapi. An empty PageToken renders no action row. */}}
 {{ template "session-card" . }}
 ```
 
@@ -300,6 +300,21 @@ Rules:
   unknown, in dim sans. Never a placeholder that reads like a real name or a real
   path: a card showing an invented directory tells an operator something false
   about an unsandboxed shell.
+- **Both deadlines are on the card, and one of them alone would be a lie.**
+  There are two clocks: the idle bound moves with every request and an operator
+  may turn it off for one session, and the absolute bound is counted from
+  creation, is never renewed, and cannot be turned off at all. A card carrying
+  only the idle row would read as "this session never dies" for exactly the
+  session whose operator relaxed the bound — the same defect as copy claiming a
+  compact happened when the daemon only delivered the request. They are rows of
+  the `.card-meta` list, like the mode, so neither has a class of its own.
+- **A session with idle reaping off says there is no idle limit, never a date.**
+  `IdleDeadline` answers four hundred lifetimes out for such a session, which is
+  the manager's way of spelling "this comparison never fires"; formatted onto a
+  card it would read "in 400 days", a fact nothing in the daemon believes. A
+  deadline already reached reads as due rather than as time remaining — the
+  reaper is entitled to take that session on its next sweep, and a card claiming
+  otherwise is the dashboard disagreeing with the thing that acts.
 
 ## Action controls
 

@@ -377,6 +377,16 @@ func cardOf(live session.Session, now time.Time, token, remoteCommand string) se
 		// what it was handed.
 		Mode: live.Mode(remoteCommand),
 		Age:  formatAge(now.Sub(live.CreatedAt)),
+		// Both of the record's own deadlines, against the same clock reading the
+		// age and the display state are taken against — so a card cannot show a
+		// session as running beside a deadline that has already passed.
+		//
+		// The idle one asks the record whether reaping is off rather than reading
+		// the sign of the duration here, because that rule belongs where it is
+		// defined (session.IdleDisabled) and a second reading of it is a second
+		// answer.
+		IdleDeadline:     formatIdleDeadline(live, now),
+		AbsoluteDeadline: formatDeadline(live.AbsoluteDeadline().Sub(now)),
 		// The token is also what makes the card render its action row (view.go),
 		// so every card either offers a control it can authorise or offers none.
 		PageToken: token,
@@ -550,6 +560,45 @@ func formatAge(d time.Duration) string {
 	default:
 		return countOf(int(d/day), "day")
 	}
+}
+
+// noIdleLimit is what a card says instead of a deadline for a session whose
+// operator turned idle reaping off (#37, T003).
+//
+// It names the bound that is gone rather than claiming the session is immortal,
+// because the absolute deadline beside it still fires. "Never dies" here would
+// be the card contradicting the row under it.
+const noIdleLimit = "no idle limit"
+
+// formatIdleDeadline is how long a card says a session has before the idle clock
+// takes it.
+//
+// The disabled case is not a very distant deadline rendered coarsely. It is a
+// different fact, and it is stated rather than approximated: IdleDeadline
+// answers four hundred lifetimes out for such a session, which is the manager's
+// way of saying "this comparison never fires" and not a date anybody should read
+// off a card (FR-018a's discipline, applied to a bound instead of to a name).
+func formatIdleDeadline(s session.Session, now time.Time) string {
+	if s.IdleDisabled() {
+		return noIdleLimit
+	}
+	return formatDeadline(s.IdleDeadline().Sub(now))
+}
+
+// formatDeadline is how long a card says is left, in formatAge's vocabulary so
+// that one page cannot spell a duration two ways.
+//
+// A deadline already reached reads as due rather than as "in less than a
+// minute", and the boundary is expiredAt's own: at the deadline the session is
+// already past its bound, and the sweep that has not run yet decides when the
+// daemon notices rather than how long the session was allowed to live. A card
+// saying a session has time left while the reaper is entitled to take it would
+// be the dashboard disagreeing with the thing that acts.
+func formatDeadline(d time.Duration) string {
+	if d <= 0 {
+		return "due now"
+	}
+	return "in " + formatAge(d)
 }
 
 // countOf is the one place this package pluralises, so a card and a future page

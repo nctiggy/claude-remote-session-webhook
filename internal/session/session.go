@@ -221,6 +221,16 @@ func (s Session) AbsoluteDeadline() time.Time {
 	return s.CreatedAt.Add(orDefault(s.Lifetime, AbsoluteLifetime))
 }
 
+// IdleDisabled reports that idle reaping is off for this session, which is what
+// a negative Idle spells (#37).
+//
+// It exists so that "negative means off" has one expression rather than two. The
+// dashboard has to know: a card must say there is no idle limit rather than
+// render the far-future instant IdleDeadline returns for such a session, and a
+// caller comparing the duration against zero itself would be a second place the
+// rule lives — free to disagree with this one the day the spelling changes.
+func (s Session) IdleDisabled() bool { return s.Idle < 0 }
+
 // IdleDeadline is when the session dies for want of a request (FR-038).
 //
 // A zero Idle means IdleTimeout, as above. A *negative* Idle means idle reaping
@@ -229,7 +239,7 @@ func (s Session) AbsoluteDeadline() time.Time {
 // rather than removed. It is spelled as a negative rather than as zero because
 // zero already means "unset", and one value cannot mean both.
 func (s Session) IdleDeadline() time.Time {
-	if s.Idle < 0 {
+	if s.IdleDisabled() {
 		// Far enough out that no comparison against it can fire before the
 		// absolute deadline does, which is the bound that still applies.
 		return s.LastActivity.Add(AbsoluteLifetime * 400)

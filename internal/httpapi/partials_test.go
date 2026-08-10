@@ -54,6 +54,12 @@ func ownedCard() sessionView {
 		WorkDir:      "/home/operator/code/crswd",
 		DisplayState: session.DisplayRunning,
 		Age:          "2 hours",
+		// Both deadlines, because this fixture is a session the daemon knows
+		// everything about and every record has both (T003). They are already
+		// formatted here, as the age is: what turns a record into these strings
+		// is cardOf's job and TestCardShowsBothDeadlines' subject.
+		IdleDeadline:     "in 43 minutes",
+		AbsoluteDeadline: "in 22 hours",
 	}
 }
 
@@ -2683,6 +2689,106 @@ func TestCardShowsMode(t *testing.T) {
 			}
 			if got := strings.TrimSpace(markupTags.ReplaceAllString(row[1], "")); got != string(tc.want) {
 				t.Errorf("the card's mode reads %q, want %q — state is never carried by markup or colour alone (FR-059):\n%s", got, tc.want, out)
+			}
+		})
+	}
+}
+
+// The two deadline rows, read the way the mode row is: the label pins which
+// clock the value belongs to, so a card that showed one duration twice — or
+// swapped them — fails here rather than reading plausibly.
+var (
+	cardIdleRow     = regexp.MustCompile(`(?s)<dt>idle deadline</dt>\s*<dd>(.*?)</dd>`)
+	cardLifetimeRow = regexp.MustCompile(`(?s)<dt>lifetime deadline</dt>\s*<dd>(.*?)</dd>`)
+)
+
+// TestCardShowsBothDeadlines is T003: an operator can see when a session dies,
+// under each of the two bounds it has.
+//
+// It renders through cardOf for the reason TestCardShowsMode does — the claim is
+// about what a page shows, and a template rendering a field nothing fills is the
+// shape of bug this milestone exists to close for the fifth time.
+//
+// The row that matters most is the disabled one, and it is why both deadlines
+// are asserted in every case rather than only the interesting one. A session
+// whose operator turned idle reaping off must say so *and* must still show the
+// bound that has not gone anywhere: IdleDeadline answers four hundred lifetimes
+// out for such a session, so a card that formatted it would read "in 400 days"
+// — a date nothing in this daemon believes — and a card that dropped the
+// lifetime row beside it would read as immortal, which is the false claim this
+// plan warns about in its first paragraph.
+//
+// **Must fail when** the idle row renders that far-future instant, when either
+// row goes missing, or when a deadline is measured against a clock reading other
+// than the render's.
+func TestCardShowsBothDeadlines(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		name         string
+		idle         time.Duration
+		lastActivity time.Time
+		wantIdle     string
+		wantLifetime string
+	}{
+		{
+			// The daemon's own defaults, which is every session a browser
+			// started before this milestone: 60m of idle from the last request,
+			// 24h of lifetime from a creation an hour ago.
+			name:         "the daemon's defaults",
+			lastActivity: now,
+			wantIdle:     "in 1 hour",
+			wantLifetime: "in 23 hours",
+		},
+		{
+			// The choice T001 and T002 gave the operator. The idle bound is
+			// gone; the one under it is not, and the card says both.
+			name:         "idle reaping turned off",
+			idle:         -1,
+			lastActivity: now,
+			wantIdle:     noIdleLimit,
+			wantLifetime: "in 23 hours",
+		},
+		{
+			// Past the idle bound and waiting for a sweep. The pill already
+			// reads idle here; the row says the reaper is entitled to take it
+			// rather than that there is time left.
+			name:         "already past the idle bound",
+			lastActivity: now.Add(-90 * time.Minute),
+			wantIdle:     "due now",
+			wantLifetime: "in 23 hours",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			card := cardOf(session.Session{
+				ID:           strings.Repeat("d", 32),
+				Name:         "a session",
+				WorkDir:      "/home/operator/code/crswd",
+				Idle:         tc.idle,
+				CreatedAt:    now.Add(-time.Hour),
+				LastActivity: tc.lastActivity,
+			}, now, testCardToken, "rc")
+
+			out := renderComponent(t, "session-card", card)
+			for _, row := range []struct {
+				clock string
+				match *regexp.Regexp
+				want  string
+			}{
+				{clock: "idle", match: cardIdleRow, want: tc.wantIdle},
+				{clock: "lifetime", match: cardLifetimeRow, want: tc.wantLifetime},
+			} {
+				found := row.match.FindStringSubmatch(out)
+				if found == nil {
+					t.Fatalf("the card carries no labelled %s deadline, so an operator cannot tell when this session dies:\n%s", row.clock, out)
+				}
+				if got := strings.TrimSpace(markupTags.ReplaceAllString(found[1], "")); got != row.want {
+					t.Errorf("the card's %s deadline reads %q, want %q:\n%s", row.clock, got, row.want, out)
+				}
 			}
 		})
 	}

@@ -115,7 +115,43 @@
 <dt>working directory</dt>
 <dd>{{ if .WorkDir }}<span class="card-path" title="{{ .WorkDir }}">{{ .WorkDir }}</span>{{ else }}<span class="card-unknown">no working directory recorded</span>{{ end }}</dd>
 <dt>age</dt>
-<dd>{{ .Age }}</dd>
+<dd>{{ .Age }}</dd>{{/*
+  When this session dies, under each of the two bounds it has (T003).
+
+  Two rows because there are two clocks, and the reason for both being here is
+  the reason the milestone that added them exists. The idle bound moves with
+  every request and an operator may turn it off for a session; the absolute one
+  is counted from creation, is never renewed, and cannot be turned off at all.
+  A card showing only the idle row would read as "this session never dies" for
+  exactly the session whose operator relaxed the bound — the interface asserting
+  something the daemon does not do, which is the same defect as copy claiming a
+  compact happened when the daemon only delivered the request.
+
+  It is also what makes an operator's choice visible at all. The switch on the
+  create form says a session should not idle out; without these rows the only
+  evidence it took effect is a session that fails to disappear, which is a
+  thing nobody can see happening.
+
+  Rows of the meta list rather than anything of their own, exactly as the mode
+  is: the list already renders a label beside a value, so this needs no class,
+  no token and no stylesheet rule, and a second vocabulary for a duration is the
+  drift docs/components.md exists to prevent.
+
+  Rendered unconditionally, like the mode and unlike the name and the working
+  directory. Every record has both deadlines — an adopted session included,
+  because CreatedAt is tmux's own reading and the daemon's defaults apply to it
+  the moment it is adopted — so there is no session for which this is unknown.
+
+  Both values are the projection's strings, formatted server-side (dashboard.go)
+  for the reason the age is: there is no duration formatting in this template
+  set and no function map to add one. The idle row says there is no limit rather
+  than naming an instant when reaping is off for the session — see
+  formatIdleDeadline.
+*/}}
+<dt>idle deadline</dt>
+<dd>{{ .IdleDeadline }}</dd>
+<dt>lifetime deadline</dt>
+<dd>{{ .AbsoluteDeadline }}</dd>
 </dl>
 </a>
 </div>

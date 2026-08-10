@@ -80,6 +80,27 @@ type sessionView struct {
 	// to build.
 	Age string
 
+	// IdleDeadline and AbsoluteDeadline are how much longer this session has
+	// under each of the two bounds Principle VI gives it, formatted here for the
+	// reason Age is (T003).
+	//
+	// There are two fields because there are two clocks, and a card showing one
+	// of them would be the interface asserting something the daemon does not do.
+	// The idle bound moves with every request and the operator may turn it off
+	// for a session; the absolute one is counted from creation, is never renewed,
+	// and cannot be turned off at all. So a card carrying only the idle deadline
+	// would read as "this session never dies" for exactly the session the
+	// operator relaxed — the same defect as copy claiming a session was compacted
+	// when the daemon only delivered the request.
+	//
+	// IdleDeadline states that there is no idle limit for a session whose idle
+	// reaping is off, rather than the instant IdleDeadline returns for one: that
+	// instant is four hundred lifetimes out and means "never" rather than a date,
+	// and a card rendering it would be telling an operator a fact about their
+	// session that nothing in the daemon believes.
+	IdleDeadline     string
+	AbsoluteDeadline string
+
 	// PageToken is the value every action form on this card submits: minted
 	// for this render and bound to the identity layer 1 verified for it
 	// (FR-002b, FR-007, contracts/actions.md). It is the card's parameter rather
