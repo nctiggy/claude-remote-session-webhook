@@ -124,3 +124,79 @@ T004 (the stale comment), T005 (README).
   `golangci-lint run` reports 0 issues and no CI workflow runs `gofmt` or
   `goimports`, so the `AGENTS.md` format command is the only thing that would, and
   only for a file someone happens to edit.
+
+---
+
+## Iteration 2 — 2026-08-10
+
+**Did:** T002. The create form now carries a second switch —
+`<input type="checkbox" name="idle_timeout" value="0">`, labelled "Never die when
+idle" — so the override T001 taught the handler to read is something an operator
+can actually say. Beside it, a `.field-hint` naming the clock that still ends the
+session.
+
+**Learned — what the next iteration would otherwise rediscover:**
+
+- **Adding a checkbox to the create form breaks `TestCreateFormRendersRemoteSwitch`**
+  (`partials_test.go`). It counted *every* checkbox in the render and fatally
+  failed at 2, with a message about the mode being one two-state control. The
+  count was a proxy for "one control per mode", so it now counts the ones posting
+  `remote_control`. It keeps the **literal** name rather than `fieldRemoteControl`
+  deliberately — a rename that edited the constant and the template together would
+  pass a test written against the constant while browsers posted a field the
+  daemon does not read. The new test uses the constant instead, because its job is
+  the opposite one: holding the template's second spelling to what `actions.go`
+  reads.
+- **`.switch-label` is uppercase and letter-spaced** (`crswd.css:817`) — it is the
+  design system's *label role*, not body text. Prose set in it shouts. The honest
+  sentence therefore lives in a `.field-hint`/`.field-hint-text` named by
+  `aria-describedby`, which is exactly the arrangement the working-directory
+  field's roots hint already uses. No new class was needed for any of it.
+- **`.field-switch` is `grid-auto-flow: column`**, so a hint placed inside the
+  switch row becomes a third *column* beside the box. The row and its hint are
+  wrapped in an outer `.field` instead; `.field` nests without trouble (grid, gap
+  `--s1`, `inline-size: min(100%, --card-min)`), and the coarse-pointer
+  `min-block-size: var(--tap)` still lands on the row that carries the class.
+- **The hint names no number.** What the absolute lifetime is here is
+  configuration — `session_lifetime`, default 24h — so copy saying "24 hours"
+  would be false on any install that set it. It points at settings instead, which
+  is reachable: `config.Editable` is `!IsSecret && VarForKey != ""`, and
+  `session_lifetime` is in `file.go`'s key list.
+- **Proven by breaking it, three ways**: `value="30m"` (parses to a *positive*
+  idle — the control would claim something it does not do), the
+  `aria-describedby` removed, and the field renamed to `idle`. Each fails with the
+  sentence written for it. The value arm is the one worth keeping: it feeds the
+  markup's value to `parseLifetimeOverrides` itself rather than asserting the
+  string `"0"`, so what is pinned is that the submission *disables reaping*.
+- **`go test -tags quickstart ./cmd/crswd` passes here** (36s) — tmux, jq and
+  `127.0.0.1:8765` were all available. Worth running for a template change: the
+  acceptance suite renders the real dashboard.
+
+**Left:** T003 (the deadline on the card), T004 (the stale comment at
+`internal/session/session.go:15`), T005 (README).
+
+**Findings — noticed, not fixed:**
+
+- **Both findings from iteration 1 still stand and neither was touched.** The
+  signed API's 500 on a refused lifetime (`refuseCreate`,
+  `internal/httpapi/sessions.go:432`) is still a fix-lane line of its own, and
+  `internal/httpapi/render.go` is still the one file `gofmt -l .` names.
+- **The form can turn the idle clock off but cannot set a lifetime.** T001 reads
+  both `lifetime` and `idle_timeout`; this task put a control on only the second,
+  because that is the one the plan specified and the one the operator's words
+  describe. So the absolute lifetime a browser-created session gets is always the
+  daemon's default — an operator who wants a longer one raises `session_lifetime`
+  in settings, which is what the hint tells them. Whether the form should also
+  offer a per-session lifetime entry is a real question and **not one this
+  milestone answers**; it would need `.field-label`/`.field-input`, a duration the
+  ceiling can refuse, and copy about what happens when it does.
+- **`docs/components.md`'s Switch section had gone stale in the making.** It
+  opened "Today there is exactly one on the dashboard", which this task made
+  false, and its `.switch-input` row named only `remote_control`. Updated in the
+  same commit — that document is binding under Principle VII, and the drift it
+  exists to catch is exactly this one. Worth noting that **no test would have
+  caught it**: the class sweep
+  (`TestTheComponentsDocumentNamesThePickerTheSwitchTheHeaderAndTheToast`) matches
+  `.switch*` by *name*, so a document naming the right classes while describing
+  the wrong number of controls passes it cleanly. Same blind spot #119 was about,
+  one level up from the classes.
