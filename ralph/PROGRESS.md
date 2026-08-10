@@ -200,3 +200,69 @@ session.
   `.switch*` by *name*, so a document naming the right classes while describing
   the wrong number of controls passes it cleanly. Same blind spot #119 was about,
   one level up from the classes.
+
+---
+
+## Iteration 3 — 2026-08-10
+
+**Did:** T003. The card carries two new `.card-meta` rows — `idle deadline` and
+`lifetime deadline` — so an operator can see when a session dies and can tell
+that the T002 switch took effect. **Two rows, not one**: a card showing only the
+idle deadline would read as "this session never dies" for exactly the session
+whose operator relaxed the bound.
+
+**Learned — what the next iteration would otherwise rediscover:**
+
+- **`IdleDeadline()` returns `LastActivity + AbsoluteLifetime*400` when reaping is
+  off — 400 days.** Rendered through `formatAge` that reads "in 400 days", a date
+  nothing in the daemon believes. `formatIdleDeadline` (dashboard.go) states
+  `noIdleLimit` instead. This is the single most important thing about the idle
+  clock at the render layer.
+- **`session.Session.IdleDisabled()` is new** and is now the one expression of
+  "a negative `Idle` means off". `IdleDeadline()` calls it, so the two cannot
+  drift. Anything outside `internal/session` that needs to know should call it
+  rather than compare against zero.
+- **`formatDeadline` puts the boundary where `expiredAt` does** (`d <= 0` →
+  `"due now"`), so the card and the reaper agree about a session that is already
+  past its bound. `formatAge` would otherwise say "in less than a minute" about a
+  session the next sweep is entitled to take.
+- **The card's meta rows need no class and no CSS.** `.card-meta` is a two-column
+  grid of `dt`/`dd`, `max-content` label column above the breakpoint and one
+  column below it. Adding rows changed no stylesheet rule, so
+  `TestTheComponentsDocumentNamesThePickerTheSwitchTheHeaderAndTheToast` was never
+  in play.
+- **`ownedCard()` in `partials_test.go` is "everything the daemon can know"** and
+  now carries both formatted deadlines. A new `sessionView` field wants a value
+  there or every card test renders an empty `dd`.
+- **Proven by breaking it, twice**: with the `IdleDisabled` branch removed the
+  disabled row reads `"in 400 days"`; with the lifetime row deleted from the
+  template the test says an operator cannot tell when the session dies.
+- **`go test -tags quickstart ./cmd/crswd` passes here again** (36s) — worth the
+  run for a template change, as iteration 2 found.
+
+**Left:** T004 (the stale comment at `internal/session/session.go:15` — note it is
+now at **line 16** and the file grew by `IdleDisabled`, so grep for the sentence
+rather than trusting the line number), T005 (README).
+
+**Findings — noticed, not fixed:**
+
+- **Both findings from iteration 1 still stand, untouched for a third
+  iteration.** The signed API answers a refused lifetime with a **500**
+  (`refuseCreate`, `internal/httpapi/sessions.go`) where `docs/security.md` wants
+  a 400 with the uniform body — one `case` beside the existing
+  `ErrInvalidName, ErrInvalidWorkDir` one. And `internal/httpapi/render.go` is
+  still the only file `gofmt -l .` names, on a branch where `golangci-lint run`
+  reports 0 issues and no CI job runs `gofmt`. Both are fix-lane lines.
+- **The card shows the lifetime deadline but nothing can set it from the
+  browser.** T001 reads `lifetime`; T002 put a control only on the idle clock. So
+  the new `lifetime deadline` row is the daemon's default for every
+  browser-created session, and an operator who reads it and wants it longer has
+  to go to settings. That is the same gap iteration 2 logged, now *visible* on
+  every card — which arguably strengthens the case for the per-session lifetime
+  field, and is still not this milestone's to answer.
+- **`specs/004-configure-and-operate/contracts/card-layout.md` describes the
+  readable half as "name, state, mode, workdir, age"** and is now one milestone
+  stale. Left alone deliberately: a shipped spec is a record of what that
+  milestone decided, and `docs/components.md` is the binding document — that one
+  was updated in the same commit, including the `cardOf` field list, which had
+  already been missing `StartCommand` and `Mode` before this task touched it.
