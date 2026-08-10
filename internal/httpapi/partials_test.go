@@ -1839,20 +1839,32 @@ func TestCreateFormRendersRemoteSwitch(t *testing.T) {
 
 	out := renderComponent(t, "create-form", createForm())
 
+	// By the name rather than by the type, which is what this counted until the
+	// form grew its second switch (T002, the idle override). The count was always
+	// a proxy for the thing the sentence below says — one two-state control per
+	// mode — and a second checkbox posting a *different* field is not the defect
+	// it was written about: what would be is two boxes both posting
+	// remote_control, which is one mode answered twice in a single submission.
+	// Counting every checkbox on the form made the create form's vocabulary
+	// unable to grow without this test failing for a reason it does not hold.
+	//
+	// The literal, as this test has always spelled it rather than reaching for
+	// the constant: what is being pinned is the name that goes over the wire, and
+	// a rename that edited the constant and the template together would pass a
+	// test written against the constant while every browser posted something the
+	// deployed daemon does not read.
 	var boxes []string
 	for _, input := range formInput.FindAllStringSubmatch(out, -1) {
-		if kind, _ := attributeValue(t, input[1], "type"); kind == "checkbox" {
+		kind, _ := attributeValue(t, input[1], "type")
+		name, _ := attributeValue(t, input[1], "name")
+		if kind == "checkbox" && name == "remote_control" {
 			boxes = append(boxes, input[1])
 		}
 	}
 	if len(boxes) != 1 {
-		t.Fatalf("the create form renders %d checkboxes; the mode is one two-state control:\n%s", len(boxes), out)
+		t.Fatalf("the create form renders %d remote_control checkboxes; the mode is one two-state control, and the route reads it out of that name:\n%s", len(boxes), out)
 	}
 	box := boxes[0]
-
-	if name, _ := attributeValue(t, box, "name"); name != "remote_control" {
-		t.Errorf("the switch posts as %q and the route reads remote_control (<input%s>)", name, box)
-	}
 	// An unticked checkbox posts nothing, so this one value is the whole of what
 	// the ticked state says. A box with no value posts "on" by every browser's
 	// convention, which is the same string — but by their convention rather than
@@ -1880,6 +1892,113 @@ func TestCreateFormRendersRemoteSwitch(t *testing.T) {
 	}
 	if !labelled {
 		t.Errorf("no <label for=%q> names the switch; a placeholder is not a label and neither is proximity (docs/components.md):\n%s", id, out)
+	}
+}
+
+// TestCreateFormLetsASessionOutliveTheIdleClock is T002, and it is the assertion
+// milestone 10 exists because nobody wrote four times over.
+//
+// The per-session idle override has been on the record, bounded by the
+// operator's ceilings, covered by tests and named in the README since #37, and
+// until T001 the one surface an operator actually uses could not reach it. A
+// field the handler reads and no form submits is indistinguishable, from the
+// dashboard, from a field that does not exist — so this reads the markup a
+// browser receives and asks whether the control is really there.
+//
+// It does not stop at the name. The value is handed to parseLifetimeOverrides —
+// the route's own parser, not a second reading of what "0" ought to mean — and
+// the answer has to be a negative idle, which is what turns idle reaping off for
+// this session. A box posting a plausible-looking value nothing disables is
+// exactly the shape of the four failures before this one.
+//
+// **Must fail when** the switch is dropped, renamed away from the field
+// actions.go reads, posts a value that leaves the idle clock running, ships
+// ticked, is unlabelled, or loses the sentence saying the absolute lifetime
+// still applies.
+func TestCreateFormLetsASessionOutliveTheIdleClock(t *testing.T) {
+	t.Parallel()
+
+	out := renderComponent(t, "create-form", createForm())
+
+	// The constant, deliberately, and the opposite choice from the switch above:
+	// this template set is parsed with no function map, so the markup spells the
+	// field a second time and this is the thing that holds the two spellings
+	// together — the arrangement `confirm=yes` already has on the card.
+	var boxes []string
+	for _, input := range formInput.FindAllStringSubmatch(out, -1) {
+		kind, _ := attributeValue(t, input[1], "type")
+		name, _ := attributeValue(t, input[1], "name")
+		if kind == "checkbox" && name == fieldIdleTimeout {
+			boxes = append(boxes, input[1])
+		}
+	}
+	if len(boxes) != 1 {
+		t.Fatalf("the create form renders %d %q checkboxes; the operator's choice is one two-state control, and the handler reads the override out of that field:\n%s", len(boxes), fieldIdleTimeout, out)
+	}
+	box := boxes[0]
+
+	value, ok := attributeValue(t, box, "value")
+	if !ok {
+		t.Fatalf("the switch carries no value (<input%s>); a checkbox with none posts whatever its browser's convention is, and the parser reads a duration", box)
+	}
+	// Through the route's own parser. What matters is not that the markup says
+	// "0" but that what it submits arrives as idle reaping switched off, and a
+	// zero on the record means "unset" rather than "none" — one value cannot mean
+	// both, which is the translation parseLifetimeOverrides exists to do.
+	_, idle, err := parseLifetimeOverrides("", value)
+	if err != nil {
+		t.Fatalf("the switch submits %s=%q and the route's own parser refuses it: %v", fieldIdleTimeout, value, err)
+	}
+	if idle >= 0 {
+		t.Errorf("the switch submits %s=%q, which the route parses to an idle of %s; a session whose idle override is not negative is still reaped for sitting quiet, so this control says it does something it does not (<input%s>)", fieldIdleTimeout, value, idle, box)
+	}
+
+	// An unticked box posts nothing at all, which is the daemon's configured
+	// default — so a form submitted without touching this starts exactly the
+	// session this door started before the field existed. Shipping it ticked
+	// would make the relaxed bound the one an operator gets without choosing it.
+	if strings.Contains(box, "checked") {
+		t.Errorf("the switch renders already on (<input%s>); absence is the daemon's default, and a session that outlives the idle clock is a choice rather than a state to arrive in", box)
+	}
+
+	id, ok := attributeValue(t, box, "id")
+	if !ok {
+		t.Fatalf("the switch carries no id (<input%s>), so no label can name it", box)
+	}
+	var labelled bool
+	for _, label := range formLabel.FindAllStringSubmatch(out, -1) {
+		if label[1] != id {
+			continue
+		}
+		labelled = true
+		if strings.TrimSpace(label[2]) == "" {
+			t.Errorf("the switch's label is empty; a control announced as nothing is an unlabelled control:\n%s", out)
+		}
+	}
+	if !labelled {
+		t.Errorf("no <label for=%q> names the switch; a placeholder is not a label and neither is proximity (docs/components.md):\n%s", id, out)
+	}
+
+	// The honest half. There are two clocks and this control turns off one of
+	// them: the absolute deadline is counted from CreatedAt, is never renewed and
+	// cannot be disabled at all. A control offering "never die" with nothing
+	// beside it is this interface asserting something the daemon does not do —
+	// the same defect as copy claiming a session was compacted when the daemon
+	// only delivered the request.
+	//
+	// The word rather than the sentence, so the prose stays the template's to
+	// write: what is pinned is that the remaining bound is named where the
+	// operator is looking.
+	describes, ok := attributeValue(t, box, "aria-describedby")
+	if !ok {
+		t.Fatalf("the switch is described by nothing (<input%s>); turning off the idle clock does not make a session immortal, and a control that does not say so overstates what it does", box)
+	}
+	note := regexp.MustCompile(`(?s)<[^>]*\bid="` + regexp.QuoteMeta(describes) + `"[^>]*>(.*?)</div>`).FindStringSubmatch(out)
+	if note == nil {
+		t.Fatalf("the switch points at %q for its description and the render holds no such element:\n%s", describes, out)
+	}
+	if !strings.Contains(strings.ToLower(note[1]), "lifetime") {
+		t.Errorf("the switch's description never mentions the absolute lifetime (%q); that clock still ends this session and the operator asked for one that does not die", strings.TrimSpace(note[1]))
 	}
 }
 
