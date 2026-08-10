@@ -231,6 +231,57 @@
 */}}<div class="field field-switch">
 <input class="switch-input" id="create-remote" type="checkbox" name="remote_control" value="on">
 <label class="switch-label" for="create-remote">Remote control</label>
+</div>{{/*
+  The idle clock, turned off for this session (T002, milestone 10). It is the
+  operator's own request — "I just want to be able to allow sessions to never
+  die if I choose" — and until T001 the dashboard could not make it: the
+  per-session override existed on the record, was bounded by the operator's
+  ceilings, was tested and was in the README, and this form passed four fields
+  and none of them was this one. A control that renders and submits nothing is
+  the failure this milestone is named after, so the field below is the field
+  actions.go reads and a test holds the two spellings together.
+
+  The switch, and not a duration entry, because there is exactly one thing an
+  operator asked to say here and it has two states. `idle_timeout=0` is the
+  spelling parseLifetimeOverrides already turns into a negative — zero on the
+  record means "unset", so one value cannot mean both "the operator said
+  nothing" and "the operator said none" — and an unticked box posts nothing at
+  all, which is the daemon's default. So a form submitted without it starts
+  exactly the session this door started before the field existed, and the
+  ticked state needs no parsing either side has not had since #37.
+
+  **The honest half is not decoration.** Turning off the idle clock does not
+  make a session immortal: there are two clocks, and the absolute one is
+  counted from CreatedAt, never renewed, and refuses to be disabled at all
+  (resolveLifetimes turns a negative Lifetime away). A label reading "never
+  die" with nothing beside it would be this interface asserting something the
+  daemon does not do, which is the same defect as copy that claims a session was
+  compacted when the daemon only delivered the request.
+
+  So the sentence sits in the .field-hint the working-directory field already
+  uses, named by aria-describedby exactly as that one is, and it says where the
+  remaining bound comes from and what to do about it. It cannot go in the label:
+  .switch-label is the design system's label role — uppercase, tracked — and
+  three sentences set in it would be shouting, not prose a person reads.
+
+  It names no number. What the absolute lifetime is here is this daemon's
+  configuration, and a sentence saying "24 hours" would be false on every
+  install that set session_lifetime to something else. The way to push it out
+  is the operator's own settings page, which is where it is pointed.
+
+  The outer .field is what binds the two: .field-switch is a column flow, so a
+  hint inside the row would be a third column beside the box rather than an
+  aside under it. No new class either way — this is the vocabulary
+  docs/components.md already defines, arranged the way that document's own Form
+  rules arrange a control and the hint that describes it.
+*/}}<div class="field">
+<div class="field field-switch">
+<input class="switch-input" id="create-never-die" type="checkbox" name="idle_timeout" value="0" aria-describedby="create-never-die-note">
+<label class="switch-label" for="create-never-die">Never die when idle</label>
+</div>
+<div class="field-hint" id="create-never-die-note">
+<p class="field-hint-text">Nothing reaps this session for sitting quiet. It still ends at the absolute lifetime this daemon is configured with, which is counted from when the session started and never renewed. Raise session_lifetime in settings if that is too soon.</p>
+</div>
 </div>
 <button class="button button-primary" type="submit">Start session</button>
 </form>

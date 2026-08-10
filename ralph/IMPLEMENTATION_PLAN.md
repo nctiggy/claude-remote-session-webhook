@@ -1,68 +1,72 @@
 # Implementation Plan
 
-**Milestone 9 — Two operator requests.**
+**Milestone 10 — Let a session outlive the defaults.**
 
-> *"All true/false settings should be check boxes."*
-> *"Also can we have a way to restart the daemon from within the UI?"*
+> *"I like leaving these sessions running forever if I want to. 1 hour is way too
+> tight if we leave those as defaults."*
+> *"I just want to be able to allow sessions to never die if I choose."*
 
-Six tasks. No spec directory: two features, both small, both verified against the
-code before this plan was written.
-
----
-
-## What is already true (verified, do not re-derive)
-
-- **There are exactly two boolean keys**: `discover_roots` and
-  `destroy_on_shutdown` — the only two callers of `loadBool` in
-  `internal/config/config.go` (lines 610 and 629). Neither is a secret, so both are
-  already `Editable`.
-- **Neither feature needs a new class.** The switch (`.switch-input`,
-  `.switch-label`) exists, is styled, and is named in `docs/components.md`. The
-  restart reuses `.updating` and `.spinner`, which settings.html already renders.
-  **That keeps both class sweeps and the components-doc guard out of the risk
-  surface entirely** — do not introduce a new name and neither can fire.
-- **`ExitForRestart()` and `exitGrace` already exist** in the updater and
-  `internal/httpapi/update.go`. The restart route reuses both.
-- **`Restart=always` is already in `deploy/crswd.example.service`**, added for
-  self-update. Without it a restart is just a stop.
+Five tasks.
 
 ---
 
-## ⚠️ The trap in the checkbox work is HTTP, not CSS
+## ⚠️ There are TWO clocks. Read this before touching anything.
 
-**An unchecked checkbox submits nothing at all.**
+| Clock | From | Default | Per-session override |
+|---|---|---|---|
+| **Idle** | `LastActivity`, moves with it | `60m` | `Idle` — a **negative** value turns it off |
+| **Absolute** | `CreatedAt`, **never renewed** | `24h` | `Lifetime` — no "never", but no upper cap either |
 
-`internal/httpapi/settings_edit.go:59` reads
-`r.PostForm.Get(fieldSettingValue)`. An unchecked box is therefore
-indistinguishable from a cleared field, and "off" would read as "unset".
+**Turning off idle does not make a session immortal.** The absolute deadline still
+fires. A task that claims to have delivered "never dies" while only touching idle
+has not read this table.
 
-**Do not reach for the hidden-input trick.** A hidden field and a checkbox sharing
-one name submit two values when checked, and `.Get` returns the **first** — which
-is the hidden `false`. It looks right, tests green if the test only checks the
-unchecked case, and silently makes every boolean unsettable.
+**Why the asymmetry is deliberate and must survive**: a negative `Idle` is safe
+*because* the absolute deadline still applies — the bound is relaxed, not removed.
+A negative `Lifetime` would remove it, and `resolveLifetimes` refuses it.
 
-**The fix**: the handler knows the key is boolean and reads an absent value as
-`false` — and does so **only** for keys it knows are boolean. A truncated or
-malformed request must never clear a setting that is not one. That rule is the
-security-relevant half of this task and belongs in a test.
+**How "effectively never" is reached**: the operator raises the ceilings
+(`session_lifetime_max`, `idle_timeout_max`) in settings, and a session opts in up
+to that ceiling. `loadDuration` has no upper bound, so a very large duration
+already parses. **The operator's ceiling stays the bound** — that is what keeps
+Principle VI true while giving the per-session freedom that was asked for.
 
 ---
 
-## ⚠️ The restart is a mutating route on the browser door
+## ⚠️ This is the fifth "code with no caller"
 
-It joins through `s.handleAction(...)`, the same call destroy and update use, so
-the gate, the audit record, the ownership check and **both halves of the
-cross-site defence** are inherited rather than re-implemented. Registering it by
-hand is how they get re-implemented differently.
+`internal/httpapi/sessions.go:381` — the signed API — passes `Lifetime` and `Idle`.
+`internal/httpapi/actions.go:455` — **the browser create** — passes Owner, Name,
+WorkDir, StartCommand, and nothing else.
 
-**Why a browser may do this at all**: update already can, and the operator argued
-that door open on #66 — an attacker with the dashboard can already start a
-session running a permission-skipping assistant in an approved root, which is code
-execution. Restart runs **the binary that is already installed**. It is strictly
-less than update, which installs code from the internet.
+So the per-session override exists, is tested, is bounded, is documented — and the
+dashboard cannot reach it. `CRSW_IDLE_TIMEOUT_MAX`'s README line calls itself "the
+ceiling for a per-session idle override", which is a ceiling on something the
+surface the operator actually uses cannot do.
 
-**Sessions survive it.** That is what #63 bought, and it is why this is a
-reasonable control to offer rather than a foot-gun.
+After the reaper, `Store.Touch`, the PR-opener and `CRSW_DESTROY_ON_SHUTDOWN`, this
+is the fifth. **T001 is done when the browser can set it, not when the field is
+assigned.**
+
+---
+
+## ⚠️ Do NOT make watching advance the idle clock
+
+The operator noticed the behaviour — *"it seems it has no idea if I am connected or
+not"* — and they are right about what happens: `View` never touches, the live
+stream calls `View` in a loop, so an open stream keeps nothing alive.
+
+**That is deliberate.** `manager.go`, above `View`:
+
+> The idle clock is *not advanced*, which is the whole reason this is a second
+> method rather than a flag on Resolve. **Watching is not driving (FR-034f).** The
+> property holds by construction — there is no clock reading in this method to hand
+> to Touch.
+
+**Leave it alone.** A forgotten browser tab holding an unsandboxed shell open
+forever is a worse failure than an explicit per-session choice, and the explicit
+choice is what this milestone delivers. If it is revisited later it needs its own
+spec and its own argument, not a line added inside a task about something else.
 
 ---
 
@@ -73,40 +77,36 @@ reasonable control to offer rather than a foot-gun.
 - Each task must be independently completable **and verifiable** in one iteration.
 - **Every task ends green**: `go build ./... && go vet ./... && go test ./... && golangci-lint run`.
   Add `-tags tmux` when the task touches tmux and `-tags quickstart` when it touches
-  `cmd/crswd`. Tests ship inside the task that implements the behaviour — never as a separate
-  failing test, which step 6 of `PROMPT.md` would make the iteration revert.
-- **Check the linter is v2 before trusting it.** A pre-v2 binary reads this repo's v2 config,
-  runs zero linters, and exits 0 — a green that means nothing (#26).
-- `go.sum` must never appear. An import needs justification under `docs/security.md` §5 first.
+  `cmd/crswd`.
+- **Check the linter is v2 before trusting it** (#26).
+- `go.sum` must never appear.
 - **AR-005: a test satisfies the cross-site checks, it never disables them.**
-- **AR-008: no refactoring outside the task**, however obvious the improvement.
+- **AR-008: no refactoring outside the task.**
 - **A task is not done when the code exists. It is done when something calls it.**
-- **A new guard must be proven by breaking it** — show it failing against the unfixed
-  state before calling the task done. It is the only way to tell a guard from decoration.
-- **Everything works with no JavaScript.** A checkbox that only submits correctly with a
-  script, or a restart that only reports progress with one, has failed the task.
+  This milestone exists because that rule was broken a fifth time.
+- **A new guard must be proven by breaking it.**
+- **Everything works with no JavaScript.**
 
 ---
 
 ## Tasks
 
-- [x] **T001** Add a way to ask whether a config key is a boolean, in `internal/config/`. The two keys are `discover_roots` and `destroy_on_shutdown` — derive them from the `loadBool` call sites rather than hand-listing them somewhere that can drift, if that is reachable; otherwise list them next to `IsSecret`'s list and say why. Test that both are reported boolean, that a secret is not, and that an unknown key is not.
+- [x] **T001** 🔒 Let the browser create set `Lifetime` and `Idle`, in `internal/httpapi/actions.go` (the `CreateRequest` at ~line 455). The values are **submitted by the operator and therefore untrusted**: they must pass through `resolveLifetimes`' ceilings exactly as the signed API's do, and a request asking beyond the ceiling is refused with the uniform refusal rather than clamped silently. Reuse the signed path's parsing if it is reachable; do not write a second parser with different rules. Test that a create beyond the ceiling is refused, that a negative idle is accepted and disables idle reaping, and that a negative **lifetime** is still refused.
 
-- [x] **T002** 🔒 Teach `internal/httpapi/settings_edit.go` that a boolean key's absent value means `false`. **Only for keys T001 reports as boolean.** A missing value for any other key must behave exactly as it does today. Test both halves: an unchecked boolean saves `false`, and a non-boolean with no value is still refused. **The second test is the security-relevant one** — without it, a truncated request clears a setting.
+- [x] **T002** Put the control on the create form in `web/templates/partials/create-form.html`. The operator's word for it is "never die", so the control should say what it does in those terms and be honest that the absolute lifetime still applies unless the operator has raised it. Reuse `.field`, `.field-switch`, `.switch-input`, `.switch-label` — **introduce no new class**. Assert against the rendered markup that the control exists and submits what T001 reads, because a control that renders and submits nothing is exactly the failure this milestone is about.
 
-- [x] **T003** Render boolean settings as a switch in `web/templates/settings.html`, reusing `.switch-input` and `.switch-label`. **Introduce no new class.** The checkbox reflects the current value and submits `true` when checked. Assert against the rendered markup that a boolean row carries a checkbox and a non-boolean row still carries a text input — milestone 4 shipped three green tasks about a control that never changed, and reading the markup is what stops that.
+- [x] **T003** Show a session's deadline on its card, in `web/templates/partials/session-card.html`. An operator who cannot see when a session dies cannot tell that their choice took effect — and this milestone's whole subject is a clock nobody could see. Use the existing `.card-meta` list and its `dt`/`dd` shape; **no new class**. Say "no idle limit" rather than a far-future timestamp when idle reaping is off for that session.
 
-- [x] **T004** 🔒 Add `POST /dashboard/restart`, registered through `s.handleAction(...)` exactly as destroy and update are. Confirming field `confirm` must equal `yes` — reuse `fieldConfirm`/`confirmYes`. Audit action `dashboard.restart`, exactly one record. It calls the same `ExitForRestart()` the update uses, from a goroutine after `exitGrace`, for the reason written above that constant: exiting before the response flushes is what made an earlier update arrive as a Cloudflare 502. Test the confirming step, both cross-site halves independently, and that exactly one audit record is written.
+- [x] **T004** Fix the stale comment at `internal/session/session.go:15`. It says the two lifetimes "are constants rather than configuration on purpose: an operator who could widen them could widen the blast radius the constitution bounds by construction." They are configurable — `CRSW_SESSION_LIFETIME` and `CRSW_IDLE_TIMEOUT` — and the constants are now the fallback when nothing is configured. Describe what is actually true: the constants are defaults, the operator's configuration sets the ceiling, and the per-session override operates under that ceiling.
 
-- [x] **T005** Put a Restart control on the settings page, in the Updates section, reusing `.updating` and `.spinner`. It needs a confirming step in the markup and must say what it does — sessions survive a restart, and an operator who does not know that will not press it. **No new class.**
-
-- [x] **T006** Make the restart wait out the daemon in `web/static/crswd.js`, reusing the update's path. The submit handler branches on `form.matches('.update-form')` at line ~1043; the restart form should take the same branch. Widen the match rather than duplicating the branch, and keep the ordering the existing test pins — the swap must precede the toast, or the toast wins and the special case is unreachable. Update `TestTheUpdateDoesNotBecomeAToast` or add its sibling so both forms are held to it.
+- [x] **T005** Update `README.md`'s configuration table and any prose that describes the lifetimes. The four keys' descriptions should say that the ceilings bound a per-session choice **the dashboard can now make**, and how an operator who wants effectively-never sets them. Keep the honest note that there is no "never" sentinel and say what to do instead.
 
 ---
 
 ## Out of scope
 
-- **#120** — resizing the tmux PTY to the reader's viewport. Needs design, not an iteration.
-- **#121** — a pane wrap toggle. **Blocked on Q1** of `docs/mobile-open-questions.md`.
-- **Answering Q1 or Q2.** They belong to the operator and a real device.
-- **Any other control on the settings page.** Two requests, six tasks, nothing else.
+- **Making a live stream advance the idle clock.** See the warning above.
+- **A "never" sentinel for the absolute lifetime.** Removing that bound entirely is
+  a different decision from relaxing it, and it needs its own argument.
+- **#120, #121.** Unchanged.
+- **Q2.** Still the operator's to answer.

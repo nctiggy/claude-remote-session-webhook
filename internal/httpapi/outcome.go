@@ -93,6 +93,15 @@ const (
 	outcomeBadStartCommand outcome = "bad-start-command"
 	outcomeBadMode         outcome = "bad-mode"
 
+	// outcomeBadLifetime is a create naming how long its session may live in
+	// terms this daemon will not grant — a duration it cannot read, or one past
+	// the ceiling the operator configured (milestone 10). It is the create's own
+	// bad-field code rather than a reuse of outcomeBadName for the reason each of
+	// the four above is per-field: what an operator has to fix is the number they
+	// typed, and a sentence about session names would send them to the wrong
+	// control.
+	outcomeBadLifetime outcome = "bad-lifetime"
+
 	// outcomeBadVersion is a `version` field that is not shaped like a release
 	// tag, and it is the update's own bad-field code rather than a reuse of
 	// outcomeBadName for the reason each of the four above is per-field: what an
@@ -281,6 +290,19 @@ var banners = map[outcome]outcomeView{
 		// operator's own page — which is caller-authored text reaching the
 		// document, the thing the closed vocabulary above exists to prevent.
 		Message: "That is not a mode this daemon offers. Nothing was changed.",
+	},
+	outcomeBadLifetime: {
+		// Says what a usable answer looks like and where the bound comes from,
+		// and quotes neither what arrived nor what the ceiling is. The value is
+		// caller-authored text on its way back out through a page (FR-042); the
+		// ceiling is on the settings page, which is where an operator who wants a
+		// longer one goes anyway.
+		//
+		// It names the refusal rather than a clamp deliberately. resolveLifetimes
+		// refuses an override past its ceiling instead of quietly granting a day
+		// to a create that asked for thirty, and a banner implying the session
+		// started with something shorter would undo that in words.
+		Message: "This daemon will not run a session for that long. Give a duration like 72h, inside the ceilings on the settings page, or leave the field empty for the default. Nothing was started.",
 	},
 	outcomeBadVersion: {
 		// Says what a version looks like rather than quoting the one that arrived.

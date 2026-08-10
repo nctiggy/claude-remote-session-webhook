@@ -21,485 +21,396 @@ When the whole plan is done and green, append a line containing exactly
 
 ---
 
-## Iteration 0 — two operator requests
+## Iteration 0 — let a session outlive the defaults
 
-**Did:** Archived milestone 8, opened a fresh notebook.
+**Did:** Archived milestone 9, opened a fresh notebook.
 
-**Left:** six tasks, from two requests: *"All true/false settings should be check
-boxes"* and *"can we have a way to restart the daemon from within the UI?"*
+**Left:** five tasks. The operator: *"I like leaving these sessions running forever
+if I want to. 1 hour is way too tight"* and *"I just want to be able to allow
+sessions to never die if I choose."*
 
-**Findings, all verified before the plan was written:**
+**Findings, all verified:**
 
-- **There are exactly two boolean keys**: `discover_roots` and
-  `destroy_on_shutdown`, the two callers of `loadBool`. Neither is a secret, so both
-  are already `Editable`.
-- **Neither feature needs a new component or a new class.** The switch
-  (`.switch-input`, `.switch-label`) exists and is documented; the restart reuses
-  `.updating` and `.spinner`. That keeps both class sweeps and the components-doc
-  guard out of the risk surface entirely.
-- **The trap in the checkbox work is not CSS, it is HTTP.** An unchecked checkbox
-  submits **nothing at all**. The handler currently reads
-  `r.PostForm.Get(fieldSettingValue)`, so an unchecked box is indistinguishable from
-  a cleared field. The fix is not the hidden-input trick — with both fields sharing a
-  name, `.Get` returns the first, which is the wrong one. It is for the handler to
-  know the key is boolean and read an absent value as `false`, and **only** for keys
-  it knows are boolean. A truncated request must never clear a setting that is not
-  one.
-- **The restart needs almost no new machinery.** `ExitForRestart()` and `exitGrace`
-  already exist for the update, and the reason for the goroutine and the grace period
-  is written above them: exiting before the response flushes is what turned an
-  earlier update into a Cloudflare 502.
-- **Restart is strictly less dangerous than update**, which already goes through the
-  browser door. Update installs code from the internet; restart runs the binary that
-  is already installed. The argument the operator won on #66 covers this a fortiori.
-
----
-
-## Iteration 1 — 2026-08-09 21:39 — T001
-
-**Did:** Added `config.IsBool(key)` in `internal/config/secret.go`, next to
-`IsSecret`, plus `bool_test.go` — a behavioural table and a structural test that
-parses the package and holds the list to loadBool's call sites in both directions.
-
-**Learned:**
-
-- **Deriving the keys at runtime is not reachable**, so the plan's fallback applies:
-  the list is a literal next to `IsSecret`'s. Go cannot ask a function who calls it,
-  and populating a registry *from* `loadBool` does not work either — it only runs
-  during a load, so the set would be empty before the first one and the settings
-  page asks before that.
-- **The AST walk is the repo's existing answer to exactly this**, so no new technique
-  was invented: `secret_test.go` walks the package for a second secrecy classifier,
-  `envexample_test.go`'s `declaredVars` parses config.go's constants, and
-  `TestVarsNamesEveryDeclaredVariable` pins a hand-written list to them. T001 reuses
-  `packageFiles` from `secret_test.go` directly — it is in `package config_test`, so
-  it is already in scope from a new file in that package.
-- **`declaredVars` returns values only** (`map[value]bool`), and resolving a call site
-  needs the other direction, name→value. I added `varConstants` rather than widening
-  `declaredVars`, per AR-008. If a later task needs both, that is the moment to merge
-  them, not now.
-- **The reverse direction is checked over `config.Vars()`, not over IsBool's own string
-  literals.** Vars() is the whole universe of keys a file may set or the page may
-  render, so a key wrongly claimed boolean is caught exactly where it could do harm,
-  and the check stays behavioural instead of asserting how `IsBool` happens to be
-  written. A later rewrite of `IsBool` into a map or a switch will not break it.
-- **Both directions were shown failing before the commit**, per the plan's rule. A:
-  dropping `destroy_on_shutdown` → *"is loaded with loadBool and config.IsBool(...) is
-  false"*. B: adding `listen` → *"no loadBool call reads CRSW_LISTEN, so a request that
-  omits its value would write `false` over a setting that is not a boolean"*. B is the
-  direction T002 depends on.
-- **`golangci-lint` is 2.12.2 here**, so the #26 fake-green does not apply to this
-  machine. Worth re-checking each iteration anyway; it is one command.
-- **Adding `IsBool` to `secret.go` does not trip `TestIsSecretIsTheOnlyClassifier`.**
-  Its `decidesSecrecy` accuses only a declaration whose name contains "secret" *and*
-  which is `(string) bool`; `IsBool` has the shape but not the name. The literal walk
-  matches the two secret keys exactly, and the new keys are not those. If a later task
-  adds a third classifier there, check both halves again — the shape alone is not
-  enough to be accused, which is what makes the file safe to grow.
-
-**Left:** T002–T006. T002 is next and is the security-relevant half: teach
-`settings_edit.go` that an absent value means `false` **only** for keys `IsBool`
-reports, and test that a non-boolean with no value is still refused.
-
-**Findings:** none new. One thing noted in passing and deliberately not acted on:
-`secret.go` is now a file named for one of the two predicates it holds. Renaming it
-is out of scope under AR-008, and it would move the file `secret_test.go` exempts by
-name (`classifierFile = "secret.go"`), which is a change worth its own task rather
-than a drive-by.
+- **There are two clocks, and this matters more than anything else here.**
+  `AbsoluteLifetime` (24h from creation, never renewed) and `IdleTimeout` (60m from
+  last activity, moves with it). Turning off idle does **not** make a session
+  immortal — the absolute deadline still fires. Any task that claims to deliver
+  "never dies" while only touching idle has not read this.
+- **The per-session override already exists and is already bounded.**
+  `CreateRequest.Lifetime` and `.Idle`, resolved by `resolveLifetimes`, with a
+  negative `Idle` meaning *idle reaping off for this session* — explicitly safe
+  because the absolute deadline still applies, so the bound is relaxed rather than
+  removed.
+- **The browser cannot reach any of it.** `internal/httpapi/sessions.go:381` (the
+  signed API) passes `Lifetime` and `Idle`. `internal/httpapi/actions.go:455` (the
+  browser create) passes Owner, Name, WorkDir and StartCommand — and nothing else.
+  **This is the fifth "code with no caller" in this repository**, after the reaper,
+  `Store.Touch`, the PR-opener and `CRSW_DESTROY_ON_SHUTDOWN`. `CRSW_IDLE_TIMEOUT_MAX`
+  is documented as "the ceiling for a per-session idle override" — a ceiling on
+  something the dashboard cannot do.
+- **`loadDuration` has no upper bound**, so a very large lifetime already parses.
+  There is no "never" sentinel and the README says so deliberately.
+- **Watching deliberately does not advance the idle clock.** `View`'s comment:
+  *"Watching is not driving (FR-034f). The property holds by construction — there is
+  no clock reading in this method to hand to Touch."* The operator noticed this
+  ("it has no idea if I am connected"). **Do not change it in this milestone.** A
+  forgotten tab holding an unsandboxed shell open forever is a worse failure than an
+  explicit per-session choice, and the choice is what these tasks deliver.
+- **A stale comment to fix:** `internal/session/session.go:15` still says the two
+  lifetimes "are constants rather than configuration on purpose: an operator who
+  could widen them could widen the blast radius." They became configurable. That is
+  the same class of defect milestone 8 spent five tasks closing.
 
 ---
 
-## Iteration 2 — 2026-08-09 21:47 — T002
+## Iteration 1 — 2026-08-10
 
-**Did:** `submittedValue(form, key)` in `internal/httpapi/settings_edit.go` reads an
-absent value field as `false` for `config.IsBool` keys and as the empty value for
-every other key, plus two tests: an unchecked box turning `discover_roots` off, and
-the narrowness that keeps `false` out of everything else.
+**Did:** T001. `createFromBrowser` now reads two optional form fields and passes
+`Lifetime` and `Idle` into `session.CreateRequest`, so the dashboard can finally
+reach the per-session overrides the record, the ceilings, the reaper and the README
+have all had since #37.
 
-**Learned:**
+**Learned — the shape T002 has to submit against:**
 
-- **The plan's wording for the second test does not hold, and the fix is sharper than
-  the wording.** "A non-boolean with no value is still refused" is not true of any key
-  that could carry the test: an absent value writes `key = ` (empty), and the loader
-  reads empty as *unset*, so `max_sessions` falls back to its default and
-  `allowed_roots` falls back to the built-in `$HOME` root — both **accepted**. Nothing
-  is refused. What the test asserts instead is what the plan's own body asks for: an
-  absent value for a non-boolean behaves **exactly as it does today**, and never
-  becomes `false`.
-- **The bytes-only assertion would have been decoration.** Against the over-broad
-  reading, the candidate is `max_sessions = false`, `config.Validate` refuses it, and
-  the file is left *unchanged* — so "the file does not contain `max_sessions = false`"
-  passes against the very defect it names. The assertion that actually fires is the
-  other one: the file must carry `max_sessions = ` (with the newline, since
-  `"max_sessions = "` is a prefix of the line being refused). Shown failing by
-  dropping `&& config.IsBool(key)` and restoring it.
-- **`allowed_roots` cannot host that test at all**, which is worth knowing before
-  someone reaches for the most security-shaped key. Empty and `false` are both
-  refused-or-accepted identically from the outside — `false` fails the absolute-path
-  check, empty falls back to the default root — so the over-broad reading is invisible
-  through it. `max_sessions` is the key where the two readings diverge observably.
-- **For today's two keys this changes nothing the daemon does.** `loadBool` already
-  reads empty as false, so unticking a box "worked" before this task by coincidence.
-  What it changes is the operator's file (`discover_roots = false`, not a half-finished
-  line) and the coincidence itself: a boolean defaulting to *true* would have been
-  turned on by an unticked box. That is why T002 is worth its iteration even though the
-  suite would have gone green without the production change.
-- **`editForm` re-renders the settings section each time to lift a page token**, so a
-  test can post twice against one fleet (on, then off) without minting anything itself.
-- **`golangci-lint` is 2.12.2 here** — checked again per #26. `go vet` under all three
-  build tags compiles clean; none of them was touched.
+- **The fields are `lifetime` and `idle_timeout`**, the same names POST /sessions
+  spells in JSON, read from `PostForm` and parsed by that route's own
+  `parseLifetimeOverrides` (`internal/httpapi/sessions.go:85`). No second parser
+  was written. They carry **Go duration strings** (`72h`, `90m`), and absent means
+  the daemon's default — a form submitting neither starts exactly the session this
+  door started before.
+- **`idle_timeout=0` is the "no idle limit" spelling.** `parseLifetimeOverrides`
+  turns a submitted zero into `-1` because zero on the record already means "unset",
+  and a negative `Idle` is the disable. So T002's switch can be
+  `<input type="checkbox" name="idle_timeout" value="0">` and needs no new parsing
+  on either side. A hand-built `idle_timeout=-30m` reaches the same record state;
+  both are covered by a test.
+- **A new outcome code: `bad-lifetime`** (`outcome.go`), with its sentence in
+  `banners` and its spelling added to `spelledOutcomes` in `outcome_test.go` —
+  `TestEveryOutcomeThisPackageSpellsHasASentence` counts the map, so a new code
+  must be added in both places or the suite fails.
+- **"The uniform refusal" in T001 was read as this door's field-level refusal**, not
+  as the action gate's 403. A value past a ceiling comes from an operator who was
+  admitted and passed the gate; it is the same class of thing as a bad name or a
+  forbidden work dir, and those answer with an outcome redirect. A 403 there would
+  make the gate's own refusal ambiguous.
+- **The ceilings in the httpapi fixture are the constants** — `newSessionFixture`
+  never calls `SetLifetimes`, so `maxLifetime` is 24h and `maxIdle` is 60m. That is
+  what makes `lifetime=720h` and `idle_timeout=90m` refusable in a unit test with no
+  configuration.
+- **The fixture's manager clock does not move**, so "idle reaping is off" cannot be
+  proven by running a sweep. It is asserted through `IdleDeadline()` — the method
+  `expiredAt` compares against — never falling before `AbsoluteDeadline()`, plus
+  `DisplayState` still reading `running` an hour past the default idle threshold.
+- **Both halves were proven by breaking them.** With the two fields unread the
+  carry test fails on the record and the refusal test gets `outcome=created` on
+  every row.
 
-**Left:** T003–T006. T003 is next: render the two boolean rows as switches in
-`web/templates/settings.html`, reusing `.switch-input`/`.switch-label`, introducing no
-new class, and asserting against the *rendered markup* that a boolean row carries a
-checkbox and a non-boolean row still carries a text input. The checked box must submit
-`value=true`; unchecked submits nothing, which is what this iteration made safe.
+**Left:** T002 (the control on the create form), T003 (the deadline on the card),
+T004 (the stale comment), T005 (README).
 
-**Findings:**
+**Findings — noticed, not fixed:**
 
-- **A truncated edit POST silently resets a setting to its default, and always has.**
-  A request naming `allowed_roots` with no value field writes `allowed_roots = `, the
-  loader reads that as unset, and the containment allowlist becomes the built-in
-  `$HOME` root — accepted, written, and audited as an ordinary edit. Same shape for
-  `max_sessions` (back to the default cap). This is pre-existing behaviour, out of
-  T002's scope under AR-008, and T002 deliberately pins it rather than changing it. It
-  is worth its own task: the honest fix is for the handler to refuse a request whose
-  value field is absent for a key that is not boolean, rather than treating absence as
-  "clear it". Constitution VI is the reason — both keys are containment bounds.
-- `submittedValue` is package-level rather than a method for testability of the pure
-  reading, but nothing tests it directly; both guards go through the route. That is the
-  right way round per `docs/conventions.md` ("assert the caller"), noted only so a later
-  iteration does not add a unit test for it and think it has covered the route.
-
----
-
-## Iteration 3 — 2026-08-09 21:56 — T003
-
-**Did:** `settings.html` renders a boolean row as `.switch-input` and every other
-editable row as the `.setting-input` it always had, branching on two new
-`settingRow` fields (`Boolean`, `On`) that `settingsOf` fills from `config.IsBool`.
-Four tests read the rendered markup; a fifth drives the box's own value through the
-edit route.
-
-**Learned:**
-
-- **The value attribute is the whole of this task's real risk, and it is invisible
-  to a markup-only test.** A checkbox with no `value` submits `on`; `loadBool` calls
-  `strconv.ParseBool`, which refuses `on`; `config.Validate` then refuses the whole
-  candidate file. So the operator ticks the box, presses Save, and the file is
-  **unchanged** — a control that looks right and does nothing, reported as a refusal
-  about a value they never chose. Proven by mutation: `value="on"` leaves
-  `discover_roots` absent from the file entirely. `boolOn` now sits beside `boolOff`
-  in `settings_edit.go` as this page's two spellings for a boolean, and
-  `TestTheSwitchSubmitsTheSpellingThisPageWrites` holds the template's literal to it
-  — the arrangement `confirm=yes` already has.
-- **The sweep is over every editable key, not over the two booleans.** Both
-  directions then hold and neither can go stale: a third boolean forgotten in the
-  template fails as a text field, and a key wrongly reported boolean fails as a box.
-  The second direction is the one that matters — a box is the control whose *absence*
-  the route reads as `false`, so a wrongly-boxed key is a setting an untick clears.
-- **`On` is read off `Value`, not off the Config a second time.** The value column
-  and the tick are then one answer. Reading the Config again would let this page state
-  a setting in a cell and contradict it in the control beside it.
-- **All five guards were shown failing first**, per the plan's rule: `{{ if false }}`
-  (the unfixed state — all four fail), `{{ if true }}` (16 non-boolean rows become
-  boxes), no `value`, `value="on"`, and no `{{ if .On }} checked`.
-- **`settingsRowFor` already existed** and is the right isolation for any assertion
-  about one row; `settingControl` builds on it and refuses a row offering more than
-  one input, so "a row edits one setting with one control" is asserted on the way past.
-- **`golangci-lint` is 2.12.2 here** — checked again per #26; 0 issues. `go vet` under
-  all three build tags compiles; none was touched, and no file in `cmd/crswd` mentions
-  the settings page.
-
-**Left:** T004–T006, the restart half of the milestone. T004 is next and is the
-security-relevant one: `POST /dashboard/restart` registered through
-`s.handleAction(...)` exactly as destroy and update are, `confirm=yes` via
-`fieldConfirm`/`confirmYes`, audit action `dashboard.restart` written exactly once,
-and `ExitForRestart()` from a goroutine after `exitGrace`.
-
-**Findings:**
-
-- **The plan asked for `.switch-label` and this row deliberately has none.** Two
-  binding rules collide on this one control: `docs/components.md`'s Switch section
-  puts the pointer on the label as well as the box, and its "The settings page"
-  section says a row's input is labelled by `aria-label` rather than a visible
-  `<label>`, "because the row header beside it already says the key and a second copy
-  is the same word twice to anybody reading it aloud" — the same sentence is on
-  `.setting-form` in `crswd.css`. The rule specific to *this row* won, and the plan's
-  binding constraint ("introduce no new class") is satisfied either way. `.switch-label`
-  is still rendered by the create form, so no sweep sees a dead rule.
-- **What that costs is a tap target, and it is a real gap rather than a neutral
-  trade.** `.switch-input` is `--s4` square. On the create form the row is
-  `.field-switch`, which the coarse-pointer block sizes to `--tap`; nothing does that
-  for a switch inside `.setting-form`, so on a phone this is a `--s4` box where every
-  button on the page is a thumb. It is CSS and outside a template-only task under
-  AR-008, so it is left here rather than done quietly. **The honest fix is a
-  `.setting-form .switch-input` (or `.setting-save`-style) rule in the
-  `@media (pointer: coarse)` block**, and it is worth its own task — note that
-  `TestTheCoarseBlockChangesNoLayout` forbids `display`/`position` there, so it has to
-  be a size.
-- **A boolean row no longer prints the words `true`/`false` anywhere.**
-  `TestSettingsStatesTheValueOfEveryNonSecretKey` names only non-boolean keys so it
-  stayed green, but the page's claim — "one row per key, with the value beside it" —
-  is now carried for two keys by a tick rather than by text. That is the operator's own
-  request and reads correctly, noted only so a later iteration does not read the
-  absence of the word as a regression.
+- **The signed API answers a refused lifetime with a 500.** `refuseCreate`
+  (`internal/httpapi/sessions.go:432`) has no `ErrInvalidLifetime` branch, so both
+  an unparseable duration and one past a ceiling fall to `default:` →
+  `failInternal` → 500 with the internal-error body. `docs/security.md` says a
+  field-level refusal is a 400 with the uniform body, and `createReason` already
+  carries the sentinel for the trail — the fix is one `case` beside the existing
+  `ErrInvalidName, ErrInvalidWorkDir` one. Left alone deliberately: T001 is the
+  browser door, and AR-008 forbids the reach. **Worth a fix-lane line of its own.**
+- **`internal/httpapi/render.go` is not `gofmt` clean on this branch** — its import
+  block has `internal/buildinfo` above the stdlib imports, and `gofmt -l .` names
+  the file. It is untouched by this task and pre-existing. Nothing catches it:
+  `golangci-lint run` reports 0 issues and no CI workflow runs `gofmt` or
+  `goimports`, so the `AGENTS.md` format command is the only thing that would, and
+  only for a file someone happens to edit.
 
 ---
 
-## Iteration 4 — 2026-08-09 22:09 — T004
+## Iteration 2 — 2026-08-10
 
-**Did:** `POST /dashboard/restart` in a new `internal/httpapi/restart.go`, registered
-through `s.handleAction` beside the other six writes, audited as
-`audit.ActionDashboardRestart` (`dashboard.restart`), confirming on
-`fieldConfirm`/`confirmYes`, and calling `ExitForRestart()` from a goroutine after
-`exitGrace`. Six tests in `restart_test.go`; every one of them shown failing first.
+**Did:** T002. The create form now carries a second switch —
+`<input type="checkbox" name="idle_timeout" value="0">`, labelled "Never die when
+idle" — so the override T001 taught the handler to read is something an operator
+can actually say. Beside it, a `.field-hint` naming the clock that still ends the
+session.
 
-**Learned:**
+**Learned — what the next iteration would otherwise rediscover:**
 
-- **The route has to decide what it answers with, and the plan does not say.** T006
-  makes the restart form take the update's JS branch, which does
-  `swapUpdatesSection(said)` — it parses `.settings-panel` out of the answer — so the
-  answer must be the settings page, not a 303. That also inherits the update's real
-  reason for not redirecting: a 303 points the browser at a daemon in the act of
-  stopping. So the restart renders the settings page in the waiting state, and the
-  template's block gained one branch: `{{ if .Restarting }}Restarting…{{ else }}Installing
-  {{ .Becoming }}…{{ end }}`. A restart installs nothing and the page must not say it
-  does. `settingsView.Restarting` is a field rather than "Becoming equals the running
-  version", because those are also equal when an operator asks to install the version
-  they are already on.
-- **`data-becoming` is set to `buildinfo.Version`** — the version this daemon is coming
-  back *as*. That is what `waitOutTheUpdate` polls for, so T006 gets a working poll for
-  free. **T006 still has two things to fix there**: the ceiling message says "has not
-  answered since it began installing X", which is wrong for a restart; and the poll's
-  first tick is at 1s against an exit at 250ms, so the window where the old daemon could
-  answer its own `becoming` is closed by timing rather than by construction. Worth a
-  look when widening the branch.
-- **`restartable()` asks for the installer alone, not `selfUpdate.wired()`.** The
-  restart never touches the fetcher or the stager, and a refusal blaming a release feed
-  it does not call would be a reason that is not true. It keeps the property that makes
-  the update's arrangement safe: `newServer` wires none of the three, so a test that
-  reaches this route cannot end the process running the suite. **Proven** — dropping the
-  check panics with a nil dereference against every server in the package.
-- **`recordsAtExit` does not prove what it looks like it proves, and the same is true
-  of the update's copy of it.** The exit waits out `exitGrace`; by then the handler has
-  returned and the middleware's deferred emit has written the record either way.
-  Removing `s.emit(...)` from the handler leaves the suite green. What the assertion
-  *does* catch is an exit taken inline — proven, it reports 0 records and an unflushed
-  answer. The handler emits first regardless, because once that goroutine exists the
-  record's write and the process's end are unordered; that is argued at the emit and the
-  test comment now says plainly that it cannot see it. **`update.go`'s comment "this
-  handler does not return in production" is stale** — it stopped being true when the
-  exit moved onto a goroutine.
-- **A method-less pattern is not a cosmetic slip here.** Dropping `POST ` from
-  `patternDashboardRestart` made `PUT /dashboard/restart` return 200 and end the daemon.
-  The catch-all `/` is what otherwise answers a wrong method as a path nothing claims.
-- **`ExitForRestart` is `os.Exit(0)`, so `Shutdown` never runs and
-  `destroy_on_shutdown` never fires.** Sessions survive a restart even on a host that
-  set it — which is what T005's copy needs to say, and is true, but is true for a
-  narrower reason than "sessions survive".
-- **The three lists a new browser action can be missing from**: `spelledOutcomes` in
-  `outcome_test.go` (enforced — the count assertion fails), `banners` in `outcome.go`
-  (same assertion, other direction), and `audit_test.go`'s documented-action map (not
-  enforced; `settings.edit` and `session.mode` are absent from it). Added to all three.
-- **`golangci-lint` is 2.12.2 here** — checked again per #26; 0 issues. `go vet` under
-  all three build tags compiles clean, `-tags dev` passes, and `-race` over the update
-  and restart cases is clean.
+- **Adding a checkbox to the create form breaks `TestCreateFormRendersRemoteSwitch`**
+  (`partials_test.go`). It counted *every* checkbox in the render and fatally
+  failed at 2, with a message about the mode being one two-state control. The
+  count was a proxy for "one control per mode", so it now counts the ones posting
+  `remote_control`. It keeps the **literal** name rather than `fieldRemoteControl`
+  deliberately — a rename that edited the constant and the template together would
+  pass a test written against the constant while browsers posted a field the
+  daemon does not read. The new test uses the constant instead, because its job is
+  the opposite one: holding the template's second spelling to what `actions.go`
+  reads.
+- **`.switch-label` is uppercase and letter-spaced** (`crswd.css:817`) — it is the
+  design system's *label role*, not body text. Prose set in it shouts. The honest
+  sentence therefore lives in a `.field-hint`/`.field-hint-text` named by
+  `aria-describedby`, which is exactly the arrangement the working-directory
+  field's roots hint already uses. No new class was needed for any of it.
+- **`.field-switch` is `grid-auto-flow: column`**, so a hint placed inside the
+  switch row becomes a third *column* beside the box. The row and its hint are
+  wrapped in an outer `.field` instead; `.field` nests without trouble (grid, gap
+  `--s1`, `inline-size: min(100%, --card-min)`), and the coarse-pointer
+  `min-block-size: var(--tap)` still lands on the row that carries the class.
+- **The hint names no number.** What the absolute lifetime is here is
+  configuration — `session_lifetime`, default 24h — so copy saying "24 hours"
+  would be false on any install that set it. It points at settings instead, which
+  is reachable: `config.Editable` is `!IsSecret && VarForKey != ""`, and
+  `session_lifetime` is in `file.go`'s key list.
+- **Proven by breaking it, three ways**: `value="30m"` (parses to a *positive*
+  idle — the control would claim something it does not do), the
+  `aria-describedby` removed, and the field renamed to `idle`. Each fails with the
+  sentence written for it. The value arm is the one worth keeping: it feeds the
+  markup's value to `parseLifetimeOverrides` itself rather than asserting the
+  string `"0"`, so what is pinned is that the submission *disables reaping*.
+- **`go test -tags quickstart ./cmd/crswd` passes here** (36s) — tmux, jq and
+  `127.0.0.1:8765` were all available. Worth running for a template change: the
+  acceptance suite renders the real dashboard.
 
-**Left:** T005 and T006, both about the operator actually being able to press this.
-T005 is next: the Restart control in the Updates section of `web/templates/settings.html`,
-with a confirming step in the markup and copy saying sessions survive. The form posts
-`confirm=yes` and the page token to `/dashboard/restart`; the route is already there and
-already refuses without either.
+**Left:** T003 (the deadline on the card), T004 (the stale comment at
+`internal/session/session.go:15`), T005 (README).
 
-**Findings:**
+**Findings — noticed, not fixed:**
 
-- **The secret sweep's route table does not name this route — or the update, or the
-  settings edit.** `registeredPatterns` in `settings_test.go` is hand-written for the
-  browser door ("a twelfth would have to be added here by hand, and that is the one gap
-  this arrangement cannot close"), and it stops at the five milestone-3 patterns plus the
-  pages. So three mutating routes are outside the sweep that `docs/security.md` requires
-  be done "swept, not reasoned about". Not fixed here: it is pre-existing, systemic, and
-  a task that closes it should close all three at once rather than grow by one route per
-  milestone. **The honest fix** is to add `patternDashboardUpdate`, `patternSettingsEdit`
-  and `patternDashboardRestart` to that list and drive each in `newSweep` — note that the
-  test fails on any listed pattern nothing drove, and that the sweep's server has no
-  installer, so a restart there refuses at `restartable()` and the *rendered* page would
-  need a fake wired in to be swept at all.
-- **No rate limit on this route, as on every other action but create.** A confirmed
-  restart is cheap and instant where a confirmed update is neither, so a stuck client
-  could hold this daemon in a restart loop. It adds nothing to the threat model — the
-  caller already had the dashboard, which is already code execution — and `RestartSec=5s`
-  bounds the loop. Noted rather than fixed.
-- **`selfUpdate` is now the home of two questions with different answers**
-  (`wired()` and `restartable()`), on a type named for the update. That is the right
-  shape today and worth watching: a third route wanting only one collaborator is the
-  point at which the field should be split rather than the predicates multiplied.
+- **Both findings from iteration 1 still stand and neither was touched.** The
+  signed API's 500 on a refused lifetime (`refuseCreate`,
+  `internal/httpapi/sessions.go:432`) is still a fix-lane line of its own, and
+  `internal/httpapi/render.go` is still the one file `gofmt -l .` names.
+- **The form can turn the idle clock off but cannot set a lifetime.** T001 reads
+  both `lifetime` and `idle_timeout`; this task put a control on only the second,
+  because that is the one the plan specified and the one the operator's words
+  describe. So the absolute lifetime a browser-created session gets is always the
+  daemon's default — an operator who wants a longer one raises `session_lifetime`
+  in settings, which is what the hint tells them. Whether the form should also
+  offer a per-session lifetime entry is a real question and **not one this
+  milestone answers**; it would need `.field-label`/`.field-input`, a duration the
+  ceiling can refuse, and copy about what happens when it does.
+- **`docs/components.md`'s Switch section had gone stale in the making.** It
+  opened "Today there is exactly one on the dashboard", which this task made
+  false, and its `.switch-input` row named only `remote_control`. Updated in the
+  same commit — that document is binding under Principle VII, and the drift it
+  exists to catch is exactly this one. Worth noting that **no test would have
+  caught it**: the class sweep
+  (`TestTheComponentsDocumentNamesThePickerTheSwitchTheHeaderAndTheToast`) matches
+  `.switch*` by *name*, so a document naming the right classes while describing
+  the wrong number of controls passes it cleanly. Same blind spot #119 was about,
+  one level up from the classes.
 
 ---
 
-## Iteration 5 — 2026-08-09 22:21 — T005
+## Iteration 3 — 2026-08-10
 
-**Did:** The Updates section of `web/templates/settings.html` now carries the restart
-form — page token, `confirm=yes`, a plain `.button`, and an `.update-caution`
-sentence saying sessions survive it and why. Three tests in `settings_test.go`; every
-assertion shown failing first.
+**Did:** T003. The card carries two new `.card-meta` rows — `idle deadline` and
+`lifetime deadline` — so an operator can see when a session dies and can tell
+that the T002 switch took effect. **Two rows, not one**: a card showing only the
+idle deadline would read as "this session never dies" for exactly the session
+whose operator relaxed the bound.
 
-**Learned:**
+**Learned — what the next iteration would otherwise rediscover:**
 
-- **The restart form deliberately carries no class, and T006 has to know that before
-  it opens `crswd.js`.** T006 says to widen `form.matches('.update-form')` — there is
-  no second class to widen it *to*, because "introduce no new class" is the plan's own
-  constraint and `.update-form` is the form above's name rather than a shape either
-  form may wear. **The honest hook is the action**, which the submit handler already
-  reads one line earlier (`getAttribute('action')?.startsWith('/dashboard/')`):
-  `form.matches('.update-form, [action="/dashboard/restart"]')` is one widened match
-  rather than a duplicated branch, and it keys the special case on the thing that
-  actually makes it special — the route that is about to stop answering — instead of
-  on a layout class. Note that `TestTheUpdateDoesNotBecomeAToast` asserts the literal
-  string `form.matches('.update-form')`, so widening the selector fails that test until
-  it is updated, which is T006's own instruction arriving as a red test.
-- **The control renders whether or not a check has happened**, which is a claim and not
-  an oversight: a restart has nothing to do with a release feed, and an operator
-  restarting a wedged daemon on a host with no network must not be made to ask GitHub a
-  question first. `TestSettingsOffersTheRestart` reads the *unchecked* section, so
-  nesting the form inside `{{ if and .Checked .Available }}` fails — shown.
-- **The end-to-end test is the one worth copying.** `restartDoor` can serve `GET
-  /settings` and then post its own rendered form back to itself, so the token is real
-  rather than minted by a second fixture. That closes the gap between "the markup looks
-  right" and "the handler accepts it", which is the gap milestone 4 shipped three green
-  tasks across. Two mutations proved it independently of the markup assertions: no
-  confirming step → the route answers 303 to the refusal, no token → the gate answers
-  403.
-- **A test that renders a page before posting cannot use `d.record`/`d.only`** — the
-  GET leaves a record of its own, so those assert 1 and find 2. Assert the exit counter
-  and the answer instead.
-- **Two documents said "Two routes receive them"** — settings.html's header comment and
-  `docs/components.md`'s "The settings page" — and this task makes three. Both updated
-  in the same commit. `TestTheSettingsCommentDescribesThePage` would not have caught
-  either: it sweeps four *denials* ("no form", "no page token", "no action row", "no
-  live region") and a stale count is none of them.
-- **`golangci-lint` is 2.12.2 here** — checked again per #26; 0 issues. `go vet` under
-  all three build tags compiles clean, and `-tags dev` passes. No file in `cmd/crswd`
-  mentions the settings page or the restart route, so the quickstart suite is untouched.
+- **`IdleDeadline()` returns `LastActivity + AbsoluteLifetime*400` when reaping is
+  off — 400 days.** Rendered through `formatAge` that reads "in 400 days", a date
+  nothing in the daemon believes. `formatIdleDeadline` (dashboard.go) states
+  `noIdleLimit` instead. This is the single most important thing about the idle
+  clock at the render layer.
+- **`session.Session.IdleDisabled()` is new** and is now the one expression of
+  "a negative `Idle` means off". `IdleDeadline()` calls it, so the two cannot
+  drift. Anything outside `internal/session` that needs to know should call it
+  rather than compare against zero.
+- **`formatDeadline` puts the boundary where `expiredAt` does** (`d <= 0` →
+  `"due now"`), so the card and the reaper agree about a session that is already
+  past its bound. `formatAge` would otherwise say "in less than a minute" about a
+  session the next sweep is entitled to take.
+- **The card's meta rows need no class and no CSS.** `.card-meta` is a two-column
+  grid of `dt`/`dd`, `max-content` label column above the breakpoint and one
+  column below it. Adding rows changed no stylesheet rule, so
+  `TestTheComponentsDocumentNamesThePickerTheSwitchTheHeaderAndTheToast` was never
+  in play.
+- **`ownedCard()` in `partials_test.go` is "everything the daemon can know"** and
+  now carries both formatted deadlines. A new `sessionView` field wants a value
+  there or every card test renders an empty `dd`.
+- **Proven by breaking it, twice**: with the `IdleDisabled` branch removed the
+  disabled row reads `"in 400 days"`; with the lifetime row deleted from the
+  template the test says an operator cannot tell when the session dies.
+- **`go test -tags quickstart ./cmd/crswd` passes here again** (36s) — worth the
+  run for a template change, as iteration 2 found.
 
-**Left:** T006 only — the restart taking the update's JS branch so the page waits out
-the daemon instead of dropping the answer into a toast. The two fixes iteration 4 left
-for it still stand: the ceiling message says "has not answered since it began installing
-X", which is false for a restart, and the poll's first tick is at 1s against an exit at
-250ms.
+**Left:** T004 (the stale comment at `internal/session/session.go:15` — note it is
+now at **line 16** and the file grew by `IdleDisabled`, so grep for the sentence
+rather than trusting the line number), T005 (README).
 
-**Findings:**
+**Findings — noticed, not fixed:**
 
-- **The waiting block does not say what to do, and two comments claim it does.**
-  settings.html's comment over that block says "the sentence says what to do", and
-  `update.go`'s says "it says to reload in a moment". What the block actually renders is
-  a spinner and either `Restarting…` or `Installing X…`, and nothing else. So a
-  scriptless operator presses Restart, lands on `/dashboard/restart` — a POST-only path,
-  where a reload is a 404 — and sits in front of a spinner that will never resolve
-  because nothing is polling. **This is the exact shape #119 exists for**: a comment
-  denying, or in this case asserting, what the markup beneath it does. It is
-  pre-existing (the update has had it since milestone 6) and outside a template-only
-  task under AR-008. **The honest fix** is one sentence in that block — "This page will
-  not update itself; reload in a moment" — plus deleting the two claims if it is not
-  added. T006 is already inside that copy for the ceiling message and is the natural
-  place for it.
-- **The restart form has no `data-submit-once`, and that is consistent rather than
-  missed.** The components doc puts the hook on the create form alone, because a second
-  create is a second unsandboxed shell while a second destroy finds no record. A second
-  restart is the same end state, so no hook — but it does write a second audit record
-  for one operator's one intent, within the 250ms grace window. Noted, not fixed.
-- **The restart form loses `.update-form`'s `gap: var(--s3)` between its button and its
-  sentence**, because it carries no class and there is no rule for a bare form in this
-  panel. It is a few pixels and no test can see it. **The honest fix is not a
-  `.restart-form`**: it is that the Updates section has two forms of one shape and the
-  shape is named after one of them. Renaming `.update-form` to something the section
-  owns touches the class sweep, the stylesheet and — until T006 lands — the script's
-  branch, which is three files for a spacing change and is why it is written here
-  instead.
-- The three findings from iteration 4 are all still open: the `registeredPatterns`
-  sweep does not name this route (nor the update, nor the settings edit), there is no
-  rate limit on it, and `update.go`'s "this handler does not return in production" is
-  stale.
+- **Both findings from iteration 1 still stand, untouched for a third
+  iteration.** The signed API answers a refused lifetime with a **500**
+  (`refuseCreate`, `internal/httpapi/sessions.go`) where `docs/security.md` wants
+  a 400 with the uniform body — one `case` beside the existing
+  `ErrInvalidName, ErrInvalidWorkDir` one. And `internal/httpapi/render.go` is
+  still the only file `gofmt -l .` names, on a branch where `golangci-lint run`
+  reports 0 issues and no CI job runs `gofmt`. Both are fix-lane lines.
+- **The card shows the lifetime deadline but nothing can set it from the
+  browser.** T001 reads `lifetime`; T002 put a control only on the idle clock. So
+  the new `lifetime deadline` row is the daemon's default for every
+  browser-created session, and an operator who reads it and wants it longer has
+  to go to settings. That is the same gap iteration 2 logged, now *visible* on
+  every card — which arguably strengthens the case for the per-session lifetime
+  field, and is still not this milestone's to answer.
+- **`specs/004-configure-and-operate/contracts/card-layout.md` describes the
+  readable half as "name, state, mode, workdir, age"** and is now one milestone
+  stale. Left alone deliberately: a shipped spec is a record of what that
+  milestone decided, and `docs/components.md` is the binding document — that one
+  was updated in the same commit, including the `cardOf` field list, which had
+  already been missing `StartCommand` and `Mode` before this task touched it.
 
 ---
 
-## Iteration 6 — 2026-08-09 22:32 — T006
+## Iteration 4 — 2026-08-10
 
-**Did:** The submit handler's waiting branch is now
-`form.matches('.update-form, [action="/dashboard/restart"]')`, so a restart swaps in
-the daemon's waiting markup and polls instead of answering with a toast. The wait's
-ceiling sentence moved out of the script into `data-ceiling` on the waiting block,
-which branches on `.Restarting`. Four guards, each shown failing first.
+**Did:** T004. The comment above `AbsoluteLifetime`/`IdleTimeout`
+(`internal/session/session.go`) no longer claims they are constants *on purpose*
+so no operator can widen them. It now says what #37 actually built: they are the
+built-in defaults, the operator's configuration sets both the defaults and the
+ceilings, a create may override either under those ceilings, and the **ceiling**
+is what keeps Principle VI true.
 
-**Learned:**
+**Learned — what the next iteration would otherwise rediscover:**
 
-- **Iteration 5's reading of the widening was right and is now proven both ways.**
-  There is no second class to widen to, so the selector's other half is the address.
-  `waitingBranchPattern` reads the selector *out of* the source and anchors on
-  `swapUpdatesSection(` — a literal `strings.Contains` cannot tell a selector widened
-  to the restart from one narrowed away from the update, and both mutations were run:
-  `.update-form` alone fails the restart's test only, the action alone fails the
-  update's test only.
-- **The cross-file half is the one worth having.** The restart test asserts the
-  selector's address against the form the page really renders, not against a literal
-  beside it. Renaming the action in the template alone fails it (shown: the rendered
-  page carries 0 forms posting to `/dashboard/restart`) — that is a script matching an
-  address nothing posts to, which is silent everywhere else until an operator presses
-  the button.
-- **The ceiling sentence was the reachable lie this task created.** Before T006 a
-  restart never started the poll at all (the settings page carries no `[data-becoming]`
-  until a route renders the waiting state), so the script's hard-coded "has not
-  answered since it began installing X" was unreachable for a restart. Widening the
-  branch makes it the last thing that operator ever reads. It is the template's now,
-  read with `.combo-status`'s exact guard (`if (!sentence) return;`), so a missing
-  attribute stops the poll silently rather than writing `undefined` into a live region.
-- **`wantRestartingPage` and `wantUpdatingPage` were the right homes for the page
-  half.** Both already assert what the waiting page must say; the ceiling is the same
-  claim about the last sentence rather than the first. Every caller inherited it, which
-  is why dropping `data-ceiling` fails five tests across two files rather than one.
-- **The word check in `wantRestartingPage` is case-sensitive (`"Installing"`) and my
-  ceiling copy is lowercase**, so the pre-existing assertion would *not* have caught an
-  unbranched ceiling. The new one lowercases before comparing. Worth knowing before
-  adding a third sentence to that block.
-- **`golangci-lint` is 2.12.2 here** — checked again per #26; 0 issues. `go vet` under
-  all three build tags compiles clean, `-tags dev` passes, and nothing in `cmd/crswd`
-  mentions the settings page, so the quickstart suite is untouched.
+- **T005 (README) can be written from this one file.** The four keys are
+  `CRSW_SESSION_LIFETIME` / `CRSW_IDLE_TIMEOUT` (defaults) and
+  `CRSW_SESSION_LIFETIME_MAX` / `CRSW_IDLE_TIMEOUT_MAX` (ceilings), loaded at
+  `config.go:649,657` and handed to the manager by one call —
+  `internal/httpapi/server.go:387` `sessions.SetLifetimes(...)`.
+- **Where each bound is actually enforced**, for prose that has to be true:
+  `validateLifetimes` (`config.go:1493`) refuses at *startup* — lifetime must be
+  positive, a ceiling may not sit below its own default, `CRSW_IDLE_TIMEOUT` may
+  not be negative (0 is the disable there) and may not exceed the lifetime.
+  `resolveLifetimes` (`manager.go:232`) refuses at *create* — over a ceiling is
+  refused, never clamped; a negative lifetime is refused; a negative idle is the
+  per-session disable; an idle that could never fire inside the lifetime is
+  refused. Note the asymmetry in spelling: **`CRSW_IDLE_TIMEOUT=0` disables,
+  a negative `Idle` on a record disables** — zero on the record means "unset".
+- **"Effectively never", concretely:** raise `CRSW_SESSION_LIFETIME_MAX` (and
+  `CRSW_SESSION_LIFETIME` if the default should move with it — `loadDuration` has
+  no upper bound, so `8760h` parses), then a create asks for a lifetime up to that
+  ceiling. There is still no "never" sentinel and `AbsoluteDeadline`'s comment
+  says why: *"a session that can outlive the daemon's own memory of why it exists
+  is what Constitution VI is written against"*. The dashboard can now make the
+  idle half of that choice (T002's switch); the lifetime half is still settings.
+- **A comment fix has no test that can fail without it.** Nothing in this repo
+  reads a Go comment, so the gate for this task was the green tree plus the
+  reading. Deliberately did not invent a prose-pinning test: it would pin the
+  wording rather than the fact, and Principle IV is against the machinery.
 
-**Left:** nothing. Every task in the plan is checked and the tree is green.
+**Left:** T005 (README's configuration table and the lifetime prose) — the last
+task in the milestone.
 
-**Findings:**
+**Findings — noticed, not fixed:**
 
-- **The poll's first tick is at 1s and the exit is at 250ms, and for a restart that
-  gap is the only thing keeping the page honest.** A restart comes back as the version
-  it went down as, so the old daemon can answer its own `becoming` — if `exitGrace`
-  ever grew past `WAIT_MS`, the first poll would succeed against the daemon that has
-  not gone down yet and the operator would be sent to a settings page announcing a
-  restart that had not happened. The update cannot have this bug (it is becoming a
-  *different* version). **The honest fix** is for the restart's wait to require seeing
-  the daemon fail to answer at least once before accepting a success — which is a state
-  machine change on a path the update shares, and is why it is written here. Left open
-  by iteration 4 and still open.
-- **The scriptless operator still has no signposted way back**, which is iteration 5's
-  finding and is unchanged. They land on `/dashboard/restart` — a POST-only path where
-  a reload is a 404 — in front of a spinner nothing will resolve. It is milder than it
-  reads: the answer is the whole settings page, so the masthead's Settings link is
-  right there, and the ceiling sentence this iteration fixed is the scripted path's
-  only. But two comments (settings.html's block comment, `update.go`'s "it says to
-  reload in a moment") still claim a sentence that block does not render. **The honest
-  fix** is one line in the waiting block — a link to `/settings?section=Updates`, which
-  is where the script sends them anyway — plus deleting the two claims. Not done here:
-  it changes what the update's shipped page says, and T006 is a script task.
-- **`.update-form` now has two readers with different rights.** The stylesheet's rule
-  and the class sweep own the name; the script only borrows it, and the moment a third
-  form joins that branch the selector will want to be a name of its own. That is the
-  same observation iteration 5 made about the missing `gap: var(--s3)`, arriving from
-  the other side — the section has two forms of one shape and the shape is named after
-  one of them.
-- The three findings from iteration 4 remain open, unchanged: `registeredPatterns` does
-  not sweep this route (nor the update, nor the settings edit), there is no rate limit
-  on it, and `update.go`'s "this handler does not return in production" is stale.
+- **`internal/config/config.go:1454` makes a claim about a test that does not
+  exist.** It duplicates the two constants to avoid an import cycle — correct and
+  well explained — and then says *"config_test pins them equal so the duplication
+  cannot drift silently."* Nothing does: no `_test.go` in the repo mentions
+  `session_AbsoluteLifetime`/`session_IdleTimeout`, and no config test imports
+  `internal/session`. So the duplication is unpinned **and** a reader is told it
+  is safe. Two lanes' worth: the pin is a small test
+  (`session_AbsoluteLifetime == session.AbsoluteLifetime`, in a `config_test`
+  package to keep the cycle out of the build), the sentence is a fix-lane line.
+  Out of scope here — T004 names one comment in one file and AR-008 forbids the
+  reach — but this is the *same defect class* T004 exists to close, one package
+  over, and it is now the more dangerous of the two: a false claim of coverage.
+- **Both findings from iteration 1 still stand, untouched for a fourth
+  iteration.** The signed API answers a refused lifetime with a **500**
+  (`refuseCreate`, `internal/httpapi/sessions.go`) where `docs/security.md` wants
+  a 400 with the uniform body. `internal/httpapi/render.go` is still the only file
+  `gofmt -l .` names, on a branch with `golangci-lint run` (v2.12.2) at 0 issues.
 
 ---
+
+## Iteration 5 — 2026-08-10
+
+**Did:** T005, the last task. `README.md`'s four lifetime rows now describe a
+per-session override the dashboard can actually reach, and two new notes say the
+two clocks apart and give the effectively-never recipe the operator asked for.
+The closing paragraph now names *why* the `_MAX` ceiling is the bound: the
+ceiling is the operator's, the choice under it is the session's.
+
+**Learned — what a later iteration would otherwise rediscover:**
+
+- **The README's configuration table is pinned by name only.**
+  `internal/config/docs_test.go`'s `readmeVarRow` matches the **first cell** of a
+  row against `config.go`'s declared constants, in both directions. Descriptions
+  are free prose. What must not change: one row per variable, on one line, first
+  cell exactly ``| `CRSW_X` |``.
+- **`cmd/crswd/quickstart_test.go` also reads `README.md`**, but only lines that
+  begin `journalctl` after a leading `#` is stripped (`trailCommands`). A new
+  fenced block is safe as long as no line in it starts with that word.
+  `internal/release/readme_test.go` pins the install one-liner, the "no clone and
+  build above it" rule and the rollback path — all outside the configuration
+  section.
+- **The idle *disable* is not bounded by `CRSW_IDLE_TIMEOUT_MAX`.**
+  `resolveLifetimes` checks `idle > maxIdleAllowed` and `idle > effectiveLife`;
+  a negative passes both. That is deliberate and is the whole asymmetry — the
+  ceiling bounds an idle timeout set *longer*, and what bounds a session with the
+  clock off is the absolute deadline. Prose that says the ceiling bounds the
+  switch is wrong.
+- **Deviation from T005's wording, deliberately.** The task says the four keys
+  should say the ceilings bound a choice "the dashboard can now make". Only the
+  idle half is true: T002 put a control on the idle clock alone, so
+  `CRSW_SESSION_LIFETIME_MAX` still bounds something only the signed API sends.
+  The README says exactly that rather than the plan's sentence — a README that
+  promised a lifetime field the form does not render would be this milestone's
+  own defect, one document over.
+- **No test was added, for iteration 4's reason.** Nothing reads README prose,
+  and the two facts worth pinning are already pinned elsewhere (the variable
+  names here, the form's `idle_timeout` field in `partials_test.go`). A test over
+  the wording would pin the sentence rather than the fact.
+
+**Left:** nothing. T001–T005 are all done and the tree is green —
+`go build ./... && go vet ./... && go test ./... && golangci-lint run` (v2.12.2,
+0 issues), plus `go test -tags quickstart ./cmd/crswd` (36s).
+
+**Findings — noticed, not fixed:**
+
+- **`CRSW_IDLE_TIMEOUT=0` does not disable idle reaping, and the daemon's own
+  error message says it does.** `validateLifetimes` (`internal/config/config.go`)
+  refuses a negative with *"use 0 to disable idle reaping"*. But a configured 0
+  reaches `SetLifetimes` as `defaultIdle = 0`; `resolveLifetimes` reads a zero
+  `req.Idle` as "take the default", gets 0, and the record carries 0 — which
+  `orDefault` resolves to the built-in `IdleTimeout`, **60m**. So an operator
+  following that advice silently gets the very default they were turning off. The
+  disable is a *negative* `Idle`, which only a create can spell. Two lanes: the
+  message is a fix-lane line; making the configured 0 mean the disable
+  (translate to `-1` the way `parseLifetimeOverrides` already does) is a change
+  with a test. **This is why the README's new prose never mentions 0** — it would
+  have documented the bug.
+- **`.env.example` still tells operators the lifetimes are constants.** Its
+  closing *"Not configurable, and named here so nobody goes looking for a knob"*
+  section says the idle timeout (60m) and the absolute lifetime (24h) "are
+  constants in the code, not variables… a deployment that could widen them from
+  an environment file could unbound it". Lines 144–169 of **the same file**
+  document all four variables. That is T004's defect exactly, in the file an
+  operator copies, and it is self-contradicting. One-line fix lane.
+- **The create form's hint points at a page that cannot change it.** T002's
+  `.field-hint` says *"Raise session_lifetime in settings"*; `/settings` is
+  read-only by construction and registers no mutating verb, so the operator who
+  follows it finds a table. The real move is the config file or the unit's
+  environment, then a restart. Copy fix.
+- **`docs/auth-and-sessions.md`'s Lifetimes table is a milestone stale.** It
+  states "Session idle timeout | 60 minutes" and "Session absolute lifetime |
+  24 hours, no renewal" as facts, with no mention of the configuration or the
+  per-session override. It is a binding document under `AGENTS.md`'s progressive
+  disclosure — likelier to be read before a handler change than the README is.
+- **Iteration 1's two findings and iteration 4's one are all still open.** The
+  signed API's **500** on a refused lifetime (`refuseCreate`) where
+  `docs/security.md` wants a 400; `internal/httpapi/render.go` still the only
+  file `gofmt -l .` names; and `internal/config/config.go`'s claim that
+  "config_test pins them equal" about a test that does not exist. Five fix-lane
+  lines are now waiting, four of them about the same thing this milestone was
+  about: a document that describes code it has outlived.
 
 RALPH_COMPLETE

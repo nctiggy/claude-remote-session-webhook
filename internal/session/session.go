@@ -14,8 +14,17 @@ import (
 )
 
 // The two lifetimes every session is bounded by (FR-038, Principle VI). They are
-// constants rather than configuration on purpose: an operator who could widen
-// them could widen the blast radius the constitution bounds by construction.
+// the daemon's built-in defaults rather than the bound itself: the operator
+// configures both the defaults and their ceilings — CRSW_SESSION_LIFETIME and
+// CRSW_IDLE_TIMEOUT, CRSW_SESSION_LIFETIME_MAX and CRSW_IDLE_TIMEOUT_MAX, handed
+// over by SetLifetimes — and a create may override either for one session under
+// those ceilings, refused above one rather than clamped to it (#37). These are
+// what every one of those falls back to when nothing is configured.
+//
+// What bounds the blast radius is therefore the ceiling, not the constant. Every
+// session still carries both deadlines, the absolute one is never renewed, and
+// there is no way to spell "never" for it — so a relaxed bound is one the
+// operator allowed, never one a caller took.
 const (
 	// AbsoluteLifetime is measured from CreatedAt and is never renewed.
 	AbsoluteLifetime = 24 * time.Hour
@@ -221,6 +230,16 @@ func (s Session) AbsoluteDeadline() time.Time {
 	return s.CreatedAt.Add(orDefault(s.Lifetime, AbsoluteLifetime))
 }
 
+// IdleDisabled reports that idle reaping is off for this session, which is what
+// a negative Idle spells (#37).
+//
+// It exists so that "negative means off" has one expression rather than two. The
+// dashboard has to know: a card must say there is no idle limit rather than
+// render the far-future instant IdleDeadline returns for such a session, and a
+// caller comparing the duration against zero itself would be a second place the
+// rule lives — free to disagree with this one the day the spelling changes.
+func (s Session) IdleDisabled() bool { return s.Idle < 0 }
+
 // IdleDeadline is when the session dies for want of a request (FR-038).
 //
 // A zero Idle means IdleTimeout, as above. A *negative* Idle means idle reaping
@@ -229,7 +248,7 @@ func (s Session) AbsoluteDeadline() time.Time {
 // rather than removed. It is spelled as a negative rather than as zero because
 // zero already means "unset", and one value cannot mean both.
 func (s Session) IdleDeadline() time.Time {
-	if s.Idle < 0 {
+	if s.IdleDisabled() {
 		// Far enough out that no comparison against it can fire before the
 		// absolute deadline does, which is the bound that still applies.
 		return s.LastActivity.Add(AbsoluteLifetime * 400)

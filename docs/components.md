@@ -258,13 +258,13 @@ session that reads as green is a bug.
 
 ## Session card
 
-One session: name, state pill, identifier, working directory, age, and its
-action row.
+One session: name, state pill, identifier, start command, mode, working
+directory, age, both of its deadlines, and its action row.
 
 ```gotemplate
-{{/* The dot is one card's view — ID, Name, DisplayState, WorkDir, Age,
-     PageToken — built by cardOf() in internal/httpapi. An empty PageToken
-     renders no action row. */}}
+{{/* The dot is one card's view — ID, Name, DisplayState, StartCommand, Mode,
+     WorkDir, Age, IdleDeadline, AbsoluteDeadline, PageToken — built by cardOf()
+     in internal/httpapi. An empty PageToken renders no action row. */}}
 {{ template "session-card" . }}
 ```
 
@@ -300,6 +300,21 @@ Rules:
   unknown, in dim sans. Never a placeholder that reads like a real name or a real
   path: a card showing an invented directory tells an operator something false
   about an unsandboxed shell.
+- **Both deadlines are on the card, and one of them alone would be a lie.**
+  There are two clocks: the idle bound moves with every request and an operator
+  may turn it off for one session, and the absolute bound is counted from
+  creation, is never renewed, and cannot be turned off at all. A card carrying
+  only the idle row would read as "this session never dies" for exactly the
+  session whose operator relaxed the bound — the same defect as copy claiming a
+  compact happened when the daemon only delivered the request. They are rows of
+  the `.card-meta` list, like the mode, so neither has a class of its own.
+- **A session with idle reaping off says there is no idle limit, never a date.**
+  `IdleDeadline` answers four hundred lifetimes out for such a session, which is
+  the manager's way of spelling "this comparison never fires"; formatted onto a
+  card it would read "in 400 days", a fact nothing in the daemon believes. A
+  deadline already reached reads as due rather than as time remaining — the
+  reaper is entitled to take that session on its next sweep, and a card claiming
+  otherwise is the dashboard disagreeing with the thing that acts.
 
 ## Action controls
 
@@ -634,16 +649,19 @@ Rules:
 
 ### Switch
 
-One `<input type="checkbox">`, themed. Today there is exactly one on the
-dashboard: remote control on the create form.
+One `<input type="checkbox">`, themed. Today there are two, both on the create
+form: remote control, and the idle override that lets a session outlive the idle
+clock. This section said there was exactly one for as long as that was true; the
+second arrived with milestone 10, and the rules below say which of them each one
+governs rather than reading as though the form still had a single switch.
 
 | Class | What it is |
 |---|---|
 | `.field-switch` | The row. The one field whose label sits beside its input rather than above it |
-| `.switch-input` | The native checkbox, `name="remote_control"`, `value="on"` |
+| `.switch-input` | The native checkbox. `name="remote_control"` `value="on"`, and `name="idle_timeout"` `value="0"` |
 | `.switch-label` | Its label, in the design system's label role |
 
-Rules:
+Rules — the first two are the remote-control switch's:
 - **It carries a mode, never a name.** The browser neither sees nor sends a
   command name; which configured command each mode runs is read from
   configuration server-side. A control offering command names is the defect this
@@ -651,6 +669,25 @@ Rules:
 - **Two states and no third.** A ticked box posts `on` and an unticked one posts
   nothing at all, so a lost or stripped field yields the *less* privileged mode.
   Anything else is the uniform refusal, including a real configured command name.
+
+And these are the idle override's:
+- **It posts the spelling the signed API already has**, `idle_timeout=0`, read by
+  that route's own parser — one door offering a session that outlives the
+  defaults and the other refusing the same word would be two sets of rules for
+  one bound. An unticked box posts nothing, which is the daemon's configured
+  default, so a form submitted without touching it starts exactly the session
+  this door started before the field existed.
+- **The label says "never die" and the hint beside it says what still does.**
+  There are two clocks: this switch turns off the idle one, and the absolute
+  lifetime is counted from creation, is never renewed, and cannot be disabled at
+  all. A label offering "never die" alone would be the interface asserting
+  something the daemon does not do — the same defect as copy claiming a session
+  was compacted when the daemon only delivered the request. The sentence is a
+  `.field-hint` named by `aria-describedby`, exactly as the working-directory
+  field's roots are, because `.switch-label` is the label role and prose set in
+  it is shouting.
+- **Neither switch ships `checked`.** The relaxed bound and the more privileged
+  mode are both choices an operator makes, never states they arrive in.
 - **The native control is the accessible core; only its presentation changes.**
   `accent-color` paints the platform's own checkbox and there is deliberately no
   `appearance: none` — what an operator reads is the tick, a shape, and the

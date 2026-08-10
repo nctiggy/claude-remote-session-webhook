@@ -265,7 +265,7 @@ func (s *Server) refuseBrowserDestroy(w http.ResponseWriter, r *http.Request, er
 // (FR-033).
 const patternDashboardCreate = "POST /dashboard/sessions"
 
-// The three fields a create carries beside the token the gate reads
+// The fields a create carries beside the token the gate reads
 // (contracts/actions.md, contracts/remote-control-toggle.md).
 //
 // Spelled once here so the field this handler reads has one spelling. The form
@@ -275,6 +275,25 @@ const patternDashboardCreate = "POST /dashboard/sessions"
 const (
 	fieldName    = "name"
 	fieldWorkDir = "work_dir"
+
+	// fieldLifetime and fieldIdleTimeout are the per-session overrides of the
+	// two clocks every session is bounded by (#37, milestone 10). They are
+	// spelled exactly as POST /sessions spells them in JSON, and read through
+	// that route's own parser: one door offering a session that outlives the
+	// defaults and the other refusing the same words would be two sets of rules
+	// for one bound.
+	//
+	// They carry duration strings rather than numbers, for parseLifetimeOverrides'
+	// reason — a bare 3600 is a unit the operator and the daemon have to agree
+	// about silently. Absent means the daemon's default, so a form that submits
+	// neither starts exactly the session this door started before they existed.
+	//
+	// Nothing here is trusted for being typed by the operator. What the ceilings
+	// bound is the blast radius Principle VI bounds by construction, and a value
+	// past one is refused rather than clamped: an operator who believes they have
+	// thirty days and silently has one learns otherwise when the session is gone.
+	fieldLifetime    = "lifetime"
+	fieldIdleTimeout = "idle_timeout"
 
 	// fieldRemoteControl is the switch, and it carries a *mode* rather than a
 	// name (FR-003, FR-004). It replaced a `<select name="start_command">` that
@@ -416,6 +435,29 @@ func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// How long this session may live, and how long it may go untouched — the
+	// operator's own choice, read through the parser POST /sessions reads them
+	// with (#37, milestone 10). Until this existed the fields were on the record,
+	// were bounded, were tested and were documented, and the surface the operator
+	// actually uses could reach none of it.
+	//
+	// The parse is here rather than in the manager because a duration *string* is
+	// a wire spelling and the manager takes durations; what the ceilings do to the
+	// parsed values is resolveLifetimes' and is not repeated here. A second parser
+	// on this door would be a second set of rules about how long an unsandboxed
+	// shell may live, free to disagree with the first.
+	//
+	// Ahead of the manager for the reason the mode check is: a create that named
+	// an unusable lifetime costs no path resolution and no tmux command. The
+	// refusal is refuseBrowserCreate's, so a value past a ceiling and a value the
+	// clock cannot read are one answer to the operator and one sentinel on the
+	// trail — never the caller's own text, which is what createReason keeps out.
+	lifetime, idle, err := parseLifetimeOverrides(r.PostForm.Get(fieldLifetime), r.PostForm.Get(fieldIdleTimeout))
+	if err != nil {
+		s.refuseBrowserCreate(w, r, err)
+		return
+	}
+
 	// Which configured command that mode runs, asked of the manager rather than
 	// worked out here (FR-004). Local asks for no command in particular, which is
 	// what an empty StartCommand already means to config.StartCommands.Command,
@@ -459,6 +501,13 @@ func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
 		// The daemon's own answer to the mode above, never a byte the form
 		// carried. It is the whole of FR-004 in one assignment.
 		StartCommand: startCommand,
+		// The operator's two overrides, which the manager checks against the
+		// operator's own ceilings before a record exists (resolveLifetimes). A
+		// negative Idle is idle reaping off for this session and is safe because
+		// the absolute deadline still fires; there is deliberately no spelling of
+		// that for Lifetime, on either door.
+		Lifetime: lifetime,
+		Idle:     idle,
 	})
 	if err != nil {
 		s.refuseBrowserCreate(w, r, err)
@@ -527,6 +576,19 @@ func (s *Server) refuseBrowserCreate(w http.ResponseWriter, r *http.Request, err
 		// than one fact, and the day they disagree this is the honest answer.
 		AuditFrom(r.Context()).Deny(createReason(err).Error())
 		s.redirectOutcome(w, r, outcomeBadStartCommand)
+	case errors.Is(err, session.ErrInvalidLifetime):
+		// Its own outcome rather than the generic failure, for the reason the two
+		// field refusals above have one each: what an operator has to fix is a
+		// value they typed, and a sentence saying the session could not be started
+		// would send them looking at the host. Both causes end here — a duration
+		// this daemon cannot read, and one past a ceiling the operator set — and
+		// the sentence covers both, because the fix for either is the field.
+		//
+		// The record carries the sentinel createReason returns and never the
+		// wrapped text, which on this branch is the only branch where that matters
+		// twice over: the parse error quotes what arrived (FR-042).
+		AuditFrom(r.Context()).Deny(createReason(err).Error())
+		s.redirectOutcome(w, r, outcomeBadLifetime)
 	case errors.Is(err, session.ErrTooManySessions):
 		// A full fleet and a spent create budget are one outcome for the reason
 		// they were one body: nothing the operator sent is wrong, and the only fix
