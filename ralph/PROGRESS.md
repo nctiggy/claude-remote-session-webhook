@@ -266,3 +266,65 @@ rather than trusting the line number), T005 (README).
   milestone decided, and `docs/components.md` is the binding document — that one
   was updated in the same commit, including the `cardOf` field list, which had
   already been missing `StartCommand` and `Mode` before this task touched it.
+
+---
+
+## Iteration 4 — 2026-08-10
+
+**Did:** T004. The comment above `AbsoluteLifetime`/`IdleTimeout`
+(`internal/session/session.go`) no longer claims they are constants *on purpose*
+so no operator can widen them. It now says what #37 actually built: they are the
+built-in defaults, the operator's configuration sets both the defaults and the
+ceilings, a create may override either under those ceilings, and the **ceiling**
+is what keeps Principle VI true.
+
+**Learned — what the next iteration would otherwise rediscover:**
+
+- **T005 (README) can be written from this one file.** The four keys are
+  `CRSW_SESSION_LIFETIME` / `CRSW_IDLE_TIMEOUT` (defaults) and
+  `CRSW_SESSION_LIFETIME_MAX` / `CRSW_IDLE_TIMEOUT_MAX` (ceilings), loaded at
+  `config.go:649,657` and handed to the manager by one call —
+  `internal/httpapi/server.go:387` `sessions.SetLifetimes(...)`.
+- **Where each bound is actually enforced**, for prose that has to be true:
+  `validateLifetimes` (`config.go:1493`) refuses at *startup* — lifetime must be
+  positive, a ceiling may not sit below its own default, `CRSW_IDLE_TIMEOUT` may
+  not be negative (0 is the disable there) and may not exceed the lifetime.
+  `resolveLifetimes` (`manager.go:232`) refuses at *create* — over a ceiling is
+  refused, never clamped; a negative lifetime is refused; a negative idle is the
+  per-session disable; an idle that could never fire inside the lifetime is
+  refused. Note the asymmetry in spelling: **`CRSW_IDLE_TIMEOUT=0` disables,
+  a negative `Idle` on a record disables** — zero on the record means "unset".
+- **"Effectively never", concretely:** raise `CRSW_SESSION_LIFETIME_MAX` (and
+  `CRSW_SESSION_LIFETIME` if the default should move with it — `loadDuration` has
+  no upper bound, so `8760h` parses), then a create asks for a lifetime up to that
+  ceiling. There is still no "never" sentinel and `AbsoluteDeadline`'s comment
+  says why: *"a session that can outlive the daemon's own memory of why it exists
+  is what Constitution VI is written against"*. The dashboard can now make the
+  idle half of that choice (T002's switch); the lifetime half is still settings.
+- **A comment fix has no test that can fail without it.** Nothing in this repo
+  reads a Go comment, so the gate for this task was the green tree plus the
+  reading. Deliberately did not invent a prose-pinning test: it would pin the
+  wording rather than the fact, and Principle IV is against the machinery.
+
+**Left:** T005 (README's configuration table and the lifetime prose) — the last
+task in the milestone.
+
+**Findings — noticed, not fixed:**
+
+- **`internal/config/config.go:1454` makes a claim about a test that does not
+  exist.** It duplicates the two constants to avoid an import cycle — correct and
+  well explained — and then says *"config_test pins them equal so the duplication
+  cannot drift silently."* Nothing does: no `_test.go` in the repo mentions
+  `session_AbsoluteLifetime`/`session_IdleTimeout`, and no config test imports
+  `internal/session`. So the duplication is unpinned **and** a reader is told it
+  is safe. Two lanes' worth: the pin is a small test
+  (`session_AbsoluteLifetime == session.AbsoluteLifetime`, in a `config_test`
+  package to keep the cycle out of the build), the sentence is a fix-lane line.
+  Out of scope here — T004 names one comment in one file and AR-008 forbids the
+  reach — but this is the *same defect class* T004 exists to close, one package
+  over, and it is now the more dangerous of the two: a false claim of coverage.
+- **Both findings from iteration 1 still stand, untouched for a fourth
+  iteration.** The signed API answers a refused lifetime with a **500**
+  (`refuseCreate`, `internal/httpapi/sessions.go`) where `docs/security.md` wants
+  a 400 with the uniform body. `internal/httpapi/render.go` is still the only file
+  `gofmt -l .` names, on a branch with `golangci-lint run` (v2.12.2) at 0 issues.
