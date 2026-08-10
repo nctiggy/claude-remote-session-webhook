@@ -60,3 +60,67 @@ sessions to never die if I choose."*
   lifetimes "are constants rather than configuration on purpose: an operator who
   could widen them could widen the blast radius." They became configurable. That is
   the same class of defect milestone 8 spent five tasks closing.
+
+---
+
+## Iteration 1 — 2026-08-10
+
+**Did:** T001. `createFromBrowser` now reads two optional form fields and passes
+`Lifetime` and `Idle` into `session.CreateRequest`, so the dashboard can finally
+reach the per-session overrides the record, the ceilings, the reaper and the README
+have all had since #37.
+
+**Learned — the shape T002 has to submit against:**
+
+- **The fields are `lifetime` and `idle_timeout`**, the same names POST /sessions
+  spells in JSON, read from `PostForm` and parsed by that route's own
+  `parseLifetimeOverrides` (`internal/httpapi/sessions.go:85`). No second parser
+  was written. They carry **Go duration strings** (`72h`, `90m`), and absent means
+  the daemon's default — a form submitting neither starts exactly the session this
+  door started before.
+- **`idle_timeout=0` is the "no idle limit" spelling.** `parseLifetimeOverrides`
+  turns a submitted zero into `-1` because zero on the record already means "unset",
+  and a negative `Idle` is the disable. So T002's switch can be
+  `<input type="checkbox" name="idle_timeout" value="0">` and needs no new parsing
+  on either side. A hand-built `idle_timeout=-30m` reaches the same record state;
+  both are covered by a test.
+- **A new outcome code: `bad-lifetime`** (`outcome.go`), with its sentence in
+  `banners` and its spelling added to `spelledOutcomes` in `outcome_test.go` —
+  `TestEveryOutcomeThisPackageSpellsHasASentence` counts the map, so a new code
+  must be added in both places or the suite fails.
+- **"The uniform refusal" in T001 was read as this door's field-level refusal**, not
+  as the action gate's 403. A value past a ceiling comes from an operator who was
+  admitted and passed the gate; it is the same class of thing as a bad name or a
+  forbidden work dir, and those answer with an outcome redirect. A 403 there would
+  make the gate's own refusal ambiguous.
+- **The ceilings in the httpapi fixture are the constants** — `newSessionFixture`
+  never calls `SetLifetimes`, so `maxLifetime` is 24h and `maxIdle` is 60m. That is
+  what makes `lifetime=720h` and `idle_timeout=90m` refusable in a unit test with no
+  configuration.
+- **The fixture's manager clock does not move**, so "idle reaping is off" cannot be
+  proven by running a sweep. It is asserted through `IdleDeadline()` — the method
+  `expiredAt` compares against — never falling before `AbsoluteDeadline()`, plus
+  `DisplayState` still reading `running` an hour past the default idle threshold.
+- **Both halves were proven by breaking them.** With the two fields unread the
+  carry test fails on the record and the refusal test gets `outcome=created` on
+  every row.
+
+**Left:** T002 (the control on the create form), T003 (the deadline on the card),
+T004 (the stale comment), T005 (README).
+
+**Findings — noticed, not fixed:**
+
+- **The signed API answers a refused lifetime with a 500.** `refuseCreate`
+  (`internal/httpapi/sessions.go:432`) has no `ErrInvalidLifetime` branch, so both
+  an unparseable duration and one past a ceiling fall to `default:` →
+  `failInternal` → 500 with the internal-error body. `docs/security.md` says a
+  field-level refusal is a 400 with the uniform body, and `createReason` already
+  carries the sentinel for the trail — the fix is one `case` beside the existing
+  `ErrInvalidName, ErrInvalidWorkDir` one. Left alone deliberately: T001 is the
+  browser door, and AR-008 forbids the reach. **Worth a fix-lane line of its own.**
+- **`internal/httpapi/render.go` is not `gofmt` clean on this branch** — its import
+  block has `internal/buildinfo` above the stdlib imports, and `gofmt -l .` names
+  the file. It is untouched by this task and pre-existing. Nothing catches it:
+  `golangci-lint run` reports 0 issues and no CI workflow runs `gofmt` or
+  `goimports`, so the `AGENTS.md` format command is the only thing that would, and
+  only for a file someone happens to edit.
