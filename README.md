@@ -235,10 +235,10 @@ stands in for the permission prompt that is gone.
 | `CRSW_LISTEN` | no | `127.0.0.1:8765` | The listener. A host that is not a loopback IP literal, or a port out of range, refuses |
 | `CRSW_MAX_SESSIONS` | no | `5` | How many sessions may exist at once. Below 1 refuses |
 | `CRSW_DESTROY_ON_SHUTDOWN` | no | `false` | Tear every session down when the daemon stops. Off by default: sessions survive a clean stop and startup adoption reclaims them, so a redeploy no longer costs the fleet. `true` restores the old behaviour, for a host being decommissioned rather than updated |
-| `CRSW_SESSION_LIFETIME` | no | `24h` | How long a session may live from creation. Zero or negative refuses; there is no "never" |
-| `CRSW_SESSION_LIFETIME_MAX` | no | `CRSW_SESSION_LIFETIME` | The ceiling a per-session lifetime override may not exceed. Below the default refuses |
-| `CRSW_IDLE_TIMEOUT` | no | `60m` | How long a session may sit without a request before the reaper takes it. Longer than the lifetime refuses |
-| `CRSW_IDLE_TIMEOUT_MAX` | no | `CRSW_IDLE_TIMEOUT` | The ceiling for a per-session idle override. Below the default refuses |
+| `CRSW_SESSION_LIFETIME` | no | `24h` | How long a session may live from creation, never renewed. The default every create inherits, and a create may ask for another up to the ceiling below. Zero or negative refuses; there is no "never", so an operator who wants one sets this long instead |
+| `CRSW_SESSION_LIFETIME_MAX` | no | `CRSW_SESSION_LIFETIME` | The ceiling a per-session lifetime override may not exceed — a create asking past it is refused, never clamped. Below the default refuses. It defaults to the default, so an override buys nothing until this is raised deliberately |
+| `CRSW_IDLE_TIMEOUT` | no | `60m` | How long a session may sit without a request before the reaper takes it, counted from its last activity and moving with it. Negative refuses; longer than the lifetime refuses |
+| `CRSW_IDLE_TIMEOUT_MAX` | no | `CRSW_IDLE_TIMEOUT` | The ceiling a per-session idle override may not exceed. Below the default refuses. It bounds an idle timeout set *longer*; the dashboard's switch turns that clock off rather than lengthening it, which this does not bound and the absolute lifetime does |
 | `CRSW_CREATE_RATE_PER_MIN` | no | `6` | Creates per minute per caller. Below 1 refuses |
 | `CRSW_MAX_BODY_BYTES` | no | `65536` | The largest request body read. Below 1 refuses |
 | `CRSW_ACCESS_TEAM_DOMAIN` | all three, or none | none — the dashboard admits nobody | The Cloudflare Access team domain the assertion's issuer and key set are both derived from |
@@ -284,6 +284,30 @@ Notes worth having before you set these:
   and a real configured name submitted in that field is refused like any other
   value. `CRSW_START_COMMANDS` is still how the API door names one, because that
   door takes names.
+- **There are two clocks, and only one of them can be turned off.** The idle
+  timeout runs from a session's last activity and moves with it; the absolute
+  lifetime runs from creation and is never renewed. A create may override either
+  under the `_MAX` ceiling beside it, and **the dashboard makes the idle half of
+  that choice**: the create form carries a *Never die when idle* switch, and a
+  session started with it ticked is never reaped for sitting quiet. It still dies
+  at its absolute deadline — which is exactly what makes turning the idle clock
+  off safe, and why there is no switch for the other one. Both deadlines are on
+  the session's card, so which clock is coming is something to read rather than
+  infer.
+- **"Effectively never" is a ceiling raised, not a bound removed.** No value
+  spells *never*, and a negative lifetime is refused, so the way to get a session
+  that outlives a working day is to say how long. There is no upper bound on the
+  parse, so a year is a legal answer:
+  ```
+  CRSW_SESSION_LIFETIME=8760h     # the default every create inherits; the ceiling follows it
+  CRSW_IDLE_TIMEOUT=8760h         # or leave this and tick the form's switch per session
+  ```
+  Raising only `CRSW_SESSION_LIFETIME_MAX` widens what a create may *ask* for and
+  changes nothing an operator gets by default — that is the shape for the API
+  door, which sends `lifetime` and `idle_timeout` per create, rather than for the
+  form, whose only lifetime control is that switch. Nothing is re-read while the
+  daemon runs and a session keeps the deadlines it was created with, so a raise
+  reaches the next session and not the one already running.
 - **`CRSW_LISTEN` will not take a hostname.** `localhost` is refused rather than
   resolved: `/etc/hosts` or a resolver could move the bind off loopback without
   this value changing. Reachability is the tunnel's job.
@@ -301,7 +325,9 @@ Notes worth having before you set these:
 One limit is still a **constant in the code, not a setting**: the signed-request
 timestamp window, 300s in both directions. The session lifetime and the idle
 timeout are settings now, and what bounds them is the `_MAX` ceiling beside each
-rather than their being unwritable.
+rather than their being unwritable — the ceiling is the operator's, the choice
+under it is the session's, and the blast radius stays bounded because a session
+cannot reach past what the host was configured to allow.
 
 ### The configuration file
 
