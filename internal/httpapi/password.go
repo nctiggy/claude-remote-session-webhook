@@ -172,8 +172,9 @@ func newPasswordDoor(secret, password []byte) (*passwordDoor, error) {
 		return nil, errPasswordDoorNoPassword
 	}
 	return &passwordDoor{
-		key:    append([]byte(nil), secret...),
-		digest: sha256.Sum256(password),
+		key: append([]byte(nil), secret...),
+		// Derived once, at startup, so the cost is paid where nobody is waiting.
+		digest: derivePassword(password, secret),
 		clock:  systemClock{},
 	}, nil
 }
@@ -243,7 +244,7 @@ func (d *passwordDoor) Verify(r *http.Request) (*access.VerifiedOperator, error)
 // refuse here and nothing for a caller to branch on. Neither side of the compare
 // is ever logged, recorded, rendered, or put in an error.
 func (d *passwordDoor) admits(submitted []byte) bool {
-	got := sha256.Sum256(submitted)
+	got := derivePassword(submitted, d.key)
 	return subtle.ConstantTimeCompare(got[:], d.digest[:]) == 1
 }
 
