@@ -110,7 +110,7 @@ reassured.
 
 ## Tasks
 
-- [ ] **T001** 🔒 Add `access_enabled` (bool) and `dashboard_password` (secret) in `internal/config/`. `dashboard_password` joins `IsSecret`; `access_enabled` joins the boolean keys so it renders as a checkbox and is caught by `TestIsBoolNamesEveryBooleanLoaded`. Implement the selection table above in `Validate`, including **refusing to start when both are configured**. Test every row of that table, and test that the password is never returned by anything that renders configuration.
+- [x] **T001** 🔒 Add `access_enabled` (bool) and `dashboard_password` (secret) in `internal/config/`. `dashboard_password` joins `IsSecret`; `access_enabled` joins the boolean keys so it renders as a checkbox and is caught by `TestIsBoolNamesEveryBooleanLoaded`. Implement the selection table above in `Validate`, including **refusing to start when both are configured**. Test every row of that table, and test that the password is never returned by anything that renders configuration.
 
 - [ ] **T002** 🔒 Relax the bind guard in `loadListen`: a non-loopback address is permitted **only when layer 1 admits somebody**. A `closedDoor` daemon still refuses. The refusal is a startup error to a terminal rather than an HTTP response, so it may name which of the two is missing. **Must fail when** the `IsLoopback` check is simply deleted.
 

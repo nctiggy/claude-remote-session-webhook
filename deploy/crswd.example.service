@@ -63,6 +63,12 @@ StandardError=journal
 # committed to a public repository — a value typed here is published forever.
 # The secret is the obvious case; the other three name a Cloudflare team, an
 # application, and a person.
+#
+# CRSW_DASHBOARD_PASSWORD belongs in that file too, and for the strongest
+# version of the same reason: it is the browser door itself on a daemon that is
+# not behind Cloudflare. Set it INSTEAD of the three Access values — configuring
+# both is a startup failure — and only on a network where you have read what
+# `.env.example` says about it crossing the wire in clear.
 # Optional, and the leading `-` is what makes it so. The configuration file at
 # %h/.config/crswd/config is what install.sh writes and what an operator edits;
 # this env file predates it and is kept only so a deployment that still has one
@@ -95,6 +101,13 @@ Environment=CRSW_MAX_SESSIONS=5
 # intact. Set true if a stopped daemon should mean nothing left running. A crash
 # leaves sessions either way; this governs the clean stop only.
 Environment=CRSW_DESTROY_ON_SHUTDOWN=
+
+# Whether Cloudflare Access is the browser door. Default: off, and off does not
+# turn Access away — the three values in the environment file above select it on
+# their own, as they always have. Set true to say so, which makes those three
+# required rather than optional and makes configuring a password door alongside
+# them a startup failure instead of a guess.
+Environment=CRSW_ACCESS_ENABLED=
 Environment=CRSW_CREATE_RATE_PER_MIN=6
 Environment=CRSW_MAX_BODY_BYTES=65536
 Environment=CRSW_MAX_STREAMS=10

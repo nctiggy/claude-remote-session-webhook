@@ -304,6 +304,11 @@ const (
 	canaryAnnounce = "test-only-"
 	canarySecret   = canaryAnnounce + "qx7v-zk2m-vb9n-ct4r-ls8w-pd3h-gj6f-wn5y-rt1u-mb0e" //nolint:gosec // G101: a canary a test sweeps for, not a credential
 	canaryAllowed  = canaryAnnounce + "zq8t-kd4p-mn7v@vb6n-xw3r.hj9c"
+
+	// The third, and the one this page would most obviously be asked to print:
+	// it is the browser door itself on a daemon with no Cloudflare in front of
+	// it, and the operator reading the page is the person who set it.
+	canaryPassword = canaryAnnounce + "hf2k-wt6d-pl9s-cy4b-vr7n-qm3x" //nolint:gosec // G101: a canary a test sweeps for, not a credential
 )
 
 // shortestRunWorthHaving is where a run of a secret starts being a disclosure.
@@ -466,6 +471,10 @@ func TestSettingsNeverRendersSecretValue(t *testing.T) {
 	f := settingsOn(t, func(cfg *config.Config) {
 		cfg.SharedSecret = []byte(canarySecret)
 		cfg.AccessAllowedEmails = []string{canaryAllowed}
+		// A Config no Load produces — validateDoors refuses two doors — and
+		// deliberately so: this page must hide the password whether or not the
+		// loader agreed to start on the daemon that holds one.
+		cfg.DashboardPassword = []byte(canaryPassword)
 	})
 	page := settingsBody(t, f)
 
@@ -475,6 +484,7 @@ func TestSettingsNeverRendersSecretValue(t *testing.T) {
 	}{
 		{"the shared secret", canarySecret},
 		{"the allowlisted addresses", canaryAllowed},
+		{"the dashboard password", canaryPassword},
 	} {
 		if strings.Contains(page, secret.value) {
 			t.Errorf("the settings page renders %s verbatim:\n%s", secret.what, page)
@@ -525,6 +535,15 @@ func TestSecretRendersPresentOrAbsent(t *testing.T) {
 		}, secretPresent},
 		{"an empty allowlist", "access_allowed_emails", func(cfg *config.Config) {
 			cfg.AccessAllowedEmails = nil
+		}, secretAbsent},
+		// The third key, and the one whose absent half is a fact about the daemon
+		// rather than an omission: no password means no password door, which is
+		// most daemons, and the cell has to say so in the same two words.
+		{"a configured password door", "dashboard_password", func(cfg *config.Config) {
+			cfg.DashboardPassword = []byte(canaryPassword)
+		}, secretPresent},
+		{"no password door", "dashboard_password", func(cfg *config.Config) {
+			cfg.DashboardPassword = nil
 		}, secretAbsent},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -993,6 +1012,11 @@ func newSweep(t *testing.T) *sweep {
 		fleet: settingsOn(t, func(cfg *config.Config) {
 			cfg.SharedSecret = []byte(canarySecret)
 			cfg.AccessAllowedEmails = []string{canaryAllowed}
+			// Swept even though this fixture's live door is Access: the claim
+			// this test makes is about every response, and a route that learned
+			// to print the password would not announce itself by also turning
+			// the Access door off.
+			cfg.DashboardPassword = []byte(canaryPassword)
 		}),
 		router:  http.NewServeMux(),
 		reached: map[string]bool{},
@@ -1278,6 +1302,7 @@ func TestFullRouteSweepLeaksNoSecret(t *testing.T) {
 	}{
 		{"the shared secret", canarySecret},
 		{"the allowlisted addresses", canaryAllowed},
+		{"the dashboard password", canaryPassword},
 	} {
 		for _, answer := range s.answers {
 			if strings.Contains(answer.text, secret.value) {

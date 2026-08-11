@@ -123,12 +123,16 @@ Specific to this daemon:
   only. `config.example` ships with every setting commented out, which is also what
   keeps a copy of it from being a file that holds a secret.
 - **Which keys are secret is one predicate — `config.IsSecret`** — and it is
-  `shared_secret` and `access_allowed_emails`. The allowlist is not a credential,
-  but it names *who* may reach a daemon that runs unsandboxed code on this host. A
-  second list would let the 0600 refusal and the settings page disagree about what
-  a secret is, and that disagreement surfaces as a credential in a browser rather
-  than as a failure.
-- **A configuration file that sets either is refused unless it is mode 0600.** The
+  `shared_secret`, `access_allowed_emails` and `dashboard_password`. The allowlist
+  is not a credential, but it names *who* may reach a daemon that runs unsandboxed
+  code on this host. The password is the browser door itself on a daemon with no
+  Cloudflare in front of it, which is why the predicate's third caller matters as
+  much as the first two: `config.Editable` is `!IsSecret`, so naming it there is
+  what keeps it out of the form on the page it protects. A second list would let
+  the 0600 refusal, the settings page and that form disagree about what a secret
+  is, and the disagreement surfaces as a credential in a browser rather than as a
+  failure.
+- **A configuration file that sets any of them is refused unless it is mode 0600.** The
   refusal fires on the file's *contents*, not on its name: refusing over the mode of
   a file holding nothing but `allowed_roots` would demand a change that protects
   nothing, and an operator who cannot act on a refusal learns to work around it.

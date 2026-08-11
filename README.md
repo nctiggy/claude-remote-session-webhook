@@ -241,9 +241,11 @@ stands in for the permission prompt that is gone.
 | `CRSW_IDLE_TIMEOUT_MAX` | no | `CRSW_IDLE_TIMEOUT` | The ceiling a per-session idle override may not exceed. Below the default refuses. It bounds an idle timeout set *longer*; the dashboard's switch turns that clock off rather than lengthening it, which this does not bound and the absolute lifetime does |
 | `CRSW_CREATE_RATE_PER_MIN` | no | `6` | Creates per minute per caller. Below 1 refuses |
 | `CRSW_MAX_BODY_BYTES` | no | `65536` | The largest request body read. Below 1 refuses |
+| `CRSW_ACCESS_ENABLED` | no | `false` | Declares Cloudflare Access to be the browser door. On with none of the three below, it refuses to start rather than serving a dashboard that admits nobody; on beside `CRSW_DASHBOARD_PASSWORD`, it refuses rather than choosing a door. It is not required for the Access door — the three values still select it on their own |
 | `CRSW_ACCESS_TEAM_DOMAIN` | all three, or none | none — the dashboard admits nobody | The Cloudflare Access team domain the assertion's issuer and key set are both derived from |
 | `CRSW_ACCESS_AUD` | all three, or none | none | The Access application's AUD tag, compared for equality and never parsed |
 | `CRSW_ACCESS_ALLOWED_EMAILS` | all three, or none | none | Comma-separated addresses admitted to the dashboard. An entry that is empty or carries a space refuses. **Treated as a secret** |
+| `CRSW_DASHBOARD_PASSWORD` | no | none | The browser door for a daemon with no Cloudflare in front of it. Shorter than 16 characters refuses; set alongside Access, refuses. **Treated as a secret**, so it is never rendered and never editable from the browser. Without TLS in front of the daemon it crosses the network in clear |
 | `CRSW_MAX_STREAMS` | no | `10` | Live output streams open at once. Below 1 refuses |
 | `CRSW_PANE_BOUND` | no | `200` | The largest screen a pane capture may return, in lines. A capture past it is refused, never shortened |
 | `CRSW_START_COMMAND` | no | `claude --dangerously-skip-permissions` | The command line bound to the name `default`. Empty, or carrying a `;` or a control character, refuses |

@@ -736,6 +736,11 @@ func TestGroupReadableWithSecretRefuses(t *testing.T) {
 		// daemon that runs unsandboxed code. It is secret because IsSecret says
 		// so, which is the only place that says so.
 		{name: "the allowlist alone is enough", contents: "access_allowed_emails = nctiggy@gmail.com\n", mode: 0o644},
+		// The password door's own credential, and the reason it is worth a row of
+		// its own: it arrived a milestone after this check, and it is secret here
+		// for the same reason it is unrenderable and uneditable — because
+		// IsSecret names it, in one place, for all three callers.
+		{name: "the dashboard password alone is enough", contents: "dashboard_password = " + hunter2 + "\n", mode: 0o644},
 		{name: "a secret among ordinary settings", contents: "listen = 127.0.0.1:8787\nallowed_roots = /home/nctiggy/code\nshared_secret = " + hunter2 + "\n", mode: 0o644},
 	}
 

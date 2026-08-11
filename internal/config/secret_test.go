@@ -32,7 +32,7 @@ const (
 // under test. A list read out of the answer agrees with the answer by
 // construction, and "only shared_secret is classified" — the failure this task
 // names — has to be catchable here.
-var secretKeyNames = []string{"shared_secret", "access_allowed_emails"}
+var secretKeyNames = []string{"shared_secret", "access_allowed_emails", "dashboard_password"}
 
 func TestIsSecretNamesBothSecretKeys(t *testing.T) {
 	t.Parallel()
@@ -44,6 +44,7 @@ func TestIsSecretNamesBothSecretKeys(t *testing.T) {
 	}{
 		{"shared_secret", true, "it authenticates every API caller"},
 		{"access_allowed_emails", true, "it is not a credential, but it names who may reach a daemon that runs unsandboxed code"},
+		{"dashboard_password", true, "it is the browser door itself, and a password rendered on the page it protects, or editable from it, is not a door"},
 		{"allowed_roots", false, "it is the containment boundary, and an operator whose working directory was refused has to be able to read it"},
 		{"listen", false, "a loopback address discloses nothing"},
 		{"start_commands", false, "the settings page names commands the operator configured themselves"},

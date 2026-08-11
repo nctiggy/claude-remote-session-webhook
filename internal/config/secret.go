@@ -17,11 +17,16 @@ package config
 // host, which is worth exactly as little publication as the secret that
 // authenticates them.
 //
+// dashboard_password is the third, and it is the one where a third caller of
+// this predicate matters: config.Editable is !IsSecret, so naming it here is
+// what keeps the password out of the settings page's form as well as out of its
+// value column. A password settable from the page it protects is not a door.
+//
 // Keys are the file spelling — the environment variable minus CRSW_,
 // lower-cased — because that is the spelling both callers hold: one reads it off
 // a line of the operator's file, the other renders it in a column.
 func IsSecret(key string) bool {
-	return key == "shared_secret" || key == "access_allowed_emails"
+	return key == "shared_secret" || key == "access_allowed_emails" || key == "dashboard_password"
 }
 
 // IsBool reports whether a configuration key holds a true/false setting.
@@ -43,5 +48,5 @@ func IsSecret(key string) bool {
 // Keys are the file spelling, as IsSecret's are and for the same reason: it is
 // the spelling the callers hold.
 func IsBool(key string) bool {
-	return key == "discover_roots" || key == "destroy_on_shutdown"
+	return key == "discover_roots" || key == "destroy_on_shutdown" || key == "access_enabled"
 }

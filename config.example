@@ -229,13 +229,31 @@ version = 1
 # max_body_bytes = 65536
 
 
-# --- Layer 1: the browser door. All three of these, or none of them. ---
+# --- Layer 1: the browser door. Cloudflare Access, or a password, or neither. ---
 #
-# None of the three means this daemon serves the API and admits nobody to the
-# dashboard, which is a deployment it supports and says loudly at every start.
-# Some of them is a startup failure: a team domain without an audience is a
-# half-configured door, and a daemon that started anyway would refuse every
-# login while looking correctly configured.
+# The three Access values are all three of them or none. None means this daemon
+# serves the API and admits nobody to the dashboard, which is a deployment it
+# supports and says loudly at every start. Some of them is a startup failure: a
+# team domain without an audience is a half-configured door, and a daemon that
+# started anyway would refuse every login while looking correctly configured.
+#
+# dashboard_password at the foot of this section is the other door, for a daemon
+# on an internal network with no Cloudflare in front of it. Configuring both is a
+# startup failure. Which door is live decides who may run code on this host, and
+# that is the last question a daemon should answer by picking one.
+
+# Declare that Cloudflare Access is the browser door. true or false; anything
+# else is a startup failure, as it is for every other boolean here.
+#
+# It selects nothing on its own. The three values below have selected the Access
+# door since long before this setting existed, and still do — a daemon that
+# already has them keeps the dashboard it has. What this adds is you saying so,
+# which is checkable where an unstated intention is not: on with none of the
+# three, the daemon refuses to start instead of serving a closed door, and on
+# beside dashboard_password it names the collision instead of choosing.
+#
+# Default: false.
+# access_enabled = false
 
 # Your Cloudflare Access team domain, normally <team>.cloudflareaccess.com. It
 # is one value because two things must agree: the expected issuer and the key
@@ -274,6 +292,27 @@ version = 1
 #
 # Default: none.
 # access_allowed_emails = you@example.com,colleague@example.com
+
+# The password door: the browser door for a daemon on an internal network, where
+# there is no Cloudflare edge in front of it and so no assertion for layer 1 to
+# validate. At least 16 characters — shorter is a startup failure, because the
+# attacker this door is written against is on the same fast network you are.
+#
+# Set beside access_enabled or the three values above, the daemon refuses to
+# start. It has one browser door.
+#
+# It is treated as a secret: a file setting it must be mode 0600, /settings
+# reports it as present or absent and never spells it, and it is one of the
+# settings that page will not edit — a password settable from the page it
+# protects is not a door. Change it here, in this file, and restart.
+#
+# With no TLS in front of the daemon it crosses the network in clear on every
+# sign-in, and anyone who can watch the LAN can read it. That is a real weakness
+# of this door rather than a footnote: put a reverse proxy with a certificate in
+# front of the daemon, or choose it knowing.
+#
+# Default: none, and there is no password door.
+# dashboard_password = paste a long random passphrase here
 
 
 # --- Bounds on what the dashboard may hold open and believe. ---

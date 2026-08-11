@@ -372,6 +372,8 @@ func settingValue(cfg *config.Config, name string) (value string, known bool) {
 		return strconv.Itoa(cfg.CreateRatePerMin), true
 	case config.EnvMaxBodyBytes:
 		return strconv.FormatInt(cfg.MaxBodyBytes, 10), true
+	case config.EnvAccessEnabled:
+		return strconv.FormatBool(cfg.AccessEnabled), true
 	case config.EnvAccessTeamDomain:
 		return cfg.AccessTeamDomain, true
 	case config.EnvAccessAUD:
@@ -446,6 +448,11 @@ func secretConfigured(cfg *config.Config, name string) (configured, known bool) 
 		return len(cfg.SharedSecret) > 0, true
 	case config.EnvAccessAllowedEmails:
 		return len(cfg.AccessAllowedEmails) > 0, true
+	case config.EnvDashboardPassword:
+		// Whether there is a password door, which is a fact about this daemon an
+		// operator has to be able to read. The length behind it is not: the cell
+		// says one of two words either way.
+		return len(cfg.DashboardPassword) > 0, true
 	default:
 		return false, false
 	}
@@ -508,7 +515,8 @@ func settingSectionOf(key string) string {
 	switch key {
 	case "listen":
 		return "Where it listens"
-	case "access_team_domain", "access_aud", "access_allowed_emails", "shared_secret":
+	case "access_enabled", "access_team_domain", "access_aud", "access_allowed_emails",
+		"dashboard_password", "shared_secret":
 		return "Who may reach it"
 	case "allowed_roots", "workdir_suggestions", "discover_roots":
 		return "What it may touch"
