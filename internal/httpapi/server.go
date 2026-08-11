@@ -367,7 +367,7 @@ func verifiedLayer1(cfg *config.Config) (layer1, error) {
 			// rather than an interface holding a nil *Validator.
 			return nil, err
 		}
-		return assertionDoor{validator: v}, nil
+		return assertionDoor{validator: v, door: doorSentenceAccess}, nil
 
 	case len(cfg.DashboardPassword) > 0:
 		d, err := newPasswordDoor(cfg.SharedSecret, cfg.DashboardPassword)

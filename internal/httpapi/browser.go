@@ -100,7 +100,28 @@ type assertionValidator interface {
 // The request's own context goes down with it, so a key-set fetch a browser
 // abandoned is abandoned with it — and, because unobtainable keys refuse
 // (FR-009), that ends as a denial rather than as an admission.
-type assertionDoor struct{ validator assertionValidator }
+type assertionDoor struct {
+	validator assertionValidator
+
+	// door is what the settings page calls this layer 1 (M12/T006), and it is
+	// here because this is the one door type that is two doors.
+	//
+	// Both of internal/access's implementations arrive through this wrapper, and
+	// they are not the same news: one verifies a person against an identity
+	// provider at the edge, and the other is the development bypass, which
+	// verifies nobody. Nothing about a built door tells them apart — the
+	// distinction was made at construction — so the constructor says which it
+	// made rather than leaving the page to infer it. Inferring it from the Config
+	// was tried and is wrong: WithAccessBypassActive lifts the *requirement* to
+	// set the three Access values and not the ability to, so a developer running
+	// the bypass against their ordinary configuration file has all three, and a
+	// page reading them would report Cloudflare Access on the one build whose
+	// layer 1 admits everybody without checking anything.
+	//
+	// It is inert. Verify never reads it, no caller supplies it, and the only
+	// values it takes are constants in this package.
+	door string
+}
 
 func (d assertionDoor) Verify(r *http.Request) (*access.VerifiedOperator, error) {
 	if d.validator == nil {

@@ -375,7 +375,10 @@ func settingsEverySection(t *testing.T, f *fleet) string {
 
 	var all strings.Builder
 	all.WriteString(settingsSectionBody(t, f, sectionUpdates))
-	for _, section := range sectioned(settingsOf(testConfig(loopbackListen))) {
+	// No door sentence, here and at every other grouping call in this file: these
+	// read section titles to walk the menu, and what the page really composes for
+	// that field is asserted by the tests that are about it.
+	for _, section := range sectioned(settingsOf(testConfig(loopbackListen)), "") {
 		all.WriteString(settingsSectionBody(t, f, section.Title))
 	}
 	return all.String()
@@ -704,7 +707,7 @@ func TestSettingsRendersOneRowPerKey(t *testing.T) {
 	// operator cannot reach — and the flat table could not tell those apart from
 	// working, because everything was on one page regardless of the menu.
 	seen := map[string]int{}
-	for _, section := range sectioned(settingsOf(testConfig(loopbackListen))) {
+	for _, section := range sectioned(settingsOf(testConfig(loopbackListen)), "") {
 		body := settingsSectionBody(t, f, section.Title)
 		for _, name := range config.Vars() {
 			key := config.KeyForVar(name)
@@ -1450,7 +1453,7 @@ func TestEverySettingAppearsInASection(t *testing.T) {
 
 	rows := settingsOf(testConfig(loopbackListen))
 	var grouped int
-	for _, section := range sectioned(rows) {
+	for _, section := range sectioned(rows, "") {
 		grouped += len(section.Settings)
 	}
 	if grouped != len(rows) {
@@ -1469,7 +1472,7 @@ func TestSettingsMenuReachesEverySection(t *testing.T) {
 	f := newFleet(t)
 	page := settingsDefaultBody(t, f)
 
-	for _, section := range sectioned(settingsOf(testConfig(loopbackListen))) {
+	for _, section := range sectioned(settingsOf(testConfig(loopbackListen)), "") {
 		// %20 rather than +, because html/template escapes for a URL context and
 		// that is the encoding it chooses. Asserting the rendered form rather
 		// than a guess at it is the point: a test that built the link itself
@@ -1481,6 +1484,230 @@ func TestSettingsMenuReachesEverySection(t *testing.T) {
 	}
 	if !strings.Contains(page, sectionUpdates) {
 		t.Error("the menu does not offer Updates")
+	}
+}
+
+// doorFor is the layer 1 the shipping build really builds for a Config, so a
+// claim about what the page says is made against the door a daemon on that
+// configuration would be holding rather than against a hand-built stand-in.
+func doorFor(t *testing.T, cfg *config.Config) layer1 {
+	t.Helper()
+
+	door, err := verifiedLayer1(cfg)
+	if err != nil {
+		t.Fatalf("verifiedLayer1 = _, %v; want a door", err)
+	}
+	return door
+}
+
+// TestTheDoorSentenceIsTheDoorTheServerBuilt is T006's claim, asked in the one
+// place every door can be asked it.
+//
+// Which layer 1 a browser meets decides who may execute code on this host, and
+// until this task the page said nothing about it at all: an operator could read
+// `access_enabled` and `dashboard_password` and still not know which of the two
+// their daemon had acted on, or whether it had built either.
+//
+// It is driven against the projection and not only through a rendered page
+// because two of its answers can be rendered to nobody. A closedDoor daemon
+// serves this page to no browser — that is what a closed door is — and a door
+// built without saying which it is is a wiring defect nothing is supposed to
+// produce. A test that only opened pages would leave both branches unwritten,
+// and the branch a missing one falls through to is whichever the switch happens
+// to name last.
+//
+// **The Config cannot reach the answer at all**, which is the strongest form of
+// the rule this task needed and is why it is a signature rather than a row
+// below: doorSentence is handed a door and nothing else, so a page describing
+// the daemon its operator meant to start instead of the one they are reading is
+// not a mistake this function can make. What could still make it is the call
+// site, and TestSettingsNamesTheDoorThatIsLive drives a daemon whose file and
+// whose door disagree to hold that end.
+//
+// **Must fail when** any two doors are given one sentence, and when the door
+// this daemon has two of stops being asked which one it is.
+func TestTheDoorSentenceIsTheDoorTheServerBuilt(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range []struct {
+		name string
+		door layer1
+		want string
+	}{
+		{"the Access door a configured Config builds", doorFor(t, testConfig(loopbackListen)), doorSentenceAccess},
+		{"the password door a configured Config builds", doorFor(t, passwordConfig(loopbackListen)), doorSentencePassword},
+		{"the closed door, which nobody can read this page through", doorFor(t, noDoorConfig(loopbackListen)), doorSentenceClosed},
+		{
+			// A wrapper built without saying which of internal/access's two
+			// validators is inside it. Nothing produces one — verifiedLayer1 and
+			// NewWithBypass both name theirs — and if anything ever does, the answer
+			// it must not fall through to is Cloudflare Access, because the other
+			// thing wearing this type is the development bypass, which verifies
+			// nobody.
+			"an assertion door that names no door of its own",
+			assertionDoor{}, doorSentenceUnrecognised,
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := doorSentence(c.door); got != c.want {
+				t.Errorf("a daemon holding %s says %q; want %q", typeName(c.door), got, c.want)
+			}
+		})
+	}
+
+	// Read against each other, because a table comparing four sentences proves
+	// nothing about which door is live if two of them are the same string.
+	said := map[string]bool{}
+	for _, sentence := range []string{doorSentenceAccess, doorSentencePassword, doorSentenceClosed, doorSentenceUnrecognised} {
+		if said[sentence] {
+			t.Errorf("two doors are described by %q, so the page cannot tell them apart", sentence)
+		}
+		said[sentence] = true
+	}
+}
+
+// TestSettingsNamesTheDoorThatIsLive drives the sentence through the whole
+// daemon, for both doors an operator can be reading this page through.
+//
+// End to end and not through the projection alone, because a fact composed into
+// a view nothing renders is the shape of task that looks finished: what has to
+// be true is that the operator *sees* it, on the section whose heading is the
+// question.
+//
+// The two halves arrive as differently as they really do — one carrying an
+// assertion the edge signed, the other carrying nothing but the cookie a sign-in
+// gave it — which is the whole reason the answer cannot come from one place in
+// the middleware.
+//
+// **Must fail when** the section renders no door sentence, or renders another
+// door's.
+func TestSettingsNamesTheDoorThatIsLive(t *testing.T) {
+	t.Parallel()
+
+	t.Run("behind Cloudflare Access", func(t *testing.T) {
+		t.Parallel()
+
+		f := newFleet(t)
+		assertNamesTheDoor(t, settingsSectionBody(t, f, sectionWhoMayReachIt), doorSentenceAccess)
+	})
+
+	t.Run("behind the dashboard password", func(t *testing.T) {
+		t.Parallel()
+
+		assertNamesTheDoor(t, doorSectionAsOperator(t, newLoginDaemon(t)), doorSentencePassword)
+	})
+
+	// A daemon whose file names Cloudflare Access and whose server was handed the
+	// password door: a wiring defect, and the case that decides where the
+	// sentence may come from. It has to read as the door that is really in front
+	// of the dashboard rather than as the one the operator asked for — the same
+	// distinction mayBindOffLoopback draws and the sign-in route's registration
+	// draws — and this is the level the mistake could still be made at, since
+	// doorSentence itself is never handed a Config.
+	//
+	// **Must fail when** the call site composes the sentence from s.cfg.
+	t.Run("a file that disagrees with the door the server built", func(t *testing.T) {
+		t.Parallel()
+
+		door, ok := doorFor(t, passwordConfig(loopbackListen)).(*passwordDoor)
+		if !ok {
+			t.Fatal("a password Config did not build the password door")
+		}
+		door.clock = fixedClock{at: testTime}
+
+		// The three Access values, and no dashboard_password: the page's own rows
+		// will say Access is configured and the password is absent, which is
+		// exactly the file this daemon is not running.
+		d := &loginDaemon{testServer: newAuditedServerOn(t, testConfig(loopbackListen), door), door: door}
+
+		assertNamesTheDoor(t, doorSectionAsOperator(t, d), doorSentencePassword)
+	})
+
+	// The third door's sentence reaches nobody, and this is what that means
+	// rather than a gap in the two above. closedDoor admits no browser, so the
+	// page an operator meets on such a daemon is the uniform refusal — which is
+	// itself the answer to "which door is live", said by the door.
+	t.Run("behind a closed door there is no page to read it on", func(t *testing.T) {
+		t.Parallel()
+
+		s := newAuditedServerOn(t, noDoorConfig(loopbackListen), doorFor(t, noDoorConfig(loopbackListen)))
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, settingsPath, nil))
+
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("GET %s on a closed-door daemon = %d (%s); want %d", settingsPath, w.Code, w.Body.String(), http.StatusUnauthorized)
+		}
+		if body := w.Body.String(); strings.Contains(body, doorSentenceClosed) {
+			t.Errorf("the refusal names the door:\n%s", body)
+		}
+	})
+}
+
+// doorSectionAsOperator opens "Who may reach it" on a password daemon, carrying
+// nothing but the cookie a sign-in gave it — which is everything a browser on
+// such a daemon ever has.
+func doorSectionAsOperator(t *testing.T, d *loginDaemon) string {
+	t.Helper()
+
+	w := d.openAs(t, settingsPath+"?"+querySection+"="+url.QueryEscape(sectionWhoMayReachIt), d.signIn(t))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET the door section as the signed-in operator = %d (%s); want %d", w.Code, w.Body.String(), http.StatusOK)
+	}
+	return w.Body.String()
+}
+
+// assertNamesTheDoor holds a rendered section to exactly one door sentence.
+//
+// The other three are asserted absent rather than merely the right one present:
+// a page that named every door would satisfy "it says Access" and tell an
+// operator nothing.
+func assertNamesTheDoor(t *testing.T, section, want string) {
+	t.Helper()
+
+	if got := strings.Count(section, want); got != 1 {
+		t.Errorf("the section states %q %d times; want exactly once:\n%s", want, got, section)
+	}
+	for _, other := range []string{doorSentenceAccess, doorSentencePassword, doorSentenceClosed, doorSentenceUnrecognised} {
+		if other == want {
+			continue
+		}
+		if strings.Contains(section, other) {
+			t.Errorf("the section also says %q, so it names more than one door:\n%s", other, section)
+		}
+	}
+}
+
+// TestTheDoorSentenceIsOnTheSectionThatAsksTheQuestion pins where it lives.
+//
+// One section and not the page, because the page shows one section at a time: a
+// sentence rendered outside them would follow the operator into "Limits", and a
+// sentence repeated in all of them would be the same fact six times. "Who may
+// reach it" is the heading the door is the answer to, and the keys it was
+// resolved from are the rows directly beneath it.
+//
+// **Must fail when** the sentence is composed onto the view rather than onto its
+// section, which renders it under every heading.
+func TestTheDoorSentenceIsOnTheSectionThatAsksTheQuestion(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+
+	elsewhere := []string{sectionUpdates}
+	for _, section := range sectioned(settingsOf(testConfig(loopbackListen)), "") {
+		if section.Title != sectionWhoMayReachIt {
+			elsewhere = append(elsewhere, section.Title)
+		}
+	}
+	if len(elsewhere) < 2 {
+		t.Fatal("this page has no section besides the door's, so nothing below asserts where the sentence is not")
+	}
+
+	for _, title := range elsewhere {
+		if body := settingsSectionBody(t, f, title); strings.Contains(body, doorSentenceAccess) {
+			t.Errorf("section %q states which door is live; it belongs under %q alone:\n%s", title, sectionWhoMayReachIt, body)
+		}
 	}
 }
 

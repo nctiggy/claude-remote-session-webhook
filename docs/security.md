@@ -43,6 +43,27 @@ middleware and there must never be one**: it asks its one door for a verdict, an
 door reads whichever credential is its own. A nil validator with a special case beside
 it would be a second authorisation path, and the second path is the one nobody reads.
 
+**Which of the three is live is stated on the settings page**, under "Who may reach it",
+and it is read from the door the server was built with rather than from the configuration
+— the same intent-versus-evidence distinction the bind rule and the sign-in route's
+registration both draw, for the same reason. A daemon whose file names a door its server
+did not build is a wiring defect, and the page an operator goes to when something is
+already confusing must describe the daemon they are reading rather than the one they
+meant to start. `httpapi.doorSentence` is handed a door and no `Config` at all, which is
+that rule as a signature rather than as a habit.
+
+Two of the layer 1s are one Go type — the Access validator and the `-tags dev` bypass
+both reach the middleware through `assertionDoor` — so **the constructor records which
+one it built** and the page asks the door rather than inferring. Inferring from the
+`Config` is wrong here and was tried: `WithAccessBypassActive` lifts the requirement to
+*set* the three Access values and not the ability to, so a developer running the bypass
+against their ordinary file has all three, and a page reading them would report
+Cloudflare Access on the one build whose layer 1 admits everybody without checking
+anything. That build says so instead, in as many words.
+
+The sentence names no value: the password's row is still `present` or `absent` and
+nothing else.
+
 ### The password door
 
 It authenticates *less* than Access does, and the difference is stated rather than

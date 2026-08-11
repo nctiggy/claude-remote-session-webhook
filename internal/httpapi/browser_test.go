@@ -200,7 +200,11 @@ func (k *keyServer) validator(t *testing.T) layer1 {
 	if err != nil {
 		t.Fatalf("access.New = _, %v; want a validator", err)
 	}
-	return assertionDoor{validator: v}
+	// Named as verifiedLayer1 names it, not left zero: what the settings page
+	// calls this door is decided at construction (M12/T006), so a fixture
+	// standing in for the production one has to be built the way production
+	// builds it or it is standing in for a door no daemon holds.
+	return assertionDoor{validator: v, door: doorSentenceAccess}
 }
 
 // claims is an assertion the daemon should admit: this issuer, this audience,

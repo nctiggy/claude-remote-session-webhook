@@ -226,6 +226,31 @@
 
 {{ range .Sections }}{{ if eq $.Shown .Title }}<section class="settings-section">
 <h2 class="settings-title">{{ .Title }}</h2>
+{{/*
+  Which door is live, on the one section that is the question it answers.
+
+  It is the most consequential fact about this daemon — which layer 1 a browser
+  meets decides who may execute code on this host — and it was visible nowhere
+  until M12/T006. The keys beneath it say what the operator configured; this says
+  what the daemon built out of them, which is not the same claim and is the one
+  worth being sure of.
+
+  Which section carries it is Go's answer (sectioned), never a heading compared
+  in here: two answers to "which section is this" would be free to disagree, and
+  the shape of that disagreement is a page that quietly stops naming its door.
+
+  No class, and that is the same decision the restart form above makes. The
+  sentence beneath it is .settings-source — a name that means "which file these
+  values came from" — and a second element wearing it would tell every reader,
+  and every sweep that finds the file line by it, something untrue. A third
+  spelling for one sentence is the second vocabulary docs/components.md exists to
+  prevent, so this takes none rather than inventing one.
+
+  It carries no value of any kind. Every sentence it can hold is a constant in
+  Go, chosen from the door this server was built with and never from the
+  configuration, and the password door's says only that the door is the password
+  — what that daemon has is already the `present` its own row renders.
+*/}}{{ with .Door }}<p>{{ . }}</p>{{ end }}
 <p class="settings-source">{{ if $.ConfigFile }}Read from {{ $.ConfigFile }}{{ else }}No configuration file was read.{{ end }}</p>
 <table class="settings-table">
 <thead>

@@ -102,6 +102,20 @@ all. A row it refuses, and every row when no token could be minted, renders the
 text it always had: a control certain to be turned away is not offered, which is
 the discipline that builds a card with no actions rather than actions that fail.
 
+**"Who may reach it" carries one sentence the other sections do not: which door
+is live.** It sits directly under that heading, above the file line, and it says
+whether this daemon is behind Cloudflare Access, behind the dashboard password,
+or behind a closed door that admits nobody. It is the most consequential fact
+about the daemon and it was on no page at all until M12; the keys beneath it say
+what the operator configured, and this says which of them the daemon actually
+built a door out of, which is not the same claim. It carries **no class**, for
+the reason the restart form below carries none: the sentence under it is
+`.settings-source`, a name that means "which file these values came from", and a
+second element wearing it would tell every reader something untrue. It renders no
+value of any kind — every sentence it can say is a constant in Go, chosen from
+the door this server was built with and never from the configuration, and
+`dashboard_password` stays `present`/`absent` on its row.
+
 Its controls are this document's — `.button`, `.button-primary`, and the
 page-token partial. The Updates section's three — Check, Update, Restart — are
 that vocabulary and nothing else: Restart is a plain `.button`, because exactly

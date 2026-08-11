@@ -147,6 +147,23 @@ type settingsView struct {
 type settingSection struct {
 	Title    string
 	Settings []settingRow
+
+	// Door is which layer 1 a browser actually meets, in one sentence, and is
+	// empty on every section but one.
+	//
+	// It sits on the section rather than on the view because it belongs *under*
+	// a heading: the page shows one section at a time, and a fact rendered
+	// outside them would either follow the operator into "Limits" or be lost
+	// whenever they were reading anything else. Which section gets it is decided
+	// in Go, by sectioned, so the template asks only whether there is one — a
+	// template comparing a heading against a string would be a second answer to
+	// "which section is this", free to disagree with settingSectionOf.
+	//
+	// It is not a settingRow, and could not be: a row is one key config.go
+	// declares, with the layer that supplied its value beside it, and this is
+	// neither. No environment variable holds it — it is what the daemon *did*
+	// with the ones that do.
+	Door string
 }
 
 // updatePanel is the Updates section: what is running, what is available, and
@@ -231,6 +248,72 @@ const (
 	secretPresent = "present"
 	secretAbsent  = "absent"
 )
+
+// The whole vocabulary for which door is live (M12/T006), and the most
+// consequential sentence on this page.
+//
+// Which layer 1 a browser meets decides who may execute code on this host, and
+// until this task it was visible nowhere: an operator could read `access_enabled`
+// and `dashboard_password` as configured and still not know which of them the
+// daemon acted on, or whether it had built either.
+//
+// Four sentences here and a fifth in bypass_dev.go, all of them constants, none
+// of them naming a value. In particular the password door's says that the door
+// is the password and never a word about what the password is — the presence of
+// one is already the `present` its own row renders, and this sentence adds
+// nothing to it.
+const (
+	doorSentenceAccess = "This dashboard is behind Cloudflare Access."
+
+	doorSentencePassword = "This dashboard is behind the dashboard password."
+
+	doorSentenceClosed = "This dashboard has no door configured and admits nobody."
+
+	doorSentenceUnrecognised = "This dashboard's door is not one this page can name."
+)
+
+// doorSentence is which layer 1 a browser actually meets, said in one sentence.
+//
+// It reads the door this server was **built with** and nothing else — never the
+// Config. A page that named the door from configuration would describe the
+// daemon its operator meant to start rather than the one they are reading, which
+// is the single thing this page exists not to do; it is the same
+// intent-versus-evidence distinction mayBindOffLoopback draws and the sign-in
+// route's registration draws, and here the evidence is the whole answer.
+//
+// Two of the doors are one type, so that type is asked what it is
+// (assertionDoor.door). Inferring it from the Config was tried and does not
+// work: config.WithAccessBypassActive lifts the requirement to set the three
+// Access values and not the ability to, so a developer running the bypass
+// against their ordinary file has all three — and a page reading them would
+// report Cloudflare Access on the one build whose layer 1 admits everybody
+// without checking anything. That is the one lie this sentence must not tell.
+//
+// The closed door's sentence can be read by nobody, and it is written anyway.
+// closedDoor admits no browser, so a daemon holding one serves this page to
+// no-one at all; what an operator meets there is the uniform 401, which is the
+// answer to the question, said by the door. It stays because this projection has
+// to be total — a door with no sentence of its own would fall through to
+// another's, and on a switch the one it falls to is whichever is written last.
+//
+// The unrecognised sentence is the same discipline one level down: a door built
+// without saying which it is has nothing true to say about itself, so this says
+// that rather than picking the likeliest.
+func doorSentence(door layer1) string {
+	switch d := door.(type) {
+	case *passwordDoor:
+		return doorSentencePassword
+	case closedDoor:
+		return doorSentenceClosed
+	case assertionDoor:
+		if d.door == "" {
+			return doorSentenceUnrecognised
+		}
+		return d.door
+	default:
+		return doorSentenceUnrecognised
+	}
+}
 
 // settingsOf projects a Config into the rows the settings page renders.
 //
@@ -491,7 +574,10 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	// value on this page was resolved once, at startup, so the page cannot
 	// disagree with the daemon it describes.
 	rows := settingsOf(s.cfg)
-	sections := sectioned(rows)
+	// s.browser and never the Config: which door a browser meets is the fact this
+	// page was least able to state, and the only honest source for it is the
+	// layer 1 this server was actually built with. See doorSentence.
+	sections := sectioned(rows, doorSentence(s.browser))
 	editToken, _ := s.mintPageToken(r, operator)
 	s.renderPage(w, r, http.StatusOK, "settings", settingsView{
 		Operator:   operator,
@@ -503,6 +589,14 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		Update:     s.updatePanelFor(r, operator),
 	})
 }
+
+// sectionWhoMayReachIt is the section the door sentence belongs under, named
+// once because three places now have to agree on it: the classifier below, the
+// order the menu shows, and sectioned, which decides where the sentence lands. A
+// literal in all three is three chances for the sentence to attach to a heading
+// that no longer exists, and a section that quietly stopped carrying it looks
+// exactly like a daemon nobody asked about its door.
+const sectionWhoMayReachIt = "Who may reach it"
 
 // settingSectionOf says which section a key belongs under.
 //
@@ -517,7 +611,7 @@ func settingSectionOf(key string) string {
 		return "Where it listens"
 	case "access_enabled", "access_team_domain", "access_aud", "access_allowed_emails",
 		"dashboard_password", "shared_secret":
-		return "Who may reach it"
+		return sectionWhoMayReachIt
 	case "allowed_roots", "workdir_suggestions", "discover_roots":
 		return "What it may touch"
 	case "start_commands", "remote_start_commands":
@@ -536,19 +630,28 @@ func settingSectionOf(key string) string {
 // boundary next, and the numbers last.
 var sectionOrder = []string{
 	"Where it listens",
-	"Who may reach it",
+	sectionWhoMayReachIt,
 	"What it may touch",
 	"What it runs",
 	"Limits",
 	"Other",
 }
 
-// sectioned groups rows without dropping any.
+// sectioned groups rows without dropping any, and hands the door sentence to
+// the one section it is an answer to.
 //
 // The count is asserted by TestEverySettingAppearsInASection, because a grouping
 // that loses a key is a settings page that is quietly incomplete — worse than no
 // grouping, since the operator has no way to tell which one it is.
-func sectioned(rows []settingRow) []settingSection {
+//
+// The door goes under "Who may reach it" rather than above every section,
+// because that heading *is* the question it answers and the keys it is the
+// outcome of are the rows beneath it. Repeating it on all six would be the same
+// sentence six times; putting it outside them would be a fact the operator
+// carries into "Limits". It arrives as a parameter rather than being worked out
+// here for the reason every value on this page arrives resolved: which door was
+// built is not something a projection of the Config can see.
+func sectioned(rows []settingRow, door string) []settingSection {
 	byTitle := make(map[string][]settingRow, len(sectionOrder))
 	for _, row := range rows {
 		title := settingSectionOf(row.Key)
@@ -557,9 +660,15 @@ func sectioned(rows []settingRow) []settingSection {
 
 	out := make([]settingSection, 0, len(sectionOrder))
 	for _, title := range sectionOrder {
-		if held := byTitle[title]; len(held) > 0 {
-			out = append(out, settingSection{Title: title, Settings: held})
+		held := byTitle[title]
+		if len(held) == 0 {
+			continue
 		}
+		section := settingSection{Title: title, Settings: held}
+		if title == sectionWhoMayReachIt {
+			section.Door = door
+		}
+		out = append(out, section)
 	}
 	return out
 }

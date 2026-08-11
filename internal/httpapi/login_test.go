@@ -80,6 +80,21 @@ func (d *loginDaemon) get(t *testing.T, target string) *httptest.ResponseRecorde
 	return w
 }
 
+// openAs asks for a page carrying nothing but what a sign-in gave it: no
+// assertion, no signature, no bearer token — which is everything a browser on a
+// password daemon ever has.
+func (d *loginDaemon) openAs(t *testing.T, target string, cookie *http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := httptest.NewRequest(http.MethodGet, target, nil)
+	//nolint:gosec // G124: a request-side cookie has no attributes to set.
+	r.AddCookie(&http.Cookie{Name: cookie.Name, Value: cookie.Value})
+
+	w := httptest.NewRecorder()
+	d.ServeHTTP(w, r)
+	return w
+}
+
 // submit posts a form to the sign-in route the way the rendered page does.
 func (d *loginDaemon) submit(t *testing.T, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
