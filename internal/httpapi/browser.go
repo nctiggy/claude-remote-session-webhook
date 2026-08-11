@@ -6,9 +6,11 @@ package httpapi
 // to it (FR-012), so a browser request is never refused for carrying no
 // signature and an API request is never refused for carrying no identity.
 //
-// What runs here is layer 1 and nothing else — the Cloudflare Access assertion,
-// validated by internal/access. Layers 2 and 3 are untouched: no dashboard route
-// asks for a signature, and no API route consults an assertion.
+// What runs here is layer 1 and nothing else — whichever of this daemon's three
+// doors was configured: the Cloudflare Access assertion validated by
+// internal/access, the dashboard password's signed cookie (password.go), or the
+// closed door that admits nobody. Layers 2 and 3 are untouched: no dashboard
+// route asks for a signature, and no API route consults either credential.
 
 import (
 	"context"
@@ -56,18 +58,58 @@ var bodyBrowserRefused = []byte(`<!doctype html>
 </html>
 `)
 
-// layer1 is the browser door's whole dependency: something that can turn an
-// assertion into a verified operator, or refuse.
+// layer1 is the browser door's whole dependency: something that can turn a
+// request into a verified operator, or refuse.
 //
-// It is an interface because internal/access ships two implementations —
-// *access.Validator, and the //go:build dev *access.Bypass that skips layer 1 on
-// a laptop where there is no Cloudflare Access to sign anything. That package
-// declares the same signature and asserts both types against it, so the door in
-// front of them is one door. A middleware written against *Validator and
-// *adapted* for the bypass would be a second authorisation path, and the second
-// path is the one nobody reads.
+// It is an interface because this daemon has three of them — closedDoor below,
+// assertionDoor, and the password door (password.go) — chosen between at exactly
+// one place, verifiedLayer1. A middleware written against one and *adapted* for
+// the others would be a second authorisation path, and the second path is the
+// one nobody reads.
+//
+// It takes the request rather than a credential because the doors read
+// *different* credentials: Access forwards a signed assertion in a header, and
+// the password door carries a signed cookie. A middleware that read one and
+// handed it over would have to know which door it was holding — and "which door
+// is this" is exactly the question verifiedLayer1 exists to answer once, at
+// startup, instead of on every request.
 type layer1 interface {
+	Verify(r *http.Request) (*access.VerifiedOperator, error)
+}
+
+// assertionValidator is what internal/access ships: something that turns the
+// assertion the edge forwarded into a verified operator.
+//
+// The signature is restated here because that package declares its own copy
+// unexported, and asserts both of its implementations against it — *Validator,
+// and the //go:build dev *Bypass that skips layer 1 on a laptop where there is
+// no Cloudflare Access to sign anything.
+type assertionValidator interface {
 	Verify(ctx context.Context, assertion string) (*access.VerifiedOperator, error)
+}
+
+// assertionDoor is layer 1 when Cloudflare Access is the configured door: it
+// reads the credential this door's caller presents and hands it to
+// internal/access.
+//
+// Both of that package's implementations reach the middleware through this one
+// type, which is what keeps them one door rather than one door and an adaptation
+// of it. It holds the credential-reading and nothing else: no check moved in
+// here, and none was left behind.
+//
+// The request's own context goes down with it, so a key-set fetch a browser
+// abandoned is abandoned with it — and, because unobtainable keys refuse
+// (FR-009), that ends as a denial rather than as an admission.
+type assertionDoor struct{ validator assertionValidator }
+
+func (d assertionDoor) Verify(r *http.Request) (*access.VerifiedOperator, error) {
+	if d.validator == nil {
+		// Fail closed on the path that should not happen, for the reason
+		// verifyBrowser refuses a nil door: a door with nothing behind it must
+		// refuse rather than admit.
+		return nil, errBrowserDoorUnwired
+	}
+	return d.validator.Verify(r.Context(), r.Header.Get(headerAccessAssertion))
 }
 
 // closedDoor is layer 1 on a daemon with no identity provider configured (#70).
@@ -87,7 +129,7 @@ type layer1 interface {
 // has never had anything to do with layer 1.
 type closedDoor struct{}
 
-func (closedDoor) Verify(context.Context, string) (*access.VerifiedOperator, error) {
+func (closedDoor) Verify(*http.Request) (*access.VerifiedOperator, error) {
 	return nil, errNoIdentityProvider
 }
 
@@ -284,15 +326,19 @@ func (s *Server) authenticateBrowser(action audit.Action, next http.Handler) htt
 // would be the daemon's first cross-request browser state, and with it the
 // expiry, invalidation and fixation questions this design exists not to have.
 //
-// The request's own context is passed down, so a key-set fetch a browser
-// abandoned is abandoned with it — and, because unobtainable keys refuse
-// (FR-009), that ends as a denial rather than as an admission.
+// That holds under the password door too, which is why its cookie is verified by
+// recomputing it rather than by looking it up (password.go). A signed cookie is
+// a credential the browser carries, not a session record this daemon keeps.
+//
+// Which credential is read is the door's own business and never this function's
+// — see layer1. Whatever this daemon was configured with, exactly one question
+// is asked here, of exactly one thing.
 func (s *Server) verifyBrowser(r *http.Request) (*access.VerifiedOperator, error) {
 	if s.browser == nil {
 		return nil, errBrowserDoorUnwired
 	}
 
-	operator, err := s.browser.Verify(r.Context(), r.Header.Get(headerAccessAssertion))
+	operator, err := s.browser.Verify(r)
 	switch {
 	case err != nil:
 		return nil, err

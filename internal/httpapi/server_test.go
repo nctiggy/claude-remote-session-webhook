@@ -557,14 +557,12 @@ func TestNewRefusesANonLoopbackListenAddressWithTheSentinel(t *testing.T) {
 func TestNewBindsOffLoopbackOnlyForADaemonSomebodyCanGetInto(t *testing.T) {
 	t.Parallel()
 
-	// The password door is not built until T003, so the layer 1 that goes with a
-	// password configuration is named here rather than taken from verifiedLayer1
-	// — what this case is about is the guard reading both halves.
-	withPassword := func(listen string) *config.Config {
-		cfg := noDoorConfig(listen)
-		cfg.DashboardPassword = []byte("test-only-dashboard-password")
-		return cfg
-	}
+	// Every row names its layer 1 rather than taking it from verifiedLayer1,
+	// including the two that could now have the real one: what this test is about
+	// is the guard reading *both* halves, so the two halves have to be settable
+	// apart. The rows where they agree — a password configuration behind the
+	// password door verifiedLayer1 actually builds — are in password_test.go
+	// (M12/T003), which is where the wiring is what is under test.
 
 	for _, c := range []struct {
 		name    string
@@ -581,7 +579,7 @@ func TestNewBindsOffLoopbackOnlyForADaemonSomebodyCanGetInto(t *testing.T) {
 		},
 		{
 			name: "a password door, on the network",
-			cfg:  withPassword("0.0.0.0:8765"),
+			cfg:  passwordConfig("0.0.0.0:8765"),
 			door: testBrowser(),
 			why:  "the deployment this milestone exists for: no Cloudflare, and a listener the LAN can reach",
 		},

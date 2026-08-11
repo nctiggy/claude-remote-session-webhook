@@ -152,7 +152,7 @@ type stubLayer1 struct {
 	err      error
 }
 
-func (s stubLayer1) Verify(context.Context, string) (*access.VerifiedOperator, error) {
+func (s stubLayer1) Verify(*http.Request) (*access.VerifiedOperator, error) {
 	return s.operator, s.err
 }
 

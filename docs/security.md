@@ -15,14 +15,72 @@ vulnerability in a feature — it is total host compromise.
 Assume the endpoint is being scanned. It is on the public internet under a
 predictable hostname.
 
-There are **two front doors**, on one hostname, behind one Access application with two
-edge policies. **No path gets an edge bypass**, and each door still needs its own
-answer to "who is this?" behind the edge:
+There are **two front doors**, one per kind of caller. In the deployment this was
+written for both are on one hostname, behind one Access application with two edge
+policies; **no path gets an edge bypass**, and each door still needs its own answer to
+"who is this?" behind the edge:
 
 | Door | Caller | Admitted at the edge by | Checked by the daemon |
 |---|---|---|---|
 | Web dashboard | A browser, operated by a human | The identity policy: Google IdP, one allowlisted address | Layer 1 — the forwarded `Cf-Access-Jwt-Assertion` is genuine, is the **identity** shape, and names an allowlisted email. A route that **changes** something adds the action gate below |
 | API | The companion Claude skill, or any script | An Access **service token**, sent as `CF-Access-Client-Id` + `CF-Access-Client-Secret` | HMAC-SHA256 signature, timestamp, replay, per-session token. The assertion is ignored entirely |
+
+**Since M12 the browser door's layer 1 is one of three, and the API door's is none of
+them.** The API has never consulted an assertion and does not consult a cookie either;
+what changes below is only what the *browser* door verifies:
+
+| Layer 1 | Configured by | Verifies | Deployment |
+|---|---|---|---|
+| Access validator | `access_enabled` + the three Access values | The forwarded assertion, as above | On the internet, behind a tunnel |
+| **Password door** | `dashboard_password` | A cookie this daemon signed, proving the holder knew the password | On an internal network, with no Cloudflare in front of it |
+| Closed door | Neither | Nothing. It admits nobody | A daemon with no dashboard, which is what an unconfigured one is |
+
+**They are mutually exclusive and the selection happens once**, at
+`httpapi.verifiedLayer1`, which returns one of the three. Configuring both is a startup
+failure — `config.Validate` refuses it rather than picking a winner, because which door
+is live decides who may execute code on this host. **There is no branch in the browser
+middleware and there must never be one**: it asks its one door for a verdict, and the
+door reads whichever credential is its own. A nil validator with a special case beside
+it would be a second authorisation path, and the second path is the one nobody reads.
+
+### The password door
+
+It authenticates *less* than Access does, and the difference is stated rather than
+smoothed over. Access verifies a person against an identity provider at the edge, before
+this host is reachable. The password door verifies that whoever is asking knows one
+secret — so there is one operator behind it by construction, no allowlist to check, and
+no edge failing closed in front of it. Everything behind the door is unchanged: the same
+`auth.CallerOperator`, the same ownership checks, the same action gate on anything that
+changes the host.
+
+- **The password is a secret by `config.IsSecret`**, so it is `present`/`absent` on the
+  settings page and refused by `config.Editable`. A password settable from the page it
+  protects is not a door.
+- **It is compared constant-time, over SHA-256 of both sides.** Both halves are needed:
+  a compare that stops at the first difference leaks the password under timing, and a
+  constant-time compare over the raw values still leaks its length, because
+  `subtle.ConstantTimeCompare` answers immediately for two slices of different lengths.
+- **The session cookie is signed with HMAC-SHA256 keyed by `shared_secret`** under a
+  label of its own — no new key, and rotating the secret ends every outstanding sign-in,
+  which is correct. The password's digest is inside the signed payload too, so changing
+  the password ends them as well.
+- **It is stateless.** The cookie is verified by recomputing it, exactly as the page
+  token and the layer-2 signature are. The daemon still keeps no browser session, so
+  there is still nothing to fixate, sweep, or invalidate.
+- **`HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` only when the request arrived
+  over TLS** — read from `r.TLS` and never from `X-Forwarded-Proto`, which is
+  caller-authored text this daemon has no configured proxy to believe. `Lax` rather than
+  `Strict` because the operator arrives by typing a URL, and `Strict` withholds the
+  cookie on that first top-level navigation.
+- **The password never appears in a log, an audit record, a page, an error, or a URL.**
+  Every refusal on this door is one of its own sentinels, recorded server-side, and the
+  caller gets the same uniform 401 every other layer-1 failure gives.
+
+**On a network without TLS the password crosses it in clear.** That is a real weakness
+of this mode rather than an oversight, and the cookie is what keeps it to one crossing
+per session instead of one per request. An operator choosing this door is told so
+plainly in the README; a proxy terminating TLS in front of the daemon is the fix, and
+recommending it is not the same as pretending the plain case is safe.
 
 The two shapes are not interchangeable. A service token's assertion carries
 `common_name`, an empty `sub`, and **no email** — so "no email" must never read as

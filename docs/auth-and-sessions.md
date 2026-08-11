@@ -5,15 +5,21 @@
 In this project "session" means **a Claude Code session running in a tmux window**,
 and "auth" means **proving a request is allowed to create, drive, or watch one**.
 
-There are two callers and two front doors, and the daemon serves no login form of its
-own: the API client signs each request, and a person signs in to Cloudflare Access at
-the edge, before the daemon is reachable at all. **The daemon still keeps no browser
-session** — it issues no cookie, stores no server-side session record, and has nothing
-to fixate, renew, or invalidate. It re-derives who is looking from a signed assertion
-on **every** request and keeps nothing between them. A rendered page does carry one
-value this daemon minted — the page token below — and that changes nothing here: it is
-verified by recomputing it, never by looking it up, so there is still no record to
-fixate, expire, or leave behind.
+There are two callers and two front doors: the API client signs each request, and a
+person is admitted by whichever layer 1 this daemon was configured with. Behind
+Cloudflare that is Access, which the operator signs in to at the edge, before the daemon
+is reachable at all. On an internal network with no Cloudflare in front of it, it is the
+dashboard password and a login form this daemon serves itself (M12) — see
+[`docs/security.md`](./security.md) for the three implementations and the one place they
+are chosen between.
+
+**The daemon still stores no browser session** — no server-side record, nothing to
+fixate, renew, or invalidate. It re-derives who is looking on **every** request and
+keeps nothing between them. What changed at M12 is that it may now *issue* a cookie, and
+that is not the same thing: the cookie is a credential the browser carries, verified by
+recomputing it, never by looking it up. The page token below has always worked that way
+and for the same reason. Neither leaves a record behind, which is why the questions this
+design exists not to have are still not here.
 
 Treat this file as a correctness spec, not a style guide. A bug here is host
 compromise — see `docs/security.md` for why.
@@ -22,7 +28,7 @@ compromise — see `docs/security.md` for why.
 
 | Layer | Enforced by | Stops |
 |---|---|---|
-| 1. Network | Cloudflare Tunnel + Access at the edge, **and the daemon validating the assertion the edge forwards** | Anyone the edge did not admit reaching the daemon at all, and anything that reached it anyway claiming to be an identity the edge vouched for |
+| 1. Network | Cloudflare Tunnel + Access at the edge, **and the daemon validating the assertion the edge forwards** — or, on a daemon with no edge in front of it, the dashboard password's signed cookie | Anyone the edge did not admit reaching the daemon at all, and anything that reached it anyway claiming to be an identity the edge vouched for. Under the password door there is no edge, so the daemon's own check is the whole of it |
 | 2. Request | HMAC-SHA256 signature + timestamp | A forged or replayed request from something that got past layer 1 |
 | 3. Session | Per-session bearer token | A valid caller driving a session that is not theirs |
 

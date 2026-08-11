@@ -57,6 +57,12 @@ func NewWithBypass(cfg *config.Config, warn io.Writer) (*Server, error) {
 			// Untyped nil for the reason verifiedLayer1 returns one.
 			return nil, err
 		}
-		return b, nil
+		// Through the same assertionDoor the real validator reaches the middleware
+		// through, and not beside it (M12/T003). The bypass reads no assertion, so
+		// the wrapper changes nothing about what it does — what it keeps is the
+		// property this whole file is written for: the door in front of the two is
+		// one door, and the development build is the build where a drift between
+		// them could still be seen.
+		return assertionDoor{validator: b}, nil
 	})
 }

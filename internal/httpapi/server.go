@@ -327,9 +327,16 @@ func NewWith(cfg *config.Config, tmux tmuxctl.Controller, trail *audit.Logger) (
 	return newWithLayer1(cfg, tmux, trail, verifiedLayer1)
 }
 
-// verifiedLayer1 is the door's first layer as the shipping build builds it: the
+// verifiedLayer1 is the door's first layer as the shipping build builds it, and
+// **the one place a door is chosen**. It returns exactly one of three things: the
 // validator that verifies a Cloudflare Access assertion against the account's
-// published keys.
+// published keys, the password door that verifies a cookie this daemon signed
+// (M12/T003), or the closed door that admits nobody.
+//
+// One place, because the alternative is a browser middleware that asks which
+// door it is holding — and closedDoor's own comment says what that costs. The
+// selection is here, at startup, made once, from configuration config.Validate
+// has already refused every ambiguous spelling of.
 //
 // It is a function rather than the expression it wraps so that the //go:build
 // dev half of this package can put the development bypass at exactly this point
@@ -337,19 +344,35 @@ func NewWith(cfg *config.Config, tmux tmuxctl.Controller, trail *audit.Logger) (
 // server, always — a Validator that could be accompanied by a Bypass would be
 // the "defaulted off" switch FR-041 forbids, wearing an interface.
 func verifiedLayer1(cfg *config.Config) (layer1, error) {
-	// No identity provider configured means a dashboard that admits nobody,
-	// rather than a daemon that will not start (#70). The API is untouched —
-	// it has never had anything to do with layer 1.
-	if cfg.AccessTeamDomain == "" {
+	// Access first, because a daemon carrying the three Access values has had the
+	// Access door since long before the password existed, and config.validateDoors
+	// refuses a configuration that names both. The order therefore decides nothing
+	// a loaded Config can reach — it decides what a hand-built one gets, and the
+	// answer that keeps an existing deployment's door is the right one.
+	switch {
+	case cfg.AccessTeamDomain != "":
+		v, err := access.New(cfg.AccessTeamDomain, cfg.AccessAUD, cfg.AccessAllowedEmails)
+		if err != nil {
+			// Untyped, so that newServer's nil check below reads a nil interface
+			// rather than an interface holding a nil *Validator.
+			return nil, err
+		}
+		return assertionDoor{validator: v}, nil
+
+	case len(cfg.DashboardPassword) > 0:
+		d, err := newPasswordDoor(cfg.SharedSecret, cfg.DashboardPassword)
+		if err != nil {
+			// Untyped, for the reason one line above.
+			return nil, err
+		}
+		return d, nil
+
+	default:
+		// Neither configured means a dashboard that admits nobody, rather than a
+		// daemon that will not start (#70). The API is untouched — it has never had
+		// anything to do with layer 1.
 		return closedDoor{}, nil
 	}
-	v, err := access.New(cfg.AccessTeamDomain, cfg.AccessAUD, cfg.AccessAllowedEmails)
-	if err != nil {
-		// Untyped, so that newServer's nil check below reads a nil interface
-		// rather than an interface holding a nil *Validator.
-		return nil, err
-	}
-	return v, nil
 }
 
 // newWithLayer1 is NewWith with the door's first layer named by the caller. The
