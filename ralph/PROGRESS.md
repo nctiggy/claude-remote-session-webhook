@@ -336,3 +336,137 @@ hand must wrap it in `assertionDoor{validator: v}` or it will not compile.
   `.field-input`, `.field-label` and `.button` and add no class; whether the page
   itself earns a components entry is that task's call, and there is no precedent
   for a full-page single-purpose form in there yet.
+
+---
+
+## Iteration 4 — 2026-08-11 — T004, the login page and the route that answers it
+
+**Did:** Built `GET /login` and `POST /login` in `internal/httpapi/login.go`, the
+page in `web/templates/login.html`, and registered both **only** when the layer 1
+`newServer` was handed is the password door. A sign-in now issues the cookie T003
+built and nothing else does. `docs/security.md`, `docs/auth-and-sessions.md` and
+`docs/components.md` all describe the two routes.
+
+**Left:** T005 through T010.
+
+### These are the only two routes in front of layer 1, and that is the task
+
+Everything else on this door is registered through `handleBrowser` or
+`handleAction` and cannot be reached without a verified operator. These cannot be
+reached *with* one — the credential is what they exist to produce. So there is a
+third registration function, `handleLogin`, and it is a function rather than a
+flag for the reason `handleAction` is one: the promise it makes is the most
+consequential of the three, so registering a route in front of the door has to be
+a thing somebody types.
+
+What bounds it, all of it tested:
+
+- **Registered from the door that was built, never from `cfg.DashboardPassword`.**
+  A daemon whose file names a door the server did not build is a wiring defect,
+  and a wiring defect must not be what puts a login form on the network — the same
+  distinction `mayBindOffLoopback` draws, for the same reason. Under Access,
+  `/login` matches no route and is the browser door's 404 from *behind* layer 1.
+- **The password is read from `PostForm` and never `Form`**, so a submission that
+  put it in the query string fails rather than working.
+- **Every refusal is `refuseBrowser`'s bytes** — the same 401 a missing cookie
+  gets. Two sentinels tell the trail which; a test asserts they are not one string.
+- **A refused attempt sets no cookie**, which is `issue` being last rather than a
+  rule anybody remembers.
+
+### The action gate is absent and cannot apply
+
+Two of its three checks are the layer-1 identity and a page token bound to it, and
+neither exists before this route runs. Half a gate would be the second,
+differently-shaped authorisation path this milestone exists to not have. **What is
+left open is that a hostile page can make the operator's browser submit guesses it
+cannot read the answer to** — that is T005's limiter, and it is the reason that
+task is not optional polish. See the finding below.
+
+### Two decisions the plan does not make
+
+- **No version and no header on the login page.** Every other page shows the
+  version, and every other page is behind layer 1. This one answers a stranger,
+  and `version.go` already says why that matters: "a version is exactly the fact a
+  scanner would like for free". The header goes with it for a different reason —
+  the masthead exists so it is never ambiguous whose credentials are driving
+  sessions on this host, and there are none yet.
+- **303 to `/`, with no "return to" parameter.** An unauthenticated caller
+  supplying the address a successful sign-in redirects to is an open redirect with
+  a login form in front of it.
+
+**Learned, for whoever picks up T005:**
+
+- **`handleLogin(pattern, action, handler)` is where the limiter goes**, wrapped
+  around the handler at that one line the way `limitCreates` is wrapped in
+  `handle`. Note the difference the plan already names: `limiter.allow` takes an
+  `auth.CallerID` and sits *behind* layer 2, because a create's budget is spent by
+  an identity. There is no identity here, so the key is the source — and
+  `limiter.allow`'s signature is `auth.CallerID`, so T005 either widens that type
+  or gives the login its own limiter over the same bucket code. **Reusing the
+  bucket, not copying it, is what the plan asks for.**
+- **`RequestAudit` grew an unexported `allow(caller)`.** The two middlewares set
+  those fields inline because they learned the identity on the way past; the login
+  route is the one route that *establishes* one, so the handler takes the decision
+  and this is the one nil-safe line for it.
+- **`newAuditedServerOn(t, cfg, browser)`** is the new fixture: which routes a
+  daemon registers is decided at construction, so `settingsOn`'s
+  adjust-the-Config-afterwards shape cannot express a claim about them.
+  `newLoginDaemon` builds through the real `verifiedLayer1` deliberately — a
+  hand-built `*passwordDoor` would prove registration works for a door no
+  configuration produces.
+- **Adding a page costs three tests, not one.** `renderedPages` in
+  `partials_test.go` fails for a `templates/*.html` nothing renders;
+  `TestEveryPageCarriesTheHeader` now consults `pagesWithNobodyToName`, a map to a
+  *reason* so the exception has to be argued where it is taken; and
+  `TestEveryPageLoadsTheLoopThatDrivesItsRain` was rewritten to ask each rendered
+  page whether it drew a canvas rather than assuming every page carries a header.
+  That last one is strictly stronger than it was — it now also catches a page that
+  renders a canvas of its own without the loop.
+- **`TestTheStylesheetAndTheMarkupNameTheSameThings` is what "no new class"
+  really means here**: a class a template renders with no rule behind it fails
+  that sweep, so the page's vocabulary is pinned twice — once by the stylesheet
+  and once by `loginPageVocabulary` in `login_test.go`.
+- **Every guard was proven by breaking it**, one at a time, restoring between:
+  registering the routes unconditionally, reading `Form` instead of `PostForm`,
+  issuing the cookie before the check, dropping the security headers, folding the
+  two sentinels into one string, putting a version and a settings link on the
+  page, dropping the allow from the successful attempt, and never issuing at all.
+  Each turns exactly the named cases red and nothing else.
+- All four suites green here: default, `-tags dev`, `-tags tmux`, and
+  `-tags quickstart` (~35s, with the deployed daemon still holding 127.0.0.1:8765).
+  Linter is v2.12.2, checked (#26), 0 issues.
+
+**Findings, not fixed:**
+
+- **Nothing points an operator at `/login`.** A browser arriving at `/` with no
+  cookie gets the uniform 401, which by design says nothing — so the only way to
+  find the sign-in page is to know the path. Redirecting the refusal would make it
+  non-uniform *and* put a branch keyed on which door is live into the browser
+  middleware, which the plan forbids outright. **This is T008's** ("document the
+  LAN deployment"): the README has to say `http://host:port/login` in as many
+  words, or the daemon is unusable by anyone who did not read this file.
+- **A cross-site POST to `/login` is not refused**, and that is a deliberate
+  omission rather than an oversight. Login CSRF buys an attacker nothing here —
+  there is one account, so there is no session to fixate, and they cannot read the
+  answer — but it does let a hostile page **spend the operator's own rate-limit
+  budget from the operator's own source address**, which is a lockout. **T005 owns
+  this**: either the limiter tolerates it, or that task adds `crossSiteAction`'s
+  header check to this route and states why half a gate is acceptable where a
+  whole one cannot apply. Raised here rather than done, because adding an
+  unasked-for check to the one route in front of layer 1 is not a call to make in
+  passing.
+- **`.specify/memory/constitution.md` Principle VI is still wrong** — "the listener
+  binds loopback only". Iterations 2 and 3 raised it; it is still owed a human PR,
+  and no task in this plan is chartered to amend the constitution.
+- **`docs/security.md`'s two-front-doors table still says both doors are behind
+  Cloudflare Access** in its own opening paragraph, and the M12 paragraph beneath
+  it now contradicts that. Iteration 2 raised it against T003/T004; T003 rewrote
+  the *layer 1* table and this task rewrote the password-door section, and neither
+  touched the sentence above them. It is one paragraph and it is now the last
+  stale claim in that file.
+- **`TestEveryPageShowsTheVersion` still walks a hand-written list of four pages**
+  and so never noticed a fifth arriving without one. The login page's absence from
+  it is correct and deliberate, but the list is a guard that cannot see a new page
+  — the same shape as the `registeredPatterns` gap the sweep's own comment admits
+  to. Deriving it from `renderedPages` minus `pagesWithNobodyToName` is a small
+  change and was left out of this task as AR-008 churn.

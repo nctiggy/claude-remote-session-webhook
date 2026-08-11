@@ -214,10 +214,22 @@ func newAuditedServer(t *testing.T) *testServer {
 // door reads no assertion, so the validator behind it never runs.
 func newAuditedServerWith(t *testing.T, browser layer1) *testServer {
 	t.Helper()
+	return newAuditedServerOn(t, testConfig(loopbackListen), browser)
+}
+
+// newAuditedServerOn is newAuditedServerWith with the Config chosen as well,
+// which the sign-in suite needs and nothing before it did.
+//
+// Adjusting the fixture's Config after construction — settingsOn's shape — is
+// enough for anything a handler reads per request, and is not enough here: which
+// routes a daemon registers is decided once, at construction, from the door it
+// was built with (M12/T004). A fixture that changed the Config afterwards would
+// be making claims about a daemon that never existed.
+func newAuditedServerOn(t *testing.T, cfg *config.Config, browser layer1) *testServer {
+	t.Helper()
 
 	buf := &syncSink{}
 	fixture := newSessionFixture(t)
-	cfg := testConfig(loopbackListen)
 	s, err := newServer(
 		cfg,
 		net.Listen,

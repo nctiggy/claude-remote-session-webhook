@@ -149,6 +149,14 @@ Non-negotiable:
   daemon's first cross-request browser state, and with it the expiry, invalidation
   and fixation questions this design exists not to have.
 
+**Under the password door there is no edge and no assertion**, so the credential is the
+signed cookie and the way to get one is `GET /login` and `POST /login` — the only two
+routes this daemon registers ahead of layer 1, and only on a daemon whose door is the
+password. They are bounded in [`docs/security.md`](./security.md); the part that belongs
+here is that they change nothing about the layering above. A cookie that verifies
+produces the same `VerifiedOperator` an assertion does, derived per request and stored
+nowhere, and every route behind the door asks exactly the questions it always asked.
+
 **Local development** uses the `//go:build dev` bypass in `internal/access`, which
 skips layer 1 only. It must: refuse to start unless the listener is loopback, log a
 loud warning on **every** request, and be absent from the shipping build. It is

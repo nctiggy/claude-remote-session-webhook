@@ -76,6 +76,37 @@ changes the host.
   Every refusal on this door is one of its own sentinels, recorded server-side, and the
   caller gets the same uniform 401 every other layer-1 failure gives.
 
+#### The two routes in front of layer 1
+
+`GET /login` and `POST /login` are the **only** routes this daemon registers ahead of
+layer 1, and they exist so there is a way to obtain the cookie everything else demands.
+That sentence is worth being nervous about, so what bounds it is written here rather
+than left to the code:
+
+- **They are registered only when the password door is the layer 1 the server was
+  actually built with** — not when the configuration merely names a password. A daemon
+  whose file names a door the server did not build is a wiring defect, and a wiring
+  defect must not be what puts a login form on the network; it is the same distinction
+  the bind rule above draws. Where Access is the door, `/login` matches no route and is
+  answered by the browser door's own 404 from *behind* layer 1. **A login form standing
+  beside a working Access door would be a second way into the dashboard**, and the way
+  to not have one is to not register it.
+- **They change nothing.** No session is created, destroyed, driven or read; the only
+  effect is a `Set-Cookie`, and only for a caller who supplied the secret. Every other
+  path on the daemon — a page, an action, a path nothing claims — still meets the door.
+- **The password is read from the posted body and nowhere else.** Never the query
+  string: a password this daemon would accept out of a URL is a password in a browser
+  history, a referrer header, and every proxy log in between.
+- **The action gate is deliberately absent, and cannot apply.** Two of its three checks
+  are the layer-1 identity and a page token bound to it, and neither exists before this
+  route runs; half a gate would be the second, differently-shaped authorisation path
+  there is exactly one of on this door. What a hostile page can therefore do is make a
+  browser submit guesses whose answer it cannot read — bounded by the per-source limit
+  on this route, which is where that argument is finished.
+- **A sign-in leaves one audit record either way** — `login.view` for the form,
+  `login.submit` for an attempt, allowed or denied — carrying no password material,
+  because every reason on it is a sentinel this codebase authored.
+
 **On a network without TLS the password crosses it in clear.** That is a real weakness
 of this mode rather than an oversight, and the cookie is what keeps it to one crossing
 per session instead of one per request. An operator choosing this door is told so

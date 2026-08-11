@@ -949,6 +949,11 @@ type sweep struct {
 // be added here by hand, and that is the one gap this arrangement cannot close.
 // The version route was the eleventh, and it was added here by hand exactly as
 // this comment says it would have to be.
+//
+// The sign-in routes (M12/T004) are deliberately absent: this daemon's door is
+// Cloudflare Access, so newServer registers neither of them and a pattern listed
+// here would be one nothing could drive. What they answer with is swept in
+// login_test.go, against a daemon whose door they exist on.
 func registeredPatterns(t *testing.T) []string {
 	t.Helper()
 

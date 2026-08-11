@@ -679,6 +679,26 @@ func newServer(
 	for _, a := range assets {
 		s.handleBrowser(a.pattern, audit.ActionDashboardAsset, s.serveAsset(a))
 	}
+	// The sign-in page and the form it posts (M12/T004), and the only two routes
+	// this daemon ever registers in front of layer 1 — see login.go for what makes
+	// that safe.
+	//
+	// **Registered only when the password door is the layer 1 this server was
+	// actually built with**, which is what this assertion asks. Not "the Config
+	// names a password": that is intent, and a daemon whose file named a door the
+	// server did not build is a wiring defect, which must never be the thing that
+	// puts a login form on the network. The distinction is mayBindOffLoopback's,
+	// one screen up, and it is the same one for the same reason.
+	//
+	// Where Access is the door — or where there is no door — nothing is registered
+	// and /login is a path nothing claims, answered by the browser door's own 404
+	// from behind layer 1. A login form standing beside a working Access door
+	// would be the second authorisation path this milestone forbids, and the way
+	// to not have one is to not register it.
+	if door, ok := browser.(*passwordDoor); ok {
+		s.handleLogin(patternLoginPage, audit.ActionLoginView, s.loginPage)
+		s.handleLogin(patternLoginSubmit, audit.ActionLoginSubmit, s.login(door))
+	}
 	s.handleUnrouted()
 	return s, nil
 }

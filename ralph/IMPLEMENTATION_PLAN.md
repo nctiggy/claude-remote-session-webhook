@@ -116,7 +116,7 @@ reassured.
 
 - [x] **T003** 🔒 Implement the password door as a validator in `internal/httpapi/`, returned from the **same** function at `server.go:339` that returns `closedDoor` and `access.Validator`. Constant-time comparison over SHA-256 of both sides. Session cookie signed with `hmac.New(sha256.New, sharedSecret)` over a distinct label; `HttpOnly`, `SameSite=Lax`, `Path=/`, `Secure` when the request was TLS. **No branch in the browser middleware.**
 
-- [ ] **T004** 🔒 The login page and its POST route. A real form, working with no JavaScript, reusing `.field`, `.field-input`, `.field-label`, `.button` — **no new class**. The route is registered only when the password door is the configured layer 1, and answers the uniform 404 otherwise. It sets the cookie on success and the uniform refusal on failure, with no distinction between causes.
+- [x] **T004** 🔒 The login page and its POST route. A real form, working with no JavaScript, reusing `.field`, `.field-input`, `.field-label`, `.button` — **no new class**. The route is registered only when the password door is the configured layer 1, and answers the uniform 404 otherwise. It sets the cookie on success and the uniform refusal on failure, with no distinction between causes.
 
 - [ ] **T005** 🔒 Rate-limit the login route, per source, reusing the create route's limiter pattern rather than inventing a second one. Exactly one audit record per attempt, allowed or denied, carrying **no password material**. Test that a burst is refused and that the record says which.
 

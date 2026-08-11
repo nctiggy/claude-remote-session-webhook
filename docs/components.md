@@ -549,11 +549,21 @@ Rules — these are security rules as much as design rules:
 
 ## Form
 
-No Form partial. Two forms are shipped, and they are the pattern: the create form
-(`partials/create-form.html`, outside every card, because a create names no
-session) and the rename disclosure on the session's own page
-(`templates/session.html`). A text entry is a `<div class="field">` holding a
-`<label class="field-label">` and an `<input class="field-input">`.
+No Form partial. Three forms are shipped, and they are the pattern: the create
+form (`partials/create-form.html`, outside every card, because a create names no
+session), the rename disclosure on the session's own page
+(`templates/session.html`), and the sign-in form (`templates/login.html`, on a
+daemon whose door is the dashboard password). A text entry is a
+`<div class="field">` holding a `<label class="field-label">` and an
+`<input class="field-input">`.
+
+The sign-in page adds **no class at all**, which is what makes it worth naming
+here rather than giving it a section: it is `.field`, `.field-label`,
+`.field-input` and `.button` in the arrangement above, and the `<form>` itself
+carries `.field` for the reason the create form's idle-override block does — that
+class is this vocabulary's stack, and an outer one binds a control to what sits
+with it. It is also the one page in the tree that composes **no header**, because
+it is served before there is an operator to name.
 
 ```gotemplate
 <div class="field">

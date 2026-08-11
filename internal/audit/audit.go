@@ -210,6 +210,34 @@ const (
 	// it delivered: the record shape is frozen (FR-016), and what came back up is
 	// what the version route answers afterwards.
 	ActionDashboardRestart Action = "dashboard.restart"
+
+	// ActionLoginView is the sign-in form served, and ActionLoginSubmit is one
+	// sign-in attempt decided — allow or deny, one record per attempt (M12/T004).
+	//
+	// They are the only two actions in this vocabulary recorded for a request that
+	// reached no layer 1, because the routes behind them are the only two
+	// registered in front of one: they exist on a daemon whose door is the
+	// dashboard password, and they are what turns knowing that password into the
+	// cookie every other record's caller was admitted by. An operator auditing a
+	// host on a network reads login.submit the way they read auth.reject on a
+	// public one — it is the count that says whether anybody is trying.
+	//
+	// Two names rather than one, for the reason settings.view and settings.edit
+	// are two: asking for the form and answering it are different events, and a
+	// scanner that fetched the page a thousand times must not be counted with a
+	// thousand guesses at the password.
+	//
+	// They are login.* rather than dashboard.*, which is the tempting prefix, for
+	// the reason session.mode is named for its subject: what the record is about
+	// is the door rather than the dashboard behind it, and a daemon behind
+	// Cloudflare Access registers neither route at all — so an operator grepping
+	// `login\.` is asking a question only one kind of deployment can answer.
+	//
+	// Neither ever carries password material. The record's shape is frozen
+	// (FR-016) and the reason on a refusal is one of login.go's own sentinels, so
+	// there is nowhere for the submitted bytes to be attached even by accident.
+	ActionLoginView   Action = "login.view"
+	ActionLoginSubmit Action = "login.submit"
 )
 
 // Decision is the allow/deny outcome, and unlike Action it is closed: two
