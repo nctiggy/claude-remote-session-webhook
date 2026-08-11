@@ -242,3 +242,97 @@ halves agree, and nothing else needs changing for it.
 - **`docs/security.md`'s "two front doors" table still says both doors are behind
   Cloudflare Access.** True today; **T003/T004** make it false. Whoever writes the
   password door owns that table.
+
+---
+
+## Iteration 3 — 2026-08-11 — T003, the password door
+
+**Did:** Built the third layer 1 in `internal/httpapi/password.go` — a signed
+session cookie, verified by recomputing it — and returned it from the same
+`verifiedLayer1` that returns `closedDoor` and the Access validator. `docs/security.md`'s
+"two front doors" section and `docs/auth-and-sessions.md`'s opening now describe
+three implementations instead of one.
+
+**Left:** T004 through T010.
+
+### `layer1` had to take the request, and that is the whole shape of this task
+
+The plan forbids a branch in the browser middleware, and the two doors read
+**different credentials** — Access a header, the password a cookie. The old
+interface was `Verify(ctx, assertion string)`, so the middleware was reading the
+header itself and handing it over, which is a middleware that already knows which
+door it holds. It now takes `*http.Request` and each door reads its own
+credential. `assertionDoor` wraps `internal/access`'s two implementations at one
+place, so nothing in that package changed and both still reach the middleware the
+same way.
+
+**This is the fixture change T004 onward will trip over:** `keyServer.validator(t)`
+returns `layer1` (an `assertionDoor`) rather than `*access.Validator`, and
+`stubLayer1.Verify` takes a request. Roughly twenty call sites kept working
+because the fixture absorbed it — a new test that builds `access.New(...)` by
+hand must wrap it in `assertionDoor{validator: v}` or it will not compile.
+
+### Two things the plan does not state, decided and written down
+
+- **`dashboardSessionLifetime = 12h`**, equal to `pageTokenLifetime` and chosen
+  the same way. The plan fixes every other property of this cookie and not the
+  number. Change the constant if you want another; nothing depends on it.
+- **The password's SHA-256 is inside the signed payload**, not just the label the
+  plan asks for. Without it, an operator who changes the password *because they
+  think it is known* keeps admitting whoever holds a cookie minted under the old
+  one, for up to a lifetime, with no recourse short of rotating the shared
+  secret. It costs nothing and it makes forging a cookie need the password **and**
+  the secret rather than the secret alone.
+
+**Learned, for whoever picks up T004:**
+
+- **`admits` and `issue` are the two methods T004 calls**, and they are on the
+  concrete `*passwordDoor`, not on `layer1`. Registering the login route means a
+  type assertion at registration — which is where the plan wants the decision
+  ("registered only when the password door is the configured layer 1"), and is
+  not a branch in the middleware.
+- **The identity is `passwordOperator`**, a constant that is deliberately not
+  address-shaped, for the reason `access.bypassEmail` is not. It is what the
+  masthead renders and what the page token is bound to, so it must stay non-empty
+  — a token bound to `""` is one every empty identity verifies.
+- **`isPageTokenMAC` is now `isHexMAC`**, shared with the cookie. One call site
+  and no test named it, so the rename was three lines; two copies of that
+  predicate would be two rules about the uppercase twin, free to disagree.
+- **gosec needs three `//nolint`s here and each has a real reason** — G124 on the
+  real `SetCookie` (Secure is conditional *on purpose*: a Secure cookie on a
+  plaintext LAN is one the browser never sends back), G124 on the test's
+  request-side cookie (a request carries no attributes), and G101 on the fixture
+  password. The linter is v2.12.2, checked (#26).
+- **Every guard was proven by breaking it**, one at a time, restoring between:
+  the constant-time compare, the digest in the MAC input, the expiry check, the
+  canonical-spelling check, the MAC shape check, `hmac.Equal`, each of the three
+  cookie attributes, and the selection in `verifiedLayer1`. Each turns exactly
+  the named case red and nothing else. The cookie-attribute assertions were
+  rewritten from a `switch` to independent `if`s when the first breakage proved
+  the chain hid the other two.
+- All four suites green here: default, `-tags dev`, `-tags tmux`, and
+  `-tags quickstart` (~36s, with the deployed daemon still holding 127.0.0.1:8765).
+
+**Findings, not fixed:**
+
+- **`.specify/memory/constitution.md` Principle VI is still wrong** and now more
+  so: it says the listener binds loopback only, and the door that makes a wider
+  bind legitimate exists as of this commit. Iteration 2 raised it; no task in this
+  plan is chartered to amend the constitution, and an autonomous loop rewriting
+  the highest-authority document to match its own change is what Principle II is
+  about. **Still owed a human PR.**
+- **`verifiedLayer1` prefers Access when a Config names both doors.** No
+  `config.Load` produces one — `validateDoors` refuses it — but a hand-built
+  Config can, and `TestVerifiedLayer1PicksExactlyOneDoor` pins the answer rather
+  than leaving it to argument. If that ever needs to be a refusal instead, it is
+  one case in that switch.
+- **Nothing sets the cookie yet.** `issue` has a test caller and no production
+  one until T004 registers the login route, so a password-configured daemon
+  currently starts, binds where its operator can reach it, and refuses every
+  browser — which is *strictly* the shape the plan asked for at this task
+  boundary, but it is not a usable daemon until T004 lands. Do not ship this
+  commit alone.
+- **`docs/components.md` has no login-form entry.** T004 must reuse `.field`,
+  `.field-input`, `.field-label` and `.button` and add no class; whether the page
+  itself earns a components entry is that task's call, and there is no precedent
+  for a full-page single-purpose form in there yet.
