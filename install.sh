@@ -20,11 +20,11 @@
 # restores the mode stored in the archive. Both checks stand in front of it.
 #
 # What it then writes is the binary, the service unit, a record of the unit it
-# wrote, and a configuration file — but it replaces neither a configuration nor
-# a unit it cannot show it wrote itself, so running it again on a host somebody
-# has since configured is safe. It enables nothing and starts nothing: the
-# daemon cannot serve a request before the secret is set, and a service that
-# fails on first boot teaches its operator to ignore a failing service.
+# wrote, a configuration file, and the one directory that configuration lets a
+# session run in — but it replaces neither a configuration nor a unit it cannot
+# show it wrote itself, so running it again on a host somebody has since
+# configured is safe. It enables nothing and starts nothing: enabling a unit is
+# a decision about the machine it runs on, and this script is a stranger there.
 #
 # This script belongs to the project rather than to a person: no home
 # directory and no username appears below. The account name in the URLs is
@@ -50,6 +50,13 @@ readonly BINARY=".local/bin/crswd"
 readonly UNIT=".config/systemd/user/crswd.service"
 readonly UNIT_RECORD=".local/share/crswd/crswd.service.sha256"
 readonly CONFIG=".config/crswd/config"
+
+# The one directory a session may run in, created beside a new configuration
+# and named by it. `code` is the daemon's own default, spelled the same way in
+# internal/config and in config.example. $HOME itself is never it: SSH keys,
+# cloud credentials and browser profiles all live directly under $HOME, and an
+# allowlist containing them contains everything, which is no allowlist.
+readonly ROOT="code"
 
 say() { printf 'crswd: %s\n' "$*"; }
 die() {
@@ -235,11 +242,19 @@ place_unit() {
 # it during an operation they think of as safe.
 #
 # Every setting with a default still arrives commented out, so the file behaves
-# as no file at all in each of them. The one it cannot is the shared secret:
-# there is no default that could stand in for a credential, and the daemon
-# refuses to start without one. So it is generated here rather than left as a
-# blank the operator fills in, because a required credential filled in by hand
-# is a credential somebody types from memory.
+# as no file at all in each of them. Two cannot.
+#
+# The shared secret, because there is no default that could stand in for a
+# credential and the daemon refuses to start without one. So it is generated
+# here rather than left as a blank the operator fills in, because a required
+# credential filled in by hand is a credential somebody types from memory.
+#
+# The allowlist, because its default is only a default where the directory
+# already exists — every entry must resolve at startup, so a host without
+# ~/code has a daemon that refuses to boot rather than one running on the
+# built-in root. The directory is created here and then named explicitly: this
+# is the whole of what bounds a session that runs with the permission prompt
+# turned off, and a boundary nobody can read is a boundary nobody checks.
 #
 # That is also what stopped the 0600 below being a precaution. This file now is
 # a credential, and the daemon refuses to read one that sets a secret at any
@@ -266,6 +281,17 @@ write_config() {
   # is reading a service that will not come up.
   [ "${#secret}" -ge 64 ] || die "openssl produced a short shared secret — refusing to write one the daemon would reject"
 
+  # Before the file that names it, and not after: an allowed_roots entry that
+  # does not resolve is a startup failure, so a configuration written first
+  # would be a configuration this installer knows the daemon will refuse.
+  if [ -d "$HOME/$ROOT" ]; then
+    say "~/$ROOT is already here — sessions will be confined to it"
+  else
+    mkdir -p -- "$HOME/$ROOT" ||
+      die "could not create ~/$ROOT, which is the only directory sessions would be allowed to run in"
+    say "created ~/$ROOT — the only directory sessions will be allowed to run in"
+  fi
+
   mkdir -p -- "$HOME/${CONFIG%/*}"
   # Created under a 0077 umask rather than written and then chmod'd: between
   # those two there is a moment where a file that now does hold the shared
@@ -273,10 +299,10 @@ write_config() {
   # redundant — it states the mode this file must have, where the umask only
   # arranges for it.
   #
-  # Two heredocs with a printf between them, rather than one heredoc with the
-  # secret interpolated into it. The quoted delimiter is what keeps `$HOME/code`
-  # and every `#` below literal, and unquoting it to reach one value would
-  # expand the rest of the file along with it.
+  # Heredocs with a printf between them for each value, rather than one heredoc
+  # with the two interpolated into it. The quoted delimiter is what keeps every
+  # `$` and every `#` below literal, and unquoting it to reach two values would
+  # expand the rest of the file along with them.
   (
     umask 077
     {
@@ -327,29 +353,43 @@ CONFIG
 # Colon-separated absolute paths; a session may only run in a directory one of
 # them contains, and every entry must already exist.
 #
-# Default: $HOME/code. $HOME itself is never the default and is a poor choice:
-# SSH keys, cloud credentials and browser profiles all live directly under it,
-# which would make the allowlist decorative.
-# allowed_roots =
+# The installer wrote this one and created the directory. It is the daemon's
+# own default, written out rather than left commented for two reasons: a
+# default that only applies where the directory happens to exist is a daemon
+# that refuses to boot on every host where it does not, and this line is the
+# whole of what bounds a session running with the permission prompt turned off
+# — which is a thing to be able to read, not to have to know.
+#
+# $HOME itself is never the default and is a poor choice: SSH keys, cloud
+# credentials and browser profiles all live directly under it, which would make
+# the allowlist decorative.
+#
+# The systemd unit sets CRSW_ALLOWED_ROOTS to this same directory, and the
+# environment beats this file. Change what a session may reach and you have to
+# change it in both places, or delete that line from the unit — an edit here
+# alone is one that appears to have done nothing.
 CONFIG
+      printf 'allowed_roots = %s\n' "$HOME/$ROOT"
     } > "$HOME/$CONFIG"
   )
   chmod 0600 -- "$HOME/$CONFIG"
   # That one was generated, never which one. The line an operator reads here is
   # the line an operator pastes into an issue.
-  say "wrote ~/$CONFIG (mode 0600, with a generated shared_secret)"
+  say "wrote ~/$CONFIG (mode 0600, with a generated shared_secret and allowed_roots = ~/$ROOT)"
 }
 
-# What is left, said plainly, because nothing else is going to say it. The
-# secret is written now, so what stands between this host and a daemon that
-# starts is the allowlist — and an installer that enabled the unit here would
-# still leave a service failing on first boot, which teaches an operator to
-# ignore a failing service, a habit worth more than the convenience of not
-# typing one command.
+# What is left, said plainly, because nothing else is going to say it. Both of
+# the settings the daemon has no usable default for are written now, so what
+# remains is no longer a hand-edit somebody has to make before the service can
+# come up. The unit is still printed rather than enabled: enabling one is a
+# decision about somebody else's machine and nothing here has been asked to
+# take it.
 next_steps() {
   say ""
-  say "Next: set allowed_roots in ~/$CONFIG (shared_secret is already generated),"
-  say "then: systemctl --user enable --now crswd"
+  say "Next: systemctl --user enable --now crswd"
+  say ""
+  say "shared_secret and allowed_roots are both set in ~/$CONFIG. Read it first —"
+  say "allowed_roots is the only thing bounding what a session can reach."
   say ""
   say "Nothing was enabled and nothing is running: this installer starts no service."
 }

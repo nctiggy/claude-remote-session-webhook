@@ -39,6 +39,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 )
 
 const (
@@ -1033,6 +1035,11 @@ const (
 	// answer is already yes.
 	freshStep = "Nothing the installer writes is here yet"
 
+	// installStep is the first of the two runs, and the only one that meets a
+	// host with nothing on it. Everything the installer writes for the first
+	// time is measured there.
+	installStep = "Install"
+
 	// secondRunStep is the run that carries the requirement. The first one only
 	// proves an install; this one is the re-run an operator does to take a newer
 	// binary, on a host they have configured since.
@@ -1120,6 +1127,27 @@ func TestVerifyInstallProvesItOnAnotherMachine(t *testing.T) {
 			t.Errorf("the %q step does not check ~/%s, which %s writes.\nA path this job does not know about is one it never sees created: it is there after the install because it was there before, and nothing says so",
 				freshStep, rel, installerPath)
 		}
+	}
+
+	// The one the loop above cannot find: allowed_roots names a directory, and
+	// it is spelled without a leading dot. It is also the path whose absence has
+	// no symptom here — nothing in this job starts the daemon, and an
+	// allowed_roots entry that does not resolve is a startup failure — so the
+	// only thing standing behind it is that this job watched it appear and read
+	// the configuration that names it.
+	root := config.DefaultRootName
+	if !regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(root) + `\b`).MatchString(fresh) {
+		t.Errorf("the %q step does not check ~/%s, the directory the installed configuration allows sessions to run in.\nA runner image that shipped one would turn \"the installer created it\" into a description of what was already there",
+			freshStep, root)
+	}
+	install := commands(stepScript(t, wf, installStep))
+	if !strings.Contains(install, "$HOME/"+root) {
+		t.Errorf("the %q step never names $HOME/%s.\nThe configuration written on that host says a session may only run there, and a configuration naming a directory nobody created is a daemon that refuses to boot on a host where every file looks right",
+			installStep, root)
+	}
+	if !strings.Contains(install, "-d ") {
+		t.Errorf("the %q step asks nothing about a directory.\nThat the configuration names the root is half of it; whether the root is there is the half the daemon fails on",
+			installStep)
 	}
 
 	// Twice, and the second run is the one that carries the requirement: a

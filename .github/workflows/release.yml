@@ -329,16 +329,24 @@ jobs:
         # that shipped one of these paths would turn every assertion below into a
         # description of what was already there.
         #
-        # These four are every path install.sh writes, and a test holds the two
-        # lists together — a fifth path added to the installer and not to this
+        # These five are every path install.sh writes, and a test holds the two
+        # lists together — a sixth path added to the installer and not to this
         # loop is a file this job would find already present and report as
         # installed.
+        #
+        # `code` is the last of them and the only one that is not a file: the
+        # directory the installed configuration names as the one place a session
+        # may run. A runner image that shipped one would make "the installer
+        # created it" a description of what was already there — which is the
+        # assertion below that matters most, because a configuration naming a
+        # directory nobody created is a daemon that refuses to boot.
         run: |
           fresh=0
           for rel in .local/bin/crswd \
                      .config/systemd/user/crswd.service \
                      .local/share/crswd/crswd.service.sha256 \
-                     .config/crswd/config; do
+                     .config/crswd/config \
+                     code; do
             if [ -e "$HOME/$rel" ]; then
               echo "::error::~/$rel already exists, so installing it here proves nothing"
               fresh=1
@@ -443,6 +451,26 @@ jobs:
           mode=$(stat -c %a "$config")
           if [ "$mode" != 600 ]; then
             echo "::error::~/.config/crswd/config is mode $mode, want 600 — it is the file the shared secret was written into"
+            exit 1
+          fi
+
+          # The containment boundary: what the configuration names, and whether
+          # it is there. Both halves, because either one alone passes on a host
+          # the daemon refuses to start on — an entry that does not resolve is a
+          # startup failure, and a directory nobody named is one the operator
+          # cannot read off the file they were just told is theirs.
+          #
+          # $HOME itself is the answer that must never appear. It would start,
+          # every session would be inside the allowlist, and the allowlist would
+          # hold the SSH keys and cloud credentials that live directly under a
+          # home directory.
+          roots=$(sed -n 's/^allowed_roots = //p' "$config")
+          if [ "$roots" != "$HOME/code" ]; then
+            echo "::error::the installed configuration sets allowed_roots to '$roots'; the installer names \$HOME/code, which is also what the unit sets CRSW_ALLOWED_ROOTS to. A third answer is one the operator reads and the daemon never uses"
+            exit 1
+          fi
+          if [ ! -d "$roots" ]; then
+            echo "::error::the configuration names $roots and no such directory exists. Every allowed_roots entry must resolve at startup, so this host has a configuration that looks complete and a daemon that refuses to boot"
             exit 1
           fi
 
