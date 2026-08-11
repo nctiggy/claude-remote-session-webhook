@@ -79,3 +79,60 @@ interrupted write is not a state to draw conclusions from. Verify against the fi
 against the test, before calling something a defect.
 
 **Left:** T002 through T006.
+
+---
+
+## Iteration 2 — T001 finished, and the record above corrected
+
+**Did:** Finished T001 and replaced the test's own configuration parser with the
+daemon's. `installedSecret` now calls `config.ParseFile` + `File.Lookup` rather than
+cutting the line on `=` in the test file, so what is asserted is that **the daemon
+reads the file the installer wrote** — a fixture parser can agree with the installer
+about a file the daemon refuses, and the operator meets that as a service that will
+not come up. `install.sh` and the `verify-install` additions are unchanged from
+`6b727f2`.
+
+**The entry above describes this iteration's working tree, and the account in it is
+wrong.** Nothing was killed and no write was interrupted. The `say "... generated
+shared_secret $secret"` line it saw was **a deliberate break check**, made and reverted
+inside a minute, because this plan requires that *a new guard must be proven by
+breaking it*. Four were run against `install.sh` in turn, each reverted:
+
+| Break | What must fail |
+|---|---|
+| `say` the value | `never printed` |
+| `secret=deadbeef` | the length check, before anything is written |
+| a constant 64 characters long | `a different one on every host` |
+| back to `# shared_secret =` | every case, via "sets no shared_secret" |
+
+**What actually happened is worth more than the correction.** Two agents were working
+this one checkout at the same time. `6b727f2` is this iteration's uncommitted work,
+committed by the other one at the moment it happened to look at the tree — its message
+describes tests it did not write, and the `install_test.go` in it is this iteration's
+file three edits before it was finished. `ralph/loop.sh` refuses to *start* on a dirty
+tree (line 31), which is the whole of its protection: nothing stops a second iteration
+starting on a clean tree and then committing a first one's half-finished edits, and
+both will pick the same topmost open task because that is what the prompt tells them
+to do.
+
+**Findings:**
+
+- **One checkout, one loop.** A second concurrent iteration is not a slow loop, it is
+  a corrupt notebook: commit messages describing work their author did not do, and a
+  `PROGRESS.md` entry inferring a defect from a transient state. If two are wanted,
+  they need separate worktrees.
+- **A transient working tree is not evidence.** Any iteration following this plan will
+  put a deliberate leak into `install.sh` for a few seconds, because the plan tells it
+  to. Reading one and reporting a leak is the false positive that costs the most trust.
+- **`README.md:33` is now stale** — `$EDITOR ~/.config/crswd/config  # shared_secret,
+  allowed_roots` tells a stranger to set a secret the installer generated. **T004** owns
+  the rewrite, so it is left there rather than half-fixed twice.
+- **`specs/006-…/contracts/installer.md:86` shows the old transcript** in its worked
+  example (`Next: set shared_secret and allowed_roots`). It is a record of what
+  milestone 6 specced and this plan is the authority now, so it was left alone — but
+  the next reader of that contract should know it describes an installer that no longer
+  exists.
+- **CI never shellchecks `install.sh`.** `ci.yml` lists `.claude/hooks/*.sh`,
+  `ralph/loop.sh`, `.claude/statusline.sh` and `.github/scripts/*.sh` — not the one
+  script strangers pipe into `bash`. The `format-and-lint` hook covers it at
+  `-S error` for whoever edits it, and nothing covers it on a pull request.
