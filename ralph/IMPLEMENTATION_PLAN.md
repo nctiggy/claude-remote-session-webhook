@@ -83,7 +83,39 @@ dashboard.
 
 - [ ] **T004** Rewrite `README.md` for a stranger. Lead with what it is, then install, then the four secrets and what each buys (table above), then configure, then run. **Move the contributor material out** — "Working in this repo", "Planning a milestone", "Running a loop" are ~46 lines of internal workflow sitting between the install steps and the configuration reference; they belong in `CONTRIBUTING.md`. Keep the voice this project already has: plain, direct, willing to say why. Do not invent a marketing register.
 
-- [ ] **T005** Make the Cloudflare Access setup a crisp, ordered sequence in the README — it is the one part that cannot be automated, so it must at least be followable without guessing. Team domain, AUD, allowed emails, and the two edge policies (identity for the browser, service token for the API). Say what each is for. Name the failure an operator will actually hit: the two assertion shapes are not interchangeable, and a service token presented to the browser door is refused exactly as a stranger's is.
+- [ ] **T005** Make the Cloudflare Access setup a crisp, ordered sequence in the README.
+  **The concrete detail below was verified against the code — use it rather than
+  re-deriving it, and do not soften it into generalities.**
+
+  | What | Value / where it comes from |
+  |---|---|
+  | `access_team_domain` | `<team>.cloudflareaccess.com`. **Origin only** — `loadAccessOrigin` refuses a path, query, fragment or credentials. |
+  | The key set | The daemon fetches `<team_domain>/cdn-cgi/access/certs` (`internal/access/keys.go`, `certsPath`). Say so: it explains why the team domain must be exact. |
+  | `access_aud` | The application's **Application Audience (AUD) Tag**, on its Overview page. Compared for equality, never parsed. |
+  | `access_allowed_emails` | Comma-separated. An entry that is empty or contains a space refuses. |
+
+  **One Access application, two policies** — this is the part that costs an
+  operator an afternoon:
+
+  | Policy | Action | Rule | Serves |
+  |---|---|---|---|
+  | Browser | **Allow** | Emails → the operator's address | The dashboard |
+  | API | **Service Auth** | Service Token | The companion skill and scripts |
+
+  The API policy's action must be **Service Auth**, not Allow. A service token's
+  assertion carries `common_name`, an empty `sub`, and **no email** — which is why
+  "no email" must never read as "allow", and why a service-token assertion
+  presented to the browser door is refused exactly as a stranger's is.
+
+  Also give the ingress the tunnel needs (`deploy/cloudflared.example.yml`):
+  hostname → `http://127.0.0.1:8765`, with a `http_status:404` catch-all. The
+  daemon binds loopback only; the tunnel is the sole way in.
+
+  **Name the failure an operator actually hits**: all three Access values or none.
+  Set none and the daemon *starts*, warns, and admits nobody to the dashboard —
+  a working daemon serving no one, which looks healthy and is the worst version.
+
+  Original wording, still binding: — it is the one part that cannot be automated, so it must at least be followable without guessing. Team domain, AUD, allowed emails, and the two edge policies (identity for the browser, service token for the API). Say what each is for. Name the failure an operator will actually hit: the two assertion shapes are not interchangeable, and a service token presented to the browser door is refused exactly as a stranger's is.
 
 - [ ] **T006** Fix `#129` — `.env.example` says the idle timeout and absolute session lifetime "are constants in the code, not variables" about 120 lines below listing `CRSW_SESSION_LIFETIME` and `CRSW_SESSION_LIFETIME_MAX` as variables. **Correct the claims that stopped being true and keep the ones that did not**: the signed-request timestamp window really is a constant, and there really is no variable that disables Access validation. Do not delete the section.
 
