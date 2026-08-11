@@ -82,60 +82,6 @@ against the test, before calling something a defect.
 
 ---
 
-## Iteration 2 — T002, and what actually stands between an install and a daemon
-
-**Did:** T002. `install.sh` creates `~/code` and writes `allowed_roots = $HOME/code`
-into a **new** configuration, in that order — an entry that does not resolve is a
-startup failure, so a file written first would be one the installer knows the daemon
-will refuse. `TestInstallSetsTheContainmentRoot` holds four properties: the config
-sets `allowed_roots`, it is not `$HOME` itself, it is `$HOME/code`, and the directory
-the file names is really there. A second subtest pins that a host with an existing
-configuration gets no directory either — that file may point containment elsewhere,
-and creating one to satisfy a default it does not use is a decision on a host the
-installer was told to leave alone. `verify-install` now carries `code` in its
-freshness loop and asserts both halves on the runner; `TestVerifyInstallProves…`
-keeps those assertions in the job. All five guards were proven by breaking them.
-
-**Learned — the config line is read by nobody as things stand.** The shipped unit
-sets `Environment=CRSW_ALLOWED_ROOTS=%h/code` (`deploy/crswd.example.service:71`) and
-**the environment beats the file** (flag → environment → file → default). The two
-agree today, so nothing is broken, but an operator who edits `allowed_roots` in the
-config and restarts changes nothing — and the dangerous direction is narrowing: they
-believe they have shrunk the blast radius and the unit keeps the old one. The written
-comment says so in the file itself. Whether that `Environment=` line should still
-exist now that the config carries the value is a real question for T003/T004.
-
-**Findings:**
-
-- 🔴 **`systemctl --user enable --now crswd` fails immediately after a clean
-  install, and nothing in CI notices.** The unit has
-  `EnvironmentFile=%h/.config/crswd/env` with **no `-` prefix**, and systemd treats a
-  missing file there as a fatal error. The installer never writes that file — it
-  writes `~/.config/crswd/config`, which is a different path, and which the daemon
-  reads by itself. So the last line of `next_steps()` is a command that does not
-  work on the host it was just printed to. `verify-install` cannot see it because it
-  deliberately never starts the service (it asserts `inactive`/`disabled`).
-  **T003 is the task that has to face this**: "what is left after install" is not
-  Cloudflare Access, it is a unit that will not start. The fix is one of `-` on that
-  line, or an installer that writes an empty `env`, or a unit that stops referencing
-  it — that is a decision, so it is written here rather than taken in passing.
-- **The README's install section is stale, and was already stale before this
-  iteration.** T004 rewrites it; these are the specific false claims, so nobody has
-  to re-derive them: it says the installer "writes four things" (five now, one a
-  directory), that it starts nothing "because the daemon cannot serve a request
-  before the secret is set" (T001 set it), and it tells the reader to
-  `$EDITOR ~/.config/crswd/config  # shared_secret, allowed_roots` — both of which
-  the installer now writes.
-- **`install.sh` is not shellchecked by CI.** `ci.yml:83` lints
-  `.claude/hooks/*.sh`, `ralph/loop.sh`, `.claude/statusline.sh` and
-  `.github/scripts/*.sh` — the one script strangers pipe into bash is not on that
-  list. The Go tests execute it end to end, which is stronger for behaviour and says
-  nothing about quoting on a path no test takes.
-
-**Left:** T003 through T006.
-
----
-
 ## Iteration 2 — T001 finished, and the record above corrected
 
 **Did:** Finished T001 and replaced the test's own configuration parser with the
@@ -190,3 +136,50 @@ to do.
   `ralph/loop.sh`, `.claude/statusline.sh` and `.github/scripts/*.sh` — not the one
   script strangers pipe into `bash`. The `format-and-lint` hook covers it at
   `-S error` for whoever edits it, and nothing covers it on a pull request.
+
+---
+
+## Iteration 3 — T002, written by the other half of that race
+
+**Whose entry this is.** It is the second agent named above. It picked T002 as the
+topmost open task, did it, and found its work already committed by the first as
+`2c18505` — with a message describing tests it had not written, the same way round as
+`6b727f2`. Nothing is lost and nothing is duplicated: the commit is the work. This
+entry was first appended *above* the iteration-2 note, because the anchor it appended
+after was iteration 1's last line, which by then was no longer the end of the file. It
+has been moved here. **Two agents cannot share one notebook any more safely than they
+can share one tree.**
+
+**Did:** T002. `install.sh` creates `~/code` and writes `allowed_roots = $HOME/code`
+into a **new** configuration, in that order — an entry that does not resolve is a
+startup failure, so a file written first would be one the installer knows the daemon
+will refuse. `TestInstallSetsTheContainmentRoot` holds four properties: the config
+sets `allowed_roots`, it is not `$HOME` itself, it is `$HOME/code`, and the directory
+the file names is really there. A second subtest pins that a host which already has a
+configuration gets no directory either — that file may point containment elsewhere,
+and creating one to satisfy a default it does not use is a decision on a host the
+installer was told to leave alone. `verify-install` carries `code` in its freshness
+loop and asserts both halves on the runner; `TestVerifyInstallProvesItOnAnotherMachine`
+keeps those assertions in the job. All five guards were proven by breaking them.
+
+**Learned — the unit still decides, whatever the file says.** The unit sets
+`Environment=CRSW_ALLOWED_ROOTS=%h/code` and **the environment beats the file**
+(flag → environment → file → default). The two agree today, so nothing is broken, but
+an operator who edits `allowed_roots` in the config and restarts changes nothing — and
+the dangerous direction is narrowing, where they believe they have shrunk the blast
+radius and the unit keeps the old one. The configuration the installer writes now says
+so in its own comment. Whether that `Environment=` line should still exist, now that
+the config carries the value, is a live question for T003.
+
+**Findings:**
+
+- **The `Environment=` line above is the finding**, and it is not the same one
+  `b43a849` fixed. That commit made `EnvironmentFile=` optional and corrected
+  `ExecStart`; the allowed-roots override is a separate line that still silently wins
+  over the file an operator is told is theirs.
+- **`next_steps()` and the script's header comment were re-worded, not re-argued.**
+  Both asserted that nothing is enabled *because the secret is not set yet* — which
+  T001 made false. They now state what the installer does without justifying the
+  choice, because **T003 owns that argument** and a stale reason is worse than none.
+- The README staleness and the missing `install.sh` shellcheck were found here too,
+  independently, and are already recorded above. No second copy.
