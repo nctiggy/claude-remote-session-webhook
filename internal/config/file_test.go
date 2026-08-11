@@ -1173,8 +1173,12 @@ func TestBackupIsConsultedWhenTheFileWillNotLoad(t *testing.T) {
 		// The other half of "will not load": the grammar is fine and a *value*
 		// is refused. It is the same recovery — the operator still cannot start
 		// the daemon they would use to fix it.
+		//
+		// A host name is the value, because fileLines writes an Access door and a
+		// daemon with one may bind off loopback now (M12/T002). A name is refused
+		// under every door.
 		root := t.TempDir()
-		path, _ := setup(t, fileLines(root, "listen = 0.0.0.0:8080"))
+		path, _ := setup(t, fileLines(root, "listen = localhost:8080"))
 
 		cfg, err := config.LoadFrom(env(map[string]string{configFileEnvName: path}), io.Discard)
 		if err != nil {
@@ -1213,7 +1217,7 @@ func TestBackupIsConsultedWhenTheFileWillNotLoad(t *testing.T) {
 		root := t.TempDir()
 		for name, contents := range map[string]string{
 			"the backup does not parse":    "also not a pair\n",
-			"the backup breaks a bound":    fileLines(root, "listen = 0.0.0.0:8080"),
+			"the backup breaks a bound":    fileLines(root, "listen = localhost:8080"),
 			"the backup is short a secret": "allowed_roots = " + root + "\n",
 		} {
 			path, backup := setup(t, "listen 127.0.0.1:9999\n")

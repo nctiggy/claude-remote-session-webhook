@@ -55,6 +55,16 @@ func withAccess(pairs map[string]string) map[string]string {
 	return pairs
 }
 
+// withoutAccess is the inverse, for the tests elsewhere in this package whose
+// base environment carries the three: a daemon whose dashboard admits nobody,
+// which is the state half the rules in this file are about.
+func withoutAccess(pairs map[string]string) map[string]string {
+	delete(pairs, config.EnvAccessTeamDomain)
+	delete(pairs, config.EnvAccessAUD)
+	delete(pairs, config.EnvAccessAllowedEmails)
+	return pairs
+}
+
 func TestLoadFromSelectsOneBrowserDoor(t *testing.T) {
 	t.Parallel()
 
@@ -195,6 +205,128 @@ func TestLoadFromSelectsOneBrowserDoor(t *testing.T) {
 			}
 			if tc.wantPassword && string(cfg.DashboardPassword) != goodPassword {
 				t.Error("the configured password did not survive the load, so nothing downstream could check it")
+			}
+		})
+	}
+}
+
+// TestTheListenerReachesOnlyAsFarAsTheDoorAdmits is the selection's other
+// consequence (M12/T002): which door is live decides how far the listener may
+// reach.
+//
+// The bound is relaxed, never removed. Loopback stops being the *only* permitted
+// address when somebody can actually get in — an operator on their own network,
+// with no Cloudflare in front of this daemon, has to be able to reach it from the
+// machine they are sitting at — and a daemon whose dashboard admits nobody stays
+// where the tunnel can find it and nothing else can. Delete the IsLoopback check
+// and the first three rows below go green while a listener nobody can log in to
+// serves the LAN, which is the failure this test exists for.
+func TestTheListenerReachesOnlyAsFarAsTheDoorAdmits(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		with   func(map[string]string)
+		listen string
+		// wantErr are substrings every one of which the refusal must carry. Empty
+		// means the address is permitted.
+		wantErr []string
+		why     string
+	}{
+		{
+			name:   "no door, every interface",
+			with:   func(map[string]string) {},
+			listen: "0.0.0.0:8765",
+			wantErr: []string{
+				config.EnvListen, "not loopback", "admits nobody",
+				config.EnvAccessTeamDomain, config.EnvDashboardPassword,
+			},
+			why: "the daemon the whole guard is about: reachable from the network and refusing everyone who " +
+				"arrives. The refusal names both doors because either one would fix it",
+		},
+		{
+			name:    "no door, a LAN address",
+			with:    func(map[string]string) {},
+			listen:  "192.168.1.10:8765",
+			wantErr: []string{"not loopback"},
+			why:     "not only the wildcard: any address the network can route to is the same exposure",
+		},
+		{
+			name:    "no door, the IPv6 wildcard",
+			with:    func(map[string]string) {},
+			listen:  "[::]:8765",
+			wantErr: []string{"not loopback"},
+			why:     "the check is on the parsed address, so the second family is not a way round it",
+		},
+		{
+			name:   "no door, loopback",
+			with:   func(map[string]string) {},
+			listen: "127.0.0.53:8765",
+			why:    "today's daemon, unchanged: no door and the tunnel in front of it",
+		},
+		{
+			name:   "access, every interface",
+			with:   func(p map[string]string) { withAccess(p) },
+			listen: "0.0.0.0:8765",
+			why:    "an Access door admits somebody, so the daemon may be somewhere they can reach it",
+		},
+		{
+			name:   "a password, a LAN address",
+			with:   func(p map[string]string) { p[config.EnvDashboardPassword] = goodPassword },
+			listen: "192.168.1.10:8765",
+			why:    "the deployment this milestone exists for: no Cloudflare, a password, and a listener on the network",
+		},
+		{
+			name:    "a password, a name",
+			with:    func(p map[string]string) { p[config.EnvDashboardPassword] = goodPassword },
+			listen:  "localhost:8765",
+			wantErr: []string{"never a name"},
+			why: "a door relaxes the loopback demand and nothing else. A name is whatever /etc/hosts or a " +
+				"resolver says it is, and the point of this value is to say where the daemon will be",
+		},
+		{
+			name:    "no door, a name",
+			with:    func(map[string]string) {},
+			listen:  "localhost:8765",
+			wantErr: []string{"loopback IP literal", "never a name"},
+			why: "the same refusal for the daemon with no door, and it still says loopback: an operator told " +
+				"only half of what is demanded fixes the address twice",
+		},
+		{
+			name:    "a password, no port",
+			with:    func(p map[string]string) { p[config.EnvDashboardPassword] = goodPassword },
+			listen:  "0.0.0.0",
+			wantErr: []string{config.EnvListen, "host:port"},
+			why:     "every other bound on the address survives the relaxation",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			pairs := doorEnv(t)
+			tc.with(pairs)
+			pairs[config.EnvListen] = tc.listen
+
+			cfg, err := config.LoadFrom(env(pairs), io.Discard, config.WithoutConfigFile())
+
+			if len(tc.wantErr) > 0 {
+				if err == nil {
+					t.Fatalf("LoadFrom() bound %s: %s", tc.listen, tc.why)
+				}
+				for _, want := range tc.wantErr {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error = %q, want it to name %q: %s", err, want, tc.why)
+					}
+				}
+				assertUnspoken(t, err.Error(), "the refusal")
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("LoadFrom() refused %s: %v — %s", tc.listen, err, tc.why)
+			}
+			if cfg.Listen != tc.listen {
+				t.Errorf("Listen = %q, want %q: %s", cfg.Listen, tc.listen, tc.why)
 			}
 		})
 	}

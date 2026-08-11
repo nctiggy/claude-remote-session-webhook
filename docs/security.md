@@ -246,15 +246,46 @@ way the `Access-Control-Allow-*` absence below is.
 
 ## Transport & exposure
 
-The daemon binds **`127.0.0.1` only**. It is never reachable directly; a Cloudflare
-Tunnel connects outbound and brokers `*.example.com` traffic to the loopback
-listener. No inbound port is opened on the host or the router.
+The daemon binds **loopback by default**, and the deployment this was written for
+is not reachable any other way: a Cloudflare Tunnel connects outbound and brokers
+`*.example.com` traffic to the loopback listener, and no inbound port is opened on
+the host or the router.
 
 ```
 internet → Cloudflare edge (TLS, Access) → tunnel (outbound) → 127.0.0.1:PORT
 ```
 
-If a change would make the daemon listen on `0.0.0.0`, that change is wrong.
+Since M12 there is a second one — an operator on their own network with no
+Cloudflare in front of this daemon at all, reaching it from the machine they are
+sitting at:
+
+```
+operator's browser → LAN → 0.0.0.0:PORT
+```
+
+**The invariant is "never reachable without authentication", not "never
+reachable".** That is the whole of what the bind rule now says, and it is a bound
+relaxed rather than deleted:
+
+- A non-loopback address is permitted **only when layer 1 admits somebody** — an
+  Access door or a dashboard password. A daemon whose dashboard admits nobody
+  (`closedDoor`, which is what a daemon with neither has) refuses to bind off
+  loopback, and the refusal is a **startup failure**, not a warning.
+- It is checked in the three places the loopback rule was always checked:
+  `config.loadListen` on the configured value, `httpapi.assertBindAddress` on the
+  configured string again, and `httpapi.assertBoundAddress` on the address the
+  kernel actually handed back — the only one of the three that is evidence rather
+  than intent. The second asks both what was configured *and* which layer 1 was
+  wired, because a daemon whose file names a door it did not build is a wiring
+  defect and must not be what puts a listener on the network.
+- A host **name** is refused under every door. `/etc/hosts` or a resolver can
+  point `localhost` anywhere, so only an IP literal says where the listener will
+  be.
+- The development bypass is not a door. It authenticates nobody, configures no
+  door, and `internal/access` refuses a non-loopback listener under it besides.
+
+If a change would let a daemon that admits nobody listen on `0.0.0.0`, that change
+is wrong.
 
 ### Response headers
 
@@ -374,7 +405,8 @@ web page it fetched — reaches the dashboard. **All of it is untrusted.**
 - [ ] Any caller-supplied path allowlisted and symlink-resolved
 - [ ] Auth failures are uniform and leak no detail about which check failed
 - [ ] No session output, prompt, or token in any log line
-- [ ] Listener still bound to loopback
+- [ ] Listener still bound to loopback, or bound wider only on a daemon whose
+      layer 1 admits somebody
 - [ ] A new setting a secret could be written into is classified by `config.IsSecret`,
       so the 0600 refusal and the settings page cannot disagree about it
 - [ ] No secret value on any rendered page — swept across every route, not reasoned about

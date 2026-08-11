@@ -6,10 +6,13 @@
 // and a Server can only be built from it. A seventh entry is a contract change
 // (contracts/http-api.md), not a convenience.
 //
-// The listener binds loopback and nothing else (FR-005). Reachability comes from
-// the Cloudflare Tunnel, so a listener on any other interface is the one change
-// docs/security.md calls simply wrong. config.Load already refuses a non-loopback
-// CRSW_LISTEN; this package refuses it twice more — once on the configured
+// The listener binds loopback unless a browser arriving off it would meet a door
+// that can let them in (FR-005, M12). Reachability used to come from the
+// Cloudflare Tunnel and nowhere else; it may now come from the operator's own
+// network, and what did not change is the invariant underneath — this daemon is
+// never reachable without authentication, so a dashboard that admits nobody
+// stays where only the tunnel can find it. config.Load applies that rule to
+// CRSW_LISTEN; this package applies it twice more — once on the configured
 // string, and once on the address the kernel actually handed back, which is the
 // only one of the three that is evidence rather than intent.
 package httpapi
@@ -463,7 +466,9 @@ func newServer(
 		// sessions exist, not how much work asking for them costs.
 		return nil, errors.New("httpapi: no create rate limiter provided; refusing to start")
 	}
-	if err := assertLoopbackAddress(cfg.Listen); err != nil {
+	// After the nil checks above, because the answer depends on which layer 1
+	// this server was handed and a nil one has no answer to give.
+	if err := assertBindAddress(cfg.Listen, mayBindOffLoopback(cfg, browser)); err != nil {
 		return nil, err
 	}
 
@@ -936,14 +941,14 @@ func (s *Server) StartReaper(ctx context.Context) error {
 	return nil
 }
 
-// Listen binds the configured address and refuses to keep a listener that is not
-// on loopback.
+// Listen binds the configured address and refuses to keep a listener the daemon
+// is not allowed to have.
 //
 // The assertion is on ln.Addr(), not on the string that was asked for. The
 // configured value has been checked twice by the time it gets here, but only
 // what the kernel returns says what is actually reachable; a listener that came
-// back bound to a wildcard is closed rather than served, because by then the
-// socket already exists.
+// back bound to a wildcard on a daemon whose dashboard admits nobody is closed
+// rather than served, because by then the socket already exists.
 func (s *Server) Listen() error {
 	if s.ln != nil {
 		return fmt.Errorf("httpapi: already listening on %s", s.ln.Addr())
@@ -953,7 +958,7 @@ func (s *Server) Listen() error {
 	if err != nil {
 		return fmt.Errorf("httpapi: bind %s: %w", s.cfg.Listen, err)
 	}
-	if err := assertLoopbackAddr(ln.Addr()); err != nil {
+	if err := assertBoundAddress(ln.Addr(), mayBindOffLoopback(s.cfg, s.browser)); err != nil {
 		return errors.Join(err, ln.Close())
 	}
 
@@ -1085,14 +1090,44 @@ func (s *Server) notImplemented(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// assertLoopbackAddress re-checks the configured address (FR-005).
+// mayBindOffLoopback reports whether this daemon is allowed to be somewhere the
+// network can reach it — which it is exactly when a browser arriving there meets
+// a door that can let them in (M12).
 //
-// config.Load already refuses a non-loopback host, so this is the second of
-// three checks and deliberately not the last. A Config is a struct: a test, a
-// future caller, or a startup path that reorders two lines can produce one that
-// never went through Load. The guarantee has to belong to the Server, not to one
-// route into it.
-func assertLoopbackAddress(addr string) error {
+// Both halves are asked, and they are not the same question. The configuration
+// is what the operator asked for; the door is what was actually wired in front
+// of the dashboard. A closedDoor daemon refuses off loopback however its file
+// reads, because a listener nobody can authenticate through is the one thing the
+// bind guard has always existed to prevent, and a daemon whose configuration
+// names a door it did not build is a wiring defect rather than a licence.
+//
+// It is also what keeps the development build where it has always been. That
+// build's layer 1 is not a closedDoor and admits every browser without checking
+// anything, so the door half alone would hand the one build that authenticates
+// nobody the widest bind — the config half says no, since a bypass daemon
+// configures no door at all, and internal/access refuses a non-loopback listener
+// under it besides.
+func mayBindOffLoopback(cfg *config.Config, door layer1) bool {
+	if _, closed := door.(closedDoor); closed {
+		return false
+	}
+	return cfg.AccessTeamDomain != "" || len(cfg.DashboardPassword) > 0
+}
+
+// assertBindAddress re-checks the configured address (FR-005).
+//
+// config.Load already applies this rule, so this is the second of three checks
+// and deliberately not the last. A Config is a struct: a test, a future caller,
+// or a startup path that reorders two lines can produce one that never went
+// through Load. The guarantee has to belong to the Server, not to one route into
+// it.
+//
+// offLoopbackOK is mayBindOffLoopback's answer, taken as an argument so that the
+// two callers below cannot ask it differently. It relaxes the loopback demand
+// and nothing else: an address that is not an IP literal is refused either way,
+// because a name is whatever a resolver says it is and the point of this value
+// is to say where the daemon will be.
+func assertBindAddress(addr string, offLoopbackOK bool) error {
 	if addr == "" {
 		return fmt.Errorf("httpapi: no listen address configured: %w", ErrNotLoopback)
 	}
@@ -1107,18 +1142,26 @@ func assertLoopbackAddress(addr string) error {
 		// A name is refused rather than resolved, matching config.loadListen:
 		// /etc/hosts or a resolver can point "localhost" off loopback without
 		// this value changing, which would move the bind invisibly.
-		return fmt.Errorf("httpapi: listen host %q must be a loopback IP literal such as 127.0.0.1 or ::1: %w", host, ErrNotLoopback)
+		return fmt.Errorf("httpapi: listen host %q must be an IP literal such as 127.0.0.1 or ::1: %w", host, ErrNotLoopback)
 	}
-	if !ip.IsLoopback() {
-		return fmt.Errorf("httpapi: listen host %q is not loopback: %w", host, ErrNotLoopback)
+	if !ip.IsLoopback() && !offLoopbackOK {
+		return fmt.Errorf("httpapi: listen host %q is not loopback and this daemon's dashboard admits nobody: %w", host, ErrNotLoopback)
 	}
 	return nil
 }
 
-// assertLoopbackAddr checks the address a listener came back with. It fails
-// closed on an address it does not recognise: an unknown type is not evidence of
-// loopback, and this is the last check before the socket starts accepting.
-func assertLoopbackAddr(addr net.Addr) error {
+// assertBoundAddress checks the address a listener came back with, and is the
+// last check before the socket starts accepting.
+//
+// It fails closed on an address it does not recognise: an unknown type is not
+// evidence of loopback. A daemon permitted off loopback has nothing left for
+// this check to establish — it is allowed to be reachable, whatever the kernel
+// handed back — so the question it answers is only ever asked of the daemon that
+// is not.
+func assertBoundAddress(addr net.Addr, offLoopbackOK bool) error {
+	if offLoopbackOK {
+		return nil
+	}
 	tcp, ok := addr.(*net.TCPAddr)
 	if !ok {
 		return fmt.Errorf("httpapi: bound to %v, which is not a TCP address but a %T: %w", addr, addr, ErrNotLoopback)

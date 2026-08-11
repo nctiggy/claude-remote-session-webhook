@@ -705,10 +705,6 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 	if err != nil {
 		return nil, err
 	}
-	listen, err := loadListen(getenv)
-	if err != nil {
-		return nil, err
-	}
 	maxSessions, err := loadInt(getenv, EnvMaxSessions, DefaultMaxSessions)
 	if err != nil {
 		return nil, err
@@ -778,7 +774,15 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 	if err := validateDoors(accessEnabled, teamDomain, dashboardPassword, o.accessBypassed); err != nil {
 		return nil, err
 	}
-	if teamDomain == "" && len(dashboardPassword) == 0 && !o.accessBypassed {
+	// Read after the two checks above rather than beside the other bounds, which
+	// is where it used to sit: what a listen address is allowed to be now depends
+	// on whether anybody can get through the browser door, and that is not a fact
+	// until the group check and the selection have both had their say (M12/T002).
+	listen, err := loadListen(getenv, browserDoorAdmits(teamDomain, dashboardPassword))
+	if err != nil {
+		return nil, err
+	}
+	if !browserDoorAdmits(teamDomain, dashboardPassword) && !o.accessBypassed {
 		if err := warnNoIdentityProvider(warn); err != nil {
 			return nil, err
 		}
@@ -1372,10 +1376,38 @@ func resolveRoot(path string) (ApprovedRoot, error) {
 	return ApprovedRoot{Path: resolved}, nil
 }
 
-// loadListen enforces the loopback bind (FR-005). Reachability comes from the
-// tunnel; a listener on any other interface is the one change docs/security.md
-// says is simply wrong.
-func loadListen(getenv func(string) string) (string, error) {
+// browserDoorAdmits reports whether layer 1 has anybody to let in: Cloudflare
+// Access, or the password door beside it.
+//
+// One predicate rather than the same pair of comparisons written twice, for the
+// reason IsSecret is one predicate — its two callers decide different things
+// about the same fact (what the startup banner says, and how far the listener
+// may reach), and two spellings that could drift would have a daemon warn that
+// it admits nobody while binding an address only a daemon that admits somebody
+// is allowed.
+//
+// It is deliberately not told about the development bypass. That build
+// authenticates nobody, so it has nobody to admit in the sense that matters
+// here, and internal/access refuses a non-loopback listener under it anyway.
+func browserDoorAdmits(teamDomain string, password []byte) bool {
+	return teamDomain != "" || len(password) > 0
+}
+
+// loadListen bounds where the daemon may bind (FR-005).
+//
+// Loopback is the default and the only address a daemon with no browser door
+// may have. It stops being the *only* permitted address when layer 1 admits
+// somebody: an operator on their own network, with no Cloudflare in front of
+// this daemon, has to be able to reach it from the machine they are sitting at
+// (M12). The bound is relaxed there and nowhere else, because the invariant it
+// serves is "never reachable without authentication" rather than "never
+// reachable" — a daemon whose dashboard admits nobody stays where the tunnel
+// can find it and nothing else can.
+//
+// doorAdmits is a caller's answer rather than a Config field read here: this
+// runs during the load that builds the Config, and a check that read its own
+// half-built result would be checking nothing.
+func loadListen(getenv func(string) string, doorAdmits bool) (string, error) {
 	v := getenv(EnvListen)
 	if v == "" {
 		v = DefaultListen
@@ -1386,15 +1418,30 @@ func loadListen(getenv func(string) string) (string, error) {
 		return "", fmt.Errorf("%s %q is not a host:port address; refusing to start: %w", EnvListen, v, err)
 	}
 
+	// Said once, because the two refusals below differ only in whether loopback
+	// is part of the demand, and an operator told half of it fixes the address
+	// twice.
+	permitted := "a loopback IP literal such as 127.0.0.1 or ::1"
+	if doorAdmits {
+		permitted = "an IP literal such as 127.0.0.1, ::1 or 0.0.0.0"
+	}
+
 	ip := net.ParseIP(host)
 	if ip == nil {
-		// A name is refused rather than resolved: /etc/hosts or a resolver can
-		// point "localhost" anywhere, which would move the bind off loopback
-		// without changing this value.
-		return "", fmt.Errorf("%s host %q must be a loopback IP literal such as 127.0.0.1 or ::1; refusing to start", EnvListen, host)
+		// A name is refused rather than resolved, under either door: /etc/hosts
+		// or a resolver can point "localhost" anywhere, which would move the bind
+		// without changing this value. The wildcard ":8765" arrives here too, as
+		// an empty host — 0.0.0.0 is the same address said in a way that can be
+		// read off the line.
+		return "", fmt.Errorf("%s host %q must be %s, never a name; refusing to start", EnvListen, host, permitted)
 	}
-	if !ip.IsLoopback() {
-		return "", fmt.Errorf("%s host %q is not loopback; the daemon is reachable only through the tunnel; refusing to start", EnvListen, host)
+	if !ip.IsLoopback() && !doorAdmits {
+		// The refusal names both doors because both are missing, and it may name
+		// them: this is a startup error to a terminal, not an HTTP response, so
+		// there is no stranger here to tell anything to.
+		return "", fmt.Errorf(
+			"%s host %q is not loopback and this daemon's dashboard admits nobody: configure %s (with %s and %s) or %s before binding off loopback, or keep the listener on loopback and reach it through the tunnel; refusing to start",
+			EnvListen, host, EnvAccessTeamDomain, EnvAccessAUD, EnvAccessAllowedEmails, EnvDashboardPassword)
 	}
 
 	n, err := strconv.Atoi(port)

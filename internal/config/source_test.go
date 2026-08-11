@@ -372,33 +372,44 @@ func TestFileValueIsValidatedIdentically(t *testing.T) {
 		name  string
 		key   string
 		value string
+		// noDoor takes the Access values out of both environments, for a value
+		// that is refused only on a daemon whose dashboard admits nobody. The
+		// file must be held to that rule as the environment is, or an operator
+		// could bind a closed daemon to the network from a file (M12/T002).
+		noDoor bool
 	}{
-		{"a listen host that is a name", "listen", "localhost:8765"},
-		{"a listen host that is not loopback", "listen", "0.0.0.0:8765"},
-		{"a session cap that is not a number", "max_sessions", "several"},
-		{"a session cap below one", "max_sessions", "0"},
-		{"an idle timeout that is not a duration", "idle_timeout", "soon"},
-		{"a negative lifetime", "session_lifetime", "-1h"},
+		{name: "a listen host that is a name", key: "listen", value: "localhost:8765"},
+		{name: "a listen host that is not loopback", key: "listen", value: "0.0.0.0:8765", noDoor: true},
+		{name: "a session cap that is not a number", key: "max_sessions", value: "several"},
+		{name: "a session cap below one", key: "max_sessions", value: "0"},
+		{name: "an idle timeout that is not a duration", key: "idle_timeout", value: "soon"},
+		{name: "a negative lifetime", key: "session_lifetime", value: "-1h"},
 		// The one where identical validation is the security property rather
 		// than a convenience: tmux's parser eats a trailing ";" before the line
 		// is typed, so a start command carrying one is refused at startup. A
 		// file that skipped that check would deliver a truncated command line to
 		// an unsandboxed shell.
-		{"a start command carrying a semicolon", "start_commands", "rc=claude; rm -rf /"},
-		{"a start command with an unknown placeholder", "start_commands", "rc=claude --dir {working_dir}"},
-		{"an allowed root that is not absolute", "allowed_roots", "relative/path"},
-		{"an allowed address with whitespace in it", "access_allowed_emails", "one@example.com two@example.com"},
+		{name: "a start command carrying a semicolon", key: "start_commands", value: "rc=claude; rm -rf /"},
+		{name: "a start command with an unknown placeholder", key: "start_commands", value: "rc=claude --dir {working_dir}"},
+		{name: "an allowed root that is not absolute", key: "allowed_roots", value: "relative/path"},
+		{name: "an allowed address with whitespace in it", key: "access_allowed_emails", value: "one@example.com two@example.com"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
 			fromEnv, _ := baseEnv(t)
 			fromEnv[config.VarForKey(tc.key)] = tc.value
+			if tc.noDoor {
+				withoutAccess(fromEnv)
+			}
 			// No HOME, so DefaultPath finds nothing to read: this is the
 			// pre-milestone path through the loader.
 			_, envErr := config.LoadFrom(env(fromEnv), io.Discard)
 
 			fromFile, _ := baseEnv(t)
+			if tc.noDoor {
+				withoutAccess(fromFile)
+			}
 			// The variable has to go, or the environment answers first and the
 			// file's value is never validated at all — which is a green test
 			// that proves the opposite of what it says.
@@ -496,16 +507,21 @@ func TestNoFileMatchesTodayExactly(t *testing.T) {
 
 			// And the errors too. A refusal that changed shape would break every
 			// acceptance suite SC-002 is verified against.
+			//
+			// A host name rather than 0.0.0.0, which both environments now permit:
+			// they carry an Access door, and a daemon somebody can get into may
+			// bind where they can reach it (M12/T002). A name is refused under
+			// every door, so the refusal being compared is still the listener's.
 			bad := maps.Clone(pairs)
-			bad[config.EnvListen] = "0.0.0.0:8765"
+			bad[config.EnvListen] = "localhost:8765"
 			_, gotErr := config.LoadFrom(env(bad), io.Discard)
 
 			badReference := maps.Clone(reference)
-			badReference[config.EnvListen] = "0.0.0.0:8765"
+			badReference[config.EnvListen] = "localhost:8765"
 			_, wantErr := config.LoadFrom(env(badReference), io.Discard)
 
 			if gotErr == nil || wantErr == nil {
-				t.Fatalf("a non-loopback listen address was accepted: %v, %v", gotErr, wantErr)
+				t.Fatalf("a listen host that is a name was accepted: %v, %v", gotErr, wantErr)
 			}
 			if gotErr.Error() != wantErr.Error() {
 				t.Errorf("looking for a file changed a refusal:\n got %v\nwant %v", gotErr, wantErr)

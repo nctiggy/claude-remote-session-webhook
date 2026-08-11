@@ -106,6 +106,21 @@ func testConfig(listen string) *config.Config {
 	}
 }
 
+// noDoorConfig is testConfig with layer 1 unconfigured: the daemon #70 describes,
+// whose dashboard admits nobody.
+//
+// It is the fixture for every case about how far the listener may reach
+// (M12/T002), because testConfig carries an Access door and a daemon somebody
+// can get into is allowed to be somewhere they can reach it. A case that used
+// testConfig to prove a bind is refused would be proving nothing.
+func noDoorConfig(listen string) *config.Config {
+	cfg := testConfig(listen)
+	cfg.AccessTeamDomain = ""
+	cfg.AccessAUD = ""
+	cfg.AccessAllowedEmails = nil
+	return cfg
+}
+
 // rateNotUnderTest is a create budget no test in this package can exhaust by
 // accident, so that a 429 anywhere else is the concurrent-session cap and
 // nothing else.
