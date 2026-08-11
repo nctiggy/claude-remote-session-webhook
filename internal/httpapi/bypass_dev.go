@@ -21,6 +21,19 @@ import (
 	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 )
 
+// doorSentenceBypassed is what the settings page says on this build (M12/T006),
+// and it lives here rather than beside the other three because it is the one
+// sentence the shipping build must not even carry the words of.
+//
+// It says what is true and does not soften it. The bypass is layer 1 for a
+// developer on a laptop with no Cloudflare Access to sign anything, and what it
+// verifies is nothing at all — so this is the one daemon where "which door is
+// live" has the answer "none, and every browser is admitted". access.Bypass
+// already announces itself on every request (FR-040) and the masthead above this
+// sentence names the operator NOBODY; this is the same fact where an operator
+// goes to read facts.
+const doorSentenceBypassed = "This dashboard's layer 1 is bypassed: this is a development build and it verifies nobody."
+
 // NewWithBypass is New with layer 1 replaced by the development bypass: the
 // daemon a developer runs on a laptop, where there is no Cloudflare Access to
 // sign anything (US5, FR-038).
@@ -57,6 +70,17 @@ func NewWithBypass(cfg *config.Config, warn io.Writer) (*Server, error) {
 			// Untyped nil for the reason verifiedLayer1 returns one.
 			return nil, err
 		}
-		return b, nil
+		// Through the same assertionDoor the real validator reaches the middleware
+		// through, and not beside it (M12/T003). The bypass reads no assertion, so
+		// the wrapper changes nothing about what it does — what it keeps is the
+		// property this whole file is written for: the door in front of the two is
+		// one door, and the development build is the build where a drift between
+		// them could still be seen.
+		//
+		// Named for what it is, which is the one thing the wrapper cannot work out
+		// for itself: the two validators reaching the middleware through one type
+		// is exactly why the settings page has to be told which of them this is
+		// (M12/T006).
+		return assertionDoor{validator: b, door: doorSentenceBypassed}, nil
 	})
 }

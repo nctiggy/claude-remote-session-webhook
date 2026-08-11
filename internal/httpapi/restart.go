@@ -190,9 +190,12 @@ func (s *Server) renderRestarting(w http.ResponseWriter, r *http.Request) {
 
 	rows := settingsOf(s.cfg)
 	s.renderPage(w, r, http.StatusOK, "settings", settingsView{
-		Operator:   operator,
-		Settings:   rows,
-		Sections:   sectioned(rows),
+		Operator: operator,
+		Settings: rows,
+		// The same account of the door GET /settings composes, though this answer
+		// shows the Updates section and so renders none of it: one page, one account
+		// of which door is live and one way out of it, whichever route composed it.
+		Sections:   sectioned(rows, doorFactsOf(s.browser)),
 		Shown:      sectionUpdates,
 		ConfigFile: s.cfg.FilePath,
 		Becoming:   buildinfo.Version,

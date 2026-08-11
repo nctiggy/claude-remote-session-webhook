@@ -604,30 +604,45 @@ func TestLoadFromRejects(t *testing.T) {
 			},
 			wantIn: "empty entry",
 		},
+		// The three below take the Access values back out first. A non-loopback
+		// address is refused because this daemon's dashboard would admit nobody,
+		// not because the address is what it is — door_test.go has the pairing in
+		// full, including the doors that permit these exact addresses.
 		{
-			name:   "listen host is a wildcard",
-			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvListen] = "0.0.0.0:8765" },
+			name: "listen host is a wildcard and nothing admits a browser",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				withoutAccess(p)
+				p[config.EnvListen] = "0.0.0.0:8765"
+			},
 			wantIn: "not loopback",
 		},
 		{
-			name:   "listen host is a routable address",
-			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvListen] = "192.168.1.10:8765" },
+			name: "listen host is a routable address and nothing admits a browser",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				withoutAccess(p)
+				p[config.EnvListen] = "192.168.1.10:8765"
+			},
 			wantIn: "not loopback",
 		},
 		{
-			name:   "listen host is the IPv6 wildcard",
-			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvListen] = "[::]:8765" },
+			name: "listen host is the IPv6 wildcard and nothing admits a browser",
+			mutate: func(_ *testing.T, p map[string]string, _ string) {
+				withoutAccess(p)
+				p[config.EnvListen] = "[::]:8765"
+			},
 			wantIn: "not loopback",
 		},
 		{
+			// These two keep the Access door on, because a name is refused under
+			// every door: 0.0.0.0 says where the listener will be and "" does not.
 			name:   "listen host is empty, meaning every interface",
 			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvListen] = ":8765" },
-			wantIn: "loopback IP literal",
+			wantIn: "never a name",
 		},
 		{
 			name:   "listen host is a name that could resolve anywhere",
 			mutate: func(_ *testing.T, p map[string]string, _ string) { p[config.EnvListen] = "localhost:8765" },
-			wantIn: "loopback IP literal",
+			wantIn: "never a name",
 		},
 		{
 			name:   "listen has no port",

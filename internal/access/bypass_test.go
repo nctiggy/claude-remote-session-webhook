@@ -208,14 +208,15 @@ func TestNewBypassNeedsSomewhereToAnnounceItself(t *testing.T) {
 	}
 }
 
-// TestNewBypassRefusesANonLoopbackListener is FR-039, and the table is the same
-// one config.loadListen is held to — including its refusal of host names, which
-// is the row that looks wrong until you notice "localhost" is whatever a
-// resolver says it is.
+// TestNewBypassRefusesANonLoopbackListener is FR-039, and the table is the one
+// config.loadListen holds a daemon with no browser door to — including its
+// refusal of host names, which is the row that looks wrong until you notice
+// "localhost" is whatever a resolver says it is.
 //
-// config refuses these addresses already. This is a third check of the same rule
-// on purpose: the other two protect a daemon that still authenticates, and the
-// defining property of this one is that it does not.
+// It is a third check of the same rule on purpose, and since M12 the only
+// unconditional one: the other two let a daemon whose layer 1 admits somebody
+// bind where the network can reach it, and the defining property of this build
+// is that its layer 1 admits everybody without checking anything.
 func TestNewBypassRefusesANonLoopbackListener(t *testing.T) {
 	t.Parallel()
 

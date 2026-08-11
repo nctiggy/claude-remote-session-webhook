@@ -401,7 +401,8 @@ func (s *Server) renderUpdating(w http.ResponseWriter, r *http.Request, version 
 	}
 
 	rows := settingsOf(s.cfg)
-	sections := sectioned(rows)
+	// The same account of the door GET /settings composes — see renderRestarting.
+	sections := sectioned(rows, doorFactsOf(s.browser))
 	s.renderPage(w, r, http.StatusOK, "settings", settingsView{
 		Operator:   operator,
 		Settings:   rows,

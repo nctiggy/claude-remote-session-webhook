@@ -42,18 +42,35 @@ func (c *testClock) advance(d time.Duration) {
 	c.at = c.at.Add(d)
 }
 
-func testLimiter(t *testing.T, perMinute int, clk clock) *limiter {
+func testLimiter(t *testing.T, perMinute int, clk clock) *limiter[auth.CallerID] {
 	t.Helper()
 
-	l, err := newLimiter(perMinute, clk)
+	l, err := newLimiter[auth.CallerID]("create", perMinute, clk)
 	if err != nil {
 		t.Fatalf("newLimiter(%d, %T) = _, %v; want a limiter", perMinute, clk, err)
 	}
 	return l
 }
 
+// testLoginLimiter is the other budget, on a clock a test moves by hand.
+//
+// The sign-in limiter a server builds for itself is on the host clock, which is
+// the right answer for a daemon and no answer at all for a test: a burst refused
+// by a limiter that also refills while the test runs proves the refusal and not
+// the recovery. Assigning over s.logins is how a test drives it, the way
+// stream_test.go assigns over s.streams.
+func testLoginLimiter(t *testing.T, clk clock) *limiter[loginSource] {
+	t.Helper()
+
+	l, err := newLimiter[loginSource]("sign-in", loginRatePerMin, clk)
+	if err != nil {
+		t.Fatalf("newLimiter[loginSource](%d, %T) = _, %v; want a limiter", loginRatePerMin, clk, err)
+	}
+	return l
+}
+
 // spend drives n requests through the limiter and reports how many were allowed.
-func spend(l *limiter, id auth.CallerID, n int) int {
+func spend[K comparable](l *limiter[K], id K, n int) int {
 	allowed := 0
 	for i := 0; i < n; i++ {
 		if l.allow(id) {
@@ -280,17 +297,29 @@ func TestALimiterRefusesARateThatBoundsNothing(t *testing.T) {
 	t.Parallel()
 
 	for _, perMinute := range []int{0, -1} {
-		if l, err := newLimiter(perMinute, newTestClock(testTime)); err == nil {
+		if l, err := newLimiter[auth.CallerID]("create", perMinute, newTestClock(testTime)); err == nil {
 			t.Errorf("newLimiter(%d, _) = %v, nil; want a refusal", perMinute, l)
 		}
 	}
-	if l, err := newLimiter(config.DefaultCreateRatePerMin, nil); err == nil {
+	if l, err := newLimiter[auth.CallerID]("create", config.DefaultCreateRatePerMin, nil); err == nil {
 		t.Errorf("newLimiter(_, nil) = %v, nil; want a refusal — a limiter with no clock never refills", l)
+	}
+
+	// The refusal names the budget it is about (M12/T005). There are two now, and
+	// a startup error is read by an operator who cannot see which line raised it —
+	// so one that said "create" while the sign-in limiter was what failed would
+	// send them to a variable that is not the problem.
+	_, err := newLimiter[loginSource]("sign-in", 0, newTestClock(testTime))
+	if err == nil {
+		t.Fatal("newLimiter[loginSource](0, _) built a limiter; want a refusal")
+	}
+	if !strings.Contains(err.Error(), "sign-in") {
+		t.Errorf("the sign-in limiter's refusal is %q; it never names which budget could not be built", err)
 	}
 }
 
 // held reports how many buckets the limiter is holding, for the sweep's test.
-func (l *limiter) held() int {
+func (l *limiter[K]) held() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return len(l.buckets)

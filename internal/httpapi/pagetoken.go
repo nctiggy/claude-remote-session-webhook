@@ -221,7 +221,7 @@ func (k pageKey) verify(token, identity string, now time.Time) error {
 
 	// Step 5, before the recomputation and not after it: a value that is not the
 	// shape of a MAC is refused without this daemon computing one for it.
-	if !isPageTokenMAC(mac) {
+	if !isHexMAC(mac) {
 		return errPageTokenMalformed
 	}
 
@@ -264,8 +264,8 @@ func (k pageKey) mac(identity string, expiry int64) (string, error) {
 	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 
-// isPageTokenMAC reports whether s is exactly the shape mac produces: 64
-// characters, lowercase hex, and nothing else.
+// isHexMAC reports whether s is exactly the shape mac produces: 64 characters,
+// lowercase hex, and nothing else.
 //
 // Lowercase is required rather than accepted in either case, for the reason
 // session.hashToken hashes the encoded token rather than the bytes behind it:
@@ -273,7 +273,12 @@ func (k pageKey) mac(identity string, expiry int64) (string, error) {
 // an uppercase twin — two strings that authorise the same action, only one of
 // which was ever minted. It also means the constant-time compare above runs over
 // two strings of equal length, which is the shape it is written for.
-func isPageTokenMAC(s string) bool {
+//
+// The password door's session cookie is the same shape and is checked by this
+// same function (password.go). It is named for what it tests rather than for the
+// first caller that needed it: two copies of this predicate would be two rules
+// about what a MAC looks like, free to disagree about the uppercase twin.
+func isHexMAC(s string) bool {
 	if len(s) != pageTokenMACLen {
 		return false
 	}

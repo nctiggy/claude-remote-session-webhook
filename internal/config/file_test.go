@@ -736,6 +736,11 @@ func TestGroupReadableWithSecretRefuses(t *testing.T) {
 		// daemon that runs unsandboxed code. It is secret because IsSecret says
 		// so, which is the only place that says so.
 		{name: "the allowlist alone is enough", contents: "access_allowed_emails = nctiggy@gmail.com\n", mode: 0o644},
+		// The password door's own credential, and the reason it is worth a row of
+		// its own: it arrived a milestone after this check, and it is secret here
+		// for the same reason it is unrenderable and uneditable — because
+		// IsSecret names it, in one place, for all three callers.
+		{name: "the dashboard password alone is enough", contents: "dashboard_password = " + hunter2 + "\n", mode: 0o644},
 		{name: "a secret among ordinary settings", contents: "listen = 127.0.0.1:8787\nallowed_roots = /home/nctiggy/code\nshared_secret = " + hunter2 + "\n", mode: 0o644},
 	}
 
@@ -1168,8 +1173,12 @@ func TestBackupIsConsultedWhenTheFileWillNotLoad(t *testing.T) {
 		// The other half of "will not load": the grammar is fine and a *value*
 		// is refused. It is the same recovery — the operator still cannot start
 		// the daemon they would use to fix it.
+		//
+		// A host name is the value, because fileLines writes an Access door and a
+		// daemon with one may bind off loopback now (M12/T002). A name is refused
+		// under every door.
 		root := t.TempDir()
-		path, _ := setup(t, fileLines(root, "listen = 0.0.0.0:8080"))
+		path, _ := setup(t, fileLines(root, "listen = localhost:8080"))
 
 		cfg, err := config.LoadFrom(env(map[string]string{configFileEnvName: path}), io.Discard)
 		if err != nil {
@@ -1208,7 +1217,7 @@ func TestBackupIsConsultedWhenTheFileWillNotLoad(t *testing.T) {
 		root := t.TempDir()
 		for name, contents := range map[string]string{
 			"the backup does not parse":    "also not a pair\n",
-			"the backup breaks a bound":    fileLines(root, "listen = 0.0.0.0:8080"),
+			"the backup breaks a bound":    fileLines(root, "listen = localhost:8080"),
 			"the backup is short a secret": "allowed_roots = " + root + "\n",
 		} {
 			path, backup := setup(t, "listen 127.0.0.1:9999\n")

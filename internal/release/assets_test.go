@@ -1190,7 +1190,7 @@ func TestVerifyInstallProvesItOnAnotherMachine(t *testing.T) {
 	asked := strings.Contains(job, "systemctl --user is-active crswd")
 	compared := strings.Contains(job, "inactive")
 	if !asked || !compared {
-		t.Errorf("the %s job does not run `systemctl --user is-active crswd` and require it to answer `inactive` (asked=%t, compared=%t).\nThe daemon cannot serve a request before the secret is set, so an installer that started it would leave a service failing on first boot — which teaches its operator to ignore a failing service",
+		t.Errorf("the %s job does not run `systemctl --user is-active crswd` and require it to answer `inactive` (asked=%t, compared=%t).\nAn installer that started it would have enabled a daemon that spawns shells with the permission prompt turned off, at boot, on a host whose operator has not yet said who may reach the dashboard",
 			verifyInstallJob, asked, compared)
 	}
 }

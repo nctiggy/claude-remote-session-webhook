@@ -15,14 +15,187 @@ vulnerability in a feature — it is total host compromise.
 Assume the endpoint is being scanned. It is on the public internet under a
 predictable hostname.
 
-There are **two front doors**, on one hostname, behind one Access application with two
-edge policies. **No path gets an edge bypass**, and each door still needs its own
-answer to "who is this?" behind the edge:
+There are **two front doors**, one per kind of caller. In the deployment this was
+written for both are on one hostname, behind one Access application with two edge
+policies; **no path gets an edge bypass**, and each door still needs its own answer to
+"who is this?" behind the edge:
 
 | Door | Caller | Admitted at the edge by | Checked by the daemon |
 |---|---|---|---|
 | Web dashboard | A browser, operated by a human | The identity policy: Google IdP, one allowlisted address | Layer 1 — the forwarded `Cf-Access-Jwt-Assertion` is genuine, is the **identity** shape, and names an allowlisted email. A route that **changes** something adds the action gate below |
 | API | The companion Claude skill, or any script | An Access **service token**, sent as `CF-Access-Client-Id` + `CF-Access-Client-Secret` | HMAC-SHA256 signature, timestamp, replay, per-session token. The assertion is ignored entirely |
+
+**Since M12 the browser door's layer 1 is one of three, and the API door's is none of
+them.** The API has never consulted an assertion and does not consult a cookie either;
+what changes below is only what the *browser* door verifies:
+
+| Layer 1 | Configured by | Verifies | Deployment |
+|---|---|---|---|
+| Access validator | `access_enabled` + the three Access values | The forwarded assertion, as above | On the internet, behind a tunnel |
+| **Password door** | `dashboard_password` | A cookie this daemon signed, proving the holder knew the password | On an internal network, with no Cloudflare in front of it |
+| Closed door | Neither | Nothing. It admits nobody | A daemon with no dashboard, which is what an unconfigured one is |
+
+**They are mutually exclusive and the selection happens once**, at
+`httpapi.verifiedLayer1`, which returns one of the three. Configuring both is a startup
+failure — `config.Validate` refuses it rather than picking a winner, because which door
+is live decides who may execute code on this host. **There is no branch in the browser
+middleware and there must never be one**: it asks its one door for a verdict, and the
+door reads whichever credential is its own. A nil validator with a special case beside
+it would be a second authorisation path, and the second path is the one nobody reads.
+
+**Which of the three is live is stated on the settings page**, under "Who may reach it",
+and it is read from the door the server was built with rather than from the configuration
+— the same intent-versus-evidence distinction the bind rule and the sign-in route's
+registration both draw, for the same reason. A daemon whose file names a door its server
+did not build is a wiring defect, and the page an operator goes to when something is
+already confusing must describe the daemon they are reading rather than the one they
+meant to start. `httpapi.doorSentence` is handed a door and no `Config` at all, which is
+that rule as a signature rather than as a habit.
+
+Two of the layer 1s are one Go type — the Access validator and the `-tags dev` bypass
+both reach the middleware through `assertionDoor` — so **the constructor records which
+one it built** and the page asks the door rather than inferring. Inferring from the
+`Config` is wrong here and was tried: `WithAccessBypassActive` lifts the requirement to
+*set* the three Access values and not the ability to, so a developer running the bypass
+against their ordinary file has all three, and a page reading them would report
+Cloudflare Access on the one build whose layer 1 admits everybody without checking
+anything. That build says so instead, in as many words.
+
+The sentence names no value: the password's row is still `present` or `absent` and
+nothing else.
+
+### The password door
+
+It authenticates *less* than Access does, and the difference is stated rather than
+smoothed over. Access verifies a person against an identity provider at the edge, before
+this host is reachable. The password door verifies that whoever is asking knows one
+secret — so there is one operator behind it by construction, no allowlist to check, and
+no edge failing closed in front of it. Everything behind the door is unchanged: the same
+`auth.CallerOperator`, the same ownership checks, the same action gate on anything that
+changes the host.
+
+- **The password is a secret by `config.IsSecret`**, so it is `present`/`absent` on the
+  settings page and refused by `config.Editable`. A password settable from the page it
+  protects is not a door.
+- **It is compared constant-time, over SHA-256 of both sides.** Both halves are needed:
+  a compare that stops at the first difference leaks the password under timing, and a
+  constant-time compare over the raw values still leaks its length, because
+  `subtle.ConstantTimeCompare` answers immediately for two slices of different lengths.
+- **The session cookie is signed with HMAC-SHA256 keyed by `shared_secret`** under a
+  label of its own — no new key, and rotating the secret ends every outstanding sign-in,
+  which is correct. The password's digest is inside the signed payload too, so changing
+  the password ends them as well.
+- **It is stateless.** The cookie is verified by recomputing it, exactly as the page
+  token and the layer-2 signature are. The daemon still keeps no browser session, so
+  there is still nothing to fixate, sweep, or invalidate.
+- **`HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` only when the request arrived
+  over TLS** — read from `r.TLS` and never from `X-Forwarded-Proto`, which is
+  caller-authored text this daemon has no configured proxy to believe. `Lax` rather than
+  `Strict` because the operator arrives by typing a URL, and `Strict` withholds the
+  cookie on that first top-level navigation.
+- **The password never appears in a log, an audit record, a page, an error, or a URL.**
+  Every refusal on this door is one of its own sentinels, recorded server-side, and the
+  caller gets the same uniform 401 every other layer-1 failure gives.
+
+#### The two routes in front of layer 1
+
+`GET /login` and `POST /login` are the **only** routes this daemon registers ahead of
+layer 1, and they exist so there is a way to obtain the cookie everything else demands.
+That sentence is worth being nervous about, so what bounds it is written here rather
+than left to the code:
+
+- **They are registered only when the password door is the layer 1 the server was
+  actually built with** — not when the configuration merely names a password. A daemon
+  whose file names a door the server did not build is a wiring defect, and a wiring
+  defect must not be what puts a login form on the network; it is the same distinction
+  the bind rule above draws. Where Access is the door, `/login` matches no route and is
+  answered by the browser door's own 404 from *behind* layer 1. **A login form standing
+  beside a working Access door would be a second way into the dashboard**, and the way
+  to not have one is to not register it.
+- **They change nothing.** No session is created, destroyed, driven or read; the only
+  effect is a `Set-Cookie`, and only for a caller who supplied the secret. Every other
+  path on the daemon — a page, an action, a path nothing claims — still meets the door.
+- **The password is read from the posted body and nowhere else.** Never the query
+  string: a password this daemon would accept out of a URL is a password in a browser
+  history, a referrer header, and every proxy log in between.
+- **The action gate is deliberately absent, and cannot apply.** Two of its three checks
+  are the layer-1 identity and a page token bound to it, and neither exists before this
+  route runs; half a gate would be the second, differently-shaped authorisation path
+  there is exactly one of on this door. What bounds a submission instead are the two
+  checks below, and they run in this order because each one bounds the next.
+- **A submission the browser itself calls cross-site is refused**, before anything has
+  been spent — `Sec-Fetch-Site` present and not `same-origin`, the same `crossSite` the
+  pane stream reads and not a second reading of the same header. Absent still admits,
+  unlike on an action route: a script signing in sends no header, and what bounds a
+  script is that it has a source address and therefore a budget. This is a check on the
+  *initiator*; it authorises nobody, and it is here because the budget below is a thing
+  that can be exhausted. Without it the cheapest way to empty the operator's guesses is
+  a hostile page making the operator's own browser spend them, from the operator's own
+  address — a lockout on the one route that can end a lockout.
+- **Every attempt is counted against the address it came from**, at six a minute with a
+  burst of three, on the same token bucket the create route spends — the port dropped,
+  because a browser opens a new one per connection and a budget per connection is no
+  budget at all; `RemoteAddr` and never `X-Forwarded-For`, because a limiter keyed by a
+  value the caller writes is one the caller opts out of. It is spent **before** the two
+  sides are compared, so a correct password does not buy its way past a spent budget,
+  and it is not what makes guessing this password hopeless — the sixteen-character
+  minimum is. What it buys is that guessing is slow, loud, and cheap to refuse.
+- **The refusal is this door's uniform 401, not the create route's 429.** A caller that
+  proved who it is may be told to slow down; one that has proved nothing is told
+  nothing, so a brute-forcer cannot tell a refused guess from a guess nobody read and
+  cannot pace their attempts by the answer.
+- **`GET /login` is deliberately not on that budget.** Serving the form costs this
+  daemon what refusing an unauthenticated request costs it anywhere else on this door,
+  none of which is limited either — while a budget a page load could spend is a budget
+  an `<img src="/login">` on a hostile page could empty, and what it would empty is the
+  operator's own way back in.
+- **A sign-in leaves one audit record either way** — `login.view` for the form,
+  `login.submit` for an attempt, allowed or denied, the ones the budget and the
+  cross-site check refused included — carrying no password material, because every
+  reason on it is a sentinel this codebase authored. Four of them refuse here and the
+  caller can tell none of them apart, so the trail is the only place they are ever
+  distinguished.
+
+#### The way back out
+
+`POST /logout` clears the cookie, and it is registered from the same question the two
+routes above are — so the door a browser can open and the door it can close appear and
+disappear together. Where Cloudflare Access is the door it is not registered and the
+settings page draws no control, because what that browser holds is the edge's own
+`CF_Authorization`, which this daemon does not read and must not pretend to end.
+
+- **It is behind layer 1 and through the action gate**, on `handleAction` like every
+  other mutating browser route. The exemption the sign-in routes have is for producing
+  a credential the caller does not yet hold; this caller holds one, so nothing here
+  needs an exception and a route that took one would be a second authorisation path.
+- **A refused sign-out clears nothing.** The gate runs before the handler, so a
+  cross-site POST or a missing page token leaves the session exactly where it was —
+  otherwise the route would be a way for a hostile page to log the operator out of an
+  interface that starts unsandboxed shells, which is a denial of service wearing a
+  safety check's clothes.
+- **The deletion mirrors the issue in name, path, `HttpOnly`, `SameSite` and the
+  conditional `Secure`**, because a browser matches a deletion against what it holds by
+  name, domain and path. An attribute that drifts is a Sign out that reports success and
+  changes nothing, which is the one failure this route can have that looks like working.
+- **It ends one browser's copy and nothing more.** The door keeps no session record, so
+  there is nothing to invalidate: a cookie already copied off the machine stays valid
+  until its own expiry, and what ends every outstanding sign-in at once is rotating
+  `shared_secret` or changing the password — both of which are in the MAC's payload for
+  exactly that reason. An operator who believes their cookie was taken needs one of
+  those, not this button.
+- **One record, `login.signout`**, distinct from `login.submit` so that an operator
+  counting attempts at their password is not counting departures with them. It names
+  the identity layer 1 verified and carries no cookie material.
+- **It answers `303` to `/login`.** The sign-in form is the only answer that shows the
+  sign-out worked; a message on a page the caller is no longer entitled to would be this
+  daemon drawing them the inside while telling them they are out. The destination is a
+  constant and never a "return to" parameter, for the reason the sign-in's is.
+
+**On a network without TLS the password crosses it in clear.** That is a real weakness
+of this mode rather than an oversight, and the cookie is what keeps it to one crossing
+per session instead of one per request. An operator choosing this door is told so
+plainly in the README; a proxy terminating TLS in front of the daemon is the fix, and
+recommending it is not the same as pretending the plain case is safe.
 
 The two shapes are not interchangeable. A service token's assertion carries
 `common_name`, an empty `sub`, and **no email** — so "no email" must never read as
@@ -123,12 +296,16 @@ Specific to this daemon:
   only. `config.example` ships with every setting commented out, which is also what
   keeps a copy of it from being a file that holds a secret.
 - **Which keys are secret is one predicate — `config.IsSecret`** — and it is
-  `shared_secret` and `access_allowed_emails`. The allowlist is not a credential,
-  but it names *who* may reach a daemon that runs unsandboxed code on this host. A
-  second list would let the 0600 refusal and the settings page disagree about what
-  a secret is, and that disagreement surfaces as a credential in a browser rather
-  than as a failure.
-- **A configuration file that sets either is refused unless it is mode 0600.** The
+  `shared_secret`, `access_allowed_emails` and `dashboard_password`. The allowlist
+  is not a credential, but it names *who* may reach a daemon that runs unsandboxed
+  code on this host. The password is the browser door itself on a daemon with no
+  Cloudflare in front of it, which is why the predicate's third caller matters as
+  much as the first two: `config.Editable` is `!IsSecret`, so naming it there is
+  what keeps it out of the form on the page it protects. A second list would let
+  the 0600 refusal, the settings page and that form disagree about what a secret
+  is, and the disagreement surfaces as a credential in a browser rather than as a
+  failure.
+- **A configuration file that sets any of them is refused unless it is mode 0600.** The
   refusal fires on the file's *contents*, not on its name: refusing over the mode of
   a file holding nothing but `allowed_roots` would demand a change that protects
   nothing, and an operator who cannot act on a refusal learns to work around it.
@@ -242,15 +419,46 @@ way the `Access-Control-Allow-*` absence below is.
 
 ## Transport & exposure
 
-The daemon binds **`127.0.0.1` only**. It is never reachable directly; a Cloudflare
-Tunnel connects outbound and brokers `*.example.com` traffic to the loopback
-listener. No inbound port is opened on the host or the router.
+The daemon binds **loopback by default**, and the deployment this was written for
+is not reachable any other way: a Cloudflare Tunnel connects outbound and brokers
+`*.example.com` traffic to the loopback listener, and no inbound port is opened on
+the host or the router.
 
 ```
 internet → Cloudflare edge (TLS, Access) → tunnel (outbound) → 127.0.0.1:PORT
 ```
 
-If a change would make the daemon listen on `0.0.0.0`, that change is wrong.
+Since M12 there is a second one — an operator on their own network with no
+Cloudflare in front of this daemon at all, reaching it from the machine they are
+sitting at:
+
+```
+operator's browser → LAN → 0.0.0.0:PORT
+```
+
+**The invariant is "never reachable without authentication", not "never
+reachable".** That is the whole of what the bind rule now says, and it is a bound
+relaxed rather than deleted:
+
+- A non-loopback address is permitted **only when layer 1 admits somebody** — an
+  Access door or a dashboard password. A daemon whose dashboard admits nobody
+  (`closedDoor`, which is what a daemon with neither has) refuses to bind off
+  loopback, and the refusal is a **startup failure**, not a warning.
+- It is checked in the three places the loopback rule was always checked:
+  `config.loadListen` on the configured value, `httpapi.assertBindAddress` on the
+  configured string again, and `httpapi.assertBoundAddress` on the address the
+  kernel actually handed back — the only one of the three that is evidence rather
+  than intent. The second asks both what was configured *and* which layer 1 was
+  wired, because a daemon whose file names a door it did not build is a wiring
+  defect and must not be what puts a listener on the network.
+- A host **name** is refused under every door. `/etc/hosts` or a resolver can
+  point `localhost` anywhere, so only an IP literal says where the listener will
+  be.
+- The development bypass is not a door. It authenticates nobody, configures no
+  door, and `internal/access` refuses a non-loopback listener under it besides.
+
+If a change would let a daemon that admits nobody listen on `0.0.0.0`, that change
+is wrong.
 
 ### Response headers
 
@@ -342,6 +550,16 @@ web page it fetched — reaches the dashboard. **All of it is untrusted.**
   and unbounded spawning is a local denial of service. **Both doors create**, so the
   browser's create calls the same limiter and the same validation rather than a second
   copy of either.
+- Per-source rate limit on `POST /login`, on **the same token bucket**, which is generic
+  over its key rather than duplicated: a create's budget is spent by an identity because
+  it sits behind layer 2, and a sign-in's is spent by an address because establishing an
+  identity is what it is for. The type parameter is what keeps one from being spent by
+  the other's key. Two limiters over two copies of the bucket would be two rules about
+  what a budget is, free to disagree.
+- **What that limiter remembers is bounded by its own sweep**, and since the sign-in
+  budget exists that is load-bearing: its keys are addresses a stranger chooses, so what
+  keeps the map small is that every decision drops every bucket that has refilled to the
+  top — an entry survives only while it is partly spent.
 - Cap concurrent sessions; refuse past the cap rather than degrading the host.
 - **Every request is audited**: timestamp, caller ID, action, session ID, decision.
   Audit records carry no prompt text and no session output.
@@ -370,7 +588,8 @@ web page it fetched — reaches the dashboard. **All of it is untrusted.**
 - [ ] Any caller-supplied path allowlisted and symlink-resolved
 - [ ] Auth failures are uniform and leak no detail about which check failed
 - [ ] No session output, prompt, or token in any log line
-- [ ] Listener still bound to loopback
+- [ ] Listener still bound to loopback, or bound wider only on a daemon whose
+      layer 1 admits somebody
 - [ ] A new setting a secret could be written into is classified by `config.IsSecret`,
       so the 0600 refusal and the settings page cannot disagree about it
 - [ ] No secret value on any rendered page — swept across every route, not reasoned about

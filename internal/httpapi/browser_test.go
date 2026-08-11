@@ -190,15 +190,21 @@ func newSilentKeyServer(t *testing.T) *keyServer {
 }
 
 // validator builds layer 1 against this key server, exactly as NewWith builds
-// the production one.
-func (k *keyServer) validator(t *testing.T) *access.Validator {
+// the production one — the *Validator inside the same assertionDoor
+// verifiedLayer1 wraps it in, so a test drives the door the daemon serves and
+// not the validator underneath it.
+func (k *keyServer) validator(t *testing.T) layer1 {
 	t.Helper()
 
 	v, err := access.New(k.origin, testAUD, []string{testOperatorEmail})
 	if err != nil {
 		t.Fatalf("access.New = _, %v; want a validator", err)
 	}
-	return v
+	// Named as verifiedLayer1 names it, not left zero: what the settings page
+	// calls this door is decided at construction (M12/T006), so a fixture
+	// standing in for the production one has to be built the way production
+	// builds it or it is standing in for a door no daemon holds.
+	return assertionDoor{validator: v, door: doorSentenceAccess}
 }
 
 // claims is an assertion the daemon should admit: this issuer, this audience,

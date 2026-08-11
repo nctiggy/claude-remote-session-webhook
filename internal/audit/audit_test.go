@@ -269,6 +269,18 @@ func TestEmitAcceptsEveryDocumentedAction(t *testing.T) {
 		// arrived in the trail as dashboard.update would leave them unable to ask
 		// whether what is running on this host ever changed.
 		audit.ActionDashboardRestart: "dashboard.restart",
+
+		// Milestone 12's two: the sign-in form served, and one attempt at it
+		// decided. They are here for the reason the restart is — what an operator
+		// greps for is the spelling, and these are the two records a daemon with no
+		// Cloudflare in front of it has instead of the edge's own sign-in log.
+		audit.ActionLoginView:   "login.view",
+		audit.ActionLoginSubmit: "login.submit",
+
+		// And its third: the sign-in that was ended rather than attempted. It is
+		// here for the same reason — a departure that arrived in the trail as
+		// login.submit would be counted as somebody guessing at the password.
+		audit.ActionLoginSignOut: "login.signout",
 	}
 	for action, want := range cases {
 		t.Run(want, func(t *testing.T) {

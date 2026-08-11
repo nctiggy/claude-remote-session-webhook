@@ -85,10 +85,11 @@ one row per key, with the layer that supplied each value beside it.
 
 **It acts as well as reads, and it carries all three of the things every
 actionable page in this tree carries** — a page token inside every mutating form,
-the controls that submit them, and a live region at the foot of the file. Three
+the controls that submit them, and a live region at the foot of the file. Four
 routes receive them: `POST /settings/edit` for one configuration key,
-`POST /dashboard/update` for the binary, and `POST /dashboard/restart` for the
-process running it. `GET /settings` is still the only verb registered on the path
+`POST /dashboard/update` for the binary, `POST /dashboard/restart` for the
+process running it, and `POST /logout` for the browser's own sign-in, on the
+daemons that have one. `GET /settings` is still the only verb registered on the path
 itself, which is why the header's link to it is a link to a page and nothing more.
 
 That paragraph replaced one asserting the opposite — no page token, no action row,
@@ -101,6 +102,35 @@ the form that would put a credential in a page cannot be rendered from here at
 all. A row it refuses, and every row when no token could be minted, renders the
 text it always had: a control certain to be turned away is not offered, which is
 the discipline that builds a card with no actions rather than actions that fail.
+
+**"Who may reach it" carries one sentence the other sections do not: which door
+is live.** It sits directly under that heading, above the file line, and it says
+whether this daemon is behind Cloudflare Access, behind the dashboard password,
+or behind a closed door that admits nobody. It is the most consequential fact
+about the daemon and it was on no page at all until M12; the keys beneath it say
+what the operator configured, and this says which of them the daemon actually
+built a door out of, which is not the same claim. It carries **no class**, for
+the reason the restart form below carries none: the sentence under it is
+`.settings-source`, a name that means "which file these values came from", and a
+second element wearing it would tell every reader something untrue. It renders no
+value of any kind — every sentence it can say is a constant in Go, chosen from
+the door this server was built with and never from the configuration, and
+`dashboard_password` stays `present`/`absent` on its row.
+
+**It also carries the one control that ends a sign-in**, directly under that sentence,
+because it is the same fact with a verb on it: the heading that answers "who may reach
+it" is the one that should offer "and stop being one of them". It is a plain `.button` —
+the update owns the view's one primary, and `.button-danger` is for an action that ends
+an unsandboxed shell, which this is not — inside a form carrying no class of its own,
+the same decision the restart form makes. It is drawn only where the route behind it is
+registered, which is a daemon whose door is the dashboard password; behind Cloudflare
+Access there is nothing this daemon could clear, and a Sign out that cleared nothing
+would be worse than none. That is decided in Go (`doorFacts.SignOut`) and lands on the
+same section the sentence does, so the control cannot be composed onto the page and
+follow the operator into "Limits". It posts to `/logout` and deliberately not to
+`/dashboard/logout`: the script intercepts that prefix and answers in the toast, which
+for this one action would leave the operator looking at a dashboard that is dead in
+their hands.
 
 Its controls are this document's — `.button`, `.button-primary`, and the
 page-token partial. The Updates section's three — Check, Update, Restart — are
@@ -549,11 +579,21 @@ Rules — these are security rules as much as design rules:
 
 ## Form
 
-No Form partial. Two forms are shipped, and they are the pattern: the create form
-(`partials/create-form.html`, outside every card, because a create names no
-session) and the rename disclosure on the session's own page
-(`templates/session.html`). A text entry is a `<div class="field">` holding a
-`<label class="field-label">` and an `<input class="field-input">`.
+No Form partial. Three forms are shipped, and they are the pattern: the create
+form (`partials/create-form.html`, outside every card, because a create names no
+session), the rename disclosure on the session's own page
+(`templates/session.html`), and the sign-in form (`templates/login.html`, on a
+daemon whose door is the dashboard password). A text entry is a
+`<div class="field">` holding a `<label class="field-label">` and an
+`<input class="field-input">`.
+
+The sign-in page adds **no class at all**, which is what makes it worth naming
+here rather than giving it a section: it is `.field`, `.field-label`,
+`.field-input` and `.button` in the arrangement above, and the `<form>` itself
+carries `.field` for the reason the create form's idle-override block does — that
+class is this vocabulary's stack, and an outer one binds a control to what sits
+with it. It is also the one page in the tree that composes **no header**, because
+it is served before there is an operator to name.
 
 ```gotemplate
 <div class="field">

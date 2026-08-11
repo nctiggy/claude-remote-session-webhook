@@ -5,15 +5,21 @@
 In this project "session" means **a Claude Code session running in a tmux window**,
 and "auth" means **proving a request is allowed to create, drive, or watch one**.
 
-There are two callers and two front doors, and the daemon serves no login form of its
-own: the API client signs each request, and a person signs in to Cloudflare Access at
-the edge, before the daemon is reachable at all. **The daemon still keeps no browser
-session** — it issues no cookie, stores no server-side session record, and has nothing
-to fixate, renew, or invalidate. It re-derives who is looking from a signed assertion
-on **every** request and keeps nothing between them. A rendered page does carry one
-value this daemon minted — the page token below — and that changes nothing here: it is
-verified by recomputing it, never by looking it up, so there is still no record to
-fixate, expire, or leave behind.
+There are two callers and two front doors: the API client signs each request, and a
+person is admitted by whichever layer 1 this daemon was configured with. Behind
+Cloudflare that is Access, which the operator signs in to at the edge, before the daemon
+is reachable at all. On an internal network with no Cloudflare in front of it, it is the
+dashboard password and a login form this daemon serves itself (M12) — see
+[`docs/security.md`](./security.md) for the three implementations and the one place they
+are chosen between.
+
+**The daemon still stores no browser session** — no server-side record, nothing to
+fixate, renew, or invalidate. It re-derives who is looking on **every** request and
+keeps nothing between them. What changed at M12 is that it may now *issue* a cookie, and
+that is not the same thing: the cookie is a credential the browser carries, verified by
+recomputing it, never by looking it up. The page token below has always worked that way
+and for the same reason. Neither leaves a record behind, which is why the questions this
+design exists not to have are still not here.
 
 Treat this file as a correctness spec, not a style guide. A bug here is host
 compromise — see `docs/security.md` for why.
@@ -22,7 +28,7 @@ compromise — see `docs/security.md` for why.
 
 | Layer | Enforced by | Stops |
 |---|---|---|
-| 1. Network | Cloudflare Tunnel + Access at the edge, **and the daemon validating the assertion the edge forwards** | Anyone the edge did not admit reaching the daemon at all, and anything that reached it anyway claiming to be an identity the edge vouched for |
+| 1. Network | Cloudflare Tunnel + Access at the edge, **and the daemon validating the assertion the edge forwards** — or, on a daemon with no edge in front of it, the dashboard password's signed cookie | Anyone the edge did not admit reaching the daemon at all, and anything that reached it anyway claiming to be an identity the edge vouched for. Under the password door there is no edge, so the daemon's own check is the whole of it |
 | 2. Request | HMAC-SHA256 signature + timestamp | A forged or replayed request from something that got past layer 1 |
 | 3. Session | Per-session bearer token | A valid caller driving a session that is not theirs |
 
@@ -142,6 +148,23 @@ Non-negotiable:
 - **Derive the identity per request; never store it.** A cached one would be the
   daemon's first cross-request browser state, and with it the expiry, invalidation
   and fixation questions this design exists not to have.
+
+**Under the password door there is no edge and no assertion**, so the credential is the
+signed cookie and the way to get one is `GET /login` and `POST /login` — the only two
+routes this daemon registers ahead of layer 1, and only on a daemon whose door is the
+password. They are bounded in [`docs/security.md`](./security.md); the part that belongs
+here is that they change nothing about the layering above. A cookie that verifies
+produces the same `VerifiedOperator` an assertion does, derived per request and stored
+nowhere, and every route behind the door asks exactly the questions it always asked.
+
+**The way back out is `POST /logout`**, registered on the same daemons and from the same
+question — but *behind* layer 1 and through the action gate, because by the time it runs
+the caller holds the credential the other two exist to produce. It clears the cookie and
+sends the browser to the sign-in form. What it ends is one browser's copy: the door keeps
+no session record, so there is nothing to invalidate, and a cookie already copied
+elsewhere stays valid until its own expiry. Ending every outstanding sign-in at once
+means rotating `shared_secret` or changing the password, both of which are inside the
+MAC's payload for that reason.
 
 **Local development** uses the `//go:build dev` bypass in `internal/access`, which
 skips layer 1 only. It must: refuse to start unless the listener is loopback, log a
@@ -476,6 +499,8 @@ This is the most fragile thing in the project and the most sensitive:
 | Replay cache TTL | 10 minutes |
 | Page token lifetime | 12 hours — long enough that a dashboard left open through a working day still acts, short enough to bound what one captured token is worth. Nothing else depends on the number: expiry fails visibly and a reload fixes it |
 | Page token key | The process's lifetime. Regenerated at every start, never persisted, so a restart invalidates every outstanding token |
+| Dashboard session cookie | 12 hours, on the password door only — the page token's number, chosen the same way. Carried *inside* the signed value and measured on the server's clock; the cookie's own `Max-Age` is a request to the browser, and a client that ignores it presents an expired value and is refused |
+| Sign-in attempts | 6 a minute per source address, burst 3, on the create route's own token bucket. A constant rather than a setting: it is an attacker's budget, not the operator's work. It is not what makes the password hard to guess — the sixteen-character minimum is — and it is spent before the two sides are compared, so a correct password does not buy its way past a spent budget |
 | Session bearer token TTL | 24 hours — deliberately equal to the absolute lifetime |
 | Session idle timeout | 60 minutes, then auto-destroy |
 | Session absolute lifetime | 24 hours, no renewal |

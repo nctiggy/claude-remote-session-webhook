@@ -26,9 +26,10 @@
   This page acts as well as reads. It carries mutating forms, the page token
   inside each of them, the controls that submit them, and the live region at the
   foot of this file — the three things every actionable page in this tree carries,
-  and the forms they exist for. Three routes receive them: POST /settings/edit for
-  one configuration key, POST /dashboard/update for the binary, and
-  POST /dashboard/restart for the process running it. `GET /settings` is still the
+  and the forms they exist for. Four routes receive them: POST /settings/edit for
+  one configuration key, POST /dashboard/update for the binary,
+  POST /dashboard/restart for the process running it, and POST /logout for this
+  browser's own sign-in, on the daemons that have one. `GET /settings` is still the
   only verb registered on this path itself, which is why the header's link to it is
   a link to a page and nothing more.
 
@@ -226,6 +227,65 @@
 
 {{ range .Sections }}{{ if eq $.Shown .Title }}<section class="settings-section">
 <h2 class="settings-title">{{ .Title }}</h2>
+{{/*
+  Which door is live, on the one section that is the question it answers.
+
+  It is the most consequential fact about this daemon — which layer 1 a browser
+  meets decides who may execute code on this host — and it was visible nowhere
+  until M12/T006. The keys beneath it say what the operator configured; this says
+  what the daemon built out of them, which is not the same claim and is the one
+  worth being sure of.
+
+  Which section carries it is Go's answer (sectioned), never a heading compared
+  in here: two answers to "which section is this" would be free to disagree, and
+  the shape of that disagreement is a page that quietly stops naming its door.
+
+  No class, and that is the same decision the restart form above makes. The
+  sentence beneath it is .settings-source — a name that means "which file these
+  values came from" — and a second element wearing it would tell every reader,
+  and every sweep that finds the file line by it, something untrue. A third
+  spelling for one sentence is the second vocabulary docs/components.md exists to
+  prevent, so this takes none rather than inventing one.
+
+  It carries no value of any kind. Every sentence it can hold is a constant in
+  Go, chosen from the door this server was built with and never from the
+  configuration, and the password door's says only that the door is the password
+  — what that daemon has is already the `present` its own row renders.
+
+  The way out sits directly under it, because it is the same fact with a verb on
+  it: this is the heading that answers "who may reach it", so it is the one that
+  should offer "and stop being one of them". Whether it is drawn at all is Go's
+  answer too (doorFacts.SignOut) — the same question newServer asked when it
+  decided whether to register the route — so a daemon behind Cloudflare Access
+  draws no button, because what that browser holds is the edge's cookie and this
+  daemon cannot end it. A Sign out that cleared nothing would be worse than none.
+
+  It renders only with a token, like every other form on this page: a control
+  certain to be turned away is not offered at all.
+
+  Plain .button, not .button-primary — exactly one primary per view, and on the
+  settings page the update owns it — and not .button-danger, which is the
+  spelling for an action that ends an unsandboxed shell (docs/components.md).
+  This ends a browser's sign-in and no session on this host.
+
+  The form carries no class, the decision the restart form below already makes:
+  there is no shape here that a name in docs/components.md describes, and a
+  second element wearing another form's name tells every reader something untrue.
+
+  It posts to /logout and deliberately not to /dashboard/logout. crswd.js
+  intercepts a form aimed at that prefix and turns the answer into a toast, which
+  is right for an action the operator stays on the page for and exactly wrong for
+  this one: the cookie would go and the operator would be left looking at a
+  dashboard that is dead in their hands. Off the prefix the browser follows the
+  redirect to the sign-in form, with the script running or not.
+
+  There is no confirming step, unlike the update and the restart below. Those are
+  undone by nobody; this is undone by signing in again.
+*/}}{{ with .Door.Sentence }}<p>{{ . }}</p>{{ end }}
+{{ if and .Door.SignOut $.Token }}<form method="post" action="/logout">
+<input type="hidden" name="crsw_page_token" value="{{ $.Token }}">
+<button class="button" type="submit">Sign out</button>
+</form>{{ end }}
 <p class="settings-source">{{ if $.ConfigFile }}Read from {{ $.ConfigFile }}{{ else }}No configuration file was read.{{ end }}</p>
 <table class="settings-table">
 <thead>

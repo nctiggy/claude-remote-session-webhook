@@ -488,30 +488,36 @@ func TestServerTimeoutsAreSet(t *testing.T) {
 	}
 }
 
-// TestNewRefusesANonLoopbackListenAddress is FR-005 at the second of its three
-// gates. Every case here is a daemon that would have been reachable from off the
-// host, or one whose reachability a resolver could change later.
-func TestNewRefusesANonLoopbackListenAddress(t *testing.T) {
+// TestNewRefusesAListenAddressTheDoorDoesNotEarn is FR-005 at the second of its
+// three gates. Every case here is a daemon that would have been reachable from
+// off the host with nobody able to log in to it, or one whose address a resolver
+// could reinterpret later.
+func TestNewRefusesAListenAddressTheDoorDoesNotEarn(t *testing.T) {
 	t.Parallel()
 
 	refused := []struct {
 		name, listen string
+		// door is the configuration this address is refused under. The addresses
+		// that are refused whatever the door keep the Access one, so that the
+		// case is about the address; the rest are about the daemon nobody can get
+		// into (M12/T002).
+		door func(string) *config.Config
 	}{
-		{"all interfaces v4", "0.0.0.0:8765"},
-		{"all interfaces v6", "[::]:8765"},
-		{"a LAN address", "192.168.1.10:8765"},
-		{"a public address", "203.0.113.7:8765"},
-		{"a hostname a resolver controls", "localhost:8765"},
-		{"an empty host", ":8765"},
-		{"no port at all", "8765"},
-		{"nothing configured", ""},
+		{name: "all interfaces v4", listen: "0.0.0.0:8765", door: noDoorConfig},
+		{name: "all interfaces v6", listen: "[::]:8765", door: noDoorConfig},
+		{name: "a LAN address", listen: "192.168.1.10:8765", door: noDoorConfig},
+		{name: "a public address", listen: "203.0.113.7:8765", door: noDoorConfig},
+		{name: "a hostname a resolver controls", listen: "localhost:8765", door: testConfig},
+		{name: "an empty host", listen: ":8765", door: testConfig},
+		{name: "no port at all", listen: "8765", door: testConfig},
+		{name: "nothing configured", listen: "", door: testConfig},
 	}
 
 	for _, c := range refused {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 
-			s, err := New(testConfig(c.listen))
+			s, err := New(c.door(c.listen))
 			if err == nil {
 				t.Fatalf("New(%q) built a server; want a refusal", c.listen)
 			}
@@ -531,8 +537,98 @@ func TestNewRefusesANonLoopbackListenAddress(t *testing.T) {
 func TestNewRefusesANonLoopbackListenAddressWithTheSentinel(t *testing.T) {
 	t.Parallel()
 
-	if _, err := New(testConfig("0.0.0.0:8765")); !errors.Is(err, ErrNotLoopback) {
+	if _, err := New(noDoorConfig("0.0.0.0:8765")); !errors.Is(err, ErrNotLoopback) {
 		t.Fatalf("New(\"0.0.0.0:8765\") = _, %v; want an error matching ErrNotLoopback", err)
+	}
+}
+
+// TestNewBindsOffLoopbackOnlyForADaemonSomebodyCanGetInto is the relaxation and
+// its bound in one place (M12/T002).
+//
+// The two halves of the answer are asked separately here because they are
+// different facts: the configuration is what the operator asked for, and the
+// door is what was actually wired in front of the dashboard. Either one missing
+// keeps the daemon on loopback — so a wiring mistake that left a closedDoor in
+// front of a configured door cannot put an unauthenticated listener on the
+// network, and neither can a Config whose door was never configured at all.
+//
+// Delete the IsLoopback check in assertBindAddress and the last three cases go
+// green.
+func TestNewBindsOffLoopbackOnlyForADaemonSomebodyCanGetInto(t *testing.T) {
+	t.Parallel()
+
+	// Every row names its layer 1 rather than taking it from verifiedLayer1,
+	// including the two that could now have the real one: what this test is about
+	// is the guard reading *both* halves, so the two halves have to be settable
+	// apart. The rows where they agree — a password configuration behind the
+	// password door verifiedLayer1 actually builds — are in password_test.go
+	// (M12/T003), which is where the wiring is what is under test.
+
+	for _, c := range []struct {
+		name    string
+		cfg     *config.Config
+		door    layer1
+		wantErr bool
+		why     string
+	}{
+		{
+			name: "an access door, on the network",
+			cfg:  testConfig("192.168.1.10:8765"),
+			door: testBrowser(),
+			why:  "an operator behind Cloudflare who wants the daemon reachable on their own network too",
+		},
+		{
+			name: "a password door, on the network",
+			cfg:  passwordConfig("0.0.0.0:8765"),
+			door: testBrowser(),
+			why:  "the deployment this milestone exists for: no Cloudflare, and a listener the LAN can reach",
+		},
+		{
+			name: "no door at all, on loopback",
+			cfg:  noDoorConfig(loopbackListen),
+			door: closedDoor{},
+			why:  "today's daemon, unchanged",
+		},
+		{
+			name:    "no door at all, on the network",
+			cfg:     noDoorConfig("0.0.0.0:8765"),
+			door:    closedDoor{},
+			wantErr: true,
+			why:     "reachable and admitting nobody: the state the guard has always existed to prevent",
+		},
+		{
+			name:    "a configured door with a closed one wired in front of it",
+			cfg:     testConfig("192.168.1.10:8765"),
+			door:    closedDoor{},
+			wantErr: true,
+			why: "the file names a door and the dashboard has none. That is a wiring defect, and a wiring " +
+				"defect must not be what decides the listener is allowed on the network",
+		},
+		{
+			name:    "a door that admits somebody in front of a daemon that configured none",
+			cfg:     noDoorConfig("0.0.0.0:8765"),
+			door:    testBrowser(),
+			wantErr: true,
+			why: "the other way round, and this is where the development bypass lands: its layer 1 is not a " +
+				"closedDoor and it authenticates nobody, so the configuration is what has to say no",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			s, err := newServer(c.cfg, net.Listen, testAuth(t), c.door, testTrail(t), newSessionFixture(t).mgr,
+				testLimiter(t, c.cfg.CreateRatePerMin, fixedClock{at: testTime}))
+			switch {
+			case c.wantErr && err == nil:
+				t.Fatalf("newServer(%q) built a server: %s", c.cfg.Listen, c.why)
+			case c.wantErr && !errors.Is(err, ErrNotLoopback):
+				t.Fatalf("newServer(%q) = _, %v; want an error matching ErrNotLoopback: %s", c.cfg.Listen, err, c.why)
+			case !c.wantErr && err != nil:
+				t.Fatalf("newServer(%q) = _, %v; want a server: %s", c.cfg.Listen, err, c.why)
+			case !c.wantErr && s == nil:
+				t.Fatalf("newServer(%q) returned no server and no error: %s", c.cfg.Listen, c.why)
+			}
+		})
 	}
 }
 
@@ -680,7 +776,7 @@ func TestNewRefusesMissingDependencies(t *testing.T) {
 
 	cfg := testConfig(loopbackListen)
 	mgr := newSessionFixture(t).mgr
-	lim := func() *limiter { return testLimiter(t, cfg.CreateRatePerMin, fixedClock{at: testTime}) }
+	lim := func() *limiter[auth.CallerID] { return testLimiter(t, cfg.CreateRatePerMin, fixedClock{at: testTime}) }
 	cases := map[string]func() (*Server, error){
 		"no config": func() (*Server, error) { return New(nil) },
 		"no listen source": func() (*Server, error) {
@@ -867,10 +963,13 @@ func TestListenRefusesAndClosesAListenerThatIsNotOnLoopback(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 
+			// A daemon with no door: the last of the three gates is about the
+			// listener a daemon nobody can log in to is not allowed to keep, and
+			// a configured door would make every address here permitted (T002).
 			ln := &fakeListener{addr: c.addr}
-			s, err := newServer(testConfig(loopbackListen), func(string, string) (net.Listener, error) {
+			s, err := newServer(noDoorConfig(loopbackListen), func(string, string) (net.Listener, error) {
 				return ln, nil
-			}, testAuth(t), testBrowser(), testTrail(t), newSessionFixture(t).mgr,
+			}, testAuth(t), closedDoor{}, testTrail(t), newSessionFixture(t).mgr,
 				testLimiter(t, config.DefaultCreateRatePerMin, fixedClock{at: testTime}))
 			if err != nil {
 				t.Fatalf("newServer = _, %v; want a server", err)
@@ -890,6 +989,41 @@ func TestListenRefusesAndClosesAListenerThatIsNotOnLoopback(t *testing.T) {
 				t.Error("Serve() succeeded after a refused bind")
 			}
 		})
+	}
+}
+
+// TestListenKeepsANonLoopbackListenerWhenTheDoorAdmitsSomebody is the other side
+// of the gate above, and the one an operator on a LAN depends on: the socket the
+// kernel handed back is off loopback, and the daemon keeps it (M12/T002).
+//
+// It goes through the same fake listener, because a server that refused here
+// would fail with a closed socket and no daemon rather than with a message — the
+// last check runs after the bind has already happened.
+func TestListenKeepsANonLoopbackListenerWhenTheDoorAdmitsSomebody(t *testing.T) {
+	t.Parallel()
+
+	addr := &net.TCPAddr{IP: net.IPv4(192, 168, 1, 10), Port: 8765}
+	ln := &fakeListener{addr: addr}
+	cfg := testConfig("192.168.1.10:8765")
+	s, err := newServer(cfg, func(string, string) (net.Listener, error) {
+		return ln, nil
+	}, testAuth(t), testBrowser(), testTrail(t), newSessionFixture(t).mgr,
+		testLimiter(t, cfg.CreateRatePerMin, fixedClock{at: testTime}))
+	if err != nil {
+		t.Fatalf("newServer = _, %v; want a server", err)
+	}
+
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen() = %v; want the listener kept: a daemon with a door may be where a browser can reach it", err)
+	}
+	if ln.closed != 0 {
+		t.Errorf("the listener was closed %d times; want 0", ln.closed)
+	}
+	if s.Addr() == nil {
+		t.Error("Addr() = nil after a bind that was allowed; the server did not keep the listener")
+	}
+	if err := s.Close(); err != nil {
+		t.Errorf("Close() = %v", err)
 	}
 }
 

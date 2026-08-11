@@ -36,6 +36,8 @@ func TestIsBoolNamesBothBooleanKeys(t *testing.T) {
 	}{
 		{"discover_roots", true, "it is loaded with loadBool and is on or off"},
 		{"destroy_on_shutdown", true, "it is loaded with loadBool and is on or off"},
+		{"access_enabled", true, "it is loaded with loadBool and is on or off"},
+		{"dashboard_password", false, "a password is not a boolean, and an absent one read as false would be a door quietly removed"},
 		{"shared_secret", false, "a secret is not a boolean, and an absent value for it must never be read as a decision"},
 		{"access_allowed_emails", false, "a list of addresses is not a boolean; reading an absent one as false would rewrite who may sign in"},
 		{"allowed_roots", false, "the containment boundary is a list of paths"},

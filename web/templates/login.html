@@ -1,0 +1,62 @@
+{{/*
+  The sign-in page — the one page this daemon serves to somebody it has not
+  identified (M12/T004). It exists only on a daemon whose configured layer 1 is
+  the dashboard password; where Cloudflare Access is the door, this route is not
+  registered at all and the path is one nothing claims.
+
+  It carries no header, and that is the one deliberate departure from every other
+  page in this tree. The masthead exists so it is never ambiguous whose
+  credentials are driving unsandboxed sessions on this host
+  (docs/components.md), and here there are none yet: rendering it would either
+  invent an identity or draw an empty one, and the settings link inside it would
+  point at a page this caller cannot open.
+
+  It shows no version either, and that is security rather than layout. Every
+  other page in this tree is behind layer 1, so what they say about this daemon
+  they say to an operator who is already in. This page answers a stranger, and a
+  version is exactly the fact a scanner would like for free — which is the whole
+  reason GET /dashboard/version is behind the door instead of being the health
+  endpoint it looks like.
+
+  No new class. The entry is docs/components.md's Form — a .field holding a
+  .field-label and a .field-input — and the submit is the canonical .button.
+  The <form> itself carries .field for the reason the create form's idle-override
+  block does: that class is this vocabulary's stack, an outer one binds a control
+  to what sits with it, and a login form is one field and its submit. A
+  .login-form would be a second spelling of a shape that already exists.
+
+  No script. Nothing on this page is drawn or streamed, and a form that works
+  with nothing running is the requirement rather than the fallback.
+
+  The password field carries no pattern and no minlength. There is a bound —
+  config.MinDashboardPasswordLen — and it is enforced where the password is
+  *configured* rather than where it is offered: a hint here would tell a stranger
+  how long the secret is, and would refuse in a native browser bubble this daemon
+  never wrote.
+
+  autocomplete="current-password" so a password manager fills it. autocomplete
+  is off on every other field in this tree because those carry session names and
+  paths, which are not credentials and which a browser has no business
+  remembering; this one is the credential, and the manager holding it is better
+  than the operator choosing something they can type.
+*/}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>crswd — sign in</title>
+<link rel="stylesheet" href="/static/crswd.css">
+</head>
+<body>
+<main class="shell">
+<h1 class="brand">crswd <span class="brand-tag">session control</span></h1>
+<form class="field" method="post" action="/login">
+<div class="field">
+<label class="field-label" for="login-password">Password</label>
+<input class="field-input" id="login-password" type="password" name="password" required autocomplete="current-password">
+</div>
+<button class="button button-primary" type="submit">Sign in</button>
+</form>
+</main>
+</body>
+</html>

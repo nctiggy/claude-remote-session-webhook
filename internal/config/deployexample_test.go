@@ -181,6 +181,9 @@ func deploymentSpecific() map[string]bool {
 		config.EnvAccessTeamDomain:    true,
 		config.EnvAccessAUD:           true,
 		config.EnvAccessAllowedEmails: true,
+		// The browser door itself on a daemon with no Cloudflare in front of it,
+		// which makes it the last value in this repository that may be committed.
+		config.EnvDashboardPassword: true,
 	}
 }
 

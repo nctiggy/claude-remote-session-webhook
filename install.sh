@@ -95,16 +95,18 @@ require_tools() {
   [ -z "$missing" ] || die "not on PATH:$missing"
 }
 
-# What the documented deployment needs and the daemon does not. These warn rather
-# than refuse on purpose: the daemon binds loopback and something has to carry
-# traffic to it, but nothing here requires that something to be cloudflared, and
-# an operator fronting it with their own proxy is not making a mistake. Likewise
-# the start command is configurable, so `claude` is the default's dependency
-# rather than the daemon's.
+# What a documented deployment needs and the daemon does not. These warn rather
+# than refuse on purpose, and cloudflared is the clearest case: the daemon binds
+# loopback unless it has a door, so on the deployment that reaches the internet
+# something has to carry traffic to it — but nothing here requires that something
+# to be cloudflared, an operator fronting it with their own proxy is not making a
+# mistake, and the deployment behind a dashboard password listens on the network
+# it serves and needs no carrier at all. Likewise the start command is
+# configurable, so `claude` is the default's dependency rather than the daemon's.
 advise_tools() {
   for tool in cloudflared claude; do
     command -v "$tool" > /dev/null 2>&1 || \
-      warn "$tool is not on PATH. It is not needed to install or start crswd, but the documented setup uses it — see the README."
+      warn "$tool is not on PATH. It is not needed to install or start crswd, but a documented deployment uses it — see the README."
   done
 }
 
@@ -433,12 +435,48 @@ CONFIG
 # What is left, said plainly, because nothing else is going to say it. Both of
 # the settings the daemon has no usable default for are written now, so what
 # remains is no longer a hand-edit somebody has to make before the service can
-# come up. The unit is still printed rather than enabled: enabling one is a
-# decision about somebody else's machine and nothing here has been asked to
-# take it.
+# come up. It is the one question this script cannot answer for anybody: which
+# door the dashboard has.
+#
+# A daemon with neither serves the API and admits nobody to the dashboard. It
+# starts, it stays up, and every browser that reaches it — the operator's
+# included — gets the refusal a stranger gets, which from a browser is
+# indistinguishable from broken. The daemon says so at every start, into a
+# journal nobody has opened yet, so it is said here too.
+#
+# The unit is still printed rather than enabled, and the reason has changed.
+# The one this decision used to rest on — the daemon refuses to start without a
+# secret, so a service enabled here would fail on first boot and teach its
+# operator to ignore a failing service — stopped being true the moment this
+# script began generating one. What is left is the reason in the header, which
+# never depended on the configuration and is the stronger of the two: what would
+# be enabled at boot is a daemon that spawns shells with the permission prompt
+# turned off, on a host whose operator has not yet said who may reach it. A
+# `curl | bash` that leaves one running has taken that decision for them.
+#
+# The practical half agrees. `systemctl --user` needs a user manager this pipe
+# has no guarantee of, and a unit enabled from an SSH session stops when the
+# session ends unless lingering is on — which is one more decision about
+# somebody else's machine.
 next_steps() {
   say ""
-  say "Next: systemctl --user enable --now crswd"
+  say "Two things are left. The second is one command."
+  say ""
+  say "1. Give the dashboard a door, in ~/$CONFIG. It has none, and a daemon with"
+  say "   none serves the API and admits nobody to the dashboard: a browser gets"
+  say "   the same refusal a stranger gets. Pick the one that fits this host —"
+  say ""
+  say "     dashboard_password   a sign-in form this daemon serves, for a host on"
+  say "                          a network you control. With no TLS in front of it"
+  say "                          the password crosses that network in clear."
+  say ""
+  say "     access_enabled       Cloudflare Access, with access_team_domain,"
+  say "                          access_aud and access_allowed_emails, for a host"
+  say "                          reached over the internet through a tunnel."
+  say ""
+  say "   One or the other, never both: two doors configured is a startup failure."
+  say ""
+  say "2. systemctl --user enable --now crswd"
   say ""
   say "shared_secret and allowed_roots are both set in ~/$CONFIG. Read it first —"
   say "allowed_roots is the only thing bounding what a session can reach."

@@ -106,6 +106,21 @@ func testConfig(listen string) *config.Config {
 	}
 }
 
+// noDoorConfig is testConfig with layer 1 unconfigured: the daemon #70 describes,
+// whose dashboard admits nobody.
+//
+// It is the fixture for every case about how far the listener may reach
+// (M12/T002), because testConfig carries an Access door and a daemon somebody
+// can get into is allowed to be somewhere they can reach it. A case that used
+// testConfig to prove a bind is refused would be proving nothing.
+func noDoorConfig(listen string) *config.Config {
+	cfg := testConfig(listen)
+	cfg.AccessTeamDomain = ""
+	cfg.AccessAUD = ""
+	cfg.AccessAllowedEmails = nil
+	return cfg
+}
+
 // rateNotUnderTest is a create budget no test in this package can exhaust by
 // accident, so that a 429 anywhere else is the concurrent-session cap and
 // nothing else.
@@ -137,7 +152,7 @@ type stubLayer1 struct {
 	err      error
 }
 
-func (s stubLayer1) Verify(context.Context, string) (*access.VerifiedOperator, error) {
+func (s stubLayer1) Verify(*http.Request) (*access.VerifiedOperator, error) {
 	return s.operator, s.err
 }
 
@@ -199,10 +214,22 @@ func newAuditedServer(t *testing.T) *testServer {
 // door reads no assertion, so the validator behind it never runs.
 func newAuditedServerWith(t *testing.T, browser layer1) *testServer {
 	t.Helper()
+	return newAuditedServerOn(t, testConfig(loopbackListen), browser)
+}
+
+// newAuditedServerOn is newAuditedServerWith with the Config chosen as well,
+// which the sign-in suite needs and nothing before it did.
+//
+// Adjusting the fixture's Config after construction — settingsOn's shape — is
+// enough for anything a handler reads per request, and is not enough here: which
+// routes a daemon registers is decided once, at construction, from the door it
+// was built with (M12/T004). A fixture that changed the Config afterwards would
+// be making claims about a daemon that never existed.
+func newAuditedServerOn(t *testing.T, cfg *config.Config, browser layer1) *testServer {
+	t.Helper()
 
 	buf := &syncSink{}
 	fixture := newSessionFixture(t)
-	cfg := testConfig(loopbackListen)
 	s, err := newServer(
 		cfg,
 		net.Listen,

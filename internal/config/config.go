@@ -100,12 +100,47 @@ const (
 	EnvCreateRatePerMin   = "CRSW_CREATE_RATE_PER_MIN"
 	EnvMaxBodyBytes       = "CRSW_MAX_BODY_BYTES"
 
+	// EnvAccessEnabled declares that Cloudflare Access is this daemon's browser
+	// door, which turns the three values below from optional into required (M12).
+	//
+	// It selects nothing on its own: the door is chosen from what is configured,
+	// and a daemon carrying the three Access values has had the Access door since
+	// long before this variable existed. What this adds is the operator *saying
+	// so* — and a stated intention is checkable in the two places an unstated one
+	// is not. Set with none of the three, it refuses to start rather than serving
+	// the closed door an unset team domain would otherwise produce; set beside
+	// EnvDashboardPassword, it names the ambiguity instead of picking a winner.
+	//
+	// It is deliberately not required for the Access door. Making it so would
+	// mean every daemon already running on the three values either lost its
+	// dashboard on upgrade or refused to start, and neither is a thing to do to
+	// an operator who changed nothing.
+	EnvAccessEnabled = "CRSW_ACCESS_ENABLED"
+
 	// Layer 1 — the Cloudflare Access assertion the browser door validates.
 	// Required, and fatal when absent, for the same reason the shared secret is:
 	// a daemon that cannot verify who the browser is has no browser door at all.
 	EnvAccessTeamDomain    = "CRSW_ACCESS_TEAM_DOMAIN"
 	EnvAccessAUD           = "CRSW_ACCESS_AUD"
 	EnvAccessAllowedEmails = "CRSW_ACCESS_ALLOWED_EMAILS"
+
+	// EnvDashboardPassword is the other browser door: the one for a daemon on an
+	// internal network, where there is no Cloudflare edge in front of it and
+	// therefore no assertion for layer 1 to validate (M12).
+	//
+	// It is a secret by IsSecret, which is what keeps it out of the settings
+	// page's value column and out of any form that page renders. A password
+	// settable from the page it protects is not a door.
+	//
+	// It is never the door *as well as* Access. Two configured doors is a
+	// startup failure, because which one is live decides who may execute code on
+	// this host and that is the last question a daemon should answer by picking.
+	//
+	// gosec G101 fires here for the reason it fires on EnvSharedSecret: the
+	// identifier says "password" and the value is a string literal. The value is
+	// the *name* of an environment variable and is meant to be published —
+	// .env.example carries it verbatim.
+	EnvDashboardPassword = "CRSW_DASHBOARD_PASSWORD" //nolint:gosec // G101: an env var name, not a credential
 
 	EnvMaxStreams = "CRSW_MAX_STREAMS"
 
@@ -196,6 +231,19 @@ var ErrStartCommandName = errors.New("the session name cannot be put into the st
 // shared secret: an absent secret is an absent auth layer.
 const (
 	MinSecretBytes = 32
+
+	// MinDashboardPasswordLen bounds the password door because Principle I says
+	// weak auth configuration is a startup failure rather than a warning, and a
+	// password is the one credential in this daemon a human chooses. The shared
+	// secret's 32 bytes are generated; this one is typed, and demanding 32 of
+	// those would be answered with a shorter password in a different place.
+	//
+	// Sixteen because the attacker this door is written against is on the same
+	// LAN: a fast network, and a rate limiter keyed per source is exactly as
+	// effective as the number of sources they have. Sixteen characters is past
+	// what an offline wordlist reaches, which is the bound worth having, and no
+	// operator who is pasting from a password manager notices it.
+	MinDashboardPasswordLen = 16
 
 	// DefaultRootName is joined to $HOME. Never $HOME itself, which would make
 	// the allowlist decorative — SSH keys, cloud credentials and browser
@@ -387,6 +435,12 @@ type Config struct {
 	CreateRatePerMin   int
 	MaxBodyBytes       int64
 
+	// AccessEnabled is the operator's declaration that Cloudflare Access is the
+	// browser door. Read EnvAccessEnabled for what it does and does not decide:
+	// the door is selected from AccessTeamDomain and DashboardPassword, and this
+	// is what makes the three Access values required and the two doors exclusive.
+	AccessEnabled bool
+
 	// AccessTeamDomain is a normalised origin — scheme and host, no path, host
 	// lower-cased. It is one configured value because two things must agree: the
 	// issuer is exactly this string, and the key set is fetched from it.
@@ -405,6 +459,17 @@ type Config struct {
 	// The edge is the gate; this is the daemon asserting the gate is configured
 	// as believed.
 	AccessAllowedEmails []string
+
+	// DashboardPassword is the browser door for a daemon with no Cloudflare edge
+	// in front of it. Empty means no password door, and it is never non-empty at
+	// the same time as AccessTeamDomain — validateDoors refuses that start.
+	//
+	// It is held as the bytes the operator configured, like SharedSecret and for
+	// the same reason: hashing it here would put a second representation of one
+	// credential in the process, and the comparison that matters hashes both
+	// sides at the point of comparison anyway. It must never be logged, rendered,
+	// or returned in an error — not even its length.
+	DashboardPassword []byte
 
 	// MaxStreams bounds concurrent live-output streams, which are the one thing
 	// a browser can hold open indefinitely.
@@ -458,11 +523,21 @@ type Config struct {
 //
 // The allowed addresses are counted rather than named: they are a list of real
 // people, and this string is written wherever a Config is formatted.
+//
+// The dashboard password is redacted rather than counted, unlike the addresses:
+// a count is a length, and a length is the one measurement of a human-chosen
+// password worth having. Whether there is one at all is said plainly, because a
+// log line that read `<redacted>` for a daemon with no password door would
+// describe a door that is not there.
 func (c Config) String() string {
-	return fmt.Sprintf("config{shared_secret:<redacted> roots:%v listen:%q max_sessions:%d create_rate_per_min:%d max_body_bytes:%d access_team_domain:%q access_aud:%q allowed_emails:%d max_streams:%d start_commands:%v}",
+	password := "unset"
+	if len(c.DashboardPassword) > 0 {
+		password = "<redacted>"
+	}
+	return fmt.Sprintf("config{shared_secret:<redacted> roots:%v listen:%q max_sessions:%d create_rate_per_min:%d max_body_bytes:%d access_enabled:%t access_team_domain:%q access_aud:%q allowed_emails:%d dashboard_password:%s max_streams:%d start_commands:%v}",
 		c.Roots, c.Listen, c.MaxSessions, c.CreateRatePerMin, c.MaxBodyBytes,
-		c.AccessTeamDomain, c.AccessAUD, len(c.AccessAllowedEmails), c.MaxStreams,
-		c.StartCommands)
+		c.AccessEnabled, c.AccessTeamDomain, c.AccessAUD, len(c.AccessAllowedEmails),
+		password, c.MaxStreams, c.StartCommands)
 }
 
 // GoString mirrors String, so %#v is not a way around the redaction.
@@ -630,10 +705,6 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 	if err != nil {
 		return nil, err
 	}
-	listen, err := loadListen(getenv)
-	if err != nil {
-		return nil, err
-	}
 	maxSessions, err := loadInt(getenv, EnvMaxSessions, DefaultMaxSessions)
 	if err != nil {
 		return nil, err
@@ -674,6 +745,10 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 	if err != nil {
 		return nil, err
 	}
+	accessEnabled, err := loadBool(getenv, EnvAccessEnabled)
+	if err != nil {
+		return nil, err
+	}
 	teamDomain, err := loadTeamDomain(getenv, o.accessBypassed)
 	if err != nil {
 		return nil, err
@@ -689,7 +764,25 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 	if err := validateAccessGroup(teamDomain, aud, emails, o.accessBypassed); err != nil {
 		return nil, err
 	}
-	if teamDomain == "" && !o.accessBypassed {
+	dashboardPassword, err := loadDashboardPassword(getenv)
+	if err != nil {
+		return nil, err
+	}
+	// After the group check, so that teamDomain standing for "Access is
+	// configured" is a fact rather than an assumption: all three or none of them
+	// is already true by the time this asks.
+	if err := validateDoors(accessEnabled, teamDomain, dashboardPassword, o.accessBypassed); err != nil {
+		return nil, err
+	}
+	// Read after the two checks above rather than beside the other bounds, which
+	// is where it used to sit: what a listen address is allowed to be now depends
+	// on whether anybody can get through the browser door, and that is not a fact
+	// until the group check and the selection have both had their say (M12/T002).
+	listen, err := loadListen(getenv, browserDoorAdmits(teamDomain, dashboardPassword))
+	if err != nil {
+		return nil, err
+	}
+	if !browserDoorAdmits(teamDomain, dashboardPassword) && !o.accessBypassed {
 		if err := warnNoIdentityProvider(warn); err != nil {
 			return nil, err
 		}
@@ -713,9 +806,11 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 		MaxSessions:         maxSessions,
 		CreateRatePerMin:    createRate,
 		MaxBodyBytes:        maxBody,
+		AccessEnabled:       accessEnabled,
 		AccessTeamDomain:    teamDomain,
 		AccessAUD:           aud,
 		AccessAllowedEmails: emails,
+		DashboardPassword:   dashboardPassword,
 		MaxStreams:          maxStreams,
 		PaneBound:           paneBound,
 		SessionLifetime:     lifetime,
@@ -1221,11 +1316,16 @@ func defaultRoot(getenv func(string) string, warn io.Writer) ([]ApprovedRoot, er
 // the state an operator must not be left to discover. Repeated on every start,
 // not only the first — a weakened posture nobody is reminded of is one nobody
 // remembers.
+//
+// It names both doors since M12, and the caller no longer emits it for a daemon
+// with a password door: a banner that said the dashboard admits nobody beside a
+// door that admits the operator would be the kind of warning people learn to
+// scroll past.
 func warnNoIdentityProvider(warn io.Writer) error {
 	banner := fmt.Sprintf(
 		"crswd: no identity provider configured (%s, %s, %s) — the API works, the dashboard admits nobody.\n"+
-			"crswd: configure all three to enable the dashboard. See docs/auth-and-sessions.md.\n",
-		EnvAccessTeamDomain, EnvAccessAUD, EnvAccessAllowedEmails)
+			"crswd: configure all three to enable the dashboard, or set %s for a daemon that is not behind Cloudflare. See docs/auth-and-sessions.md.\n",
+		EnvAccessTeamDomain, EnvAccessAUD, EnvAccessAllowedEmails, EnvDashboardPassword)
 
 	if _, err := io.WriteString(warn, banner); err != nil {
 		return fmt.Errorf("emit the absent-identity-provider warning: %w", err)
@@ -1276,10 +1376,38 @@ func resolveRoot(path string) (ApprovedRoot, error) {
 	return ApprovedRoot{Path: resolved}, nil
 }
 
-// loadListen enforces the loopback bind (FR-005). Reachability comes from the
-// tunnel; a listener on any other interface is the one change docs/security.md
-// says is simply wrong.
-func loadListen(getenv func(string) string) (string, error) {
+// browserDoorAdmits reports whether layer 1 has anybody to let in: Cloudflare
+// Access, or the password door beside it.
+//
+// One predicate rather than the same pair of comparisons written twice, for the
+// reason IsSecret is one predicate — its two callers decide different things
+// about the same fact (what the startup banner says, and how far the listener
+// may reach), and two spellings that could drift would have a daemon warn that
+// it admits nobody while binding an address only a daemon that admits somebody
+// is allowed.
+//
+// It is deliberately not told about the development bypass. That build
+// authenticates nobody, so it has nobody to admit in the sense that matters
+// here, and internal/access refuses a non-loopback listener under it anyway.
+func browserDoorAdmits(teamDomain string, password []byte) bool {
+	return teamDomain != "" || len(password) > 0
+}
+
+// loadListen bounds where the daemon may bind (FR-005).
+//
+// Loopback is the default and the only address a daemon with no browser door
+// may have. It stops being the *only* permitted address when layer 1 admits
+// somebody: an operator on their own network, with no Cloudflare in front of
+// this daemon, has to be able to reach it from the machine they are sitting at
+// (M12). The bound is relaxed there and nowhere else, because the invariant it
+// serves is "never reachable without authentication" rather than "never
+// reachable" — a daemon whose dashboard admits nobody stays where the tunnel
+// can find it and nothing else can.
+//
+// doorAdmits is a caller's answer rather than a Config field read here: this
+// runs during the load that builds the Config, and a check that read its own
+// half-built result would be checking nothing.
+func loadListen(getenv func(string) string, doorAdmits bool) (string, error) {
 	v := getenv(EnvListen)
 	if v == "" {
 		v = DefaultListen
@@ -1290,15 +1418,30 @@ func loadListen(getenv func(string) string) (string, error) {
 		return "", fmt.Errorf("%s %q is not a host:port address; refusing to start: %w", EnvListen, v, err)
 	}
 
+	// Said once, because the two refusals below differ only in whether loopback
+	// is part of the demand, and an operator told half of it fixes the address
+	// twice.
+	permitted := "a loopback IP literal such as 127.0.0.1 or ::1"
+	if doorAdmits {
+		permitted = "an IP literal such as 127.0.0.1, ::1 or 0.0.0.0"
+	}
+
 	ip := net.ParseIP(host)
 	if ip == nil {
-		// A name is refused rather than resolved: /etc/hosts or a resolver can
-		// point "localhost" anywhere, which would move the bind off loopback
-		// without changing this value.
-		return "", fmt.Errorf("%s host %q must be a loopback IP literal such as 127.0.0.1 or ::1; refusing to start", EnvListen, host)
+		// A name is refused rather than resolved, under either door: /etc/hosts
+		// or a resolver can point "localhost" anywhere, which would move the bind
+		// without changing this value. The wildcard ":8765" arrives here too, as
+		// an empty host — 0.0.0.0 is the same address said in a way that can be
+		// read off the line.
+		return "", fmt.Errorf("%s host %q must be %s, never a name; refusing to start", EnvListen, host, permitted)
 	}
-	if !ip.IsLoopback() {
-		return "", fmt.Errorf("%s host %q is not loopback; the daemon is reachable only through the tunnel; refusing to start", EnvListen, host)
+	if !ip.IsLoopback() && !doorAdmits {
+		// The refusal names both doors because both are missing, and it may name
+		// them: this is a startup error to a terminal, not an HTTP response, so
+		// there is no stranger here to tell anything to.
+		return "", fmt.Errorf(
+			"%s host %q is not loopback and this daemon's dashboard admits nobody: configure %s (with %s and %s) or %s before binding off loopback, or keep the listener on loopback and reach it through the tunnel; refusing to start",
+			EnvListen, host, EnvAccessTeamDomain, EnvAccessAUD, EnvAccessAllowedEmails, EnvDashboardPassword)
 	}
 
 	n, err := strconv.Atoi(port)
@@ -1411,6 +1554,26 @@ func loadAllowedEmails(getenv func(string) string, bypassed bool) ([]string, err
 	return emails, nil
 }
 
+// loadDashboardPassword reads the password door's credential, absent when unset.
+//
+// Its errors name the variable and the requirement and nothing else — never the
+// value, and never its actual length, for loadSecret's reason: "shorter than
+// sixteen" is the rule restated, while "eleven characters" is a measurement of a
+// live credential written to stderr and kept in the journal forever.
+//
+// Unset is not a failure. It is the daemon that has no password door, which is
+// every daemon that exists today.
+func loadDashboardPassword(getenv func(string) string) ([]byte, error) {
+	v := getenv(EnvDashboardPassword)
+	if v == "" {
+		return nil, nil
+	}
+	if len(v) < MinDashboardPasswordLen {
+		return nil, fmt.Errorf("%s is shorter than the required %d characters; refusing to start", EnvDashboardPassword, MinDashboardPasswordLen)
+	}
+	return []byte(v), nil
+}
+
 // loadBool reads an on/off setting, off when unset.
 //
 // A value that is neither is a startup failure rather than a false, which is the
@@ -1488,6 +1651,59 @@ func validateAccessGroup(teamDomain, aud string, emails []string, bypassed bool)
 	return fmt.Errorf(
 		"%s, %s and %s are all-or-nothing: configure every one to enable the dashboard, or none to run the API alone; refusing to start with %d of 3",
 		EnvAccessTeamDomain, EnvAccessAUD, EnvAccessAllowedEmails, set)
+}
+
+// validateDoors enforces that this daemon has at most one browser door (M12).
+//
+// The whole selection, and it is deliberately small:
+//
+//	access_enabled  dashboard_password  layer 1
+//	true            unset               Access — and the three become required
+//	false / unset   set                 the password door
+//	true            set                 refuse to start
+//	false / unset   unset               the closed door, or Access if the three
+//	                                    values are set, which is today's daemon
+//
+// The last row is the one the table in the plan does not name and the one every
+// existing deployment is on: three Access values and no such variable, because
+// the variable did not exist when they were written. Reading that as "no door"
+// would take the dashboard away from a daemon whose operator changed nothing,
+// and reading it as a refusal would stop that daemon starting at all. So the
+// three values still select Access on their own, and access_enabled is the
+// operator saying it out loud — see EnvAccessEnabled.
+//
+// It runs after validateAccessGroup, which is what makes teamDomain a sound
+// stand-in for "Access is configured": by here the three are all set or all
+// unset.
+//
+// The refusal is a startup error to a terminal rather than an HTTP response, so
+// it may name which two settings collided. It names the *variables* and never a
+// value, because one of the two is a live credential.
+func validateDoors(accessEnabled bool, teamDomain string, password []byte, bypassed bool) error {
+	accessConfigured := accessEnabled || teamDomain != ""
+
+	if len(password) > 0 && accessConfigured {
+		// Whichever of the two the operator used to configure Access, so the
+		// message names the line they can go and look at.
+		named := EnvAccessTeamDomain
+		if accessEnabled {
+			named = EnvAccessEnabled
+		}
+		return fmt.Errorf(
+			"%s and %s each configure the browser door and this daemon has one: unset whichever you did not mean; refusing to start rather than choosing for you",
+			named, EnvDashboardPassword)
+	}
+
+	// An operator who said Access is the door and configured no Access is asking
+	// for a dashboard that admits nobody. Unstated, that is the supported
+	// deployment the warning covers; stated, it is a mistake, and a daemon that
+	// started anyway would look configured and refuse every login.
+	if accessEnabled && teamDomain == "" && !bypassed {
+		return fmt.Errorf(
+			"%s is on and %s, %s and %s are not set: configure all three, or turn it off to run the API alone or a %s door; refusing to start",
+			EnvAccessEnabled, EnvAccessTeamDomain, EnvAccessAUD, EnvAccessAllowedEmails, EnvDashboardPassword)
+	}
+	return nil
 }
 
 func validateLifetimes(lifetime, lifetimeMax, idle, idleMax time.Duration) error {

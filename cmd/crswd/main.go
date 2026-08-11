@@ -117,8 +117,9 @@ func printVersion(out io.Writer) {
 
 // run is the startup sequence, and its order is the requirement.
 //
-// Configuration first, because a missing or weak secret, a non-loopback listen
-// address, or an unresolvable root is a startup failure and not a warning
+// Configuration first, because a missing or weak secret, a listen address wider
+// than this daemon's door earns, or an unresolvable root is a startup failure
+// and not a warning
 // (docs/security.md §4) — nothing below runs on a Config that failed to load.
 //
 // Then the dependency probe, which is the same choice one layer out: a host

@@ -1059,20 +1059,55 @@ func TestInstallSetsTheContainmentRoot(t *testing.T) {
 	})
 }
 
+// doorKeys and doorClosedPhrase are the words this installer and README.md's
+// install section must both use, declared once so they cannot be changed in one
+// of those two documents alone.
+//
+// The keys are the third thing with no default that will do, and the only one
+// left after an install: both doors, so the operator picks rather than
+// discovers. Neither is ever written to the file — one is a credential this
+// script must not invent, and the other selects a Cloudflare account it knows
+// nothing about — so naming them is the whole of what either document can do,
+// and they are named as the configuration file spells them rather than as prose.
+//
+// The phrase is what a daemon with neither does, and it is the one the startup
+// banner and the settings page already use.
+//
+// TestInstallPrintsNextSteps holds the installer's *printed output* to them,
+// which is stronger than a scan of the script would be — the same words appear
+// in a comment near next_steps, so a file scan would pass on a script that had
+// stopped saying them. TestReadmeAndInstallerNameTheSameDoors holds README.md to
+// the same list, and the page has no output to check.
+var (
+	doorKeys         = []string{"dashboard_password", "access_enabled"}
+	doorClosedPhrase = "admits nobody"
+)
+
 // TestInstallPrintsNextSteps is FR-018 and FR-019 together, because they are the
 // same step: the installer stops, and the only reason that is not an unfinished
 // job is that it says what is left.
 //
-// It cannot enable the unit — the daemon refuses to start without the secret, so
-// a service enabled here fails on first boot, and an operator who has watched
-// this service fail once reads the next failure as normal.
+// What is left changed when the installer started generating the secret. It is
+// no longer a hand-edit before the service can come up — the service comes up —
+// it is the question this script cannot answer for anybody: which door the
+// dashboard has. A daemon with neither runs, stays healthy, and refuses every
+// browser including its operator's, which from a browser is indistinguishable
+// from broken. So both doors are named here, as the configuration file spells
+// them, and the failure that is not a failure is stated in the operator's words
+// rather than left to a startup banner in a journal they have not opened.
+//
+// It still enables nothing, and the reason it used to give for that no longer
+// holds: the daemon would now start. The one underneath never depended on the
+// configuration — what would be enabled at boot is a daemon that spawns shells
+// with the permission prompt turned off, on a host whose operator has not yet
+// said who may reach it.
 func TestInstallPrintsNextSteps(t *testing.T) {
 	t.Parallel()
 	needsOpenSSL(t)
 
 	got := installs(t)
 
-	for _, want := range []string{
+	for _, want := range append([]string{
 		// The two settings with no default that will do, named as the
 		// configuration file spells them rather than as prose.
 		"shared_secret",
@@ -1080,14 +1115,21 @@ func TestInstallPrintsNextSteps(t *testing.T) {
 		// Where to set them, and the command that is deliberately not run.
 		"~/.config/crswd/config",
 		"systemctl --user enable --now crswd",
-	} {
+	}, doorKeys...) {
 		if !strings.Contains(got.stdout, want) {
-			t.Errorf("the installer never says %q:\n%s\nIt has just stopped one command short of a working daemon; whoever ran it has to be told which one", want, got.stdout)
+			t.Errorf("the installer never says %q:\n%s\nIt has just stopped short of a working daemon; whoever ran it has to be told what of", want, got.stdout)
 		}
 	}
 
+	// The phrase the daemon's own startup banner and the settings page both use
+	// for this state, shared on purpose: an operator who meets it in one place
+	// and then in another has to be able to tell it is the same fact.
+	if !strings.Contains(got.stdout, doorClosedPhrase) {
+		t.Errorf("the installer names the two doors and never says what a daemon with neither does:\n%s\nIt serves the API and admits nobody to the dashboard. Naming a setting is not saying what happens without it, and what happens is a healthy service that refuses the browser of the person who just installed it", got.stdout)
+	}
+
 	if got.ran("systemctl") {
-		t.Errorf("the installer called systemctl:\n%v\nIt cannot start: the secret is not set yet, so the service it enabled would fail on first boot and teach its operator to ignore a failing service", got.events)
+		t.Errorf("the installer called systemctl:\n%v\nWhat it would enable at boot is a daemon that spawns shells with the permission prompt turned off, on a host whose operator has not yet said who may reach it — and `systemctl --user` from a pipe out of curl may have no user manager to talk to, or may be enabling a unit that stops with the SSH session", got.events)
 	}
 }
 
@@ -1514,7 +1556,7 @@ func TestEveryInstallerFunctionIsCalled(t *testing.T) {
 	for _, d := range defined {
 		name := string(d[1])
 		// A call is the name anywhere it is not the definition line.
-		calls := regexp.MustCompile(`(?m)^[^#\n]*\b` + regexp.QuoteMeta(name) + `\b`).FindAll(script, -1)
+		calls := regexp.MustCompile(`(?m)^[^#\n]*\b`+regexp.QuoteMeta(name)+`\b`).FindAll(script, -1)
 		if len(calls) < 2 {
 			t.Errorf("install.sh defines %s() and never calls it; a shell function with no caller is dead on arrival and nothing compiles it to say so", name)
 		}

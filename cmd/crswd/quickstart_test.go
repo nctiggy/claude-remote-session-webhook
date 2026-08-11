@@ -1277,10 +1277,21 @@ func TestQuickstartStory1StartupFailures(t *testing.T) {
 	addr := freePort(t)
 
 	cases := map[string]map[string]string{
-		"the secret is unset":      {"CRSW_SHARED_SECRET": unset, "CRSW_LISTEN": addr},
-		"the secret is too short":  {"CRSW_SHARED_SECRET": "tooshort", "CRSW_LISTEN": addr},
-		"the secret is 31 bytes":   {"CRSW_SHARED_SECRET": strings.Repeat("a", 31), "CRSW_LISTEN": addr},
-		"the listener is public":   {"CRSW_LISTEN": freeAddrOn(t, "0.0.0.0")},
+		"the secret is unset":     {"CRSW_SHARED_SECRET": unset, "CRSW_LISTEN": addr},
+		"the secret is too short": {"CRSW_SHARED_SECRET": "tooshort", "CRSW_LISTEN": addr},
+		"the secret is 31 bytes":  {"CRSW_SHARED_SECRET": strings.Repeat("a", 31), "CRSW_LISTEN": addr},
+		// The three Access values go with it: a public listener is a startup
+		// failure on a daemon whose dashboard admits nobody, and that is the
+		// whole of what the bind guard still refuses since M12/T002. With a door
+		// configured this same address starts, which is the point of the
+		// milestone and is proven where a test can bind a socket without putting
+		// one on the network the suite is running on.
+		"the listener is public and nothing admits a browser": {
+			"CRSW_LISTEN":                freeAddrOn(t, "0.0.0.0"),
+			"CRSW_ACCESS_TEAM_DOMAIN":    unset,
+			"CRSW_ACCESS_AUD":            unset,
+			"CRSW_ACCESS_ALLOWED_EMAILS": unset,
+		},
 		"the listener is a name":   {"CRSW_LISTEN": freeAddrOn(t, "localhost")},
 		"the root does not exist":  {"CRSW_ALLOWED_ROOTS": filepath.Join(h.dir, "nope"), "CRSW_LISTEN": addr},
 		"the cap is not a number":  {"CRSW_MAX_SESSIONS": "many", "CRSW_LISTEN": addr},

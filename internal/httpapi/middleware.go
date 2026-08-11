@@ -138,6 +138,25 @@ func (a *RequestAudit) Deny(reason string) {
 	a.rec.Reason = reason
 }
 
+// allow records that the request was served, and by whom.
+//
+// The two middlewares above set these fields directly rather than calling this,
+// because they are the ones that learned the identity and they set it on the way
+// past. The sign-in route cannot: it is the one route that *establishes* an
+// identity rather than being given one, so the decision is taken in the handler
+// that made it (login.go). This is that one line, nil-safe like every other
+// method here, rather than two spellings of the same two assignments.
+//
+// An empty caller is the trail's `unknown`, which is what a request that proved
+// nothing is owed.
+func (a *RequestAudit) allow(caller string) {
+	if a == nil {
+		return
+	}
+	a.rec.Caller = caller
+	a.rec.Decision = audit.Allow
+}
+
 // CallerFrom reports the identity the middleware authenticated for this request.
 //
 // A handler behind the middleware can rely on ok being true — the handler is not

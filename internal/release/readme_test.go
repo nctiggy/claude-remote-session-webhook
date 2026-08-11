@@ -98,6 +98,35 @@ func TestReadmeDocumentsRollingBack(t *testing.T) {
 	}
 }
 
+// TestReadmeAndInstallerNameTheSameDoors is the README's half of one fact stated
+// twice: the installed configuration is complete except for a door, and until the
+// operator picks one the dashboard admits nobody.
+//
+// It is stated twice because it is met twice — once in the terminal the installer
+// prints to, once on the page somebody reads before running it — and until this
+// test nothing held the page to it. The failure that leaves is silent and
+// expensive: a README that names one door, or names a key by a spelling the
+// configuration file does not take, sends its reader to a daemon that starts,
+// stays healthy, and refuses their browser exactly as it refuses a stranger's.
+//
+// The vocabulary is declared in install_test.go and read by both tests, so the
+// two documents cannot be reworded one at a time. That is what makes this an
+// agreement rather than a second list; the installer's own half is checked
+// against its output rather than its text, and the reason is written there.
+//
+// **Must fail when** the README drops a door or rewords the phrase.
+func TestReadmeAndInstallerNameTheSameDoors(t *testing.T) {
+	t.Parallel()
+
+	readme := readReadme(t)
+
+	for _, want := range append(append([]string{}, doorKeys...), doorClosedPhrase) {
+		if !strings.Contains(readme, want) {
+			t.Errorf("%s never says %q.\nThe installer's next steps say it, and a reader who arrives by the page rather than the terminal is owed the same sentence: the daemon they installed is closed rather than broken, and this is the setting that opens it", readmePath, want)
+		}
+	}
+}
+
 // TestReleaseHasNoDependencies is FR-034, and the reason FR-010 is achievable at
 // all: a static binary that runs on a host with no compiler and no development
 // library is what this milestone ships, and it stays possible only while nothing

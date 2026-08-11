@@ -1,58 +1,93 @@
 # Implementation Plan
 
-**Milestone 11 — Make it installable by a stranger.**
+**Milestone 12 — A second front door.**
 
-> *"The readme needs to be clear and crisp and be on theme. Someone else should be
-> able to easily install this on their own machine. It should also try to automate
-> as much as possible so the user can just run the curl/bash command to install if
-> they want."*
+> *"I want this to work on my internal network without needing Cloudflare… I want
+> to be able to configure one or the other. If just local UI then built in or set
+> password in the config file. Otherwise Cloudflare. And that should also have a
+> bool for Cloudflare being enabled."*
 
-Six tasks.
-
----
-
-## ⚠️ None of this can be proven on the author's machine
-
-This box has the project installed, a config written, `~/.local/bin` on `PATH`
-and the unit in place. **Every precondition the installer exists to create is
-already true here**, so a successful run proves nothing.
-
-`verify-install` in `.github/workflows/release.yml` runs the published installer on
-a **GitHub-hosted runner with a fresh `HOME`**, twice — once to prove it installs,
-once to prove it does not overwrite. That job is the only thing in this project
-that can fail for the reasons these tasks are about.
-
-**Any task that changes `install.sh` must extend that job in the same task.**
-"It worked when I ran it" is not evidence here and never has been.
+Ten tasks. **This is the highest-consequence surface since the updater.** Read the
+whole preamble before T001.
 
 ---
 
-## ⚠️ A generated secret must never be printed
+## ⚠️ What is actually being changed
 
-The installer's output goes to a terminal scrollback, a CI log, and often a pipe
-from `curl`. A secret that appears there has a second copy in all three.
+Two walls stand between a LAN and this daemon, and the bind is the lesser one.
 
-Write it into the `0600` config and report **that** one was generated — never what
-it is. This is the same discipline `crswd keygen` follows, for the same reason.
+1. **`loadListen` refuses any non-loopback address.** Visible, and not the blocker.
+2. **`closedDoor{}` admits nobody** when Access is unconfigured. **Cloudflare
+   Access is currently the dashboard's only authentication.** Lift wall 1 alone and
+   the daemon is reachable over the LAN and refuses everyone.
 
-**And never overwrite an existing configuration.** That rule already exists and
-generating a secret must not weaken it: a config that is present is the operator's,
-generated secret or not.
+**Every session this daemon starts is an unsandboxed shell running with
+`--dangerously-skip-permissions`.** A weak door here is code execution as the
+operator for anyone who can reach the port. That is the standard every task below
+is held to.
 
 ---
 
-## What the four secrets are, since T004 has to explain them
+## ⚠️ Exactly one layer 1. Never two.
 
-| Secret | Door | What it buys |
-|---|---|---|
-| ed25519 release key | — | The operator holds the private half; the public half is embedded at install. A self-update proves the bytes came from **this** repository. A checksum alone proves nothing: whoever can serve a binary can serve its checksum. |
-| `shared_secret` | API | HMAC-SHA256 the companion skill and scripts sign with. Under 32 bytes refuses to start. |
-| Access team domain / AUD / allowed emails | Browser | The daemon verifies the forwarded Access JWT **itself**, so Access failing open does not become an unauthenticated session. All three or none. |
-| Per-session bearer token | API | Minted per session, scoped to that session. Tells apart callers who all authenticate as one shared secret. |
+Layer 1 is built at **one** place — `internal/httpapi/server.go:339` — and returns
+a validator interface. The password door is a **third implementation returned from
+that same function**: `closedDoor`, `access.Validator`, `password`.
 
-A service token's assertion carries **no email**, which is why "no email" must
-never read as "allow" — or every API call would also admit the caller to the
-dashboard.
+`closedDoor`'s own comment says why this matters:
+
+> A nil validator and a special case in the middleware would be the second path,
+> and the second path is the one nobody reads.
+
+**No task may add a branch in the browser middleware.** If a task finds itself
+wanting one, it has left the plan.
+
+**The selection is explicit and mutually exclusive:**
+
+| `access_enabled` | `dashboard_password` | Layer 1 | Notes |
+|---|---|---|---|
+| `true` | unset | `access.Validator` | The three Access values become required |
+| `false` / unset | set | password door | The new one |
+| `true` | set | **refuse to start** | Ambiguity is the defect; never pick a winner silently |
+| `false` / unset | unset | `closedDoor` | Today's behaviour — admits nobody |
+
+---
+
+## ⚠️ The bind guard is relaxed conditionally, never removed
+
+A non-loopback listen is permitted **only when layer 1 admits somebody**. A
+`closedDoor` daemon must still refuse to bind off loopback.
+
+That keeps the invariant — *never reachable without authentication* — intact
+rather than deleted. A task that simply drops the `IsLoopback` check has removed a
+bound instead of relaxing it, which is the same distinction milestone 10 drew
+between a negative idle and a negative lifetime.
+
+---
+
+## ⚠️ Password rules, all of them non-negotiable
+
+- **It is a secret.** `config.IsSecret("dashboard_password")` must return true, so
+  it is never editable from the browser and renders as `present`/`absent` only. A
+  password settable from the page it protects is not a door.
+- **Never in a log, an audit record, a page, an error, or a URL.**
+- **Constant-time comparison**, over hashes of both sides so length does not leak.
+- **Rate-limited**, with the limiter keyed per source rather than per session. A
+  LAN is a fast network to brute force from.
+- **The session cookie is `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure`
+  whenever the request arrived over TLS.** Lax rather than Strict because the
+  operator arrives by typing a URL, and Strict withholds the cookie on that first
+  top-level navigation.
+- **The cookie is signed**, keyed by HMAC over the existing `shared_secret` with a
+  distinct label — no new key, and rotating the secret invalidates sessions, which
+  is correct.
+- **The login route is unreachable when Access is the configured door.** A login
+  form that exists beside a working Access door is the second path again.
+
+**State the plaintext-over-HTTP risk in the documentation rather than hiding it.**
+On a LAN without TLS the password crosses the network in clear. That is a real
+weakness of this mode and an operator choosing it deserves to be told, not
+reassured.
 
 ---
 
@@ -60,71 +95,46 @@ dashboard.
 
 - `- [ ]` open · `- [x]` done · `- [!]` blocked (reason in `PROGRESS.md`)
 - Priority order is meaningful — the loop always takes the topmost open item.
-- Each task must be independently completable **and verifiable** in one iteration.
 - **Every task ends green**: `go build ./... && go vet ./... && go test ./... && golangci-lint run`,
   plus `-tags tmux` / `-tags quickstart` where touched.
 - **Check the linter is v2 before trusting it** (#26).
-- `go.sum` must never appear.
+- `go.sum` must never appear — `crypto/hmac`, `crypto/sha256`, `crypto/subtle` and
+  `net/http` are all stdlib.
+- **AR-005: a test satisfies the cross-site checks, it never disables them.**
 - **AR-008: no refactoring outside the task.**
 - **A task is not done when the code exists. It is done when something calls it.**
 - **A new guard must be proven by breaking it.**
-- **`install.sh` names nobody** (FR-020): no personal name, no account identifier,
-  no `/home/<someone>` path. The repository owner in a URL is fine and unavoidable.
+- **Everything works with no JavaScript**, the login form included.
 
 ---
 
 ## Tasks
 
-- [x] **T001** 🔒 Generate `shared_secret` in `install.sh` when writing a **new** configuration, and write it in rather than leaving it commented. Use a real CSPRNG (`openssl rand -hex 32`, or `/dev/urandom` if openssl is not a dependency the installer already has — check `require_tools` before adding one). **Never print it.** Say that a secret was generated, not what it is. An existing config is still never touched. Extend `verify-install` to assert: the written config contains a `shared_secret` of at least 32 bytes, the file is `0600`, the secret does **not** appear in the installer's stdout, and the second run leaves it byte-identical.
+- [x] **T001** 🔒 Add `access_enabled` (bool) and `dashboard_password` (secret) in `internal/config/`. `dashboard_password` joins `IsSecret`; `access_enabled` joins the boolean keys so it renders as a checkbox and is caught by `TestIsBoolNamesEveryBooleanLoaded`. Implement the selection table above in `Validate`, including **refusing to start when both are configured**. Test every row of that table, and test that the password is never returned by anything that renders configuration.
 
-- [x] **T002** Set `allowed_roots` in `install.sh` for a new configuration, to the default the config file already names (`$HOME/code`), creating the directory if it is absent. **Never `$HOME` itself** — the config's own comment says why: SSH keys, cloud credentials and browser profiles live directly under it, which would make the allowlist decorative. Write it explicitly rather than relying on a default, so the operator can see what their containment is. Extend `verify-install` to assert the directory exists and the config names it.
+- [x] **T002** 🔒 Relax the bind guard in `loadListen`: a non-loopback address is permitted **only when layer 1 admits somebody**. A `closedDoor` daemon still refuses. The refusal is a startup error to a terminal rather than an HTTP response, so it may name which of the two is missing. **Must fail when** the `IsLoopback` check is simply deleted.
 
-- [ ] **T003** Reduce what is left after install to as close to nothing as it can honestly be, and rewrite `next_steps()` to say it. With T001 and T002 the daemon can now start, so the remaining gap is Cloudflare Access — until it is configured the dashboard admits nobody, which is a working daemon serving no one rather than a broken one. **Decide and record whether the installer should now enable the unit.** The existing reasoning (a service failing on first boot teaches an operator to ignore a failing service) was written against an incomplete config; say whether it still holds and why. Do not change the behaviour without writing the argument down.
+- [x] **T003** 🔒 Implement the password door as a validator in `internal/httpapi/`, returned from the **same** function at `server.go:339` that returns `closedDoor` and `access.Validator`. Constant-time comparison over SHA-256 of both sides. Session cookie signed with `hmac.New(sha256.New, sharedSecret)` over a distinct label; `HttpOnly`, `SameSite=Lax`, `Path=/`, `Secure` when the request was TLS. **No branch in the browser middleware.**
 
-- [ ] **T004** Rewrite `README.md` for a stranger. Lead with what it is, then install, then the four secrets and what each buys (table above), then configure, then run. **Move the contributor material out** — "Working in this repo", "Planning a milestone", "Running a loop" are ~46 lines of internal workflow sitting between the install steps and the configuration reference; they belong in `CONTRIBUTING.md`. Keep the voice this project already has: plain, direct, willing to say why. Do not invent a marketing register.
+- [x] **T004** 🔒 The login page and its POST route. A real form, working with no JavaScript, reusing `.field`, `.field-input`, `.field-label`, `.button` — **no new class**. The route is registered only when the password door is the configured layer 1, and answers the uniform 404 otherwise. It sets the cookie on success and the uniform refusal on failure, with no distinction between causes.
 
-- [ ] **T005** Make the Cloudflare Access setup a crisp, ordered sequence in the README.
-  **The concrete detail below was verified against the code — use it rather than
-  re-deriving it, and do not soften it into generalities.**
+- [x] **T005** 🔒 Rate-limit the login route, per source, reusing the create route's limiter pattern rather than inventing a second one. Exactly one audit record per attempt, allowed or denied, carrying **no password material**. Test that a burst is refused and that the record says which.
 
-  | What | Value / where it comes from |
-  |---|---|
-  | `access_team_domain` | `<team>.cloudflareaccess.com`. **Origin only** — `loadAccessOrigin` refuses a path, query, fragment or credentials. |
-  | The key set | The daemon fetches `<team_domain>/cdn-cgi/access/certs` (`internal/access/keys.go`, `certsPath`). Say so: it explains why the team domain must be exact. |
-  | `access_aud` | The application's **Application Audience (AUD) Tag**, on its Overview page. Compared for equality, never parsed. |
-  | `access_allowed_emails` | Comma-separated. An entry that is empty or contains a space refuses. |
+- [x] **T006** Show which door is live on the settings page, reusing existing classes. An operator must be able to tell whether they are behind Access, a password, or a closed door — the single most consequential fact about the daemon, currently invisible. `dashboard_password` renders `present`/`absent` and never its value.
 
-  **One Access application, two policies** — this is the part that costs an
-  operator an afternoon:
+- [x] **T007** Log out. A POST through `handleAction` like every other mutating route, clearing the cookie. Without it a shared or borrowed browser keeps a session the operator cannot end.
 
-  | Policy | Action | Rule | Serves |
-  |---|---|---|---|
-  | Browser | **Allow** | Emails → the operator's address | The dashboard |
-  | API | **Service Auth** | Service Token | The companion skill and scripts |
+- [x] **T008** Document the LAN deployment in `README.md`: the config for each door, the bind change, and **the plaintext-over-HTTP weakness stated plainly** with TLS recommended. Say what each door is for — Access when it is on the internet, a password when it is not.
 
-  The API policy's action must be **Service Auth**, not Allow. A service token's
-  assertion carries `common_name`, an empty `sub`, and **no email** — which is why
-  "no email" must never read as "allow", and why a service-token assertion
-  presented to the browser door is refused exactly as a stranger's is.
+- [x] **T009** Carried from milestone 11: rewrite `next_steps()` in `install.sh` now that the config is complete, and **decide and record** whether the installer should enable the unit. The old reasoning was written against an incomplete config; say whether it still holds.
 
-  Also give the ingress the tunnel needs (`deploy/cloudflared.example.yml`):
-  hostname → `http://127.0.0.1:8765`, with a `http_status:404` catch-all. The
-  daemon binds loopback only; the tunnel is the sole way in.
-
-  **Name the failure an operator actually hits**: all three Access values or none.
-  Set none and the daemon *starts*, warns, and admits nobody to the dashboard —
-  a working daemon serving no one, which looks healthy and is the worst version.
-
-  Original wording, still binding: — it is the one part that cannot be automated, so it must at least be followable without guessing. Team domain, AUD, allowed emails, and the two edge policies (identity for the browser, service token for the API). Say what each is for. Name the failure an operator will actually hit: the two assertion shapes are not interchangeable, and a service token presented to the browser door is refused exactly as a stranger's is.
-
-- [ ] **T006** Fix `#129` — `.env.example` says the idle timeout and absolute session lifetime "are constants in the code, not variables" about 120 lines below listing `CRSW_SESSION_LIFETIME` and `CRSW_SESSION_LIFETIME_MAX` as variables. **Correct the claims that stopped being true and keep the ones that did not**: the signed-request timestamp window really is a constant, and there really is no variable that disables Access validation. Do not delete the section.
+- [x] **T010** Carried from milestone 11: rewrite `README.md` for a stranger — lead with what it is, then install, then the doors, then configure. Move "Working in this repo", "Planning a milestone" and "Running a loop" into `CONTRIBUTING.md`. Then fix `#129`: `.env.example` claims the session lifetimes are "constants in the code, not variables" about 120 lines below listing them as variables — correct the claims that stopped being true and keep the ones that did not.
 
 ---
 
 ## Out of scope
 
-- **Automating Cloudflare Access.** It is configuration on somebody else's service.
-- **Auto-starting the daemon**, unless T003 argues for it explicitly and writes the
-  argument down.
-- **Packaging (apt, brew, nix).** A tarball and an install script, as specced.
+- **mTLS and OIDC.** Two doors is the request; a third is a different milestone.
+- **Terminating TLS in the daemon.** An operator who wants it puts a proxy in
+  front, which is what the loopback bind already assumes.
 - **#120, #121.** Unchanged. **Q2** is still the operator's to answer.

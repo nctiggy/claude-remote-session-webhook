@@ -95,12 +95,13 @@ var (
 // NewBypass refuses to operate unless the listener is loopback (FR-039), and
 // announces itself before it returns.
 //
-// config.loadListen already refuses a non-loopback CRSW_LISTEN, and
-// httpapi.Server asserts it again on the address the kernel actually bound. This
-// is a third reading of the same rule and is meant to be: the other two protect
-// a daemon that still authenticates, and the whole property of this one is that
-// it does not. It must hold on its own, so it is checked here rather than
-// inherited from a caller that could one day be written differently.
+// The other two readings of this rule — config.loadListen, and httpapi.Server on
+// the address the kernel actually bound — stopped being absolute at M12: a
+// daemon whose layer 1 admits somebody may bind where the network can reach it.
+// This one did not, and that is the whole reason it is written here rather than
+// inherited. The other two protect a daemon that still authenticates; the
+// property of this one is that it does not, so it must hold on its own and can
+// never be relaxed by a door it has none of.
 //
 // warn is required rather than defaulted, because a bypass with nowhere to
 // announce itself is the silent one FR-040 exists to prevent.
@@ -170,8 +171,8 @@ func (b *Bypass) announce(what string) error {
 	return nil
 }
 
-// assertLoopbackListen holds the bypass to the rule config.loadListen holds
-// CRSW_LISTEN to, including its refusal of host *names*.
+// assertLoopbackListen holds the bypass to the rule config.loadListen holds a
+// daemon with no browser door to, including its refusal of host *names*.
 //
 // A name is refused rather than resolved because "localhost" is whatever
 // /etc/hosts or a resolver says it is, and a bypass that trusted the answer

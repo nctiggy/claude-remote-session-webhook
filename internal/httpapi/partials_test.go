@@ -1613,34 +1613,35 @@ func TestEveryScriptATemplateLoadsIsAnEmbeddedAssetAndNeverAnInlineOne(t *testin
 // TestEveryPageLoadsTheLoopThatDrivesItsRain is the linkage in the direction a
 // test can lose silently.
 //
-// Every page composes the header, and the header renders a rain canvas
+// Every page that composes the header renders a rain canvas with it
 // (docs/components.md). A canvas nothing draws into is an empty rectangle: the
 // markup is right, the stylesheet is right, every assertion in this package
 // passes, and the effect the design system calls the product's signature is
 // simply absent in a browser. This is the only place that shows up.
+//
+// It reads the rendered pages rather than the template sources, and asks each
+// one whether it drew a canvas at all. That is the derived form of a claim this
+// test used to make by assuming — "every page carries a header" — which stopped
+// being true when the sign-in page arrived with nobody to name in one
+// (pagesWithNobodyToName). Deriving it is strictly stronger than listing an
+// exception here: a page that renders a canvas of its own without composing the
+// header is now caught too, and a page that quietly stops rendering one is
+// TestEveryPageCarriesTheHeader's to catch, where the exception is argued once.
 func TestEveryPageLoadsTheLoopThatDrivesItsRain(t *testing.T) {
 	t.Parallel()
 
-	pages := 0
-	err := fs.WalkDir(web.Templates, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || path.Dir(p) != "templates" {
-			return err
+	drawn := 0
+	for name, page := range renderedPages(t) {
+		if !strings.Contains(page, "<canvas") {
+			continue
 		}
-		pages++
-		source, err := fs.ReadFile(web.Templates, p)
-		if err != nil {
-			return err
+		drawn++
+		if !strings.Contains(page, `src="/static/crswd.js"`) {
+			t.Errorf("the %s page renders a rain canvas and loads no script; the canvas is an empty rectangle in a browser and nothing here would say so", name)
 		}
-		if !strings.Contains(string(source), `src="/static/crswd.js"`) {
-			t.Errorf("web/%s loads no script, and every page carries a header with a rain canvas in it", p)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk the embedded template tree: %v", err)
 	}
-	if pages == 0 {
-		t.Fatal("the embedded tree holds no page at all, so this sweep asserted nothing")
+	if drawn == 0 {
+		t.Fatal("no page renders a canvas at all, so this sweep asserted nothing — and the rain has nowhere to fall")
 	}
 }
 
@@ -2993,6 +2994,10 @@ func renderedPages(t *testing.T) map[string]string {
 			Operator: operator,
 			Message:  emptyView{Title: notFoundTitle, Body: notFoundBody},
 		}),
+		// Against no data at all, which is what loginPage passes it: nothing on
+		// that page is a fact about this daemon, and a view struct would be an
+		// invitation to add one.
+		"login": renderComponent(t, "login", nil),
 	}
 
 	unrendered := make(map[string]bool, len(pages))
@@ -3019,6 +3024,27 @@ func renderedPages(t *testing.T) map[string]string {
 	return pages
 }
 
+// pagesWithNobodyToName is the named exception to the rule below, and it is a
+// map to a reason rather than a set so that the exception has to be argued for
+// in the same place it is taken.
+//
+// There is exactly one. The header exists so it is never ambiguous whose
+// credentials are driving unsandboxed sessions on this host
+// (docs/components.md), and the sign-in page is the one page in this tree served
+// to somebody who has not been identified — that is its entire purpose. A
+// masthead there would either invent an identity or draw an empty one, and the
+// settings link inside it would point at a page this caller cannot open. The
+// version goes with it, and that half is security rather than layout: every
+// other page is behind layer 1, this one answers a stranger, and a version is
+// exactly the fact GET /dashboard/version is behind the door to keep from a
+// scanner.
+//
+// **A second entry here is a decision somebody takes deliberately**, which is
+// the whole reason this is a named list and not a shape the loop skips.
+var pagesWithNobodyToName = map[string]string{
+	"login": "served before there is an operator to name, which is what it is for",
+}
+
 // TestEveryPageCarriesTheHeader is FR-011's word "every", and SC-003.
 //
 // A link on the fleet and nowhere else is an affordance an operator has to learn
@@ -3036,6 +3062,9 @@ func TestEveryPageCarriesTheHeader(t *testing.T) {
 	t.Parallel()
 
 	for name, page := range renderedPages(t) {
+		if why := pagesWithNobodyToName[name]; why != "" {
+			continue
+		}
 		masthead := mastheadOf(t, "the "+name+" page", page)
 		if _, ok := anchorTo(masthead, settingsPath); !ok {
 			t.Errorf("the %s page carries a header with no link to %s:\n%s", name, settingsPath, masthead)

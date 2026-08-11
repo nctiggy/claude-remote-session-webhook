@@ -6,10 +6,13 @@
 // and a Server can only be built from it. A seventh entry is a contract change
 // (contracts/http-api.md), not a convenience.
 //
-// The listener binds loopback and nothing else (FR-005). Reachability comes from
-// the Cloudflare Tunnel, so a listener on any other interface is the one change
-// docs/security.md calls simply wrong. config.Load already refuses a non-loopback
-// CRSW_LISTEN; this package refuses it twice more — once on the configured
+// The listener binds loopback unless a browser arriving off it would meet a door
+// that can let them in (FR-005, M12). Reachability used to come from the
+// Cloudflare Tunnel and nowhere else; it may now come from the operator's own
+// network, and what did not change is the invariant underneath — this daemon is
+// never reachable without authentication, so a dashboard that admits nobody
+// stays where only the tunnel can find it. config.Load applies that rule to
+// CRSW_LISTEN; this package applies it twice more — once on the configured
 // string, and once on the address the kernel actually handed back, which is the
 // only one of the three that is evidence rather than intent.
 package httpapi
@@ -166,7 +169,17 @@ type Server struct {
 	// limiter per server for the reason there is one Authenticator: two would be
 	// two independent memories of how fast a caller has been asking, which is a
 	// rate limit that does not limit the rate.
-	creates *limiter
+	creates *limiter[auth.CallerID]
+
+	// logins is the per-source budget for sign-in attempts (M12/T005), one per
+	// server for the same reason the create limiter is.
+	//
+	// It is built here rather than passed in, like the roots and the caps and
+	// unlike the create limiter: that one's rate is the operator's to set, and
+	// this one's is not — see loginRatePerMin. It exists on every server, not
+	// only on the ones that register the sign-in routes, so that this field can
+	// never be the nil a route was registered in front of.
+	logins *limiter[loginSource]
 
 	// streams is the bound on how many output streams may be open at once
 	// (FR-034e). One per server for the reason there is one create limiter: two
@@ -324,9 +337,16 @@ func NewWith(cfg *config.Config, tmux tmuxctl.Controller, trail *audit.Logger) (
 	return newWithLayer1(cfg, tmux, trail, verifiedLayer1)
 }
 
-// verifiedLayer1 is the door's first layer as the shipping build builds it: the
+// verifiedLayer1 is the door's first layer as the shipping build builds it, and
+// **the one place a door is chosen**. It returns exactly one of three things: the
 // validator that verifies a Cloudflare Access assertion against the account's
-// published keys.
+// published keys, the password door that verifies a cookie this daemon signed
+// (M12/T003), or the closed door that admits nobody.
+//
+// One place, because the alternative is a browser middleware that asks which
+// door it is holding — and closedDoor's own comment says what that costs. The
+// selection is here, at startup, made once, from configuration config.Validate
+// has already refused every ambiguous spelling of.
 //
 // It is a function rather than the expression it wraps so that the //go:build
 // dev half of this package can put the development bypass at exactly this point
@@ -334,19 +354,35 @@ func NewWith(cfg *config.Config, tmux tmuxctl.Controller, trail *audit.Logger) (
 // server, always — a Validator that could be accompanied by a Bypass would be
 // the "defaulted off" switch FR-041 forbids, wearing an interface.
 func verifiedLayer1(cfg *config.Config) (layer1, error) {
-	// No identity provider configured means a dashboard that admits nobody,
-	// rather than a daemon that will not start (#70). The API is untouched —
-	// it has never had anything to do with layer 1.
-	if cfg.AccessTeamDomain == "" {
+	// Access first, because a daemon carrying the three Access values has had the
+	// Access door since long before the password existed, and config.validateDoors
+	// refuses a configuration that names both. The order therefore decides nothing
+	// a loaded Config can reach — it decides what a hand-built one gets, and the
+	// answer that keeps an existing deployment's door is the right one.
+	switch {
+	case cfg.AccessTeamDomain != "":
+		v, err := access.New(cfg.AccessTeamDomain, cfg.AccessAUD, cfg.AccessAllowedEmails)
+		if err != nil {
+			// Untyped, so that newServer's nil check below reads a nil interface
+			// rather than an interface holding a nil *Validator.
+			return nil, err
+		}
+		return assertionDoor{validator: v, door: doorSentenceAccess}, nil
+
+	case len(cfg.DashboardPassword) > 0:
+		d, err := newPasswordDoor(cfg.SharedSecret, cfg.DashboardPassword)
+		if err != nil {
+			// Untyped, for the reason one line above.
+			return nil, err
+		}
+		return d, nil
+
+	default:
+		// Neither configured means a dashboard that admits nobody, rather than a
+		// daemon that will not start (#70). The API is untouched — it has never had
+		// anything to do with layer 1.
 		return closedDoor{}, nil
 	}
-	v, err := access.New(cfg.AccessTeamDomain, cfg.AccessAUD, cfg.AccessAllowedEmails)
-	if err != nil {
-		// Untyped, so that newServer's nil check below reads a nil interface
-		// rather than an interface holding a nil *Validator.
-		return nil, err
-	}
-	return v, nil
 }
 
 // newWithLayer1 is NewWith with the door's first layer named by the caller. The
@@ -385,7 +421,7 @@ func newWithLayer1(
 	sessions.SetRemoteControlCommand(cfg.RemoteControlCommand)
 	// The configured lifetimes reach the manager here, and nowhere else (#37).
 	sessions.SetLifetimes(cfg.SessionLifetime, cfg.SessionLifetimeMax, cfg.IdleTimeout, cfg.IdleTimeoutMax)
-	creates, err := newLimiter(cfg.CreateRatePerMin, systemClock{})
+	creates, err := newLimiter[auth.CallerID]("create", cfg.CreateRatePerMin, systemClock{})
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the create rate limiter: %w", err)
 	}
@@ -431,7 +467,7 @@ func newServer(
 	browser layer1,
 	trail *audit.Logger,
 	sessions *session.Manager,
-	creates *limiter,
+	creates *limiter[auth.CallerID],
 ) (*Server, error) {
 	switch {
 	case cfg == nil:
@@ -463,7 +499,9 @@ func newServer(
 		// sessions exist, not how much work asking for them costs.
 		return nil, errors.New("httpapi: no create rate limiter provided; refusing to start")
 	}
-	if err := assertLoopbackAddress(cfg.Listen); err != nil {
+	// After the nil checks above, because the answer depends on which layer 1
+	// this server was handed and a nil one has no answer to give.
+	if err := assertBindAddress(cfg.Listen, mayBindOffLoopback(cfg, browser)); err != nil {
 		return nil, err
 	}
 
@@ -502,6 +540,16 @@ func newServer(
 		return nil, fmt.Errorf("httpapi: build the page token key: %w", err)
 	}
 
+	// The sign-in budget (M12/T005), built from a constant rather than from the
+	// Config and so unable to fail on a daemon an operator configured — but built
+	// through the same constructor as the create limiter, which fails closed on a
+	// rate that bounds nothing. A daemon that could not build the budget for the
+	// one route in front of layer 1 does not get to serve that route.
+	logins, err := newLimiter[loginSource]("sign-in", loginRatePerMin, systemClock{})
+	if err != nil {
+		return nil, fmt.Errorf("httpapi: build the sign-in rate limiter: %w", err)
+	}
+
 	mux := http.NewServeMux()
 	s := &Server{
 		cfg: cfg,
@@ -522,6 +570,7 @@ func newServer(
 		templates:  templates,
 		sessions:   sessions,
 		creates:    creates,
+		logins:     logins,
 		streams:    streams,
 		closing:    make(chan struct{}),
 		panes:      newPanes(),
@@ -650,6 +699,34 @@ func newServer(
 	// door with an exception in it.
 	for _, a := range assets {
 		s.handleBrowser(a.pattern, audit.ActionDashboardAsset, s.serveAsset(a))
+	}
+	// The sign-in page and the form it posts (M12/T004), and the only two routes
+	// this daemon ever registers in front of layer 1 — see login.go for what makes
+	// that safe.
+	//
+	// **Registered only when the password door is the layer 1 this server was
+	// actually built with**, which is what this assertion asks. Not "the Config
+	// names a password": that is intent, and a daemon whose file named a door the
+	// server did not build is a wiring defect, which must never be the thing that
+	// puts a login form on the network. The distinction is mayBindOffLoopback's,
+	// one screen up, and it is the same one for the same reason.
+	//
+	// Where Access is the door — or where there is no door — nothing is registered
+	// and /login is a path nothing claims, answered by the browser door's own 404
+	// from behind layer 1. A login form standing beside a working Access door
+	// would be the second authorisation path this milestone forbids, and the way
+	// to not have one is to not register it.
+	//
+	// The way back out is registered here too (M12/T007) and from the same
+	// question, so the door a browser can open and the door it can close appear
+	// and disappear together. It is the one of the three that is *not* in front of
+	// layer 1: it goes through handleAction like every other mutating browser
+	// route, because by the time it runs the caller holds the credential the other
+	// two exist to produce. See logout.go.
+	if door, ok := passwordDoorOf(browser); ok {
+		s.handleLogin(patternLoginPage, audit.ActionLoginView, s.loginPage)
+		s.handleLogin(patternLoginSubmit, audit.ActionLoginSubmit, s.login(door))
+		s.handleAction(patternLogout, audit.ActionLoginSignOut, s.logout(door))
 	}
 	s.handleUnrouted()
 	return s, nil
@@ -936,14 +1013,14 @@ func (s *Server) StartReaper(ctx context.Context) error {
 	return nil
 }
 
-// Listen binds the configured address and refuses to keep a listener that is not
-// on loopback.
+// Listen binds the configured address and refuses to keep a listener the daemon
+// is not allowed to have.
 //
 // The assertion is on ln.Addr(), not on the string that was asked for. The
 // configured value has been checked twice by the time it gets here, but only
 // what the kernel returns says what is actually reachable; a listener that came
-// back bound to a wildcard is closed rather than served, because by then the
-// socket already exists.
+// back bound to a wildcard on a daemon whose dashboard admits nobody is closed
+// rather than served, because by then the socket already exists.
 func (s *Server) Listen() error {
 	if s.ln != nil {
 		return fmt.Errorf("httpapi: already listening on %s", s.ln.Addr())
@@ -953,7 +1030,7 @@ func (s *Server) Listen() error {
 	if err != nil {
 		return fmt.Errorf("httpapi: bind %s: %w", s.cfg.Listen, err)
 	}
-	if err := assertLoopbackAddr(ln.Addr()); err != nil {
+	if err := assertBoundAddress(ln.Addr(), mayBindOffLoopback(s.cfg, s.browser)); err != nil {
 		return errors.Join(err, ln.Close())
 	}
 
@@ -1085,14 +1162,44 @@ func (s *Server) notImplemented(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// assertLoopbackAddress re-checks the configured address (FR-005).
+// mayBindOffLoopback reports whether this daemon is allowed to be somewhere the
+// network can reach it — which it is exactly when a browser arriving there meets
+// a door that can let them in (M12).
 //
-// config.Load already refuses a non-loopback host, so this is the second of
-// three checks and deliberately not the last. A Config is a struct: a test, a
-// future caller, or a startup path that reorders two lines can produce one that
-// never went through Load. The guarantee has to belong to the Server, not to one
-// route into it.
-func assertLoopbackAddress(addr string) error {
+// Both halves are asked, and they are not the same question. The configuration
+// is what the operator asked for; the door is what was actually wired in front
+// of the dashboard. A closedDoor daemon refuses off loopback however its file
+// reads, because a listener nobody can authenticate through is the one thing the
+// bind guard has always existed to prevent, and a daemon whose configuration
+// names a door it did not build is a wiring defect rather than a licence.
+//
+// It is also what keeps the development build where it has always been. That
+// build's layer 1 is not a closedDoor and admits every browser without checking
+// anything, so the door half alone would hand the one build that authenticates
+// nobody the widest bind — the config half says no, since a bypass daemon
+// configures no door at all, and internal/access refuses a non-loopback listener
+// under it besides.
+func mayBindOffLoopback(cfg *config.Config, door layer1) bool {
+	if _, closed := door.(closedDoor); closed {
+		return false
+	}
+	return cfg.AccessTeamDomain != "" || len(cfg.DashboardPassword) > 0
+}
+
+// assertBindAddress re-checks the configured address (FR-005).
+//
+// config.Load already applies this rule, so this is the second of three checks
+// and deliberately not the last. A Config is a struct: a test, a future caller,
+// or a startup path that reorders two lines can produce one that never went
+// through Load. The guarantee has to belong to the Server, not to one route into
+// it.
+//
+// offLoopbackOK is mayBindOffLoopback's answer, taken as an argument so that the
+// two callers below cannot ask it differently. It relaxes the loopback demand
+// and nothing else: an address that is not an IP literal is refused either way,
+// because a name is whatever a resolver says it is and the point of this value
+// is to say where the daemon will be.
+func assertBindAddress(addr string, offLoopbackOK bool) error {
 	if addr == "" {
 		return fmt.Errorf("httpapi: no listen address configured: %w", ErrNotLoopback)
 	}
@@ -1107,18 +1214,26 @@ func assertLoopbackAddress(addr string) error {
 		// A name is refused rather than resolved, matching config.loadListen:
 		// /etc/hosts or a resolver can point "localhost" off loopback without
 		// this value changing, which would move the bind invisibly.
-		return fmt.Errorf("httpapi: listen host %q must be a loopback IP literal such as 127.0.0.1 or ::1: %w", host, ErrNotLoopback)
+		return fmt.Errorf("httpapi: listen host %q must be an IP literal such as 127.0.0.1 or ::1: %w", host, ErrNotLoopback)
 	}
-	if !ip.IsLoopback() {
-		return fmt.Errorf("httpapi: listen host %q is not loopback: %w", host, ErrNotLoopback)
+	if !ip.IsLoopback() && !offLoopbackOK {
+		return fmt.Errorf("httpapi: listen host %q is not loopback and this daemon's dashboard admits nobody: %w", host, ErrNotLoopback)
 	}
 	return nil
 }
 
-// assertLoopbackAddr checks the address a listener came back with. It fails
-// closed on an address it does not recognise: an unknown type is not evidence of
-// loopback, and this is the last check before the socket starts accepting.
-func assertLoopbackAddr(addr net.Addr) error {
+// assertBoundAddress checks the address a listener came back with, and is the
+// last check before the socket starts accepting.
+//
+// It fails closed on an address it does not recognise: an unknown type is not
+// evidence of loopback. A daemon permitted off loopback has nothing left for
+// this check to establish — it is allowed to be reachable, whatever the kernel
+// handed back — so the question it answers is only ever asked of the daemon that
+// is not.
+func assertBoundAddress(addr net.Addr, offLoopbackOK bool) error {
+	if offLoopbackOK {
+		return nil
+	}
 	tcp, ok := addr.(*net.TCPAddr)
 	if !ok {
 		return fmt.Errorf("httpapi: bound to %v, which is not a TCP address but a %T: %w", addr, addr, ErrNotLoopback)
