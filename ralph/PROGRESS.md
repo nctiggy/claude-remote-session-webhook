@@ -1102,3 +1102,126 @@ about the tree now.
   `TestTmuxKillingTheLastSessionStopsTheServer`, and `internal/httpapi`'s
   `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval`. None reappeared across
   the four suites here. All three are **quick-fix lane**.
+
+---
+
+## Iteration 10 — 2026-08-11 — T010, the page a stranger actually reads
+
+**Did:** `README.md` is ordered the way it is used — what it is, the risk,
+install, the doors, configure — and the 46 lines of contributor workflow are
+`CONTRIBUTING.md` now. `.env.example`'s tail block (#129) names what is still
+constant instead of two settings that stopped being constants in milestone 10.
+The installer and the README were made to share one vocabulary for the door,
+held by a test in each direction.
+
+**Left:** nothing. Every task in this plan is ticked and all four suites are
+green.
+
+### The reorder is the task; the three false claims were the cost of doing it
+
+The charter was an ordering — lead with what it is, then install, then the
+doors, then configure. Doing that meant reading every paragraph in position, and
+three of them did not survive the reading:
+
+1. **"No mutating verb is registered on `/settings` at all"** — false since
+   `POST /settings/edit` shipped. `web/templates/settings.html` says it plainly:
+   four routes receive that page's forms (`/settings/edit`, `/dashboard/update`,
+   `/dashboard/restart`, `/logout`), and `GET` being the only verb on the *path*
+   is a different and much smaller claim. The template also says what replaced
+   the absent route as the bound — the action gate plus `config.Editable` — so
+   the README now says that instead, with the three properties an operator needs
+   before using it: no secret is editable, the candidate is loaded through the
+   startup loader before it lands, and the write reaches the file rather than the
+   running daemon (which is what the restart button beside it is for).
+2. **"Relay Claude's own device-code login"** was in *What it does*. It is not
+   built — `internal/session` still carries "milestone 4's device-code relay" as
+   a future tense. Neither is the companion Claude skill; there is no `skill/`
+   directory. Both are named as not-built now, in the feature list and in the
+   Roadmap.
+3. **The Status blockquote stopped at milestone 6** and ran twelve lines. The
+   Roadmap table runs to 12 and one sentence carries the status.
+
+Also corrected while in position: the 0600 refusal covers `dashboard_password`
+too (it asks `IsSecret`, which has held three keys since T001), and `config
+migrate` is not "the only code that writes a configuration file" — the settings
+edit replaces one key and the installer writes a file where there is none.
+
+### The guard the last iteration asked for, and why the obvious one was wrong
+
+Iteration 9 left this: the README's install section and `next_steps()` are two
+statements of one fact, nothing compares them, and T010 is the cheapest place to
+close it. The first attempt scanned both files for the shared words. **It passed
+with the installer's own sentence broken**, because `install.sh` carries the
+phrase `admits nobody` in a comment above `next_steps` as well as in what it
+prints — a file scan finds the comment and reports agreement that is not there.
+
+What shipped instead: `doorKeys` and `doorClosedPhrase` are declared once in
+`install_test.go` and read by both tests. `TestInstallPrintsNextSteps` holds the
+installer's **printed output** to them, which the comment cannot satisfy;
+`TestReadmeAndInstallerNameTheSameDoors` holds `README.md`'s text to the same
+list, the page having no output to check. Reword the phrase in one document and
+both tests fail — proven by doing it: three breaks, each reverted, and the third
+is the one that caught the weak version.
+
+The README gained `access_enabled` in its `$EDITOR` line to satisfy it, which is
+the improvement anyway: the line told a stranger to set "the access_* values",
+which is not a key the configuration file takes.
+
+**Learned, for whoever reads this next:**
+
+- **`internal/release/readme_test.go` is the file that pins `README.md`.** It
+  holds the install one-liner (read out of `install.sh`'s own header, so drift
+  fails here rather than 404ing for whoever runs it), the rule that no
+  `go build` / `git clone` / `go mod download` appears **above** that line, the
+  rollback path, and now the door vocabulary. The CONTRIBUTING split is what
+  makes the second of those comfortable again — the from-source commands are in
+  another file entirely, and the only `go build` left on the page is the
+  from-a-clone deployment well below the install.
+- **Three tests read `README.md` and none of them reads its structure.**
+  `internal/config/docs_test.go` matches the **first cell** of a table row
+  (one row per variable, on one line, exactly ``| `CRSW_X` |``);
+  `cmd/crswd/quickstart_test.go` takes every line beginning `journalctl` after a
+  leading `#` is stripped, and runs its filter stages against a real stream. A
+  section may move freely; a row and a command line may not be reflowed.
+- **The internal anchors are the thing a reorder breaks silently.** Nothing
+  checks them. `#deployment` became `#the-two-doors` and four links needed
+  following; `CONTRIBUTING.md` links back to `README.md#install`. A grep for
+  `](#` after any heading change is the whole of the check that exists.
+- **Milestone names, since the Roadmap now has to carry them and no one file
+  did**: 7 make it work on a phone, 8 close the guard gaps milestone 7 found,
+  9 boolean checkboxes and restart-from-the-page, 10 let a session outlive the
+  defaults, 11 make it installable by a stranger, 12 a second front door. They
+  are only in the `ralph/archive/progress-milestone-N.md` iteration-0 entries.
+- All four suites green: default, `-tags dev`, `-tags tmux`, `-tags quickstart`
+  (35s). Linter is v2.12.2, checked (#26), 0 issues.
+
+**Findings, not fixed:**
+
+- **`.specify/memory/constitution.md` Principle VI is still wrong** — "the
+  listener binds loopback only". Raised by every iteration from 2 onward and
+  still owed a human PR: no task in this plan was chartered to amend the
+  constitution, and it is now contradicted by `README.md`, `config.example`,
+  `.env.example`, `docs/auth-and-sessions.md` and `install.sh`. **This is the
+  one open item in the milestone that a person has to do.**
+- **`gofmt -l .` reports `internal/httpapi/render.go`**, as it has since
+  iteration 6. **Quick-fix lane**, one file, no behaviour.
+- **`TestEveryPageShowsTheVersion` still walks a hand-written list of four
+  pages** (iterations 4 through 10 — no iteration this milestone added a page).
+- **`TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` failed once here**
+  ("arrived 13ms after the open, which is past the 10ms interval") and passed on
+  every re-run, including alone. It is the third of the three flaky timing tests
+  this milestone logged, with `internal/audit`'s
+  `TestTheLeakSuiteReallyDrivesTheDaemon` and `internal/tmuxctl`'s
+  `TestTmuxKillingTheLastSessionStopsTheServer`. All three are **quick-fix
+  lane**, and this one now has a measured failure to start from.
+- **`.env.example:178` runs `CRSW_DESTROY_ON_SHUTDOWN=` straight into the next
+  variable's comment block with no blank line between them.** Cosmetic, and
+  `TestEnvExampleDescribesEveryVariable` is satisfied either way — it reads the
+  comment immediately above as the description, which here belongs to the
+  variable below. **Quick-fix lane.**
+- **`specs/006-…/contracts/installer.md:62` and `:86` still describe the
+  installer as it was specced**, including a worked example whose next steps say
+  "set shared_secret and allowed_roots". Left alone deliberately, as iterations 2
+  and 9 did: a contract is a record of what was decided then.
+
+RALPH_COMPLETE

@@ -128,7 +128,7 @@ reassured.
 
 - [x] **T009** Carried from milestone 11: rewrite `next_steps()` in `install.sh` now that the config is complete, and **decide and record** whether the installer should enable the unit. The old reasoning was written against an incomplete config; say whether it still holds.
 
-- [ ] **T010** Carried from milestone 11: rewrite `README.md` for a stranger — lead with what it is, then install, then the doors, then configure. Move "Working in this repo", "Planning a milestone" and "Running a loop" into `CONTRIBUTING.md`. Then fix `#129`: `.env.example` claims the session lifetimes are "constants in the code, not variables" about 120 lines below listing them as variables — correct the claims that stopped being true and keep the ones that did not.
+- [x] **T010** Carried from milestone 11: rewrite `README.md` for a stranger — lead with what it is, then install, then the doors, then configure. Move "Working in this repo", "Planning a milestone" and "Running a loop" into `CONTRIBUTING.md`. Then fix `#129`: `.env.example` claims the session lifetimes are "constants in the code, not variables" about 120 lines below listing them as variables — correct the claims that stopped being true and keep the ones that did not.
 
 ---
 
