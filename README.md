@@ -30,12 +30,20 @@ and then writes four things:
 | `~/.local/share/crswd/crswd.service.sha256` | a record of the unit it wrote |
 | `~/.config/crswd/config` | a starter configuration, **only if there is none** |
 
-It enables nothing and starts nothing, because the daemon cannot serve a request
-before the secret is set and a service that fails on first boot teaches its
-operator to ignore a failing service. So the rest is yours:
+That configuration is complete enough to start: it carries a generated
+`shared_secret` and an `allowed_roots` pointing at a directory the installer
+created. What it does not carry is a **door** — neither can be invented for you,
+one being a credential and the other a Cloudflare account — so until you choose
+one the daemon serves the API and admits nobody to the dashboard. It is not
+broken; it is closed. Which door you want is [Deployment](#deployment).
+
+It enables nothing and starts nothing. What would be enabled at boot is a daemon
+that spawns shells with the permission prompt turned off, and whether to run one —
+on which machine, admitting whom — is not a decision to take from inside a pipe.
+So the rest is yours:
 
 ```bash
-$EDITOR ~/.config/crswd/config          # shared_secret, allowed_roots
+$EDITOR ~/.config/crswd/config          # dashboard_password, or the access_* values
 systemctl --user enable --now crswd
 ```
 
