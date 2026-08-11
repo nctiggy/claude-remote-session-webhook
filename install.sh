@@ -59,6 +59,7 @@ readonly CONFIG=".config/crswd/config"
 readonly ROOT="code"
 
 say() { printf 'crswd: %s\n' "$*"; }
+warn() { printf 'crswd: warning: %s\n' "$*" >&2; }
 die() {
   printf 'crswd: %s\n' "$*" >&2
   exit 1
@@ -83,11 +84,62 @@ RELEASE_KEYS
 }
 
 require_tools() {
+  # tmux is here rather than in the advisory list below because the daemon is a
+  # tmux session manager: without it there is no session to start, drive or read,
+  # and every route answers an error. Installing onto a host without it produces
+  # a service that comes up and can do nothing.
   missing=""
-  for tool in curl tar sha256sum openssl install; do
+  for tool in curl tar sha256sum openssl install tmux; do
     command -v "$tool" > /dev/null 2>&1 || missing="$missing $tool"
   done
   [ -z "$missing" ] || die "not on PATH:$missing"
+}
+
+# What the documented deployment needs and the daemon does not. These warn rather
+# than refuse on purpose: the daemon binds loopback and something has to carry
+# traffic to it, but nothing here requires that something to be cloudflared, and
+# an operator fronting it with their own proxy is not making a mistake. Likewise
+# the start command is configurable, so `claude` is the default's dependency
+# rather than the daemon's.
+advise_tools() {
+  for tool in cloudflared claude; do
+    command -v "$tool" > /dev/null 2>&1 || \
+      warn "$tool is not on PATH. It is not needed to install or start crswd, but the documented setup uses it — see the README."
+  done
+}
+
+# ~/.local/bin is where this installs, and on several distributions it is not on
+# PATH until something puts it there. The unit uses an absolute path so the
+# service does not care; an operator typing `crswd --version` does.
+#
+# Appended with a marker so a second run finds its own line and adds nothing. The
+# login shell is read from $SHELL rather than from this process, because
+# `curl | bash` is bash whatever the operator actually uses.
+ensure_path() {
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) return 0 ;;
+  esac
+
+  profile="$HOME/.profile"
+  case "${SHELL:-}" in
+    */zsh) profile="$HOME/.zshrc" ;;
+    */bash) [ -f "$HOME/.bashrc" ] && profile="$HOME/.bashrc" ;;
+  esac
+
+  if [ -f "$profile" ] && grep -q 'added by crswd install' "$profile" 2>/dev/null; then
+    warn "~/.local/bin is not on PATH and $profile already carries the line that adds it — open a new shell, or source it."
+    return 0
+  fi
+
+  # Single-quoted deliberately: $HOME and $PATH are written literally so the
+  # profile expands them every time a shell starts, rather than baking in the
+  # values this installer happened to run with. shellcheck's SC2016 is the right
+  # warning for the wrong line.
+  # shellcheck disable=SC2016
+  printf '\n# added by crswd install\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$profile" \
+    || die "could not add ~/.local/bin to PATH in $profile"
+  say "added ~/.local/bin to PATH in ${profile#"$HOME"/}"
+  say "  this shell does not have it yet — open a new one, or: export PATH=\"\$HOME/.local/bin:\$PATH\""
 }
 
 unsupported() {
@@ -396,6 +448,7 @@ next_steps() {
 
 main() {
   require_tools
+  advise_tools
   detect_platform
   say "detected $os/$arch"
 
@@ -425,6 +478,7 @@ main() {
   say "unpacked $tarball"
 
   place 0755 unpacked/crswd "$BINARY"
+  ensure_path
   place_unit
   write_config
   next_steps

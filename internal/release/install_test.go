@@ -1460,3 +1460,63 @@ func TestTheUnitDoesNotRequireAFileTheInstallerNeverWrites(t *testing.T) {
 		}
 	}
 }
+
+// TestTheInstallerRequiresTmux holds the one dependency without which the daemon
+// is a session manager that cannot manage a session.
+//
+// It was absent from require_tools while curl, tar, sha256sum, openssl and
+// install were all checked — so an install onto a host without tmux succeeded,
+// and every route answered an error afterwards. README.md has said "tmux missing
+// is fatal" the whole time.
+//
+// **Must fail when** tmux moves to the advisory list or is dropped. A warning is
+// the right answer for cloudflared, whose job something else may be doing, and
+// the wrong answer for the program the daemon drives.
+func TestTheInstallerRequiresTmux(t *testing.T) {
+	t.Parallel()
+
+	script, err := os.ReadFile(installerPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", installerPath, err)
+	}
+	block := regexp.MustCompile(`(?s)require_tools\(\) \{.*?\n\}`).Find(script)
+	if block == nil {
+		t.Fatal("install.sh has no require_tools, so nothing here checks what it demands")
+	}
+	if !bytes.Contains(block, []byte("tmux")) {
+		t.Errorf("require_tools does not demand tmux:\n%s\nThe daemon drives tmux for every session it starts, reads or ends; installing without it produces a service that comes up and can do nothing", block)
+	}
+}
+
+// TestEveryInstallerFunctionIsCalled is this repository's oldest failure applied
+// to shell.
+//
+// A reaper with no caller, Store.Touch with no caller, a PR-opener no workflow
+// invoked, CRSW_DESTROY_ON_SHUTDOWN read by nothing, and a per-session lifetime
+// override the browser could not reach: five times, in Go. A shell function
+// defined and never called fails the same way and even more quietly, because
+// nothing compiles it.
+//
+// **Must fail when** a function is added to install.sh and never wired into the
+// path an install actually takes.
+func TestEveryInstallerFunctionIsCalled(t *testing.T) {
+	t.Parallel()
+
+	script, err := os.ReadFile(installerPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", installerPath, err)
+	}
+	defined := regexp.MustCompile(`(?m)^([a-z_][a-z0-9_]*)\(\) \{`).FindAllSubmatch(script, -1)
+	if len(defined) == 0 {
+		t.Fatal("install.sh defines no functions at all, so this test is checking nothing")
+	}
+
+	for _, d := range defined {
+		name := string(d[1])
+		// A call is the name anywhere it is not the definition line.
+		calls := regexp.MustCompile(`(?m)^[^#\n]*\b` + regexp.QuoteMeta(name) + `\b`).FindAll(script, -1)
+		if len(calls) < 2 {
+			t.Errorf("install.sh defines %s() and never calls it; a shell function with no caller is dead on arrival and nothing compiles it to say so", name)
+		}
+	}
+}
