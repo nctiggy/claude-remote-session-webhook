@@ -1059,6 +1059,30 @@ func TestInstallSetsTheContainmentRoot(t *testing.T) {
 	})
 }
 
+// doorKeys and doorClosedPhrase are the words this installer and README.md's
+// install section must both use, declared once so they cannot be changed in one
+// of those two documents alone.
+//
+// The keys are the third thing with no default that will do, and the only one
+// left after an install: both doors, so the operator picks rather than
+// discovers. Neither is ever written to the file — one is a credential this
+// script must not invent, and the other selects a Cloudflare account it knows
+// nothing about — so naming them is the whole of what either document can do,
+// and they are named as the configuration file spells them rather than as prose.
+//
+// The phrase is what a daemon with neither does, and it is the one the startup
+// banner and the settings page already use.
+//
+// TestInstallPrintsNextSteps holds the installer's *printed output* to them,
+// which is stronger than a scan of the script would be — the same words appear
+// in a comment near next_steps, so a file scan would pass on a script that had
+// stopped saying them. TestReadmeAndInstallerNameTheSameDoors holds README.md to
+// the same list, and the page has no output to check.
+var (
+	doorKeys         = []string{"dashboard_password", "access_enabled"}
+	doorClosedPhrase = "admits nobody"
+)
+
 // TestInstallPrintsNextSteps is FR-018 and FR-019 together, because they are the
 // same step: the installer stops, and the only reason that is not an unfinished
 // job is that it says what is left.
@@ -1083,22 +1107,15 @@ func TestInstallPrintsNextSteps(t *testing.T) {
 
 	got := installs(t)
 
-	for _, want := range []string{
+	for _, want := range append([]string{
 		// The two settings with no default that will do, named as the
 		// configuration file spells them rather than as prose.
 		"shared_secret",
 		"allowed_roots",
-		// The third thing with no default that will do, and the only one left
-		// after this install: both doors, so the operator picks rather than
-		// discovers. Neither is written to the file — one is a credential this
-		// script must not invent, and the other selects a Cloudflare account it
-		// knows nothing about.
-		"dashboard_password",
-		"access_enabled",
 		// Where to set them, and the command that is deliberately not run.
 		"~/.config/crswd/config",
 		"systemctl --user enable --now crswd",
-	} {
+	}, doorKeys...) {
 		if !strings.Contains(got.stdout, want) {
 			t.Errorf("the installer never says %q:\n%s\nIt has just stopped short of a working daemon; whoever ran it has to be told what of", want, got.stdout)
 		}
@@ -1107,7 +1124,7 @@ func TestInstallPrintsNextSteps(t *testing.T) {
 	// The phrase the daemon's own startup banner and the settings page both use
 	// for this state, shared on purpose: an operator who meets it in one place
 	// and then in another has to be able to tell it is the same fact.
-	if !strings.Contains(got.stdout, "admits nobody") {
+	if !strings.Contains(got.stdout, doorClosedPhrase) {
 		t.Errorf("the installer names the two doors and never says what a daemon with neither does:\n%s\nIt serves the API and admits nobody to the dashboard. Naming a setting is not saying what happens without it, and what happens is a healthy service that refuses the browser of the person who just installed it", got.stdout)
 	}
 
