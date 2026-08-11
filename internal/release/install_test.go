@@ -35,6 +35,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -871,28 +872,32 @@ func TestConfigModeIs0600(t *testing.T) {
 	})
 }
 
-// configValue reads one setting out of a written configuration the way the
-// daemon's own parser reads it: `#` comments a whole line and nowhere else, the
-// first `=` separates, and the spaces around a value are not part of it.
+// installedSecret is the shared secret out of a configuration the installer
+// wrote, read by the daemon's own parser rather than by a second one written
+// here.
 //
-// It fails rather than returning "" for a key that is not there. Every caller
+// Which is the claim worth making. The installer writes that file for the daemon
+// to read, and a parser living in this package could agree with the installer
+// about a file the daemon refuses — the operator would meet that as a service
+// that will not come up, holding a file every test here called correct.
+//
+// It fails rather than returning "" for a file that sets nothing: every caller
 // compares what it gets back against something, and an empty string compares
-// equal to another empty string — which is a test that passes against an
-// installer that wrote no secret at all.
-func configValue(t *testing.T, body, key string) string {
+// equal to another empty string.
+func installedSecret(t *testing.T, body []byte) string {
 	t.Helper()
 
-	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "#") {
-			continue
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if ok && strings.TrimSpace(k) == key {
-			return strings.TrimSpace(v)
-		}
+	// Warnings to io.Discard rather than nil, which means os.Stderr: nothing
+	// here is about a renamed key, and the writer is not optional.
+	f, err := config.ParseFile(installedConfig, body, io.Discard)
+	if err != nil {
+		t.Fatalf("the daemon's own parser refuses the configuration the installer wrote: %v\nThat file exists for this parser to read, and one it refuses is a host where the service does not start", err)
 	}
-	t.Fatalf("the installed configuration sets no %s", key)
-	return ""
+	secret, ok := f.Lookup(config.EnvSharedSecret)
+	if !ok {
+		t.Fatal("the installed configuration sets no shared_secret.\nThe daemon refuses to start without one, so the install stopped one hand-edit short of a host that works — and the hand that fills in a required credential is the hand that types something it can remember")
+	}
+	return secret
 }
 
 // TestInstallGeneratesASharedSecret is T001. The daemon refuses to start without
@@ -918,7 +923,7 @@ func TestInstallGeneratesASharedSecret(t *testing.T) {
 		got := installs(t)
 		body, _ := placed(t, got, installedConfig)
 
-		if secret := configValue(t, string(body), "shared_secret"); len(secret) < config.MinSecretBytes {
+		if secret := installedSecret(t, body); len(secret) < config.MinSecretBytes {
 			t.Errorf("the installed configuration sets a shared_secret shorter than the %d bytes config.MinSecretBytes requires.\nThe daemon refuses to start on it, and whoever installed this meets that as a service that will not come up", config.MinSecretBytes)
 		}
 	})
@@ -928,7 +933,7 @@ func TestInstallGeneratesASharedSecret(t *testing.T) {
 
 		got := installs(t)
 		body, _ := placed(t, got, installedConfig)
-		secret := configValue(t, string(body), "shared_secret")
+		secret := installedSecret(t, body)
 
 		if strings.Contains(got.stdout+got.stderr, secret) {
 			t.Error("the installer printed the shared secret it generated.\nIts output is a terminal scrollback, a CI log, and often the far end of a pipe from curl: printed once is a copy in all three, and rotating it is the only way back. Say that a secret was generated, never which one")
@@ -944,7 +949,7 @@ func TestInstallGeneratesASharedSecret(t *testing.T) {
 		first, _ := placed(t, installs(t), installedConfig)
 		second, _ := placed(t, installs(t), installedConfig)
 
-		if configValue(t, string(first), "shared_secret") == configValue(t, string(second), "shared_secret") {
+		if installedSecret(t, first) == installedSecret(t, second) {
 			t.Error("two installs generated the same shared_secret.\nThat is a constant in the installer rather than a secret, and it authenticates every API caller on every host that ever ran it")
 		}
 	})
@@ -964,11 +969,11 @@ func TestInstallGeneratesASharedSecret(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read the configuration the first run wrote: %v", err)
 			}
-			afterFirst = configValue(t, string(raw), "shared_secret")
+			afterFirst = installedSecret(t, raw)
 		})
 
 		body, _ := placed(t, second, installedConfig)
-		if configValue(t, string(body), "shared_secret") != afterFirst {
+		if installedSecret(t, body) != afterFirst {
 			t.Error("the second run replaced the generated shared secret.\nRe-running the one-liner is how a host takes a newer binary, and every client signing with the old secret stops being able to reach the daemon the moment it does")
 		}
 	})
