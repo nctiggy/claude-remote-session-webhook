@@ -124,7 +124,7 @@ reassured.
 
 - [x] **T007** Log out. A POST through `handleAction` like every other mutating route, clearing the cookie. Without it a shared or borrowed browser keeps a session the operator cannot end.
 
-- [ ] **T008** Document the LAN deployment in `README.md`: the config for each door, the bind change, and **the plaintext-over-HTTP weakness stated plainly** with TLS recommended. Say what each door is for — Access when it is on the internet, a password when it is not.
+- [x] **T008** Document the LAN deployment in `README.md`: the config for each door, the bind change, and **the plaintext-over-HTTP weakness stated plainly** with TLS recommended. Say what each door is for — Access when it is on the internet, a password when it is not.
 
 - [ ] **T009** Carried from milestone 11: rewrite `next_steps()` in `install.sh` now that the config is complete, and **decide and record** whether the installer should enable the unit. The old reasoning was written against an incomplete config; say whether it still holds.
 

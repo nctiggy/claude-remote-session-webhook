@@ -865,3 +865,116 @@ deletion of one either, and the LAN this door exists for has no TLS on it.
   `internal/tmuxctl`'s `TestTmuxKillingTheLastSessionStopsTheServer` (iteration 6,
   two spellings of "the server is gone" raced). Neither reappeared across the four
   suites here. Both are **quick-fix lane**.
+
+---
+
+## Iteration 8 — 2026-08-11 — T008, the deployment nobody had written down
+
+**Did:** `README.md`'s Deployment section is two deployments now, compared in a
+table and then written out: the tunnel-and-Access one it always described, and the
+LAN one this milestone built. It names the sign-in address, says where Sign out
+is, and states the plaintext weakness as a weakness. The bind rule is corrected in
+the three places that still stated the absolute one — the `CRSW_LISTEN` row,
+`.env.example`, `config.example` — and `docs/auth-and-sessions.md` finally has the
+two rows iterations 5 and 7 kept deferring.
+
+**Left:** T009, T010.
+
+### The path is documentation the way a route is code
+
+Everything else in this section is a convenience. `/login` is not: this door
+answers `/` with the uniform 401 for a stranger and for its own operator alike,
+because redirecting the refusal would make it non-uniform *and* put a branch keyed
+on which door is live into the browser middleware, which the plan forbids outright.
+**So the README is the only thing standing between a correctly configured password
+daemon and an operator who cannot get in** — and the way that fails is
+indistinguishable from the daemon being broken.
+
+`TestTheREADMENamesTheSignInPath` therefore reads `pathLogin` off the constant the
+mux is registered with rather than spelling it. Its second assertion is the one
+worth keeping: naming the path is not the same as printing an address somebody can
+type, and a page that only mentioned `/login` inside a route table would satisfy
+the first check while leaving an operator holding a host and a port with nothing to
+put after them. Both halves were proven by breaking — the address altered, and then
+the route moved — and they fail independently.
+
+### Three claims that were false rather than merely thin
+
+- **`.env.example` line 151 and `config.example`'s `listen` comment** both still
+  said a non-loopback host is a startup failure, full stop. Iteration 2 assigned
+  the first to this task; the second is the same sentence in the file the README
+  calls "the annotated copy to start from", so fixing one and not the other would
+  have been arbitrary.
+- **"Verifying the exposure model" told an operator that `curl http://<lan-ip>:PORT/`
+  must fail to connect.** On the deployment this task documents it is *supposed* to
+  connect, so the check had to become two checks: behind the tunnel, unreachable;
+  on a LAN, reachable and answering 401, with `/login` the only thing that does
+  not. Verified against the code rather than assumed — `refuseBrowser` writes 401
+  and `serveLogin` renders 200. `deploy/README.md` has the same block and was left
+  alone: it opens "confirm the daemon is not reachable except through the tunnel",
+  which scopes it to the deployment that page is about.
+- **A reverse proxy does not make the cookie `Secure`.** The recommendation this
+  task is chartered to make (put TLS in front) leaves `r.TLS` nil at the daemon,
+  and the flag follows that rather than `X-Forwarded-Proto` — deliberately, since
+  there is no configured proxy to believe. Telling an operator to put a proxy in
+  front without saying so would have been the half-truth version of the warning.
+  It is one sentence in the blockquote, and it names the consequence: do not leave
+  a plaintext route to the same host open beside the proxied one.
+
+**Learned, for whoever picks up T009:**
+
+- **`TestREADMEDocumentsEveryVariable` reads the *first cell* of any table row and
+  fails on a second row for one variable.** The deployment comparison table tripped
+  it with a row labelled `` `CRSW_LISTEN` ``, which was the right catch: that table's
+  other rows are labelled by topic ("Reached through", "Configured by"), so the
+  label was inconsistent with its own table as well as with the guard. It is now
+  "Where it listens" and the variable lives inside the cell, which the regex does
+  not read. **Any new table in this README wants topic labels in column one.**
+- **`cmd/crswd`'s quickstart suite runs every line in `README.md` that starts with
+  `journalctl`** (`trailDocPaths`), and fails a command with no filter stage. Adding
+  one to this page means adding a working pipeline, not an illustration.
+- **`internal/release/readme_test.go` forbids `go build`, `git clone` or
+  `go mod download` appearing before the install one-liner.** The from-source block
+  inside Deployment is well below it, but a section added *above* Install cannot
+  carry any of those three strings.
+- T009 owns `install.sh`'s `next_steps()`, and line 99's "the daemon binds loopback
+  and something has to carry it" is the last file still asserting the old rule.
+  T010 owns the README's stale Status blockquote and Roadmap, which both stop at
+  milestone 6.
+- All four suites green: default, `-tags dev`, `-tags tmux`, and `-tags quickstart`
+  (~35s, with the deployed daemon still holding 127.0.0.1:8765). Linter is v2.12.2,
+  checked (#26), 0 issues.
+
+**Findings, not fixed:**
+
+- **A third flaky test, and this one is a wall clock.**
+  `internal/httpapi`'s `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval`
+  failed once under `-tags tmux` — `stream_test.go:991`, "the opening screen
+  arrived 20ms after the open, which is past the 10ms interval" — and passed on
+  `-count=15` and on a clean re-run of the whole tagged suite. It asserts a real
+  property (the first screen must not wait for a tick) against a 10ms budget, which
+  loses to scheduler noise when the tmux suite is running real `tmux` beside it.
+  Nothing this task touched is in that path. The fix is to make the assertion about
+  ordering rather than about elapsed milliseconds. **Quick-fix lane**, and the third
+  flaky test this milestone has logged.
+- **`docs/auth-and-sessions.md`'s two new rows widened this task past `README.md`**,
+  which is what T008 names. Taken deliberately: iterations 5 and 7 both nominated
+  T008 as "the nearest documentation task", the numbers are this milestone's own,
+  and the alternative was the finding rolling forward into T009 (`install.sh`) and
+  T010 (the README rewrite), neither of which is chartered for that file either.
+  Two rows, no prose moved.
+- **`.specify/memory/constitution.md` Principle VI is still wrong** — "the listener
+  binds loopback only". Iterations 2 through 7 raised it, and this task makes it
+  worse in a specific way: the README an operator reads now contradicts the
+  highest-authority document in the repo, in as many words. Still owed a human PR;
+  no task in this plan is chartered to amend the constitution.
+- **`gofmt -l .` still reports `internal/httpapi/render.go` and
+  `internal/release/install_test.go`** (iterations 6 and 7), both untouched here.
+  **Quick-fix lane**, two files, no behaviour.
+- **`TestEveryPageShowsTheVersion` still walks a hand-written list of four pages**
+  (iterations 4 through 7 — this task added no page either).
+- **The README still has no CONTRIBUTING split and a Roadmap ending at milestone
+  6.** Both are T010's charter, and the Status blockquote says "milestone 6 is
+  landing" on a tree that is finishing milestone 12. Left rather than fixed in
+  passing (AR-008), but it is the first thing a stranger reads and it is six
+  milestones stale.
