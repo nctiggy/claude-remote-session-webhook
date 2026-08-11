@@ -140,3 +140,105 @@ number of sources they have. Change the constant if you want another.
   operator out. Turning it *off* does not disable Access, for the reason above.
   Stated here because "a checkbox next to the door" invites the assumption that
   unticking it removes the door.
+
+---
+
+## Iteration 2 — 2026-08-11 — T002, the bind guard relaxed rather than removed
+
+**Did:** A non-loopback listen address is now permitted when layer 1 admits
+somebody — an Access door or a `dashboard_password` — and refused when it does
+not. `loadListen` takes that answer as an argument and moved below `validateDoors`
+to get it. `docs/security.md`'s transport section states the new rule.
+
+**Left:** T003 through T010.
+
+### The bind guard is three checks, and all three had to move
+
+The plan names `loadListen`. It is not the only reading of that rule: `httpapi`'s
+package doc says so itself — `assertLoopbackAddress` on the configured string and
+`assertLoopbackAddr` on the address the kernel handed back. **Relaxing only the
+first would have shipped a daemon that loads a configuration it then refuses to
+bind**, which is the failure an operator meets after being told their config is
+fine. So all three moved together, and the two in `httpapi` were renamed
+`assertBindAddress` / `assertBoundAddress`: a function still called
+`assertLoopback` that returns nil for `0.0.0.0` is the comment that lies to the
+next reader.
+
+**The two packages ask the question differently on purpose.**
+
+- `config.browserDoorAdmits(teamDomain, password)` — intent. It is what the
+  operator configured, and it is also what the "admits nobody" startup banner
+  reads, so the banner and the bind cannot disagree.
+- `httpapi.mayBindOffLoopback(cfg, door)` — intent **and** evidence. Not a
+  `closedDoor`, *and* the config names a door. Either half alone is wrong:
+  - door half alone lets the **development bypass** bind off loopback, because
+    `*access.Bypass` is not a `closedDoor` — it is the one layer 1 that admits
+    everybody without checking anything, and it would have got the widest bind in
+    the codebase. `access.NewBypass` still refuses on its own (and is now the
+    only unconditional reading of the rule), but that is the backstop, not the
+    reason.
+  - config half alone lets a daemon whose file names a door the server did not
+    build put an unauthenticated listener on the network. That is a wiring
+    defect, and a wiring defect must not read as permission.
+
+  Both halves are proven by breaking: invert either and exactly one case of
+  `TestNewBindsOffLoopbackOnlyForADaemonSomebodyCanGetInto` goes red for it.
+
+### Between here and T003, a password door still cannot bind off loopback
+
+`verifiedLayer1` returns `closedDoor` for a password-configured daemon until T003
+builds the door, so `mayBindOffLoopback`'s door half says no and the daemon
+refuses to start on a LAN address. **This is deliberate and fails closed** — it
+is the plan's "a `closedDoor` daemon must still refuse", read as the door the
+server actually built rather than the one the file asked for. T003 makes the two
+halves agree, and nothing else needs changing for it.
+
+**Learned, for whoever picks up T003:**
+
+- **A name is refused under every door, and that is now the *only* absolute part
+  of the address rule.** `:8765` arrives at the same branch as `localhost:8765`
+  (an empty host is not an IP literal), so the wildcard has to be written
+  `0.0.0.0`. The refusal's wording is built from `doorAdmits` so it never demands
+  loopback of a daemon that does not need it — an operator told half the rule
+  fixes the address twice.
+- **Test fixtures carrying a door hid this everywhere.** `config`'s `baseEnv`,
+  `fileLines`, `httpapi`'s `testConfig` and the quickstart host env all set the
+  three Access values, so eleven existing cases were asserting "0.0.0.0 is
+  refused" on daemons that may now have it. `withoutAccess` (config) and
+  `noDoorConfig` (httpapi) are the doorless fixtures; **a case about the bind
+  that uses a door-carrying fixture proves nothing.**
+- Two `file_test.go` fixtures used `listen = 0.0.0.0:8080` as a stand-in for "a
+  value that will not load" beside `fileLines`' Access door. They say
+  `localhost:8080` now — a name, refused under every door — which keeps those
+  cases about the backup recovery rather than about the bind.
+- The whole `-tags quickstart` suite passes here in ~35s with the deployed daemon
+  still holding 127.0.0.1:8765; `-tags tmux` and `-tags dev` are green too.
+
+**Findings, not fixed:**
+
+- **`.specify/memory/constitution.md` Principle VI still says "The listener binds
+  **loopback only**. Reachability comes from the tunnel."** That is now false, and
+  it is the highest-authority document in the repo. The constitution's own
+  governance section requires a PR stating what changed and why, reviewed by a
+  code owner — **no task in this plan is chartered to amend it**, and an
+  autonomous loop rewriting the constitution to match its own change is precisely
+  what Principle II is about. It is raised here rather than done. The same
+  principle's own escape hatch is arguably already satisfied ("a feature that
+  widens any of these needs an explicit justification in the plan naming what now
+  becomes reachable" — this plan's preamble is that justification), which is why
+  this is a wording amendment and not a conflict.
+- **`.env.example` and `README.md` still describe the absolute rule.**
+  `.env.example` line 151 says "A non-loopback host is a startup failure" and the
+  README's variable table says the same; both are **T008**'s charter ("the bind
+  change"), so they were left rather than fixed in passing (AR-008). Same for
+  `install.sh`'s "the daemon binds loopback and something has to carry it", which
+  is **T009**'s.
+- **No acceptance case starts a daemon on `0.0.0.0`.** The quickstart case that
+  binds a public address is the refusal (now with the three Access values unset,
+  so it is about the closed door). Proving the positive there would mean putting
+  a real listener on the network of whatever machine runs the suite; it is proven
+  at the unit level instead — `newServer` accepts the address and `Listen` keeps
+  a listener claiming `192.168.1.10`.
+- **`docs/security.md`'s "two front doors" table still says both doors are behind
+  Cloudflare Access.** True today; **T003/T004** make it false. Whoever writes the
+  password door owns that table.
