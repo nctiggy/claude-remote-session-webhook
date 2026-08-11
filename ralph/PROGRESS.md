@@ -736,3 +736,132 @@ answers 401 and that the refusal names no door.
   human PR; no task in this plan is chartered to amend the constitution.
 - **`TestEveryPageShowsTheVersion` still walks a hand-written list of four
   pages** (iterations 4 and 5, unchanged — this task added no page).
+
+---
+
+## Iteration 7 — 2026-08-11 — T007, the way back out
+
+**Did:** `POST /logout` clears the dashboard cookie and sends the browser to the
+sign-in form. It is registered from the same question the sign-in routes are, so
+the door a browser can open and the one it can close appear and disappear
+together; the settings page offers it under "Who may reach it", beside the
+sentence naming the door. `docs/security.md`, `docs/auth-and-sessions.md` and
+`docs/components.md` all state it.
+
+**Left:** T008, T009, T010.
+
+### The path is `/logout`, and the reason is a script
+
+Every other mutating browser route lives under `/dashboard/`, and this one
+deliberately does not. **`crswd.js` intercepts any form whose `action` starts
+with `/dashboard/`**, posts it with `fetch`, and turns the answer into a sentence
+in the toast. For every other action that is right — the operator stays where
+they were and is told what happened. For this one it is exactly wrong: the
+request would succeed, the cookie would go, and the operator would be left
+looking at a settings page that still draws them the inside and is dead in their
+hands. Off that prefix the browser does the ordinary thing, follows the 303, and
+lands on the sign-in form — the same answer with the script running and with
+scripting off, which is what "everything works with no JavaScript" has to mean
+when the script is doing something helpful.
+
+It reads as `/login`'s pair in the address bar too, and it is one: they exist on
+exactly the same daemons. What they do not share is where they sit relative to
+layer 1, and that is the thing to keep straight — `/login` is registered *ahead*
+of it because its job is producing the credential; this is registered *behind*
+it, through `handleAction`, because by the time it runs the caller holds one.
+
+### A refused sign-out must clear nothing, and that is the real guard here
+
+The gate runs before the handler, so this is already true — but it is the
+property worth a test of its own rather than an inference. **A route that cleared
+the cookie on its way to answering 403 would be a route any hostile page could
+use to log the operator out at will**, which is a denial of service wearing a
+safety check's clothes, on the one interface whose sessions are unsandboxed
+shells. Every row of `TestTheSignOutRouteIsBehindTheActionGate` therefore asserts
+three things: the refusal, that no cookie was written, and that the original
+cookie still opens the fleet afterwards.
+
+### `clear` is a method on the door, and the reason is the browser's matching rule
+
+A deletion is a `Set-Cookie` like any other, matched by the browser against what
+it holds **by name, domain and path**. So a `Path` that drifts from `issue`'s is a
+Sign out that reports success and changes nothing — the single failure this route
+can have that looks identical to working. Three lines in the handler would have
+been enough code and the wrong shape; one door owns what this cookie is, and
+`TestTheClearedCookieIsTheOneTheSignInIssued` compares `clear`'s output against
+`issue`'s own rather than against constants written in the test, so the two cannot
+agree with the test while disagreeing with each other.
+
+`Secure` follows `r.TLS` in the deletion for the same reason it does in the issue:
+a browser that would not accept a Secure cookie over plaintext will not accept the
+deletion of one either, and the LAN this door exists for has no TLS on it.
+
+**Learned, for whoever picks up T008:**
+
+- **`settingSection.Door` is a `doorFacts` now, not a string** — `{Sentence,
+  SignOut}` — composed once by `doorFactsOf(s.browser)` and handed to `sectioned`.
+  Two questions of one door, asked in one place, because separately they are free
+  to disagree and the shape of that disagreement is a Sign out button under "This
+  dashboard is behind Cloudflare Access". Six test call sites pass `doorFacts{}`;
+  three production ones (`settings.settings`, `update.renderUpdating`,
+  `restart.renderRestarting`) pass the real thing.
+- **`passwordDoorOf(door layer1) (*passwordDoor, bool)` is the one predicate**, and
+  it now has two callers that must never disagree: `newServer`, deciding whether
+  to register `/login` and `/logout`, and `doorFactsOf`, deciding whether to draw
+  the button. A control for a route nobody registered is the "actions certain to
+  be refused" shape `docs/components.md` rules out.
+- **The control cannot be composed onto the page even by mistake**, because the
+  flag lives on the section. A template that moved the form outside
+  `{{ range .Sections }}` does not compile — `.Door` is not a field of
+  `settingsView` — so the mutation that would make it follow the operator into
+  "Limits" is a Go change and not a one-line template slip.
+- **The page token for a password daemon's forms is minted for `passwordOperator`,
+  not `testOperatorEmail`.** That is the difference between this route's fixtures
+  and every other action's, and it is the first thing to get wrong: the token is
+  bound to the identity layer 1 verified, and on this door that identity comes
+  from the cookie rather than from an address the edge signed.
+- **`d.signOut(t, cookie, form, site)` and `d.opensTheFleet(t, cookie)`** are the
+  two helpers a later task will want. The second is the only honest way to ask
+  whether a sign-out worked: a `Set-Cookie` says what the daemon *asked* the
+  browser to do, and that says what the door does with what the browser has.
+- **Every guard was proven by breaking it**, one at a time, restoring between:
+  `handleBrowser` in place of `handleAction`, the route registered on every door,
+  the deletion's `Path` narrowed, its `Max-Age` set to 0, its `Secure` pinned on,
+  `door.clear` removed, the redirect sent to the fleet, the pattern's method
+  dropped, the template's `.Door.SignOut` condition dropped, and the record
+  emitted as `login.submit`. Each turns exactly the named cases red and nothing
+  else.
+- All four suites green: default, `-tags dev`, `-tags tmux`, and `-tags
+  quickstart` (~36s, with the deployed daemon still holding 127.0.0.1:8765).
+  Linter is v2.12.2, checked (#26), 0 issues.
+
+**Findings, not fixed:**
+
+- **Nothing points a signed-in operator at the sign-out except the settings page**,
+  which is two clicks from anywhere: header → Settings → "Who may reach it". The
+  masthead is where it would belong on any other dashboard, and putting it there
+  was rejected rather than overlooked — the header partial executes against a
+  `*VerifiedOperator` and nothing else, so a form in it would need a page token
+  threaded through all four pages that render it, and its own comment says "one
+  link is not a navigation bar, and if a third arrives that is the moment to
+  reconsider the shape". That reconsideration is a design task, not a passing
+  edit. **T008 should say where the button is** in as many words, the way it must
+  already say `http://host:port/login`.
+- **`docs/auth-and-sessions.md`'s "Lifetimes" table still has no row for the
+  dashboard session cookie or the sign-in rate** (iteration 5's finding), and this
+  task adds nothing to it — a sign-out has no lifetime. Still one edit for a
+  documentation task, and **T008** is still the nearest.
+- **`.specify/memory/constitution.md` Principle VI is still wrong** — "the
+  listener binds loopback only". Iterations 2 through 6 raised it. Still owed a
+  human PR; no task in this plan is chartered to amend the constitution.
+- **`gofmt -l .` still reports `internal/httpapi/render.go` and
+  `internal/release/install_test.go`** (iteration 6), both untouched here and both
+  already unformatted before that. **Quick-fix lane**, two files, no behaviour.
+- **`TestEveryPageShowsTheVersion` still walks a hand-written list of four pages**
+  (iterations 4, 5 and 6 — this task added no page either).
+- **The two flaky tests logged this milestone are both still open**:
+  `internal/audit`'s `TestTheLeakSuiteReallyDrivesTheDaemon` (iteration 5, a
+  second-granularity page-token expiry straddling a boundary) and
+  `internal/tmuxctl`'s `TestTmuxKillingTheLastSessionStopsTheServer` (iteration 6,
+  two spellings of "the server is gone" raced). Neither reappeared across the four
+  suites here. Both are **quick-fix lane**.

@@ -122,7 +122,7 @@ reassured.
 
 - [x] **T006** Show which door is live on the settings page, reusing existing classes. An operator must be able to tell whether they are behind Access, a password, or a closed door — the single most consequential fact about the daemon, currently invisible. `dashboard_password` renders `present`/`absent` and never its value.
 
-- [ ] **T007** Log out. A POST through `handleAction` like every other mutating route, clearing the cookie. Without it a shared or borrowed browser keeps a session the operator cannot end.
+- [x] **T007** Log out. A POST through `handleAction` like every other mutating route, clearing the cookie. Without it a shared or borrowed browser keeps a session the operator cannot end.
 
 - [ ] **T008** Document the LAN deployment in `README.md`: the config for each door, the bind change, and **the plaintext-over-HTTP weakness stated plainly** with TLS recommended. Say what each door is for — Access when it is on the internet, a password when it is not.
 
