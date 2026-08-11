@@ -716,9 +716,17 @@ func newServer(
 	// from behind layer 1. A login form standing beside a working Access door
 	// would be the second authorisation path this milestone forbids, and the way
 	// to not have one is to not register it.
-	if door, ok := browser.(*passwordDoor); ok {
+	//
+	// The way back out is registered here too (M12/T007) and from the same
+	// question, so the door a browser can open and the door it can close appear
+	// and disappear together. It is the one of the three that is *not* in front of
+	// layer 1: it goes through handleAction like every other mutating browser
+	// route, because by the time it runs the caller holds the credential the other
+	// two exist to produce. See logout.go.
+	if door, ok := passwordDoorOf(browser); ok {
 		s.handleLogin(patternLoginPage, audit.ActionLoginView, s.loginPage)
 		s.handleLogin(patternLoginSubmit, audit.ActionLoginSubmit, s.login(door))
+		s.handleAction(patternLogout, audit.ActionLoginSignOut, s.logout(door))
 	}
 	s.handleUnrouted()
 	return s, nil

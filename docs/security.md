@@ -156,6 +156,41 @@ than left to the code:
   caller can tell none of them apart, so the trail is the only place they are ever
   distinguished.
 
+#### The way back out
+
+`POST /logout` clears the cookie, and it is registered from the same question the two
+routes above are — so the door a browser can open and the door it can close appear and
+disappear together. Where Cloudflare Access is the door it is not registered and the
+settings page draws no control, because what that browser holds is the edge's own
+`CF_Authorization`, which this daemon does not read and must not pretend to end.
+
+- **It is behind layer 1 and through the action gate**, on `handleAction` like every
+  other mutating browser route. The exemption the sign-in routes have is for producing
+  a credential the caller does not yet hold; this caller holds one, so nothing here
+  needs an exception and a route that took one would be a second authorisation path.
+- **A refused sign-out clears nothing.** The gate runs before the handler, so a
+  cross-site POST or a missing page token leaves the session exactly where it was —
+  otherwise the route would be a way for a hostile page to log the operator out of an
+  interface that starts unsandboxed shells, which is a denial of service wearing a
+  safety check's clothes.
+- **The deletion mirrors the issue in name, path, `HttpOnly`, `SameSite` and the
+  conditional `Secure`**, because a browser matches a deletion against what it holds by
+  name, domain and path. An attribute that drifts is a Sign out that reports success and
+  changes nothing, which is the one failure this route can have that looks like working.
+- **It ends one browser's copy and nothing more.** The door keeps no session record, so
+  there is nothing to invalidate: a cookie already copied off the machine stays valid
+  until its own expiry, and what ends every outstanding sign-in at once is rotating
+  `shared_secret` or changing the password — both of which are in the MAC's payload for
+  exactly that reason. An operator who believes their cookie was taken needs one of
+  those, not this button.
+- **One record, `login.signout`**, distinct from `login.submit` so that an operator
+  counting attempts at their password is not counting departures with them. It names
+  the identity layer 1 verified and carries no cookie material.
+- **It answers `303` to `/login`.** The sign-in form is the only answer that shows the
+  sign-out worked; a message on a page the caller is no longer entitled to would be this
+  daemon drawing them the inside while telling them they are out. The destination is a
+  constant and never a "return to" parameter, for the reason the sign-in's is.
+
 **On a network without TLS the password crosses it in clear.** That is a real weakness
 of this mode rather than an oversight, and the cookie is what keeps it to one crossing
 per session instead of one per request. An operator choosing this door is told so

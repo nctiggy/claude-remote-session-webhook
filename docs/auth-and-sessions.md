@@ -157,6 +157,15 @@ here is that they change nothing about the layering above. A cookie that verifie
 produces the same `VerifiedOperator` an assertion does, derived per request and stored
 nowhere, and every route behind the door asks exactly the questions it always asked.
 
+**The way back out is `POST /logout`**, registered on the same daemons and from the same
+question — but *behind* layer 1 and through the action gate, because by the time it runs
+the caller holds the credential the other two exist to produce. It clears the cookie and
+sends the browser to the sign-in form. What it ends is one browser's copy: the door keeps
+no session record, so there is nothing to invalidate, and a cookie already copied
+elsewhere stays valid until its own expiry. Ending every outstanding sign-in at once
+means rotating `shared_secret` or changing the password, both of which are inside the
+MAC's payload for that reason.
+
 **Local development** uses the `//go:build dev` bypass in `internal/access`, which
 skips layer 1 only. It must: refuse to start unless the listener is loopback, log a
 loud warning on **every** request, and be absent from the shipping build. It is

@@ -85,10 +85,11 @@ one row per key, with the layer that supplied each value beside it.
 
 **It acts as well as reads, and it carries all three of the things every
 actionable page in this tree carries** — a page token inside every mutating form,
-the controls that submit them, and a live region at the foot of the file. Three
+the controls that submit them, and a live region at the foot of the file. Four
 routes receive them: `POST /settings/edit` for one configuration key,
-`POST /dashboard/update` for the binary, and `POST /dashboard/restart` for the
-process running it. `GET /settings` is still the only verb registered on the path
+`POST /dashboard/update` for the binary, `POST /dashboard/restart` for the
+process running it, and `POST /logout` for the browser's own sign-in, on the
+daemons that have one. `GET /settings` is still the only verb registered on the path
 itself, which is why the header's link to it is a link to a page and nothing more.
 
 That paragraph replaced one asserting the opposite — no page token, no action row,
@@ -115,6 +116,21 @@ second element wearing it would tell every reader something untrue. It renders n
 value of any kind — every sentence it can say is a constant in Go, chosen from
 the door this server was built with and never from the configuration, and
 `dashboard_password` stays `present`/`absent` on its row.
+
+**It also carries the one control that ends a sign-in**, directly under that sentence,
+because it is the same fact with a verb on it: the heading that answers "who may reach
+it" is the one that should offer "and stop being one of them". It is a plain `.button` —
+the update owns the view's one primary, and `.button-danger` is for an action that ends
+an unsandboxed shell, which this is not — inside a form carrying no class of its own,
+the same decision the restart form makes. It is drawn only where the route behind it is
+registered, which is a daemon whose door is the dashboard password; behind Cloudflare
+Access there is nothing this daemon could clear, and a Sign out that cleared nothing
+would be worse than none. That is decided in Go (`doorFacts.SignOut`) and lands on the
+same section the sentence does, so the control cannot be composed onto the page and
+follow the operator into "Limits". It posts to `/logout` and deliberately not to
+`/dashboard/logout`: the script intercepts that prefix and answers in the toast, which
+for this one action would leave the operator looking at a dashboard that is dead in
+their hands.
 
 Its controls are this document's — `.button`, `.button-primary`, and the
 page-token partial. The Updates section's three — Check, Update, Restart — are

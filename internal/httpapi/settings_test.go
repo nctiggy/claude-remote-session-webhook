@@ -375,10 +375,10 @@ func settingsEverySection(t *testing.T, f *fleet) string {
 
 	var all strings.Builder
 	all.WriteString(settingsSectionBody(t, f, sectionUpdates))
-	// No door sentence, here and at every other grouping call in this file: these
+	// No door facts, here and at every other grouping call in this file: these
 	// read section titles to walk the menu, and what the page really composes for
 	// that field is asserted by the tests that are about it.
-	for _, section := range sectioned(settingsOf(testConfig(loopbackListen)), "") {
+	for _, section := range sectioned(settingsOf(testConfig(loopbackListen)), doorFacts{}) {
 		all.WriteString(settingsSectionBody(t, f, section.Title))
 	}
 	return all.String()
@@ -707,7 +707,7 @@ func TestSettingsRendersOneRowPerKey(t *testing.T) {
 	// operator cannot reach — and the flat table could not tell those apart from
 	// working, because everything was on one page regardless of the menu.
 	seen := map[string]int{}
-	for _, section := range sectioned(settingsOf(testConfig(loopbackListen)), "") {
+	for _, section := range sectioned(settingsOf(testConfig(loopbackListen)), doorFacts{}) {
 		body := settingsSectionBody(t, f, section.Title)
 		for _, name := range config.Vars() {
 			key := config.KeyForVar(name)
@@ -1453,7 +1453,7 @@ func TestEverySettingAppearsInASection(t *testing.T) {
 
 	rows := settingsOf(testConfig(loopbackListen))
 	var grouped int
-	for _, section := range sectioned(rows, "") {
+	for _, section := range sectioned(rows, doorFacts{}) {
 		grouped += len(section.Settings)
 	}
 	if grouped != len(rows) {
@@ -1472,7 +1472,7 @@ func TestSettingsMenuReachesEverySection(t *testing.T) {
 	f := newFleet(t)
 	page := settingsDefaultBody(t, f)
 
-	for _, section := range sectioned(settingsOf(testConfig(loopbackListen)), "") {
+	for _, section := range sectioned(settingsOf(testConfig(loopbackListen)), doorFacts{}) {
 		// %20 rather than +, because html/template escapes for a URL context and
 		// that is the encoding it chooses. Asserting the rendered form rather
 		// than a guess at it is the point: a test that built the link itself
@@ -1695,7 +1695,7 @@ func TestTheDoorSentenceIsOnTheSectionThatAsksTheQuestion(t *testing.T) {
 	f := newFleet(t)
 
 	elsewhere := []string{sectionUpdates}
-	for _, section := range sectioned(settingsOf(testConfig(loopbackListen)), "") {
+	for _, section := range sectioned(settingsOf(testConfig(loopbackListen)), doorFacts{}) {
 		if section.Title != sectionWhoMayReachIt {
 			elsewhere = append(elsewhere, section.Title)
 		}

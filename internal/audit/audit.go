@@ -238,6 +238,26 @@ const (
 	// there is nowhere for the submitted bytes to be attached even by accident.
 	ActionLoginView   Action = "login.view"
 	ActionLoginSubmit Action = "login.submit"
+
+	// ActionLoginSignOut is one dashboard session ended by the operator holding
+	// it (M12/T007) — the cookie login.submit issued, cleared.
+	//
+	// It is login.* like the two above and for their reason: what it is about is
+	// the door rather than the dashboard behind it, and a daemon behind
+	// Cloudflare Access registers no route for it at all, so an operator grepping
+	// `login\.` reads the whole life of a sign-in on the one kind of deployment
+	// that has one. It is deliberately not a third spelling of login.submit,
+	// which is the tempting reuse: an operator counting attempts at their
+	// password must not be counting departures with them.
+	//
+	// Unlike the two above, the route behind it is *behind* layer 1 and through
+	// the action gate, so the caller on this record is an identity that was
+	// verified rather than the `unknown` a login.view carries.
+	//
+	// It carries no cookie material, for the reason nothing here carries a
+	// credential: the record's shape is frozen (FR-016), and what was cleared is
+	// not a fact this daemon keeps anywhere.
+	ActionLoginSignOut Action = "login.signout"
 )
 
 // Decision is the allow/deny outcome, and unlike Action it is closed: two

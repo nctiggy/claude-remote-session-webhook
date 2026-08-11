@@ -178,6 +178,26 @@ func newPasswordDoor(secret, password []byte) (*passwordDoor, error) {
 	}, nil
 }
 
+// passwordDoorOf reports the password door a server was built with, when that is
+// what it was built with.
+//
+// It is one function rather than a type assertion at each site because two sites
+// now ask it and they must never answer differently: newServer registers the
+// sign-in and sign-out routes from this, and the settings page decides whether to
+// draw the Sign out control from this. A page offering a control for a route that
+// was not registered is the "actions certain to be refused" shape
+// docs/components.md rules out, and a route registered with nothing pointing at
+// it is worse — it is a form nobody can find.
+//
+// It asks the **built** door and never the Config, which is the distinction
+// mayBindOffLoopback and doorSentence both draw: a daemon whose file names a door
+// the server did not build is a wiring defect, and a wiring defect must not be
+// what puts a login form on the network.
+func passwordDoorOf(door layer1) (*passwordDoor, bool) {
+	d, ok := door.(*passwordDoor)
+	return d, ok
+}
+
 // Verify is layer 1's question on this door: does this request carry a session
 // cookie this daemon signed, for a password that is still the configured one,
 // inside its lifetime?
@@ -275,6 +295,48 @@ func (d *passwordDoor) issue(w http.ResponseWriter, r *http.Request) error {
 		Secure:   r.TLS != nil,
 	})
 	return nil
+}
+
+// clear takes the cookie back (M12/T007), and it is issue's opposite in every
+// attribute that decides *which* cookie a browser drops.
+//
+// A deletion is a Set-Cookie like any other: the browser matches it against what
+// it holds by name, domain and path, so the Path here has to be issue's or the
+// operator presses Sign out and keeps their session. That is the whole reason
+// this is a method on the door beside issue rather than three lines in the
+// handler — one place owns what this cookie is, and the two ends of its life
+// cannot drift onto different paths.
+//
+// MaxAge is negative, which is net/http's spelling of `Max-Age=0`: delete this
+// now. The empty value is belt and braces for a client that ignores it — an
+// empty string is not an expiry and a MAC, so verifyValue refuses it as
+// malformed and the request is refused by layer 1 like any other.
+//
+// **What this ends is one browser's copy, and that is all it can end.** The door
+// keeps no session record, so there is nothing here to invalidate; a cookie
+// already copied off this browser stays valid until its own expiry, and the only
+// things that end every outstanding sign-in at once are rotating the shared
+// secret or changing the password — both of which are in the MAC's payload on
+// purpose (see mac). An operator who believes their cookie was taken needs one of
+// those, not this button, and saying so is worth more than a control that implies
+// otherwise.
+//
+// HttpOnly, SameSite and Secure follow issue's, and Secure follows the transport
+// for issue's reason: a browser that would not accept a Secure cookie over
+// plaintext will not accept the deletion of one either, which on the LAN this
+// door exists for is a sign-out that silently does nothing.
+//
+//nolint:gosec // G124: Secure follows the transport deliberately; see issue.
+func (d *passwordDoor) clear(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieDashboardSession,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil,
+	})
 }
 
 // sign renders the wire form: the expiry, then the MAC over it.

@@ -148,8 +148,8 @@ type settingSection struct {
 	Title    string
 	Settings []settingRow
 
-	// Door is which layer 1 a browser actually meets, in one sentence, and is
-	// empty on every section but one.
+	// Door is what this page says about layer 1, and is the zero value on every
+	// section but one.
 	//
 	// It sits on the section rather than on the view because it belongs *under*
 	// a heading: the page shows one section at a time, and a fact rendered
@@ -163,7 +163,38 @@ type settingSection struct {
 	// declares, with the layer that supplied its value beside it, and this is
 	// neither. No environment variable holds it — it is what the daemon *did*
 	// with the ones that do.
-	Door string
+	Door doorFacts
+}
+
+// doorFacts is everything this page says about layer 1: the sentence naming
+// which door is live, and whether it is one the operator can leave.
+//
+// The two travel together in one value because they are two readings of one
+// thing, taken once (doorFactsOf). Composed separately they would be free to
+// disagree, and the shape of that disagreement is the page saying "behind
+// Cloudflare Access" above a Sign out button, or saying "behind the dashboard
+// password" with no way out of it.
+type doorFacts struct {
+	// Sentence is which layer 1 a browser actually meets, said in one sentence.
+	// Empty renders nothing, which is what a section that is not the door's gets.
+	Sentence string
+
+	// SignOut is whether this daemon has a sign-out route to offer, which is the
+	// same question newServer asked when it decided whether to register one. A
+	// control the daemon would answer with a 404 is worse than no control: it
+	// looks like a way out.
+	SignOut bool
+}
+
+// doorFactsOf reads the door this server was **built with**, once, and answers
+// both of the questions this page asks about it.
+//
+// Never the Config — see doorSentence for the whole of why, and passwordDoorOf
+// for why the sign-out half is the same predicate the registration uses rather
+// than a second one that agrees with it today.
+func doorFactsOf(door layer1) doorFacts {
+	_, password := passwordDoorOf(door)
+	return doorFacts{Sentence: doorSentence(door), SignOut: password}
 }
 
 // updatePanel is the Updates section: what is running, what is available, and
@@ -577,7 +608,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	// s.browser and never the Config: which door a browser meets is the fact this
 	// page was least able to state, and the only honest source for it is the
 	// layer 1 this server was actually built with. See doorSentence.
-	sections := sectioned(rows, doorSentence(s.browser))
+	sections := sectioned(rows, doorFactsOf(s.browser))
 	editToken, _ := s.mintPageToken(r, operator)
 	s.renderPage(w, r, http.StatusOK, "settings", settingsView{
 		Operator:   operator,
@@ -651,7 +682,12 @@ var sectionOrder = []string{
 // carries into "Limits". It arrives as a parameter rather than being worked out
 // here for the reason every value on this page arrives resolved: which door was
 // built is not something a projection of the Config can see.
-func sectioned(rows []settingRow, door string) []settingSection {
+//
+// The sign-out control rides on that same value and lands on that same section
+// (M12/T007), because it is the same fact with a verb on it: the one heading that
+// answers "who may reach it" is the one that should offer "and stop being one of
+// them". Nothing else on the page has to know it exists.
+func sectioned(rows []settingRow, door doorFacts) []settingSection {
 	byTitle := make(map[string][]settingRow, len(sectionOrder))
 	for _, row := range rows {
 		title := settingSectionOf(row.Key)
