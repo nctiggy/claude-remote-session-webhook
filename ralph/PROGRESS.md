@@ -56,3 +56,26 @@ curl/bash command."*
   installer exists to create is already true. `verify-install` on a GitHub-hosted
   runner with a fresh `HOME` is the only thing that can fail. **Any task changing
   the installer must extend that job.**
+
+---
+
+## Iteration 1 — T001, and an interruption worth recording
+
+**Did:** T001. `install.sh` generates `shared_secret` with `openssl rand -hex 32` when
+it writes a **new** configuration, writes it into the `0600` file, and never prints it.
+`TestInstallGeneratesASharedSecret` holds three properties: the secret is at least
+`config.MinSecretBytes`, it does **not** appear in stdout or stderr, and two installs do
+not produce the same one — the last catching a constant masquerading as a secret.
+
+**Interrupted, and the note is for the next reader rather than the loop.** The
+operator asked for install and Cloudflare documentation mid-iteration, so this
+iteration was killed to add it. The kill raced the iteration's own final write, and a
+half-written `install.sh` briefly carried `say "... generated shared_secret $secret"` —
+which was read as a leak and was not one. The iteration corrected it before exiting,
+and the guard above already covered it.
+
+**The lesson is about reading, not about the code:** a working tree during an
+interrupted write is not a state to draw conclusions from. Verify against the file, and
+against the test, before calling something a defect.
+
+**Left:** T002 through T006.

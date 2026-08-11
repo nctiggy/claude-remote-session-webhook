@@ -44,6 +44,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/updater"
 )
 
@@ -814,21 +815,30 @@ func TestConfigModeIs0600(t *testing.T) {
 			t.Errorf("~/%s is mode %04o, want 0600.\nThat file is where the shared secret goes, and 0644 is what a `cat >` inherits from a stock umask", config, mode)
 		}
 
-		// Every setting commented out, which is what docs/security.md §3 says
-		// keeps a copy of the example from being a file that holds a secret —
-		// and what makes this file behave exactly as no file at all until the
-		// operator edits it.
+		// Every setting with a default arrives commented out, which is what makes
+		// this file behave as no file at all in each of them until the operator
+		// edits it. The two exceptions are the schema version and the secret,
+		// and the secret is one because there is no default that could stand in
+		// for a credential — see TestInstallGeneratesASharedSecret.
+		//
+		// The key is named in the failure and the value never is. A line that
+		// should not be here is diagnosed by which setting it is, and a test
+		// that printed the whole line would print the secret on the day this
+		// list is wrong.
+		set := map[string]bool{"version": true, "shared_secret": true}
 		for _, line := range strings.Split(string(body), "\n") {
 			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") || line == "version = 1" {
+			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			t.Errorf("the installed configuration sets %q.\nEverything but the schema version has to arrive commented out: a value here is one the operator did not choose, on a file they are about to be told is theirs", line)
-		}
-		for _, key := range []string{"shared_secret", "allowed_roots"} {
-			if !strings.Contains(string(body), key) {
-				t.Errorf("the installed configuration never mentions %s, which the next steps tell the operator to set in it", key)
+			key, _, ok := strings.Cut(line, "=")
+			if key = strings.TrimSpace(key); ok && set[key] {
+				continue
 			}
+			t.Errorf("the installed configuration sets %q.\nEverything with a default has to arrive commented out: a value here is one the operator did not choose, on a file they are about to be told is theirs", key)
+		}
+		if !strings.Contains(string(body), "allowed_roots") {
+			t.Errorf("the installed configuration never mentions allowed_roots, which the next steps tell the operator to set in it")
 		}
 	})
 
@@ -857,6 +867,109 @@ func TestConfigModeIs0600(t *testing.T) {
 		}
 		if mode != 0o644 {
 			t.Errorf("the installer changed the mode of an existing configuration to %04o.\nLeaving it alone means the mode too — that file holds no secret, so 0644 is a mode the daemon accepts and not one to correct on somebody's behalf", mode)
+		}
+	})
+}
+
+// configValue reads one setting out of a written configuration the way the
+// daemon's own parser reads it: `#` comments a whole line and nowhere else, the
+// first `=` separates, and the spaces around a value are not part of it.
+//
+// It fails rather than returning "" for a key that is not there. Every caller
+// compares what it gets back against something, and an empty string compares
+// equal to another empty string — which is a test that passes against an
+// installer that wrote no secret at all.
+func configValue(t *testing.T, body, key string) string {
+	t.Helper()
+
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if ok && strings.TrimSpace(k) == key {
+			return strings.TrimSpace(v)
+		}
+	}
+	t.Fatalf("the installed configuration sets no %s", key)
+	return ""
+}
+
+// TestInstallGeneratesASharedSecret is T001. The daemon refuses to start without
+// a secret, so an installer that wrote the line commented out and told the
+// operator to fill it in stopped one hand-edit short of a host that works — and
+// the hand that fills in a required credential is the hand that types something
+// it can remember.
+//
+// Three claims, and the second is the one with no symptom of its own: an
+// installer that generates a perfectly good secret and prints it has put a
+// credential into a terminal scrollback, a CI log, and the far end of a pipe
+// from curl, and every other thing about the install still looks right.
+//
+// No failure below names a value. What is under test is a secret, and a test
+// that printed it on the way to reporting a leak would be the leak.
+func TestInstallGeneratesASharedSecret(t *testing.T) {
+	t.Parallel()
+	needsOpenSSL(t)
+
+	t.Run("long enough for the daemon to accept it", func(t *testing.T) {
+		t.Parallel()
+
+		got := installs(t)
+		body, _ := placed(t, got, installedConfig)
+
+		if secret := configValue(t, string(body), "shared_secret"); len(secret) < config.MinSecretBytes {
+			t.Errorf("the installed configuration sets a shared_secret shorter than the %d bytes config.MinSecretBytes requires.\nThe daemon refuses to start on it, and whoever installed this meets that as a service that will not come up", config.MinSecretBytes)
+		}
+	})
+
+	t.Run("never printed", func(t *testing.T) {
+		t.Parallel()
+
+		got := installs(t)
+		body, _ := placed(t, got, installedConfig)
+		secret := configValue(t, string(body), "shared_secret")
+
+		if strings.Contains(got.stdout+got.stderr, secret) {
+			t.Error("the installer printed the shared secret it generated.\nIts output is a terminal scrollback, a CI log, and often the far end of a pipe from curl: printed once is a copy in all three, and rotating it is the only way back. Say that a secret was generated, never which one")
+		}
+	})
+
+	t.Run("a different one on every host", func(t *testing.T) {
+		t.Parallel()
+
+		// Two installs, two homes, and the only thing asserted is that they
+		// disagree. A fixture committed to the installer would satisfy every
+		// other case here and hand one credential to everybody who ran it.
+		first, _ := placed(t, installs(t), installedConfig)
+		second, _ := placed(t, installs(t), installedConfig)
+
+		if configValue(t, string(first), "shared_secret") == configValue(t, string(second), "shared_secret") {
+			t.Error("two installs generated the same shared_secret.\nThat is a constant in the installer rather than a secret, and it authenticates every API caller on every host that ever ran it")
+		}
+	})
+
+	t.Run("a second run leaves the generated one alone", func(t *testing.T) {
+		t.Parallel()
+
+		// Read between the runs. They share a home, so a value read afterwards
+		// would be compared against itself and pass against an installer that
+		// rewrote the file.
+		var afterFirst string
+
+		_, second := twice(t, func(t *testing.T, home string, _ *release) {
+			t.Helper()
+
+			raw, err := os.ReadFile(filepath.Join(home, installedConfig)) //nolint:gosec // G304: the home is this test's own t.TempDir.
+			if err != nil {
+				t.Fatalf("read the configuration the first run wrote: %v", err)
+			}
+			afterFirst = configValue(t, string(raw), "shared_secret")
+		})
+
+		body, _ := placed(t, second, installedConfig)
+		if configValue(t, string(body), "shared_secret") != afterFirst {
+			t.Error("the second run replaced the generated shared secret.\nRe-running the one-liner is how a host takes a newer binary, and every client signing with the old secret stops being able to reach the daemon the moment it does")
 		}
 	})
 }
