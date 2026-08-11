@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -960,6 +961,50 @@ func TestACrossSiteSignInIsRefusedAndSpendsNothing(t *testing.T) {
 				burst+1, w.Code, w.Body.String(), http.StatusSeeOther)
 		}
 	})
+}
+
+// readmePath is the page an operator reads before they have a running daemon.
+const readmePath = "../../README.md"
+
+// TestTheREADMENamesTheSignInPath holds the documentation to the route (M12/T008).
+//
+// This door tells nobody which paths it serves — a browser arriving at `/` with
+// no cookie gets the same uniform 401 a stranger gets, and redirecting it would
+// make the refusal non-uniform *and* put a branch keyed on which door is live
+// into the browser middleware. So the only way an operator finds the sign-in form
+// is that something told them, and the README is that something. It is therefore
+// load-bearing rather than courteous: a password daemon whose operator cannot
+// find `/login` is a daemon nobody can open, and the failure looks exactly like
+// the daemon being broken.
+//
+// The path is read from the constant the mux is registered with rather than
+// typed here, because two spellings free to disagree is the whole failure — the
+// README would go on printing the old one, and what an operator would meet is
+// this door's 401 with nothing to say why.
+//
+// **Must fail when** the README stops naming the path, and when the route moves
+// and the page does not follow.
+func TestTheREADMENamesTheSignInPath(t *testing.T) {
+	t.Parallel()
+
+	raw, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", readmePath, err)
+	}
+	readme := string(raw)
+
+	if !strings.Contains(readme, pathLogin) {
+		t.Errorf("%s never names %q.\nNothing else points an operator at the sign-in form: / answers the uniform 401 by design, so a path this page leaves out is one nobody can be expected to guess",
+			readmePath, pathLogin)
+	}
+
+	// Naming it is not the same as saying it is a URL to open. A page that only
+	// mentioned the path inside a route table would satisfy the check above
+	// while leaving an operator to work out the scheme, the host and the port.
+	if !strings.Contains(readme, "http://<the host's LAN address>:8765"+pathLogin) {
+		t.Errorf("%s names %q but never as an address to type.\nThe operator this section is written for is holding a host and a port and no idea what to put after them",
+			readmePath, pathLogin)
+	}
 }
 
 // loginTemplateSource is the page's markup as it is embedded, with its own

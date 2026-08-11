@@ -2,10 +2,15 @@
 
 Start and drive Claude Code sessions on your own machine, from anywhere.
 
-A self-hosted Go daemon (`crswd`) that serves a web dashboard and an HTTP API under
-a `*.example.com` hostname. Each session runs in a tmux window with
-`--dangerously-skip-permissions`. Two clients: a browser UI behind Cloudflare Access
-(Google identity), and a companion Claude skill authenticating by HMAC signature.
+A self-hosted Go daemon (`crswd`) that serves a web dashboard and an HTTP API. Each
+session runs in a tmux window with `--dangerously-skip-permissions`. Two clients: a
+browser UI, and a companion Claude skill authenticating by HMAC signature.
+
+The browser is admitted by **one of two doors, chosen in the configuration and never
+both at once** — Cloudflare Access when the daemon is on the internet under a
+`*.example.com` hostname, or a **dashboard password** when it is on a network you
+control and there is no Cloudflare in front of it. Which one you want, and what each
+costs you, is [Deployment](#deployment).
 
 ## Install
 
@@ -131,12 +136,23 @@ install -m 0755 crswd-api ~/.local/bin/crswd-api
 by hand to debug, and `send-keys` / `capture-pane` are what make `/compact` and the
 device-code login relay possible at all.
 
-**Cloudflare Tunnel, not an open port.** The daemon binds `127.0.0.1` only. The
-tunnel connects outbound; nothing inbound is ever opened on the host or the router.
+**Cloudflare Tunnel, not an open port.** On the internet the daemon binds
+`127.0.0.1` and the tunnel connects outbound; nothing inbound is ever opened on the
+host or the router. It *will* bind wider, for the LAN deployment below — but only on
+a daemon whose dashboard has a door somebody can open. The invariant is **never
+reachable without authentication**, not *never reachable*, and that is a bound
+relaxed rather than deleted.
 
 **Cloudflare Access, not an in-daemon OAuth flow.** Google login and the one-email
 allowlist are enforced at the edge, so unauthenticated traffic never reaches the
 box. The daemon just validates the signed JWT — tens of lines instead of hundreds.
+
+**A password, only where there is no edge to do that.** A daemon on your own
+network has no Access application in front of it and so no assertion to validate.
+There it serves its own sign-in form and issues a cookie it signed. That proves
+knowledge of one secret rather than identifying a person against an identity
+provider — strictly less than Access does, which is stated below rather than
+smoothed over.
 
 **Go templates + htmx, not an SPA.** Single static binary via `go:embed`. No npm,
 no second toolchain, and SSE is a natural fit for tailing pane output.
@@ -232,7 +248,7 @@ stands in for the permission prompt that is gone.
 | `CRSW_ALLOWED_ROOTS` | no | `$HOME/code`, with a loud banner | Colon-separated absolute directories a session may run in. An entry that is empty, relative, missing, unresolvable, or not a directory refuses |
 | `CRSW_DISCOVER_ROOTS` | no | `false` | Offer each approved root's immediate subdirectories as working-directory suggestions. Anything but a boolean refuses |
 | `CRSW_WORKDIR_SUGGESTIONS` | no | empty | Comma-separated absolute directories offered on the create form beside the roots. An entry that is empty or relative refuses; one outside the roots is offered and refused on create, because the list is a convenience and `CRSW_ALLOWED_ROOTS` is the control |
-| `CRSW_LISTEN` | no | `127.0.0.1:8765` | The listener. A host that is not a loopback IP literal, or a port out of range, refuses |
+| `CRSW_LISTEN` | no | `127.0.0.1:8765` | The listener. The host must be an IP literal; a name refuses under every door. A non-loopback host such as `0.0.0.0` is permitted **only when the dashboard has a door** — Access or `CRSW_DASHBOARD_PASSWORD`. With neither, it refuses: a daemon that admits nobody may not be reachable by anybody. A port out of range refuses |
 | `CRSW_MAX_SESSIONS` | no | `5` | How many sessions may exist at once. Below 1 refuses |
 | `CRSW_DESTROY_ON_SHUTDOWN` | no | `false` | Tear every session down when the daemon stops. Off by default: sessions survive a clean stop and startup adoption reclaims them, so a redeploy no longer costs the fleet. `true` restores the old behaviour, for a host being decommissioned rather than updated |
 | `CRSW_SESSION_LIFETIME` | no | `24h` | How long a session may live from creation, never renewed. The default every create inherits, and a create may ask for another up to the ceiling below. Zero or negative refuses; there is no "never", so an operator who wants one sets this long instead |
@@ -310,9 +326,13 @@ Notes worth having before you set these:
   form, whose only lifetime control is that switch. Nothing is re-read while the
   daemon runs and a session keeps the deadlines it was created with, so a raise
   reaches the next session and not the one already running.
-- **`CRSW_LISTEN` will not take a hostname.** `localhost` is refused rather than
-  resolved: `/etc/hosts` or a resolver could move the bind off loopback without
-  this value changing. Reachability is the tunnel's job.
+- **`CRSW_LISTEN` will not take a hostname, under either door.** `localhost` is
+  refused rather than resolved: `/etc/hosts` or a resolver could move the bind
+  without this value changing, and only an IP literal says where the listener will
+  actually be. The wildcard is spelled `0.0.0.0` for the same reason — `:8765` is an
+  empty host, which is a name. **Whether a non-loopback literal is accepted at all
+  depends on which door is configured**, and the refusal names both of them; see
+  [Deployment](#deployment).
 - **The create burst is derived, not configured.** The limiter is a per-caller
   token bucket filling at `CRSW_CREATE_RATE_PER_MIN` and holding `max(1, rate/2)`
   tokens — 3 at the default. There is no burst variable on purpose, since a second
@@ -455,8 +475,31 @@ trains an operator to ignore it, which is worse than not checking at all.
 
 ## Deployment
 
-The daemon runs as a **systemd user service**, with a Cloudflare Tunnel dialling out
-beside it. Example files for both live in [`deploy/`](deploy/), and
+**There are two, and choosing between them is the most consequential thing in this
+file.** A request that passes the browser door starts an unsandboxed shell on this
+host, so the door is the product. Both deployments run the daemon as a **systemd
+user service**; what differs is who is allowed to knock, and from where.
+
+| | On the internet | On your own network |
+|---|---|---|
+| Reached through | A Cloudflare Tunnel dialling out to `*.example.com` | The LAN, directly |
+| The browser door | **Cloudflare Access** — Google login and a one-email allowlist, enforced at the edge and re-checked here | **A dashboard password** — a sign-in form this daemon serves, and a cookie it signed |
+| Configured by | `CRSW_ACCESS_TEAM_DOMAIN` + `CRSW_ACCESS_AUD` + `CRSW_ACCESS_ALLOWED_EMAILS`, and `CRSW_ACCESS_ENABLED=true` to say so | `CRSW_DASHBOARD_PASSWORD` |
+| Where it listens | `CRSW_LISTEN=127.0.0.1:8765` — the tunnel is the only way in | `CRSW_LISTEN` on a LAN address, or `0.0.0.0` |
+| TLS | The Cloudflare edge terminates it, before the tunnel | **None by default.** Put a reverse proxy with a certificate in front, or the password crosses the network in clear — **the warning below** |
+
+**Never both.** Configure a password beside Access and the daemon refuses to start
+rather than picking a winner: which door is live decides who may execute code here,
+and that is the last question a daemon should answer by guessing. Configure neither
+and it serves the API, admits nobody to the dashboard, and says so at every start.
+
+Which one a running daemon actually has is on `GET /settings`, under **Who may reach
+it**, in a sentence — read from the door the server was built with rather than from
+the file, so a daemon wired one way and configured another says what it *is*.
+
+### On the internet — Cloudflare Tunnel and Access
+
+Example files for both live in [`deploy/`](deploy/), and
 [`deploy/README.md`](deploy/README.md) is the operator's page: what you supply, in
 what order, and why three settings in the unit are load-bearing.
 
@@ -500,6 +543,71 @@ systemctl --user enable --now crswd
 `Environment=CRSW_SHARED_SECRET=` in the unit would be wrong even in a private
 repo: anyone who can run `systemctl --user show crswd` can read a unit back.
 
+### On your own network — the dashboard password
+
+No Cloudflare, no tunnel, no hostname: the daemon listens on an address the machine
+you are sitting at can reach, and serves its own sign-in form. The whole of it, in
+`~/.config/crswd/config`:
+
+```
+shared_secret = <openssl rand -hex 32>
+dashboard_password = <a long passphrase, at least 16 characters>
+listen = 0.0.0.0:8765
+allowed_roots = /home/you/code
+```
+
+The file must be mode `0600` — it holds two secrets, and the daemon refuses to start
+from one any other account can read. Then `systemctl --user enable --now crswd`, and:
+
+```
+http://<the host's LAN address>:8765/login
+```
+
+**That path is the only way in, and nothing points you at it.** A browser arriving
+at `/` with no cookie gets the same uniform 401 a stranger gets — this door tells
+nobody which paths it serves, including you. Sign in there and every other page
+works as it does behind Access. **To sign out**, go to Settings (the link in the
+header of every page) and press **Sign out** under *Who may reach it*, beside the
+sentence naming the door. That ends this browser's copy of the cookie; a copy taken
+off the machine stays valid until it expires, and what ends every outstanding
+sign-in at once is changing `dashboard_password` or rotating `shared_secret`.
+
+`listen` may be a LAN address instead of `0.0.0.0` if the host has more than one
+interface and you want exactly one of them. It may not be a name — see the note
+under [Configuration](#configuration) — and `0.0.0.0` is refused outright on a
+daemon with no door, which is the bound that makes this mode safe to have at all.
+
+> **⚠️ Without TLS in front of the daemon, the password crosses the network in
+> clear.** Anyone who can watch that network — a switch port, a compromised device,
+> the Wi-Fi you are on — reads it and gets everything you have. This is a real
+> weakness of this mode, not a footnote, and it is stated rather than reassured
+> away.
+>
+> **Put a reverse proxy with a certificate in front of the daemon.** Terminate TLS
+> there and point it back at `127.0.0.1:8765`; the daemon does not terminate TLS
+> itself, and an operator who wants it puts a proxy in front, which is what the
+> loopback bind already assumed. The cookie limits the exposure to one crossing per
+> sign-in instead of one per request — it does not remove it.
+>
+> Behind such a proxy the session cookie is still not marked `Secure`, and that is
+> deliberate: the flag follows the TLS state of the connection the *daemon* sees,
+> and never `X-Forwarded-Proto`, which is caller-authored text there is no
+> configured proxy to believe. So do not leave a plaintext route to the same host
+> open beside the proxied one — a browser would send the cookie down it.
+>
+> Run this only on a network you actually control. Everything on that network can
+> reach the port, and behind the port is an unsandboxed shell.
+
+**The password door authenticates less than Access does, and knowing what less
+means is the point of choosing.** Access verifies a *person* against Google, at the
+edge, before this host is reachable at all; a password verifies that whoever is
+asking knows one secret. There is one operator behind it by construction, no
+allowlist to check, and nothing failing closed in front of it. What is unchanged is
+everything behind the door: the same owner, the same ownership checks, the same
+action gate on anything that changes the host. What bounds a guess is a sixteen
+character minimum, a budget of six attempts a minute per source address, and a
+refusal that says nothing about which of the two sides was wrong.
+
 ### Reading the audit trail
 
 Audit records are structured JSON on stdout, which makes the journal the entire
@@ -527,6 +635,8 @@ pane never is.
 
 ### Verifying the exposure model
 
+**Behind the tunnel** — the daemon must be reachable no other way:
+
 ```bash
 ss -tlnp | grep crswd                  # 127.0.0.1:PORT, never 0.0.0.0
 curl -sS http://<host-lan-ip>:PORT/    # must fail to connect
@@ -534,6 +644,19 @@ curl -sS http://<host-lan-ip>:PORT/    # must fail to connect
 
 If the second command reaches the daemon, stop and fix the bind address before
 going any further.
+
+**On a LAN** the second command is *supposed* to connect — so what to check is that
+connecting buys nothing. It must answer `401` with no cookie, and the sign-in form
+must be the only thing that does not:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' http://<host-lan-ip>:PORT/         # 401
+curl -sS -o /dev/null -w '%{http_code}\n' http://<host-lan-ip>:PORT/login    # 200
+```
+
+A `200` on the first line is the failure this whole section exists to catch: it
+means something is admitting an unauthenticated browser, and every session on the
+host is a shell anyone on that network can drive. Stop and fix it.
 
 ## Licence
 

@@ -499,6 +499,8 @@ This is the most fragile thing in the project and the most sensitive:
 | Replay cache TTL | 10 minutes |
 | Page token lifetime | 12 hours — long enough that a dashboard left open through a working day still acts, short enough to bound what one captured token is worth. Nothing else depends on the number: expiry fails visibly and a reload fixes it |
 | Page token key | The process's lifetime. Regenerated at every start, never persisted, so a restart invalidates every outstanding token |
+| Dashboard session cookie | 12 hours, on the password door only — the page token's number, chosen the same way. Carried *inside* the signed value and measured on the server's clock; the cookie's own `Max-Age` is a request to the browser, and a client that ignores it presents an expired value and is refused |
+| Sign-in attempts | 6 a minute per source address, burst 3, on the create route's own token bucket. A constant rather than a setting: it is an attacker's budget, not the operator's work. It is not what makes the password hard to guess — the sixteen-character minimum is — and it is spent before the two sides are compared, so a correct password does not buy its way past a spent budget |
 | Session bearer token TTL | 24 hours — deliberately equal to the absolute lifetime |
 | Session idle timeout | 60 minutes, then auto-destroy |
 | Session absolute lifetime | 24 hours, no renewal |
