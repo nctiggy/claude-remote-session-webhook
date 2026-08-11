@@ -329,16 +329,24 @@ jobs:
         # that shipped one of these paths would turn every assertion below into a
         # description of what was already there.
         #
-        # These four are every path install.sh writes, and a test holds the two
-        # lists together — a fifth path added to the installer and not to this
+        # These five are every path install.sh writes, and a test holds the two
+        # lists together — a sixth path added to the installer and not to this
         # loop is a file this job would find already present and report as
         # installed.
+        #
+        # `code` is the last of them and the only one that is not a file: the
+        # directory the installed configuration names as the one place a session
+        # may run. A runner image that shipped one would make "the installer
+        # created it" a description of what was already there — which is the
+        # assertion below that matters most, because a configuration naming a
+        # directory nobody created is a daemon that refuses to boot.
         run: |
           fresh=0
           for rel in .local/bin/crswd \
                      .config/systemd/user/crswd.service \
                      .local/share/crswd/crswd.service.sha256 \
-                     .config/crswd/config; do
+                     .config/crswd/config \
+                     code; do
             if [ -e "$HOME/$rel" ]; then
               echo "::error::~/$rel already exists, so installing it here proves nothing"
               fresh=1
@@ -392,23 +400,77 @@ jobs:
             echo "::error::the installer failed on the kind of machine it is written for"
             exit 1
           fi
-          cat "$log"
 
           for rel in .local/bin/crswd \
                      .config/systemd/user/crswd.service \
                      .local/share/crswd/crswd.service.sha256 \
                      .config/crswd/config; do
             if [ ! -e "$HOME/$rel" ]; then
+              cat "$log"
               echo "::error::the installer reported success and wrote no ~/$rel"
               exit 1
             fi
           done
 
+          config="$HOME/.config/crswd/config"
+
+          # The generated secret, read before the transcript is shown and never
+          # echoed from here on: `sed` prints only what it extracts, into a
+          # variable. The order is the point — this log becomes a public record
+          # of the run the moment it is `cat`, so a check that the secret is not
+          # in it has to run before that and not after.
+          secret=$(sed -n 's/^shared_secret = //p' "$config")
+          if [ -z "$secret" ]; then
+            cat "$log"
+            echo "::error::the installed configuration sets no shared_secret. The daemon refuses to start without one, so this install stopped one hand-edit short of a host that works"
+            exit 1
+          fi
+          # No length in the message, for the same reason the settings page
+          # prints none: it is four characters an attacker no longer has to
+          # guess at.
+          if [ "${#secret}" -lt 32 ]; then
+            cat "$log"
+            echo "::error::the installed configuration sets a shared_secret shorter than the 32 bytes the daemon requires; it would refuse to start"
+            exit 1
+          fi
+          # -q, and no cat: a run that finds the secret in the transcript must
+          # not publish the transcript to say so.
+          if grep -Fq -- "$secret" "$log"; then
+            echo "::error::the installer printed the shared secret it generated. Its output is a terminal scrollback, a CI log, and often the far end of a pipe from curl — printed once is a copy in all three. The transcript is deliberately not shown here, because showing it now would be the same disclosure"
+            exit 1
+          fi
+          # The digest, so the second run can be compared against this one
+          # without either of them writing the value anywhere.
+          printf '%s' "$secret" | sha256sum > "$RUNNER_TEMP/secret.sha256"
+
+          cat "$log"
+
           # Measured on a real host with a real umask, which is the half the Go
-          # tests cannot speak for: this file is where the shared secret goes.
-          mode=$(stat -c %a "$HOME/.config/crswd/config")
+          # tests cannot speak for: the file checked above now holds a
+          # credential, and the daemon refuses to read one at any other mode.
+          mode=$(stat -c %a "$config")
           if [ "$mode" != 600 ]; then
-            echo "::error::~/.config/crswd/config is mode $mode, want 600 — it is the file the shared secret is written into"
+            echo "::error::~/.config/crswd/config is mode $mode, want 600 — it is the file the shared secret was written into"
+            exit 1
+          fi
+
+          # The containment boundary: what the configuration names, and whether
+          # it is there. Both halves, because either one alone passes on a host
+          # the daemon refuses to start on — an entry that does not resolve is a
+          # startup failure, and a directory nobody named is one the operator
+          # cannot read off the file they were just told is theirs.
+          #
+          # $HOME itself is the answer that must never appear. It would start,
+          # every session would be inside the allowlist, and the allowlist would
+          # hold the SSH keys and cloud credentials that live directly under a
+          # home directory.
+          roots=$(sed -n 's/^allowed_roots = //p' "$config")
+          if [ "$roots" != "$HOME/code" ]; then
+            echo "::error::the installed configuration sets allowed_roots to '$roots'; the installer names \$HOME/code, which is also what the unit sets CRSW_ALLOWED_ROOTS to. A third answer is one the operator reads and the daemon never uses"
+            exit 1
+          fi
+          if [ ! -d "$roots" ]; then
+            echo "::error::the configuration names $roots and no such directory exists. Every allowed_roots entry must resolve at startup, so this host has a configuration that looks complete and a daemon that refuses to boot"
             exit 1
           fi
 
@@ -477,6 +539,20 @@ jobs:
           # holding none of the operator's settings.
           if ! sha256sum -c "$RUNNER_TEMP/edited.sha256"; then
             echo "::error::the second run overwrote a file the operator had edited"
+            exit 1
+          fi
+
+          # The generated secret by itself, as well as the file as a whole. The
+          # check above would catch a rewrite too, and this one names what it
+          # would cost: every client signing with the old secret stops being
+          # able to reach the daemon the moment a re-install replaces it, and
+          # the operator ran a command whose whole promise is that it leaves
+          # their file alone. Compared as digests, so neither run writes the
+          # value to a second place.
+          secret=$(sed -n 's/^shared_secret = //p' "$config")
+          after=$(printf '%s' "$secret" | sha256sum)
+          if [ "$after" != "$(cat "$RUNNER_TEMP/secret.sha256")" ]; then
+            echo "::error::the second run changed the generated shared_secret"
             exit 1
           fi
 

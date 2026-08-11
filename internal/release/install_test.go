@@ -35,6 +35,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -44,6 +45,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/updater"
 )
 
@@ -814,21 +816,29 @@ func TestConfigModeIs0600(t *testing.T) {
 			t.Errorf("~/%s is mode %04o, want 0600.\nThat file is where the shared secret goes, and 0644 is what a `cat >` inherits from a stock umask", config, mode)
 		}
 
-		// Every setting commented out, which is what docs/security.md §3 says
-		// keeps a copy of the example from being a file that holds a secret —
-		// and what makes this file behave exactly as no file at all until the
-		// operator edits it.
+		// Every other setting arrives commented out, which is what makes this
+		// file behave as no file at all in each of them until the operator edits
+		// it. Three exceptions, and each is one for a stated reason: the schema
+		// version, the secret because no default could stand in for a credential
+		// (TestInstallGeneratesASharedSecret), and the allowlist because its
+		// default only applies where the directory already exists
+		// (TestInstallSetsTheContainmentRoot).
+		//
+		// The key is named in the failure and the value never is. A line that
+		// should not be here is diagnosed by which setting it is, and a test
+		// that printed the whole line would print the secret on the day this
+		// list is wrong.
+		set := map[string]bool{"version": true, "shared_secret": true, "allowed_roots": true}
 		for _, line := range strings.Split(string(body), "\n") {
 			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") || line == "version = 1" {
+			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			t.Errorf("the installed configuration sets %q.\nEverything but the schema version has to arrive commented out: a value here is one the operator did not choose, on a file they are about to be told is theirs", line)
-		}
-		for _, key := range []string{"shared_secret", "allowed_roots"} {
-			if !strings.Contains(string(body), key) {
-				t.Errorf("the installed configuration never mentions %s, which the next steps tell the operator to set in it", key)
+			key, _, ok := strings.Cut(line, "=")
+			if key = strings.TrimSpace(key); ok && set[key] {
+				continue
 			}
+			t.Errorf("the installed configuration sets %q.\nEverything with a default has to arrive commented out: a value here is one the operator did not choose, on a file they are about to be told is theirs", key)
 		}
 	})
 
@@ -857,6 +867,194 @@ func TestConfigModeIs0600(t *testing.T) {
 		}
 		if mode != 0o644 {
 			t.Errorf("the installer changed the mode of an existing configuration to %04o.\nLeaving it alone means the mode too — that file holds no secret, so 0644 is a mode the daemon accepts and not one to correct on somebody's behalf", mode)
+		}
+	})
+}
+
+// installedValue is one setting out of a configuration the installer wrote,
+// read by the daemon's own parser rather than by a second one written here.
+//
+// Which is the claim worth making. The installer writes that file for the daemon
+// to read, and a parser living in this package could agree with the installer
+// about a file the daemon refuses — the operator would meet that as a service
+// that will not come up, holding a file every test here called correct.
+//
+// Callers say what an absent setting costs, because it is a different sentence
+// for each of them, but none may treat "" as an answer: every one compares what
+// it gets back against something, and an empty string compares equal to another
+// empty string.
+func installedValue(t *testing.T, body []byte, key string) (string, bool) {
+	t.Helper()
+
+	// Warnings to io.Discard rather than nil, which means os.Stderr: nothing
+	// here is about a renamed key, and the writer is not optional.
+	f, err := config.ParseFile(installedConfig, body, io.Discard)
+	if err != nil {
+		t.Fatalf("the daemon's own parser refuses the configuration the installer wrote: %v\nThat file exists for this parser to read, and one it refuses is a host where the service does not start", err)
+	}
+	return f.Lookup(key)
+}
+
+// installedSecret is the shared secret, and it fails rather than returning ""
+// for a file that sets none.
+func installedSecret(t *testing.T, body []byte) string {
+	t.Helper()
+
+	secret, ok := installedValue(t, body, config.EnvSharedSecret)
+	if !ok {
+		t.Fatal("the installed configuration sets no shared_secret.\nThe daemon refuses to start without one, so the install stopped one hand-edit short of a host that works — and the hand that fills in a required credential is the hand that types something it can remember")
+	}
+	return secret
+}
+
+// TestInstallGeneratesASharedSecret is T001. The daemon refuses to start without
+// a secret, so an installer that wrote the line commented out and told the
+// operator to fill it in stopped one hand-edit short of a host that works — and
+// the hand that fills in a required credential is the hand that types something
+// it can remember.
+//
+// Three claims, and the second is the one with no symptom of its own: an
+// installer that generates a perfectly good secret and prints it has put a
+// credential into a terminal scrollback, a CI log, and the far end of a pipe
+// from curl, and every other thing about the install still looks right.
+//
+// No failure below names a value. What is under test is a secret, and a test
+// that printed it on the way to reporting a leak would be the leak.
+func TestInstallGeneratesASharedSecret(t *testing.T) {
+	t.Parallel()
+	needsOpenSSL(t)
+
+	t.Run("long enough for the daemon to accept it", func(t *testing.T) {
+		t.Parallel()
+
+		got := installs(t)
+		body, _ := placed(t, got, installedConfig)
+
+		if secret := installedSecret(t, body); len(secret) < config.MinSecretBytes {
+			t.Errorf("the installed configuration sets a shared_secret shorter than the %d bytes config.MinSecretBytes requires.\nThe daemon refuses to start on it, and whoever installed this meets that as a service that will not come up", config.MinSecretBytes)
+		}
+	})
+
+	t.Run("never printed", func(t *testing.T) {
+		t.Parallel()
+
+		got := installs(t)
+		body, _ := placed(t, got, installedConfig)
+		secret := installedSecret(t, body)
+
+		if strings.Contains(got.stdout+got.stderr, secret) {
+			t.Error("the installer printed the shared secret it generated.\nIts output is a terminal scrollback, a CI log, and often the far end of a pipe from curl: printed once is a copy in all three, and rotating it is the only way back. Say that a secret was generated, never which one")
+		}
+	})
+
+	t.Run("a different one on every host", func(t *testing.T) {
+		t.Parallel()
+
+		// Two installs, two homes, and the only thing asserted is that they
+		// disagree. A fixture committed to the installer would satisfy every
+		// other case here and hand one credential to everybody who ran it.
+		first, _ := placed(t, installs(t), installedConfig)
+		second, _ := placed(t, installs(t), installedConfig)
+
+		if installedSecret(t, first) == installedSecret(t, second) {
+			t.Error("two installs generated the same shared_secret.\nThat is a constant in the installer rather than a secret, and it authenticates every API caller on every host that ever ran it")
+		}
+	})
+
+	t.Run("a second run leaves the generated one alone", func(t *testing.T) {
+		t.Parallel()
+
+		// Read between the runs. They share a home, so a value read afterwards
+		// would be compared against itself and pass against an installer that
+		// rewrote the file.
+		var afterFirst string
+
+		_, second := twice(t, func(t *testing.T, home string, _ *release) {
+			t.Helper()
+
+			raw, err := os.ReadFile(filepath.Join(home, installedConfig)) //nolint:gosec // G304: the home is this test's own t.TempDir.
+			if err != nil {
+				t.Fatalf("read the configuration the first run wrote: %v", err)
+			}
+			afterFirst = installedSecret(t, raw)
+		})
+
+		body, _ := placed(t, second, installedConfig)
+		if installedSecret(t, body) != afterFirst {
+			t.Error("the second run replaced the generated shared secret.\nRe-running the one-liner is how a host takes a newer binary, and every client signing with the old secret stops being able to reach the daemon the moment it does")
+		}
+	})
+}
+
+// TestInstallSetsTheContainmentRoot is T002. allowed_roots is the whole of what
+// bounds a session running with the permission prompt turned off, and the
+// installer used to leave it commented out over a note naming the default.
+//
+// That default is only a default where the directory already exists: every
+// entry has to resolve at startup, so on a host with no ~/code the daemon
+// refuses to boot rather than falling back to the built-in root. The two halves
+// below are one requirement — a configuration naming a directory nobody created
+// is a service that will not come up, and a directory nobody named is a
+// boundary the operator cannot read off the file they were told is theirs.
+func TestInstallSetsTheContainmentRoot(t *testing.T) {
+	t.Parallel()
+	needsOpenSSL(t)
+
+	t.Run("named in the configuration, and there on the disk", func(t *testing.T) {
+		t.Parallel()
+
+		got := installs(t)
+		body, _ := placed(t, got, installedConfig)
+
+		roots, ok := installedValue(t, body, config.EnvAllowedRoots)
+		if !ok {
+			t.Fatal("the installed configuration sets no allowed_roots.\nThe daemon then uses its built-in default, which resolves only where that directory happens to exist — and the operator reads a file that says nothing about what a session can reach")
+		}
+
+		// $HOME itself, spelled out because it is the failure with no symptom:
+		// the daemon starts, every session is contained, and the allowlist holds
+		// the SSH keys, the cloud credentials and the browser profiles that live
+		// directly under a home directory.
+		if roots == got.home {
+			t.Fatalf("the installed configuration allows sessions to run anywhere under %s.\nThat is the whole home directory: an allowlist that contains a private key is not a containment boundary", roots)
+		}
+		if want := filepath.Join(got.home, config.DefaultRootName); roots != want {
+			t.Errorf("the installed configuration sets allowed_roots to %q; the default this file and the daemon both name is %q.\nThe two have to agree: the systemd unit sets CRSW_ALLOWED_ROOTS to the daemon's default and the environment beats the file, so a third answer here is one the operator reads and the daemon never uses", roots, want)
+		}
+
+		// Stat what the file names rather than what this test expected it to
+		// name. It is the path the daemon resolves at startup, and the one it
+		// refuses to start on.
+		info, err := os.Stat(roots)
+		if err != nil {
+			t.Fatalf("the configuration names %s and the installer did not create it: %v\nEvery allowed_roots entry must resolve at startup, so this host has a daemon that refuses to boot and a configuration that looks complete", roots, err)
+		}
+		if !info.IsDir() {
+			t.Errorf("%s is not a directory (mode %v).\nThe daemon refuses to start on an allowed_roots entry that is not one", roots, info.Mode())
+		}
+	})
+
+	t.Run("a host that already has a configuration gets no directory either", func(t *testing.T) {
+		t.Parallel()
+
+		// The other half of "an existing configuration is never touched". That
+		// file may point containment somewhere else entirely, and a directory
+		// created to satisfy a default it does not use is this installer making
+		// a decision on a host it was told to leave alone.
+		got := installs(t, func(t *testing.T, home string) {
+			t.Helper()
+
+			dir := filepath.Join(home, ".config", "crswd")
+			if err := os.MkdirAll(dir, 0o750); err != nil {
+				t.Fatalf("make %s: %v", dir, err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "config"), []byte("version = 1\nallowed_roots = /tmp\n"), 0o600); err != nil {
+				t.Fatalf("write the operator's configuration: %v", err)
+			}
+		})
+
+		if _, err := os.Stat(filepath.Join(got.home, config.DefaultRootName)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("the installer created ~/%s on a host whose configuration it left alone (%v).\nThat file already says where sessions may run, and it is not here", config.DefaultRootName, err)
 		}
 	})
 }
@@ -1195,4 +1393,130 @@ func keyLines(t *testing.T, blob string) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+// unitPath is the service file the installer ships and installs.
+const unitPath = repoRoot + "/deploy/crswd.example.service"
+
+// TestTheUnitExecsWhatTheInstallerInstalls is the guard for the defect that
+// made this daemon unstartable on every machine the installer ever set up.
+//
+// The unit's ExecStart was `%h/bin/crswd`. The installer writes
+// `~/.local/bin/crswd`. Nothing compared them, so systemd answered
+// `Failed to spawn 'start' task: No such file or directory` on a fresh host —
+// and never here, because this machine's own deployment predates the installer
+// and has a binary at the older path.
+//
+// **Must fail when** the installer's destination and the unit's ExecStart drift
+// apart. They are written in two languages in two files and cannot share a
+// constant, which is the same shape as the asset-name duplication one file over:
+// the duplication is unavoidable, the drift is not.
+func TestTheUnitExecsWhatTheInstallerInstalls(t *testing.T) {
+	t.Parallel()
+
+	unit, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", unitPath, err)
+	}
+	script, err := os.ReadFile(installerPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", installerPath, err)
+	}
+
+	exec := regexp.MustCompile(`(?m)^ExecStart=%h/(\S+)`).FindSubmatch(unit)
+	if exec == nil {
+		t.Fatal("the unit has no ExecStart under %h, so nothing here can check where it points")
+	}
+	dest := regexp.MustCompile(`(?m)^readonly BINARY="([^"]+)"`).FindSubmatch(script)
+	if dest == nil {
+		t.Fatal("install.sh declares no BINARY, so nothing here can check what it installs")
+	}
+
+	if got, want := string(exec[1]), string(dest[1]); got != want {
+		t.Errorf("the unit execs %%h/%s and the installer installs ~/%s.\nsystemd answers \"Failed to spawn 'start' task: No such file or directory\" on any host that does not already have a binary at the unit's path, which is every host the installer has ever set up", got, want)
+	}
+}
+
+// TestTheUnitDoesNotRequireAFileTheInstallerNeverWrites is the other half of the
+// same journal entry: `Failed to load environment files: No such file or
+// directory`.
+//
+// The installer writes ~/.config/crswd/config. The unit required
+// ~/.config/crswd/env, which nothing creates. A mandatory EnvironmentFile that
+// is absent is a unit systemd refuses to start at all.
+//
+// **Must fail when** an EnvironmentFile is made mandatory again. The leading `-`
+// is what keeps a legacy env file working without requiring one.
+func TestTheUnitDoesNotRequireAFileTheInstallerNeverWrites(t *testing.T) {
+	t.Parallel()
+
+	unit, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", unitPath, err)
+	}
+	for _, m := range regexp.MustCompile(`(?m)^EnvironmentFile=(\S+)`).FindAllSubmatch(unit, -1) {
+		if !bytes.HasPrefix(m[1], []byte("-")) {
+			t.Errorf("the unit requires the environment file %s and the installer never writes one; systemd refuses to start a unit whose mandatory environment file is absent, which is every fresh install", m[1])
+		}
+	}
+}
+
+// TestTheInstallerRequiresTmux holds the one dependency without which the daemon
+// is a session manager that cannot manage a session.
+//
+// It was absent from require_tools while curl, tar, sha256sum, openssl and
+// install were all checked — so an install onto a host without tmux succeeded,
+// and every route answered an error afterwards. README.md has said "tmux missing
+// is fatal" the whole time.
+//
+// **Must fail when** tmux moves to the advisory list or is dropped. A warning is
+// the right answer for cloudflared, whose job something else may be doing, and
+// the wrong answer for the program the daemon drives.
+func TestTheInstallerRequiresTmux(t *testing.T) {
+	t.Parallel()
+
+	script, err := os.ReadFile(installerPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", installerPath, err)
+	}
+	block := regexp.MustCompile(`(?s)require_tools\(\) \{.*?\n\}`).Find(script)
+	if block == nil {
+		t.Fatal("install.sh has no require_tools, so nothing here checks what it demands")
+	}
+	if !bytes.Contains(block, []byte("tmux")) {
+		t.Errorf("require_tools does not demand tmux:\n%s\nThe daemon drives tmux for every session it starts, reads or ends; installing without it produces a service that comes up and can do nothing", block)
+	}
+}
+
+// TestEveryInstallerFunctionIsCalled is this repository's oldest failure applied
+// to shell.
+//
+// A reaper with no caller, Store.Touch with no caller, a PR-opener no workflow
+// invoked, CRSW_DESTROY_ON_SHUTDOWN read by nothing, and a per-session lifetime
+// override the browser could not reach: five times, in Go. A shell function
+// defined and never called fails the same way and even more quietly, because
+// nothing compiles it.
+//
+// **Must fail when** a function is added to install.sh and never wired into the
+// path an install actually takes.
+func TestEveryInstallerFunctionIsCalled(t *testing.T) {
+	t.Parallel()
+
+	script, err := os.ReadFile(installerPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", installerPath, err)
+	}
+	defined := regexp.MustCompile(`(?m)^([a-z_][a-z0-9_]*)\(\) \{`).FindAllSubmatch(script, -1)
+	if len(defined) == 0 {
+		t.Fatal("install.sh defines no functions at all, so this test is checking nothing")
+	}
+
+	for _, d := range defined {
+		name := string(d[1])
+		// A call is the name anywhere it is not the definition line.
+		calls := regexp.MustCompile(`(?m)^[^#\n]*\b` + regexp.QuoteMeta(name) + `\b`).FindAll(script, -1)
+		if len(calls) < 2 {
+			t.Errorf("install.sh defines %s() and never calls it; a shell function with no caller is dead on arrival and nothing compiles it to say so", name)
+		}
+	}
 }

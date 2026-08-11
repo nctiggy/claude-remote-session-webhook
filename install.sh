@@ -20,11 +20,11 @@
 # restores the mode stored in the archive. Both checks stand in front of it.
 #
 # What it then writes is the binary, the service unit, a record of the unit it
-# wrote, and a configuration file — but it replaces neither a configuration nor
-# a unit it cannot show it wrote itself, so running it again on a host somebody
-# has since configured is safe. It enables nothing and starts nothing: the
-# daemon cannot serve a request before the secret is set, and a service that
-# fails on first boot teaches its operator to ignore a failing service.
+# wrote, a configuration file, and the one directory that configuration lets a
+# session run in — but it replaces neither a configuration nor a unit it cannot
+# show it wrote itself, so running it again on a host somebody has since
+# configured is safe. It enables nothing and starts nothing: enabling a unit is
+# a decision about the machine it runs on, and this script is a stranger there.
 #
 # This script belongs to the project rather than to a person: no home
 # directory and no username appears below. The account name in the URLs is
@@ -51,7 +51,15 @@ readonly UNIT=".config/systemd/user/crswd.service"
 readonly UNIT_RECORD=".local/share/crswd/crswd.service.sha256"
 readonly CONFIG=".config/crswd/config"
 
+# The one directory a session may run in, created beside a new configuration
+# and named by it. `code` is the daemon's own default, spelled the same way in
+# internal/config and in config.example. $HOME itself is never it: SSH keys,
+# cloud credentials and browser profiles all live directly under $HOME, and an
+# allowlist containing them contains everything, which is no allowlist.
+readonly ROOT="code"
+
 say() { printf 'crswd: %s\n' "$*"; }
+warn() { printf 'crswd: warning: %s\n' "$*" >&2; }
 die() {
   printf 'crswd: %s\n' "$*" >&2
   exit 1
@@ -76,11 +84,62 @@ RELEASE_KEYS
 }
 
 require_tools() {
+  # tmux is here rather than in the advisory list below because the daemon is a
+  # tmux session manager: without it there is no session to start, drive or read,
+  # and every route answers an error. Installing onto a host without it produces
+  # a service that comes up and can do nothing.
   missing=""
-  for tool in curl tar sha256sum openssl install; do
+  for tool in curl tar sha256sum openssl install tmux; do
     command -v "$tool" > /dev/null 2>&1 || missing="$missing $tool"
   done
   [ -z "$missing" ] || die "not on PATH:$missing"
+}
+
+# What the documented deployment needs and the daemon does not. These warn rather
+# than refuse on purpose: the daemon binds loopback and something has to carry
+# traffic to it, but nothing here requires that something to be cloudflared, and
+# an operator fronting it with their own proxy is not making a mistake. Likewise
+# the start command is configurable, so `claude` is the default's dependency
+# rather than the daemon's.
+advise_tools() {
+  for tool in cloudflared claude; do
+    command -v "$tool" > /dev/null 2>&1 || \
+      warn "$tool is not on PATH. It is not needed to install or start crswd, but the documented setup uses it — see the README."
+  done
+}
+
+# ~/.local/bin is where this installs, and on several distributions it is not on
+# PATH until something puts it there. The unit uses an absolute path so the
+# service does not care; an operator typing `crswd --version` does.
+#
+# Appended with a marker so a second run finds its own line and adds nothing. The
+# login shell is read from $SHELL rather than from this process, because
+# `curl | bash` is bash whatever the operator actually uses.
+ensure_path() {
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) return 0 ;;
+  esac
+
+  profile="$HOME/.profile"
+  case "${SHELL:-}" in
+    */zsh) profile="$HOME/.zshrc" ;;
+    */bash) [ -f "$HOME/.bashrc" ] && profile="$HOME/.bashrc" ;;
+  esac
+
+  if [ -f "$profile" ] && grep -q 'added by crswd install' "$profile" 2>/dev/null; then
+    warn "~/.local/bin is not on PATH and $profile already carries the line that adds it — open a new shell, or source it."
+    return 0
+  fi
+
+  # Single-quoted deliberately: $HOME and $PATH are written literally so the
+  # profile expands them every time a shell starts, rather than baking in the
+  # values this installer happened to run with. shellcheck's SC2016 is the right
+  # warning for the wrong line.
+  # shellcheck disable=SC2016
+  printf '\n# added by crswd install\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$profile" \
+    || die "could not add ~/.local/bin to PATH in $profile"
+  say "added ~/.local/bin to PATH in ${profile#"$HOME"/}"
+  say "  this shell does not have it yet — open a new one, or: export PATH=\"\$HOME/.local/bin:\$PATH\""
 }
 
 unsupported() {
@@ -234,33 +293,85 @@ place_unit() {
 # thing on this host they authored; an installer that replaced it would destroy
 # it during an operation they think of as safe.
 #
-# What is written is an example with every setting commented out, so the file as
-# written behaves exactly as no file at all — and holds no secret, which is what
-# makes leaving a copy of it lying around safe.
+# Every setting with a default still arrives commented out, so the file behaves
+# as no file at all in each of them. Two cannot.
+#
+# The shared secret, because there is no default that could stand in for a
+# credential and the daemon refuses to start without one. So it is generated
+# here rather than left as a blank the operator fills in, because a required
+# credential filled in by hand is a credential somebody types from memory.
+#
+# The allowlist, because its default is only a default where the directory
+# already exists — every entry must resolve at startup, so a host without
+# ~/code has a daemon that refuses to boot rather than one running on the
+# built-in root. The directory is created here and then named explicitly: this
+# is the whole of what bounds a session that runs with the permission prompt
+# turned off, and a boundary nobody can read is a boundary nobody checks.
+#
+# That is also what stopped the 0600 below being a precaution. This file now is
+# a credential, and the daemon refuses to read one that sets a secret at any
+# other mode.
 write_config() {
+  local secret
   if [ -e "$HOME/$CONFIG" ]; then
     say "~/$CONFIG exists — leaving it alone"
     return 0
   fi
 
+  # openssl is already required — it is what verifies the release signature — so
+  # the CSPRNG this reaches for costs no new dependency.
+  #
+  # The value is never printed. It goes from this substitution into a file
+  # created under a 0077 umask and nowhere else: not to say(), not into an error
+  # message, not into the transcript. The installer's output is a terminal
+  # scrollback, a CI log, and often the far end of a pipe from curl, so a secret
+  # printed once is a secret in all three — the same reason `crswd keygen`
+  # writes nothing to disk.
+  secret=$(openssl rand -hex 32) || die "could not generate a shared secret"
+  # 32 bytes is the minimum the daemon accepts and `-hex 32` is 64 characters.
+  # A short one would be written, refused at startup, and diagnosed by whoever
+  # is reading a service that will not come up.
+  [ "${#secret}" -ge 64 ] || die "openssl produced a short shared secret — refusing to write one the daemon would reject"
+
+  # Before the file that names it, and not after: an allowed_roots entry that
+  # does not resolve is a startup failure, so a configuration written first
+  # would be a configuration this installer knows the daemon will refuse.
+  if [ -d "$HOME/$ROOT" ]; then
+    say "~/$ROOT is already here — sessions will be confined to it"
+  else
+    mkdir -p -- "$HOME/$ROOT" ||
+      die "could not create ~/$ROOT, which is the only directory sessions would be allowed to run in"
+    say "created ~/$ROOT — the only directory sessions will be allowed to run in"
+  fi
+
   mkdir -p -- "$HOME/${CONFIG%/*}"
   # Created under a 0077 umask rather than written and then chmod'd: between
-  # those two there is a moment where a file that is about to hold the shared
+  # those two there is a moment where a file that now does hold the shared
   # secret is readable by every account on this host. The chmod after it is not
   # redundant — it states the mode this file must have, where the umask only
   # arranges for it.
+  #
+  # Heredocs with a printf between them for each value, rather than one heredoc
+  # with the two interpolated into it. The quoted delimiter is what keeps every
+  # `$` and every `#` below literal, and unquoting it to reach two values would
+  # expand the rest of the file along with them.
   (
     umask 077
-    cat > "$HOME/$CONFIG" <<'CONFIG'
+    {
+      cat <<'CONFIG'
 # crswd configuration.
 #
 # Written once, by the installer. Nothing in this project writes it again — a
 # re-install leaves whatever is here alone. This file is yours.
 #
-# Every setting is commented out, so as written it behaves exactly like no
+# The shared secret below was generated when this file was written. Everything
+# else is commented out, so in every other respect it behaves exactly like no
 # configuration file at all. Uncomment only what you mean to change. The full
 # annotated list of every setting there is lives at
 # https://github.com/nctiggy/claude-remote-session-webhook/blob/main/config.example
+#
+# This file holds a credential, and the daemon refuses to read a file that sets
+# one at any mode but 0600. It was written that way. Keep it that way.
 #
 # Format: `key = value`, one per line. `#` starts a comment at the start of a
 # line and nowhere else, because a shared secret may legitimately contain one.
@@ -274,40 +385,70 @@ version = 1
 # REQUIRED. The HMAC shared secret the API client signs with, at least 32
 # bytes. Unset is a startup failure: an absent secret is an absent
 # authentication layer, and a daemon that starts without one is worse than a
-# daemon that does not start. Generate one with `openssl rand -hex 32`.
+# daemon that does not start.
+#
+# This one was generated by the installer, from `openssl rand -hex 32`, and has
+# never been printed — not to the terminal that ran the install, not into a log,
+# not into the pipe from curl. This file is the only place it exists, which is
+# where you read it from to configure a client.
+#
+# Replace it with one of your own whenever you like. Every client signing with
+# the old one stops being able to reach the daemon at that moment, which is the
+# whole of what rotating a shared secret means.
 #
 # A file that sets this must be mode 0600, which is how this one was written.
-# shared_secret =
+CONFIG
+      printf 'shared_secret = %s\n' "$secret"
+      cat <<'CONFIG'
 
 # The blast radius, and the real containment control — keep it narrow.
 # Colon-separated absolute paths; a session may only run in a directory one of
 # them contains, and every entry must already exist.
 #
-# Default: $HOME/code. $HOME itself is never the default and is a poor choice:
-# SSH keys, cloud credentials and browser profiles all live directly under it,
-# which would make the allowlist decorative.
-# allowed_roots =
+# The installer wrote this one and created the directory. It is the daemon's
+# own default, written out rather than left commented for two reasons: a
+# default that only applies where the directory happens to exist is a daemon
+# that refuses to boot on every host where it does not, and this line is the
+# whole of what bounds a session running with the permission prompt turned off
+# — which is a thing to be able to read, not to have to know.
+#
+# $HOME itself is never the default and is a poor choice: SSH keys, cloud
+# credentials and browser profiles all live directly under it, which would make
+# the allowlist decorative.
+#
+# The systemd unit sets CRSW_ALLOWED_ROOTS to this same directory, and the
+# environment beats this file. Change what a session may reach and you have to
+# change it in both places, or delete that line from the unit — an edit here
+# alone is one that appears to have done nothing.
 CONFIG
+      printf 'allowed_roots = %s\n' "$HOME/$ROOT"
+    } > "$HOME/$CONFIG"
   )
   chmod 0600 -- "$HOME/$CONFIG"
-  say "wrote ~/$CONFIG (mode 0600)"
+  # That one was generated, never which one. The line an operator reads here is
+  # the line an operator pastes into an issue.
+  say "wrote ~/$CONFIG (mode 0600, with a generated shared_secret and allowed_roots = ~/$ROOT)"
 }
 
-# What is left, said plainly, because nothing else is going to say it. The
-# daemon cannot serve a request before the secret is set, so an installer that
-# enabled the unit here would leave a service failing on first boot — which
-# teaches an operator to ignore a failing service, a habit worth more than the
-# convenience of not typing one command.
+# What is left, said plainly, because nothing else is going to say it. Both of
+# the settings the daemon has no usable default for are written now, so what
+# remains is no longer a hand-edit somebody has to make before the service can
+# come up. The unit is still printed rather than enabled: enabling one is a
+# decision about somebody else's machine and nothing here has been asked to
+# take it.
 next_steps() {
   say ""
-  say "Next: set shared_secret and allowed_roots in ~/$CONFIG,"
-  say "then: systemctl --user enable --now crswd"
+  say "Next: systemctl --user enable --now crswd"
+  say ""
+  say "shared_secret and allowed_roots are both set in ~/$CONFIG. Read it first —"
+  say "allowed_roots is the only thing bounding what a session can reach."
   say ""
   say "Nothing was enabled and nothing is running: this installer starts no service."
 }
 
 main() {
   require_tools
+  advise_tools
   detect_platform
   say "detected $os/$arch"
 
@@ -337,6 +478,7 @@ main() {
   say "unpacked $tarball"
 
   place 0755 unpacked/crswd "$BINARY"
+  ensure_path
   place_unit
   write_config
   next_steps
