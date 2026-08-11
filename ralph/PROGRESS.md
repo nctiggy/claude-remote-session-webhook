@@ -978,3 +978,127 @@ the route moved — and they fail independently.
   landing" on a tree that is finishing milestone 12. Left rather than fixed in
   passing (AR-008), but it is the first thing a stranger reads and it is six
   milestones stale.
+
+---
+
+## Iteration 9 — 2026-08-11 — T009, the command that finished nothing
+
+**Did:** `next_steps()` names both doors — `dashboard_password` and
+`access_enabled`, as the configuration file spells them — says what a daemon with
+neither does, and puts `systemctl --user enable --now crswd` second rather than
+first. The enable decision was re-examined and stands; the reasoning behind it was
+replaced in all three places that carried the old one. `advise_tools`' stale
+loopback claim, handed forward by iteration 8, is corrected too.
+
+**Left:** T010.
+
+### The old next steps described a host that no longer exists
+
+`shared_secret` and `allowed_roots` were the two settings with no usable default,
+and the installer has written both since milestone 6's T010. So "Next: `systemctl
+--user enable --now crswd`" was true and finished nothing: the service comes up,
+it is healthy, and its dashboard is `closedDoor`. The operator opens a browser and
+gets the same uniform 401 a stranger gets, which is **indistinguishable from the
+daemon being broken** — the identical failure shape T008 found for `/login`, one
+step earlier in the same install.
+
+The daemon does warn (`warnNoIdentityProvider`, every start, #70), but into a
+journal that nobody who just ran `curl … | bash` has opened. So the installer says
+it too, and says it in the same words — `admits nobody` is the phrase the startup
+banner and `doorSentenceClosed` on the settings page both use, and an operator who
+meets the state twice has to be able to tell it is one fact.
+
+### The enable decision: it stands, and not for the reason it used to
+
+The recorded reason was **the daemon refuses to start without a secret, so a
+service enabled here fails on first boot and teaches its operator to ignore a
+failing service**. That stopped being true the moment this installer began
+generating a secret. Left alone it would have been a correct decision resting on a
+false premise, which is the kind that gets reversed by the next person who checks
+the premise.
+
+What it rests on now never depended on the configuration: **what would be enabled
+at boot is a daemon that spawns shells with `--dangerously-skip-permissions`, on a
+host whose operator has not yet said who may reach it.** A `curl | bash` that
+leaves one running at boot has taken that decision for them. The practical half
+agrees — `systemctl --user` needs a user manager a pipe out of curl has no
+guarantee of, and a unit enabled from an SSH session stops when the session ends
+unless lingering is on.
+
+Recorded in the three live places, because a decision recorded in one is a
+decision the other two contradict:
+
+- `install.sh`'s `next_steps()` comment (the script's own header reason —
+  "enabling a unit is a decision about the machine it runs on" — needed no change;
+  it never depended on the config, and it is what the new comment points at).
+- `TestInstallPrintsNextSteps`' doc comment and its `systemctl` failure message.
+- `TestVerifyInstallProvesItOnAnotherMachine`'s message in `assets_test.go`, which
+  justified the CI job's `is-active` → `inactive` assertion with the same false
+  sentence.
+- `README.md`'s Install section, which stated it to a stranger in as many words
+  and told them to edit `shared_secret, allowed_roots` — two settings the
+  installer had already written.
+
+`specs/006-…/contracts/installer.md:62` still carries the old reasoning and was
+left alone deliberately: it is the record of what was decided then, not a claim
+about the tree now.
+
+**Learned, for whoever picks up T010:**
+
+- **The installer must not write either door into the config**, and
+  `TestConfigModeIs0600` enforces the general rule — it fails on any key set in
+  the written file outside `{version, shared_secret, allowed_roots}`. That is the
+  right bound for both: `dashboard_password` is a credential this script would be
+  inventing, and `access_enabled` selects a Cloudflare account it knows nothing
+  about. Naming them in the output is the whole of what it can do.
+- **`TestInstallPrintsNextSteps` now pins five strings and one phrase.** The four
+  it had, plus `dashboard_password` and `access_enabled`, plus `admits nobody`.
+  Each was proven by breaking it — the password name replaced with prose, the
+  Access name replaced with prose, the phrase reworded — one at a time, restoring
+  between; each turns exactly its own assertion red.
+- **The README's Install section and `next_steps()` are now two statements of one
+  fact** (the config is complete except for a door). T010 rewrites that page; they
+  have to still agree afterwards. Nothing enforces it — no test compares the two —
+  which is a real gap and the cheapest place to close it is a T010-era guard.
+- **`git diff` on `install_test.go` carries one line the hook reformatted**
+  (`regexp.MustCompile(...+...)` spacing, line 1542). That is iterations 6–8's
+  logged `gofmt -l` finding for this file, fixed as a side effect of editing it
+  rather than reverted back to unformatted.
+- All four suites green: default, `-tags dev`, `-tags tmux`, and `-tags quickstart`
+  (36s, with the deployed daemon still holding 127.0.0.1:8765). Linter is v2.12.2,
+  checked (#26), 0 issues.
+
+**Findings, not fixed:**
+
+- **Nothing tells the operator about `loginctl enable-linger`.** `README.md`'s
+  from-a-clone block has it with the right reason ("or the unit stops when you log
+  out"), and neither `next_steps()` nor the LAN deployment section does — so the
+  path a stranger actually takes (one-liner → next steps → `systemctl --user
+  enable --now`) is the one path that never mentions it. Enable it over SSH, log
+  out, and the daemon stops; the symptom appears minutes later and looks nothing
+  like its cause. Judged outside T009's charter, which is the config and the
+  enable decision, and lingering is neither. **T010 or the quick-fix lane.**
+- **`~/.config/crswd/config` says nothing about the door either.** The file the
+  installer writes annotates `shared_secret` and `allowed_roots` at length and
+  points at `config.example` for the rest; the door is not "the rest", it is the
+  one remaining thing with no usable default. Left because `write_config` is not
+  this task's charter and the comment block is load-bearing for
+  `TestConfigModeIs0600`'s "everything else arrives commented out".
+- **`.specify/memory/constitution.md` Principle VI is still wrong** — "the listener
+  binds loopback only". Iterations 2 through 8 raised it. Still owed a human PR;
+  no task in this plan is chartered to amend the constitution, and it is now
+  contradicted by the README, `config.example`, `.env.example`,
+  `docs/auth-and-sessions.md` and `install.sh`.
+- **`gofmt -l .` now reports only `internal/httpapi/render.go`** — the second file
+  (`internal/release/install_test.go`) was formatted by the hook when this task
+  edited it. **Quick-fix lane**, one file, no behaviour.
+- **`TestEveryPageShowsTheVersion` still walks a hand-written list of four pages**
+  (iterations 4 through 8 — this task added no page either).
+- **The README still has no CONTRIBUTING split and a Roadmap ending at milestone
+  6**, and the Status blockquote still says "milestone 6 is landing". T010's
+  charter, untouched here beyond the Install paragraph this task owned.
+- **The three flaky tests logged this milestone are all still open**:
+  `internal/audit`'s `TestTheLeakSuiteReallyDrivesTheDaemon`, `internal/tmuxctl`'s
+  `TestTmuxKillingTheLastSessionStopsTheServer`, and `internal/httpapi`'s
+  `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval`. None reappeared across
+  the four suites here. All three are **quick-fix lane**.
