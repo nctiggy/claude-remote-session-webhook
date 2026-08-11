@@ -1,72 +1,58 @@
 # Implementation Plan
 
-**Milestone 10 — Let a session outlive the defaults.**
+**Milestone 11 — Make it installable by a stranger.**
 
-> *"I like leaving these sessions running forever if I want to. 1 hour is way too
-> tight if we leave those as defaults."*
-> *"I just want to be able to allow sessions to never die if I choose."*
+> *"The readme needs to be clear and crisp and be on theme. Someone else should be
+> able to easily install this on their own machine. It should also try to automate
+> as much as possible so the user can just run the curl/bash command to install if
+> they want."*
 
-Five tasks.
-
----
-
-## ⚠️ There are TWO clocks. Read this before touching anything.
-
-| Clock | From | Default | Per-session override |
-|---|---|---|---|
-| **Idle** | `LastActivity`, moves with it | `60m` | `Idle` — a **negative** value turns it off |
-| **Absolute** | `CreatedAt`, **never renewed** | `24h` | `Lifetime` — no "never", but no upper cap either |
-
-**Turning off idle does not make a session immortal.** The absolute deadline still
-fires. A task that claims to have delivered "never dies" while only touching idle
-has not read this table.
-
-**Why the asymmetry is deliberate and must survive**: a negative `Idle` is safe
-*because* the absolute deadline still applies — the bound is relaxed, not removed.
-A negative `Lifetime` would remove it, and `resolveLifetimes` refuses it.
-
-**How "effectively never" is reached**: the operator raises the ceilings
-(`session_lifetime_max`, `idle_timeout_max`) in settings, and a session opts in up
-to that ceiling. `loadDuration` has no upper bound, so a very large duration
-already parses. **The operator's ceiling stays the bound** — that is what keeps
-Principle VI true while giving the per-session freedom that was asked for.
+Six tasks.
 
 ---
 
-## ⚠️ This is the fifth "code with no caller"
+## ⚠️ None of this can be proven on the author's machine
 
-`internal/httpapi/sessions.go:381` — the signed API — passes `Lifetime` and `Idle`.
-`internal/httpapi/actions.go:455` — **the browser create** — passes Owner, Name,
-WorkDir, StartCommand, and nothing else.
+This box has the project installed, a config written, `~/.local/bin` on `PATH`
+and the unit in place. **Every precondition the installer exists to create is
+already true here**, so a successful run proves nothing.
 
-So the per-session override exists, is tested, is bounded, is documented — and the
-dashboard cannot reach it. `CRSW_IDLE_TIMEOUT_MAX`'s README line calls itself "the
-ceiling for a per-session idle override", which is a ceiling on something the
-surface the operator actually uses cannot do.
+`verify-install` in `.github/workflows/release.yml` runs the published installer on
+a **GitHub-hosted runner with a fresh `HOME`**, twice — once to prove it installs,
+once to prove it does not overwrite. That job is the only thing in this project
+that can fail for the reasons these tasks are about.
 
-After the reaper, `Store.Touch`, the PR-opener and `CRSW_DESTROY_ON_SHUTDOWN`, this
-is the fifth. **T001 is done when the browser can set it, not when the field is
-assigned.**
+**Any task that changes `install.sh` must extend that job in the same task.**
+"It worked when I ran it" is not evidence here and never has been.
 
 ---
 
-## ⚠️ Do NOT make watching advance the idle clock
+## ⚠️ A generated secret must never be printed
 
-The operator noticed the behaviour — *"it seems it has no idea if I am connected or
-not"* — and they are right about what happens: `View` never touches, the live
-stream calls `View` in a loop, so an open stream keeps nothing alive.
+The installer's output goes to a terminal scrollback, a CI log, and often a pipe
+from `curl`. A secret that appears there has a second copy in all three.
 
-**That is deliberate.** `manager.go`, above `View`:
+Write it into the `0600` config and report **that** one was generated — never what
+it is. This is the same discipline `crswd keygen` follows, for the same reason.
 
-> The idle clock is *not advanced*, which is the whole reason this is a second
-> method rather than a flag on Resolve. **Watching is not driving (FR-034f).** The
-> property holds by construction — there is no clock reading in this method to hand
-> to Touch.
+**And never overwrite an existing configuration.** That rule already exists and
+generating a secret must not weaken it: a config that is present is the operator's,
+generated secret or not.
 
-**Leave it alone.** A forgotten browser tab holding an unsandboxed shell open
-forever is a worse failure than an explicit per-session choice, and the explicit
-choice is what this milestone delivers. If it is revisited later it needs its own
-spec and its own argument, not a line added inside a task about something else.
+---
+
+## What the four secrets are, since T004 has to explain them
+
+| Secret | Door | What it buys |
+|---|---|---|
+| ed25519 release key | — | The operator holds the private half; the public half is embedded at install. A self-update proves the bytes came from **this** repository. A checksum alone proves nothing: whoever can serve a binary can serve its checksum. |
+| `shared_secret` | API | HMAC-SHA256 the companion skill and scripts sign with. Under 32 bytes refuses to start. |
+| Access team domain / AUD / allowed emails | Browser | The daemon verifies the forwarded Access JWT **itself**, so Access failing open does not become an unauthenticated session. All three or none. |
+| Per-session bearer token | API | Minted per session, scoped to that session. Tells apart callers who all authenticate as one shared secret. |
+
+A service token's assertion carries **no email**, which is why "no email" must
+never read as "allow" — or every API call would also admit the caller to the
+dashboard.
 
 ---
 
@@ -75,38 +61,38 @@ spec and its own argument, not a line added inside a task about something else.
 - `- [ ]` open · `- [x]` done · `- [!]` blocked (reason in `PROGRESS.md`)
 - Priority order is meaningful — the loop always takes the topmost open item.
 - Each task must be independently completable **and verifiable** in one iteration.
-- **Every task ends green**: `go build ./... && go vet ./... && go test ./... && golangci-lint run`.
-  Add `-tags tmux` when the task touches tmux and `-tags quickstart` when it touches
-  `cmd/crswd`.
+- **Every task ends green**: `go build ./... && go vet ./... && go test ./... && golangci-lint run`,
+  plus `-tags tmux` / `-tags quickstart` where touched.
 - **Check the linter is v2 before trusting it** (#26).
 - `go.sum` must never appear.
-- **AR-005: a test satisfies the cross-site checks, it never disables them.**
 - **AR-008: no refactoring outside the task.**
 - **A task is not done when the code exists. It is done when something calls it.**
-  This milestone exists because that rule was broken a fifth time.
 - **A new guard must be proven by breaking it.**
-- **Everything works with no JavaScript.**
+- **`install.sh` names nobody** (FR-020): no personal name, no account identifier,
+  no `/home/<someone>` path. The repository owner in a URL is fine and unavoidable.
 
 ---
 
 ## Tasks
 
-- [x] **T001** 🔒 Let the browser create set `Lifetime` and `Idle`, in `internal/httpapi/actions.go` (the `CreateRequest` at ~line 455). The values are **submitted by the operator and therefore untrusted**: they must pass through `resolveLifetimes`' ceilings exactly as the signed API's do, and a request asking beyond the ceiling is refused with the uniform refusal rather than clamped silently. Reuse the signed path's parsing if it is reachable; do not write a second parser with different rules. Test that a create beyond the ceiling is refused, that a negative idle is accepted and disables idle reaping, and that a negative **lifetime** is still refused.
+- [ ] **T001** 🔒 Generate `shared_secret` in `install.sh` when writing a **new** configuration, and write it in rather than leaving it commented. Use a real CSPRNG (`openssl rand -hex 32`, or `/dev/urandom` if openssl is not a dependency the installer already has — check `require_tools` before adding one). **Never print it.** Say that a secret was generated, not what it is. An existing config is still never touched. Extend `verify-install` to assert: the written config contains a `shared_secret` of at least 32 bytes, the file is `0600`, the secret does **not** appear in the installer's stdout, and the second run leaves it byte-identical.
 
-- [x] **T002** Put the control on the create form in `web/templates/partials/create-form.html`. The operator's word for it is "never die", so the control should say what it does in those terms and be honest that the absolute lifetime still applies unless the operator has raised it. Reuse `.field`, `.field-switch`, `.switch-input`, `.switch-label` — **introduce no new class**. Assert against the rendered markup that the control exists and submits what T001 reads, because a control that renders and submits nothing is exactly the failure this milestone is about.
+- [ ] **T002** Set `allowed_roots` in `install.sh` for a new configuration, to the default the config file already names (`$HOME/code`), creating the directory if it is absent. **Never `$HOME` itself** — the config's own comment says why: SSH keys, cloud credentials and browser profiles live directly under it, which would make the allowlist decorative. Write it explicitly rather than relying on a default, so the operator can see what their containment is. Extend `verify-install` to assert the directory exists and the config names it.
 
-- [x] **T003** Show a session's deadline on its card, in `web/templates/partials/session-card.html`. An operator who cannot see when a session dies cannot tell that their choice took effect — and this milestone's whole subject is a clock nobody could see. Use the existing `.card-meta` list and its `dt`/`dd` shape; **no new class**. Say "no idle limit" rather than a far-future timestamp when idle reaping is off for that session.
+- [ ] **T003** Reduce what is left after install to as close to nothing as it can honestly be, and rewrite `next_steps()` to say it. With T001 and T002 the daemon can now start, so the remaining gap is Cloudflare Access — until it is configured the dashboard admits nobody, which is a working daemon serving no one rather than a broken one. **Decide and record whether the installer should now enable the unit.** The existing reasoning (a service failing on first boot teaches an operator to ignore a failing service) was written against an incomplete config; say whether it still holds and why. Do not change the behaviour without writing the argument down.
 
-- [x] **T004** Fix the stale comment at `internal/session/session.go:15`. It says the two lifetimes "are constants rather than configuration on purpose: an operator who could widen them could widen the blast radius the constitution bounds by construction." They are configurable — `CRSW_SESSION_LIFETIME` and `CRSW_IDLE_TIMEOUT` — and the constants are now the fallback when nothing is configured. Describe what is actually true: the constants are defaults, the operator's configuration sets the ceiling, and the per-session override operates under that ceiling.
+- [ ] **T004** Rewrite `README.md` for a stranger. Lead with what it is, then install, then the four secrets and what each buys (table above), then configure, then run. **Move the contributor material out** — "Working in this repo", "Planning a milestone", "Running a loop" are ~46 lines of internal workflow sitting between the install steps and the configuration reference; they belong in `CONTRIBUTING.md`. Keep the voice this project already has: plain, direct, willing to say why. Do not invent a marketing register.
 
-- [x] **T005** Update `README.md`'s configuration table and any prose that describes the lifetimes. The four keys' descriptions should say that the ceilings bound a per-session choice **the dashboard can now make**, and how an operator who wants effectively-never sets them. Keep the honest note that there is no "never" sentinel and say what to do instead.
+- [ ] **T005** Make the Cloudflare Access setup a crisp, ordered sequence in the README — it is the one part that cannot be automated, so it must at least be followable without guessing. Team domain, AUD, allowed emails, and the two edge policies (identity for the browser, service token for the API). Say what each is for. Name the failure an operator will actually hit: the two assertion shapes are not interchangeable, and a service token presented to the browser door is refused exactly as a stranger's is.
+
+- [ ] **T006** Fix `#129` — `.env.example` says the idle timeout and absolute session lifetime "are constants in the code, not variables" about 120 lines below listing `CRSW_SESSION_LIFETIME` and `CRSW_SESSION_LIFETIME_MAX` as variables. **Correct the claims that stopped being true and keep the ones that did not**: the signed-request timestamp window really is a constant, and there really is no variable that disables Access validation. Do not delete the section.
 
 ---
 
 ## Out of scope
 
-- **Making a live stream advance the idle clock.** See the warning above.
-- **A "never" sentinel for the absolute lifetime.** Removing that bound entirely is
-  a different decision from relaxing it, and it needs its own argument.
-- **#120, #121.** Unchanged.
-- **Q2.** Still the operator's to answer.
+- **Automating Cloudflare Access.** It is configuration on somebody else's service.
+- **Auto-starting the daemon**, unless T003 argues for it explicitly and writes the
+  argument down.
+- **Packaging (apt, brew, nix).** A tarball and an install script, as specced.
+- **#120, #121.** Unchanged. **Q2** is still the operator's to answer.
