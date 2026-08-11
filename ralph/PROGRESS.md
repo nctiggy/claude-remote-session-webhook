@@ -612,3 +612,127 @@ second authorisation path the milestone forbids.
   pinned clock the way `httpapi`'s fixtures do. Left as a **quick-fix-lane** item
   rather than done in passing, because a fresh context should not be changing a
   suite whose whole purpose is to be the thing nobody edits to make a build pass.
+
+---
+
+## Iteration 6 — 2026-08-11 — T006, the door said out loud
+
+**Did:** "Who may reach it" now opens with one sentence saying which layer 1 is
+live — Cloudflare Access, the dashboard password, a closed door, or (on a `-tags
+dev` build) a bypassed one. It is composed from `s.browser` and never from the
+Config. `docs/security.md` and `docs/components.md` both state the rule.
+
+**Left:** T007 through T010.
+
+### The Config cannot reach the answer, and that is the design
+
+`doorSentence(door layer1)` takes a door and **no `*config.Config` at all**. The
+first draft took both, mayBindOffLoopback-style, and it was wrong for a reason
+worth keeping: this page's whole job is describing the daemon somebody is
+reading rather than the one they meant to start, so the evidence half is the
+entire answer and the intent half can only ever contradict it. Making it a
+signature rather than a habit means "the page reports the file" is not a mistake
+this function can make; what could still make it is the call site, and
+`TestSettingsNamesTheDoorThatIsLive/a file that disagrees with the door the
+server built` drives a whole daemon whose file names Access and whose layer 1 is
+the password door to hold that end.
+
+### `assertionDoor` is one type and two doors, so it now says which
+
+The Access validator and the development bypass both reach the middleware
+through `assertionDoor` — that is T003's own arrangement and it is right — so
+nothing about a *built* door tells them apart. The first attempt inferred it
+from `cfg.AccessTeamDomain == ""`, and **that is a real defect, not a
+simplification**: `config.WithAccessBypassActive` lifts the requirement to *set*
+the three Access values and not the ability to, so a developer running
+`--dev-auth-bypass` against their ordinary configuration file has all three. That
+page would have said "behind Cloudflare Access" on the one build whose layer 1
+admits everybody without checking anything.
+
+So `assertionDoor` gained an inert `door string`, set at construction —
+`doorSentenceAccess` in `verifiedLayer1`, `doorSentenceBypassed` in
+`bypass_dev.go`. `Verify` never reads it, no caller supplies it, and the only
+values it takes are constants in this package. An `assertionDoor` built without
+one reads `doorSentenceUnrecognised` rather than falling through to Access,
+because the other thing wearing that type verifies nobody.
+
+### The closed door's sentence can be read by nobody, and it is written anyway
+
+`closedDoor` admits no browser, so a daemon holding one serves this page to
+no-one — the plan's "or a closed door" is not observable to an operator, and what
+they meet instead is the uniform 401, which is the door answering the question
+itself. The branch stays because the projection has to be total: a door with no
+sentence falls through to another's, and on a switch that is whichever is written
+last. It is pinned by unit rows and by a subtest asserting the closed daemon
+answers 401 and that the refusal names no door.
+
+**Learned, for whoever picks up T007:**
+
+- **`sectioned` takes the sentence now** (`sectioned(rows, door string)`), and
+  hands it to `sectionWhoMayReachIt` alone. Four test call sites pass `""`; they
+  only read `.Title`. There are **three** production callers —
+  `settings.settings`, `update.renderUpdating`, `restart.renderRestarting` — and
+  the last two render the Updates section, so the sentence never reaches a
+  browser through them. They compose it anyway: one page, one account of its
+  door, whichever route built it.
+- **Which section carries it is Go's answer, never a heading compared in the
+  template.** Two answers to "which section is this" would be free to disagree,
+  and the shape of that disagreement is a page that quietly stops naming its
+  door.
+- **The sentence carries no class**, which is the restart form's precedent:
+  `.settings-source` means "which file these values came from", and a second
+  element wearing that name would mislead every reader and every sweep that finds
+  the file line by it. It needs no CSS rule, so both stylesheet sweeps stay green
+  — check that before reaching for a class.
+- **`keyServer.validator(t)` had to start naming its door.** It stands in for the
+  production Access door, so it is now built the way `verifiedLayer1` builds one;
+  a fixture left zero would have been standing in for a door no daemon holds, and
+  `newFleet` is what the Access half of the render test drives.
+- **`loginDaemon` grew `openAs(t, target, cookie)`** — a page asked for with
+  nothing but what a sign-in gave it, which is everything a browser on a password
+  daemon ever has. `newLoginDaemon` is not the only way to build one: the
+  disagreeing-daemon case constructs `&loginDaemon{testServer: …, door: …}`
+  directly, which is how a Config and a door that no `Load` would pair get paired.
+- **Every guard was proven by breaking it**, one at a time, restoring between:
+  the sentence taken from the Config inside `doorSentence`, the sentence taken
+  from the Config at the call site, `verifiedLayer1` no longer naming its door,
+  the bypass shape reading as Access, two doors given one sentence, the sentence
+  put on every section, and the sentence never rendered. Each turns exactly the
+  named cases red and nothing else.
+- All four suites green: default, `-tags dev`, `-tags tmux`, and `-tags
+  quickstart` (~35s, with the deployed daemon still holding 127.0.0.1:8765).
+  Linter is v2.12.2, checked (#26), 0 issues.
+
+**Findings, not fixed:**
+
+- **Nothing asserts the bypass's own sentence.** `doorSentenceBypassed` is
+  behind `//go:build dev`, and `internal/httpapi` has no dev-tagged test file at
+  all, so what is pinned is the *shape* (`assertionDoor` with no name reads
+  unrecognised) rather than the fact that `NewWithBypass` names it. Adding one
+  would mean a new file, and `NewWithBypass` calls `tmuxctl.NewExec`, so a test
+  driving it needs a real tmux — which the `dev` tag's row in `AGENTS.md` says it
+  does not. A test reconstructing the two lines by hand would only prove that a
+  copy agrees with itself. Raised rather than done.
+- **`gofmt -l .` reports `internal/httpapi/render.go` and
+  `internal/release/install_test.go`**, both untouched by this task and both
+  already unformatted before it. CI runs `golangci-lint`, which is green, so
+  nothing enforces `gofmt` on them today. **Quick-fix lane**, two files, no
+  behaviour.
+- **`internal/tmuxctl`'s `TestTmuxKillingTheLastSessionStopsTheServer` flaked
+  once** under `-tags tmux` while four suites ran back to back, and passed on
+  `-count=6` and on a clean re-run of the whole tagged suite. It asserts
+  `has-session` names "no server running" and got "server exited unexpectedly" —
+  two spellings of the same fact, raced between the server exiting and the probe.
+  The daemon is not involved. **Quick-fix lane**, and the second flaky test this
+  milestone has logged (see iteration 5's `internal/audit` entry).
+- **The design system has no rule for an unclassed `<p>` in a settings panel**,
+  which is what the door sentence is. It inherits body typography, so it reads
+  larger and darker than the `.settings-source` eyebrow beneath it — deliberate,
+  since it is the section's lede — but nothing in `docs/design-system.md` says
+  what a bare paragraph in a panel should be, and the next one will make the same
+  judgement from scratch.
+- **`.specify/memory/constitution.md` Principle VI is still wrong** — "the
+  listener binds loopback only". Iterations 2, 3, 4 and 5 raised it. Still owed a
+  human PR; no task in this plan is chartered to amend the constitution.
+- **`TestEveryPageShowsTheVersion` still walks a hand-written list of four
+  pages** (iterations 4 and 5, unchanged — this task added no page).
