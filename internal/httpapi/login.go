@@ -27,14 +27,26 @@ package httpapi
 //   - The password is read from PostForm and compared in passwordDoor.admits,
 //     which is the only place in this daemon the two sides are ever compared. It
 //     reaches no log, no record, no page, no error and no URL.
+//   - **A submission is bounded before it is read** (M12/T005): refused outright
+//     if the browser calls it cross-site, then counted against a budget belonging
+//     to the address it came from. Guessing this password is therefore slow, is
+//     loud on the trail, and cannot be done through somebody else's browser.
 //
 // What is *not* here is the action gate. It cannot be: two of its three checks
 // are the layer-1 identity and a page token bound to it, and neither exists
 // before this route runs. Half a gate would be a second, differently shaped
 // authorisation path — the thing there is exactly one of on this door. What a
-// hostile third-party page can therefore do is cause the operator's browser to
-// submit guesses it cannot read the answer to; what bounds that is the limiter
-// T005 puts in front of this route.
+// hostile third-party page could otherwise do is cause the operator's browser to
+// submit guesses it cannot read the answer to; the cross-site check in
+// admitLogin is what refuses those, and it is a check on the initiator rather
+// than a second way of deciding who may act.
+//
+// **Only the POST is limited, and the page is deliberately not.** Serving the
+// form costs this daemon what refusing an unauthenticated request costs it
+// anywhere else on this door, none of which is limited either — while a budget a
+// page load could spend is a budget an <img src="/login"> on a hostile page could
+// empty, which would take the sign-in form away from the operator who needs it.
+// The budget belongs to guesses because guesses are what it is about.
 
 import (
 	"context"
@@ -68,19 +80,32 @@ const fieldPassword = "password"
 // The sign-in refusals, authored here and for the trail alone.
 //
 // Distinct sentinels for the reason password.go's are: the operator reading
-// their journal needs to know whether a form arrived at all or arrived with the
-// wrong answer in it, and the record is the only place that is kept. **No caller
-// ever learns which** — both leave through refuseBrowser, which writes the same
-// bytes layer 1 writes for a missing cookie, so a stranger cannot tell a
-// rejected guess from a malformed submission from a request that never reached
-// this route.
+// their journal needs to know whether a form arrived at all, arrived with the
+// wrong answer in it, arrived from somebody else's page, or arrived from a
+// source that had already spent its guesses — and the record is the only place
+// any of that is kept. **No caller ever learns which** — every one of them
+// leaves through refuseBrowser, which writes the same bytes layer 1 writes for a
+// missing cookie, so a stranger cannot tell a rejected guess from a malformed
+// submission from a guess nobody read from a request that never reached this
+// route.
 //
-// Neither carries a byte the caller sent, and in particular neither carries the
+// None carries a byte the caller sent, and in particular none carries the
 // submitted password or the configured one (FR-035, FR-042).
+//
+// The fourth of them is errLoginRateExceeded, which lives beside the create
+// route's refusal in ratelimit.go because what it says is about the budget
+// rather than about this route.
 var (
 	errLoginFormUnreadable = errors.New("the sign-in form could not be read")
 
 	errLoginRefused = errors.New("the submitted password is not the configured one")
+
+	// errLoginCrossSite is a submission the browser itself called foreign
+	// (M12/T005). It is the *first* thing checked, which is the whole of why it
+	// is here: a hostile page cannot spend the operator's sign-in budget from the
+	// operator's own address if its submissions are refused before they cost a
+	// token. See admitLogin for why this is not half an action gate.
+	errLoginCrossSite = errors.New("the sign-in was submitted from another site")
 )
 
 // handleLogin is the one place a sign-in route reaches the mux, so neither can
@@ -178,11 +203,38 @@ func (s *Server) login(door *passwordDoor) http.HandlerFunc {
 	}
 }
 
-// admitLogin is the check itself, and it reports which half refused.
+// admitLogin is the check itself, and it reports which of the four refused.
 //
 // It returns the sentinel rather than a boolean because the two audiences
 // differ, exactly as admitAction's does: the caller gets one response whichever
 // it was, and the trail gets the truth.
+//
+// **The order is the design, not a tidy sequence.** Each check is cheaper than
+// the one after it and bounds it:
+//
+//  1. Cross-site, one header lookup, before anything has been spent.
+//  2. The per-source budget (M12/T005), before the body is read.
+//  3. The form, bounded by MaxBodyBytes.
+//  4. The password, compared in constant time, and then the cookie.
+//
+// Step 1 is not half an action gate, and it is not what admits anybody. The
+// gate's other two checks are the layer-1 identity and a page token bound to it,
+// and neither can exist in front of the door that produces them — so this is a
+// check on the *initiator*, which is the request side of the CORS rule
+// docs/security.md already states for this whole door, reusing crossSite rather
+// than a second reading of the same header. It is here because step 2 is: a
+// budget is a thing that can be exhausted, and without step 1 the cheapest way
+// to exhaust it is a hostile page making the operator's own browser submit
+// guesses from the operator's own address, which locks the operator out of the
+// one route that can end a lockout. **The limiter creates that vector, so the
+// task that adds the limiter closes it.**
+//
+// It is crossSite and deliberately not crossSiteAction: present-and-wrong
+// refuses, absent does not. Every argument crossSiteAction makes for refusing an
+// absent header is about a route that changes something on this host, and this
+// one changes nothing — while the caller it would newly refuse, a script signing
+// in with curl, has an address of its own and therefore a budget of its own,
+// which is the whole of what step 2 is.
 //
 // The body is bounded by the same limit the API door decodes under. ParseForm
 // carries its own 10MB ceiling, which is three orders of magnitude more than one
@@ -199,6 +251,18 @@ func (s *Server) login(door *passwordDoor) http.HandlerFunc {
 // included — so there is no branch on presence to be timed, and no third
 // sentinel saying the field was absent.
 func (s *Server) admitLogin(w http.ResponseWriter, r *http.Request, door *passwordDoor) error {
+	if crossSite(r) {
+		return errLoginCrossSite
+	}
+
+	// Spent by every attempt that gets this far, whatever it goes on to answer —
+	// the create limiter's rule, for the create limiter's reason. A budget only
+	// wrong guesses spend is one an attacker empties for free by sending nothing
+	// readable at all.
+	if !s.logins.allow(sourceOf(r)) {
+		return errLoginRateExceeded
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxBodyBytes)
 	if err := r.ParseForm(); err != nil {
 		// Not the parse error, which names a type from net/http and a byte count

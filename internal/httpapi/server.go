@@ -169,7 +169,17 @@ type Server struct {
 	// limiter per server for the reason there is one Authenticator: two would be
 	// two independent memories of how fast a caller has been asking, which is a
 	// rate limit that does not limit the rate.
-	creates *limiter
+	creates *limiter[auth.CallerID]
+
+	// logins is the per-source budget for sign-in attempts (M12/T005), one per
+	// server for the same reason the create limiter is.
+	//
+	// It is built here rather than passed in, like the roots and the caps and
+	// unlike the create limiter: that one's rate is the operator's to set, and
+	// this one's is not — see loginRatePerMin. It exists on every server, not
+	// only on the ones that register the sign-in routes, so that this field can
+	// never be the nil a route was registered in front of.
+	logins *limiter[loginSource]
 
 	// streams is the bound on how many output streams may be open at once
 	// (FR-034e). One per server for the reason there is one create limiter: two
@@ -411,7 +421,7 @@ func newWithLayer1(
 	sessions.SetRemoteControlCommand(cfg.RemoteControlCommand)
 	// The configured lifetimes reach the manager here, and nowhere else (#37).
 	sessions.SetLifetimes(cfg.SessionLifetime, cfg.SessionLifetimeMax, cfg.IdleTimeout, cfg.IdleTimeoutMax)
-	creates, err := newLimiter(cfg.CreateRatePerMin, systemClock{})
+	creates, err := newLimiter[auth.CallerID]("create", cfg.CreateRatePerMin, systemClock{})
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the create rate limiter: %w", err)
 	}
@@ -457,7 +467,7 @@ func newServer(
 	browser layer1,
 	trail *audit.Logger,
 	sessions *session.Manager,
-	creates *limiter,
+	creates *limiter[auth.CallerID],
 ) (*Server, error) {
 	switch {
 	case cfg == nil:
@@ -530,6 +540,16 @@ func newServer(
 		return nil, fmt.Errorf("httpapi: build the page token key: %w", err)
 	}
 
+	// The sign-in budget (M12/T005), built from a constant rather than from the
+	// Config and so unable to fail on a daemon an operator configured — but built
+	// through the same constructor as the create limiter, which fails closed on a
+	// rate that bounds nothing. A daemon that could not build the budget for the
+	// one route in front of layer 1 does not get to serve that route.
+	logins, err := newLimiter[loginSource]("sign-in", loginRatePerMin, systemClock{})
+	if err != nil {
+		return nil, fmt.Errorf("httpapi: build the sign-in rate limiter: %w", err)
+	}
+
 	mux := http.NewServeMux()
 	s := &Server{
 		cfg: cfg,
@@ -550,6 +570,7 @@ func newServer(
 		templates:  templates,
 		sessions:   sessions,
 		creates:    creates,
+		logins:     logins,
 		streams:    streams,
 		closing:    make(chan struct{}),
 		panes:      newPanes(),

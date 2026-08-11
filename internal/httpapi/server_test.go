@@ -776,7 +776,7 @@ func TestNewRefusesMissingDependencies(t *testing.T) {
 
 	cfg := testConfig(loopbackListen)
 	mgr := newSessionFixture(t).mgr
-	lim := func() *limiter { return testLimiter(t, cfg.CreateRatePerMin, fixedClock{at: testTime}) }
+	lim := func() *limiter[auth.CallerID] { return testLimiter(t, cfg.CreateRatePerMin, fixedClock{at: testTime}) }
 	cases := map[string]func() (*Server, error){
 		"no config": func() (*Server, error) { return New(nil) },
 		"no listen source": func() (*Server, error) {

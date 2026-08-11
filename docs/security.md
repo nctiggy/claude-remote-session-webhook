@@ -100,12 +100,40 @@ than left to the code:
 - **The action gate is deliberately absent, and cannot apply.** Two of its three checks
   are the layer-1 identity and a page token bound to it, and neither exists before this
   route runs; half a gate would be the second, differently-shaped authorisation path
-  there is exactly one of on this door. What a hostile page can therefore do is make a
-  browser submit guesses whose answer it cannot read — bounded by the per-source limit
-  on this route, which is where that argument is finished.
+  there is exactly one of on this door. What bounds a submission instead are the two
+  checks below, and they run in this order because each one bounds the next.
+- **A submission the browser itself calls cross-site is refused**, before anything has
+  been spent — `Sec-Fetch-Site` present and not `same-origin`, the same `crossSite` the
+  pane stream reads and not a second reading of the same header. Absent still admits,
+  unlike on an action route: a script signing in sends no header, and what bounds a
+  script is that it has a source address and therefore a budget. This is a check on the
+  *initiator*; it authorises nobody, and it is here because the budget below is a thing
+  that can be exhausted. Without it the cheapest way to empty the operator's guesses is
+  a hostile page making the operator's own browser spend them, from the operator's own
+  address — a lockout on the one route that can end a lockout.
+- **Every attempt is counted against the address it came from**, at six a minute with a
+  burst of three, on the same token bucket the create route spends — the port dropped,
+  because a browser opens a new one per connection and a budget per connection is no
+  budget at all; `RemoteAddr` and never `X-Forwarded-For`, because a limiter keyed by a
+  value the caller writes is one the caller opts out of. It is spent **before** the two
+  sides are compared, so a correct password does not buy its way past a spent budget,
+  and it is not what makes guessing this password hopeless — the sixteen-character
+  minimum is. What it buys is that guessing is slow, loud, and cheap to refuse.
+- **The refusal is this door's uniform 401, not the create route's 429.** A caller that
+  proved who it is may be told to slow down; one that has proved nothing is told
+  nothing, so a brute-forcer cannot tell a refused guess from a guess nobody read and
+  cannot pace their attempts by the answer.
+- **`GET /login` is deliberately not on that budget.** Serving the form costs this
+  daemon what refusing an unauthenticated request costs it anywhere else on this door,
+  none of which is limited either — while a budget a page load could spend is a budget
+  an `<img src="/login">` on a hostile page could empty, and what it would empty is the
+  operator's own way back in.
 - **A sign-in leaves one audit record either way** — `login.view` for the form,
-  `login.submit` for an attempt, allowed or denied — carrying no password material,
-  because every reason on it is a sentinel this codebase authored.
+  `login.submit` for an attempt, allowed or denied, the ones the budget and the
+  cross-site check refused included — carrying no password material, because every
+  reason on it is a sentinel this codebase authored. Four of them refuse here and the
+  caller can tell none of them apart, so the trail is the only place they are ever
+  distinguished.
 
 **On a network without TLS the password crosses it in clear.** That is a real weakness
 of this mode rather than an oversight, and the cookie is what keeps it to one crossing
@@ -466,6 +494,16 @@ web page it fetched — reaches the dashboard. **All of it is untrusted.**
   and unbounded spawning is a local denial of service. **Both doors create**, so the
   browser's create calls the same limiter and the same validation rather than a second
   copy of either.
+- Per-source rate limit on `POST /login`, on **the same token bucket**, which is generic
+  over its key rather than duplicated: a create's budget is spent by an identity because
+  it sits behind layer 2, and a sign-in's is spent by an address because establishing an
+  identity is what it is for. The type parameter is what keeps one from being spent by
+  the other's key. Two limiters over two copies of the bucket would be two rules about
+  what a budget is, free to disagree.
+- **What that limiter remembers is bounded by its own sweep**, and since the sign-in
+  budget exists that is load-bearing: its keys are addresses a stranger chooses, so what
+  keeps the map small is that every decision drops every bucket that has refilled to the
+  top — an entry survives only while it is partly spent.
 - Cap concurrent sessions; refuse past the cap rather than degrading the host.
 - **Every request is audited**: timestamp, caller ID, action, session ID, decision.
   Audit records carry no prompt text and no session output.

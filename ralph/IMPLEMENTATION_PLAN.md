@@ -118,7 +118,7 @@ reassured.
 
 - [x] **T004** 🔒 The login page and its POST route. A real form, working with no JavaScript, reusing `.field`, `.field-input`, `.field-label`, `.button` — **no new class**. The route is registered only when the password door is the configured layer 1, and answers the uniform 404 otherwise. It sets the cookie on success and the uniform refusal on failure, with no distinction between causes.
 
-- [ ] **T005** 🔒 Rate-limit the login route, per source, reusing the create route's limiter pattern rather than inventing a second one. Exactly one audit record per attempt, allowed or denied, carrying **no password material**. Test that a burst is refused and that the record says which.
+- [x] **T005** 🔒 Rate-limit the login route, per source, reusing the create route's limiter pattern rather than inventing a second one. Exactly one audit record per attempt, allowed or denied, carrying **no password material**. Test that a burst is refused and that the record says which.
 
 - [ ] **T006** Show which door is live on the settings page, reusing existing classes. An operator must be able to tell whether they are behind Access, a password, or a closed door — the single most consequential fact about the daemon, currently invisible. `dashboard_password` renders `present`/`absent` and never its value.
 

@@ -18,13 +18,14 @@ package httpapi
 //     really was is on the trail with no byte of the password in it.
 
 import (
-	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
@@ -383,16 +384,31 @@ func signInWith(form url.Values) *http.Request {
 	return r
 }
 
-// TestTheTwoSentinelsAreNotTheSameString is what keeps the table above honest.
+// TestTheSignInSentinelsAreFourDifferentStrings is what keeps the table above
+// honest.
 //
 // Every row asserts the reason it expects, so two sentinels that had been
 // reworded into one string would satisfy every one of them while leaving an
-// operator unable to tell a malformed submission from a rejected guess.
-func TestTheTwoSentinelsAreNotTheSameString(t *testing.T) {
+// operator unable to tell a malformed submission from a rejected guess — or,
+// since T005, a guess from a guess nobody read and a guess somebody else's page
+// submitted. The caller is told none of it, so the trail is the only place these
+// four events are ever distinguishable, and a duplicate here is a distinction
+// that has already been lost.
+func TestTheSignInSentinelsAreFourDifferentStrings(t *testing.T) {
 	t.Parallel()
 
-	if errors.Is(errLoginRefused, errLoginFormUnreadable) || errLoginRefused.Error() == errLoginFormUnreadable.Error() {
-		t.Errorf("the two sign-in refusals record the same reason (%q); the trail is the only place they are told apart", errLoginRefused)
+	sentinels := map[string]error{
+		"a form that could not be read":  errLoginFormUnreadable,
+		"a wrong password":               errLoginRefused,
+		"a source out of budget":         errLoginRateExceeded,
+		"a submission from another site": errLoginCrossSite,
+	}
+	seen := make(map[string]string, len(sentinels))
+	for what, err := range sentinels {
+		if also, clash := seen[err.Error()]; clash {
+			t.Errorf("%s and %s record the same reason (%q); the trail is the only place they are told apart", what, also, err)
+		}
+		seen[err.Error()] = what
 	}
 }
 
@@ -640,6 +656,295 @@ func TestTheSignInPageIsNotServedToAnAccessDaemonsOperatorEither(t *testing.T) {
 	if strings.Contains(w.Body.String(), `name="`+fieldPassword+`"`) {
 		t.Errorf("a daemon whose door is Access served a sign-in form:\n%s", w.Body.String())
 	}
+}
+
+// --- The budget in front of the door (M12/T005) ----------------------------
+
+// wrongGuess is a password that is not the configured one, spelled once.
+const wrongGuess = "test-only-not-the-password"
+
+// The two addresses these tests count attempts against. Both are documentation
+// ranges (RFC 5737), like the one httptest.NewRequest fills in, so nothing here
+// names a host that could exist.
+const (
+	oneSource     = "198.51.100.7"
+	anotherSource = "203.0.113.9"
+)
+
+// meterSignIns puts the daemon's sign-in budget on a clock this test moves, and
+// hands back both the clock and the burst.
+//
+// The limiter is installed after the server is built rather than passed to it,
+// which is the seam newRateFixture already uses for the create budget and the
+// one stream_test.go uses for the stream cap. It is also what makes the wiring
+// claim honest: the limiter installed here is the one the route has to consult
+// for any of these tests to see a refusal at all.
+//
+// A clock of its own because the daemon's is the host's: a burst refused by a
+// limiter that is also refilling while the test runs proves the refusal and not
+// the recovery, and the recovery is half of what a rate limit promises.
+func (d *loginDaemon) meterSignIns(t *testing.T) (*testClock, int) {
+	t.Helper()
+
+	clk := newTestClock(testTime)
+	d.logins = testLoginLimiter(t, clk)
+	return clk, burstFor(loginRatePerMin)
+}
+
+// attempt posts one sign-in from a named address.
+func (d *loginDaemon) attempt(t *testing.T, from string, password string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := signInWith(url.Values{fieldPassword: {password}})
+	r.RemoteAddr = from
+
+	w := httptest.NewRecorder()
+	d.ServeHTTP(w, r)
+	return w
+}
+
+// form asks for the sign-in page from a named address.
+//
+// The address matters, which is the whole reason this exists beside get: a
+// budget claim made about two verbs arriving from *different* sources is a claim
+// about two buckets, and it holds however the one bucket was spent. Both halves
+// of the page's test therefore name one source and use it throughout.
+func (d *loginDaemon) form(t *testing.T, from string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := httptest.NewRequest(http.MethodGet, pathLogin, nil)
+	r.RemoteAddr = from
+
+	w := httptest.NewRecorder()
+	d.ServeHTTP(w, r)
+	return w
+}
+
+// refusedBy asserts the uniform refusal and the reason the trail kept for it.
+//
+// Every refusal on this route is the same 401 with the same bytes and no cookie,
+// whichever of the four it was, so the response cannot be what a test reads to
+// tell them apart — reading the trail is the only way to assert the difference,
+// which is exactly the property being asserted.
+func (d *loginDaemon) refusedBy(t *testing.T, w *httptest.ResponseRecorder, want error, why string) {
+	t.Helper()
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("the attempt was answered %d (%s); want %d: %s", w.Code, w.Body.String(), http.StatusUnauthorized, why)
+	}
+	if got := w.Body.String(); got != string(bodyBrowserRefused) {
+		t.Errorf("the refusal is not this door's own bytes: %s", why)
+	}
+	if cookies := (&http.Response{Header: w.Header()}).Cookies(); len(cookies) != 0 {
+		t.Errorf("a refused attempt set %d cookie(s); a credential must not leave beside a refusal", len(cookies))
+	}
+
+	records := d.records(t)
+	if len(records) == 0 {
+		t.Fatalf("the attempt left no audit record; one per attempt is the whole of what the operator can read: %s", why)
+	}
+	if got, want := records[len(records)-1]["reason"], want.Error(); got != want {
+		t.Errorf("reason = %v; want %v: %s", got, want, why)
+	}
+}
+
+// TestASignInBurstIsSpentAndThenRefused is T005's first half: a source may guess
+// a few times at once, and then it may not.
+//
+// The claim is deliberately made about the *right* password as well as the wrong
+// one. A limiter placed after the comparison would refuse every wrong guess past
+// the burst and let a correct one through, which is a limiter that stops nobody
+// who is about to succeed — so the budget is checked before the two sides are
+// ever compared, and this is where that ordering is pinned.
+//
+// The recovery is asserted with it because a rate limit is a delay and not a
+// ban. Nothing is reset by hand here: the only thing that changes is the clock
+// the limiter reads.
+//
+// **Must fail when** the limiter is removed from admitLogin, moved below the
+// password comparison, or keyed by something a single source varies per request.
+func TestASignInBurstIsSpentAndThenRefused(t *testing.T) {
+	t.Parallel()
+
+	d := newLoginDaemon(t)
+	clk, burst := d.meterSignIns(t)
+
+	for i := 0; i < burst; i++ {
+		d.refusedBy(t, d.attempt(t, oneSource+":4001", wrongGuess), errLoginRefused,
+			"a guess inside the burst is read and refused on its merits")
+	}
+
+	d.refusedBy(t, d.attempt(t, oneSource+":4002", wrongGuess), errLoginRateExceeded,
+		"the guess past the burst is refused by the budget rather than by the password")
+	d.refusedBy(t, d.attempt(t, oneSource+":4003", testDashboardPassword), errLoginRateExceeded,
+		"the configured password does not buy its way past a spent budget")
+
+	// One record per attempt, allowed or denied — T005 states it and the deferred
+	// emit is what makes it true. A refusal that skipped the trail would be the
+	// only event on this daemon an operator cannot count.
+	if got, want := len(d.records(t)), burst+2; got != want {
+		t.Errorf("%d attempts left %d audit records; want exactly one each", want, got)
+	}
+	if trail := d.sink.String(); strings.Contains(trail, testDashboardPassword) || strings.Contains(trail, wrongGuess) {
+		t.Errorf("the trail carries password material:\n%s", trail)
+	}
+
+	clk.advance(time.Minute / loginRatePerMin)
+
+	w := d.attempt(t, oneSource+":4004", testDashboardPassword)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("the sign-in after a token's worth of time = %d (%s); want %d — a rate limit is a delay, not a ban",
+			w.Code, w.Body.String(), http.StatusSeeOther)
+	}
+}
+
+// TestTheSignInBudgetIsPerSourceAndNotPerConnection is the key itself, and it is
+// two claims that fail in opposite directions.
+//
+// Keyed too narrowly — by the whole RemoteAddr, port and all — every attempt
+// arrives on a new ephemeral port and gets a fresh budget, which is a limiter
+// that permits everything while looking like one that does not. Keyed too widely
+// — one bucket for the daemon — a stranger with a fast connection locks the
+// operator out of their own dashboard by guessing badly enough.
+//
+// **Must fail when** sourceOf stops dropping the port, or the limiter stops
+// keying by source at all.
+func TestTheSignInBudgetIsPerSourceAndNotPerConnection(t *testing.T) {
+	t.Parallel()
+
+	d := newLoginDaemon(t)
+	_, burst := d.meterSignIns(t)
+
+	// Every one from a different port, which is what a browser really does.
+	for i := 0; i < burst; i++ {
+		d.refusedBy(t, d.attempt(t, fmt.Sprintf("%s:%d", oneSource, 5000+i), wrongGuess), errLoginRefused,
+			"a guess inside the burst is read whichever port it came from")
+	}
+	d.refusedBy(t, d.attempt(t, oneSource+":5999", wrongGuess), errLoginRateExceeded,
+		"a new connection from a spent source is not a new budget")
+
+	for i := 0; i < burst; i++ {
+		d.refusedBy(t, d.attempt(t, fmt.Sprintf("%s:%d", anotherSource, 6000+i), wrongGuess), errLoginRefused,
+			"another source has its own budget; one host guessing must not lock the operator out")
+	}
+}
+
+// TestTheSignInPageIsNotOnTheGuessBudget is the decision T005 takes about the
+// other verb on this path, asserted from both sides.
+//
+// The budget is about guesses. Serving the form costs this daemon what refusing
+// an unauthenticated request costs it on any other route of this door, none of
+// which is limited either — while a budget a page load could spend is a budget
+// an <img src="/login"> on a hostile page could empty, and what it would empty is
+// the operator's own way in. So a spent source is still shown the form, and a
+// page fetched all day still leaves every guess unspent.
+//
+// **Must fail when** the limiter is wrapped around handleLogin rather than
+// applied to the submission, which is the tempting single line: both routes
+// would then share one bucket.
+func TestTheSignInPageIsNotOnTheGuessBudget(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a spent source is still served the form", func(t *testing.T) {
+		t.Parallel()
+
+		d := newLoginDaemon(t)
+		_, burst := d.meterSignIns(t)
+		for i := 0; i <= burst; i++ {
+			d.attempt(t, oneSource+":7000", wrongGuess)
+		}
+
+		if w := d.form(t, oneSource+":7001"); w.Code != http.StatusOK {
+			t.Fatalf("GET %s from a source that is out of guesses = %d; want %d — the form is how a lockout ends",
+				pathLogin, w.Code, http.StatusOK)
+		}
+	})
+
+	t.Run("page loads spend no guesses", func(t *testing.T) {
+		t.Parallel()
+
+		d := newLoginDaemon(t)
+		_, burst := d.meterSignIns(t)
+		for i := 0; i <= burst; i++ {
+			d.form(t, oneSource+":7002")
+		}
+
+		if w := d.attempt(t, oneSource+":7003", testDashboardPassword); w.Code != http.StatusSeeOther {
+			t.Fatalf("the sign-in after %d page loads = %d (%s); want %d",
+				burst+1, w.Code, w.Body.String(), http.StatusSeeOther)
+		}
+	})
+}
+
+// TestACrossSiteSignInIsRefusedAndSpendsNothing is the check the budget made
+// necessary, which is why it arrives with the budget rather than before it.
+//
+// Without it the cheapest way to empty the operator's guesses is a hostile page
+// that makes the operator's own browser submit them, from the operator's own
+// address — a lockout an attacker holds for as long as the tab is open, on the
+// one route that can end a lockout. It is not half an action gate: it authorises
+// nobody, and the gate's other two checks cannot exist in front of the door that
+// produces them.
+//
+// crossSite and not crossSiteAction, so an absent header is still read: a script
+// signing in with curl sends none, and it has an address and therefore a budget
+// of its own, which is what bounds it.
+//
+// **Must fail when** the check is dropped, moved below the limiter, or widened
+// to refuse a header that is merely absent.
+func TestACrossSiteSignInIsRefusedAndSpendsNothing(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the browser's own verdict decides", func(t *testing.T) {
+		t.Parallel()
+
+		for _, c := range []struct {
+			site string
+			want error
+			why  string
+		}{
+			{site: secFetchSiteSameOrigin, want: errLoginRefused, why: "the form this daemon rendered is what signs the operator in"},
+			{site: "", want: errLoginRefused, why: "absent is not evidence of a foreign initiator, and a script has a budget of its own"},
+			{site: "cross-site", want: errLoginCrossSite, why: "a hostile page must not spend the operator's guesses"},
+			{site: "same-site", want: errLoginCrossSite, why: "only same-origin admits; a sibling host is not this page"},
+			{site: "none", want: errLoginCrossSite, why: "no page asked for this, and the sign-in form is a page"},
+		} {
+			t.Run("Sec-Fetch-Site: "+c.site, func(t *testing.T) {
+				t.Parallel()
+
+				d := newLoginDaemon(t)
+				d.meterSignIns(t)
+
+				r := signInWith(url.Values{fieldPassword: {wrongGuess}})
+				if c.site != "" {
+					r.Header.Set(headerSecFetchSite, c.site)
+				}
+				w := httptest.NewRecorder()
+				d.ServeHTTP(w, r)
+
+				d.refusedBy(t, w, c.want, c.why)
+			})
+		}
+	})
+
+	t.Run("a refused submission costs no budget", func(t *testing.T) {
+		t.Parallel()
+
+		d := newLoginDaemon(t)
+		_, burst := d.meterSignIns(t)
+
+		for i := 0; i <= burst; i++ {
+			r := signInWith(url.Values{fieldPassword: {wrongGuess}})
+			r.RemoteAddr = oneSource + ":8000"
+			r.Header.Set(headerSecFetchSite, "cross-site")
+			d.ServeHTTP(httptest.NewRecorder(), r)
+		}
+
+		if w := d.attempt(t, oneSource+":8001", testDashboardPassword); w.Code != http.StatusSeeOther {
+			t.Fatalf("the operator's sign-in after %d cross-site submissions from their own address = %d (%s); want %d",
+				burst+1, w.Code, w.Body.String(), http.StatusSeeOther)
+		}
+	})
 }
 
 // loginTemplateSource is the page's markup as it is embedded, with its own

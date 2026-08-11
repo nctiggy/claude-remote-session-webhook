@@ -470,3 +470,145 @@ task is not optional polish. See the finding below.
   — the same shape as the `registeredPatterns` gap the sweep's own comment admits
   to. Deriving it from `renderedPages` minus `pagesWithNobodyToName` is a small
   change and was left out of this task as AR-008 churn.
+
+---
+
+## Iteration 5 — 2026-08-11 — T005, the budget in front of the door
+
+**Did:** `POST /login` is now counted against the address it came from, at six a
+minute with a burst of three, on **the create route's own token bucket** — made
+generic over its key rather than copied. A submission the browser itself calls
+cross-site is refused before it can spend anything. `docs/security.md` states
+both, and the four sentinels a refusal can carry.
+
+**Left:** T006 through T010.
+
+### The limiter is generic, and that is what "reuse the bucket" had to mean
+
+`limiter.allow` took an `auth.CallerID`, because a create's budget is spent by an
+identity behind layer 2. The sign-in route has no identity — producing one is the
+whole of what it does — so the key is the source. Three readings were available
+and two are wrong:
+
+- **Cast the address into an `auth.CallerID`.** Free, and a lie of exactly the
+  kind iteration 2 renamed `assertLoopback` over. A `CallerID` is something layer
+  2 authenticated.
+- **A second bucket implementation for the login.** Two rules about what a budget
+  is, free to disagree — and the plan says reuse the bucket, not the pattern.
+- **`limiter[K comparable]`.** One bucket, two key types, and the compiler
+  refusing to let either budget be spent by the other's key.
+
+The cost is a type parameter on six signatures and `newLimiter[auth.CallerID]` at
+the one existing call site. `newLimiter` also took a `what` string: two budgets
+now share its two startup refusals, and "the create rate limiter" named as the
+thing that could not be built would send an operator to the wrong variable.
+
+### The cross-site check, which iteration 4 left to this task to decide
+
+Iteration 4's finding gave T005 two sanctioned answers — tolerate a cross-site
+POST, or refuse it and say why half a gate is acceptable. **It is refused**, and
+the argument that decides it is that *this task creates the vector*: before there
+was a budget there was nothing for a hostile page to exhaust. A guard that adds a
+new denial of service to the one route that can end one is not finished while a
+five-line reuse of `crossSite` removes the cheapest way to trigger it.
+
+It is `crossSite` and not `crossSiteAction` — present-and-wrong refuses, absent
+does not. Every argument `crossSiteAction` makes for refusing an absent header is
+about a route that *changes* something; this one changes nothing, and the caller
+it would newly refuse (a script signing in with curl) has an address and
+therefore a budget of its own. It authorises nobody, which is why it is not the
+second authorisation path the milestone forbids.
+
+### Three decisions the plan does not make
+
+- **`loginRatePerMin = 6`, burst 3**, a constant and not a variable. Every other
+  bound here is the operator's because they know their host; this one is an
+  attacker's budget, and a variable is a variable somebody sets to 6000 on the
+  one route in front of layer 1. **This limit is not what makes the password hard
+  to guess** — `MinDashboardPasswordLen` is. It buys slow, loud, and cheap to
+  refuse.
+- **`GET /login` is not limited.** Serving the form costs what refusing an
+  unauthenticated request costs anywhere else on this door, none of which is
+  limited either — and a budget a page load could spend is one an
+  `<img src="/login">` could empty, taking the sign-in form away from the
+  operator who needs it. The budget belongs to guesses.
+- **The refusal is the uniform 401, not the create route's 429.** A caller that
+  proved who it is may be told to slow down; one that has proved nothing is told
+  nothing, so a brute-forcer cannot tell a refused guess from a guess nobody read
+  and cannot pace by the answer. The cost — an operator locked out by their own
+  retries reads why on the trail rather than on the page — is real and taken
+  deliberately.
+
+**Learned, for whoever picks up T006:**
+
+- **The checks live in `admitLogin`, in an order that is the design.** Cross-site
+  (one header lookup), then the budget, then `ParseForm`, then the comparison.
+  Each is cheaper than the next and bounds it, and the budget is spent *before*
+  the two sides are compared — a limiter below the comparison stops nobody who is
+  about to succeed. Iteration 4 expected the limiter to be middleware around
+  `handleLogin`; that turned out to be the one shape that cannot work, because it
+  puts both verbs on one bucket.
+- **A test whose two verbs come from different addresses proves nothing about one
+  bucket.** `httptest.NewRequest` fills `RemoteAddr` with `192.0.2.1:1234`, so
+  the page-is-not-limited test passed under a deliberately broken build until
+  both halves were made to name one source. It was the breakage exercise that
+  found it, not the review — `d.form(t, from)` exists beside `d.get` for that.
+- **`d.logins = testLoginLimiter(t, clk)`** is how a test drives the budget:
+  the server builds its own on the host clock, and a burst refused by a limiter
+  that is also refilling proves the refusal but not the recovery.
+- **Every guard was proven by breaking it**, one at a time, restoring between:
+  the limiter removed, the limiter moved below the password comparison, the port
+  kept in the key, one bucket for the whole daemon, the cross-site check removed,
+  it widened to `crossSiteAction`, and the limiter moved into `serveLogin` so
+  both verbs shared a bucket. Each turns exactly the named cases red.
+- All four suites green: default, `-tags dev`, `-tags tmux`, and `-tags
+  quickstart` (~36s, with the deployed daemon still holding 127.0.0.1:8765).
+  Linter is v2.12.2, checked (#26), 0 issues.
+
+**Findings, not fixed:**
+
+- **The limiter's map is now growable by a stranger, and `forgetFull` is the only
+  thing that bounds it.** The create limiter's keys are identities layer 2
+  authenticated — one of them — so nobody thought about this. The sign-in
+  limiter's keys are addresses an attacker chooses. What holds is that a bucket
+  survives only while it is partly spent and every decision sweeps the full ones,
+  so the map holds about as many entries as there were distinct sources in the
+  last refill window; the sweep is O(n) in that number, paid by the request that
+  grew it. It is written into `forgetFull`'s comment. **No cap was added**: a cap
+  turns a distributed flood into a global lockout, which is worse than the
+  slowdown it prevents, and reaching a painful n needs a source count an attacker
+  on this LAN does not need to bother with. Revisit if this daemon ever faces a
+  network it does not trust.
+- **`docs/auth-and-sessions.md`'s "Lifetimes and limits" table has no row for the
+  dashboard session cookie (T003's 12 hours) or the sign-in rate (this task's six
+  a minute).** Both are stated where they are decided and in `docs/security.md`;
+  that table is where an operator would look for them together. Adding only this
+  task's row would leave it half right, so neither was added — it is one edit for
+  a documentation task, and **T008** is the nearest.
+- **`.specify/memory/constitution.md` Principle VI is still wrong** — "the
+  listener binds loopback only". Iterations 2, 3 and 4 raised it. Still owed a
+  human PR; no task in this plan is chartered to amend the constitution.
+- **`docs/security.md`'s two-front-doors opening paragraph** was raised by
+  iterations 2 and 4 as stale. Reading it again with the M12 sections beside it,
+  it is *qualified* rather than false — "in the deployment this was written for"
+  — and the table's edge column is true of that deployment. It is under-stated,
+  not wrong, which is why a third iteration has left it. Worth one sentence from
+  whoever owns the file next; it is not the defect the earlier findings implied.
+- **`TestEveryPageShowsTheVersion` still walks a hand-written list of four
+  pages** (iteration 4's finding, unchanged — nothing this task touched brings it
+  closer or further away).
+- **`internal/audit`'s `TestTheLeakSuiteReallyDrivesTheDaemon` is flaky, and the
+  mechanism is a clock rather than a race.** It failed once here —
+  `leak_test.go:1602`, "the card a create rendered back carries no page token" —
+  and passed on every one of ~20 further runs, including `-count=12`. The cause
+  is that `run.pageProof` is scraped from a fleet render at one instant and
+  compared against the fleet render a create redirected to a few milliseconds
+  later, while `pageKey.mint` stamps `now.Add(pageTokenLifetime).Unix()` —
+  **second granularity**. The two renders are the same token only when they fall
+  in the same second, so the assertion fails whenever the create straddles a
+  boundary. Nothing about it is this task's: the page token, the create path and
+  the Access door are all untouched here. The fix is in the test, not the daemon
+  — re-scrape the proof from the card being compared, or drive the leak run on a
+  pinned clock the way `httpapi`'s fixtures do. Left as a **quick-fix-lane** item
+  rather than done in passing, because a fresh context should not be changing a
+  suite whose whole purpose is to be the thing nobody edits to make a build pass.
