@@ -23,7 +23,7 @@ Type=simple
 # No flags. The daemon defines none — configuration is environment-only and read
 # once, before it binds or spawns anything — and flag.Parse rejects a flag it does
 # not know, so an ExecStart carrying one does not start at all.
-ExecStart=%h/bin/crswd
+ExecStart=%h/.local/bin/crswd
 
 # The audit trail is structured JSON on stdout, so where stdout goes is where the
 # trail is kept. Stated rather than inherited from a distro default, because
@@ -63,7 +63,13 @@ StandardError=journal
 # committed to a public repository — a value typed here is published forever.
 # The secret is the obvious case; the other three name a Cloudflare team, an
 # application, and a person.
-EnvironmentFile=%h/.config/crswd/env
+# Optional, and the leading `-` is what makes it so. The configuration file at
+# %h/.config/crswd/config is what install.sh writes and what an operator edits;
+# this env file predates it and is kept only so a deployment that still has one
+# keeps working. Without the `-`, systemd refuses to start a unit whose
+# environment file is absent — which is every machine the installer has ever
+# set up, since the installer writes a config and never an env.
+EnvironmentFile=-%h/.config/crswd/env
 
 # The rest, inline. This is every remaining variable the daemon reads, and each
 # value shown is the daemon's own default, so a line deleted here changes

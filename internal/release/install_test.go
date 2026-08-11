@@ -1394,3 +1394,69 @@ func keyLines(t *testing.T, blob string) []string {
 	}
 	return out
 }
+
+// unitPath is the service file the installer ships and installs.
+const unitPath = repoRoot + "/deploy/crswd.example.service"
+
+// TestTheUnitExecsWhatTheInstallerInstalls is the guard for the defect that
+// made this daemon unstartable on every machine the installer ever set up.
+//
+// The unit's ExecStart was `%h/bin/crswd`. The installer writes
+// `~/.local/bin/crswd`. Nothing compared them, so systemd answered
+// `Failed to spawn 'start' task: No such file or directory` on a fresh host —
+// and never here, because this machine's own deployment predates the installer
+// and has a binary at the older path.
+//
+// **Must fail when** the installer's destination and the unit's ExecStart drift
+// apart. They are written in two languages in two files and cannot share a
+// constant, which is the same shape as the asset-name duplication one file over:
+// the duplication is unavoidable, the drift is not.
+func TestTheUnitExecsWhatTheInstallerInstalls(t *testing.T) {
+	t.Parallel()
+
+	unit, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", unitPath, err)
+	}
+	script, err := os.ReadFile(installerPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", installerPath, err)
+	}
+
+	exec := regexp.MustCompile(`(?m)^ExecStart=%h/(\S+)`).FindSubmatch(unit)
+	if exec == nil {
+		t.Fatal("the unit has no ExecStart under %h, so nothing here can check where it points")
+	}
+	dest := regexp.MustCompile(`(?m)^readonly BINARY="([^"]+)"`).FindSubmatch(script)
+	if dest == nil {
+		t.Fatal("install.sh declares no BINARY, so nothing here can check what it installs")
+	}
+
+	if got, want := string(exec[1]), string(dest[1]); got != want {
+		t.Errorf("the unit execs %%h/%s and the installer installs ~/%s.\nsystemd answers \"Failed to spawn 'start' task: No such file or directory\" on any host that does not already have a binary at the unit's path, which is every host the installer has ever set up", got, want)
+	}
+}
+
+// TestTheUnitDoesNotRequireAFileTheInstallerNeverWrites is the other half of the
+// same journal entry: `Failed to load environment files: No such file or
+// directory`.
+//
+// The installer writes ~/.config/crswd/config. The unit required
+// ~/.config/crswd/env, which nothing creates. A mandatory EnvironmentFile that
+// is absent is a unit systemd refuses to start at all.
+//
+// **Must fail when** an EnvironmentFile is made mandatory again. The leading `-`
+// is what keeps a legacy env file working without requiring one.
+func TestTheUnitDoesNotRequireAFileTheInstallerNeverWrites(t *testing.T) {
+	t.Parallel()
+
+	unit, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", unitPath, err)
+	}
+	for _, m := range regexp.MustCompile(`(?m)^EnvironmentFile=(\S+)`).FindAllSubmatch(unit, -1) {
+		if !bytes.HasPrefix(m[1], []byte("-")) {
+			t.Errorf("the unit requires the environment file %s and the installer never writes one; systemd refuses to start a unit whose mandatory environment file is absent, which is every fresh install", m[1])
+		}
+	}
+}

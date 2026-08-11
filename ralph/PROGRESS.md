@@ -82,6 +82,60 @@ against the test, before calling something a defect.
 
 ---
 
+## Iteration 2 — T002, and what actually stands between an install and a daemon
+
+**Did:** T002. `install.sh` creates `~/code` and writes `allowed_roots = $HOME/code`
+into a **new** configuration, in that order — an entry that does not resolve is a
+startup failure, so a file written first would be one the installer knows the daemon
+will refuse. `TestInstallSetsTheContainmentRoot` holds four properties: the config
+sets `allowed_roots`, it is not `$HOME` itself, it is `$HOME/code`, and the directory
+the file names is really there. A second subtest pins that a host with an existing
+configuration gets no directory either — that file may point containment elsewhere,
+and creating one to satisfy a default it does not use is a decision on a host the
+installer was told to leave alone. `verify-install` now carries `code` in its
+freshness loop and asserts both halves on the runner; `TestVerifyInstallProves…`
+keeps those assertions in the job. All five guards were proven by breaking them.
+
+**Learned — the config line is read by nobody as things stand.** The shipped unit
+sets `Environment=CRSW_ALLOWED_ROOTS=%h/code` (`deploy/crswd.example.service:71`) and
+**the environment beats the file** (flag → environment → file → default). The two
+agree today, so nothing is broken, but an operator who edits `allowed_roots` in the
+config and restarts changes nothing — and the dangerous direction is narrowing: they
+believe they have shrunk the blast radius and the unit keeps the old one. The written
+comment says so in the file itself. Whether that `Environment=` line should still
+exist now that the config carries the value is a real question for T003/T004.
+
+**Findings:**
+
+- 🔴 **`systemctl --user enable --now crswd` fails immediately after a clean
+  install, and nothing in CI notices.** The unit has
+  `EnvironmentFile=%h/.config/crswd/env` with **no `-` prefix**, and systemd treats a
+  missing file there as a fatal error. The installer never writes that file — it
+  writes `~/.config/crswd/config`, which is a different path, and which the daemon
+  reads by itself. So the last line of `next_steps()` is a command that does not
+  work on the host it was just printed to. `verify-install` cannot see it because it
+  deliberately never starts the service (it asserts `inactive`/`disabled`).
+  **T003 is the task that has to face this**: "what is left after install" is not
+  Cloudflare Access, it is a unit that will not start. The fix is one of `-` on that
+  line, or an installer that writes an empty `env`, or a unit that stops referencing
+  it — that is a decision, so it is written here rather than taken in passing.
+- **The README's install section is stale, and was already stale before this
+  iteration.** T004 rewrites it; these are the specific false claims, so nobody has
+  to re-derive them: it says the installer "writes four things" (five now, one a
+  directory), that it starts nothing "because the daemon cannot serve a request
+  before the secret is set" (T001 set it), and it tells the reader to
+  `$EDITOR ~/.config/crswd/config  # shared_secret, allowed_roots` — both of which
+  the installer now writes.
+- **`install.sh` is not shellchecked by CI.** `ci.yml:83` lints
+  `.claude/hooks/*.sh`, `ralph/loop.sh`, `.claude/statusline.sh` and
+  `.github/scripts/*.sh` — the one script strangers pipe into bash is not on that
+  list. The Go tests execute it end to end, which is stronger for behaviour and says
+  nothing about quoting on a path no test takes.
+
+**Left:** T003 through T006.
+
+---
+
 ## Iteration 2 — T001 finished, and the record above corrected
 
 **Did:** Finished T001 and replaced the test's own configuration parser with the
