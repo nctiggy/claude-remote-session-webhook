@@ -82,7 +82,7 @@ be written at all.
 
 ## Tasks
 
-- [ ] **T001** 🔒 Run the config migration as part of an update, in `internal/updater/`. Migrate to a temporary file, **load and validate the result**, and only then move it into place — keeping the previous file as a backup. A migration that does not validate is discarded and the update proceeds with the config untouched; **it must never leave the daemon unable to start**. Test: a config missing keys a newer schema adds comes back with them and every existing value intact; a migration that would produce an unloadable file leaves the original in place.
+- [x] **T001** 🔒 Run the config migration as part of an update, in `internal/updater/`. Migrate to a temporary file, **load and validate the result**, and only then move it into place — keeping the previous file as a backup. A migration that does not validate is discarded and the update proceeds with the config untouched; **it must never leave the daemon unable to start**. Test: a config missing keys a newer schema adds comes back with them and every existing value intact; a migration that would produce an unloadable file leaves the original in place.
 
 - [ ] **T002** 🔒 Ship the unit as a release asset the daemon can compare against. The installer already fetches `crswd.service` and records its hash at `~/.local/share/crswd/crswd.service.sha256`. The updater needs the same file to answer "is the operator's unit the one this release ships?" — reuse the existing asset and the existing checksum path rather than inventing a second delivery.
 

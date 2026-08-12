@@ -53,3 +53,63 @@ updated."*
 
 **The test that matters:** an operator who relaxed `NoNewPrivileges` must still
 have it relaxed after an update, and must be told a newer unit exists.
+
+---
+
+## Iteration 1 — 2026-08-12
+
+**Did:** T001. `internal/updater/config.go` — a `ConfigMigrator` that rewrites the
+operator's configuration into the current schema during an update: stage beside
+their file, read the staged bytes back off disk, run them through `config.Validate`
+(the same loader a startup uses), then back up the original to `config.bak` and
+rename into place. `updateFromBrowser` calls it after a successful `Swap`.
+
+**Learned — things the next iteration would otherwise rediscover:**
+
+- **`internal/config` writes after all.** `migrate.go`'s header says "cmd/crswd is
+  the only code in this repository that writes a config file"; that has been stale
+  since the settings page shipped — `internal/config/write.go` has `WriteFile`,
+  `Validate`, `BackupPath`, and `internal/httpapi/settings_edit.go` is a second
+  writer. **`settings_edit.go` is the template to copy** for anything that writes
+  the operator's file: validate → back up → write, all through `config.*`. I reused
+  `config.WriteFile` for both the staged file and the backup rather than adding a
+  third copy of `writeAndSync` — `cmd/crswd/config_cmd.go` has its own.
+- **`config.Validate` needs a real environment.** It runs the whole loader, so a
+  test fixture needs `CRSW_SHARED_SECRET` (64 chars is safe) *and* a resolvable
+  `allowed_roots` — and it layers env **over** the file, so a fixture that sets
+  `CRSW_ALLOWED_ROOTS` in the environment cannot then test a bad root in the file.
+- **The one value that parses and does not load** is `allowed_roots` naming a
+  directory that is not there: `parseFile` only checks grammar, keys and schema, so
+  it sails through the migration and is refused by the loader. That is the whole
+  fixture for "a migration that would not validate".
+- **Where the migration could NOT go.** Startup is the obvious home and it is
+  closed: FR-008 and `specs/004-configure-and-operate/quickstart.md` both say the
+  daemon never writes the file it reads, and `cmd/crswd/config_cmd_test.go` asserts
+  it. An update is the exception because the operator asked for it by name.
+- `selfUpdate` now has a fourth member and `wired()` counts it, so a dropped wiring
+  refuses loudly rather than quietly stopping carrying the file.
+
+**Left:** T002–T007. T002 is next (ship the unit as a comparable release asset).
+
+**Findings — noticed, not fixed:**
+
+- **⚠️ The migration runs in the OLD binary, so a new release's schema changes land
+  one update late.** `config.SchemaVersion` and `renamedKeys` come from the code
+  that is running, and that is v-current, not v-next. A rename shipped in v0.90 is
+  applied by the update *after* the one that installs v0.90. Today this costs
+  nothing (`renamedKeys` is empty and `SchemaVersion` is 1) and it is what the plan
+  asked for. The fixes, if it ever matters: exec the staged candidate's own
+  `crswd config migrate` (T007 territory), or migrate on the first start after an
+  update — which needs an exception to FR-008 that nobody has written yet.
+  **Do not "fix" this silently; it is a spec question.**
+- **`cmd/crswd/config_cmd.go` still has its own `writeConfigFile`/`writeAndSync`,
+  duplicating `internal/config/write.go`.** Left alone on purpose (AR-008) — that
+  is exactly T007's job, and T007 should collapse three write paths, not two.
+- **`internal/config/migrate.go`'s header comment is wrong.** It claims cmd/crswd
+  is the only writer in the repository. Two other writers exist now. One-line doc
+  fix for the fix lane; not touched here.
+- **Flaky test:** `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval`
+  (`internal/httpapi/stream_test.go`) failed once on a loaded machine — "the opening
+  screen arrived 14ms after the open, which is past the 10ms interval" — and passed
+  on every rerun. It asserts a wall-clock deadline of 10ms, which a parallel suite
+  on a busy host will miss regardless of the code. CI will hit this eventually.
