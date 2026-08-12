@@ -213,6 +213,35 @@ ProtectSystem=full
 #                        tmux and Claude Code write to has to be handed back one
 #                        at a time with ReadWritePaths — a list that fails at run
 #                        time, in a pane, rather than at install time.
+#
+# And one question this block answers by refusing, which is worth knowing before
+# you go looking for the bug: **sudo does not work inside a session, and that is
+# these three lines rather than anything Claude Code does.**
+#
+#   NoNewPrivileges=true   a one-way kernel latch. It is inherited across fork,
+#                          preserved across execve, and cannot be cleared — so it
+#                          is already set on the tmux server before any session
+#                          starts, and nothing a session spawns can shed it.
+#                          /usr/bin/sudo keeps its setuid bit; the kernel ignores
+#                          it. A visible side effect: user-manager sandboxing
+#                          needs an unprivileged userns, so root is unmapped and
+#                          reports as `nobody` — which is why sudo complains that
+#                          sudo.conf is owned by uid 65534 rather than saying it
+#                          is not permitted.
+#   RestrictSUIDSGID=true  blocks setuid independently. Clearing only the line
+#                          above changes nothing, which is the trap.
+#   ProtectSystem=full     /usr is read-only, so apt and writes to /usr/local
+#                          fail even as root.
+#
+# To allow it, comment out the first two and set `ProtectSystem=false`. All
+# three: any one left standing keeps it blocked.
+#
+# What that costs, once, plainly: these protect the host from the daemon, and a
+# session already runs as you. Today somebody through the door owns your user
+# account. With these relaxed they own the machine — passwordless root, from a
+# pane. That is a defensible trade on a host you control and want to install
+# packages on, and it is not one to make by accident, which is why it is written
+# here rather than discovered.
 
 [Install]
 WantedBy=default.target
