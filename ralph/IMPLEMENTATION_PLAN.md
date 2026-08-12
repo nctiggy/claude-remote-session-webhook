@@ -142,7 +142,7 @@ only because of it.
 
 - [x] **T003** Show the operator what the clock is actually watching. The card already carries `idle deadline`; add the last activity it is measured from, so "why is this about to die" is answerable from the page. Reuse `.card-meta`'s `dt`/`dd`; **no new class**.
 
-- [ ] **T004** 🔒 Give the absolute lifetime a spelling for **never**, matching the discipline the idle disable already follows: it may not collide with "unset". Apply it to both the per-session override **and** `session_lifetime_max`, since a per-session never under a finite ceiling is a setting that always refuses. `resolveLifetimes` currently refuses a negative lifetime — that refusal is what changes, deliberately and with the reason recorded.
+- [x] **T004** 🔒 Give the absolute lifetime a spelling for **never**, matching the discipline the idle disable already follows: it may not collide with "unset". Apply it to both the per-session override **and** `session_lifetime_max`, since a per-session never under a finite ceiling is a setting that always refuses. `resolveLifetimes` currently refuses a negative lifetime — that refusal is what changes, deliberately and with the reason recorded.
 
 - [ ] **T005** Offer it on the create form beside the existing never-die-when-idle switch, reusing `.field-switch`, `.switch-input`, `.switch-label`. **No new class.** The label must say what it switches off: with both switches on, nothing reaps this session, and the operator has said so twice.
 

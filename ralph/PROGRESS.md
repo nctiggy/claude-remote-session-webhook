@@ -360,3 +360,96 @@ override **and** on `session_lifetime_max`.
   through `Store.Add` today, and a guard for it would be code no caller can
   execute, so it was deliberately not written. If that invariant is ever relaxed,
   this row is one of the things that breaks quietly.
+
+---
+
+## Iteration 5 — 2026-08-12 — T004, a lifetime that never ends
+
+**Did:** A negative `Lifetime` now means the absolute deadline is off
+(`Session.LifetimeDisabled`, `AbsoluteDeadline`), and `resolveLifetimes` grants
+it on exactly one condition: the daemon's own ceiling must already be unbounded.
+`CRSW_SESSION_LIFETIME_MAX = never` is how an operator says that, carried as a
+negative. The card says "no lifetime limit" and the settings page says `never`.
+
+**The spelling, and why it is a word:** `0` was impossible — zero is already
+"unset" by the time a duration is parsed — and a negative duration was possible
+but rejected. Both `0` and `-1h` are things a person writes in a config file
+meaning *no time at all*, and reading either as "forever" switches off the last
+bound on a host running unsandboxed shells. `never` cannot be misread in that
+direction. `loadLifetimeCeiling` therefore **refuses** a raw negative and names
+the word, so there is one operator-facing spelling and one internal one (the
+negative the idle disable already uses), never two of either.
+
+**Learned:**
+
+- **⚠️ The two "off" bounds had to share one span, and this was one iteration
+  from being a silent bug.** `IdleDeadline` answered `AbsoluteLifetime * 400`
+  for a disabled idle clock — unreachable only because the absolute deadline
+  underneath it always fired. Once that one could be switched off too, a session
+  with **both** switches off was reaped for idleness after 400 days, by a number
+  neither switch mentions and exactly against the label T005 has to write. Both
+  now use `neverSpan` (a century). Proven: reverting `IdleDeadline` to the old
+  multiplier fails `both bounds off is reaped by neither` and nothing else.
+- **The ceiling is what keeps this the operator's decision**, and it is the
+  whole security argument. `resolveLifetimes` reads `maxLife < 0` as "no ceiling"
+  *before* every comparison, because "is X over a ceiling that is not there" has
+  no answer. A daemon that configured nothing refuses `never`, and so does one
+  with a 8760h ceiling — a ceiling raised is not a ceiling removed.
+- **The idle-can-never-fire check had to become the finite case's alone.**
+  `idle > effectiveLife` with a negative lifetime refuses *every* idle timeout,
+  on precisely the sessions this milestone exists to keep alive.
+- **`TokenExpiry` follows `AbsoluteDeadline`, so a never-expiring session has a
+  never-expiring bearer token.** That is FR-015's "equal by construction"
+  working rather than breaking: docs/auth-and-sessions.md's rule is that the
+  token TTL may never be *shorter* than the lifetime. `expires_at` on the wire
+  now reads year 2126 for such a session. Deliberate, and stated at the method.
+- **The settings page is a *write* surface, which this task nearly missed.**
+  `POST /settings/edit` runs `config.Validate` → the real `LoadFrom`, so `never`
+  is accepted there and `-1h` refused, by the same code as at startup — but a
+  loader that learned a word the page had not would have been a value an
+  operator could read and never save. Pinned by
+  `TestEditIsWhereAnOperatorRemovesTheLifetimeCeiling`. **Grep for
+  `settings_edit` before adding any new config value spelling.**
+- **`docs/components.md` was updated in the same commit** (#119's lesson). It
+  said the absolute bound "cannot be turned off at all" and that a disabled
+  deadline reads "in 400 days"; both were false the moment this shipped.
+- **Proven by breaking it, eight ways** — refusing a negative lifetime
+  unconditionally, granting it regardless of the ceiling, dropping
+  `AbsoluteDeadline`'s branch, reverting the idle span, accepting a negative in
+  the config loader, dropping the `never` word there, restoring
+  `lifetimeMax < lifetime`, and dropping the parser case, the card branch and
+  the settings branch. Each failed the case named for it; all restored.
+- Linter confirmed v2 (`2.12.2`, #26). `go test ./...`, `-tags tmux`, `-tags
+  dev` and `-tags quickstart ./cmd/crswd` (36s) all pass; quickstart run
+  **after** the commit, per iteration 1.
+
+**Left:** T005–T007. T005 is the create-form switch, and its label is now
+literally true: with both switches on, nothing reaps the session.
+
+**Findings:**
+
+- **⚠️ A never-expiring session does not survive a daemon restart as one.**
+  Adoption builds its record from what tmux knows, and tmux does not know about
+  `Lifetime` — so the record comes back with a zero lifetime, the default
+  applies, and `Adopt` tears it down on the spot if it is already older than
+  that default (`manager.go`, FR-025). The operator's immortal session is
+  therefore mortal across a redeploy, and killed *because* it was long-lived.
+  Nothing persists session records today, so this is not fixable inside T004 —
+  but it is the sharpest edge on this feature and nobody has been told about it.
+  Worth a task, and worth a sentence in T006/T007's prose.
+- **T005 has a decision to make about the form's `.field-hint`.** It currently
+  reads "It still ends at the absolute lifetime this daemon is configured with…
+  Raise session_lifetime in settings if that is too soon" — true for every
+  session this form can start today, and false the moment T005 adds the second
+  switch. The template comment above it was corrected in this commit; the
+  visible sentence was deliberately not, because changing it before the control
+  exists would make the page describe a switch it does not render.
+- **The signed API's `lifetime` accepts `never` and nothing announces it.**
+  There is no capability document or `GET /` shape listing what a create may
+  ask for, so a skill discovers the word from the README (T007) or not at all.
+  Same gap iteration 4 logged for the effective idle clock, one field over.
+- **`gofmt -l .` still flags `internal/httpapi/render.go`** (iteration 3's
+  finding, unchanged and untouched). `golangci-lint run` reports 0 issues.
+- **`config.example`'s `session_lifetime` prose is now wrong** — it says "There
+  is deliberately no way to say 'never'". That is T006's line to fix and is
+  named here so it is not read as still true in the meantime.
