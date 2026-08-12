@@ -53,17 +53,11 @@ one: milestone 2's dashboard could only read, so it needed no control, and
 milestone 3's four actions each needed a fragment of markup rather than a
 component with a call site. Field is covered by Form below.
 
-**Toast has left this list**, and what it left behind is worth keeping. The
-clause that stood here said the Toast had "no section and no use" — that this
-dashboard answers an action in place, next to the control, rather than in
-something that floats away on a timer. That was a design position written down as
-a fact, and it had been false since issue #42: `.action-toast` is rendered by
-`dashboard.html`, `session.html` and `settings.html`, styled in `crswd.css`, and
-filled by `crswd.js` on every action an operator takes with the script running.
-Being rendered *and* styled is why no sweep reported it for four milestones — the
-drift was between the code and this document, which is the one direction only
-this document's own guard can see (#119). It has a section of its own below;
-having no partial is now the only thing it still shares with the names above it.
+**Toast has left this list.** It shipped with issue #42 and this document went on
+calling it unused for four milestones, because a component that is rendered *and*
+styled satisfies every sweep except the one that reads this file (#119). It has a
+section of its own below; having no partial is now the only thing it still shares
+with the names above it.
 
 That is not permission to invent a second vocabulary. The class names in those
 sections are the ones the shipped templates already use — `.button`,
@@ -92,12 +86,11 @@ process running it, and `POST /logout` for the browser's own sign-in, on the
 daemons that have one. `GET /settings` is still the only verb registered on the path
 itself, which is why the header's link to it is a link to a page and nothing more.
 
-That paragraph replaced one asserting the opposite — no page token, no action row,
-no live region, and no route for a form to be received by. It was written when the
-page was read-only and it outlived the milestone that gave it forms, here and in
-the template's own header comment. **The absence of a route is no longer what
-bounds this page.** What bounds it now is the action gate those two routes sit
-behind, together with `config.Editable`, which answers no for every secret — so
+An earlier version of this section described a read-only page — no page token, no
+action row, no live region, and no route for a form to be received by — and it
+outlived the milestone that gave the page forms. **The absence of a route is no
+longer what bounds it.** What bounds it now is the action gate those four routes
+sit behind, together with `config.Editable`, which answers no for every secret — so
 the form that would put a credential in a page cannot be rendered from here at
 all. A row it refuses, and every row when no token could be minted, renders the
 text it always had: a control certain to be turned away is not offered, which is
@@ -710,10 +703,7 @@ Rules:
 One `<input type="checkbox">`, themed. Today there are three, all on the create
 form: remote control, the idle override that lets a session outlive the idle
 clock, and the lifetime override that removes the deadline counted from
-creation. This section said there was exactly one for as long as that was true;
-the second arrived with milestone 10 and the third with milestone 13, and the
-rules below say which of them each one governs rather than reading as though the
-form still had a single switch.
+creation. The rules below are grouped by which of the three each one governs.
 
 **Two of the three always render, and the third is conditional** — which is the
 one thing this component's shape does not tell you. A session that never expires
@@ -842,13 +832,10 @@ Non-negotiable, applies to everything above:
   accessibility tree before its text arrives for the announcement to happen at
   all.
 
-  This paragraph is new, and what it replaced said the opposite: that a fleet
-  changing was noise and nothing about the grid was announced. That rule was
-  written when a shape change reloaded the whole page, which re-announced it as a
-  side effect of throwing it away. The reload is gone (issue #51), so the
-  announcement that came with it has to be made on purpose or not at all, and a
-  page that silently rearranges is worse for a non-sighted operator than one that
-  reloads.
+  The rule this replaced said a fleet changing was noise, and it was written when
+  a shape change reloaded the whole page and re-announced it as a side effect of
+  throwing it away; the reload is gone (issue #51), so the announcement has to be
+  made on purpose or not at all.
 - Nothing else is announced, and the boundary is deliberate. The pane itself is
   **not** a live region — announcing every terminal line is unusable — and neither
   is the card grid: a card that changed state or name is replaced in place, and
