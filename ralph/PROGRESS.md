@@ -434,3 +434,90 @@ implementation). T006 is next.
   still named `.crswd-config-*` while place.go writes systemd units through it;
   `internal/httpapi/render.go` is still the only file `gofmt -l .` names; and
   `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is wall-clock flaky.
+
+---
+
+## Iteration 6 — 2026-08-12
+
+**Did:** T006. `README.md` gains *The other two files an update carries* under
+*Updating, and rolling back* — the migration (staged, loaded, `config.bak`,
+discarded if it would not load) and the unit's four branches as a table, with the
+`diff`/`cp`/`daemon-reload`/`restart` that takes a `.new`. `deploy/README.md`
+gains *What an update does to this file* under *Why the unit looks the way it
+does*. `TestTheOperatorPagesNameTheFilesThisPackageWrites` in
+`internal/updater/unit_test.go` holds both pages to `unitPath`, `unitRecordPath`
+and `UnitAsset + newSuffix`.
+
+**The question T005 left open, and the answer:**
+
+- **Which of the two accounts to read: either, and the journal when the read
+  failed.** They are one read of the same two files through
+  `updater.DescribeUnit`, so neither is fresher. The single difference is stated
+  in `deploy/README.md`: a failed read names a path on this disk and why, which
+  is a diagnostic for whoever administers the host rather than something a
+  browser is owed — so the page says only that it happened.
+
+**The one thing documented beyond the task's literal ask**, deliberately: **how
+to hand a unit over.** T006 asks how to *take* a `.new`, and the honest answer
+raises the next question immediately — a hand copy writes no record, so the unit
+stays the operator's and the next differing release offers again. `deploy/README.md`
+therefore also documents writing the digest into
+`~/.local/share/crswd/crswd.service.sha256` by hand, with the price stated in the
+same breath (every future update then replaces that file with no `.new` and no
+diff). Verified `sha256sum < file | cut -d' ' -f1` produces exactly what
+install.sh's `${sum%% *}` records, and the recipe `mkdir -p`s the directory
+because a host whose unit the installer never placed has never had one made.
+
+**Learned — things the next iteration would otherwise rediscover:**
+
+- **⚠️ A line beginning `journalctl` in either README is executed by the
+  quickstart suite.** `trailCommands` in `cmd/crswd/quickstart_test.go` collects
+  every line whose trimmed text (leading `#` stripped) starts with `journalctl`
+  from `README.md` and `deploy/README.md`; `filterOf` then *fatals* unless it
+  contains `--user`, `-u crswd`, `-o cat` **and** a pipe, and the command must
+  both survive a stream carrying `crswd: ` diagnostics and **reject** a truncated
+  record. `… | grep 'crswd: '` would fail that second half. A leading backtick
+  saves an inline mention, which is why every journal command added here is prose
+  rather than a fenced line.
+- **That sweep is runnable on this host even though the rest of `quickstart` is
+  not.** `go test -tags quickstart ./cmd/crswd -run TestEveryDocumentedTrailCommandSurvivesTheStream`
+  passes — it takes its own port; only the two startup cases need `127.0.0.1:8765`,
+  which the deployed daemon still holds. Worth running for any README change.
+- **Two other tests read these pages**: `internal/release/readme_test.go` (the
+  install one-liner must come before any `go build`/`git clone`, and the rollback
+  path, `POST /dashboard/update` and `version=` must all appear) and
+  `internal/config/deployexample_test.go` (only fenced blocks containing
+  `/.config/crswd/env` are scanned for `CRSW_` assignments — a new block is
+  invisible to it unless it names that file).
+- **`os.ReadFile` over a loop variable needs a `//nolint:gosec // G304` even in a
+  test.** The linter is v2.12.2 (#26 checked) and flagged it.
+- **Mutation-checked:** flipping `newSuffix` to `.pacnew` failed the new test on
+  both pages, which is the drift it exists to catch — a page naming an offer that
+  is not there is the "difference nobody can see" this milestone is about.
+
+**Left:** T007 — one config-write implementation shared by `crswd config migrate`
+and the update path. That is the last task in the plan.
+
+**Findings — noticed, not fixed:**
+
+- **T007 now has four write paths to consider, not three.** `cmd/crswd/config_cmd.go`'s
+  `writeConfigFile`/`writeAndSync`, `internal/config/write.go`'s `WriteFile`,
+  `internal/updater/config.go` (staged + backup) and `internal/updater/place.go`
+  (units and the record) all go through or around the same idea. Note the
+  documentation now *claims* the update runs `crswd config migrate` "for you";
+  after T007 that should be literally true rather than nearly so.
+- **`README.md` documents `crswd.service.new` as never loadable by systemd**
+  (a unit must end in `.service`). That is true of systemd, not enforced here —
+  if `newSuffix` ever changes, it has to keep that property, and the new test
+  checks only that the pages agree with the constant.
+- **The `quickstart` suite as a whole still could not be run**: `ss -ltn` shows
+  `127.0.0.1:8765` held by the deployed daemon. `go vet -tags quickstart ./...`
+  is clean; `-tags tmux` and `-tags dev` were run in full and pass, as did
+  `golangci-lint run` (0 issues).
+- **Still open from Iterations 1–5:** the migration runs in the *old* binary;
+  `cmd/crswd/config_cmd.go` duplicates `internal/config/write.go` (T007);
+  `internal/config/migrate.go`'s and `internal/config/write.go`'s header comments
+  both name the wrong set of callers; `config.WriteFile`'s temp file is still
+  named `.crswd-config-*` while place.go writes systemd units through it;
+  `internal/httpapi/render.go` is still the only file `gofmt -l .` names; and
+  `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is wall-clock flaky.

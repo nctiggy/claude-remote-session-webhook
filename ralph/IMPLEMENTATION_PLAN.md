@@ -92,7 +92,7 @@ be written at all.
 
 - [x] **T005** Surface the same thing at startup, into the journal. The daemon already warns about an absent identity provider for the same reason: a deployment that is quietly behind looks identical to one that is current, and the journal is where an operator looks when something is wrong.
 
-- [ ] **T006** Document it in `README.md` and `deploy/README.md`: what an update does to each of the two files, why the unit is never overwritten when it has been edited, and how to take a `.new` unit when you want it. Say plainly that a hand-written unit — one this installer never wrote — is never replaced and will always produce a `.new`.
+- [x] **T006** Document it in `README.md` and `deploy/README.md`: what an update does to each of the two files, why the unit is never overwritten when it has been edited, and how to take a `.new` unit when you want it. Say plainly that a hand-written unit — one this installer never wrote — is never replaced and will always produce a `.new`.
 
 - [ ] **T007** Make `crswd config migrate` and the update path share one implementation, if T001 did not already. Two code paths that rewrite an operator's configuration differently is the drift this repository keeps finding; one of them is a command an operator runs and the other runs unattended during an update, which is the worse place to discover a difference.
 
