@@ -246,3 +246,74 @@ load-bearing, then the default, then the one commented line. 465 → 306 lines.
    deliberate — the header is where "required" is stated, since the key's own block
    no longer carries a `Default:` line — but a later task adding a second required
    setting should put it here rather than inventing a second heading.
+
+---
+
+## Iteration 4 — 2026-08-12
+
+**Did:** T004. `README.md`'s install now opens with the two deployments as numbered
+paths, states the three prerequisites nobody was told, and points at the daemon's
+own refusals. The two door sections are renamed **Path 1** and **Path 2** so the
+choice and the instructions share a vocabulary.
+
+**Learned:**
+
+- **A troubleshooting `journalctl` line cannot be written as a command.**
+  `quickstart_test.go:2050` (`trailCommands`) takes **every line in `README.md` or
+  `deploy/README.md` that begins with `journalctl`** once a leading `#` is stripped,
+  and `filterOf` then **`t.Fatal`s** unless that line pipes (`|`) *and* its producer
+  names `journalctl`, `--user`, `-u crswd` **and** `-o cat`. That sweep exists for
+  audit-trail commands; a diagnostics command is the opposite — it wants the stderr
+  banners the documented filter removes (#88). So `journalctl --user -u crswd -e`
+  is written **inline in prose, mid-line**, never in a fenced block and never at the
+  start of a source line. **T005–T008: the same trap fires on a wrapped line.**
+- **Five tests read `README.md`, and T005/T006 will walk straight into three of
+  them.** `internal/httpapi/login_test.go:1004` requires the literal string
+  `http://<the host's LAN address>:8765/login` — **T006 rewrites exactly that
+  paragraph and must keep that address byte for byte**, path included, since it is
+  read from the mux's own constant. `internal/release/readme_test.go` needs the
+  installer's one-liner verbatim with no `go build` / `git clone` /
+  `go mod download` **above** it (the from-a-clone block in Path 1 is the only one
+  left, and it must stay below), the rollback trio (`~/.local/bin/crswd.previous`,
+  `POST /dashboard/update`, `version=`), and the door vocabulary
+  (`dashboard_password`, `access_enabled`, `admits nobody`).
+  `internal/config/docs_test.go` reads the configuration table one row per line.
+- **Anchors: `](#` is still the only check that exists, and an em dash makes a
+  double hyphen.** `### Path 1 — on the internet: Cloudflare Tunnel and Access`
+  slugs to `#path-1--on-the-internet-cloudflare-tunnel-and-access` — GitHub strips
+  the em dash and the colon without collapsing the spaces either side. All six
+  in-page links were re-checked after the rename.
+- **The installer already warns about `claude` and points here.** `advise_tools`
+  (`install.sh:106`) warns when `cloudflared` or `claude` is off `PATH`, "see the
+  README" — so the prerequisite bullet is what that warning was pointing at all
+  along. The installer says nothing about `claude` being *authenticated*, which is
+  the half that actually strands a session, and the page now carries it.
+- **The gate ran in full and green:** build, vet, `go test ./...`,
+  `golangci-lint run` (v2.12.2, so #26's check passes, 0 issues), and
+  `go test -tags quickstart ./cmd/crswd` (36s) — the last one is not optional here,
+  since it is the suite that reads this file.
+
+**Left:** T005–T008.
+
+**Findings (not fixed):**
+
+1. **The install opening and the front-matter paragraph (`README.md:10-14`) now
+   both frame the two doors** — deliberately, since one is "what this project is"
+   and the other is "the first step of installing it", and they link to different
+   places (the comparison table vs. the two paths). **T007 owns the duplication
+   trim and should decide whether both survive**; if only one does, the install
+   copy is the one an operator is actually reading at that moment.
+2. **`install.sh`'s printed next steps never mention `loginctl enable-linger`,**
+   while the README calls it "easy to skip and expensive to skip" and the symptom
+   (the unit dying when the SSH session ends) arrives minutes later looking like
+   something else. `next_steps` (`install.sh:461`) lists two things: pick a door,
+   then `systemctl --user enable --now crswd`. **Not fixed:** that output is pinned
+   by `TestInstallPrintsNextSteps`, so it is a script change plus a test change, not
+   a doc task. Worth a task.
+3. **Iteration 1's findings 1 and 2 and iteration 2's finding 2 all still stand** —
+   `docs/auth-and-sessions.md`'s colliding "two doors" and its "the skill",
+   `deploy/README.md`'s Access-only "Verifying the exposure model", and the htmx
+   claim under "Why it is built this way" — **now `README.md:700`, not the `:656`
+   the last three entries name**, because this task added lines above it. T007
+   still owns it. The README's own "Verifying the exposure model" is **not** an
+   instance of the `deploy/` problem: it has both halves, tunnel and LAN.
