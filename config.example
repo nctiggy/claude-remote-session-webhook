@@ -9,10 +9,12 @@
 # above it names the default in words.
 #
 # The daemon reads this once, before it binds or spawns anything. Nothing here
-# can be changed while it runs, and a value that would weaken a bound is a
-# startup failure rather than a warning: sessions run with
+# can be changed while it runs, and a value that would weaken a bound by
+# accident is a startup failure rather than a warning: sessions run with
 # --dangerously-skip-permissions, and these settings are what stands in for the
-# permission prompt that is gone.
+# permission prompt that is gone. One bound can be removed outright, and it is
+# spelled in a way that cannot be arrived at by a typo — the lifetime ceiling,
+# below, which says what removing it costs.
 #
 #
 # WHERE THIS FILE GOES
@@ -188,9 +190,14 @@ version = 1
 # destroy_on_shutdown = false
 
 # How long a session may live from creation, whatever it is doing. Go duration
-# syntax: `24h`, `90m`. It must be positive. There is deliberately no way to
-# say "never": a session that can outlive the daemon's own memory of why it
-# exists is what the bound is written against.
+# syntax: `24h`, `90m`. It must be positive, and the word `never` the ceiling
+# below takes is refused here.
+#
+# That asymmetry is the design rather than an omission. This is the lifetime
+# every session gets without asking, so a daemon that read "never" here would
+# be one whose every session is immortal by default — which is not what a
+# per-session override is for. The ceiling opens that door and a create is what
+# walks through it.
 #
 # Default: 24h.
 # session_lifetime = 24h
@@ -198,18 +205,62 @@ version = 1
 # The ceiling a per-session lifetime override may not exceed. A create asking
 # for more is refused rather than quietly clamped — a caller who asked for
 # thirty days and was given one believes they have thirty, and nothing tells
-# them otherwise until the session is gone. Below session_lifetime it is a
-# startup failure, because every create would then be refused by a ceiling
+# them otherwise until the session is gone. A duration below session_lifetime
+# is a startup failure, because every create would then be refused by a ceiling
 # under its own default.
+#
+# The word `never` is the one value here that is not a duration: no ceiling at
+# all, and so a daemon on which a create may ask for a session that never
+# expires. It is not "below" anything, so the check above does not fire on it —
+# no default sits above the absence of a bound. `0` is unset and a negative
+# duration is refused outright rather than read as a second spelling of the
+# word: both are things a person writes meaning "no time at all", and a daemon
+# that read either as "forever" would switch off its last deadline over a typo.
+#
+# What it costs, plainly. The absolute deadline is the one bound that is never
+# renewed, so with it gone the containment left is allowed_roots and whichever
+# door admits callers — the reaper is no longer part of it. A session created
+# with both switches off is reaped by nothing and holds an unsandboxed shell
+# until somebody destroys it. That is the operator's decision to make on their
+# own host, which is why it is made here, once, and not per create.
+#
+# It is also what puts the second switch on the dashboard's create form. Only a
+# daemon whose ceiling is gone offers "never die at the lifetime limit", because
+# a create asking for that anywhere else is one this daemon is certain to
+# refuse, and a control whose only outcome is a refusal should not be drawn.
+#
+# One edge to know before relying on it: no session record survives the daemon.
+# A restart adopts such a session back from tmux as an ordinary one — carrying
+# the built-in 24h lifetime rather than the one it was created with, because
+# tmux knows the session and not what was asked for it — and tears it down on
+# the spot if it is already older than that. A session that never expires does
+# not survive a redeploy, and is destroyed *because* it was long-lived.
 #
 # Default: whatever session_lifetime is.
 # session_lifetime_max = 24h
 
-# How long a session may sit without a request before the reaper takes it,
-# measured from its last activity and moving with it. It may not be negative,
-# and longer than session_lifetime is a startup failure because it could then
-# never fire — a setting that does nothing is worse than one that refuses,
-# since nothing tells you it did nothing.
+# How long a session may sit idle before the reaper takes it, measured from the
+# later of two clocks and moving with whichever is more recent: when a request
+# last drove the session, and when the host itself last saw that session produce
+# output — tmux's own session activity, read by the sweep that is about to judge
+# the record. A session being worked in is not idle, whether the work is the
+# agent printing or a person typing in a terminal attached to it on this host,
+# and whether or not anything was asked of the daemon all afternoon.
+#
+# Watching is still not driving, and that has not changed: reading a session —
+# the dashboard, the session page, the live stream — advances neither clock. A
+# forgotten tab must never hold an unsandboxed shell open, and a forgotten tab
+# produces no output, which is what makes counting the host's own reading safe
+# where counting browser reads was not.
+#
+# The second clock can only ever push the deadline further out. A host that
+# gives no answer for a session, or an unreadable one, leaves it exactly as
+# long-lived as it was before this clock existed — a misread here must not be
+# able to destroy a session that is in use.
+#
+# It may not be negative, and longer than session_lifetime is a startup failure
+# because it could then never fire — a setting that does nothing is worse than
+# one that refuses, since nothing tells you it did nothing.
 #
 # `0` is not a disable here: zero reads as unset further down and the built-in
 # 60m applies. Switching idle reaping off belongs to one session, as a
@@ -219,7 +270,12 @@ version = 1
 # idle_timeout = 60m
 
 # The ceiling for a per-session idle override, as session_lifetime_max is for
-# lifetimes. Below idle_timeout is a startup failure.
+# lifetimes. Below idle_timeout is a startup failure. It takes no `never`, and
+# needs none: a create switches idle reaping off for its own session without
+# asking this ceiling for room, because such a session is still bounded by the
+# absolute deadline. Removing *that* one is the decision that needed the
+# operator's permission, which is why only the lifetime ceiling has a word for
+# it.
 #
 # Default: whatever idle_timeout is.
 # idle_timeout_max = 60m

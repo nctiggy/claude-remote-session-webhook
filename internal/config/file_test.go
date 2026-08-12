@@ -1466,6 +1466,91 @@ func TestConfigExampleShipsARemoteControlCommandThatRendersInItsOwnPane(t *testi
 	}
 }
 
+// TestConfigExampleSpellsNeverWhereTheDaemonTakesIt pins the asymmetry the
+// example now teaches: `never` removes the lifetime ceiling, and the same word
+// on the default beside it is refused.
+//
+// It is a claim about behaviour made in prose, which is the kind that rots
+// without anything going red — the file is not compiled and nothing else reads
+// it. The asymmetry is also the security-bearing half of milestone 13: the
+// ceiling is where an operator says a session on this host may outlive the one
+// deadline that is never renewed, and a default that quietly learned the word
+// would make every session on that host immortal without anyone asking for it.
+//
+// Both halves go through the daemon's own loader rather than being read a second
+// way here, for the reason
+// TestConfigExampleShipsARemoteControlCommandThatRendersInItsOwnPane does: what
+// the file claims is that a daemon starts on this and behaves so.
+//
+// **Must fail when** the default accepts the word, when the ceiling stops
+// accepting it, or when the example's own two lines stop being ones a daemon
+// starts on.
+func TestConfigExampleSpellsNeverWhereTheDaemonTakesIt(t *testing.T) {
+	t.Parallel()
+
+	raw, err := os.ReadFile(configExamplePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", configExamplePath, err)
+	}
+
+	lifetimeKey := config.KeyForVar(config.EnvSessionLifetime)
+	ceilingKey := config.KeyForVar(config.EnvSessionLifetimeMax)
+	shown := make(map[string]exampleLine)
+	for _, l := range exampleLines(t, raw, map[string]bool{lifetimeKey: true, ceilingKey: true}) {
+		shown[l.key] = l
+	}
+	for _, key := range []string{lifetimeKey, ceilingKey} {
+		if _, ok := shown[key]; !ok {
+			t.Fatalf("%s shows no %s line", configExamplePath, key)
+		}
+	}
+
+	// The values on the page are ones an operator uncomments, so they have to be
+	// values this daemon starts on — the example may not illustrate a bound with
+	// something the loader refuses.
+	t.Run("the two lines as shown start a daemon", func(t *testing.T) {
+		t.Parallel()
+
+		pairs, _ := baseEnv(t)
+		pairs[config.EnvSessionLifetime] = shown[lifetimeKey].value
+		pairs[config.EnvSessionLifetimeMax] = shown[ceilingKey].value
+		if got := mustLoad(t, pairs).SessionLifetime; got <= 0 {
+			t.Errorf("%s:%d shows %q and it loads as %v; the default every session gets must be a positive duration",
+				configExamplePath, shown[lifetimeKey].line, shown[lifetimeKey].value, got)
+		}
+	})
+
+	t.Run("the ceiling takes the word", func(t *testing.T) {
+		t.Parallel()
+
+		pairs, _ := baseEnv(t)
+		pairs[config.EnvSessionLifetimeMax] = config.NeverLifetime
+		cfg := mustLoad(t, pairs)
+		if cfg.SessionLifetimeMax >= 0 {
+			t.Errorf("%s:%d documents %q as the spelling for no ceiling at all and the loader answers %v; an operator who writes what this file tells them gets a bound they meant to remove",
+				configExamplePath, shown[ceilingKey].line, config.NeverLifetime, cfg.SessionLifetimeMax)
+		}
+	})
+
+	t.Run("the default refuses it", func(t *testing.T) {
+		t.Parallel()
+
+		pairs, _ := baseEnv(t)
+		pairs[config.EnvSessionLifetime] = config.NeverLifetime
+		cfg, err := config.LoadFrom(env(pairs), io.Discard)
+		if err == nil {
+			t.Fatalf("%s:%d says the word is refused here and the daemon started on it with a %v lifetime; every session on this host would then be immortal without a create ever asking",
+				configExamplePath, shown[lifetimeKey].line, cfg.SessionLifetime)
+		}
+		// The trailing space is load-bearing: the ceiling's variable has this
+		// one as a prefix, and a refusal that named only the ceiling would send
+		// an operator to the line they wrote correctly.
+		if !strings.Contains(err.Error(), config.EnvSessionLifetime+" ") {
+			t.Errorf("the refusal does not name %s, so an operator cannot tell which of the two lines it came from: %v", config.EnvSessionLifetime, err)
+		}
+	})
+}
+
 // longAgo is far enough back that any write at all moves the mtime by years
 // rather than by whatever the clock's granularity happens to be.
 var longAgo = time.Date(2020, time.January, 2, 3, 4, 5, 0, time.UTC)
