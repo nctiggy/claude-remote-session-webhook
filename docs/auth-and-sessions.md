@@ -299,6 +299,19 @@ a second path that does not — and must never delay session teardown or daemon
 shutdown. A forgotten tab that postponed an idle deadline would hold an unsandboxed
 shell open for as long as it lives.
 
+**The clock that rule is about is not the only one.** The idle deadline is measured
+from the later of two instants: the daemon's own last-activity stamp, advanced in that
+single place, and what tmux last saw the session itself produce. The rule above is
+unchanged by that and still binding — a stream advances neither — and the second clock
+is what makes declining browser reads affordable rather than merely strict: a session
+being worked in stays alive whether the work is the agent printing or a person typing
+in a terminal attached to it on this host, while a forgotten tab produces no output and
+so still keeps nothing alive. **The comparison is the fail-safe, and it must stay a
+comparison rather than becoming a usability test.** A tmux time that is absent,
+unparsable, or from a clock that disagrees can only fail to be the later of the two, so
+it falls back to the daemon's own stamp and can never shorten a session's life — there
+is no "is this value usable?" branch to get the wrong way round.
+
 Two more, for the same reason the session cap exists (constitution VI):
 
 - **Cap concurrent streams** (`CRSW_MAX_STREAMS`) and refuse past it, counted and
@@ -501,9 +514,9 @@ This is the most fragile thing in the project and the most sensitive:
 | Page token key | The process's lifetime. Regenerated at every start, never persisted, so a restart invalidates every outstanding token |
 | Dashboard session cookie | 12 hours, on the password door only — the page token's number, chosen the same way. Carried *inside* the signed value and measured on the server's clock; the cookie's own `Max-Age` is a request to the browser, and a client that ignores it presents an expired value and is refused |
 | Sign-in attempts | 6 a minute per source address, burst 3, on the create route's own token bucket. A constant rather than a setting: it is an attacker's budget, not the operator's work. It is not what makes the password hard to guess — the sixteen-character minimum is — and it is spent before the two sides are compared, so a correct password does not buy its way past a spent budget |
-| Session bearer token TTL | 24 hours — deliberately equal to the absolute lifetime |
-| Session idle timeout | 60 minutes, then auto-destroy |
-| Session absolute lifetime | 24 hours, no renewal |
+| Session bearer token TTL | 24 hours — deliberately equal to the absolute lifetime, and still equal to it on a session whose absolute deadline was removed, so that session's token does not expire either |
+| Session idle timeout | 60 minutes, then auto-destroy. Counted from the later of the session's two activity clocks: the last request that drove it, and what tmux itself last saw it print. A create may switch it off for its own session |
+| Session absolute lifetime | 24 hours, no renewal. A create may remove it altogether, but only on a daemon whose configured ceiling is itself unbounded (`CRSW_SESSION_LIFETIME_MAX=never`) — the one deadline that is never renewed is the operator's to remove and never a caller's alone |
 
 Idle and absolute timeouts are enforced by a reaper goroutine, not by the next
 request — an abandoned session must die on its own.
@@ -528,6 +541,8 @@ one of these two numbers, shorten both.
 - [ ] No `Access-Control-Allow-*` on any route, swept across every registered one
 - [ ] A stream re-evaluates authorisation every tick, never advances the idle clock,
       and never delays teardown or shutdown
+- [ ] The idle deadline is the later of the two activity clocks, and a tmux time that
+      is absent or unusable falls back to the daemon's own stamp — never to reaping
 - [ ] Every mutating browser route goes through the action gate, in the order layer 1
       → same-origin → page token, all of it before the handler runs
 - [ ] Each half of that gate has a test that refuses with the *other* half satisfied,

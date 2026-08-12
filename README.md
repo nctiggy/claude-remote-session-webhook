@@ -48,7 +48,8 @@ the blast radius bounded. Read both before touching a handler.
 What bounds the damage, once somebody is through the door, is configuration:
 sessions may only run under [allowlisted roots](#configuration), there is a cap on
 how many exist at once, and every one of them has an idle timeout and an absolute
-lifetime enforced by a reaper.
+lifetime enforced by a reaper — deadlines a create can switch off only as far as
+[the daemon's own configuration](#configuration) already allows.
 
 ## Install
 
@@ -343,10 +344,10 @@ stands in for the permission prompt that is gone.
 | `CRSW_LISTEN` | no | `127.0.0.1:8765` | The listener. The host must be an IP literal; a name refuses under every door. A non-loopback host such as `0.0.0.0` is permitted **only when the dashboard has a door** — Access or `CRSW_DASHBOARD_PASSWORD`. With neither, it refuses: a daemon that admits nobody may not be reachable by anybody. A port out of range refuses |
 | `CRSW_MAX_SESSIONS` | no | `5` | How many sessions may exist at once. Below 1 refuses |
 | `CRSW_DESTROY_ON_SHUTDOWN` | no | `false` | Tear every session down when the daemon stops. Off by default: sessions survive a clean stop and startup adoption reclaims them, so a redeploy no longer costs the fleet. `true` restores the old behaviour, for a host being decommissioned rather than updated |
-| `CRSW_SESSION_LIFETIME` | no | `24h` | How long a session may live from creation, never renewed. The default every create inherits, and a create may ask for another up to the ceiling below. Zero or negative refuses; there is no "never", so an operator who wants one sets this long instead |
-| `CRSW_SESSION_LIFETIME_MAX` | no | `CRSW_SESSION_LIFETIME` | The ceiling a per-session lifetime override may not exceed — a create asking past it is refused, never clamped. Below the default refuses. It defaults to the default, so an override buys nothing until this is raised deliberately |
-| `CRSW_IDLE_TIMEOUT` | no | `60m` | How long a session may sit without a request before the reaper takes it, counted from its last activity and moving with it. Negative refuses; longer than the lifetime refuses |
-| `CRSW_IDLE_TIMEOUT_MAX` | no | `CRSW_IDLE_TIMEOUT` | The ceiling a per-session idle override may not exceed. Below the default refuses. It bounds an idle timeout set *longer*; the dashboard's switch turns that clock off rather than lengthening it, which this does not bound and the absolute lifetime does |
+| `CRSW_SESSION_LIFETIME` | no | `24h` | How long a session may live from creation, never renewed. The default every create inherits, and a create may ask for another up to the ceiling below. Zero or negative refuses, and so does `never` — the word belongs to the ceiling, because a *default* of never would make every session on the host immortal without a create ever asking |
+| `CRSW_SESSION_LIFETIME_MAX` | no | `CRSW_SESSION_LIFETIME` | The ceiling a per-session lifetime override may not exceed — a create asking past it is refused, never clamped. Below the default refuses. It defaults to the default, so an override buys nothing until this is raised deliberately. `never` is the one value here that is not a duration: no ceiling at all, and so a daemon on which a create may ask for a session that never expires. A negative refuses rather than being read as a second spelling of it |
+| `CRSW_IDLE_TIMEOUT` | no | `60m` | How long a session may sit idle before the reaper takes it, counted from the later of two clocks and moving with whichever is more recent: the last request that drove the session, and what tmux itself last saw it print. Negative refuses; longer than the lifetime refuses |
+| `CRSW_IDLE_TIMEOUT_MAX` | no | `CRSW_IDLE_TIMEOUT` | The ceiling a per-session idle override may not exceed. Below the default refuses. It bounds an idle timeout set *longer*; the form's idle switch turns that clock off rather than lengthening it, which this does not bound and the absolute lifetime does. It takes no `never` and needs none — switching idle reaping off asks this ceiling for no room, because the absolute deadline still bounds such a session |
 | `CRSW_CREATE_RATE_PER_MIN` | no | `6` | Creates per minute per caller. Below 1 refuses |
 | `CRSW_MAX_BODY_BYTES` | no | `65536` | The largest request body read. Below 1 refuses |
 | `CRSW_ACCESS_ENABLED` | no | `false` | Declares Cloudflare Access to be the browser door. On with none of the three below, it refuses to start rather than serving a dashboard that admits nobody; on beside `CRSW_DASHBOARD_PASSWORD`, it refuses rather than choosing a door. It is not required for the Access door — the three values still select it on their own |
@@ -394,20 +395,37 @@ Notes worth having before you set these:
   and a real configured name submitted in that field is refused like any other
   value. `CRSW_START_COMMANDS` is still how the API door names one, because that
   door takes names.
-- **There are two clocks, and only one of them can be turned off.** The idle
-  timeout runs from a session's last activity and moves with it; the absolute
-  lifetime runs from creation and is never renewed. A create may override either
-  under the `_MAX` ceiling beside it, and **the dashboard makes the idle half of
-  that choice**: the create form carries a *Never die when idle* switch, and a
-  session started with it ticked is never reaped for sitting quiet. It still dies
-  at its absolute deadline — which is exactly what makes turning the idle clock
-  off safe, and why there is no switch for the other one. Both deadlines are on
-  the session's card, so which clock is coming is something to read rather than
+- **There are two clocks, and either of them can be turned off.** The idle
+  timeout runs from the session's last activity — the later of the last request
+  that drove it and what tmux itself last saw it print — and moves with whichever
+  is more recent; the absolute lifetime runs from creation and is never renewed.
+  A create may override either under the `_MAX` ceiling beside it, and **the
+  dashboard offers both as switches**: *Never die when idle*, on every daemon,
+  and *Never die at the lifetime limit*, only on one whose operator removed the
+  lifetime ceiling — anywhere else that create would be refused, and a control
+  whose only outcome is a refusal is not drawn. With both ticked, nothing reaps
+  the session. Both deadlines are on the session's card, beside the activity the
+  idle one counts from, so which clock is coming is something to read rather than
   infer.
-- **"Effectively never" is a ceiling raised, not a bound removed.** No value
-  spells *never*, and a negative lifetime is refused, so the way to get a session
-  that outlives a working day is to say how long. There is no upper bound on the
-  parse, so a year is a legal answer:
+- **Watching a session is still not driving it.** Reading — the dashboard, the
+  session page, the live stream — advances neither clock. What advances the idle
+  one is a request that drives the session, or the session producing output on
+  this host, so a long job you are watching is not reaped out from under you
+  while a tab left open over a weekend holds nothing alive. A tmux reading that
+  is missing or unusable can only fail to be the later of the two, so no session
+  is ever reaped *because* that reading failed.
+- **"Never" is spellable, and it removes a bound rather than raising one.**
+  `CRSW_SESSION_LIFETIME_MAX=never` is no ceiling at all: a create may then ask
+  for a session that never expires, which is what puts the second switch on the
+  form. The default beside it still refuses the word, so no session becomes
+  immortal without a create asking. Read what it costs first — the absolute
+  deadline is the one bound that is never renewed, so with it gone what contains
+  a session is `CRSW_ALLOWED_ROOTS` and whichever door admits callers, not the
+  reaper. One edge comes with it: no session record survives the daemon, so a
+  restart adopts such a session back from tmux as an ordinary one carrying the
+  built-in 24h lifetime, and destroys it on the spot if it is already older.
+  Saying how long is still the smaller answer, and there is no upper bound on the
+  parse, so a year is a legal one:
   ```
   CRSW_SESSION_LIFETIME=8760h     # the default every create inherits; the ceiling follows it
   CRSW_IDLE_TIMEOUT=8760h         # or leave this and tick the form's switch per session
@@ -415,7 +433,7 @@ Notes worth having before you set these:
   Raising only `CRSW_SESSION_LIFETIME_MAX` widens what a create may *ask* for and
   changes nothing an operator gets by default — that is the shape for the API
   door, which sends `lifetime` and `idle_timeout` per create, rather than for the
-  form, whose only lifetime control is that switch. Nothing is re-read while the
+  form, whose lifetime control is those two switches. Nothing is re-read while the
   daemon runs and a session keeps the deadlines it was created with, so a raise
   reaches the next session and not the one already running.
 - **`CRSW_LISTEN` will not take a hostname, under either door.** `localhost` is
