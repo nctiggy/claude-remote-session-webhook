@@ -118,3 +118,37 @@ cannot fail is not a test: assert the caller.
   `Activity`). A test that seeds a labelled session and asserts the label back
   would be testing nothing. Not fixed: outside T001, and no caller relies on it
   today.
+
+---
+
+## Iteration 0b — the finding that nearly cost the milestone
+
+**Did:** Added T000 and recorded why the rest of this plan is worth running.
+
+**The operator, mid-milestone:** *"In the remote control sessions, the only ones
+that matter TBH, there is no new activity in the tmux session."*
+
+They were right, and the consequence is larger than the idle clock. Their `rc`
+command carried `--spawn`, which makes the tmux session a **launcher**: the
+conversation lives on the relay and the pane goes quiet after startup. So for the
+sessions this operator actually runs, the pane is empty, the pill cannot tell
+running from idle from needs-auth, `compact` types into a pane nobody reads, and
+`#{session_activity}` never moves.
+
+**T001 and T002 would have measured a clock that never ticks, for the only
+sessions that matter.** It was one iteration from shipping.
+
+The fix is a start command, not daemon code:
+
+    rc=claude --dangerously-skip-permissions "/rc {name}"
+
+An ordinary interactive session that drives itself into remote control, so the
+tmux session *is* the session. Verified twice: the operator ran the form and it
+worked, and the config parser passes the quotes through intact — `send-keys` is
+called without `-l`, so the shell parses them normally.
+
+**The lesson is about where the daemon's assumptions come from.** Everything the
+dashboard does — the pane, the pill's inferred states, compact, milestone 7's
+whole mobile sweep — assumes the session renders into its own pane. Nothing
+checked that assumption, and a start command an operator was free to configure
+had quietly broken it for their primary use.

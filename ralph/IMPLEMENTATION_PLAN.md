@@ -97,7 +97,44 @@ plainly what is being switched off rather than presenting it as free.
 
 ---
 
+## ⚠️ Remote-control sessions produced no pane output, and that changed everything
+
+The operator's shipped `rc` command was:
+
+```
+rc=claude remote-control --permission-mode bypassPermissions --spawn=same-dir --name {name}
+```
+
+`--spawn` makes the tmux session a **launcher**. The conversation lives on the
+relay, so the pane goes quiet after startup — and for the sessions this operator
+actually uses, that meant the pane was empty, the pill could not tell running from
+idle from needs-auth, `compact` typed into a pane nobody read, and **tmux activity
+never ticked**.
+
+So T001 and T002 as originally written would have measured a clock that never
+moves, for the only sessions that matter. That is worth stating because it nearly
+shipped.
+
+**The fix is a start command, and it is verified working**:
+
+```
+rc=claude --dangerously-skip-permissions "/rc {name}"
+```
+
+An ordinary interactive session that drives itself into remote control, so the
+tmux session *is* the session. The operator confirmed the form runs; the config
+parser passes the quotes through intact (`send-keys` is called without `-l`, so
+the shell parses them normally).
+
+**T000 below ships that as the default.** Everything after it is worth building
+only because of it.
+
+---
+
 ## Tasks
+
+- [ ] **T000** Change the shipped remote-control default so a remote session renders in its own pane. `DefaultRemoteControlCommand` (or whatever `config.go` names the built-in) becomes the interactive form above rather than the `--spawn` launcher. Update `config.example` and `.env.example`'s `start_commands` examples to match, and say **why** in one sentence: a spawned session leaves the pane empty, and an empty pane is a dashboard that cannot show, judge, or compact anything. Keep the launcher form documented as a supported alternative for an operator who wants it — this changes a default, it does not remove a capability.
+
 
 - [x] **T001** Add `#{session_activity}` as a seventh field to `argvList()` in `internal/tmuxctl/`, parse it in `parseSessions`, and carry it on the reconciled session. The existing tests assert the six-field argv and will need updating — that is expected and correct, not a signal to route around them. `Fake` must serve it too, with a knob to set it, or nothing downstream is testable. **Unparsable or absent is not an error**: it yields a zero time, and T002 decides what that means.
 
