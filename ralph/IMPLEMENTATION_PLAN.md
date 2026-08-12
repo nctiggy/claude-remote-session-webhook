@@ -1,81 +1,86 @@
 # Implementation Plan
 
-**Milestone 13 — Make idle mean what it says, and let a session live forever.**
+**Milestone 14 — Say what is true, then say it clearly.**
 
-> *"I have no idea what idle means in this platform? Even if I am using the
-> session I think it is still considered idle. How is idle determined… is it
-> real?"*
-> *"I also want to allow for sessions to have an infinite lifetime."*
+> *"The explanations in the config.example are very long and not super human
+> readable… the readme should really include all the instructions needed to
+> complete an install."*
 
-Seven tasks.
-
----
-
-## What idle measures today, and why the operator is right
-
-`LastActivity` is advanced by **exactly three** things:
-
-| Advances the idle clock | Reachable from |
-|---|---|
-| `Resolve` — resolving a session's credential | **signed API only** |
-| `Compact` | browser + API |
-| `SetMode` | browser + API |
-
-**Nothing else.** Reading does not: the dashboard, the session page and the live
-stream all go through `View`, which has no clock reading in it — deliberately,
-under FR-034f, *"watching is not driving"*. Rename does not. And **there is no
-route to type into a session from the browser at all** — `Prompt` exists only on
-the signed API.
-
-So a browser-driven operator watching a session all day has it reaped at sixty
-minutes, and someone attached to the tmux session on the host is invisible to the
-clock entirely. Idle measures *daemon-mediated mutating HTTP requests* and calls
-that activity.
-
-## What makes this fixable rather than a trade
-
-**tmux tracks the real thing.** `#{session_activity}` is a timestamp of when the
-session last produced output — the agent printing, a human typing in an attached
-terminal, anything.
-
-`argvList()` (`internal/tmuxctl/fake.go:94`) already runs `list-sessions -F` with
-six fields on every reconciliation. **This is a seventh field on an exec that
-already happens**, not a new call and not a new cost.
-
-It also answers the objection that killed the obvious fix. Counting browser reads
-was rejected because a forgotten tab would hold an unsandboxed shell open forever.
-**Real tmux activity is not a forgotten tab** — a tab produces no output.
+Eight tasks, ordered by a Fable 5 audit that read every markdown file,
+`config.example`, `.env.example`, and the six test files that pin docs to code.
 
 ---
 
-## ⚠️ Fail safe, in the direction that keeps sessions alive
+## Wrong beats wordy
 
-tmux's activity field can be absent, unparsable, or from a session the daemon does
-not manage. **Every one of those falls back to `LastActivity` and never to
-"reap it".** A parse bug that starts destroying an operator's sessions is a far
-worse failure than one that keeps a dead session a while longer, and the absolute
-deadline still bounds the latter.
+The audit disagreed with the premise, usefully. `config.example` **is** hard to
+read — but the cause is **ordering, not length**: nearly every block leads with the
+justification and buries the operative fact. And the worst problems in the doc set
+are not verbosity at all. **Fix the false statements first.**
 
-The idle deadline is computed from **the later of** the two clocks. Either counts,
-because either is genuinely activity.
+| File | What it says | What is true |
+|---|---|---|
+| `deploy/README.md:14` | The daemon "refuses to start without" the three `CRSW_ACCESS_*` values | Lines 38–41 of the same file say setting none is supported. It is. |
+| `AGENTS.md:22` | `web/` holds "Templates, htmx, CSS"; a `skill/` directory exists | There is no htmx (`docs/components.md` says so emphatically) and no `skill/` |
+| `AGENTS.md:10` | The browser door is Cloudflare Access | Milestone 12 added the password door |
+| `AGENTS.md:50`, `CONTRIBUTING.md:22-27` | CI runs the untagged commands "and nothing else" | The tmux and quickstart suites run too |
+
+**`AGENTS.md` is the first file every agent loads.** In a Ralph-loop project a
+stale one is compounding error — every iteration of every milestone begins by
+reading it — which is why it is T001 rather than a tidy-up at the end.
 
 ---
 
-## ⚠️ "Never" needs a spelling that cannot mean "unset"
+## ⚠️ The docs are test fixtures. Do not move them.
 
-The lesson is already in this codebase and must not be relearned: a negative
-`Idle` disables idle reaping *because* zero already means "unset", and one value
-cannot mean both.
+`config.example`, `.env.example`, the README's configuration table,
+`docs/design-system.md`'s tokens and `docs/components.md`'s class names are read
+**at relative paths** and held to the code **in both directions**.
 
-An infinite lifetime needs the same care. Whatever the spelling, it must be
-**unambiguous, and it must exist for the ceiling too** — a per-session "never"
-that cannot fit under `session_lifetime_max` is a setting that always refuses.
+- `internal/config/file_test.go` — `config.example`, one `# key = value` line per
+  key, in `config.Vars()` order, each parsing to exactly the value shown
+- `internal/config/envexample_test.go` — `.env.example`, names every variable,
+  carries no values
+- `internal/config/docs_test.go` — the README's table, one row per `CRSW_` variable
+- `internal/httpapi/stylesheet_test.go` — component classes and design tokens
+- `internal/release/readme_test.go` — the install one-liner verbatim and first
+- the quickstart suite — every documented `journalctl` command
 
-**This removes a bound rather than relaxing one**, which is a real difference from
-the negative-idle case, where the absolute deadline still fired. That is the
-operator's decision to make on their own host — the containment control here is
-`allowed_roots` and the doors, not the reaper — but the documentation must say
-plainly what is being switched off rather than presenting it as free.
+**A rewrite that renames a key, drops one, or reorders `Vars()` fails the suite.**
+That is the guard working, not an obstacle.
+
+**A landmine for T003:** any comment line beginning `# <known_key> = …` counts as
+that key's line. Prose like `# idle_timeout = 0 disables nothing` fails as a
+duplicate. Use the env spelling in examples (`CRSW_IDLE_TIMEOUT=…`) as
+`.env.example` already does, or do not lead with the key.
+
+---
+
+## ⚠️ What must survive a rewrite
+
+The audit named these load-bearing. They are long because the reasoning is the
+point, and compressing them is how the next person "simplifies" a security
+property into a bug.
+
+- `config.example` — `$HOME` is never the default root (SSH keys, cloud
+  credentials, browser profiles live directly under it); no trailing comments
+  because a secret may contain `#`; first-`=` separator because `start_commands`
+  carries `=` in its value; the listen/door invariant; the password crossing a LAN
+  in clear; what `;`, control characters and `{name}` mean in a start command.
+- `docs/security.md` and `docs/auth-and-sessions.md` — **essentially whole**. Why
+  method and path are in the signed payload (a live milestone-1 bug), *"no email
+  must never read as allow"*, the bounds on the two pre-layer-1 login routes, why
+  the page token is stateless and `pageKey` unrelated to the shared secret, the
+  `$SHELL -l` probe trade.
+- `README.md` — the security posture section, "Never both", the TLS warning
+  including the `Secure`/`X-Forwarded-Proto` paragraph, signature-before-executable
+  ordering, the rollback recipe, both halves of "Verifying the exposure model".
+- `deploy/README.md` — the unit rationale (`KillMode=process`, `TimeoutStopSec`,
+  no `PrivateTmp`), the `journalctl | grep '^{'` explanation, the `crswd-api` zsh
+  `path` hazard.
+
+**The voice stays.** "Says why, not just what" is right for this project. The fix
+is *order* — fact, bounds, default, then why — not deleting the why.
 
 ---
 
@@ -84,82 +89,40 @@ plainly what is being switched off rather than presenting it as free.
 - `- [ ]` open · `- [x]` done · `- [!]` blocked (reason in `PROGRESS.md`)
 - Priority order is meaningful — the loop always takes the topmost open item.
 - **Every task ends green**: `go build ./... && go vet ./... && go test ./... && golangci-lint run`,
-  plus **`-tags tmux`** (this milestone changes the tmux argv, so that suite is
-  not optional) and `-tags quickstart` where touched.
+  plus `-tags quickstart` for anything touching a documented command.
 - **Check the linter is v2 before trusting it** (#26).
-- `go.sum` must never appear.
 - **AR-008: no refactoring outside the task.**
-- **A task is not done when the code exists. It is done when something calls it.**
-- **A new guard must be proven by breaking it.**
-- **`config.example` is guarded in both directions** and any comment line
-  beginning `# <known_key> = …` counts as that key's line — illustrative prose
-  must not start that way or the suite fails it as a duplicate.
-
----
-
-## ⚠️ Remote-control sessions produced no pane output, and that changed everything
-
-The operator's shipped `rc` command was:
-
-```
-rc=claude remote-control --permission-mode bypassPermissions --spawn=same-dir --name {name}
-```
-
-`--spawn` makes the tmux session a **launcher**. The conversation lives on the
-relay, so the pane goes quiet after startup — and for the sessions this operator
-actually uses, that meant the pane was empty, the pill could not tell running from
-idle from needs-auth, `compact` typed into a pane nobody read, and **tmux activity
-never ticked**.
-
-So T001 and T002 as originally written would have measured a clock that never
-moves, for the only sessions that matter. That is worth stating because it nearly
-shipped.
-
-**The fix is a start command, and it is verified working**:
-
-```
-rc=claude --dangerously-skip-permissions "/rc {name}"
-```
-
-An ordinary interactive session that drives itself into remote control, so the
-tmux session *is* the session. The operator confirmed the form runs; the config
-parser passes the quotes through intact (`send-keys` is called without `-l`, so
-the shell parses them normally).
-
-**T000 below ships that as the default.** Everything after it is worth building
-only because of it.
+- **Verify a claim before writing it down.** This milestone exists because four
+  files asserted things nobody checked.
 
 ---
 
 ## Tasks
 
-- [x] **T000** Change the shipped remote-control default so a remote session renders in its own pane. `DefaultRemoteControlCommand` (or whatever `config.go` names the built-in) becomes the interactive form above rather than the `--spawn` launcher. Update `config.example` and `.env.example`'s `start_commands` examples to match, and say **why** in one sentence: a spawned session leaves the pane empty, and an empty pane is a dashboard that cannot show, judge, or compact anything. Keep the launcher form documented as a supported alternative for an operator who wants it — this changes a default, it does not remove a capability.
+- [ ] **T001** Fix `AGENTS.md`. Remove `htmx` and the `skill/` directory from the project map; correct the browser-door description to name both doors; correct the CI claim to include the tmux and quickstart suites. **Check every other claim in the file against the tree while you are there** — it is the file every agent reads first, and it has been wrong in four places at once.
 
+- [ ] **T002** Fix `deploy/README.md:14` and `CONTRIBUTING.md:22-27`. The Access values are optional; setting none is a supported deployment that admits nobody to the dashboard. Say which deployment the file is for at the top, and note that a LAN operator wants the password door instead. Reposition the 1Password paths as **one example of a shape** — a secret in a manager, `EnvironmentFile` under `umask 077`, never in the unit — rather than the procedure.
 
-- [x] **T001** Add `#{session_activity}` as a seventh field to `argvList()` in `internal/tmuxctl/`, parse it in `parseSessions`, and carry it on the reconciled session. The existing tests assert the six-field argv and will need updating — that is expected and correct, not a signal to route around them. `Fake` must serve it too, with a knob to set it, or nothing downstream is testable. **Unparsable or absent is not an error**: it yields a zero time, and T002 decides what that means.
+- [ ] **T003** Reshape `config.example` to lead with the fact. Per key: **name and what it does; format, bounds and what a wrong value does; then the why where the why is load-bearing; then the default; then the one commented line.** Cut the 81-line preamble to roughly 30 — keep the file locations, the `CRSW_CONFIG_FILE` relative-path trap, `crswd config check`, the `config.bak` fallback, one precedence line, and the three format rules; replace the "why not JSON/YAML/TOML" argument with a pointer to `docs/security.md` §5. Target ~215 lines from 401. **Mind the duplicate-key-line landmine above, and keep every passage named as load-bearing.**
 
-- [x] **T002** 🔒 Compute the idle deadline from **the later of** `LastActivity` and the tmux activity time. A zero or unusable tmux time falls back to `LastActivity` alone — **never to reaping**. Test: a session with old `LastActivity` and recent tmux activity is **not** reaped; one with both old is; one with an unparsable tmux time behaves exactly as today. **Must fail when** a parse failure makes a live session reapable.
+- [ ] **T004** Restructure `README.md`'s install into **two numbered paths, chosen up front**: "on the internet" (Access) and "on a network you control" (password). Add the prerequisites nobody is told: Linux with a systemd user session, `tmux`, and **`claude` installed and authenticated on the host** — the device-code relay is not built, so a session that hits a login prompt is stuck. Add one troubleshooting line pointing at `journalctl --user -u crswd -e`, since the daemon's refusals are its best operator feature and nothing points at them.
 
-- [x] **T003** Show the operator what the clock is actually watching. The card already carries `idle deadline`; add the last activity it is measured from, so "why is this about to die" is answerable from the page. Reuse `.card-meta`'s `dt`/`dd`; **no new class**.
+- [ ] **T005** Write the Access path end to end, as a stranger must follow it: install and authenticate `cloudflared`; `cloudflared tunnel create`; **route DNS to the tunnel** (mentioned nowhere today); what to edit in `cloudflared.example.yml` — the hostname and the service URL, since the README says "then edit" and never says what; create the Access application (self-hosted, on that hostname); configure the identity provider; **both policies — an identity Allow and a Service Auth for the API**, which are required today and shown nowhere; where the AUD tag lives; the service token; the four config lines; `crswd config check`; restart; and finally **"browse to https://your-hostname/"**, which the README never says.
 
-- [x] **T004** 🔒 Give the absolute lifetime a spelling for **never**, matching the discipline the idle disable already follows: it may not collide with "unset". Apply it to both the per-session override **and** `session_lifetime_max`, since a per-session never under a finite ceiling is a setting that always refuses. `resolveLifetimes` currently refuses a negative lifetime — that refusal is what changes, deliberately and with the reason recorded.
+- [ ] **T006** Reconcile the LAN path with the installer. It currently shows a config from scratch, but a one-line-install reader already has `shared_secret` and `allowed_roots` written — the real edit is **adding** `dashboard_password` and `listen`. Say that. Note the installer already wrote the file `0600`, and fold `crswd config check` in as the pre-restart verification.
 
-- [x] **T005** Offer it on the create form beside the existing never-die-when-idle switch, reusing `.field-switch`, `.switch-input`, `.switch-label`. **No new class.** The label must say what it switches off: with both switches on, nothing reaps this session, and the operator has said so twice.
+- [ ] **T007** Trim `README.md`'s duplication. The startup probe and login-shell `PATH` material is stated three times (here, `deploy/README.md`, `docs/security.md`) — security.md owns the why, deploy owns the operational consequence, the front page gets two sentences and a link. Move the two API-door bullets out of the operator's install reading. Cut the twelve-milestone roadmap: "what is not built yet" already exists in two sentences near the top.
 
-- [x] **T006** Update `config.example` for both changes — what idle now measures, and how to spell an unlimited lifetime — **leading with the fact and putting the reasoning after it**. Mind the duplicate-key-line trap above. Also correct the four lifetime keys' prose if it now describes something that is no longer true.
-
-- [x] **T007** Update `README.md`'s configuration table and `docs/auth-and-sessions.md` where either describes the idle clock. `auth-and-sessions.md` is a binding correctness spec — **change only what stopped being true** and leave its reasoning intact. **`.env.example` belongs to this task too** (found in T006, which named `config.example` alone): it carries the same four keys with the same prose, and its `CRSW_IDLE_TIMEOUT` block still tells the operator that "a long job you are watching is still reaped" — the exact sentence T002 made false, in the file most likely to be copied.
+- [ ] **T008** Compress `docs/components.md`'s self-history. Four passages narrate the document's own revisions ("That paragraph replaced one asserting the opposite…"). The lesson each carries is already encoded in `stylesheet_test.go`; keep one sentence plus the issue number per site and lose the memoir. **Do not touch any class name** — the both-directions sweep reads them.
 
 ---
 
 ## Out of scope
 
-- **Making browser reads advance the clock.** T002 removes the need: real tmux
-  activity is the thing worth counting, and a forgotten tab produces none.
-- **A prompt route on the browser door.** It does not exist today, and adding one
-  is a different milestone with its own security argument.
-- **The docs overhaul.** A separate audit has already ranked it and it is next:
-  stale facts in `AGENTS.md` and `deploy/README.md`, a README that cannot get a
-  stranger through a Cloudflare install, and `config.example`'s rationale-first
-  ordering.
+- **A documentation site.** The audit's answer is no, and the reason is that these
+  docs are test fixtures: moving them breaks the guards, copying them creates the
+  one unguarded copy that rots. If navigation is the itch, a short "which file
+  answers what" index costs nothing — that is T004's business, not a toolchain's.
+- **`docs/security.md` and `docs/auth-and-sessions.md`.** Binding correctness
+  specs, correctly served by their length.
 - **#120, #121.** Unchanged. **Q2** is still the operator's to answer.
