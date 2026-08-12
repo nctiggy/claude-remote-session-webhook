@@ -112,8 +112,16 @@ type (
 	// what these bytes become is a file in ~/.config/systemd/user, and a route
 	// able to hand it something unverified would be a route able to choose what
 	// this host runs.
+	//
+	// Report is the read the settings page makes on every render (M15/T004), and
+	// it is on this interface rather than on a second one because it answers the
+	// same question about the same two files: whether the unit on this host is
+	// this daemon's, and whether a release's own is waiting beside it. Two seams
+	// onto one pair of files is two answers a page and an update could disagree
+	// with each other about.
 	unitCarrier interface {
 		Place(asset, sums, signature []byte) (updater.UnitOutcome, error)
+		Report() (updater.UnitReport, error)
 	}
 )
 

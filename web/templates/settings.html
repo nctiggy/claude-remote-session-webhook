@@ -152,6 +152,29 @@
   Before the check has been asked for there is no third row at all, because the
   page has not looked and has nothing to say.
 */}}{{ if .Checked }}{{ if .Reachable }}{{ if .Available }}<dt>Available</dt><dd>{{ .Available }}</dd>{{ else }}<dt>Available</dt><dd>nothing newer</dd>{{ end }}{{ else }}<dt>Available</dt><dd>could not reach the release feed</dd>{{ end }}{{ end }}
+{{/*
+  The other file an update carries, in the same list and for the same reason the
+  versions are here: two terms, two answers.
+
+  It belongs in this section rather than in one of its own because it is part of
+  what an update does — the binary is one file it brings forward and the systemd
+  unit is another, and an operator reading "Running now" is reading the same
+  question. Every class here is already this section's; there is no new one,
+  because a fact stated in the shape the page already has needs none.
+
+  Which of the sentences applies is Go's answer (unitFactsOf), never a comparison
+  made in here. It is the same discipline the door sentence follows two sections
+  down: what the interface says to a person is chosen from constants, so a page
+  cannot come to claim something about this host that nothing on it observed.
+
+  The two rows under it render only when there is really a file on the disk to
+  name, and they are the point of the whole section: a newer unit an operator
+  cannot find is a difference they cannot see, and a difference nobody can see is
+  a decision nobody can take. The command is text, like everything else here —
+  this daemon prints it and never runs it.
+*/}}{{ with .Unit.Sentence }}<dt>Systemd unit</dt><dd>{{ . }}</dd>{{ end }}
+{{ with .Unit.Waiting }}<dt>Waiting at</dt><dd>{{ . }}</dd>{{ end }}
+{{ with .Unit.Compare }}<dt>Compare them</dt><dd>{{ . }}</dd>{{ end }}
 </dl>
 
 {{/*

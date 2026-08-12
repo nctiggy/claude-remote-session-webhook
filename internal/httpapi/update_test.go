@@ -205,6 +205,17 @@ func (f *fakeUpdatePath) Place(unit, sums, signature []byte) (updater.UnitOutcom
 	return updater.UnitReplaced, nil
 }
 
+// Report stands in for the read the settings page makes about this host's unit.
+//
+// It answers the zero report, which is the honest thing for a fake with no home
+// directory behind it: the cases in this file are about the update route, and
+// what the page says about a unit is asserted in settings_test.go against a real
+// updater.Unit over a temporary home. A fake that invented an offer here would
+// put a filename this host does not have into every page these cases render.
+func (f *fakeUpdatePath) Report() (updater.UnitReport, error) {
+	return updater.UnitReport{}, nil
+}
+
 func (f *fakeUpdatePath) ExitForRestart() {
 	// Guarded, because the exit now happens on its own goroutine after the
 	// handler has returned: os.Exit inside the handler severed the connection

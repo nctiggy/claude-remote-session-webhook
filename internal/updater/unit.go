@@ -251,6 +251,96 @@ func (u *Unit) Standing(published []byte) (UnitStanding, error) {
 	return UnitOurs, nil
 }
 
+// UnitReport is everything this daemon can say about the systemd unit on this
+// host **without asking a release for anything**.
+//
+// Standing above answers "is the operator's unit the one this release ships?",
+// and it can only answer it because an update handed it the bytes that release
+// published. A page being rendered has no such bytes and must not go and get
+// them: the settings page's first job is reporting local configuration, and a
+// render that reached somebody else's API to describe a file on this disk would
+// make that page as slow and as fallible as GitHub.
+//
+// So this reads the files themselves, and the files are the whole record. A
+// crswd.service.new beside a unit *is* this daemon having said "there is a newer
+// one than yours" — it is the file the operator diffs, so it is the file that
+// decides what they are told. Persisting what an update did would be a second
+// account of the same fact, free to disagree with the one thing an operator can
+// actually look at, and wrong the moment somebody took the offer and deleted it.
+//
+// What it therefore cannot say is whether a unit this daemon did not write is up
+// to date, and that limit is stated rather than papered over. Absence of an
+// offer means no update has left one, which is not the same claim as "yours
+// matches the release" — and telling an operator the second when only the first
+// is known would be the false reassurance this milestone exists to end.
+type UnitReport struct {
+	// Path is the unit this report is about, and Offer is the file beside it
+	// holding the unit a release shipped.
+	//
+	// Offer is empty unless that file is really there. A name for a file that is
+	// not is an operator sent to diff nothing, and this whole report exists so
+	// that what they are told and what is on the disk are the same thing.
+	Path  string
+	Offer string
+
+	// Present is whether there is a unit at Path at all — the UnitAbsent host,
+	// which is a decision to be taken rather than a file to be protected.
+	Present bool
+
+	// Ours is whether the unit at Path hashes to what install.sh recorded, and
+	// so is this project's to replace.
+	//
+	// False for every host that wrote its own, which is not an edge case: it is
+	// every host deployed before the installer existed, the one that publishes
+	// these releases included.
+	Ours bool
+}
+
+// Report reads this host's unit, the record beside it and the offer beside that,
+// and answers what the settings page and the journal tell the operator.
+//
+// An error means the question could not be asked — no home directory, or a file
+// that is there and could not be read. It never means "there is nothing to say":
+// the caller states that absence in its own words rather than being handed a
+// zero value that reads like a finding.
+func (u *Unit) Report() (UnitReport, error) {
+	if u.path == "" || u.record == "" {
+		return UnitReport{}, ErrNoUnitHome
+	}
+
+	report := UnitReport{Path: u.path}
+
+	current, err := os.ReadFile(u.path) //nolint:gosec // G304: the path is HOME joined with a constant this package declares, not anything a request named.
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return UnitReport{}, fmt.Errorf("read the systemd unit %s: %w", u.path, err)
+	}
+	if err == nil {
+		report.Present = true
+
+		// The same ownership question Standing asks, answered the same way and
+		// from the same file. A second reading of what makes a unit this
+		// project's would be free to drift from the one an update acts on, and
+		// the shape of that drift is a page saying "an update replaces this"
+		// about a file the update will refuse to touch.
+		recorded, err := u.recorded()
+		if err != nil {
+			return UnitReport{}, err
+		}
+		report.Ours = recorded != "" && recorded == unitDigest(current)
+	}
+
+	switch _, err := os.Stat(u.NewPath()); {
+	case err == nil:
+		report.Offer = u.NewPath()
+	case errors.Is(err, fs.ErrNotExist):
+		// Every host that has never been offered a unit, which is most of them.
+	default:
+		return UnitReport{}, fmt.Errorf("look for the unit a release left beside this host's own %s: %w", u.NewPath(), err)
+	}
+
+	return report, nil
+}
+
 // recorded is the digest install.sh wrote for the unit it placed, or "" when
 // there is no record to read.
 //

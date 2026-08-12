@@ -337,3 +337,135 @@ func TestThePublishedUnitIsDeliveredLikeEveryOtherAsset(t *testing.T) {
 		t.Fatal("the fixture lost the tarball's own line, so the case above proved something else")
 	}
 }
+
+// TestTheUnitReportIsReadOffTheFilesThemselves is T004's evidence: what the
+// settings page and the journal say about this host's unit, worked out from the
+// files on it and from nothing else.
+//
+// **Must fail when** the report needs a release to be reachable. Standing takes
+// the published bytes because an update has them; a page being rendered does
+// not, and a render that fetched them would make the settings page as slow and
+// as fallible as somebody else's API — on a page whose first job is reporting
+// local configuration.
+//
+// The arrangements below are what an operator can be told, and the one that
+// matters is the offer: a crswd.service.new beside their unit is this daemon
+// saying "there is a newer one than yours", and it is the file they diff.
+func TestTheUnitReportIsReadOffTheFilesThemselves(t *testing.T) {
+	t.Parallel()
+
+	// A unit this project wrote and then superseded, exactly as
+	// TestUnitStandingAnswersWhatAnUpdateHasToDecide uses it.
+	const older = "[Unit]\nDescription=crswd\n\n[Service]\nExecStart=%h/bin/crswd\n"
+	// The unit the operator this milestone is for wrote for themselves.
+	const theirs = "[Service]\nExecStart=%h/bin/crswd\nNoNewPrivileges=no\n"
+
+	for _, c := range []struct {
+		name   string
+		unit   []byte
+		record []byte
+		offer  []byte
+		want   UnitReport
+		why    string
+	}{
+		{
+			name: "no unit on this host",
+			want: UnitReport{},
+			why:  "nothing is there, so nothing is present, nothing is ours and nothing is waiting",
+		},
+		{
+			name:   "a unit this daemon wrote and has not been touched since",
+			unit:   []byte(older),
+			record: digestOf(older),
+			want:   UnitReport{Present: true, Ours: true},
+			why:    "the digest install.sh recorded describes the file that is there, which is the whole of what says an update may replace it",
+		},
+		{
+			name: "the operator's own unit, with no record of one",
+			unit: []byte(theirs),
+			want: UnitReport{Present: true},
+			why:  "no record is the state every host deployed before the installer existed is in, and it is never permission to replace a file",
+		},
+		{
+			name:   "the operator's own unit, with a record describing an older one",
+			unit:   []byte(theirs),
+			record: digestOf(older),
+			want:   UnitReport{Present: true},
+			why:    "a record that does not describe the file that is there means somebody edited it, which is exactly the operator this milestone is for",
+		},
+		{
+			name:   "a newer unit waiting beside the operator's own",
+			unit:   []byte(theirs),
+			record: digestOf(older),
+			offer:  []byte(publishedUnit),
+			want:   UnitReport{Present: true},
+			why:    "this is the case the whole milestone is about: their file untouched, and the release's own beside it to be diffed",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			fixture := newUnitFixture(t, c.unit, c.record)
+			want := c.want
+			want.Path = fixture.path
+			if c.offer != nil {
+				want.Offer = fixture.unit.NewPath()
+				if err := os.WriteFile(want.Offer, c.offer, unitMode); err != nil {
+					t.Fatalf("write the fixture offer %s: %v", want.Offer, err)
+				}
+			}
+
+			got, err := fixture.unit.Report()
+			if err != nil {
+				t.Fatalf("Report() = _, %v; want %+v", err, want)
+			}
+			if got != want {
+				t.Errorf("Report() = %+v, want %+v.\n%s", got, want, c.why)
+			}
+		})
+	}
+}
+
+// TestTheUnitReportNamesNoOfferThatIsNotThere is the half of it an operator pays
+// for directly.
+//
+// **Must fail when** Offer is composed from the unit path rather than read off
+// the disk. Both spellings type-check and both look right in a review; one of
+// them sends an operator to diff a file that is not there, on the one page that
+// exists to tell them the truth about this host.
+func TestTheUnitReportNamesNoOfferThatIsNotThere(t *testing.T) {
+	t.Parallel()
+
+	fixture := newUnitFixture(t, []byte(publishedUnit), digestOf(publishedUnit))
+
+	report, err := fixture.unit.Report()
+	if err != nil {
+		t.Fatalf("Report() = _, %v", err)
+	}
+	if report.Offer != "" {
+		t.Errorf("Report() names an offer at %q on a host that has none.\nNothing is there to diff, and a page saying otherwise is worse than the silence this milestone set out to fix", report.Offer)
+	}
+}
+
+// TestTheUnitReportRefusesWithoutAHomeToLookIn is
+// TestUnitStandingRefusesWithoutAHomeToLookIn's claim for the read T004 makes.
+//
+// **Must fail when** an unresolvable home answers with the zero report. That
+// value reads as "this host has no unit", which is a fact about the daemon's own
+// environment stated as a fact about the operator's machine — and it is the one
+// a page would turn into "an update installs one".
+func TestTheUnitReportRefusesWithoutAHomeToLookIn(t *testing.T) {
+	t.Parallel()
+
+	for _, home := range []string{"", "  ", "relative/home"} {
+		u := NewUnit(func(string) string { return home })
+
+		report, err := u.Report()
+		if !errors.Is(err, ErrNoUnitHome) {
+			t.Errorf("Report() with HOME=%q = _, %v; want ErrNoUnitHome", home, err)
+		}
+		if report != (UnitReport{}) {
+			t.Errorf("Report() with HOME=%q = %+v; a report this daemon could not compute must carry no findings at all", home, report)
+		}
+	}
+}
