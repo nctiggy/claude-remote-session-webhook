@@ -468,3 +468,84 @@ unit's own `CRSW_LISTEN`**, `crswd config check`, then the sign-in form.
    "two doors" and its "the skill"; `deploy/README.md`'s Access-only "Verifying the
    exposure model"; and the htmx claim under "Why it is built this way", **now
    `README.md:875`** after this task's additions — still T007's.
+
+---
+
+## Iteration 7 — 2026-08-12
+
+**Did:** T007. `README.md` 913 → 872 lines: the startup probe is two sentences and
+a pointer at the two files that own it, the API door is a section of its own
+instead of a paragraph inside the browser doors' comparison, the twelve-milestone
+roadmap is gone, and so is the last htmx claim in the repository.
+
+**Learned:**
+
+- **The plan's "move the two API-door bullets out of the operator's install
+  reading" names something that is not in the file, and never was.** The README
+  has no bullets about the API door at any revision — checked `f5f9113`, the
+  revision the audit read (its `README.md:656` htmx line matches). What is there
+  is one **paragraph** ("The API is a second door…") inside `## The two doors`,
+  plus the two-policies material that T005 has since turned into steps 7 and 8 of
+  Path 1, where it is required procedure rather than duplication. **Read as: get
+  the API-door explanation out of the door-choosing reading** — done, as
+  `## The API door` between the audit trail and "Why it is built this way",
+  linked from the "What it does" bullet and pointing back at steps 7–8. Undoing
+  T005's steps was not on the table; the plan asked for those steps by name.
+- **`docs/security.md` §4 "Fail closed" is where the probe's *why* lives**
+  (lines 334–368: the two failure modes, the constant script on stdin, once per
+  start, the 5s/1s bounds, note-not-claim, and the named trade). `deploy/README.md`
+  §"The unit's PATH is not the session's" owns the deployment consequence. The
+  README's version was the third and longest telling, table included. Anyone
+  tempted to re-expand it: **those two are the sources, and both are binding.**
+- **One fact died with the long version and it was already homeless:** the probe's
+  suggested install line comes from `/etc/os-release` rather than being guessed
+  from `GOOS`. `grep` says it now survives only in `specs/004-…` and
+  `depcheck_test.go` — an archived spec and a test. It is a behaviour, not a
+  bound, so it was not worth two sentences on the front page; recorded here so it
+  is a decision rather than a loss.
+- **The roadmap was the only thing linking to `#roadmap`,** and nothing outside
+  `ralph/` referenced it. Cutting a section means grepping `](#` first: the other
+  fourteen anchors are unchanged and still resolve.
+- **`readme_test.go`'s two content tests survive any trim as long as three phrases
+  do**: `dashboard_password`, `access_enabled` and `admits nobody` (`doorKeys` +
+  `doorClosedPhrase`, declared in `install_test.go:1082`), plus the rollback trio.
+  The trimmed sections held none of them, which is why 79 deleted lines cost
+  nothing.
+- **The gate ran in full and green:** build, vet, `go test ./...`,
+  `golangci-lint run` (v2.12.2, #26's check passes, 0 issues), and
+  `go test -tags quickstart ./cmd/crswd` (36s).
+
+**Left:** T008.
+
+**Findings (not fixed):**
+
+1. **`internal/httpapi`'s `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval`
+   is timing-flaky and failed once here** (`stream_test.go:991`: "the opening
+   screen arrived 11ms after the open, which is past the 10ms interval"), then
+   passed on re-run and passed with the whole package. **Nothing Go changed this
+   iteration** — the diff is `README.md` alone — so this is a 1ms margin against a
+   10ms interval on a loaded host, not a regression. **Not fixed:** widening the
+   assertion is a test change with a judgement call in it (what margin still proves
+   "did not wait for a tick"), and it belongs to whoever owns that file rather than
+   a docs milestone. Worth a task; CI will hit it eventually.
+2. **T007's two open decisions, both settled deliberately and recorded so nobody
+   re-opens them silently.** (a) **Iteration 4's finding 1: both framings of the
+   doors survive.** The front matter answers "what is this project", the install
+   opening answers "which of the two am I about to install", and they link to
+   different places — the comparison table and the two paths. Collapsing them
+   would leave a reader at line 10 with a choice and nowhere to make it. (b)
+   **Iteration 6's finding 2: the three-line recipe keeps deferring**, now with
+   the deferral made honest — path 2 is "two keys here and one line to take back
+   out of the unit". Naming `CRSW_LISTEN` in the recipe would mean explaining the
+   precedence trap 400 lines above the path that hits it.
+3. **Iteration 5's finding 1, iteration 6's finding 1, iteration 4's finding 2 and
+   the two older ones stand** — no shipped `cloudflared` unit while two files assume
+   one; the systemd drop-in that is probably the better answer to Path 2 step 2 and
+   is unverified; `install.sh`'s next steps omitting `loginctl enable-linger`;
+   `docs/auth-and-sessions.md`'s colliding "two doors" and its "the skill"; and
+   `deploy/README.md`'s Access-only "Verifying the exposure model". **No live doc
+   claims htmx any more:** `grep -ril htmx` leaves `AGENTS.md`, where T001 made it
+   the negation "no htmx", and `specs/002-access-dashboard/` — five archived
+   milestone-2 artifacts that planned the dashboard with it, before it was dropped.
+   Those are a record of what was decided then, not instructions, and `docs/` and
+   `README.md` are now clean.
