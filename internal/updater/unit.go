@@ -40,8 +40,8 @@ package updater
 //
 // It writes nothing and fetches nothing. Deciding what to do about a standing —
 // replacing a unit this project wrote, or putting the new one alongside as
-// crswd.service.new — is T003, and it is separate for the reason every step in
-// this package is separate: a step that shares a file with the next one is a
+// crswd.service.new — is place.go, and it is separate for the reason every step
+// in this package is separate: a step that shares a file with the next one is a
 // step somebody removes with an early return.
 
 import (
@@ -159,9 +159,22 @@ type Unit struct {
 	path string
 
 	// record is ~/.local/share/crswd/crswd.service.sha256 — install.sh's own
-	// bookkeeping, read here and (from T003) written here, so that the installer
-	// and the updater keep answering the ownership question the same way.
+	// bookkeeping, read here and written by place.go, so that the installer and
+	// the updater keep answering the ownership question the same way.
 	record string
+
+	// verify is steps 2 and 3 over the unit a release publishes, named as a
+	// field for Stager.verify's reason: a test has to drive the whole of place.go
+	// against a release it signed with a pair it generated in process, and
+	// nothing outside the operator's terminal holds the half that signs the real
+	// one.
+	//
+	// **The shipping build's value is updater.Verify**, against the key list
+	// compiled into this binary, and TestTheUnitIsVerifiedWithTheCommittedKey
+	// pins it. What this seam stands in front of is bytes that become a file
+	// systemd executes, which makes it the one in this package worth a test of
+	// its own twice over.
+	verify func(name string, asset, sums, signature []byte) error
 }
 
 // NewUnit returns the Unit the daemon runs, for the paths install.sh writes.
@@ -171,7 +184,9 @@ func NewUnit(getenv func(string) string) *Unit {
 
 // newUnit is NewUnit with both paths supplied, for tests that must not read or
 // write the unit of the daemon running the suite.
-func newUnit(path, record string) *Unit { return &Unit{path: path, record: record} }
+func newUnit(path, record string) *Unit {
+	return &Unit{path: path, record: record, verify: Verify}
+}
 
 // underHome joins one of the installer's relative paths onto this process's
 // home directory, or returns "" when there is no absolute one.
