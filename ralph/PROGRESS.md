@@ -124,3 +124,64 @@ claims and checking the rest found two more.
    port. `go vet -tags quickstart ./...` is the fallback and it passes. Any task
    whose gate is "run quickstart" will hit this — CI's self-hosted runners are where
    it actually executes.
+
+---
+
+## Iteration 2 — 2026-08-12
+
+**Did:** T002. `deploy/README.md` now says which deployment it is for, states what
+the daemon actually refuses on the `CRSW_ACCESS_*` group, and treats 1Password as an
+example of a shape rather than the procedure; `CONTRIBUTING.md`'s CI claim is true.
+
+**Learned:**
+
+- **Iteration 1's finding #3 is wrong — retract it. `go test -tags quickstart ./...`
+  runs green on this host with the deployed daemon still holding `127.0.0.1:8765`**
+  (34s; `ss -ltn` confirms the port is held). The two startup cases stopped binding
+  8765 when `freeAddrOn` landed (`quickstart_test.go:468`) — its comment describes
+  exactly the symptom that finding reported, so the fix predates the finding. **Do
+  not skip the quickstart gate on that premise.**
+- **`deploy/README.md` is a fixture, twice over, and neither guard is obvious.**
+  `internal/config/deployexample_test.go` splits it on ``` fences, takes every block
+  containing `/.config/crswd/env`, harvests the `CRSW_*=` names from *all* of them
+  into one environment, and asserts that environment starts a daemon. **A second
+  env-file recipe is therefore not additive — it merges.** Adding a
+  `CRSW_DASHBOARD_PASSWORD=` block beside the Access one would fail two ways:
+  `validateDoors` refuses password-beside-Access, and `baseEnv` (`config_test.go:39`)
+  has no sample value for that variable, which is a `t.Fatalf`. That is why T002's
+  LAN note is a pointer to `README.md` and not a recipe. Separately,
+  `quickstart_test.go:2114` sweeps this file's `journalctl` lines against a real
+  stream.
+- **The false claim had a second copy** below the recipe ("writing only the secret
+  gets a daemon that refuses to start"). It does not: `loadBool` reads the unit's
+  empty `Environment=CRSW_ACCESS_ENABLED=` as false, `validateAccessGroup` passes on
+  zero of three, and the daemon starts with `warnNoIdentityProvider`'s banner. **When
+  a plan names a false statement by line number, grep the file for the claim** — the
+  audit found the loudest copy, not the only one.
+- **`CRSW_ACCESS_ENABLED=true` is the fix for the gap that falsehood was papering
+  over**, and the file had never mentioned it: it turns "none of the three" from a
+  supported deployment into a refusal, which is what an Access deployment wants.
+- **The `dev` tag and `gofmt` are the only things in `AGENTS.md`'s command table
+  that run nowhere but locally** — `.golangci.yml` has a `formatters:` block that
+  enables no formatter. That is now stated in `CONTRIBUTING.md` too.
+
+**Left:** T003–T008.
+
+**Findings (not fixed):**
+
+1. **Findings 1 and 2 from iteration 1 still stand** — `docs/auth-and-sessions.md`'s
+   colliding "two doors" and the API client called "the skill" (needs its own task,
+   that file is out of scope here), and `README.md:656`'s surviving htmx claim
+   (T007's territory).
+2. **`deploy/README.md`'s "Verifying the exposure model" is Access-only and does not
+   say so.** `ss -tlnp | grep crswd` "must show 127.0.0.1, never 0.0.0.0" is exactly
+   backwards for the LAN deployment, where `listen = 0.0.0.0:8765` is the documented
+   configuration. T002's header now tells a LAN reader which three sections apply,
+   which bounds the damage, but the section itself still reads as universal. **Not
+   fixed**: rewriting it is a security-doc change in a file T002 was scoped to
+   correct, not extend — worth a task.
+3. **Checked and *not* a finding, so nobody spends an iteration on it:**
+   `.env.example` (lines 86–97) and `crswd.example.service` (lines 67–71) both
+   already document the password door properly — what it is, that it is never a door
+   as well as Access, that it belongs in the `EnvironmentFile`, and the clear-wire
+   warning. The stale Access-only framing was `deploy/README.md`'s alone.
