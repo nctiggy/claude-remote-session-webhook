@@ -317,3 +317,79 @@ choice and the instructions share a vocabulary.
    the last three entries name**, because this task added lines above it. T007
    still owns it. The README's own "Verifying the exposure model" is **not** an
    instance of the `deploy/` problem: it has both halves, tunnel and LAN.
+
+---
+
+## Iteration 5 — 2026-08-12
+
+**Did:** T005. `README.md`'s Path 1 is now eleven numbered steps — `cloudflared`
+login, tunnel create, **DNS route**, the four values to edit in
+`cloudflared.example.yml`, the self-hosted Access application, the Google IdP, the
+service token, **both policies**, the four config keys, `crswd config check` and
+the restart, and finally "browse to `https://crswd.example.com/`". The from-a-clone
+block survives unchanged under a new `#### From a clone instead`.
+
+**Learned:**
+
+- **`deploy/cloudflared.example.yml`'s header was still milestone 1.** It said the
+  daemon "does not validate a Cloudflare Access JWT" and told the reader to consult
+  *"Not shippable before T037" in `ralph/IMPLEMENTATION_PLAN.md`* — a section that
+  has not existed since milestone 1's plan was archived. **Corrected here rather
+  than logged**, because step 4 of the new procedure hands that exact file to a
+  stranger, and its header told them the opposite of the page sending them. The one
+  line in it that is a fixture is `service: http://127.0.0.1:8765`
+  (`deployexample_test.go:300` matches lines starting `service: http://` after
+  trimming `- `, and compares against `config.DefaultListen`) — comments are safe
+  because the match happens after the `#`, not before it.
+- **`crswd config check` does not check values, and saying it does would be the
+  milestone's own mistake.** `configCheck` (`cmd/crswd/config_cmd.go:101`) reports
+  the file's grammar, the keys it sets — never a value — and the mode; its last
+  printed line says the values are checked at startup against the environment the
+  daemon starts in. **T006 folds the same command in as its pre-restart step and
+  should describe it the same way.**
+- **The `journalctl` trap from iteration 4 is avoidable in one move: keep the word
+  off the start of a source line.** `filterOf` strips a leading `#` and nothing
+  else, so `journalctl --user -u crswd -e` is safe written mid-sentence and fatal
+  written at a line start or as the first word of a wrapped line. The whole
+  diagnostics reference in step 10 is one inline clause for that reason.
+- **Nothing mechanical checks a README anchor**, so the two links into this
+  section were re-verified by hand against the heading list: `#configuration`,
+  `#install`, `#path-1--…`, `#path-2--…`, `#roadmap`, `#the-two-doors`,
+  `#verifying-the-exposure-model` all resolve. The new `#### From a clone instead`
+  is deliberately unlinked — it is a subsection of Path 1, not a destination.
+- **`go build` stays legal here only because it is below the one-liner.**
+  `TestReadmeLeadsWithTheOneLiner` fails on `go build`, `git clone` or
+  `go mod download` appearing at a lower byte offset than the install command, and
+  the from-a-clone block is the only place any of the three appears. Adding
+  material *above* it is free; moving it up the page is not.
+- **The gate ran in full and green:** build, vet, `go test ./...`,
+  `golangci-lint run` (v2.12.2, so #26's check passes, 0 issues), and
+  `go test -tags quickstart ./cmd/crswd` (36s), which is the suite that reads this
+  file.
+
+**Left:** T006–T008.
+
+**Findings (not fixed):**
+
+1. **Nothing in this repository ships a `cloudflared` unit, and two files now
+   assume one.** `deploy/README.md:105` ends its order of operations with
+   `systemctl --user enable --now cloudflared`, which presumes a user unit the
+   operator wrote themselves; the new step 10 says the same thing more carefully
+   (foreground run to prove the path, then "a service of cloudflared's own — its
+   `service install` subcommand writes one — or a unit beside the daemon's").
+   **Not fixed:** shipping `deploy/cloudflared.example.service` is a new deployment
+   file, not a doc edit, and `cloudflared service install` writes a *system* unit
+   while everything else on the page is `--user` — that difference deserves stating
+   once, in one place. Worth a task.
+2. **Iteration 4's findings 1 and 2 stand, and so do the older three** — the two
+   framings of the doors that T007 must choose between; `install.sh`'s next steps
+   omitting `loginctl enable-linger`; `docs/auth-and-sessions.md`'s colliding "two
+   doors" and its "the skill"; `deploy/README.md`'s Access-only "Verifying the
+   exposure model"; and the htmx claim under "Why it is built this way", **now
+   `README.md:832`** after this task's additions — still T007's.
+3. **Path 1 and Path 2 now disagree about what an operator starts from.** Path 1
+   says the installer already left `~/.config/crswd/config` holding `shared_secret`
+   and `allowed_roots` at `0600` and shows only the keys to *add*; Path 2 still
+   shows a four-line file from scratch, `shared_secret` included. **That is exactly
+   T006**, which is next — it is recorded here only so the next iteration knows the
+   two sections were written to the same shape deliberately.
