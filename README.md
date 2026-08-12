@@ -412,18 +412,61 @@ repo: anyone who can run `systemctl --user show crswd` can read a unit back.
 ### Path 2 — on your own network: the dashboard password
 
 No Cloudflare, no tunnel, no hostname: the daemon listens on an address the machine
-you are sitting at can reach, and serves its own sign-in form. The whole of it, in
-`~/.config/crswd/config`:
+you are sitting at can reach, and serves its own sign-in form. Nothing goes in front
+of it, so all four steps below are on this host.
+
+**1 · Add the door to the configuration you already have.** The installer left
+`~/.config/crswd/config` holding `shared_secret` and `allowed_roots`, at mode
+`0600`. What this path adds is two lines:
 
 ```
-shared_secret = <openssl rand -hex 32>
 dashboard_password = <a long passphrase, at least 16 characters>
 listen = 0.0.0.0:8765
-allowed_roots = /home/you/code
 ```
 
-The file must be mode `0600` — it holds two secrets, and the daemon refuses to start
-from one any other account can read. Then `systemctl --user enable --now crswd`, and:
+**Both in the same edit.** A non-loopback address on a daemon whose dashboard
+admits nobody is refused at startup — the bound at the end of this section — so
+`listen` written ahead of the password is a daemon that stops and names both
+doors. Keep the file at `0600`: the installer wrote it that way, and
+the daemon refuses to start from a file setting a secret that any other account
+can read. *Writing the file yourself rather than installing?* Then
+`shared_secret` and `allowed_roots` are yours to write too —
+[`config.example`](config.example) is the annotated copy, and the secret is the
+output of `openssl rand -hex 32`.
+
+**2 · Take the unit's copy of `listen` out of the way**, or the line you just
+wrote does nothing. The unit the installer wrote carries
+`Environment=CRSW_LISTEN=127.0.0.1:8765`, and **the environment beats the file**:
+leave it and the daemon goes on binding loopback, unreachable from the LAN, while
+the file says otherwise and `/settings` names the environment as the layer that
+won.
+
+```bash
+$EDITOR ~/.config/systemd/user/crswd.service   # delete the CRSW_LISTEN line
+systemctl --user daemon-reload
+```
+
+Putting the LAN address on that line instead of in the file works equally well;
+what does not work is setting it in both and expecting the file to win. Either
+way the unit becomes one you edited, so a later re-run of the
+[installer](#install) leaves it alone and says so.
+
+**3 · Check the file, then start.**
+
+```bash
+crswd config check                  # parses the file, names the keys it sets
+systemctl --user enable --now crswd
+```
+
+`config check` reads the file the daemon would read and reports its grammar, the
+keys it sets — never a value — and the mode it is sitting on. It says nothing
+about the unit and nothing about the values: those are checked against the
+environment at startup, so a start that fails is still read with the daemon's own
+refusal — `journalctl --user -u crswd -e`. That the port ended up where you meant
+it is `ss -tlnp | grep crswd`, under
+[Verifying the exposure model](#verifying-the-exposure-model).
+
+**4 · Browse to the sign-in form.**
 
 ```
 http://<the host's LAN address>:8765/login
