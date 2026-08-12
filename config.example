@@ -1,21 +1,11 @@
 # crswd configuration — EXAMPLE
 #
 # Copy this to ~/.config/crswd/config and uncomment only what you mean to
-# change. Every setting below is commented out, so a copy with nothing
-# uncommented is a daemon that behaves exactly as one with no configuration
-# file at all — which is every crswd deployed before this file existed. The
-# value shown on each line is the default where there is one that can be
-# written down, and an illustration where there is not; either way the block
-# above it names the default in words.
-#
-# The daemon reads this once, before it binds or spawns anything. Nothing here
-# can be changed while it runs, and a value that would weaken a bound by
-# accident is a startup failure rather than a warning: sessions run with
-# --dangerously-skip-permissions, and these settings are what stands in for the
-# permission prompt that is gone. One bound can be removed outright, and it is
-# spelled in a way that cannot be arrived at by a typo — the lifetime ceiling,
-# below, which says what removing it costs.
-#
+# change. Everything here is commented out, so a fresh copy behaves exactly as a
+# daemon with no configuration file at all; each line shows the default where one
+# can be written down and an illustration where it cannot. The file is read once,
+# before the daemon binds or spawns anything: an edit takes effect on restart,
+# and a value that would weaken a bound by accident is a startup failure.
 #
 # WHERE THIS FILE GOES
 #
@@ -24,272 +14,167 @@
 #   else ~/.config/crswd/config
 #
 # CRSW_CONFIG_FILE is taken exactly as written, a relative path included. In a
-# systemd unit a relative path resolves against that unit's WorkingDirectory
-# and not against the directory you ran systemctl from, so name an absolute one
-# unless you mean that.
+# systemd unit a relative path resolves against that unit's WorkingDirectory and
+# not against the directory you ran systemctl from, so name an absolute one
+# unless you mean that. A missing file is never an error; one that is there and
+# cannot be opened is. `crswd config check` reads the file and says what it
+# makes, without starting anything. If it stops loading, the daemon starts from
+# the config.bak beside it instead — loudly, naming both files, because your
+# most recent edits are then not in effect.
 #
-# The file is not required and its absence is never an error. A file that is
-# there and cannot be opened is one: an unreadable file is a file you expect to
-# be read, and starting on the environment instead would ignore every bound you
-# wrote in it.
-#
-# `crswd config check` reads it and says what it makes, without starting
-# anything. If it stops loading, the daemon starts from the config.bak beside
-# it instead — loudly, naming both files, because it is then running on the
-# older one and your most recent edits are not in effect.
-#
-#
-# THE FORMAT, AND WHY IT IS THIS ONE
+# THE FORMAT
 #
 #   key = value
 #   # a comment
 #
-# `#` is a comment marker at the start of a line and nowhere else. There are no
-# trailing comments: a shared secret may legitimately contain a `#`, and
-# stripping from the first one would truncate that secret into a daemon that
-# starts, looks healthy, and rejects every request it is sent.
+# Three rules. `#` marks a comment at the start of a line and nowhere else: there
+# are no trailing comments, because a shared secret may legitimately contain a
+# `#` and stripping from the first one would truncate that secret into a daemon
+# that starts, looks healthy, and rejects every request it is sent. The separator
+# is the FIRST `=`, because start_commands always carries an `=` inside its
+# value. A key is its environment variable without the CRSW_ prefix, lower-cased,
+# in [a-z0-9_] — so every variable in .env.example is a key here, and the
+# reverse. A misspelled key is refused rather than skipped, and so is a key set
+# twice.
 #
-# The separator is the FIRST `=`. start_commands always carries an `=` inside
-# its value, and a parser that refused that ambiguity would be refusing valid
-# configuration.
-#
-# A key is its environment variable without the CRSW_ prefix, lower-cased:
-# allowed_roots is CRSW_ALLOWED_ROOTS. That is a rule rather than a table, so
-# every variable named in .env.example is a key here, and the reverse. Keys are
-# lower-case [a-z0-9_]; a key outside that alphabet is refused rather than
-# folded, so each setting has exactly one spelling.
-#
-# The environment still wins. Precedence is flag, then environment, then this
-# file, then the built-in default — so a container or a unit can override one
-# value without writing a file, and a stale file on a host cannot silently
-# override the environment a deployment was configured with. The /settings page
-# names which layer each value actually came from, which is the question worth
-# answering when an edit here appears to have done nothing.
-#
-# A misspelled key is refused, never skipped, and so is a key set twice. An
-# `alowed_roots` that quietly did nothing is how a containment boundary ends up
-# unset on a daemon whose operator believes they set it.
-#
-# It is not JSON, and that is the decision this format exists for: JSON has no
-# comments, so everything you are reading would have been deleted from it, and
-# what each bound is for is the most useful thing this file has to say. YAML
-# and TOML were never candidates — neither has a standard-library parser and
-# neither is safe to hand-roll, and a dependency for one would create the
-# go.sum this repository does not have (docs/security.md §5).
-#
-# NOTHING IN THE DAEMON WRITES THIS FILE. It is yours, and a daemon that
-# reformatted it would have taken a decision that was not its to take.
-# `crswd config migrate` is the only code in this repository that writes a
-# configuration file at all.
+# Precedence is flag, then environment, then this file, then the built-in
+# default, and /settings names which layer each value came from. Nothing in the
+# daemon writes this file. Why this format and not JSON, YAML or TOML:
+# docs/security.md §5.
 
 # The schema this file was written against. Absent means 1, which is what every
-# hand-written file is. A number higher than the daemon understands is refused
+# hand-written file is. A higher number than the daemon understands is refused
 # rather than read optimistically: the reason to raise it is that a key changed
-# meaning, and guessing at the new meaning is how a containment boundary ends
-# up set to something you did not write.
+# meaning, and guessing at the new meaning sets a bound to something you did not
+# write.
 version = 1
 
 
 # --- Required. There is no default, and no way to start without it. ---
 
 # The HMAC shared secret the API client signs with. At least 32 bytes; unset or
-# shorter is a startup failure, because an absent secret is an absent
-# authentication layer and a daemon that starts with one is worse than a daemon
-# that does not start. It is never logged, never returned in an error, and
-# never echoed back — not even its length.
-#
-# Generate one with `openssl rand -hex 32`.
-#
-# A file that sets this, or access_allowed_emails, must be mode 0600: the
-# daemon refuses to start from one that any other account on this host can read
-# or write. That refusal fires only on a file that actually holds one of the
-# two — refusing over the mode of a file holding nothing but allowed_roots
-# would be demanding a change that protects nothing.
+# shorter is a startup failure, because a daemon that starts with no
+# authentication layer is worse than one that does not start. It is never
+# logged, returned in an error, or echoed back — not even its length. Generate
+# one with `openssl rand -hex 32`. A file setting any of the three secrets —
+# this, access_allowed_emails, dashboard_password — must be mode 0600; a file
+# holding none of them is not asked to change.
 # shared_secret = paste the output of openssl rand -hex 32 here
 
 
 # --- The blast radius. Read docs/security.md before widening anything here. ---
 
-# Colon-separated (`:`) absolute paths. A session may only run in a directory
-# contained by one of these, and this is the real containment control — keep it
-# narrow. Every entry must already exist as a directory that resolves; one that
-# does not is a startup failure, as is an empty entry. Two spellings of the
-# same directory collapse to one.
-#
-# Default: $HOME/code, announced by a banner on stderr at every start. $HOME
-# itself is never the default: SSH keys, cloud credentials and browser profiles
-# all live directly under it, which would make the allowlist decorative.
+# The directories a session may run in: colon-separated (`:`) absolute paths, a
+# session confined to one of them or refused. Every entry must already exist as
+# a directory that resolves; one that does not is a startup failure, as is an
+# empty entry, and two spellings of the same directory collapse to one. This is
+# the real containment control — keep it narrow. $HOME itself is never the
+# default: SSH keys, cloud credentials and browser profiles all live directly
+# under it, which would make the allowlist decorative. Default: $HOME/code,
+# announced by a banner on stderr at every start.
 # allowed_roots = /home/you/code:/home/you/work
 
-# Offer the immediate subdirectories of each approved root as
-# working-directory suggestions on the create form. Off by default, and that
-# default is the whole point: listing a filesystem is a disclosure, however
-# mild, and you opt into it rather than finding your directory names on a page
-# you never asked to have read the host.
-#
-# It widens nothing. allowed_roots is still the control — a suggestion is
-# checked against the roots as it is offered, and every path, picked or typed,
-# is resolved and checked again on the create it arrives with.
-#
-# true or false. Anything else — `yes`, `on`, `2` — is a startup failure rather
-# than a silent off: you meant on, and a daemon that read it as off would run
-# without the thing you asked for and say nothing.
+# Offer the immediate subdirectories of each approved root as working-directory
+# suggestions on the create form. true or false; anything else — `yes`, `on`,
+# `2` — is a startup failure rather than a silent off. It widens nothing: every
+# path, suggested or typed, is resolved and checked against allowed_roots on
+# create. Off by default, because listing a filesystem is a disclosure, however
+# mild, and you opt into it. Default: false.
 # discover_roots = false
 
-# Directories to offer on the create form on top of the approved roots, which
-# are always offered, and any discovered children. Comma-separated (`,`), so a
-# directory whose name contains a comma is one you type instead of pick.
-#
-# Every entry must be absolute. A relative one is a startup failure because no
-# create could ever accept it, and an empty one — a stray comma — is a startup
-# failure rather than a blank line in the picker. Nothing here is checked
-# against the filesystem: these are paths you typed, and offering one says
-# nothing about what is there, not even that it exists.
-#
-# A path outside allowed_roots may be listed, and it is refused on create
-# exactly as a typed one is — same response, same audit record. That is the
-# contract working rather than a hole: this list is a convenience and
-# allowed_roots is the control.
-#
-# Default: empty.
+# Extra directories to offer on the create form, on top of the approved roots
+# and any discovered children. Comma-separated (`,`), so a directory whose name
+# contains a comma is one you type instead of pick. Every entry must be
+# absolute; a relative one is a startup failure because no create could accept
+# it, and so is an empty one — a stray comma. Nothing here is checked against
+# the filesystem, and a path outside allowed_roots may be listed: it is refused
+# on create exactly as a typed one is. This list is a convenience and
+# allowed_roots is the control. Default: empty.
 # workdir_suggestions = /srv/scratch,/srv/second
 
-# host:port for the daemon's own listener. The host must be an IP literal: a
+# host:port for the daemon's own listener. The host must be an IP literal — a
 # name can be pointed anywhere by /etc/hosts or a resolver, which would move the
-# bind without changing this value. That is true under every door, and `:8765`
-# is a name too — an empty host — so the wildcard is written 0.0.0.0.
+# bind without changing this value — and `:8765` is a name too, an empty host,
+# so the wildcard is written 0.0.0.0.
 #
-# Loopback is the default and the only address a daemon with no browser door may
-# have. Configure one — access_enabled with the three Access values, or
-# dashboard_password — and a non-loopback literal is permitted, which is how an
-# operator on their own network reaches this from the machine they are sitting
-# at. With neither it is a startup failure: the invariant is "never reachable
-# without authentication" rather than "never reachable", and a dashboard that
-# admits nobody stays where the tunnel can find it and nothing else can.
-#
-# Default: 127.0.0.1:8765.
+# Loopback is the only address a daemon with no browser door may have. Configure
+# one — access_enabled with the three Access values, or dashboard_password — and
+# a non-loopback literal is permitted, which is how an operator on their own
+# network reaches this from the machine they are sitting at. With neither, a
+# non-loopback address is a startup failure: the invariant is "never reachable
+# without authentication" rather than "never reachable". Default: 127.0.0.1:8765.
 # listen = 127.0.0.1:8765
 
-# How many sessions may exist at once. Past it the daemon refuses to create
-# rather than degrading the host it is running on. At least 1; anything that is
-# not a whole number is a startup failure.
-#
+# How many sessions may exist at once. At least 1, a whole number; past it the
+# daemon refuses to create rather than degrading the host it runs on.
 # Default: 5.
 # max_sessions = 5
 
-# Tear every session down when the daemon stops, which is what it did before
-# sessions survived a restart. Off by default: a graceful restart is
-# overwhelmingly the common case, destroying a fleet to redeploy a binary is a
-# cost nobody asked for, and startup adoption reclaims what a restart left.
-#
-# Set it true for a host being decommissioned rather than updated. A crash
-# leaves every session running whatever this says — that is what startup
-# adoption exists to reclaim — so this only ever covers the graceful stop.
-#
-# Default: false.
+# Tear every session down when the daemon stops. true or false. It covers only
+# the graceful stop; a crash leaves sessions running whatever this says, and
+# startup adoption is what reclaims them. Off by default, because a graceful
+# restart is overwhelmingly the common case and destroying a fleet to redeploy a
+# binary is a cost nobody asked for — set it true for a host being decommissioned
+# rather than updated. Default: false.
 # destroy_on_shutdown = false
 
 # How long a session may live from creation, whatever it is doing. Go duration
-# syntax: `24h`, `90m`. It must be positive, and the word `never` the ceiling
-# below takes is refused here.
-#
-# That asymmetry is the design rather than an omission. This is the lifetime
-# every session gets without asking, so a daemon that read "never" here would
-# be one whose every session is immortal by default — which is not what a
-# per-session override is for. The ceiling opens that door and a create is what
-# walks through it.
-#
-# Default: 24h.
+# syntax: `24h`, `90m`. It must be positive, and the word `never` that the
+# ceiling below takes is refused here — this is the lifetime every session gets
+# without asking, and a daemon that read the word here would be one whose every
+# session is immortal by default. Default: 24h.
 # session_lifetime = 24h
 
 # The ceiling a per-session lifetime override may not exceed. A create asking
-# for more is refused rather than quietly clamped — a caller who asked for
-# thirty days and was given one believes they have thirty, and nothing tells
-# them otherwise until the session is gone. A duration below session_lifetime
-# is a startup failure, because every create would then be refused by a ceiling
-# under its own default.
+# for more is refused rather than quietly clamped: a caller who asked for thirty
+# days and was given one believes they have thirty. Below session_lifetime is a
+# startup failure, since every create would then be refused by a ceiling under
+# its own default. Default: whatever session_lifetime is.
 #
 # The word `never` is the one value here that is not a duration: no ceiling at
-# all, and so a daemon on which a create may ask for a session that never
-# expires. It is not "below" anything, so the check above does not fire on it —
-# no default sits above the absence of a bound. `0` is unset and a negative
-# duration is refused outright rather than read as a second spelling of the
-# word: both are things a person writes meaning "no time at all", and a daemon
-# that read either as "forever" would switch off its last deadline over a typo.
-#
-# What it costs, plainly. The absolute deadline is the one bound that is never
+# all, so a create may ask for a session that never expires. `0` is unset and a
+# negative duration is refused rather than read as a second spelling of the
+# word — reading either as "forever" would switch off the last deadline over a
+# typo. What `never` costs: the absolute deadline is the one bound that is never
 # renewed, so with it gone the containment left is allowed_roots and whichever
-# door admits callers — the reaper is no longer part of it. A session created
-# with both switches off is reaped by nothing and holds an unsandboxed shell
-# until somebody destroys it. That is the operator's decision to make on their
-# own host, which is why it is made here, once, and not per create.
-#
-# It is also what puts the second switch on the dashboard's create form. Only a
-# daemon whose ceiling is gone offers "never die at the lifetime limit", because
-# a create asking for that anywhere else is one this daemon is certain to
-# refuse, and a control whose only outcome is a refusal should not be drawn.
-#
-# One edge to know before relying on it: no session record survives the daemon.
-# A restart adopts such a session back from tmux as an ordinary one — carrying
-# the built-in 24h lifetime rather than the one it was created with, because
-# tmux knows the session and not what was asked for it — and tears it down on
-# the spot if it is already older than that. A session that never expires does
-# not survive a redeploy, and is destroyed *because* it was long-lived.
-#
-# Default: whatever session_lifetime is.
+# door admits callers, and such a session holds an unsandboxed shell until
+# somebody destroys it. That is the operator's decision, made here once rather
+# than per create — and why only a daemon whose ceiling is gone draws the
+# matching switch on the create form. One edge: no session record survives the
+# daemon, so a restart adopts such a session from tmux with the built-in 24h
+# lifetime and tears it down at once if it is already older.
 # session_lifetime_max = 24h
 
-# How long a session may sit idle before the reaper takes it, measured from the
-# later of two clocks and moving with whichever is more recent: when a request
-# last drove the session, and when the host itself last saw that session produce
-# output — tmux's own session activity, read by the sweep that is about to judge
-# the record. A session being worked in is not idle, whether the work is the
-# agent printing or a person typing in a terminal attached to it on this host,
-# and whether or not anything was asked of the daemon all afternoon.
+# How long a session may sit idle before the reaper takes it. Go duration
+# syntax; it may not be negative, and longer than session_lifetime is a startup
+# failure because it could then never fire. `0` is not a disable here — zero
+# reads as unset and the built-in 60m applies; switching idle reaping off
+# belongs to one session, as a create-time override. Default: 60m.
 #
-# Watching is still not driving, and that has not changed: reading a session —
-# the dashboard, the session page, the live stream — advances neither clock. A
-# forgotten tab must never hold an unsandboxed shell open, and a forgotten tab
-# produces no output, which is what makes counting the host's own reading safe
-# where counting browser reads was not.
-#
-# The second clock can only ever push the deadline further out. A host that
-# gives no answer for a session, or an unreadable one, leaves it exactly as
-# long-lived as it was before this clock existed — a misread here must not be
-# able to destroy a session that is in use.
-#
-# It may not be negative, and longer than session_lifetime is a startup failure
-# because it could then never fire — a setting that does nothing is worse than
-# one that refuses, since nothing tells you it did nothing.
-#
-# `0` is not a disable here: zero reads as unset further down and the built-in
-# 60m applies. Switching idle reaping off belongs to one session, as a
-# create-time override, rather than to every session this daemon will start.
-#
-# Default: 60m.
+# Idleness is measured from the later of two clocks: when a request last drove
+# the session, and when the host itself last saw it produce output — tmux's own
+# session activity. A session being worked in is not idle, whether the work is
+# the agent printing or a person typing in a terminal attached to it here.
+# Watching is still not driving: reading a session — the dashboard, the session
+# page, the live stream — advances neither clock, because a forgotten tab must
+# never hold an unsandboxed shell open. The second clock can only push the
+# deadline further out, so a host that gives no answer for a session leaves it
+# exactly as long-lived as it was before that clock existed.
 # idle_timeout = 60m
 
 # The ceiling for a per-session idle override, as session_lifetime_max is for
-# lifetimes. Below idle_timeout is a startup failure. It takes no `never`, and
-# needs none: a create switches idle reaping off for its own session without
-# asking this ceiling for room, because such a session is still bounded by the
-# absolute deadline. Removing *that* one is the decision that needed the
-# operator's permission, which is why only the lifetime ceiling has a word for
-# it.
-#
-# Default: whatever idle_timeout is.
+# lifetimes. Below idle_timeout is a startup failure. It takes no `never` and
+# needs none: a create may switch idle reaping off for its own session without
+# asking this ceiling for room, because that session is still bounded by the
+# absolute deadline. Default: whatever idle_timeout is.
 # idle_timeout_max = 60m
 
 # How many sessions may be created per minute before the daemon starts refusing
-# creates. At least 1.
-#
-# Default: 6.
+# creates. At least 1. Default: 6.
 # create_rate_per_min = 6
 
-# The largest request body the daemon will read, in bytes. Past it a request is
-# refused rather than truncated. At least 1.
-#
-# Default: 65536.
+# The largest request body the daemon will read, in bytes. At least 1. Past it a
+# request is refused rather than truncated. Default: 65536.
 # max_body_bytes = 65536
 
 
@@ -300,106 +185,74 @@ version = 1
 # supports and says loudly at every start. Some of them is a startup failure: a
 # team domain without an audience is a half-configured door, and a daemon that
 # started anyway would refuse every login while looking correctly configured.
-#
 # dashboard_password at the foot of this section is the other door, for a daemon
-# on an internal network with no Cloudflare in front of it. Configuring both is a
-# startup failure. Which door is live decides who may run code on this host, and
-# that is the last question a daemon should answer by picking one.
+# on an internal network with no Cloudflare in front of it, and configuring both
+# is a startup failure. Which door is live decides who may run code on this host,
+# and that is the last question a daemon should answer by picking one.
 
 # Declare that Cloudflare Access is the browser door. true or false; anything
-# else is a startup failure, as it is for every other boolean here.
-#
-# It selects nothing on its own. The three values below have selected the Access
-# door since long before this setting existed, and still do — a daemon that
-# already has them keeps the dashboard it has. What this adds is you saying so,
-# which is checkable where an unstated intention is not: on with none of the
-# three, the daemon refuses to start instead of serving a closed door, and on
-# beside dashboard_password it names the collision instead of choosing.
-#
-# Default: false.
+# else is a startup failure, as it is for every other boolean here. It selects
+# nothing on its own — the three values below have selected the Access door
+# since long before this setting existed. What it adds is you saying so, which
+# is checkable where an unstated intention is not: on with none of the three,
+# the daemon refuses to start instead of serving a closed door; on beside
+# dashboard_password, it names the collision instead of choosing. Default: false.
 # access_enabled = false
 
-# Your Cloudflare Access team domain, normally <team>.cloudflareaccess.com. It
-# is one value because two things must agree: the expected issuer and the key
-# set are both derived from it, and configuring them separately would allow an
-# issuer and a key set that do not belong to each other — a validator checking
-# signatures against the wrong authority.
-#
-# A full origin is accepted too. http:// is refused unless the host is a
-# loopback IP literal; that carve-out exists so the acceptance tests can serve
-# a key set they control without a Cloudflare account, and it skips no
-# validation.
-#
-# Default: none, and the dashboard admits nobody.
+# Your Cloudflare Access team domain, normally <team>.cloudflareaccess.com. A
+# full origin is accepted too; http:// is refused unless the host is a loopback
+# IP literal, a carve-out for the acceptance tests that skips no validation. It
+# is one value because the expected issuer and the key set are both derived from
+# it, and configuring them separately would allow a validator checking signatures
+# against the wrong authority. Default: none, and the dashboard admits nobody.
 # access_team_domain = your-team.cloudflareaccess.com
 
 # The Access application's AUD tag, from the application's settings in the
 # Cloudflare dashboard. It is compared for equality against the assertion's
 # audience and never parsed, so an assertion minted for another application on
-# the same team — or for another team entirely — is refused.
-#
-# Default: none.
+# the same team — or for another team entirely — is refused. Default: none.
 # access_aud = the AUD tag from your Access application
 
-# Comma-separated addresses allowed to reach the dashboard. The edge is the
-# gate; this is the daemon asserting the gate is configured as you believe, so
-# an Access policy somebody widened in the dashboard does not widen this. An
-# entry that is empty, or that carries a space, is a startup failure —
-# whitespace inside an address is the separator typed wrong, and left to run it
-# is an address that never matches with nothing saying why.
-#
-# It is treated as a secret. It authenticates nobody, but it names *who* may
-# reach a daemon that runs unsandboxed code on this host, which is worth
-# exactly as little publication as the secret that authenticates them: a file
-# setting it must be mode 0600, and /settings reports it as present or absent
-# and never spells it.
-#
-# Default: none.
+# Comma-separated addresses allowed to reach the dashboard. An entry that is
+# empty, or that carries a space, is a startup failure: whitespace inside an
+# address is the separator typed wrong, and left to run it is an address that
+# never matches with nothing saying why. The edge is the gate; this is the daemon
+# asserting the gate is configured as you believe, so an Access policy somebody
+# widened in the dashboard does not widen this. It is treated as a secret — file
+# mode 0600, present-or-absent on /settings — because it names *who* may reach a
+# daemon that runs unsandboxed code here. Default: none.
 # access_allowed_emails = you@example.com,colleague@example.com
 
 # The password door: the browser door for a daemon on an internal network, where
 # there is no Cloudflare edge in front of it and so no assertion for layer 1 to
 # validate. At least 16 characters — shorter is a startup failure, because the
-# attacker this door is written against is on the same fast network you are.
-#
-# Set beside access_enabled or the three values above, the daemon refuses to
-# start. It has one browser door.
-#
-# It is treated as a secret: a file setting it must be mode 0600, /settings
-# reports it as present or absent and never spells it, and it is one of the
-# settings that page will not edit — a password settable from the page it
-# protects is not a door. Change it here, in this file, and restart.
+# attacker this door is written against is on the same fast network you are. Set
+# beside access_enabled or the three values above, the daemon refuses to start.
+# It is treated as a secret: file mode 0600, present-or-absent on /settings, and
+# it is the one setting that page will not edit — a password settable from the
+# page it protects is not a door. Change it here and restart. Default: none, and
+# there is no password door.
 #
 # With no TLS in front of the daemon it crosses the network in clear on every
 # sign-in, and anyone who can watch the LAN can read it. That is a real weakness
 # of this door rather than a footnote: put a reverse proxy with a certificate in
 # front of the daemon, or choose it knowing.
-#
-# Default: none, and there is no password door.
 # dashboard_password = paste a long random passphrase here
 
 
 # --- Bounds on what the dashboard may hold open and believe. ---
 
-# How many live output streams may be open at once — the one thing a browser
-# can hold open indefinitely. The default is twice max_sessions, so every
-# session on a fully loaded host is watchable from two tabs before the daemon
-# starts refusing. At least 1.
-#
-# Default: 10.
+# How many live output streams may be open at once — the one thing a browser can
+# hold open indefinitely. At least 1. The default is twice max_sessions, so
+# every session on a fully loaded host is watchable from two tabs before the
+# daemon starts refusing. Default: 10.
 # max_streams = 10
 
-# The largest screen a pane capture may return, in lines. A capture past it is
-# refused rather than shortened: half a screen is a wrong screen, not a smaller
-# one. At least 1.
-#
-# 200 is far above the 24 lines a session this daemon starts actually has —
-# nothing ever attaches to one, so it keeps tmux's 80x24 default. What the
-# bound is watching for is a capture that reaches into the scrollback, where
-# tmux's own history-limit default of 2000 lines is an order of magnitude past
-# this. It should fire when the assumption behind it has broken, never because
-# a pane is merely full.
-#
+# The largest screen a pane capture may return, in lines. At least 1. A capture
+# past it is refused rather than shortened: half a screen is a wrong screen, not
+# a smaller one. 200 is far above the 24 lines a session here actually has —
+# nothing ever attaches to one, so it keeps tmux's 80x24 default — so the bound
+# fires on a capture reaching into the scrollback, never on a merely full pane.
 # Default: 200.
 # pane_bound = 200
 
@@ -407,59 +260,47 @@ version = 1
 # --- What the daemon types into a new session's shell. ---
 #
 # A create carries a NAME from the set below and never a command line. A route
-# that took a command line would make this a general remote-shell service
-# behind whatever authenticates it, rather than a Claude session manager — the
-# same reason a working directory is chosen from allowed_roots instead of being
-# named freely.
+# that took a command line would make this a general remote-shell service behind
+# whatever authenticates it, rather than a Claude session manager — the same
+# reason a working directory is chosen from allowed_roots instead of being named
+# freely.
 #
-# Every command line here is checked at startup rather than at delivery, so you
-# learn about a bad one from a daemon that refuses to boot instead of from a
-# session that came up three quarters configured. A `;` is refused, because
-# tmux's parser eats one before the line is ever typed; so is any control
-# character, which would submit the line early. A command line may not contain
-# a comma, which is the list separator. `{name}` is the one substitution the
-# daemon makes — the session's own name, restricted to [a-zA-Z0-9-] so it
-# cannot change the shape of the line — and any other `{token}` is refused
-# rather than typed at a shell.
+# Every command line here is checked at startup rather than at delivery, so a bad
+# one is a daemon that refuses to boot instead of a session that came up three
+# quarters configured. A `;` is refused, because tmux's parser eats one before the
+# line is ever typed; so is any control character, which would submit the line
+# early; and so is a comma, the list separator. `{name}` is the one substitution
+# the daemon makes — the session's own name, restricted to [a-zA-Z0-9-] so it
+# cannot change the shape of the line — and any other `{token}` is refused rather
+# than typed at a shell.
 
-# The command line bound to the name `default`, which is what a create that
-# asks for nothing in particular runs.
-#
-# Default: claude --dangerously-skip-permissions, byte for byte what every
-# session started before this was configurable at all.
+# The command line bound to the name `default`, which is what a create that asks
+# for nothing in particular runs. Default: the line shown below, byte for byte
+# what every session started before this was configurable at all.
 # start_command = claude --dangerously-skip-permissions
 
-# The named set a create may choose from, spelled as name/command pairs
-# separated by commas. Note the `=` inside the value: the parser splits on the
-# first one only, which is why this line means what it looks like. Names are
-# [a-z0-9-] and at most 32 characters, because a name reaches the audit trail.
-#
-# Naming `default` here as well as in start_command is a startup failure rather
-# than one of them silently winning. Which of two spellings takes effect is the
-# question you can least afford to guess about: the answer decides what gets
-# typed into an unsandboxed shell on every create that names no command.
+# The named set a create may choose from, spelled as name/command pairs separated
+# by commas. Note the `=` inside the value: the parser splits on the first one
+# only, which is why this line means what it looks like. Names are [a-z0-9-] and
+# at most 32 characters, because a name reaches the audit trail. Naming `default`
+# here as well as in start_command is a startup failure rather than one of them
+# silently winning — which of two spellings gets typed into an unsandboxed shell
+# is the question you can least afford to guess about. Default: none, so the set
+# is exactly the one `default` above.
 #
 # The `rc` line below is an ordinary interactive session that drives itself into
-# remote control, so the tmux session *is* the session: a `remote-control
-# --spawn=…` launcher puts the conversation on the relay and leaves this
-# daemon's pane empty, and an empty pane is a dashboard that cannot show, judge,
-# or compact anything. That launcher form is still supported and still starts a
-# remote-controlled session — write it here instead if you want it — it is
+# remote control, so the tmux session *is* the session. A `remote-control
+# --spawn=…` launcher puts the conversation on the relay and leaves this daemon's
+# pane empty, and an empty pane is a dashboard that cannot show, judge, or
+# compact anything. That form still works — write it here if you want it — it is
 # simply not what a pane-driven dashboard should ship as its example.
-#
-# Default: none, so the set is exactly the one `default` above.
 # start_commands = rc=claude --dangerously-skip-permissions "/rc {name}"
 
-# Which entry of that set the dashboard's remote-control switch means. It
-# carries a name for the same reason a create does: a switch wired to a name is
-# one you can read out of your own configuration and change here, and a switch
-# wired to a command line would be the thing the allowlist exists to prevent.
-#
-# Unset means `rc` when you have configured a command by that name, and no
-# switch at all when you have not — you are never offered a control whose only
-# outcome is a refusal. Set to a name the set does not have, it is a startup
-# failure: you have said which command you mean, and a switch that quietly
-# started plain sessions instead would be worse than no switch.
-#
-# Default: rc, when a command by that name exists.
+# Which entry of that set the dashboard's remote-control switch means. Set to a
+# name the set does not have, it is a startup failure: you have said which
+# command you mean, and a switch that quietly started plain sessions instead
+# would be worse than no switch. Unset means `rc` when you have configured a
+# command by that name, and no switch at all when you have not — you are never
+# offered a control whose only outcome is a refusal. Default: rc, when a command
+# by that name exists.
 # remote_control_command = rc
