@@ -1420,6 +1420,52 @@ func TestConfigExampleParsesAndCoversEveryKey(t *testing.T) {
 	}
 }
 
+// TestConfigExampleShipsARemoteControlCommandThatRendersInItsOwnPane pins the
+// one line an operator uncomments to start remote-controlled sessions.
+//
+// The example used to be a `remote-control --spawn=…` launcher, and a launcher
+// makes the tmux session this daemon started a starter for a session that lives
+// on the relay: the pane goes quiet after startup. Everything the dashboard does
+// reads that pane — the viewer, the status pill's inferred states, compact — so
+// the shipped example is not a matter of taste. An operator who copies a
+// spawning one gets a dashboard that can show, judge, and compact nothing, and
+// nothing in the daemon notices.
+//
+// It is loaded through the daemon's own loader rather than pattern-matched,
+// because the claim being made about this line is that a daemon starts on it.
+func TestConfigExampleShipsARemoteControlCommandThatRendersInItsOwnPane(t *testing.T) {
+	t.Parallel()
+
+	raw, err := os.ReadFile(configExamplePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", configExamplePath, err)
+	}
+
+	key := config.KeyForVar(config.EnvStartCommands)
+	shown := exampleLines(t, raw, map[string]bool{key: true})
+	if len(shown) != 1 {
+		t.Fatalf("%s shows %d %s lines, want exactly 1", configExamplePath, len(shown), key)
+	}
+
+	pairs, _ := baseEnv(t)
+	pairs[config.EnvStartCommands] = shown[0].value
+	cfg := mustLoad(t, pairs)
+
+	name := cfg.RemoteControlCommand
+	if name == "" {
+		t.Fatalf("%s:%d configures no remote-control command, so an operator who copies it is offered no switch",
+			configExamplePath, shown[0].line)
+	}
+	command, ok := cfg.StartCommands.Command(name)
+	if !ok {
+		t.Fatalf("%s:%d names %q as the remote-control command and defines no such entry", configExamplePath, shown[0].line, name)
+	}
+	if strings.Contains(command, "--spawn") {
+		t.Errorf("%s:%d ships %q as the remote-control command, and --spawn puts the conversation on the relay: the tmux session becomes a launcher whose pane goes quiet after startup.\nThe pane viewer, the status pill and compact all read that pane, so what an operator copies here decides whether the dashboard can see the sessions it started",
+			configExamplePath, shown[0].line, name)
+	}
+}
+
 // longAgo is far enough back that any write at all moves the mtime by years
 // rather than by whatever the clock's granularity happens to be.
 var longAgo = time.Date(2020, time.January, 2, 3, 4, 5, 0, time.UTC)

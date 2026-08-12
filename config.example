@@ -383,8 +383,16 @@ version = 1
 # question you can least afford to guess about: the answer decides what gets
 # typed into an unsandboxed shell on every create that names no command.
 #
+# The `rc` line below is an ordinary interactive session that drives itself into
+# remote control, so the tmux session *is* the session: a `remote-control
+# --spawn=…` launcher puts the conversation on the relay and leaves this
+# daemon's pane empty, and an empty pane is a dashboard that cannot show, judge,
+# or compact anything. That launcher form is still supported and still starts a
+# remote-controlled session — write it here instead if you want it — it is
+# simply not what a pane-driven dashboard should ship as its example.
+#
 # Default: none, so the set is exactly the one `default` above.
-# start_commands = rc=claude remote-control --name {name}
+# start_commands = rc=claude --dangerously-skip-permissions "/rc {name}"
 
 # Which entry of that set the dashboard's remote-control switch means. It
 # carries a name for the same reason a create does: a switch wired to a name is
