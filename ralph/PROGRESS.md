@@ -538,3 +538,76 @@ what makes a switch appear on the dashboard.
   finding, unchanged and untouched). `golangci-lint run` reports 0 issues.
 - **`Fake.Seed` still silently drops `Label`, `WorkDir` and `StartCommand`**
   (iteration 1's finding, unchanged).
+
+---
+
+## Iteration 7 — 2026-08-12 — T006, the file that had become wrong about two bounds
+
+**Did:** `config.example`'s four lifetime blocks now describe the daemon that
+exists. `idle_timeout` says idle is measured from the later of two clocks — the
+last request that drove the session, and what tmux itself last saw it print —
+and that watching still advances neither. `session_lifetime_max` documents
+`never`; `session_lifetime` says why the same word is refused one block above
+it; `idle_timeout_max` says why it needs no such word. The header's "a value
+that would weaken a bound is a startup failure" was true until milestone 13 and
+is now qualified rather than deleted. One new guard,
+`TestConfigExampleSpellsNeverWhereTheDaemonTakesIt`.
+
+**Learned:**
+
+- **The guard is the asymmetry, not the word.** `strings.Contains(raw, "never")`
+  would pass on this file forever — "never" appears a dozen times as ordinary
+  English, which is what makes the obvious docs-guard here worthless. What is
+  checkable is the *behaviour the prose claims*: the ceiling accepts the word
+  and the default refuses it, both through `config.LoadFrom`. Same shape as
+  iteration 2's T000 guard, for the same reason — the claim is that a daemon
+  starts on this.
+- **⚠️ `CRSW_SESSION_LIFETIME` is a prefix of `CRSW_SESSION_LIFETIME_MAX`**, so
+  `strings.Contains(err, EnvSessionLifetime)` is satisfied by a refusal that
+  names only the ceiling. The first draft of the guard passed a break for that
+  reason. It now matches `EnvSessionLifetime + " "`, and both refusal messages
+  happen to be followed by a space. **Any assertion about which of these two
+  variables an error names needs that trailing space.**
+- **`session_lifetime = never` is refused three deep**, which is why breaking
+  the guard took three edits rather than one: `loadDuration` cannot parse the
+  word, `validateLifetimes` refuses `lifetime <= 0`, and `idle > lifetime`
+  refuses it again. Good news about the daemon, and worth knowing before
+  concluding a break "did not work" — with all three relaxed the guard goes red
+  naming the wrong variable, and with `NeverLifetime` dropped from
+  `loadLifetimeCeiling` the ceiling case goes red. Both restored.
+- **⚠️ Adoption gives a session the *package constant* 24h, not this daemon's
+  configured `session_lifetime`.** `Adopt` builds a record with `Lifetime`
+  unset, and `AbsoluteDeadline` reads `orDefault(s.Lifetime, AbsoluteLifetime)`
+  — the constant at `session.go:34`, never `m.defaultLifetime`. The restart-edge
+  sentence was drafted as "this host's ordinary lifetime" and corrected to "the
+  built-in 24h" before commit. Verify against `AbsoluteDeadline` before writing
+  any sentence about what an adopted session gets.
+- **The duplicate-key trap was checked mechanically, not by eye**: no line added
+  in this change contains an `=` at all, so none of them can be read as a second
+  `# <key> = …` line. `grep -n '=' config.example` lists exactly one line per
+  key plus the three prose lines that were always there.
+- Linter confirmed v2 (`2.12.2`, #26). `go test ./...`, `-tags tmux`, `-tags
+  dev` and `-tags quickstart ./cmd/crswd` (36s) all pass; quickstart run
+  **after** the commit, per iteration 1.
+
+**Left:** T007 alone, and this iteration widened it — see the first finding.
+
+**Findings:**
+
+- **⚠️ `.env.example` carries the same four keys and is still wrong about both
+  changes**, in blunter words than `config.example` ever used: its
+  `CRSW_IDLE_TIMEOUT` block says "a long job you are watching is still reaped"
+  (false since T002 — a job producing output moves the tmux clock) and its
+  `CRSW_SESSION_LIFETIME` block says "there is deliberately no value meaning
+  never" (false since T004). T006 named `config.example` alone and T007 names
+  `README.md` and `docs/auth-and-sessions.md`, so this file fell between them.
+  **T007's line in the plan has been amended to include it** rather than left as
+  a finding to be rediscovered.
+- **Adopted sessions ignore the operator's configured default lifetime**
+  (above). On a daemon with `session_lifetime = 4h` an adopted session gets 24h
+  — *longer* than configured, which is the wrong direction for a bound. Not
+  fixed: outside T006, and it predates this milestone. Worth a task.
+- **`gofmt -l .` still flags `internal/httpapi/render.go`** (iteration 3's
+  finding, unchanged and untouched). `golangci-lint run` reports 0 issues.
+- **`Fake.Seed` still silently drops `Label`, `WorkDir` and `StartCommand`**
+  (iteration 1's finding, unchanged).
