@@ -891,6 +891,46 @@ func TestSettingsStatesTheValueOfEveryNonSecretKey(t *testing.T) {
 	}
 }
 
+// TestSettingsSaysWhenTheLifetimeCeilingIsNotThere is milestone 13 at the one
+// page that answers "what is this daemon configured to do".
+//
+// The ceiling is carried as a negative because that is what an absent bound is
+// to every reader of it in Go, and time.Duration renders a negative as
+// "-1h0m0s". An operator finding that on this page would read a misconfiguration
+// — a ceiling somehow below zero — rather than the decision they made, and this
+// row is the only place a daemon states out loud that the deadline which is
+// never renewed has nothing above it.
+//
+// **Must fail when** the row renders the sign instead of the word, or when the
+// word leaks onto a ceiling that is an ordinary duration.
+func TestSettingsSaysWhenTheLifetimeCeilingIsNotThere(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		max  time.Duration
+		want string
+	}{
+		{name: "no ceiling at all", max: -time.Hour, want: config.NeverLifetime},
+		{name: "an ordinary ceiling", max: 72 * time.Hour, want: "72h0m0s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			page := settingsBody(t, settingsOn(t, func(cfg *config.Config) {
+				cfg.SessionLifetimeMax = tc.max
+			}))
+			row := settingsRowFor(t, page, "session_lifetime_max")
+			escaped := html.EscapeString(tc.want)
+			stated := strings.Contains(row, "<td>"+escaped+"</td>") ||
+				strings.Contains(row, `value="`+escaped+`"`)
+			if !stated {
+				t.Errorf("the session_lifetime_max row is %q; want it to state %q", row, tc.want)
+			}
+		})
+	}
+}
+
 // --- T013: the whole route table, searched (SC-005) --------------------------
 //
 // TestSettingsNeverRendersSecretValue holds the one page that composes every

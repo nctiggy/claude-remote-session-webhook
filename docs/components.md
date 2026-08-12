@@ -331,13 +331,16 @@ Rules:
   path: a card showing an invented directory tells an operator something false
   about an unsandboxed shell.
 - **Both deadlines are on the card, and one of them alone would be a lie.**
-  There are two clocks: the idle bound moves with every request and an operator
-  may turn it off for one session, and the absolute bound is counted from
-  creation, is never renewed, and cannot be turned off at all. A card carrying
-  only the idle row would read as "this session never dies" for exactly the
-  session whose operator relaxed the bound — the same defect as copy claiming a
-  compact happened when the daemon only delivered the request. They are rows of
-  the `.card-meta` list, like the mode, so neither has a class of its own.
+  There are two clocks: the idle bound moves with every request, and the absolute
+  bound is counted from creation and is never renewed. Either may be switched off
+  for one session — the absolute one only on a daemon whose operator removed the
+  ceiling as well — and each switch turns off exactly one of them. A card carrying
+  only the idle row would read as "this session never dies" for the session whose
+  operator relaxed that bound alone, which is the same defect as copy claiming a
+  compact happened when the daemon only delivered the request. The pair is also
+  the only honest way to say the case where it *is* true: a session nothing reaps
+  is two rows saying so, never one row promising it. They are rows of the
+  `.card-meta` list, like the mode, so neither has a class of its own.
 - **The idle deadline is rendered with the activity it is counted from, in the
   row directly above it.** A deadline alone says when a session dies and nothing
   about what it was judged on, which is the whole of the question that produced
@@ -351,10 +354,12 @@ Rules:
   the value is as fresh as the last sweep and a rendered timestamp would claim a
   precision the daemon does not have. Another `.card-meta` row, like the two
   under it — no class, no token, no stylesheet rule.
-- **A session with idle reaping off says there is no idle limit, never a date.**
-  `IdleDeadline` answers four hundred lifetimes out for such a session, which is
-  the manager's way of spelling "this comparison never fires"; formatted onto a
-  card it would read "in 400 days", a fact nothing in the daemon believes. A
+- **A bound that is switched off says so, never a date.** A disabled deadline
+  answers a century out, which is the record's way of spelling "this comparison
+  never fires"; formatted onto a card it would read "in 36500 days", a fact
+  nothing in the daemon believes. Each row states its own absence — no idle
+  limit, no lifetime limit — and neither claims anything about the other, because
+  it is the pair that tells an operator whether anything will reap this session. A
   deadline already reached reads as due rather than as time remaining — the
   reaper is entitled to take that session on its next sweep, and a card claiming
   otherwise is the dashboard disagreeing with the thing that acts.

@@ -229,18 +229,34 @@ func (m *Manager) SetLifetimes(defaultLifetime, maxLifetime, defaultIdle, maxIdl
 // granting one day to a caller who asked for thirty is worse than refusing:
 // they believe they have thirty, and nothing tells them otherwise until the
 // session is gone.
+//
+// A negative lifetime used to be one of those refusals and is now the request to
+// switch the absolute deadline off (milestone 13). It is granted on exactly one
+// condition — the operator's own ceiling must already be unbounded — and that
+// condition is the whole of the change. A ceiling is the operator saying how
+// long a session on this host may live; "never" under a finite one is a caller
+// asking to be exempt from it, which is the one thing no override may be. So the
+// same daemon that refuses 100h under a 48h ceiling refuses this, for the same
+// reason and with the same shape of message, and an operator who wants it says
+// so once in their configuration rather than once per create.
 func (m *Manager) resolveLifetimes(req CreateRequest) (lifetime, idle time.Duration, err error) {
 	maxLife := orDefault(m.maxLifetime, AbsoluteLifetime)
 	maxIdleAllowed := orDefault(m.maxIdle, IdleTimeout)
+
+	// A negative ceiling is the operator's "no ceiling at all" — config spells
+	// it `never`, and orDefault leaves it alone because only zero is unset. It
+	// is asked first because every comparison below is against a bound that may
+	// not exist, and "is X over a ceiling that is not there" has no answer.
+	unbounded := maxLife < 0
 
 	lifetime = req.Lifetime
 	if lifetime == 0 {
 		lifetime = m.defaultLifetime
 	}
 	switch {
-	case lifetime < 0:
-		return 0, 0, fmt.Errorf("%w: a session lifetime may not be negative", ErrInvalidLifetime)
-	case lifetime > maxLife:
+	case lifetime < 0 && !unbounded:
+		return 0, 0, fmt.Errorf("%w: a session that never expires is past the %s ceiling", ErrInvalidLifetime, maxLife)
+	case lifetime > 0 && !unbounded && lifetime > maxLife:
 		return 0, 0, fmt.Errorf("%w: %s exceeds the %s ceiling", ErrInvalidLifetime, lifetime, maxLife)
 	}
 
@@ -248,16 +264,24 @@ func (m *Manager) resolveLifetimes(req CreateRequest) (lifetime, idle time.Durat
 	if idle == 0 {
 		idle = m.defaultIdle
 	}
-	// A negative idle is the disable, not an error, and it is bounded by the
-	// absolute deadline still applying.
+	// A negative idle is the disable, not an error. On a session that still has
+	// an absolute deadline it is bounded by that deadline; on one that does not,
+	// both switches are off and nothing reaps the session at all — which is what
+	// the operator asked for twice and what the create form has to say plainly.
 	if idle > maxIdleAllowed {
 		return 0, 0, fmt.Errorf("%w: an idle timeout of %s exceeds the %s ceiling", ErrInvalidLifetime, idle, maxIdleAllowed)
 	}
 	// An idle timeout that can never fire is a setting that does nothing, which
-	// is worth refusing rather than accepting quietly.
-	effectiveLife := orDefault(lifetime, AbsoluteLifetime)
-	if idle > effectiveLife {
-		return 0, 0, fmt.Errorf("%w: an idle timeout of %s can never fire inside a %s lifetime", ErrInvalidLifetime, idle, effectiveLife)
+	// is worth refusing rather than accepting quietly. It is the finite
+	// lifetime's check alone: every idle timeout fires inside a lifetime with no
+	// end, so a session that never expires has no such thing to refuse — and
+	// comparing against a negative here would refuse every idle timeout there
+	// is, on exactly the sessions this milestone exists to keep alive.
+	if lifetime >= 0 {
+		effectiveLife := orDefault(lifetime, AbsoluteLifetime)
+		if idle > effectiveLife {
+			return 0, 0, fmt.Errorf("%w: an idle timeout of %s can never fire inside a %s lifetime", ErrInvalidLifetime, idle, effectiveLife)
+		}
 	}
 	return lifetime, idle, nil
 }

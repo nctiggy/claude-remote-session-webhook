@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 )
 
@@ -65,8 +66,14 @@ type createRequest struct {
 	StartCommand string `json:"start_command"`
 
 	// Lifetime and IdleTimeout are optional per-session overrides (#37), as Go
-	// duration strings: "72h", "90m", and "0" for IdleTimeout meaning no idle
-	// reaping for this session. Absent means the daemon's default.
+	// duration strings: "72h", "90m", "0" for IdleTimeout meaning no idle
+	// reaping for this session, and "never" for Lifetime meaning no absolute
+	// deadline at all. Absent means the daemon's default.
+	//
+	// "never" is granted only on a daemon whose own ceiling is unbounded
+	// (config.NeverLifetime), and refused with every other over-the-ceiling
+	// value on one that is not — so it names a door the operator opened rather
+	// than one this field can open.
 	//
 	// Strings rather than numbers because a bare 3600 is a unit the caller and
 	// the daemon have to agree about silently, and "1h" is one nobody can read
@@ -82,14 +89,26 @@ type createRequest struct {
 // duration — which the manager reads as "unset". It is translated to a negative
 // so the two cannot be confused: one value cannot mean both "the operator said
 // nothing" and "the operator said none".
+//
+// "never" for the lifetime is the same translation for the other bound, and it
+// is a word rather than "0" for config.NeverLifetime's reason: a caller who sent
+// zero meaning "no time at all" would be handed a session nothing reaps, and the
+// deadline being switched off here is the one that is never renewed. Whether it
+// is granted is not decided here — resolveLifetimes weighs it against the
+// operator's ceiling, exactly as it weighs "8760h".
 func parseLifetimeOverrides(lifetime, idle string) (time.Duration, time.Duration, error) {
 	var out, outIdle time.Duration
 	if v := strings.TrimSpace(lifetime); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			return 0, 0, fmt.Errorf("%w: lifetime %q is not a duration such as 72h", session.ErrInvalidLifetime, v)
+		switch {
+		case strings.EqualFold(v, config.NeverLifetime):
+			out = neverLifetimeDuration
+		default:
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				return 0, 0, fmt.Errorf("%w: lifetime %q is not a duration such as 72h, or %q", session.ErrInvalidLifetime, v, config.NeverLifetime)
+			}
+			out = d
 		}
-		out = d
 	}
 	if v := strings.TrimSpace(idle); v != "" {
 		d, err := time.ParseDuration(v)
@@ -97,12 +116,17 @@ func parseLifetimeOverrides(lifetime, idle string) (time.Duration, time.Duration
 			return 0, 0, fmt.Errorf("%w: idle_timeout %q is not a duration such as 90m", session.ErrInvalidLifetime, v)
 		}
 		if d == 0 {
-			d = -1
+			d = neverLifetimeDuration
 		}
 		outIdle = d
 	}
 	return out, outIdle, nil
 }
+
+// neverLifetimeDuration is what both of this route's "switch that bound off"
+// spellings become: any negative does it, and one constant so the two doors
+// cannot come to disagree about which negative.
+const neverLifetimeDuration = -1
 
 // createResponse is the contract's 201 body, in the contract's field order.
 //

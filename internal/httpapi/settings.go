@@ -477,6 +477,14 @@ func settingValue(cfg *config.Config, name string) (value string, known bool) {
 	case config.EnvSessionLifetime:
 		return cfg.SessionLifetime.String(), true
 	case config.EnvSessionLifetimeMax:
+		// The one setting on this page whose value may not be a duration. It is
+		// carried as a negative and shown as the word the operator would write,
+		// because this row is the only place a daemon says out loud that the
+		// bound which is never renewed has no ceiling on it — and "-1h0m0s"
+		// there reads as a misconfiguration rather than as the decision it is.
+		if cfg.SessionLifetimeMax < 0 {
+			return config.NeverLifetime, true
+		}
 		return cfg.SessionLifetimeMax.String(), true
 	case config.EnvIdleTimeout:
 		return cfg.IdleTimeout.String(), true

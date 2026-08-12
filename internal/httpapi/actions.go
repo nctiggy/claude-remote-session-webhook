@@ -504,8 +504,10 @@ func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
 		// The operator's two overrides, which the manager checks against the
 		// operator's own ceilings before a record exists (resolveLifetimes). A
 		// negative Idle is idle reaping off for this session and is safe because
-		// the absolute deadline still fires; there is deliberately no spelling of
-		// that for Lifetime, on either door.
+		// the absolute deadline still fires. A negative Lifetime switches that
+		// one off too (milestone 13), which is safe on different terms: the
+		// manager grants it only where the daemon's own ceiling is already
+		// unbounded, so this field cannot open a door the operator has not.
 		Lifetime: lifetime,
 		Idle:     idle,
 	})

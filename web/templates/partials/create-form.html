@@ -252,8 +252,11 @@
 
   **The honest half is not decoration.** Turning off the idle clock does not
   make a session immortal: there are two clocks, and the absolute one is
-  counted from CreatedAt, never renewed, and refuses to be disabled at all
-  (resolveLifetimes turns a negative Lifetime away). A label reading "never
+  counted from CreatedAt and never renewed. It can be switched off too since
+  milestone 13, but only where the operator removed their own ceiling
+  (resolveLifetimes weighs a negative Lifetime against it), and this form does
+  not offer that switch — so for every session it starts, the sentence below
+  is true as written. A label reading "never
   die" with nothing beside it would be this interface asserting something the
   daemon does not do, which is the same defect as copy that claims a session was
   compacted when the daemon only delivered the request.

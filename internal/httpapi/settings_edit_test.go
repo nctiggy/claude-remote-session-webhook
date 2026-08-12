@@ -120,6 +120,43 @@ func TestEditWritesTheSetting(t *testing.T) {
 	}
 }
 
+// TestEditIsWhereAnOperatorRemovesTheLifetimeCeiling is milestone 13's claim
+// made at the surface the operator actually uses.
+//
+// A create may ask for a session that never expires only where the ceiling is
+// already gone, and this route is how it goes. It is asserted here rather than
+// only in internal/config because Validate runs the loader over the *candidate*
+// file — so a word the loader learned and this door had not would be a setting
+// an operator could read on the page and never save, and the daemon would look
+// as though it had refused their decision rather than never having been asked.
+//
+// **Must fail when** the word is refused here, and when the negative duration
+// that carries it internally is accepted here: two spellings reaching the file
+// is how the undocumented one becomes the one somebody types.
+func TestEditIsWhereAnOperatorRemovesTheLifetimeCeiling(t *testing.T) {
+	f := editable(t)
+
+	editPost(t, f, editForm(t, f, "session_lifetime_max", config.NeverLifetime))
+
+	after, err := os.ReadFile(f.cfg.FilePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", f.cfg.FilePath, err)
+	}
+	if want := "session_lifetime_max = " + config.NeverLifetime; !strings.Contains(string(after), want) {
+		t.Errorf("the file does not carry %q, so the operator cannot remove the ceiling from the page that offers it:\n%s", want, after)
+	}
+
+	editPost(t, f, editForm(t, f, "session_lifetime_max", "-1h"))
+
+	again, err := os.ReadFile(f.cfg.FilePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", f.cfg.FilePath, err)
+	}
+	if strings.Contains(string(again), "-1h") {
+		t.Errorf("a negative duration was written as a second spelling of %q:\n%s", config.NeverLifetime, again)
+	}
+}
+
 // TestEditRefusesASecret is the one exclusion, and the reason is narrower than
 // "it is a boundary".
 //

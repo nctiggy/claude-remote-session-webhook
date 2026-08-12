@@ -3356,6 +3356,145 @@ func TestLifetimeOverrides(t *testing.T) {
 	})
 }
 
+// TestALifetimeThatNeverExpiresNeedsTheOperatorsCeiling is milestone 13's second
+// half, and the half worth being careful about: the absolute deadline is the one
+// bound that is never renewed, so switching it off is removing the bound
+// Principle VI rests on rather than relaxing it.
+//
+// What keeps that the operator's decision and not a caller's is the ceiling.
+// Every case below is one create asking for the same thing, and the only thing
+// that changes is whether the daemon it is asking had already said yes.
+//
+// **Must fail when** a create can switch the absolute deadline off on a daemon
+// whose ceiling is finite — including the daemon that configured nothing, which
+// is every deployment that has not read this milestone.
+func TestALifetimeThatNeverExpiresNeedsTheOperatorsCeiling(t *testing.T) {
+	t.Parallel()
+
+	// The spelling a request carries. Any negative is the disable; this is the
+	// one httpapi's parser produces, so the test asks the question the wire asks.
+	const forever = -1 * time.Nanosecond
+
+	t.Run("refused on a daemon that configured nothing", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		req := f.request()
+		req.Lifetime = forever
+		if _, _, err := f.mgr.Create(context.Background(), req); !errors.Is(err, ErrInvalidLifetime) {
+			t.Fatalf("Create(never) on an unconfigured daemon = %v; want %v", err, ErrInvalidLifetime)
+		}
+		if got := len(f.store.List(req.Owner)); got != 0 {
+			t.Errorf("the store holds %d records; a refused create leaves none", got)
+		}
+	})
+
+	t.Run("refused under a finite ceiling however high", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		f.mgr.SetLifetimes(AbsoluteLifetime, 8760*time.Hour, IdleTimeout, IdleTimeout)
+
+		req := f.request()
+		req.Lifetime = forever
+		if _, _, err := f.mgr.Create(context.Background(), req); !errors.Is(err, ErrInvalidLifetime) {
+			t.Fatalf("Create(never) under a one-year ceiling = %v; want %v — a ceiling raised is not a ceiling removed", err, ErrInvalidLifetime)
+		}
+	})
+
+	// The granted case, and the assertion is on the reaper's own question rather
+	// than on the instant the deadline lands: a century is only "never" for as
+	// long as nothing compares against it, and expiredAt is what compares.
+	t.Run("granted under a ceiling that is not there", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		f.mgr.SetLifetimes(AbsoluteLifetime, -time.Hour, IdleTimeout, IdleTimeout)
+
+		req := f.request()
+		req.Lifetime = forever
+		s, _, err := f.mgr.Create(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Create(never) under an unbounded ceiling = %v", err)
+		}
+		if !s.LifetimeDisabled() {
+			t.Fatalf("the record carries a lifetime of %v, which still expires", s.Lifetime)
+		}
+		// Ten years on and still in use. The idle clock is the *other* switch and
+		// is untouched here, so the session is driven up to the instant being
+		// asked about — what must not happen is the bound this case turned off.
+		inUse := *s
+		tenYearsOn := s.CreatedAt.Add(10 * 365 * 24 * time.Hour)
+		inUse.LastActivity = tenYearsOn
+		if got := expiredAt(inUse, tenYearsOn); got != "" {
+			t.Errorf("ten years on the reaper takes a session in use for %q; the operator was told it never expires", got)
+		}
+	})
+
+	// The two switches together, which is what the create form offers and what
+	// the operator asked for twice. It is a separate case because the two bounds
+	// are separate deadlines: a session that survived the absolute one only to be
+	// taken for idleness would be the promise kept by half.
+	t.Run("both bounds off is reaped by neither", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		f.mgr.SetLifetimes(AbsoluteLifetime, -time.Hour, IdleTimeout, IdleTimeout)
+
+		req := f.request()
+		req.Lifetime, req.Idle = forever, forever
+		s, _, err := f.mgr.Create(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Create(never, idle off) = %v", err)
+		}
+		// Untouched since it started, which is the session this case is about:
+		// nothing has driven it and nothing has advanced either clock.
+		if got := expiredAt(*s, s.CreatedAt.Add(10*365*24*time.Hour)); got != "" {
+			t.Errorf("ten years of sitting still and the reaper takes this session for %q; both switches are off", got)
+		}
+	})
+
+	// An idle timeout is refused when it could never fire inside the lifetime it
+	// sits in. A lifetime with no end has no such timeout, and reading the
+	// negative as a very short lifetime would refuse every idle timeout there is
+	// on exactly these sessions.
+	t.Run("an ordinary idle timeout still fits inside it", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		f.mgr.SetLifetimes(AbsoluteLifetime, -time.Hour, IdleTimeout, IdleTimeout)
+
+		req := f.request()
+		req.Lifetime, req.Idle = forever, IdleTimeout
+		s, _, err := f.mgr.Create(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Create(never, 60m idle) = %v; an idle timeout fires inside a lifetime with no end", err)
+		}
+		if got, want := s.IdleDeadline(), s.IdleSince().Add(IdleTimeout); !got.Equal(want) {
+			t.Errorf("idle deadline = %v; want %v — the idle clock is untouched by the other switch", got, want)
+		}
+	})
+
+	// The ceiling is not a lifetime, and a create that names one still gets it.
+	// Removing a bound must not also remove the choice under it.
+	t.Run("a finite override is unaffected by an unbounded ceiling", func(t *testing.T) {
+		t.Parallel()
+
+		f := newManagerFixture(t)
+		f.mgr.SetLifetimes(AbsoluteLifetime, -time.Hour, IdleTimeout, IdleTimeout)
+
+		req := f.request()
+		req.Lifetime = 72 * time.Hour
+		s, _, err := f.mgr.Create(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Create(72h) under an unbounded ceiling = %v", err)
+		}
+		if got, want := s.AbsoluteDeadline(), s.CreatedAt.Add(72*time.Hour); !got.Equal(want) {
+			t.Errorf("absolute deadline = %v; want %v", got, want)
+		}
+	})
+}
+
 // TestAdoptionRestoresNameAndWorkDir is #72: a session that survives a restart
 // comes back as itself rather than as an anonymous row.
 //

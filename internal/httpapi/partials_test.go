@@ -2715,18 +2715,22 @@ var (
 // about what a page shows, and a template rendering a field nothing fills is the
 // shape of bug this milestone exists to close for the fifth time.
 //
-// The row that matters most is the disabled one, and it is why both deadlines
-// are asserted in every case rather than only the interesting one. A session
-// whose operator turned idle reaping off must say so *and* must still show the
-// bound that has not gone anywhere: IdleDeadline answers four hundred lifetimes
-// out for such a session, so a card that formatted it would read "in 400 days"
-// — a date nothing in this daemon believes — and a card that dropped the
-// lifetime row beside it would read as immortal, which is the false claim this
-// plan warns about in its first paragraph.
+// The rows that matter most are the disabled ones, and they are why both
+// deadlines are asserted in every case rather than only the interesting one. A
+// session whose operator switched a bound off must say so *and* must still show
+// the bound that has not gone anywhere: a switched-off deadline answers a century
+// out, so a card that formatted it would read "in 36500 days" — a date nothing in
+// this daemon believes — and a card that dropped the other row beside it would
+// read as immortal when only half of it was.
 //
-// **Must fail when** the idle row renders that far-future instant, when either
-// row goes missing, or when a deadline is measured against a clock reading other
-// than the render's.
+// The last case is the one where immortal is the truth. Both bounds off is what
+// the operator asked for twice and what a daemon whose ceiling was removed may
+// grant, and the two rows say it between them rather than in a sentence either
+// one could carry alone.
+//
+// **Must fail when** either row renders that far-future instant, when either row
+// goes missing, or when a deadline is measured against a clock reading other than
+// the render's.
 func TestCardShowsBothDeadlines(t *testing.T) {
 	t.Parallel()
 
@@ -2735,6 +2739,7 @@ func TestCardShowsBothDeadlines(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		idle         time.Duration
+		lifetime     time.Duration
 		lastActivity time.Time
 		wantIdle     string
 		wantLifetime string
@@ -2766,6 +2771,29 @@ func TestCardShowsBothDeadlines(t *testing.T) {
 			wantIdle:     "due now",
 			wantLifetime: "in 23 hours",
 		},
+		{
+			// Milestone 13: the deadline that is never renewed is not there at
+			// all, on a daemon whose operator removed the ceiling. The idle
+			// clock still runs, and the card still counts it down — one switch
+			// is one bound.
+			name:         "no absolute deadline",
+			lifetime:     -1,
+			lastActivity: now,
+			wantIdle:     "in 1 hour",
+			wantLifetime: noLifetimeLimit,
+		},
+		{
+			// Both, which is the only session on this daemon that nothing
+			// reaps. Neither row may report a distant date instead: that is the
+			// same defect as the one above, and here it would be the card
+			// inventing the very bound the operator removed.
+			name:         "nothing reaps this session",
+			idle:         -1,
+			lifetime:     -1,
+			lastActivity: now,
+			wantIdle:     noIdleLimit,
+			wantLifetime: noLifetimeLimit,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -2775,6 +2803,7 @@ func TestCardShowsBothDeadlines(t *testing.T) {
 				Name:         "a session",
 				WorkDir:      "/home/operator/code/crswd",
 				Idle:         tc.idle,
+				Lifetime:     tc.lifetime,
 				CreatedAt:    now.Add(-time.Hour),
 				LastActivity: tc.lastActivity,
 			}, now, testCardToken, "rc")

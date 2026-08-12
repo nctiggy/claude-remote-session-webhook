@@ -381,12 +381,12 @@ func cardOf(live session.Session, now time.Time, token, remoteCommand string) se
 		// age and the display state are taken against — so a card cannot show a
 		// session as running beside a deadline that has already passed.
 		//
-		// The idle one asks the record whether reaping is off rather than reading
-		// the sign of the duration here, because that rule belongs where it is
-		// defined (session.IdleDisabled) and a second reading of it is a second
-		// answer.
+		// Each asks the record whether its own bound is off rather than reading
+		// the sign of a duration here, because that rule belongs where it is
+		// defined (session.IdleDisabled, session.LifetimeDisabled) and a second
+		// reading of it is a second answer.
 		IdleDeadline:     formatIdleDeadline(live, now),
-		AbsoluteDeadline: formatDeadline(live.AbsoluteDeadline().Sub(now)),
+		AbsoluteDeadline: formatAbsoluteDeadline(live, now),
 		// The instant the idle row above is counted from, against the same clock
 		// reading — the record's own method, so the card cannot measure a
 		// deadline from one activity and name another (view.go, T003).
@@ -566,27 +566,48 @@ func formatAge(d time.Duration) string {
 	}
 }
 
-// noIdleLimit is what a card says instead of a deadline for a session whose
-// operator turned idle reaping off (#37, T003).
+// noIdleLimit and noLifetimeLimit are what a card says instead of a deadline for
+// a session whose operator switched that bound off (#37, milestone 13).
 //
-// It names the bound that is gone rather than claiming the session is immortal,
-// because the absolute deadline beside it still fires. "Never dies" here would
-// be the card contradicting the row under it.
-const noIdleLimit = "no idle limit"
+// Each names the bound that is gone and claims nothing about the other, which is
+// what lets one card carry both without contradicting itself. A row reading
+// "never dies" would be false beside a live deadline and redundant beside a
+// second absence — and it is the pair of rows, not either sentence, that tells
+// an operator a session nothing will reap when that is what they asked for.
+const (
+	noIdleLimit     = "no idle limit"
+	noLifetimeLimit = "no lifetime limit"
+)
 
 // formatIdleDeadline is how long a card says a session has before the idle clock
 // takes it.
 //
 // The disabled case is not a very distant deadline rendered coarsely. It is a
 // different fact, and it is stated rather than approximated: IdleDeadline
-// answers four hundred lifetimes out for such a session, which is the manager's
-// way of saying "this comparison never fires" and not a date anybody should read
-// off a card (FR-018a's discipline, applied to a bound instead of to a name).
+// answers a century out for such a session, which is the record's way of saying
+// "this comparison never fires" and not a date anybody should read off a card
+// (FR-018a's discipline, applied to a bound instead of to a name).
 func formatIdleDeadline(s session.Session, now time.Time) string {
 	if s.IdleDisabled() {
 		return noIdleLimit
 	}
 	return formatDeadline(s.IdleDeadline().Sub(now))
+}
+
+// formatAbsoluteDeadline is the same question and the same answer for the other
+// bound (milestone 13).
+//
+// It asks the record rather than testing the sign of a duration here, for
+// IdleDisabled's reason: the rule lives where it is defined, and a second
+// reading of it is a second answer, free to disagree with the first the day the
+// spelling changes. This one matters more than its twin — the card is where an
+// operator finds out that the deadline which is never renewed is not there at
+// all, and "in 36500 days" would read as a daemon that had lost track of it.
+func formatAbsoluteDeadline(s session.Session, now time.Time) string {
+	if s.LifetimeDisabled() {
+		return noLifetimeLimit
+	}
+	return formatDeadline(s.AbsoluteDeadline().Sub(now))
 }
 
 // formatDeadline is how long a card says is left, in formatAge's vocabulary so

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 )
@@ -137,6 +138,85 @@ func TestLoadFromAcceptsEveryOptionalOverride(t *testing.T) {
 // It asserts the whole trip: unset is nothing, a configured list arrives in the
 // operator's own order, and the shim recorded where it came from — the settings
 // page reads that record, and it is the page that caught the last one.
+// TestTheLifetimeCeilingHasASpellingForNever is milestone 13's operator-facing
+// half: the ceiling is what decides whether a session on this host may be
+// exempt from the one deadline that is never renewed, so it needs a value that
+// says so and cannot be arrived at by mistake.
+//
+// The refusals are the point rather than the acceptance. `0` and `-1h` are both
+// things a person writes in a configuration file meaning "no time at all", and
+// either of them silently meaning the opposite would switch off that deadline on
+// a host running unsandboxed shells.
+//
+// **Must fail when** a negative duration is accepted as a second spelling of
+// `never`, when `never` does not reach the manager as the absence of a ceiling,
+// or when a ceiling that is not there is refused for sitting "below" its own
+// default.
+func TestTheLifetimeCeilingHasASpellingForNever(t *testing.T) {
+	t.Parallel()
+
+	t.Run("never is carried as no ceiling at all", func(t *testing.T) {
+		t.Parallel()
+
+		pairs, _ := baseEnv(t)
+		pairs[config.EnvSessionLifetimeMax] = config.NeverLifetime
+
+		cfg := mustLoad(t, pairs)
+		if cfg.SessionLifetimeMax >= 0 {
+			t.Fatalf("SessionLifetimeMax = %v; want a negative, which is what resolveLifetimes reads as an absent ceiling", cfg.SessionLifetimeMax)
+		}
+		// The default is untouched by it, and that asymmetry is the design: the
+		// ceiling opens the door and a create walks through it. A daemon whose
+		// every session were immortal without asking is not what was configured
+		// here.
+		if cfg.SessionLifetime <= 0 {
+			t.Errorf("SessionLifetime = %v; an unbounded ceiling must not disable the default every create still gets", cfg.SessionLifetime)
+		}
+	})
+
+	// A word the operator typed, in whatever case their editor left it.
+	t.Run("the word is read case-insensitively", func(t *testing.T) {
+		t.Parallel()
+
+		pairs, _ := baseEnv(t)
+		pairs[config.EnvSessionLifetimeMax] = " Never "
+
+		if got := mustLoad(t, pairs).SessionLifetimeMax; got >= 0 {
+			t.Errorf("SessionLifetimeMax = %v; want an absent ceiling", got)
+		}
+	})
+
+	// The ordinary ceiling still loads, and still bounds. Removing a bound must
+	// not remove the setting.
+	t.Run("a duration is still a duration", func(t *testing.T) {
+		t.Parallel()
+
+		pairs, _ := baseEnv(t)
+		pairs[config.EnvSessionLifetimeMax] = "72h"
+
+		if got := mustLoad(t, pairs).SessionLifetimeMax; got != 72*time.Hour {
+			t.Errorf("SessionLifetimeMax = %v, want 72h", got)
+		}
+	})
+
+	t.Run("a negative duration is refused and told the word", func(t *testing.T) {
+		t.Parallel()
+
+		pairs, _ := baseEnv(t)
+		pairs[config.EnvSessionLifetimeMax] = "-1h"
+
+		_, err := config.LoadFrom(env(pairs), io.Discard)
+		if err == nil {
+			t.Fatal("LoadFrom(-1h) started a daemon whose lifetime ceiling is a negative duration; a second spelling of never is how one of them stops being documented")
+		}
+		for _, want := range []string{config.EnvSessionLifetimeMax, config.NeverLifetime} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal does not name %q, so the operator cannot tell what to write instead: %v", want, err)
+			}
+		}
+	})
+}
+
 func TestWorkdirSuggestionsIsRead(t *testing.T) {
 	t.Parallel()
 
