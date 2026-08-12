@@ -152,3 +152,65 @@ dashboard does — the pane, the pill's inferred states, compact, milestone 7's
 whole mobile sweep — assumes the session renders into its own pane. Nothing
 checked that assumption, and a start command an operator was free to configure
 had quietly broken it for their primary use.
+
+---
+
+## Iteration 2 — 2026-08-12 — T000, the default that renders in its own pane
+
+**Did:** `config.example` and `.env.example` now show
+`rc=claude --dangerously-skip-permissions "/rc {name}"` as the remote-control
+command, with the `--spawn` launcher kept in both as a documented alternative
+and one sentence on why it is no longer the example. A new guard in
+`internal/config/file_test.go` loads the uncommentable `start_commands` line
+through `config.LoadFrom` and fails if the command the switch resolves to spawns
+its session elsewhere.
+
+**Learned:**
+
+- **`config.go` ships no built-in remote-control command line.** T000 said to
+  change `DefaultRemoteControlCommand` "or whatever `config.go` names the
+  built-in" — there is none. `DefaultRemoteControlCommandName = "rc"` is a
+  *name*, and `loadRemoteControlCommand` resolves it only if the operator
+  configured a command by that name; otherwise the dashboard renders no switch
+  at all. So the two example files **are** the whole of the shipped default, and
+  adding a built-in `rc` would have handed a remote-control switch to every
+  daemon that configures nothing — a widening nobody asked for. Not done.
+- **The guard loads rather than greps.** The claim about that line is that a
+  daemon starts on it, so it goes through the daemon's own loader; the
+  `--spawn` check is the last assertion, not the only one. Proven by breaking:
+  with the launcher form restored it fails naming the file, the line and the
+  consequence.
+- **The duplicate-key trap is real and it was one indentation away.** Any
+  comment line whose text before the first `=` is a known key counts as that
+  key's line, indented or not — so the alternative form is written as prose
+  (`claude remote-control --spawn=same-dir …`) and never as
+  `# start_commands = …`. `exampleLines` in `file_test.go:1298` trims the `#`
+  *and* the whitespace before matching.
+- **The config-file parser trims only the ends of a value**, so the quotes reach
+  `send-keys` intact. That is what makes the quoted form safe *in
+  `config.example`*, and it is a property of that parser only.
+
+**Left:** T002–T007. T002 is the one that makes T001 matter — nothing reads
+`SessionInfo.Activity` yet.
+
+**Findings:**
+
+- **⚠️ The quoted form may not survive an env file, and I could not verify it.**
+  `deploy/crswd.example.service` reads `EnvironmentFile=-%h/.config/crswd/env`
+  and sets `Environment="CRSW_START_COMMAND=…"`; systemd parses quotes in both.
+  If it strips them, the operator's env-file spelling delivers
+  `claude --dangerously-skip-permissions /rc {name}` — two positional arguments
+  rather than one prompt — and that is exactly the class of silent breakage this
+  task exists to fix. The sandbox refused the `systemd-run` check, so
+  `.env.example` says only that the quotes are part of the command line and to
+  confirm whatever reads that file leaves them on, and points at
+  `config.example`, which takes the value verbatim. **Someone with a shell on a
+  systemd host should settle this**; if the quotes are eaten, `deploy/` needs
+  the escaped spelling and the unit's `Environment=` line does too.
+- **`deploy/README.md`'s recipe and the example unit still teach the env-file
+  path for command lines**, and neither was touched here — T000 named
+  `config.example` and `.env.example` only. Out of scope, worth a task.
+- Iteration 1's finding stands: **commit before running
+  `go test -tags quickstart`**. Not run this iteration — nothing under
+  `cmd/crswd` changed. `go vet -tags quickstart ./...` and `-tags dev` compile;
+  `go test -tags tmux ./...` passes.
