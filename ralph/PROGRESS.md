@@ -185,3 +185,64 @@ example of a shape rather than the procedure; `CONTRIBUTING.md`'s CI claim is tr
    already document the password door properly — what it is, that it is never a door
    as well as Access, that it belongs in the `EnvironmentFile`, and the clear-wire
    warning. The stale Access-only framing was `deploy/README.md`'s alone.
+
+---
+
+## Iteration 3 — 2026-08-12
+
+**Did:** T003. `config.example` now leads with the fact on every key — name and
+purpose, then format/bounds/what a wrong value does, then the why where it is
+load-bearing, then the default, then the one commented line. 465 → 306 lines.
+
+**Learned:**
+
+- **The plan's ~215-line target was measured against a 401-line file, and the file
+  is 465 today.** Milestone 13 added ~64 lines the plan itself protects: what
+  `never` costs on the lifetime ceiling, and the two idle clocks. 465 → 306 is a
+  34% cut where 401 → 215 was 46%. **Getting to 215 from here means deleting a
+  named load-bearing passage, which the same plan forbids** ("The voice stays…
+  the fix is *order*, not deleting the why"). Reordering and de-paragraphing is
+  worth roughly a third; the rest of that target was never available. **The next
+  file with a line target should be measured before it is trusted.**
+- **Folding `Default: x.` into the end of the block's last sentence, instead of
+  giving it its own stanza, is the single biggest structural saving** — two lines
+  per key, 46 lines across 23 keys, and it reads better because the default lands
+  next to the bounds it belongs to rather than as a footnote.
+- **The duplicate-key landmine has a twin that bit nothing but nearly did.** The
+  test cuts each comment line on its first `=` and matches the left side against
+  the known keys, so `#   key = value` in the format illustration is safe (`key`
+  is not a setting) — but a wrapped line is not. Writing `# … Default: claude`
+  followed by `# --dangerously-skip-permissions, byte for byte …` is fine, yet the
+  same wrap one word earlier would have started a line with a real key. **Keep the
+  key name off the start of any wrapped line.**
+- **Every documented value must round-trip, secrets included.** `IsSecret` only
+  suppresses the value from the failure message — `file_test.go:1408` still
+  compares. Keeping the illustration strings byte-for-byte (`paste the output of
+  openssl rand -hex 32 here`, `rc=claude --dangerously-skip-permissions "/rc
+  {name}"`) is what makes a rewrite of this file safe.
+- **The gate is real and it all ran here:** `go build`, `go vet`, `go test ./...`,
+  `golangci-lint run` (v2.12.2, so #26's check passes), and
+  `go test -tags quickstart ./cmd/crswd` (36s, green — iteration 2's retraction
+  holds).
+
+**Left:** T004–T008.
+
+**Findings (not fixed):**
+
+1. **Iteration 1's findings 1 and 2 and iteration 2's finding 2 all still stand** —
+   `docs/auth-and-sessions.md`'s colliding "two doors" and its "the skill",
+   `README.md:656`'s htmx claim (T007's), and `deploy/README.md`'s Access-only
+   "Verifying the exposure model".
+2. **`.env.example` is 376 lines documenting the same 23 settings this file
+   documents, in the same voice.** Neither points at the other, and nothing holds
+   them to each other beyond `envexample_test.go` checking that the names are all
+   present and carry no values — so the *prose* in the two files can drift apart
+   silently, and a setting whose bounds change needs both edited. **Not fixed:**
+   `.env.example` is outside T003's scope and the fix is a judgement call (make one
+   the reference and have the other point at it, or accept the duplication because
+   an operator reads exactly one of them). Worth a task in the next milestone.
+3. **`# --- Required. There is no default, and no way to start without it. ---`
+   heads a section of exactly one key** (`shared_secret`). That is fine and it is
+   deliberate — the header is where "required" is stated, since the key's own block
+   no longer carries a `Default:` line — but a later task adding a second required
+   setting should put it here rather than inventing a second heading.
