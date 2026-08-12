@@ -101,6 +101,31 @@ type sessionView struct {
 	IdleDeadline     string
 	AbsoluteDeadline string
 
+	// IdleSince is how long ago the activity the idle deadline is counted from
+	// happened, formatted here for the reason Age is (T003).
+	//
+	// It is the row that makes the one above it answerable. "in 12 minutes" says
+	// when a session dies without saying why, and the operator's question was
+	// exactly that: whether a session they were using all afternoon was being
+	// judged on anything they had done. A deadline with the instant it is
+	// measured from beside it says what the clock is watching; a deadline alone
+	// asks the operator to take it on trust.
+	//
+	// It is session.IdleSince — the *later* of the record's two clocks — and
+	// never session.Session.LastActivity, which is the narrower fact the signed
+	// API's last_activity field carries: when a request last drove this session.
+	// Those two were one value until the tmux clock arrived, and a card rendering
+	// the narrow one beside a deadline computed from the wide one would be a page
+	// disagreeing with itself about the same session. The Go names are kept
+	// distinct here for that reason, and the card's label is the operator's word
+	// for it rather than either of them.
+	//
+	// Rendered for every card. Nothing here has to state an absence the way Name
+	// and WorkDir do: a record with no last-activity time is one the store
+	// refuses to hold at all (session.validate), so there is no session for which
+	// this is unknown.
+	IdleSince string
+
 	// PageToken is the value every action form on this card submits: minted
 	// for this render and bound to the identity layer 1 verified for it
 	// (FR-002b, FR-007, contracts/actions.md). It is the card's parameter rather

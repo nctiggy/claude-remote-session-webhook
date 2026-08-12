@@ -179,7 +179,7 @@ type Session struct {
 
 	// LastActivity is when a request last drove this session, moved by
 	// Store.Touch. It is one of the two clocks the idle deadline is measured
-	// from — see TmuxActivity for the other, and idleFrom for the rule.
+	// from — see TmuxActivity for the other, and IdleSince for the rule.
 	LastActivity time.Time
 
 	// TmuxActivity is when the host itself last saw this session produce output:
@@ -273,20 +273,28 @@ func (s Session) IdleDisabled() bool { return s.Idle < 0 }
 // rather than removed. It is spelled as a negative rather than as zero because
 // zero already means "unset", and one value cannot mean both.
 //
-// It is measured from idleFrom rather than from LastActivity alone, which is
+// It is measured from IdleSince rather than from LastActivity alone, which is
 // what makes "idle" mean the session was idle rather than that nobody sent the
 // daemon a mutating request about it.
 func (s Session) IdleDeadline() time.Time {
 	if s.IdleDisabled() {
 		// Far enough out that no comparison against it can fire before the
 		// absolute deadline does, which is the bound that still applies.
-		return s.idleFrom().Add(AbsoluteLifetime * 400)
+		return s.IdleSince().Add(AbsoluteLifetime * 400)
 	}
-	return s.idleFrom().Add(orDefault(s.Idle, IdleTimeout))
+	return s.IdleSince().Add(orDefault(s.Idle, IdleTimeout))
 }
 
-// idleFrom is the instant the idle deadline is measured from: the later of the
+// IdleSince is the instant the idle deadline is measured from: the later of the
 // two clocks a session has, because either one is genuinely activity.
+//
+// It is exported for the dashboard rather than for the daemon, which is the one
+// thing worth knowing before reading it as an ordinary accessor. A card that
+// shows an idle deadline and not the activity it counts from cannot answer "why
+// is this about to die" (T003), and the two fields it is derived from are both
+// on the record — so a page computing the later of them itself would be a second
+// place this rule lives, free to disagree with this one the day it changes. That
+// is the reason IdleDisabled is exported too.
 //
 // This comparison is the whole of the fail-safe rule, and it is a comparison
 // rather than a branch on purpose. A tmux time that is absent, unparsable, from
@@ -297,7 +305,7 @@ func (s Session) IdleDeadline() time.Time {
 //
 // The ceiling is untouched by any of it (AbsoluteDeadline), so what this can do
 // at worst is keep a session until the bound Principle VI actually rests on.
-func (s Session) idleFrom() time.Time {
+func (s Session) IdleSince() time.Time {
 	if s.TmuxActivity.After(s.LastActivity) {
 		return s.TmuxActivity
 	}

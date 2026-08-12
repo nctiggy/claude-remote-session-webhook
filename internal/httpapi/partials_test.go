@@ -60,6 +60,10 @@ func ownedCard() sessionView {
 		// is cardOf's job and TestCardShowsBothDeadlines' subject.
 		IdleDeadline:     "in 43 minutes",
 		AbsoluteDeadline: "in 22 hours",
+		// The activity the idle row is counted from, and it is an hour before
+		// that row on purpose: this fixture is one session, so its strings should
+		// add up under the daemon's own default the way a rendered card's do.
+		IdleSince: "17 minutes ago",
 	}
 }
 
@@ -2701,6 +2705,7 @@ func TestCardShowsMode(t *testing.T) {
 var (
 	cardIdleRow     = regexp.MustCompile(`(?s)<dt>idle deadline</dt>\s*<dd>(.*?)</dd>`)
 	cardLifetimeRow = regexp.MustCompile(`(?s)<dt>lifetime deadline</dt>\s*<dd>(.*?)</dd>`)
+	cardActivityRow = regexp.MustCompile(`(?s)<dt>last activity</dt>\s*<dd>(.*?)</dd>`)
 )
 
 // TestCardShowsBothDeadlines is T003: an operator can see when a session dies,
@@ -2789,6 +2794,129 @@ func TestCardShowsBothDeadlines(t *testing.T) {
 				}
 				if got := strings.TrimSpace(markupTags.ReplaceAllString(found[1], "")); got != row.want {
 					t.Errorf("the card's %s deadline reads %q, want %q:\n%s", row.clock, got, row.want, out)
+				}
+			}
+		})
+	}
+}
+
+// TestCardSaysWhatTheIdleClockIsWatching is T003, and it is the operator's own
+// question rendered as an assertion: "even if I am using the session I think it
+// is still considered idle. How is idle determined… is it real?"
+//
+// The idle deadline alone cannot answer that. It says when a session dies and
+// nothing about what it was judged on, so an operator reading "in 12 minutes"
+// beside a session they have been working in all afternoon has no way to tell
+// whether the daemon can see them at all — which, before T002, it could not.
+// The row beside it names the activity the deadline is counted from, and the
+// two must be the same instant or the card explains itself with a fact it did
+// not use.
+//
+// The second case is the one with teeth. A session driven from the host — an
+// attached terminal, or an assistant printing into its own pane — moves tmux's
+// clock and no clock reachable from a request, so a card rendering
+// Session.LastActivity would show an hour and a half of silence beside a
+// deadline an hour away. That is not a cosmetic disagreement: it is the page
+// telling the operator the reaper is about to take a session it is not about to
+// take, on the one screen they would check.
+//
+// It renders through cardOf for the reason the deadline test does — the claim is
+// about what a page shows, and a template field nothing fills renders empty and
+// says nothing about it.
+//
+// **Must fail when** the row is measured from LastActivity alone, when it is
+// measured against a clock reading other than the render's, or when it goes
+// missing.
+func TestCardSaysWhatTheIdleClockIsWatching(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		name         string
+		idle         time.Duration
+		lastActivity time.Time
+		tmuxActivity time.Time
+		wantActivity string
+		wantIdle     string
+	}{
+		{
+			// A session driven through the API a few minutes ago and nothing
+			// since: one clock has an answer, and the card counts from it.
+			name:         "driven by a request",
+			lastActivity: now.Add(-5 * time.Minute),
+			wantActivity: "5 minutes ago",
+			wantIdle:     "in 55 minutes",
+		},
+		{
+			// The operator's session. Nobody has sent the daemon a mutating
+			// request in an hour and a half; the host saw it print three minutes
+			// ago. The deadline is an hour off and the row says why.
+			name:         "busy on the host, silent to the API",
+			lastActivity: now.Add(-90 * time.Minute),
+			tmuxActivity: now.Add(-3 * time.Minute),
+			wantActivity: "3 minutes ago",
+			wantIdle:     "in 57 minutes",
+		},
+		{
+			// The other direction, and the fail-safe one: a host reading older
+			// than the record's own — stale, from a clock that disagrees, or the
+			// zero time a session no sweep has reached yet holds — never shortens
+			// what the card shows any more than it shortens the deadline.
+			name:         "the host's reading is the older of the two",
+			lastActivity: now.Add(-2 * time.Minute),
+			tmuxActivity: now.Add(-40 * time.Minute),
+			wantActivity: "2 minutes ago",
+			wantIdle:     "in 58 minutes",
+		},
+		{
+			// A session doing something right now. Coarse rather than precise, in
+			// the vocabulary the age already uses, because the value behind it is
+			// as fresh as the last sweep and no fresher.
+			name:         "active as the page rendered",
+			lastActivity: now,
+			wantActivity: "less than a minute ago",
+			wantIdle:     "in 1 hour",
+		},
+		{
+			// Idle reaping off. When it dies and when it was last active are
+			// different questions, and turning the first off does not remove the
+			// answer to the second.
+			name:         "idle reaping turned off",
+			idle:         -1,
+			lastActivity: now.Add(-20 * time.Minute),
+			wantActivity: "20 minutes ago",
+			wantIdle:     noIdleLimit,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			card := cardOf(session.Session{
+				ID:           strings.Repeat("e", 32),
+				Name:         "a session",
+				WorkDir:      "/home/operator/code/crswd",
+				Idle:         tc.idle,
+				CreatedAt:    now.Add(-time.Hour),
+				LastActivity: tc.lastActivity,
+				TmuxActivity: tc.tmuxActivity,
+			}, now, testCardToken, "rc")
+
+			out := renderComponent(t, "session-card", card)
+			for _, row := range []struct {
+				what  string
+				match *regexp.Regexp
+				want  string
+			}{
+				{what: "last activity", match: cardActivityRow, want: tc.wantActivity},
+				{what: "idle deadline", match: cardIdleRow, want: tc.wantIdle},
+			} {
+				found := row.match.FindStringSubmatch(out)
+				if found == nil {
+					t.Fatalf("the card carries no %s row, so an operator cannot tell what the idle clock is watching:\n%s", row.what, out)
+				}
+				if got := strings.TrimSpace(markupTags.ReplaceAllString(found[1], "")); got != row.want {
+					t.Errorf("the card's %s reads %q, want %q:\n%s", row.what, got, row.want, out)
 				}
 			}
 		})

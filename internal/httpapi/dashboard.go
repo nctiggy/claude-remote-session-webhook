@@ -387,6 +387,10 @@ func cardOf(live session.Session, now time.Time, token, remoteCommand string) se
 		// answer.
 		IdleDeadline:     formatIdleDeadline(live, now),
 		AbsoluteDeadline: formatDeadline(live.AbsoluteDeadline().Sub(now)),
+		// The instant the idle row above is counted from, against the same clock
+		// reading — the record's own method, so the card cannot measure a
+		// deadline from one activity and name another (view.go, T003).
+		IdleSince: formatSince(now.Sub(live.IdleSince())),
 		// The token is also what makes the card render its action row (view.go),
 		// so every card either offers a control it can authorise or offers none.
 		PageToken: token,
@@ -599,6 +603,25 @@ func formatDeadline(d time.Duration) string {
 		return "due now"
 	}
 	return "in " + formatAge(d)
+}
+
+// formatSince is how long a card says it has been since the session last did
+// anything, in formatAge's vocabulary for the reason formatDeadline is in it:
+// one page, one spelling of a duration.
+//
+// It is deliberately as coarse as the deadline it explains, which is also what
+// makes it honest about a value the daemon reads on a schedule. tmux's account
+// of a session's activity reaches a record only when a sweep stores it, so this
+// is the last activity *as of the last sweep* and can be up to one sweep
+// interval behind — a granularity of a minute absorbs that almost entirely,
+// where a rendered timestamp would show a precision the daemon does not have.
+//
+// A duration that has not reached a minute reads as less than one rather than as
+// "0 minutes ago", and so does a negative: the two clocks are the daemon's and
+// the host's, and a host whose reading is a few milliseconds ahead of the render
+// must not produce a card saying a session was last active in the future.
+func formatSince(d time.Duration) string {
+	return formatAge(d) + " ago"
 }
 
 // countOf is the one place this package pluralises, so a card and a future page

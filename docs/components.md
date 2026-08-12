@@ -289,12 +289,12 @@ session that reads as green is a bug.
 ## Session card
 
 One session: name, state pill, identifier, start command, mode, working
-directory, age, both of its deadlines, and its action row.
+directory, age, its last activity, both of its deadlines, and its action row.
 
 ```gotemplate
 {{/* The dot is one card's view — ID, Name, DisplayState, StartCommand, Mode,
-     WorkDir, Age, IdleDeadline, AbsoluteDeadline, PageToken — built by cardOf()
-     in internal/httpapi. An empty PageToken renders no action row. */}}
+     WorkDir, Age, IdleSince, IdleDeadline, AbsoluteDeadline, PageToken — built
+     by cardOf() in internal/httpapi. An empty PageToken renders no action row. */}}
 {{ template "session-card" . }}
 ```
 
@@ -338,6 +338,19 @@ Rules:
   session whose operator relaxed the bound — the same defect as copy claiming a
   compact happened when the daemon only delivered the request. They are rows of
   the `.card-meta` list, like the mode, so neither has a class of its own.
+- **The idle deadline is rendered with the activity it is counted from, in the
+  row directly above it.** A deadline alone says when a session dies and nothing
+  about what it was judged on, which is the whole of the question that produced
+  this row: an operator working in a session all afternoon could not tell from
+  the card whether the daemon could see them at all. The value is the *later* of
+  the two clocks a session has — a request that drove it, or the host seeing it
+  print — so it is the instant the reaper measures from and never the narrower
+  `last_activity` the signed API reports. A card naming one and counting from the
+  other would be the page disagreeing with itself about one session. It is coarse
+  on purpose: the host's reading reaches a record only when a sweep stores it, so
+  the value is as fresh as the last sweep and a rendered timestamp would claim a
+  precision the daemon does not have. Another `.card-meta` row, like the two
+  under it — no class, no token, no stylesheet rule.
 - **A session with idle reaping off says there is no idle limit, never a date.**
   `IdleDeadline` answers four hundred lifetimes out for such a session, which is
   the manager's way of spelling "this comparison never fires"; formatted onto a
