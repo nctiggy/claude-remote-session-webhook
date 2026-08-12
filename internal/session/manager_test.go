@@ -67,6 +67,14 @@ func newManagerFixture(t *testing.T) managerFixture {
 
 	wd := newWorkDirFixture(t)
 	fake := tmuxctl.NewFake()
+	// One clock for the host and the daemon, because they are one clock in
+	// production. A fake stamping wall-clock time onto sessions a stopped daemon
+	// clock created would hand every one of them a tmux activity time days into
+	// its own future, and the idle deadline is now measured from the later of the
+	// two — so every reaper test would be asserting against a session the host
+	// says was busy moments ago. A test that wants that case says so with
+	// SetActivity.
+	fake.SetNow(func() time.Time { return contractCreatedAt })
 	store := NewStore()
 
 	mgr, err := NewManagerWithClock(fake, store, wd.roots(), capNotUnderTest, stoppedClock{now: contractCreatedAt})

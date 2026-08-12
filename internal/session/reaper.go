@@ -186,6 +186,15 @@ func (r *Reaper) Sweep(ctx context.Context) ([]Reaped, error) {
 	var reaped []Reaped
 	var failures []error
 
+	// Ask the host what it has seen before judging anything on what the daemon
+	// was asked to do. A failure here is reported and swept through: the records
+	// keep the activity times they had, which is the reading that can only keep a
+	// session alive — and a sweep that stopped for it would stop enforcing the
+	// ceiling, which is the bound that has no other enforcer.
+	if err := r.mgr.syncActivity(ctx); err != nil {
+		failures = append(failures, err)
+	}
+
 	for _, s := range r.mgr.store.snapshot() {
 		expiry := expiredAt(s, now)
 		if expiry == "" {

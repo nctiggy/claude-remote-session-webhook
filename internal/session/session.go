@@ -177,8 +177,33 @@ type Session struct {
 	// daemon restart cannot extend a session past the ceiling (FR-024).
 	CreatedAt time.Time
 
-	// LastActivity is the origin of the idle deadline, moved by Store.Touch.
+	// LastActivity is when a request last drove this session, moved by
+	// Store.Touch. It is one of the two clocks the idle deadline is measured
+	// from — see TmuxActivity for the other, and idleFrom for the rule.
 	LastActivity time.Time
+
+	// TmuxActivity is when the host itself last saw this session produce output:
+	// tmux's own #{session_activity}, read by the sweep that is about to judge
+	// the record. Zero means the host gave no usable answer, which is also what
+	// every record holds until a sweep has reached it.
+	//
+	// It is a second clock rather than a correction to the first because the two
+	// measure different things and both are true. Exactly three calls move
+	// LastActivity — Resolve, Compact, SetMode — and reading moves nothing by
+	// construction (docs/auth-and-sessions.md, "watching is not driving"), so an
+	// operator who spent an afternoon watching a session in the dashboard, or
+	// working in it directly in an attached terminal on the host, advanced no
+	// clock the reaper could see and had the session taken at sixty minutes.
+	// This is the reading that sees both of them.
+	//
+	// A forgotten tab is still not activity, which is what makes counting this
+	// safe where counting browser reads was not: a tab produces no output.
+	//
+	// Never read alone and never as a reason to reap. It only ever raises the
+	// deadline, so a host that stops answering — or answers with something
+	// unparsable — leaves every session exactly as long-lived as the build
+	// before this field existed.
+	TmuxActivity time.Time
 
 	// State is the lifecycle position above.
 	State State
@@ -240,20 +265,43 @@ func (s Session) AbsoluteDeadline() time.Time {
 // rule lives — free to disagree with this one the day the spelling changes.
 func (s Session) IdleDisabled() bool { return s.Idle < 0 }
 
-// IdleDeadline is when the session dies for want of a request (FR-038).
+// IdleDeadline is when the session dies for want of use (FR-038).
 //
 // A zero Idle means IdleTimeout, as above. A *negative* Idle means idle reaping
 // is off for this session, and that is safe in a way disabling the absolute
 // deadline would not be: the absolute one still fires, so the bound is relaxed
 // rather than removed. It is spelled as a negative rather than as zero because
 // zero already means "unset", and one value cannot mean both.
+//
+// It is measured from idleFrom rather than from LastActivity alone, which is
+// what makes "idle" mean the session was idle rather than that nobody sent the
+// daemon a mutating request about it.
 func (s Session) IdleDeadline() time.Time {
 	if s.IdleDisabled() {
 		// Far enough out that no comparison against it can fire before the
 		// absolute deadline does, which is the bound that still applies.
-		return s.LastActivity.Add(AbsoluteLifetime * 400)
+		return s.idleFrom().Add(AbsoluteLifetime * 400)
 	}
-	return s.LastActivity.Add(orDefault(s.Idle, IdleTimeout))
+	return s.idleFrom().Add(orDefault(s.Idle, IdleTimeout))
+}
+
+// idleFrom is the instant the idle deadline is measured from: the later of the
+// two clocks a session has, because either one is genuinely activity.
+//
+// This comparison is the whole of the fail-safe rule, and it is a comparison
+// rather than a branch on purpose. A tmux time that is absent, unparsable, from
+// a clock that disagrees, or simply older than the record's own can never be
+// *later*, so every one of those falls through to LastActivity and none of them
+// can shorten a session's life. There is no "is this value usable?" test to get
+// the wrong way round.
+//
+// The ceiling is untouched by any of it (AbsoluteDeadline), so what this can do
+// at worst is keep a session until the bound Principle VI actually rests on.
+func (s Session) idleFrom() time.Time {
+	if s.TmuxActivity.After(s.LastActivity) {
+		return s.TmuxActivity
+	}
+	return s.LastActivity
 }
 
 // orDefault is the zero-means-inherited rule both deadlines share, in one place
@@ -655,6 +703,40 @@ func (st *Store) Touch(id string, now time.Time) error {
 		st.byID[id] = s
 	}
 	return nil
+}
+
+// setTmuxActivity records what the host said about a session's own activity,
+// and is the only writer of that field.
+//
+// Forward-only, exactly as Touch is and for its reason plus one: tmux's activity
+// time only moves forward for a live session, so a reading behind the one
+// already held is a bad parse or a clock that jumped, and dropping it is the
+// direction that keeps sessions alive. The zero time a missing or unparsable
+// value yields is handled by the same comparison rather than by a case of its
+// own — it is never later, so it never wins.
+//
+// It is unexported for the reason lookup and snapshot are: the sweep acts on the
+// daemon's own behalf and has no caller to check a record against. Everything
+// reached from a request goes through a method that takes an owner.
+//
+// It returns nothing, unlike every other mutator here, because there is no
+// caller to answer and nothing that could be done differently. The host lists
+// sessions this store has no record of — one another daemon owns, one a destroy
+// dropped between the list and this call — and "no record" is the ordinary case
+// rather than a failure. A dead one is refused as Touch refuses one: its idle
+// clock has nobody left to run for.
+func (st *Store) setTmuxActivity(id string, at time.Time) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	s, ok := st.byID[id]
+	if !ok || s.State == StateDead {
+		return
+	}
+	if at.After(s.TmuxActivity) {
+		s.TmuxActivity = at
+		st.byID[id] = s
+	}
 }
 
 // SetCredential replaces a record's token hash and clears CredentialPending. It

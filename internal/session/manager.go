@@ -1551,6 +1551,44 @@ func (m *Manager) Adopt(ctx context.Context) ([]AdoptedSession, error) {
 	return adopted, errors.Join(failures...)
 }
 
+// syncActivity asks the host when each session it is running last did anything,
+// and records the answer against the daemon's own copy. The sweep calls it
+// before it judges anything.
+//
+// This is what makes the idle clock measure the session rather than the traffic
+// about it. LastActivity moves on three calls, two of them reachable only from
+// the signed API and none of them a read, so an operator watching a session in
+// the dashboard all afternoon — or working in it directly in an attached
+// terminal on this host — advanced nothing, and the reaper took a session
+// somebody was using. #{session_activity} is the one reading that sees both.
+//
+// It is one list-sessions per sweep, and the same command adoption already runs.
+// Asking per session would be a command per record every thirty seconds against
+// a host whose whole job is running those sessions.
+//
+// A host that cannot be listed is reported and changes nothing: every record
+// keeps whatever activity time it had, and the sweep goes on to judge them all
+// on LastActivity exactly as the build before this did. Refusing to sweep on it
+// would be far worse — the absolute deadline would stop being enforced by the
+// only thing that enforces it.
+//
+// Sessions that are not ours are skipped by the same three-signal test adoption
+// uses, so a lookalike on the host cannot postpone the reaping of a record it
+// has no relationship to.
+func (m *Manager) syncActivity(ctx context.Context) error {
+	infos, err := m.tmux.List(ctx)
+	if err != nil {
+		return fmt.Errorf("read the host's own activity times: %w", err)
+	}
+
+	for _, info := range infos {
+		if id, ours := adoptableID(info); ours {
+			m.store.setTmuxActivity(id, info.Activity)
+		}
+	}
+	return nil
+}
+
 // adoptableID is the whole of FR-022: which host sessions are ours to take back,
 // and what the id of the record for one is.
 //

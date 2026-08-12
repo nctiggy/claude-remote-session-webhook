@@ -267,6 +267,166 @@ func TestIdleDeadlineFollowsLastActivity(t *testing.T) {
 	}
 }
 
+// M13 T002: the idle deadline is measured from the later of the two clocks,
+// because either one is genuinely activity.
+//
+// The case that opened the milestone is the third one: a session nothing has
+// asked the daemon about for an hour, which the host says printed something a
+// minute ago. Every other case is the fail-safe direction — an activity time
+// that is absent, unparsable, stale or from a clock that disagrees can only be
+// ignored, never used to bring a deadline forward.
+func TestIdleDeadlineTakesTheLaterOfTheTwoClocks(t *testing.T) {
+	t.Parallel()
+
+	const idle = 90 * time.Minute
+
+	tests := []struct {
+		name         string
+		lastActivity time.Duration // from contractCreatedAt
+		tmuxActivity time.Time
+		want         time.Duration // the instant the deadline is measured from
+	}{
+		{
+			name: "no reading from the host at all",
+			// What every record holds before a sweep has reached it, and what an
+			// absent or unparsable #{session_activity} yields (T001).
+			tmuxActivity: time.Time{},
+			want:         0,
+		},
+		{
+			name:         "a host reading older than the record's own clock",
+			lastActivity: idle,
+			tmuxActivity: contractCreatedAt,
+			want:         idle,
+		},
+		{
+			name:         "a host reading newer than the record's own clock",
+			tmuxActivity: contractCreatedAt.Add(idle),
+			want:         idle,
+		},
+		{
+			name:         "the two agreeing to the nanosecond",
+			lastActivity: idle,
+			tmuxActivity: contractCreatedAt.Add(idle),
+			want:         idle,
+		},
+		{
+			// The zero time is not "idle since 1970". A record whose own clock is
+			// current stays current whatever the host failed to say.
+			name:         "a live record and no reading from the host",
+			lastActivity: idle,
+			tmuxActivity: time.Time{},
+			want:         idle,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := newTestSession(testID("f"), auth.CallerOperator)
+			s.LastActivity = contractCreatedAt.Add(tc.lastActivity)
+			s.TmuxActivity = tc.tmuxActivity
+
+			want := contractCreatedAt.Add(tc.want + IdleTimeout)
+			if got := s.IdleDeadline(); !got.Equal(want) {
+				t.Errorf("IdleDeadline() = %v, want %v", got, want)
+			}
+			// FR-019c: the dashboard and the sweep put one question to one clock,
+			// so a session the host says is busy cannot read as idle on the card.
+			if got := s.DisplayState(want.Add(-time.Nanosecond)); got != DisplayRunning {
+				t.Errorf("DisplayState() just inside the deadline = %q, want %q", got, DisplayRunning)
+			}
+			// The ceiling is not one of the two clocks. Whatever the host says,
+			// the bound Principle VI rests on does not move (FR-038).
+			if got := s.AbsoluteDeadline(); !got.Equal(contractExpiresAt) {
+				t.Errorf("AbsoluteDeadline() = %v, want the unmoved %v", got, contractExpiresAt)
+			}
+		})
+	}
+}
+
+func TestStoreSetTmuxActivity(t *testing.T) {
+	t.Parallel()
+
+	id := testID("a")
+	busy := contractCreatedAt.Add(30 * time.Minute)
+
+	t.Run("moves the idle deadline forward without a request", func(t *testing.T) {
+		t.Parallel()
+
+		st := storeWith(t, newTestSession(id, auth.CallerOperator))
+		st.setTmuxActivity(id, busy)
+
+		got, err := st.Get(id, auth.CallerOperator)
+		if err != nil {
+			t.Fatalf("Get() unexpected error: %v", err)
+		}
+		if !got.TmuxActivity.Equal(busy) {
+			t.Errorf("TmuxActivity = %v, want %v", got.TmuxActivity, busy)
+		}
+		if want := busy.Add(IdleTimeout); !got.IdleDeadline().Equal(want) {
+			t.Errorf("IdleDeadline() = %v, want %v", got.IdleDeadline(), want)
+		}
+		// The record's own clock is untouched: what the daemon was asked to do
+		// and what the session did are two facts, and the trail reads the first.
+		if !got.LastActivity.Equal(contractCreatedAt) {
+			t.Errorf("LastActivity = %v, want the unmoved %v", got.LastActivity, contractCreatedAt)
+		}
+		if !got.AbsoluteDeadline().Equal(contractExpiresAt) {
+			t.Errorf("AbsoluteDeadline() = %v, want the unmoved %v", got.AbsoluteDeadline(), contractExpiresAt)
+		}
+	})
+
+	t.Run("never moves it backwards", func(t *testing.T) {
+		t.Parallel()
+
+		st := storeWith(t, newTestSession(id, auth.CallerOperator))
+		st.setTmuxActivity(id, busy)
+
+		// A lagging read, and the zero time an unparsable field yields — the
+		// reading that must never shorten a session's life.
+		for _, stale := range []time.Time{contractCreatedAt, time.Time{}} {
+			st.setTmuxActivity(id, stale)
+
+			got, err := st.Get(id, auth.CallerOperator)
+			if err != nil {
+				t.Fatalf("Get() unexpected error: %v", err)
+			}
+			if !got.TmuxActivity.Equal(busy) {
+				t.Errorf("setTmuxActivity(%v) moved TmuxActivity back to %v, want %v", stale, got.TmuxActivity, busy)
+			}
+		}
+	})
+
+	t.Run("leaves a dead record alone", func(t *testing.T) {
+		t.Parallel()
+
+		st := storeWith(t, newTestSession(id, auth.CallerOperator))
+		if err := st.SetState(id, StateDead); err != nil {
+			t.Fatalf("SetState(dead) unexpected error: %v", err)
+		}
+		st.setTmuxActivity(id, busy)
+
+		got, ok := st.lookup(id)
+		if !ok {
+			t.Fatal("the record went missing")
+		}
+		if !got.TmuxActivity.IsZero() {
+			t.Errorf("TmuxActivity = %v on a dead record, want the zero time: its idle clock has nobody left to run for", got.TmuxActivity)
+		}
+	})
+
+	t.Run("ignores an id it holds no record for", func(t *testing.T) {
+		t.Parallel()
+
+		// The ordinary case rather than a failure: the host lists sessions this
+		// daemon has no record of, and a destroy can drop one between the list
+		// and this call.
+		NewStore().setTmuxActivity(id, busy)
+	})
+}
+
 // FR-042 forbids the token hash in anything that leaves the daemon. Session is a
 // domain type no handler should marshal, so this asserts the guard that holds
 // when one does anyway.
