@@ -90,7 +90,7 @@ be written at all.
 
 - [x] **T004** Tell the operator, on the settings page, reusing existing classes — **no new class**. Say which of the three happened: the unit was updated, a newer one is waiting as `.new`, or theirs is current. When one is waiting, name the file and the command to compare it (`diff`) — an operator who cannot see the difference cannot decide, and this daemon's whole update story is that a change is visible before it is taken.
 
-- [ ] **T005** Surface the same thing at startup, into the journal. The daemon already warns about an absent identity provider for the same reason: a deployment that is quietly behind looks identical to one that is current, and the journal is where an operator looks when something is wrong.
+- [x] **T005** Surface the same thing at startup, into the journal. The daemon already warns about an absent identity provider for the same reason: a deployment that is quietly behind looks identical to one that is current, and the journal is where an operator looks when something is wrong.
 
 - [ ] **T006** Document it in `README.md` and `deploy/README.md`: what an update does to each of the two files, why the unit is never overwritten when it has been edited, and how to take a `.new` unit when you want it. Say plainly that a hand-written unit — one this installer never wrote — is never replaced and will always produce a `.new`.
 

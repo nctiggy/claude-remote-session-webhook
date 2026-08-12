@@ -351,3 +351,86 @@ one fact, which is the drift T007 exists to collapse. Decide it deliberately.
   still named `.crswd-config-*` while place.go writes systemd units through it;
   `internal/httpapi/render.go` is still the only file `gofmt -l .` names; and
   `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is wall-clock flaky.
+
+---
+
+## Iteration 5 — 2026-08-12
+
+**Did:** T005. `cmd/crswd/unit.go` — `sayWhatBecameOfTheUnit` writes this host's
+unit standing to stderr, called from `run` immediately after the staging sweep.
+The vocabulary moved out of `internal/httpapi/settings.go` into
+`internal/updater/facts.go` (`UnitFacts`, the five `UnitSentence*` constants,
+`DescribeUnit`, `unitCompare`, `shellQuoted`), so the page and the journal are
+one implementation. The page now renders `updater.UnitFacts` and calls
+`updater.DescribeUnit`; the template is untouched, because the three field names
+are identical.
+
+**The decision T004 left open, and the answer:**
+
+- **Move the vocabulary, do not write a second one.** Iteration 4 handed this
+  over explicitly. Two sets of words for one file is exactly the drift T007
+  exists to collapse, and its shape here would be a page and a journal
+  disagreeing about whether an update replaces this operator's unit — a question
+  with no tie-breaker anywhere on the host. `internal/updater` is the home
+  because it owns `UnitReport`, both callers already import it, and a startup
+  banner about a systemd unit must not come out of the HTTP package.
+- **The journal carries one thing the page does not: the read error.** The page
+  says `UnitSentenceUnknown` and stops, because the error names a path on this
+  disk. In the journal that detail is the whole value — "could not read the
+  unit" with no reason is a line that sends somebody looking.
+
+**Learned — things the next iteration would otherwise rediscover:**
+
+- **`sayWhatBecameOfTheUnit(w, report, err)` takes three arguments, and the
+  middle one cannot be spread.** Go refuses a multi-value call mixed with other
+  arguments, so `run` does `unitReport, unitErr := ...Report()` on its own line.
+  `updater.DescribeUnit(s.updates.unit.Report())` still spreads in httpapi
+  because the report is its *only* argument.
+- **`run` does not fail on a unit it cannot read**, and that is deliberate: the
+  read error becomes a sentence. What *is* fatal is a write that fails, on
+  `warnNoIdentityProvider`'s terms — a stream that will not take a line has
+  nowhere to report anything below that point, and the alternative is a
+  swallowed error.
+- **`cmd/crswd/main_test.go` already had the AST-wiring pattern** —
+  `TestStartupDiagnosticsGoToStderr` parses main.go, finds the call by name and
+  checks `render(call.Args[0]) == "os.Stderr"`. `TestStartupSaysWhatBecameOfTheUnit`
+  is that shape, and it is the assertion this milestone is about: not that the
+  code exists, but that a start runs it.
+- **The banner is safe for the documented `grep '^{' | jq` filter** — every line
+  is prefixed `crswd: `. `TestDocumentedCommandParses` (quickstart) asserts the
+  trail contains a `crswd: ` diagnostic *and* that the filter still parses, so it
+  gets stronger rather than weaker from this.
+- **The page test no longer builds its expected diff command with the
+  implementation's own helper.** It spells `diff '<unit>' '<offer>'` out, so a
+  page rendering some other command fails instead of agreeing with itself. The
+  journal test does the same.
+- **Mutation-checked, six ways**, all caught: dropping the call from `run`
+  (wiring test, 0 calls), pointing it at `os.Stdout` (that test *and*
+  `TestDiagnosticsGoToStderr`), dropping the read-error line, dropping the
+  waiting/compare lines, swallowing the write error, and collapsing
+  `UnitTheirs` into `UnitAbsent` — that last one failed in all three packages,
+  which is the point of there being one vocabulary.
+
+**Left:** T006 (README + deploy/README) and T007 (one config-write
+implementation). T006 is next.
+
+**Findings — noticed, not fixed:**
+
+- **T006 has a doc question to answer, not just prose to write.** T005 gave the
+  journal the read error and the page nothing; if `deploy/README.md` is going to
+  tell an operator how to find out where their unit stands, it should say which
+  of the two to read and why they differ.
+- **`internal/httpapi/settings.go` lost ~115 lines and gained an import it
+  already had.** Nothing else in that file used `shellQuoted`, so no caller was
+  left behind — checked by grep before the move, and by the build after.
+- **The `quickstart` suite still could not be run here.** `127.0.0.1:8765` is
+  held by the deployed daemon (`ss -ltn`), which AGENTS.md documents as that
+  suite's requirement. `go vet -tags quickstart ./...` is clean; `-tags tmux` and
+  `-tags dev` were run in full and pass.
+- **Still open from Iterations 1–4:** the migration runs in the *old* binary;
+  `cmd/crswd/config_cmd.go` duplicates `internal/config/write.go` (T007);
+  `internal/config/migrate.go`'s and `internal/config/write.go`'s header
+  comments both name the wrong set of callers; `config.WriteFile`'s temp file is
+  still named `.crswd-config-*` while place.go writes systemd units through it;
+  `internal/httpapi/render.go` is still the only file `gofmt -l .` names; and
+  `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is wall-clock flaky.
