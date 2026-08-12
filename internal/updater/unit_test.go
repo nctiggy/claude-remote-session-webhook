@@ -469,3 +469,49 @@ func TestTheUnitReportRefusesWithoutAHomeToLookIn(t *testing.T) {
 		}
 	}
 }
+
+// operatorPages are the two documents that tell an operator what an update does
+// to the files this package writes: the page somebody reads before they have the
+// repository, and the one they follow with the unit in front of them.
+var operatorPages = []string{"../../README.md", "../../deploy/README.md"}
+
+// TestTheOperatorPagesNameTheFilesThisPackageWrites is T006 held to T002 and
+// T003, and it is the same agreement TestUnitAssetAndPathsAreTheInstallersOwn
+// makes with install.sh: four languages spell these names and nothing but a test
+// keeps them the same.
+//
+// **Must fail when** a name here moves and the documentation does not follow.
+// Every drift is silent in the direction that costs an operator most. A page
+// naming the wrong offer sends them to diff a file that is not there, which is
+// the "difference nobody can see" this milestone exists to end; a page naming the
+// wrong record tells them to hand over a unit by writing a file this daemon never
+// reads, so the next update goes on offering a .new they thought they had
+// answered.
+func TestTheOperatorPagesNameTheFilesThisPackageWrites(t *testing.T) {
+	t.Parallel()
+
+	for _, page := range operatorPages {
+		t.Run(page, func(t *testing.T) {
+			t.Parallel()
+
+			raw, err := os.ReadFile(page) //nolint:gosec // G304: the path is one of the two documents named above, committed to this repository.
+			if err != nil {
+				t.Fatalf("read %s: %v", page, err)
+			}
+			doc := string(raw)
+
+			for _, c := range []struct {
+				name string
+				cost string
+			}{
+				{name: unitPath, cost: "an operator told to look at the wrong file cannot see what an update decided about theirs"},
+				{name: unitRecordPath, cost: "the record is the whole of what says a unit is this daemon's to replace, and a page naming another path describes a host that does not exist"},
+				{name: UnitAsset + newSuffix, cost: "the offer is the file they diff, and a name they cannot find is a decision they cannot take"},
+			} {
+				if !strings.Contains(doc, c.name) {
+					t.Errorf("%s never names %q.\n%s", page, c.name, c.cost)
+				}
+			}
+		})
+	}
+}

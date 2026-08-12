@@ -186,6 +186,74 @@ systemctl --user start crswd
 the way back from *this* version, not a history — to go further back, name the
 version.
 
+#### The other two files an update carries
+
+An update is not only the binary. It brings the **configuration** forward, and it
+has an answer about the **unit** — and the two answers differ on purpose: every
+value in a configuration is yours and the schema around them is this daemon's,
+while a unit is what systemd executes, with which environment, and under which
+hardening.
+
+**The configuration is migrated in place, keeping every value and every comment.**
+It is `crswd config migrate` run for you, against the file this daemon actually
+loaded: a line-by-line rewrite that copies every line it has no reason to touch
+byte for byte. The result is written beside your file, read back off the disk, and
+put through the same loader a startup uses; only then is it moved into place,
+keeping the file it replaced as `config.bak`. **A migration that would not load is
+thrown away** and the update carries on with your file exactly as it was — the
+daemon refuses to start on a configuration it cannot load, and mid-update from a
+phone is the worst moment to find that out. A file already on the current schema is
+not written at all: not the file, and not a backup of it.
+
+**The unit is replaced only when it is the one this daemon wrote**, and what says
+so is the digest recorded at `~/.local/share/crswd/crswd.service.sha256` beside the
+unit the installer placed — the same record install.sh reads, answering the same
+question the same way:
+
+| At `~/.config/systemd/user/crswd.service` | What an update does |
+|---|---|
+| Nothing at all | Installs the one the release ships and records it. It is inert until you `daemon-reload` and enable it |
+| A unit hashing to the recorded digest | Replaces it and records the new one, keeping the mode you gave it |
+| The release's own unit already, byte for byte | Nothing, and no record either — this daemon does not claim a file it did not write |
+| Anything else | **Leaves it exactly where it is**, and writes the release's unit beside it as `crswd.service.new` |
+
+**The last row is a rule, not a fallback.** An edited unit carries a decision:
+relaxing `NoNewPrivileges`, `RestrictSUIDSGID` and `ProtectSystem` so that `sudo`
+works inside a session is something an operator works out once, and an update that
+replaced units would undo it silently on every release and make them work it out
+again each time.
+
+**A unit this installer never wrote is never replaced, and is offered a `.new` by
+every release that ships a different one.** There is no record beside a
+hand-written unit, and no record is read as "leave it" rather than as permission —
+which is not an edge case: every host deployed before the installer existed is in
+that state, the one that publishes these releases included. Nothing clears it and
+nothing is meant to. That offer is the whole of what an update does about such a
+unit, at this release and at every release after it.
+
+`crswd.service.new` is a file to read, never one systemd will load — a unit has to
+end in `.service` to be a unit at all. **Taking it is yours to do, with both files
+in front of you:**
+
+```bash
+diff ~/.config/systemd/user/crswd.service ~/.config/systemd/user/crswd.service.new
+cp ~/.config/systemd/user/crswd.service.new ~/.config/systemd/user/crswd.service
+systemctl --user daemon-reload
+systemctl --user restart crswd
+```
+
+That `diff` is printed for you rather than composed here — on `/settings` under
+**Updates**, and in the journal at every start, with both paths quoted so that a
+home directory with a space in it still compares the right two files. Deleting a
+`.new` you do not want is fine and settles nothing: the next update writes it again
+while it is still true, and withdraws it once your unit is the one the release
+ships.
+
+**Where the unit on this host stands is on `/settings` and in the journal**, in one
+sentence from one read — because a host nobody has ever pointed a browser at is
+still owed the answer. What taking a `.new` does *not* hand over, and how to hand it
+over deliberately, is [`deploy/README.md`](deploy/README.md).
+
 ### A release, without the installer
 
 Every release carries a tarball per architecture, `SHA256SUMS`, `SHA256SUMS.sig`,
