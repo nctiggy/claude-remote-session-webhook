@@ -113,7 +113,7 @@ is *order* — fact, bounds, default, then why — not deleting the why.
 
 - [x] **T007** Trim `README.md`'s duplication. The startup probe and login-shell `PATH` material is stated three times (here, `deploy/README.md`, `docs/security.md`) — security.md owns the why, deploy owns the operational consequence, the front page gets two sentences and a link. Move the two API-door bullets out of the operator's install reading. Cut the twelve-milestone roadmap: "what is not built yet" already exists in two sentences near the top.
 
-- [ ] **T008** Compress `docs/components.md`'s self-history. Four passages narrate the document's own revisions ("That paragraph replaced one asserting the opposite…"). The lesson each carries is already encoded in `stylesheet_test.go`; keep one sentence plus the issue number per site and lose the memoir. **Do not touch any class name** — the both-directions sweep reads them.
+- [x] **T008** Compress `docs/components.md`'s self-history. Four passages narrate the document's own revisions ("That paragraph replaced one asserting the opposite…"). The lesson each carries is already encoded in `stylesheet_test.go`; keep one sentence plus the issue number per site and lose the memoir. **Do not touch any class name** — the both-directions sweep reads them.
 
 ---
 

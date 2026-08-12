@@ -549,3 +549,93 @@ roadmap is gone, and so is the last htmx claim in the repository.
    milestone-2 artifacts that planned the dashboard with it, before it was dropped.
    Those are a record of what was decided then, not instructions, and `docs/` and
    `README.md` are now clean.
+
+---
+
+## Iteration 8 — 2026-08-12
+
+**Did:** T008. `docs/components.md` 906 → 893 lines: the four passages that
+narrated the document's own revisions — Toast leaving the not-built list, the
+settings page that used to be read-only, the Switch section that once had one
+switch, the fleet-announcement rule that once said the opposite — are one
+sentence each plus their issue number. No class name moved.
+
+**Learned:**
+
+- **Exactly one test reads this file, and only for four class families.**
+  `stylesheet_test.go:798` (`TestTheComponentsDocumentNamesThePickerTheSwitchTheHeaderAndTheToast`)
+  reads `componentsDocPath` and sweeps
+  `\.(combo|switch|masthead|action-toast)[\w-]*` **in both directions** against
+  `crswd.css`. Nothing else in the tree opens `docs/*.md` — `grep -rn '\.\./\.\./docs/'`
+  over `*.go` returns two constants, this one and `designSystemPath`. So prose in
+  this file is free to change as long as that class set does not, and the cheap
+  proof is `git show HEAD:docs/components.md | grep -o '\.\(combo\|switch\|masthead\|action-toast\)[a-zA-Z0-9_-]*' | sort -u`
+  against the same grep on the working copy. Identical here.
+- **The compressed Toast paragraph could drop `.action-toast` only because the
+  Toast section still names it.** A memoir passage that carries the *only*
+  mention of a guarded class is not compressible without moving the name
+  somewhere else first — the sweep does not care which paragraph it sits in, only
+  that the file says it.
+- **One surviving sentence was itself stale and is fixed in passing:** the
+  settings page's "the action gate those **two** routes sit behind" sat under a
+  paragraph listing **four**. All four are registered through `handleAction`
+  (`server.go:678, 688, 693, 729` — update, restart, settings edit, logout), so
+  it now reads "those four routes". Verified before writing, per this milestone's
+  own convention.
+- **The lesson really was already in the test.** `stylesheet_test.go:744-750`
+  carries the whole #119 argument — the toast shipped with #42, being rendered
+  *and* styled satisfies both code-facing sweeps, and the document-facing
+  direction is the only one that can see that drift. The doc's paragraph was a
+  second telling of it in the file an agent loads before touching a control.
+- **The gate ran in full and green:** build, vet, `go test ./...`,
+  `golangci-lint run` (v2.12.2, #26's check passes, 0 issues),
+  `go test -tags quickstart ./cmd/crswd` (36s), and `go test -tags tmux ./...`.
+  Iteration 7's flaky `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` did
+  not recur across three full runs of `internal/httpapi`.
+
+**Left:** nothing. All eight tasks of milestone 14 are ticked.
+
+**Findings (not fixed):**
+
+1. **Iteration 7's "no live doc claims htmx any more" is wrong, and
+   `docs/components.md` is the file it missed.** `grep -c htmx docs/components.md`
+   is **4**. Two are the negation the tree wants (the preamble's "There is no htmx
+   in this tree", and the pane's "never an htmx swap that treats the payload as
+   markup"). The other two are in the pane viewer's blockquote and one of them is
+   a live positive recommendation: **"htmx is still the right tool for the rest of
+   the dashboard."** That contradicts `AGENTS.md`'s `web/` row ("no htmx"), which
+   T001 wrote this milestone, and the same page's own preamble. The sentence is
+   inherited from `specs/002-access-dashboard/research.md:129`, written before the
+   library was dropped. **Not fixed:** T008's scope is self-history, one task per
+   iteration, and the blockquote around it is half a security rule — deleting a
+   clause out of it is a `docs/security.md` reader's job, not a passing edit.
+   Worth a task: it is one sentence, and it is the last htmx claim in a live doc.
+2. **The pane blockquote is a fifth self-narrating site, and it duplicates the
+   bullet three lines under it.** "This snippet used to show exactly that, and it
+   was wrong: a session printing `<img src=x onerror=...>` would have executed
+   it" is memoir; the rule it guards ("**Text nodes only** … never an htmx swap
+   that treats the payload as markup") is already the first bullet of the section.
+   T008 named four passages and this is not one of them, so it stands. **Whoever
+   takes finding 1 should take this with it** — same six lines, and the concrete
+   `<img src=x onerror=...>` example is the part worth keeping.
+3. **Two smaller self-references were left deliberately, because they are already
+   at the size T008 asks for**: "this is what fills the action-row parameter
+   earlier versions of this document described as present-but-empty" (Action
+   controls), and "this bullet used to end by saying an outcome needs no live
+   region at all…" (Accessibility floor). One clause and one sentence — compressing
+   further would cost the reason and save nothing.
+4. **Iteration 7's finding 1 stands:** `TestTheOpeningScreenIsSentWithoutWaiting-
+   OutAnInterval` (`stream_test.go:991`) is a 1ms margin against a 10ms interval
+   and will fail on a loaded CI host. It did not recur here, which is not
+   evidence it is fixed.
+5. **The standing operational findings all stand, none of them touched by
+   milestone 14:** no shipped `cloudflared` unit while two files assume one; the
+   systemd drop-in that is probably the better answer to Path 2 step 2 and is
+   unverified on this host; `install.sh`'s printed next steps omitting
+   `loginctl enable-linger`; `docs/auth-and-sessions.md`'s colliding "two doors"
+   and its "the skill"; and `deploy/README.md`'s Access-only "Verifying the
+   exposure model". **All five are the next milestone's material** — four of them
+   are `deploy/` and installer work that this documentation milestone had no task
+   for, and the fifth is a file the plan put out of scope by name.
+
+RALPH_COMPLETE
