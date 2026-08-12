@@ -223,6 +223,26 @@ func (m *Manager) SetLifetimes(defaultLifetime, maxLifetime, defaultIdle, maxIdl
 	m.defaultIdle, m.maxIdle = defaultIdle, maxIdle
 }
 
+// LifetimeCeilingRemoved reports that this operator has said a session on this
+// host may live forever: CRSW_SESSION_LIFETIME_MAX = never, which config carries
+// as a negative (config.NeverLifetime, milestone 13).
+//
+// It is exported for the dashboard rather than for the daemon, which is the one
+// thing worth knowing before reading it as an ordinary accessor. resolveLifetimes
+// grants a never-expiring session on exactly this condition and refuses it on
+// every other daemon, so a create form that offered that switch anywhere else
+// would be offering a control this manager is certain to turn away — the defect
+// an absent page token already keeps off a card. Asking the object that decides,
+// rather than reading the sign of a configured duration a second time, is what
+// stops the offer and the grant from disagreeing the day the spelling changes.
+//
+// It is the ceiling and never a session's own bound: Session.LifetimeDisabled is
+// that one, and the two are deliberately different questions. This says what an
+// operator permits; that says what one session was granted.
+func (m *Manager) LifetimeCeilingRemoved() bool {
+	return orDefault(m.maxLifetime, AbsoluteLifetime) < 0
+}
+
 // resolveLifetimes turns what a create asked for into what the record carries.
 //
 // An override above its ceiling is refused rather than clamped. Silently
@@ -247,7 +267,11 @@ func (m *Manager) resolveLifetimes(req CreateRequest) (lifetime, idle time.Durat
 	// it `never`, and orDefault leaves it alone because only zero is unset. It
 	// is asked first because every comparison below is against a bound that may
 	// not exist, and "is X over a ceiling that is not there" has no answer.
-	unbounded := maxLife < 0
+	//
+	// Through the exported predicate rather than the sign of maxLife, so that the
+	// form which offers this and the method which grants it are one reading of
+	// the rule rather than two (LifetimeCeilingRemoved).
+	unbounded := m.LifetimeCeilingRemoved()
 
 	lifetime = req.Lifetime
 	if lifetime == 0 {

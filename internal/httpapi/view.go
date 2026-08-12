@@ -278,6 +278,28 @@ type createFormView struct {
 	// rendering something shaped like a value.
 	Suggestions []string
 
+	// LifetimeCeilingRemoved is the one daemon fact this form branches on: the
+	// operator has said, once in their configuration, that a session on this host
+	// may live forever (CRSW_SESSION_LIFETIME_MAX = never). It renders the second
+	// switch, the one that turns the absolute deadline off for a session (T005).
+	//
+	// The switch is gated on it because session.Manager.resolveLifetimes grants
+	// that request on exactly this condition and refuses it on every other daemon.
+	// A form offering it under a finite ceiling would be a control certain to be
+	// turned away — the same defect as a card rendering actions with no page token
+	// behind them, and worse than the card's, because this one would teach an
+	// operator that a box they must tick every time is simply broken. An operator
+	// who wants it removes their ceiling and the form starts offering it.
+	//
+	// It is read off the manager that will decide (LifetimeCeilingRemoved) rather
+	// than off the sign of s.cfg.SessionLifetimeMax here, so what the page offers
+	// and what the create grants cannot come to disagree.
+	//
+	// False is the shipped daemon, and it renders exactly the form that shipped
+	// before this field existed — which is also what makes the zero value right
+	// for every test and call site that says nothing about it.
+	LifetimeCeilingRemoved bool
+
 	// There is no StartCommands field either, and its absence is the requirement
 	// rather than an omission (US1, FR-002). It carried the operator's configured
 	// command *names* so the form could render a chooser of them, which is

@@ -707,16 +707,26 @@ Rules:
 
 ### Switch
 
-One `<input type="checkbox">`, themed. Today there are two, both on the create
-form: remote control, and the idle override that lets a session outlive the idle
-clock. This section said there was exactly one for as long as that was true; the
-second arrived with milestone 10, and the rules below say which of them each one
-governs rather than reading as though the form still had a single switch.
+One `<input type="checkbox">`, themed. Today there are three, all on the create
+form: remote control, the idle override that lets a session outlive the idle
+clock, and the lifetime override that removes the deadline counted from
+creation. This section said there was exactly one for as long as that was true;
+the second arrived with milestone 10 and the third with milestone 13, and the
+rules below say which of them each one governs rather than reading as though the
+form still had a single switch.
+
+**Two of the three always render, and the third is conditional** — which is the
+one thing this component's shape does not tell you. A session that never expires
+is granted only on a daemon whose operator removed their own lifetime ceiling
+(`session.Manager.LifetimeCeilingRemoved`), so under a finite ceiling that switch
+is not drawn at all rather than drawn and refused on every submission. It is the
+same discipline as a card with no page token and a settings row `config.Editable`
+answers no for: a control certain to be turned away is not offered.
 
 | Class | What it is |
 |---|---|
 | `.field-switch` | The row. The one field whose label sits beside its input rather than above it |
-| `.switch-input` | The native checkbox. `name="remote_control"` `value="on"`, and `name="idle_timeout"` `value="0"` |
+| `.switch-input` | The native checkbox. `name="remote_control"` `value="on"`, `name="idle_timeout"` `value="0"`, and `name="lifetime"` `value="never"` |
 | `.switch-label` | Its label, in the design system's label role |
 
 Rules — the first two are the remote-control switch's:
@@ -737,15 +747,39 @@ And these are the idle override's:
   this door started before the field existed.
 - **The label says "never die" and the hint beside it says what still does.**
   There are two clocks: this switch turns off the idle one, and the absolute
-  lifetime is counted from creation, is never renewed, and cannot be disabled at
-  all. A label offering "never die" alone would be the interface asserting
-  something the daemon does not do — the same defect as copy claiming a session
-  was compacted when the daemon only delivered the request. The sentence is a
-  `.field-hint` named by `aria-describedby`, exactly as the working-directory
-  field's roots are, because `.switch-label` is the label role and prose set in
-  it is shouting.
-- **Neither switch ships `checked`.** The relaxed bound and the more privileged
-  mode are both choices an operator makes, never states they arrive in.
+  lifetime is counted from creation and is never renewed. A label offering "never
+  die" alone would be the interface asserting something the daemon does not do —
+  the same defect as copy claiming a session was compacted when the daemon only
+  delivered the request. The sentence is a `.field-hint` named by
+  `aria-describedby`, exactly as the working-directory field's roots are, because
+  `.switch-label` is the label role and prose set in it is shouting.
+- **Where that remaining bound is moved from depends on which daemon is rendering
+  the form, so the hint's last sentence does too.** With a ceiling in place the
+  absolute lifetime is configuration and the settings page is the only way to
+  push it out, which is what this hint has always said. With the ceiling gone the
+  switch below it is the way, and a sentence still sending the operator to
+  settings would be describing a daemon this page is not being served by.
+
+And these are the lifetime override's:
+- **It posts `lifetime=never`**, the field and the word `POST /sessions` already
+  takes, read by that route's own parser — the same argument the idle switch's
+  spelling makes. Deliberately not `0` and not `-1h`: both are things a person
+  writes meaning *no time at all*, and reading either as "forever" switches off
+  the one deadline that is never renewed.
+- **It renders only where the daemon would grant it**, per the paragraph above
+  the table. That fact is read off the manager that judges the create, never off
+  the sign of a configured duration a second time, so what the page offers and
+  what the create grants cannot drift apart.
+- **The hint says what is being switched off rather than presenting it as free.**
+  With this switch and the idle one both on, no clock reaps the session at all.
+  That is the operator's own decision, taken twice — once in their configuration
+  and once here — and the interface states it plainly instead of as a
+  convenience. It carries the thing nobody would find out otherwise as well: a
+  never-expiring session does not survive a restart as one, because adoption
+  rebuilds a record from what tmux knows and tmux does not know a lifetime.
+- **No switch ships `checked`.** The relaxed bound, the removed bound and the
+  more privileged mode are all choices an operator makes, never states they
+  arrive in.
 - **The native control is the accessible core; only its presentation changes.**
   `accent-color` paints the platform's own checkbox and there is deliberately no
   `appearance: none` — what an operator reads is the tick, a shape, and the

@@ -318,10 +318,18 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string, outcome 
 		// asks for a mode and the daemon resolves the mode to a command, so the
 		// names that used to be projected here are a fact the browser is no longer
 		// told — which is what stops the form from being a chooser of them again.
+		// The last of them is the daemon's own ceiling, asked of the manager that
+		// will judge the create rather than read off the configuration a second
+		// time (T005). A session that never expires is granted only where the
+		// operator removed that ceiling, so this is what decides whether the form
+		// offers the switch at all — an offer no create on this daemon could be
+		// granted is a control certain to fail, which is the thing an absent page
+		// token already keeps off a card.
 		Create: createFormView{
-			PageToken:   token,
-			Roots:       s.rootPaths(),
-			Suggestions: suggestions,
+			PageToken:              token,
+			Roots:                  s.rootPaths(),
+			Suggestions:            suggestions,
+			LifetimeCeilingRemoved: s.sessions.LifetimeCeilingRemoved(),
 		},
 		Outcome: outcome,
 	}
