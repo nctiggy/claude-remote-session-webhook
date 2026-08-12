@@ -263,3 +263,91 @@ classes.
   `internal/httpapi/render.go` is still not gofmt-clean (`gofmt -l .` names it and
   nothing else); and `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is
   wall-clock flaky.
+
+---
+
+## Iteration 4 — 2026-08-12
+
+**Did:** T004. `updater.Unit.Report()` reads this host's unit, the record beside
+it and the offer beside that — no release, no network. `unitFactsOf` in
+`internal/httpapi/settings.go` turns it into one of five sentences, and the
+Updates section renders it as three rows of the **existing** `.version-facts`
+list: the sentence, `Waiting at` naming `crswd.service.new`, and `Compare them`
+carrying the `diff` command. No new CSS class, and no CSS change at all.
+
+**The decision T004 inherited, and the answer:**
+
+- **Where the outcome comes from: the files, not persisted state.** Iteration 3
+  left this open. `Place`'s `UnitOutcome` is still dropped at the call site. The
+  `crswd.service.new` an operator diffs *is* the claim "there is a newer unit
+  than yours", so it is what decides what the page says — a second account
+  written by the update would be free to go stale the moment somebody took the
+  offer and deleted it. **No new state, and nothing fetched on a render.**
+- **⚠️ The one place I did not do what T004 literally says.** T004 asks for
+  "theirs is current". A page cannot honestly say that from disk: absence of an
+  offer means *no update has left one*, which on a host that has never been
+  updated — the operator this milestone is for — is exactly the false
+  reassurance the milestone exists to end. So `unitSentenceTheirs` says "an
+  update never replaces it. Nothing newer is *waiting* beside it." The stronger
+  claim needs the published bytes, i.e. a fetch on a page render, which
+  Iteration 3 already priced as "probably not". **If somebody wants the literal
+  wording, the fix is to compare against the release on the existing Check
+  (three more asset fetches plus a `Verify`), not to soften the sentence.**
+
+**Learned — things the next iteration would otherwise rediscover:**
+
+- **`unitCarrier` in `internal/httpapi/update.go` grew `Report()`**, rather than
+  a second seam. One pair of files answered by two seams is two answers a page
+  and an update could disagree about. `fakeUpdatePath` in `update_test.go`
+  answers the zero report deliberately — the page assertions run against a
+  **real** `updater.Unit` over a `t.TempDir()` home (`unitOnHost` in
+  `settings_test.go`), because a fake would let the page and the updater agree
+  about a host neither looked at.
+- **`updatePanelFor` is the composer, and it returns `nil` with no page token.**
+  So a mint failure costs the unit sentence as well as the update button. Left
+  as is: that server has no forms at all. The nil check is on
+  `s.updates.unit`, because `newServer` (every test in the package) wires no
+  update path — `newWithLayer1` is the only constructor that does.
+- **`.version-facts` was the whole answer to "reuse a class".** It is a `<dl>`
+  documented as "two terms, two answers", so a fact stated as a `dt`/`dd` pair
+  needs no name of its own. Adding a class would have needed a stylesheet rule,
+  and `stylesheet_test.go` holds every value in it to `docs/design-system.md`.
+- **`updater.Report` refuses rather than returning the zero `UnitReport`**, and
+  the reason is the sentence it would produce: the zero value reads as "no unit
+  on this host", whose sentence *promises an update will install one*. A read
+  that failed has its own sentence, and `unitFactsOf` takes the error to pick it.
+- **Mutation-checked, four ways**, all caught: composing `Offer` from the unit
+  path instead of stat-ing it (failed 6 cases across both packages), dropping
+  the two `.new` rows from the template, collapsing `UnitOurs` into
+  `UnitTheirs`, and dropping the `panel.Unit` wiring entirely (failed all four
+  page arrangements — the T001 lesson, tested).
+
+**Left:** T005–T007. T005 is next: the same three facts at startup, into the
+journal. It needs `updater.NewUnit(os.Getenv).Report()` in `cmd/crswd` beside the
+absent-identity-provider warning — **the sentences are `internal/httpapi`
+constants today**, so T005 either moves them somewhere both callers can reach or
+writes the journal's own wording; picking the second means two vocabularies for
+one fact, which is the drift T007 exists to collapse. Decide it deliberately.
+
+**Findings — noticed, not fixed:**
+
+- **`docs/components.md` gained the paragraph, `docs/design-system.md` did
+  not**, and it needed none: no token, no rule, no new class. Worth knowing
+  before T006 goes looking for a design doc to update.
+- **The `diff` command is shell-quoted by `shellQuoted` in `settings.go`.** It
+  is printed, never run — nothing in this daemon executes a shell — but an
+  operator pastes it, and an unquoted path with a space in it is a command that
+  silently diffs two other files. `TestTheDiffCommandSurvivesAHomeWithASpaceInIt`
+  is the only thing in the tree that would notice: every path a test builds is
+  under a temporary directory with no spaces in it.
+- **The `quickstart` suite still could not be run here.** `127.0.0.1:8765` is
+  held by the deployed daemon (checked with `ss -ltn`), which AGENTS.md
+  documents as that suite's requirement. `go vet -tags quickstart ./...` is
+  clean; `-tags tmux` and `-tags dev` were run in full and pass.
+- **Still open from Iterations 1–3:** the migration runs in the *old* binary;
+  `cmd/crswd/config_cmd.go` duplicates `internal/config/write.go` (T007);
+  `internal/config/migrate.go`'s and `internal/config/write.go`'s header
+  comments both name the wrong set of callers; `config.WriteFile`'s temp file is
+  still named `.crswd-config-*` while place.go writes systemd units through it;
+  `internal/httpapi/render.go` is still the only file `gofmt -l .` names; and
+  `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is wall-clock flaky.

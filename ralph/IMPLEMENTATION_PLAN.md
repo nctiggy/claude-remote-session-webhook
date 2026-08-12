@@ -88,7 +88,7 @@ be written at all.
 
 - [x] **T003** 🔒 On update, decide what to do with the unit, and **never overwrite one this daemon did not write**: recorded hash matches → replace it and re-record; hash differs, or no record exists → **write the new one alongside as `crswd.service.new` and leave theirs alone**. Test all three branches. **The one that matters most**: an operator who relaxed `NoNewPrivileges` still has it relaxed afterwards, and has a `.new` file naming what they are missing.
 
-- [ ] **T004** Tell the operator, on the settings page, reusing existing classes — **no new class**. Say which of the three happened: the unit was updated, a newer one is waiting as `.new`, or theirs is current. When one is waiting, name the file and the command to compare it (`diff`) — an operator who cannot see the difference cannot decide, and this daemon's whole update story is that a change is visible before it is taken.
+- [x] **T004** Tell the operator, on the settings page, reusing existing classes — **no new class**. Say which of the three happened: the unit was updated, a newer one is waiting as `.new`, or theirs is current. When one is waiting, name the file and the command to compare it (`diff`) — an operator who cannot see the difference cannot decide, and this daemon's whole update story is that a change is visible before it is taken.
 
 - [ ] **T005** Surface the same thing at startup, into the journal. The daemon already warns about an absent identity provider for the same reason: a deployment that is quietly behind looks identical to one that is current, and the journal is where an operator looks when something is wrong.
 
