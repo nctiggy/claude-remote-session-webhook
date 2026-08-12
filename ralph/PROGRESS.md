@@ -21,668 +21,621 @@ When the whole plan is done and green, append a line containing exactly
 
 ---
 
-## Iteration 0 — make idle mean what it says
+## Iteration 0 — say what is true, then say it clearly
 
-**Did:** Reset the notebook. The previous plan (a config template) was **wrong and
-was correctly blocked**: `config.example` already exists at the repository root,
-already carries every key, and is already guarded in both directions by
-`configExamplePath` in `internal/config/file_test.go`. The plan told an iteration
-to create a duplicate and it refused. That block was right.
+**Did:** Archived milestone 13.
 
-**Left:** the tasks below.
+**Left:** the tasks below, ranked by a Fable 5 audit that read every markdown file,
+`config.example`, `.env.example`, and the six test files that pin docs to code.
 
-**The operator's question, and the answer they were owed:** *"I have no idea what
-idle means… even if I am using the session I think it is still considered idle."*
+**The audit disagreed with the premise, usefully.** The operator asked for shorter,
+clearer docs. `config.example` is genuinely hard to read — but the cause is
+**ordering, not length**: nearly every block leads with the justification and
+buries the operative fact. And the worst problems in the doc set are not verbosity
+at all. **Wrong beats wordy.**
 
-They are right, and it is worse than they put it. `LastActivity` is advanced by
-exactly three things — `Resolve` (the signed-API credential path), `Compact`, and
-`SetMode`. Reading does not: the dashboard, the session page and the **live
-stream** all go through `View`, which has no clock reading in it by construction.
-There is no route to type into a session from the browser at all; `Prompt` exists
-only on the signed API.
+**Three files state things that are no longer true:**
 
-**So a browser-driven operator watching a session all day has it reaped at sixty
-minutes**, and someone attached to the tmux session directly on the host is
-invisible to the clock entirely. "Idle" measures daemon-mediated mutating HTTP
-requests and calls that activity.
+- `deploy/README.md:14` says the daemon "refuses to start without" the three
+  `CRSW_ACCESS_*` values, and line 38-41 of the same file says setting none is a
+  supported deployment. Both cannot be right; the second one is.
+- `AGENTS.md:22` lists `htmx` (there is none — `docs/components.md` says so
+  emphatically) and a `skill/` directory that does not exist. Line 10 describes an
+  Access-only browser door, which milestone 12 superseded. Line 50 says CI runs
+  the untagged commands "and nothing else", false since the tmux and quickstart
+  suites were added.
+- `CONTRIBUTING.md:22-27` carries the same stale CI claim.
 
-**What makes this fixable rather than a trade:** tmux tracks the real thing.
-`#{session_activity}` is a timestamp of when the session last produced output.
-`argvList()` in `internal/tmuxctl/fake.go:94` already runs `list-sessions -F` with
-six fields on every reconciliation — this is a seventh field on an exec that
-already happens, not a new call.
+**`AGENTS.md` is the first file every agent loads.** In a Ralph-loop project a
+stale one is compounding error, not a cosmetic issue — every iteration of every
+milestone starts by reading it.
 
-It also answers the objection that killed the obvious fix: counting browser reads
-would let a forgotten tab hold an unsandboxed shell open forever. Real tmux
-activity is not a forgotten tab.
+**The README cannot get a stranger through a Cloudflare install.** No DNS routing,
+no Access application steps, no Google IdP setup, no AUD location, no service
+token, and it never says "now browse to your hostname". It also never says to
+install and authenticate `claude` first — and since the device-code relay is not
+built, a session that hits a login prompt is simply stuck.
+
+**On mkdocs the audit says no, firmly, and the best reason is one I had not
+considered: these docs are test fixtures.** `config.example`, `.env.example`, the
+README's table, the design tokens and the component class names are read at
+relative paths and held to the code in both directions. Move them and the guards
+break; copy them and you have created the one unguarded copy — which is the drift
+this repository's whole discipline exists to kill.
+
+**A landmine for T003:** any comment line in `config.example` beginning
+`# <known_key> = …` counts as that key's line. Illustrative prose like
+`# idle_timeout = 0 disables nothing` fails the suite as a duplicate key.
 
 ---
 
-## Iteration 1 — 2026-08-12 — T001, the seventh field
+## Iteration 1 — 2026-08-12
 
-**Did:** `argvList()` now asks tmux for `#{session_activity}` as a seventh field,
-`parseSessions` reads it, and it rides on `SessionInfo.Activity`. The `Fake`
-stores it, stamps it from the injected clock in `New`, carries it through `Seed`,
-and exposes `SetActivity` for a test that needs a session tmux says is busy while
-the daemon has not heard from it. Nothing consumes `Activity` yet — that is T002.
+**Did:** T001. Corrected `AGENTS.md` against the tree — the audit named four false
+claims and checking the rest found two more.
 
 **Learned:**
 
-- **The real tmux here renders `#{session_activity}` as a Unix timestamp.**
-  Verified, not assumed: `TestTmuxListReportsProvenanceAndCreation` now asserts
-  it lands within seconds of now, so a tmux that did not know the format (it
-  would emit the literal text) fails loudly instead of silently falling every
-  session back to the old clock. `go test -tags tmux ./internal/tmuxctl` passes.
-- **Activity is the last field, so it is the first cut from the right.** The
-  start-command name moved to second-from-right. Everything after the session
-  name is still digits, a flag, a validated label, base64, and a validated
-  command name — nothing that can carry a `|` — so cutting from the right still
-  holds. Only the session name may contain the separator.
-- **The parse is deliberately asymmetric.** An unreadable *creation* time still
-  fails the row; an unreadable *activity* time yields the zero time and the row
-  parses. Failing the row would abandon reconciliation and leave every managed
-  session on the host unadopted, which is far worse than measuring idle the way
-  yesterday's build did. Two table cases pin this and two more pin that a bad
-  creation time still errors.
-- **Three places assert the six-field argv**, and all three had to move together:
-  `internal/tmuxctl/fake_test.go`, `internal/tmuxctl/exec_test.go`, and
-  `internal/session/manager_test.go` (the Adopt argv). Grep for
-  `session_created` before changing the format string again.
-- **Proved by breaking it.** With the seventh field removed the real-tmux test
-  fails on `unreadable row`; with the `Activity` assignments dropped, seven
-  parse cases and the fake round-trip test fail. Both restored.
+- **`AGENTS.md` has almost no room to grow. CI fails it at ≥150 lines** (`ci.yml`,
+  "AGENTS.md stays skimmable"), and it sits at **147**. Any future edit must budget
+  lines, not just words. Deleting the phantom `skill/` row is what paid for the two
+  lines the corrected CI paragraph needed.
+- **The audit's count was low; it was wrong in six places.** Beyond the four named:
+  `internal/` was listed as five packages when there are ten (`access`, `audit`,
+  `auth`, `buildinfo`, `config`, `httpapi`, `release`, `session`, `tmuxctl`,
+  `updater`), and `cmd/crswd/` was "flag parsing and wiring only" when it carries
+  three subcommands (`config check`, `config migrate`, `keygen`).
+- **The `Why` paragraph also claimed the device-code relay works.** It does not —
+  `internal/session/session.go:105`, `status-pill.html:14` and `crswd.js:498` all
+  park it on "milestone 4's device-code relay", and no `httpapi` route mentions it.
+  The `README.md` already names it and the companion skill as the two unbuilt
+  things; `AGENTS.md` now does too, so T004 does not have to re-derive this.
+- **The two tagged suites are broader than the table said.** `-tags tmux` also
+  covers `internal/session/mode_test.go` (a session name round-tripping through a
+  real tmux user option); `-tags dev` spans `internal/access`, `internal/httpapi`
+  **and** `cmd/crswd`, not just the first.
+- **CI runs Install, Lint, Typecheck, Test, Build, `-tags tmux`, `-tags quickstart`
+  — and not Format or `-tags dev`.** `.golangci.yml` has a `formatters:` block with
+  exclusions but enables no formatter, so nothing in CI checks `gofmt`. That is why
+  the corrected sentence names the commands rather than saying "the untagged ones".
+- **No test parses `AGENTS.md`.** Every Go reference to it is a comment citing a
+  rule. It is the one context file that is *not* a fixture — unlike `config.example`,
+  `.env.example` and the README table. Its only mechanical guard is the line count.
+- **`golangci-lint` here is v2.12.2, matching the CI pin** — the #26 check passes,
+  so a green local lint is a real one this iteration.
 
-**Left:** T002–T007. T002 is the one that makes any of this matter — nothing
-reads `SessionInfo.Activity` yet, and per `docs/conventions.md` a test that
-cannot fail is not a test: assert the caller.
+**Left:** T002–T008.
 
-**Findings:**
+**Findings (not fixed):**
 
-- **⚠️ `go test -tags quickstart ./cmd/crswd` ran while this iteration's tree was
-  dirty, and the tree came back clean with the work in `git stash`.** Nothing in
-  the repo runs `git stash` (grepped `.claude/`, `.githooks/`, `ralph/`, and the
-  suite itself), so the stash came from outside it — the reflog shows the branch
-  was also moved from `feat/m13b-idle-real` to `main` at the same moment. **The
-  lesson stands regardless of cause: commit before running the quickstart
-  acceptance suite, never with uncommitted work in the tree.** That suite builds
-  a real binary and binds a real port; it is the one command here with a foot
-  outside the process.
-- **A leftover `stash@{0}` on this branch is a duplicate of this commit** and can
-  be dropped. `stash@{1}` is older and from `fix/42-prg` — not mine, left alone.
-- **An iteration can find itself on a different branch than it started on.**
-  This one did, and nearly committed T001 onto `main`, which the hard rules
-  forbid. `git branch --show-current` before `git commit` is cheap; the loop's
-  clean-tree check at `ralph/loop.sh:32` does not cover this.
-- **`Fake.Seed` silently drops `Label`, `WorkDir` and `StartCommand`** from the
-  `SessionInfo` it is handed — it only carries `Created` and `Managed` (and now
-  `Activity`). A test that seeds a labelled session and asserts the label back
-  would be testing nothing. Not fixed: outside T001, and no caller relies on it
-  today.
+1. **`docs/auth-and-sessions.md` §"Two doors, one hostname" (line 48) is about the
+   Access-vs-API split, and calls the API client "the skill" — which does not
+   exist.** With milestone 12's password door, the phrase "two doors" now names two
+   different pairs in two different files, which is exactly the kind of collision
+   that makes a reader trust the wrong one. **Deliberately not touched**: that file
+   is named out of scope in the plan and is a binding correctness spec, so changing
+   it needs its own task, not a drive-by. Worth a task in the next milestone.
+2. **`README.md:656` still says "Go templates + htmx, not an SPA."** Same falsehood
+   T001 removed from `AGENTS.md`. It is inside T007's territory (the roadmap and
+   duplication trim) — **T007 should fix it rather than leave the last htmx claim
+   standing in the front-page file.**
+3. **The quickstart suite cannot run on this host**: the deployed daemon holds
+   `127.0.0.1:8765` (confirmed via `ss -ltn`), and two startup cases bind that exact
+   port. `go vet -tags quickstart ./...` is the fallback and it passes. Any task
+   whose gate is "run quickstart" will hit this — CI's self-hosted runners are where
+   it actually executes.
 
 ---
 
-## Iteration 0b — the finding that nearly cost the milestone
+## Iteration 2 — 2026-08-12
 
-**Did:** Added T000 and recorded why the rest of this plan is worth running.
-
-**The operator, mid-milestone:** *"In the remote control sessions, the only ones
-that matter TBH, there is no new activity in the tmux session."*
-
-They were right, and the consequence is larger than the idle clock. Their `rc`
-command carried `--spawn`, which makes the tmux session a **launcher**: the
-conversation lives on the relay and the pane goes quiet after startup. So for the
-sessions this operator actually runs, the pane is empty, the pill cannot tell
-running from idle from needs-auth, `compact` types into a pane nobody reads, and
-`#{session_activity}` never moves.
-
-**T001 and T002 would have measured a clock that never ticks, for the only
-sessions that matter.** It was one iteration from shipping.
-
-The fix is a start command, not daemon code:
-
-    rc=claude --dangerously-skip-permissions "/rc {name}"
-
-An ordinary interactive session that drives itself into remote control, so the
-tmux session *is* the session. Verified twice: the operator ran the form and it
-worked, and the config parser passes the quotes through intact — `send-keys` is
-called without `-l`, so the shell parses them normally.
-
-**The lesson is about where the daemon's assumptions come from.** Everything the
-dashboard does — the pane, the pill's inferred states, compact, milestone 7's
-whole mobile sweep — assumes the session renders into its own pane. Nothing
-checked that assumption, and a start command an operator was free to configure
-had quietly broken it for their primary use.
-
----
-
-## Iteration 2 — 2026-08-12 — T000, the default that renders in its own pane
-
-**Did:** `config.example` and `.env.example` now show
-`rc=claude --dangerously-skip-permissions "/rc {name}"` as the remote-control
-command, with the `--spawn` launcher kept in both as a documented alternative
-and one sentence on why it is no longer the example. A new guard in
-`internal/config/file_test.go` loads the uncommentable `start_commands` line
-through `config.LoadFrom` and fails if the command the switch resolves to spawns
-its session elsewhere.
+**Did:** T002. `deploy/README.md` now says which deployment it is for, states what
+the daemon actually refuses on the `CRSW_ACCESS_*` group, and treats 1Password as an
+example of a shape rather than the procedure; `CONTRIBUTING.md`'s CI claim is true.
 
 **Learned:**
 
-- **`config.go` ships no built-in remote-control command line.** T000 said to
-  change `DefaultRemoteControlCommand` "or whatever `config.go` names the
-  built-in" — there is none. `DefaultRemoteControlCommandName = "rc"` is a
-  *name*, and `loadRemoteControlCommand` resolves it only if the operator
-  configured a command by that name; otherwise the dashboard renders no switch
-  at all. So the two example files **are** the whole of the shipped default, and
-  adding a built-in `rc` would have handed a remote-control switch to every
-  daemon that configures nothing — a widening nobody asked for. Not done.
-- **The guard loads rather than greps.** The claim about that line is that a
-  daemon starts on it, so it goes through the daemon's own loader; the
-  `--spawn` check is the last assertion, not the only one. Proven by breaking:
-  with the launcher form restored it fails naming the file, the line and the
-  consequence.
-- **The duplicate-key trap is real and it was one indentation away.** Any
-  comment line whose text before the first `=` is a known key counts as that
-  key's line, indented or not — so the alternative form is written as prose
-  (`claude remote-control --spawn=same-dir …`) and never as
-  `# start_commands = …`. `exampleLines` in `file_test.go:1298` trims the `#`
-  *and* the whitespace before matching.
-- **The config-file parser trims only the ends of a value**, so the quotes reach
-  `send-keys` intact. That is what makes the quoted form safe *in
-  `config.example`*, and it is a property of that parser only.
+- **Iteration 1's finding #3 is wrong — retract it. `go test -tags quickstart ./...`
+  runs green on this host with the deployed daemon still holding `127.0.0.1:8765`**
+  (34s; `ss -ltn` confirms the port is held). The two startup cases stopped binding
+  8765 when `freeAddrOn` landed (`quickstart_test.go:468`) — its comment describes
+  exactly the symptom that finding reported, so the fix predates the finding. **Do
+  not skip the quickstart gate on that premise.**
+- **`deploy/README.md` is a fixture, twice over, and neither guard is obvious.**
+  `internal/config/deployexample_test.go` splits it on ``` fences, takes every block
+  containing `/.config/crswd/env`, harvests the `CRSW_*=` names from *all* of them
+  into one environment, and asserts that environment starts a daemon. **A second
+  env-file recipe is therefore not additive — it merges.** Adding a
+  `CRSW_DASHBOARD_PASSWORD=` block beside the Access one would fail two ways:
+  `validateDoors` refuses password-beside-Access, and `baseEnv` (`config_test.go:39`)
+  has no sample value for that variable, which is a `t.Fatalf`. That is why T002's
+  LAN note is a pointer to `README.md` and not a recipe. Separately,
+  `quickstart_test.go:2114` sweeps this file's `journalctl` lines against a real
+  stream.
+- **The false claim had a second copy** below the recipe ("writing only the secret
+  gets a daemon that refuses to start"). It does not: `loadBool` reads the unit's
+  empty `Environment=CRSW_ACCESS_ENABLED=` as false, `validateAccessGroup` passes on
+  zero of three, and the daemon starts with `warnNoIdentityProvider`'s banner. **When
+  a plan names a false statement by line number, grep the file for the claim** — the
+  audit found the loudest copy, not the only one.
+- **`CRSW_ACCESS_ENABLED=true` is the fix for the gap that falsehood was papering
+  over**, and the file had never mentioned it: it turns "none of the three" from a
+  supported deployment into a refusal, which is what an Access deployment wants.
+- **The `dev` tag and `gofmt` are the only things in `AGENTS.md`'s command table
+  that run nowhere but locally** — `.golangci.yml` has a `formatters:` block that
+  enables no formatter. That is now stated in `CONTRIBUTING.md` too.
 
-**Left:** T002–T007. T002 is the one that makes T001 matter — nothing reads
-`SessionInfo.Activity` yet.
+**Left:** T003–T008.
 
-**Findings:**
+**Findings (not fixed):**
 
-- **⚠️ The quoted form may not survive an env file, and I could not verify it.**
-  `deploy/crswd.example.service` reads `EnvironmentFile=-%h/.config/crswd/env`
-  and sets `Environment="CRSW_START_COMMAND=…"`; systemd parses quotes in both.
-  If it strips them, the operator's env-file spelling delivers
-  `claude --dangerously-skip-permissions /rc {name}` — two positional arguments
-  rather than one prompt — and that is exactly the class of silent breakage this
-  task exists to fix. The sandbox refused the `systemd-run` check, so
-  `.env.example` says only that the quotes are part of the command line and to
-  confirm whatever reads that file leaves them on, and points at
-  `config.example`, which takes the value verbatim. **Someone with a shell on a
-  systemd host should settle this**; if the quotes are eaten, `deploy/` needs
-  the escaped spelling and the unit's `Environment=` line does too.
-- **`deploy/README.md`'s recipe and the example unit still teach the env-file
-  path for command lines**, and neither was touched here — T000 named
-  `config.example` and `.env.example` only. Out of scope, worth a task.
-- Iteration 1's finding stands: **commit before running
-  `go test -tags quickstart`**. Not run this iteration — nothing under
-  `cmd/crswd` changed. `go vet -tags quickstart ./...` and `-tags dev` compile;
-  `go test -tags tmux ./...` passes.
-
----
-
-## Iteration 3 — 2026-08-12 — T002, the clock that watches the session
-
-**Did:** `Session.TmuxActivity` holds what the host last saw the session do, and
-`IdleDeadline` is measured from `idleFrom()` — the later of it and
-`LastActivity`. `Reaper.Sweep` calls the new `Manager.syncActivity` before it
-judges anything: one `list-sessions` per sweep, `adoptableID` to decide which
-rows are ours, and `Store.setTmuxActivity` to record them. The operator's
-session — watched all afternoon in the dashboard, driven by nobody through the
-API — is no longer reaped at sixty minutes.
-
-**Learned:**
-
-- **Where the value had to live was decided by FR-019c, not by taste.** The
-  reaper could have read the host's times and thrown them away inside `Sweep`,
-  storing nothing. It must not: the card renders `s.IdleDeadline()` directly
-  (`dashboard.go:388` → `formatIdleDeadline`), so a deadline the sweep knew
-  about and the record did not would make the dashboard and the reaper disagree
-  about the same session — exactly the drift FR-019c forbids. Hence a field on
-  the record, refreshed by the sweep, read by both.
-- **The fail-safe rule is a comparison, deliberately not a branch.**
-  `idleFrom()` is `if TmuxActivity.After(LastActivity)`. Absent, unparsable,
-  stale, and from-a-disagreeing-clock are not four cases — none of them can be
-  *later*, so all four fall through to `LastActivity` and none can shorten a
-  session's life. There is no "is this usable?" test to get the wrong way round.
-- **⚠️ The fake stamped tmux activity with `time.Now()` while the fixture's
-  daemon clock stood at `contractCreatedAt`, ten days earlier**, so the first
-  run had every managed session looking busy days into its own future and
-  **thirteen reaper tests failed at once**. Fixed by pinning the fake's clock to
-  the fixture's in `newManagerFixture` — one clock for the host and the daemon,
-  because they are one clock in production. A test that wants "the host says
-  busy" now says so with `SetActivity`. `manager_test.go:2269` pins the same
-  thing locally and is now redundant; left alone (AR-008).
-- **Only one existing assertion had to move**, and it is the right one:
-  `TestSweepTearsDownTheWayAnExplicitDestroyDoes` pins the exact argv a sweep
-  runs, so the new `list-sessions` at the head of it is now in `want`. Grep
-  `OpList` before changing the sweep's command sequence again.
-- **`setTmuxActivity` is unexported and returns nothing**, breaking the pattern
-  every other `Store` mutator follows, for reasons written at the call site: the
-  sweep acts on the daemon's own behalf and has no owner to check (as `lookup`
-  and `snapshot` do not), and "the host listed a session this store has no
-  record of" is the ordinary case rather than a failure.
-- **Proved by breaking it, three ways.** `idleFrom` returning `LastActivity`
-  alone fails the new sweep test, the store test and one table case; returning
-  `TmuxActivity` alone — the parse-failure-makes-a-live-session-reapable bug
-  T002 names — fails the fallback test plus a dozen existing ones; disabling the
-  `syncActivity` call fails three. All restored.
-- Linter confirmed v2 (`2.12.2`, #26). `go test ./...`, `-tags tmux`, `-tags
-  dev`, and `-tags quickstart ./cmd/crswd` all pass; quickstart was run **after**
-  the commit, per iteration 1.
-
-**Left:** T003–T007.
-
-**Findings:**
-
-- **The card's idle deadline is up to one sweep interval stale.** tmux activity
-  reaches a record only when a sweep stores it, so a session that started
-  printing five seconds ago still shows the old deadline for up to 30s. That is
-  the reaper's own resolution and consistent with it — but T003 is about telling
-  the operator what the clock is watching, and "watching, as of the last sweep"
-  is the honest wording.
-- **`gofmt -l .` flags `internal/httpapi/render.go`** — an import of
-  `internal/buildinfo` sorted above the stdlib block. It is committed that way,
-  was not touched here, and `golangci-lint run` reports 0 issues, so nothing
-  gates on it. One `gofmt -w` fixes it; out of scope for T002 (AR-008).
-- **`Fake.Seed` still silently drops `Label`, `WorkDir` and `StartCommand`**
-  (iteration 1's finding, unchanged). It does carry `Activity`, which is what
-  T002 needed.
-- **The API's `last_activity` still means "when a request last drove this"** and
-  was deliberately not changed: `entryFor` renders `s.LastActivity`, not
-  `idleFrom()`. Nothing on the wire claims an idle deadline, so nothing there
-  became inconsistent — but if T003 or a later task exposes the effective clock
-  through the API, it needs a name that does not collide with this one.
+1. **Findings 1 and 2 from iteration 1 still stand** — `docs/auth-and-sessions.md`'s
+   colliding "two doors" and the API client called "the skill" (needs its own task,
+   that file is out of scope here), and `README.md:656`'s surviving htmx claim
+   (T007's territory).
+2. **`deploy/README.md`'s "Verifying the exposure model" is Access-only and does not
+   say so.** `ss -tlnp | grep crswd` "must show 127.0.0.1, never 0.0.0.0" is exactly
+   backwards for the LAN deployment, where `listen = 0.0.0.0:8765` is the documented
+   configuration. T002's header now tells a LAN reader which three sections apply,
+   which bounds the damage, but the section itself still reads as universal. **Not
+   fixed**: rewriting it is a security-doc change in a file T002 was scoped to
+   correct, not extend — worth a task.
+3. **Checked and *not* a finding, so nobody spends an iteration on it:**
+   `.env.example` (lines 86–97) and `crswd.example.service` (lines 67–71) both
+   already document the password door properly — what it is, that it is never a door
+   as well as Access, that it belongs in the `EnvironmentFile`, and the clear-wire
+   warning. The stale Access-only framing was `deploy/README.md`'s alone.
 
 ---
 
-## Iteration 4 — 2026-08-12 — T003, the row that answers "why is this dying"
+## Iteration 3 — 2026-08-12
 
-**Did:** The card carries a `last activity` row directly above `idle deadline`,
-rendering the instant the reaper measures from. `idleFrom` is now exported as
-`Session.IdleSince`; `cardOf` formats `now.Sub(live.IdleSince())` through a new
-`formatSince`, in `formatAge`'s vocabulary. Another `.card-meta` `dt`/`dd`, no
-new class, no CSS.
+**Did:** T003. `config.example` now leads with the fact on every key — name and
+purpose, then format/bounds/what a wrong value does, then the why where it is
+load-bearing, then the default, then the one commented line. 465 → 306 lines.
 
 **Learned:**
 
-- **The row is above the deadline, not below it, and that is the argument.**
-  The two read as one sentence — last active this long ago, therefore due then.
-  A deadline followed by its evidence reads as a footnote; evidence followed by
-  a consequence reads as a reason.
-- **Iteration 3's naming warning was live, and this is where it landed.** The
-  view field is `IdleSince` and never `LastActivity`, because `httpapi` already
-  has a `LastActivity` meaning the narrower "a request drove this" —
-  `sessions.go:149`, the signed API's `last_activity`. Two fields with one name
-  and two meanings in one package is the collision that finding predicted. The
-  *label* is still "last activity", because that is the operator's word for it;
-  the Go names are what stay apart. `view.go` says so at the field.
-- **Coarseness is the honest rendering, not a shortcut.** tmux's reading reaches
-  a record only when a sweep stores it (iteration 3's finding), so the value is
-  up to one sweep interval — 30s — stale. A minute's granularity absorbs that;
-  a timestamp would show a precision the daemon does not have. That reasoning is
-  at `formatSince`, so the next hand reaching for `2026-08-12T11:58:03Z` meets it.
-- **Exported the accessor rather than taking the later of two fields in the
-  dashboard.** `IdleDisabled` exists for exactly that reason and says so — a
-  second reading of the rule is free to disagree with the first the day the
-  spelling changes. Renaming `idleFrom` touched three lines in `session.go` and
-  nothing else in the tree.
-- **Proved by breaking it, twice.** Rendering `live.LastActivity` instead of
-  `IdleSince()` fails the busy-on-the-host case with the exact defect it
-  describes — "1 hour ago" printed beside "in 57 minutes", the page contradicting
-  itself; deleting the two template lines fails all five cases. Both restored.
-- **`docs/components.md` was updated in the same commit**, because #119's lesson
-  is that the drift this document cannot see is the code moving under it. The
-  Session card's inventory sentence, its `cardOf` parameter list and one rule
-  bullet.
-- Linter confirmed v2 (`2.12.2`, #26). `go test ./...`, `-tags tmux`, `-tags
-  dev`, `-tags quickstart ./cmd/crswd` all pass; quickstart run **after** the
-  commit, per iteration 1.
+- **The plan's ~215-line target was measured against a 401-line file, and the file
+  is 465 today.** Milestone 13 added ~64 lines the plan itself protects: what
+  `never` costs on the lifetime ceiling, and the two idle clocks. 465 → 306 is a
+  34% cut where 401 → 215 was 46%. **Getting to 215 from here means deleting a
+  named load-bearing passage, which the same plan forbids** ("The voice stays…
+  the fix is *order*, not deleting the why"). Reordering and de-paragraphing is
+  worth roughly a third; the rest of that target was never available. **The next
+  file with a line target should be measured before it is trusted.**
+- **Folding `Default: x.` into the end of the block's last sentence, instead of
+  giving it its own stanza, is the single biggest structural saving** — two lines
+  per key, 46 lines across 23 keys, and it reads better because the default lands
+  next to the bounds it belongs to rather than as a footnote.
+- **The duplicate-key landmine has a twin that bit nothing but nearly did.** The
+  test cuts each comment line on its first `=` and matches the left side against
+  the known keys, so `#   key = value` in the format illustration is safe (`key`
+  is not a setting) — but a wrapped line is not. Writing `# … Default: claude`
+  followed by `# --dangerously-skip-permissions, byte for byte …` is fine, yet the
+  same wrap one word earlier would have started a line with a real key. **Keep the
+  key name off the start of any wrapped line.**
+- **Every documented value must round-trip, secrets included.** `IsSecret` only
+  suppresses the value from the failure message — `file_test.go:1408` still
+  compares. Keeping the illustration strings byte-for-byte (`paste the output of
+  openssl rand -hex 32 here`, `rc=claude --dangerously-skip-permissions "/rc
+  {name}"`) is what makes a rewrite of this file safe.
+- **The gate is real and it all ran here:** `go build`, `go vet`, `go test ./...`,
+  `golangci-lint run` (v2.12.2, so #26's check passes), and
+  `go test -tags quickstart ./cmd/crswd` (36s, green — iteration 2's retraction
+  holds).
 
-**Left:** T004–T007. T004 is the next one and it is 🔒: a spelling for a
-*never* absolute lifetime that cannot collide with "unset", on the per-session
-override **and** on `session_lifetime_max`.
+**Left:** T004–T008.
 
-**Findings:**
+**Findings (not fixed):**
 
-- **The single-session page and the fleet both gained the row, because there is
-  one card** — which is the component rule working, and worth stating because
-  the row was designed against the fleet. On the session page it sits above a
-  pane that may be showing the very output that moved the clock.
-- **Nothing on the signed API exposes the effective idle clock**, and this
-  iteration did not add it. `entryFor` still renders `s.LastActivity` under
-  `last_activity`. A skill asking "when does this die" gets a deadline it cannot
-  derive from the fields beside it — the browser can now answer that question and
-  the API still cannot. Not a defect anybody has hit; the milestone names no task
-  for it.
-- **`gofmt -l .` still flags `internal/httpapi/render.go`** (iteration 3's
-  finding, unchanged and untouched). `golangci-lint run` reports 0 issues, so
-  nothing gates on it.
-- **`session.validate` refusing a zero `LastActivity` is what makes the row
-  unconditional**, and no test pins the two together. A record with neither clock
-  set would render "56 years ago" rather than stating an absence — unreachable
-  through `Store.Add` today, and a guard for it would be code no caller can
-  execute, so it was deliberately not written. If that invariant is ever relaxed,
-  this row is one of the things that breaks quietly.
+1. **Iteration 1's findings 1 and 2 and iteration 2's finding 2 all still stand** —
+   `docs/auth-and-sessions.md`'s colliding "two doors" and its "the skill",
+   `README.md:656`'s htmx claim (T007's), and `deploy/README.md`'s Access-only
+   "Verifying the exposure model".
+2. **`.env.example` is 376 lines documenting the same 23 settings this file
+   documents, in the same voice.** Neither points at the other, and nothing holds
+   them to each other beyond `envexample_test.go` checking that the names are all
+   present and carry no values — so the *prose* in the two files can drift apart
+   silently, and a setting whose bounds change needs both edited. **Not fixed:**
+   `.env.example` is outside T003's scope and the fix is a judgement call (make one
+   the reference and have the other point at it, or accept the duplication because
+   an operator reads exactly one of them). Worth a task in the next milestone.
+3. **`# --- Required. There is no default, and no way to start without it. ---`
+   heads a section of exactly one key** (`shared_secret`). That is fine and it is
+   deliberate — the header is where "required" is stated, since the key's own block
+   no longer carries a `Default:` line — but a later task adding a second required
+   setting should put it here rather than inventing a second heading.
 
 ---
 
-## Iteration 5 — 2026-08-12 — T004, a lifetime that never ends
+## Iteration 4 — 2026-08-12
 
-**Did:** A negative `Lifetime` now means the absolute deadline is off
-(`Session.LifetimeDisabled`, `AbsoluteDeadline`), and `resolveLifetimes` grants
-it on exactly one condition: the daemon's own ceiling must already be unbounded.
-`CRSW_SESSION_LIFETIME_MAX = never` is how an operator says that, carried as a
-negative. The card says "no lifetime limit" and the settings page says `never`.
-
-**The spelling, and why it is a word:** `0` was impossible — zero is already
-"unset" by the time a duration is parsed — and a negative duration was possible
-but rejected. Both `0` and `-1h` are things a person writes in a config file
-meaning *no time at all*, and reading either as "forever" switches off the last
-bound on a host running unsandboxed shells. `never` cannot be misread in that
-direction. `loadLifetimeCeiling` therefore **refuses** a raw negative and names
-the word, so there is one operator-facing spelling and one internal one (the
-negative the idle disable already uses), never two of either.
+**Did:** T004. `README.md`'s install now opens with the two deployments as numbered
+paths, states the three prerequisites nobody was told, and points at the daemon's
+own refusals. The two door sections are renamed **Path 1** and **Path 2** so the
+choice and the instructions share a vocabulary.
 
 **Learned:**
 
-- **⚠️ The two "off" bounds had to share one span, and this was one iteration
-  from being a silent bug.** `IdleDeadline` answered `AbsoluteLifetime * 400`
-  for a disabled idle clock — unreachable only because the absolute deadline
-  underneath it always fired. Once that one could be switched off too, a session
-  with **both** switches off was reaped for idleness after 400 days, by a number
-  neither switch mentions and exactly against the label T005 has to write. Both
-  now use `neverSpan` (a century). Proven: reverting `IdleDeadline` to the old
-  multiplier fails `both bounds off is reaped by neither` and nothing else.
-- **The ceiling is what keeps this the operator's decision**, and it is the
-  whole security argument. `resolveLifetimes` reads `maxLife < 0` as "no ceiling"
-  *before* every comparison, because "is X over a ceiling that is not there" has
-  no answer. A daemon that configured nothing refuses `never`, and so does one
-  with a 8760h ceiling — a ceiling raised is not a ceiling removed.
-- **The idle-can-never-fire check had to become the finite case's alone.**
-  `idle > effectiveLife` with a negative lifetime refuses *every* idle timeout,
-  on precisely the sessions this milestone exists to keep alive.
-- **`TokenExpiry` follows `AbsoluteDeadline`, so a never-expiring session has a
-  never-expiring bearer token.** That is FR-015's "equal by construction"
-  working rather than breaking: docs/auth-and-sessions.md's rule is that the
-  token TTL may never be *shorter* than the lifetime. `expires_at` on the wire
-  now reads year 2126 for such a session. Deliberate, and stated at the method.
-- **The settings page is a *write* surface, which this task nearly missed.**
-  `POST /settings/edit` runs `config.Validate` → the real `LoadFrom`, so `never`
-  is accepted there and `-1h` refused, by the same code as at startup — but a
-  loader that learned a word the page had not would have been a value an
-  operator could read and never save. Pinned by
-  `TestEditIsWhereAnOperatorRemovesTheLifetimeCeiling`. **Grep for
-  `settings_edit` before adding any new config value spelling.**
-- **`docs/components.md` was updated in the same commit** (#119's lesson). It
-  said the absolute bound "cannot be turned off at all" and that a disabled
-  deadline reads "in 400 days"; both were false the moment this shipped.
-- **Proven by breaking it, eight ways** — refusing a negative lifetime
-  unconditionally, granting it regardless of the ceiling, dropping
-  `AbsoluteDeadline`'s branch, reverting the idle span, accepting a negative in
-  the config loader, dropping the `never` word there, restoring
-  `lifetimeMax < lifetime`, and dropping the parser case, the card branch and
-  the settings branch. Each failed the case named for it; all restored.
-- Linter confirmed v2 (`2.12.2`, #26). `go test ./...`, `-tags tmux`, `-tags
-  dev` and `-tags quickstart ./cmd/crswd` (36s) all pass; quickstart run
-  **after** the commit, per iteration 1.
+- **A troubleshooting `journalctl` line cannot be written as a command.**
+  `quickstart_test.go:2050` (`trailCommands`) takes **every line in `README.md` or
+  `deploy/README.md` that begins with `journalctl`** once a leading `#` is stripped,
+  and `filterOf` then **`t.Fatal`s** unless that line pipes (`|`) *and* its producer
+  names `journalctl`, `--user`, `-u crswd` **and** `-o cat`. That sweep exists for
+  audit-trail commands; a diagnostics command is the opposite — it wants the stderr
+  banners the documented filter removes (#88). So `journalctl --user -u crswd -e`
+  is written **inline in prose, mid-line**, never in a fenced block and never at the
+  start of a source line. **T005–T008: the same trap fires on a wrapped line.**
+- **Five tests read `README.md`, and T005/T006 will walk straight into three of
+  them.** `internal/httpapi/login_test.go:1004` requires the literal string
+  `http://<the host's LAN address>:8765/login` — **T006 rewrites exactly that
+  paragraph and must keep that address byte for byte**, path included, since it is
+  read from the mux's own constant. `internal/release/readme_test.go` needs the
+  installer's one-liner verbatim with no `go build` / `git clone` /
+  `go mod download` **above** it (the from-a-clone block in Path 1 is the only one
+  left, and it must stay below), the rollback trio (`~/.local/bin/crswd.previous`,
+  `POST /dashboard/update`, `version=`), and the door vocabulary
+  (`dashboard_password`, `access_enabled`, `admits nobody`).
+  `internal/config/docs_test.go` reads the configuration table one row per line.
+- **Anchors: `](#` is still the only check that exists, and an em dash makes a
+  double hyphen.** `### Path 1 — on the internet: Cloudflare Tunnel and Access`
+  slugs to `#path-1--on-the-internet-cloudflare-tunnel-and-access` — GitHub strips
+  the em dash and the colon without collapsing the spaces either side. All six
+  in-page links were re-checked after the rename.
+- **The installer already warns about `claude` and points here.** `advise_tools`
+  (`install.sh:106`) warns when `cloudflared` or `claude` is off `PATH`, "see the
+  README" — so the prerequisite bullet is what that warning was pointing at all
+  along. The installer says nothing about `claude` being *authenticated*, which is
+  the half that actually strands a session, and the page now carries it.
+- **The gate ran in full and green:** build, vet, `go test ./...`,
+  `golangci-lint run` (v2.12.2, so #26's check passes, 0 issues), and
+  `go test -tags quickstart ./cmd/crswd` (36s) — the last one is not optional here,
+  since it is the suite that reads this file.
 
-**Left:** T005–T007. T005 is the create-form switch, and its label is now
-literally true: with both switches on, nothing reaps the session.
+**Left:** T005–T008.
 
-**Findings:**
+**Findings (not fixed):**
 
-- **⚠️ A never-expiring session does not survive a daemon restart as one.**
-  Adoption builds its record from what tmux knows, and tmux does not know about
-  `Lifetime` — so the record comes back with a zero lifetime, the default
-  applies, and `Adopt` tears it down on the spot if it is already older than
-  that default (`manager.go`, FR-025). The operator's immortal session is
-  therefore mortal across a redeploy, and killed *because* it was long-lived.
-  Nothing persists session records today, so this is not fixable inside T004 —
-  but it is the sharpest edge on this feature and nobody has been told about it.
-  Worth a task, and worth a sentence in T006/T007's prose.
-- **T005 has a decision to make about the form's `.field-hint`.** It currently
-  reads "It still ends at the absolute lifetime this daemon is configured with…
-  Raise session_lifetime in settings if that is too soon" — true for every
-  session this form can start today, and false the moment T005 adds the second
-  switch. The template comment above it was corrected in this commit; the
-  visible sentence was deliberately not, because changing it before the control
-  exists would make the page describe a switch it does not render.
-- **The signed API's `lifetime` accepts `never` and nothing announces it.**
-  There is no capability document or `GET /` shape listing what a create may
-  ask for, so a skill discovers the word from the README (T007) or not at all.
-  Same gap iteration 4 logged for the effective idle clock, one field over.
-- **`gofmt -l .` still flags `internal/httpapi/render.go`** (iteration 3's
-  finding, unchanged and untouched). `golangci-lint run` reports 0 issues.
-- **`config.example`'s `session_lifetime` prose is now wrong** — it says "There
-  is deliberately no way to say 'never'". That is T006's line to fix and is
-  named here so it is not read as still true in the meantime.
+1. **The install opening and the front-matter paragraph (`README.md:10-14`) now
+   both frame the two doors** — deliberately, since one is "what this project is"
+   and the other is "the first step of installing it", and they link to different
+   places (the comparison table vs. the two paths). **T007 owns the duplication
+   trim and should decide whether both survive**; if only one does, the install
+   copy is the one an operator is actually reading at that moment.
+2. **`install.sh`'s printed next steps never mention `loginctl enable-linger`,**
+   while the README calls it "easy to skip and expensive to skip" and the symptom
+   (the unit dying when the SSH session ends) arrives minutes later looking like
+   something else. `next_steps` (`install.sh:461`) lists two things: pick a door,
+   then `systemctl --user enable --now crswd`. **Not fixed:** that output is pinned
+   by `TestInstallPrintsNextSteps`, so it is a script change plus a test change, not
+   a doc task. Worth a task.
+3. **Iteration 1's findings 1 and 2 and iteration 2's finding 2 all still stand** —
+   `docs/auth-and-sessions.md`'s colliding "two doors" and its "the skill",
+   `deploy/README.md`'s Access-only "Verifying the exposure model", and the htmx
+   claim under "Why it is built this way" — **now `README.md:700`, not the `:656`
+   the last three entries name**, because this task added lines above it. T007
+   still owns it. The README's own "Verifying the exposure model" is **not** an
+   instance of the `deploy/` problem: it has both halves, tunnel and LAN.
 
 ---
 
-## Iteration 6 — 2026-08-12 — T005, the switch, offered only where it works
+## Iteration 5 — 2026-08-12
 
-**Did:** The create form carries a second override switch — `lifetime=never`,
-labelled "Never die at the lifetime limit", `.field-switch`/`.switch-input`/
-`.switch-label` and a `.field-hint`, no new class. It is rendered **only** on a
-daemon whose operator removed their own lifetime ceiling, decided by a new
-`session.Manager.LifetimeCeilingRemoved()` that `resolveLifetimes` now reads
-too. The idle switch's hint points at the switch below it on those daemons and
-at the settings page on every other.
+**Did:** T005. `README.md`'s Path 1 is now eleven numbered steps — `cloudflared`
+login, tunnel create, **DNS route**, the four values to edit in
+`cloudflared.example.yml`, the self-hosted Access application, the Google IdP, the
+service token, **both policies**, the four config keys, `crswd config check` and
+the restart, and finally "browse to `https://crswd.example.com/`". The from-a-clone
+block survives unchanged under a new `#### From a clone instead`.
 
 **Learned:**
 
-- **The gate is the interesting decision, and the plan already named it.** T004
-  said a per-session never under a finite ceiling "is a setting that always
-  refuses"; drawn unconditionally, this box would be refused on *every*
-  submission an operator ever ticked it for. `docs/components.md` has one answer
-  for that shape — a card with no page token offers no actions, a settings row
-  `config.Editable` refuses is not rendered as a form — so the switch follows
-  the daemon. An operator who wants it removes the ceiling and the form starts
-  offering it.
-- **One reading of the rule, and the break proved it is load-bearing both
-  ways.** `resolveLifetimes` now calls the exported predicate instead of testing
-  `maxLife < 0` locally, so miswriting it fails *the ceiling suite* as well as
-  the form's — `TestALifetimeThatNeverExpiresNeedsTheOperatorsCeiling` and four
-  cases of `TestBrowserCreateRefusesALifetimeThisDaemonWillNotGrant` went red on
-  a one-character change. The dashboard asks the manager and never
-  `s.cfg.SessionLifetimeMax < 0`: substituting the config read passes `go test`
-  everywhere except the new page test, because the fixture sets lifetimes on the
-  *manager*, exactly as `server.go` does at startup.
-- **⚠️ `TestCreateFormRendersNoCommandName` counts configured command names as
-  substrings of the whole create section**, and `default` is one of them
-  (`config.DefaultStartCommandName`). The hint's first draft said "adopted back
-  with this daemon's default lifetime" and tripped it the moment the switch
-  rendered on that fixture. Reworded to "the lifetime an ordinary session here
-  is given". **Prose in this form may not contain a configured command name**,
-  and `rc` is two letters inside a great many English words.
-- **Proved by breaking it, four ways.** Dropping the `{{ if }}` fails both
-  withheld-case tests; posting `value="0"` instead of `never` fails with the
-  parser's own reading — the exact "never must not be spellable as unset" trap
-  the plan warns about, caught because the assertion goes through
-  `parseLifetimeOverrides` rather than matching the string; reading the config
-  instead of the manager fails the projection test; and `m.maxLifetime <= 0`
-  fails six pre-existing cases. All restored.
-- **`docs/components.md` was updated in the same commit** (#119). Its Switch
-  section said there were two switches and that the absolute lifetime "cannot be
-  disabled at all" — false since iteration 5. It now also carries the
-  conditional-rendering rule, which is the one thing about this control that the
-  markup cannot show.
-- Linter confirmed v2 (`2.12.2`, #26). `go test ./...`, `-tags tmux`, `-tags
-  dev`, `-tags quickstart ./cmd/crswd` (36s) all pass; quickstart run **after**
-  the commit, per iteration 1.
+- **`deploy/cloudflared.example.yml`'s header was still milestone 1.** It said the
+  daemon "does not validate a Cloudflare Access JWT" and told the reader to consult
+  *"Not shippable before T037" in `ralph/IMPLEMENTATION_PLAN.md`* — a section that
+  has not existed since milestone 1's plan was archived. **Corrected here rather
+  than logged**, because step 4 of the new procedure hands that exact file to a
+  stranger, and its header told them the opposite of the page sending them. The one
+  line in it that is a fixture is `service: http://127.0.0.1:8765`
+  (`deployexample_test.go:300` matches lines starting `service: http://` after
+  trimming `- `, and compares against `config.DefaultListen`) — comments are safe
+  because the match happens after the `#`, not before it.
+- **`crswd config check` does not check values, and saying it does would be the
+  milestone's own mistake.** `configCheck` (`cmd/crswd/config_cmd.go:101`) reports
+  the file's grammar, the keys it sets — never a value — and the mode; its last
+  printed line says the values are checked at startup against the environment the
+  daemon starts in. **T006 folds the same command in as its pre-restart step and
+  should describe it the same way.**
+- **The `journalctl` trap from iteration 4 is avoidable in one move: keep the word
+  off the start of a source line.** `filterOf` strips a leading `#` and nothing
+  else, so `journalctl --user -u crswd -e` is safe written mid-sentence and fatal
+  written at a line start or as the first word of a wrapped line. The whole
+  diagnostics reference in step 10 is one inline clause for that reason.
+- **Nothing mechanical checks a README anchor**, so the two links into this
+  section were re-verified by hand against the heading list: `#configuration`,
+  `#install`, `#path-1--…`, `#path-2--…`, `#roadmap`, `#the-two-doors`,
+  `#verifying-the-exposure-model` all resolve. The new `#### From a clone instead`
+  is deliberately unlinked — it is a subsection of Path 1, not a destination.
+- **`go build` stays legal here only because it is below the one-liner.**
+  `TestReadmeLeadsWithTheOneLiner` fails on `go build`, `git clone` or
+  `go mod download` appearing at a lower byte offset than the install command, and
+  the from-a-clone block is the only place any of the three appears. Adding
+  material *above* it is free; moving it up the page is not.
+- **The gate ran in full and green:** build, vet, `go test ./...`,
+  `golangci-lint run` (v2.12.2, so #26's check passes, 0 issues), and
+  `go test -tags quickstart ./cmd/crswd` (36s), which is the suite that reads this
+  file.
 
-**Left:** T006 and T007, both documentation. T006 must fix `config.example`'s
-"There is deliberately no way to say 'never'" (iteration 5's finding) and now
-also owes a line about the browser form, since `session_lifetime_max = never` is
-what makes a switch appear on the dashboard.
+**Left:** T006–T008.
 
-**Findings:**
+**Findings (not fixed):**
 
-- **The restart edge is now told to the operator, in the hint**, rather than
-  waiting for T006/T007 as iteration 5 proposed: saying "no clock reaps this
-  session" and omitting that adoption gives it back the default lifetime — and
-  tears it down on the spot if it is already older (FR-025) — would have been
-  the same overstatement the whole hint exists to prevent. T006 and T007 should
-  still say it; this is the one place an operator meets it at the moment of
-  choosing.
-- **⚠️ The signed API can ask for `lifetime=never` and gets no such gate.** It
-  is refused by `resolveLifetimes` on a daemon with a ceiling, which is correct
-  — but a skill has no way to ask *whether* this daemon would grant it, so the
-  browser can now see the daemon's answer in advance and the API still cannot.
-  Third iteration running that the same gap has been logged one field over
-  (iteration 3's effective idle clock, iteration 4's `last_activity`). Worth one
-  capability document rather than three separate fixes.
-- **Nothing renders the ceiling itself on the create form**, deliberately: the
-  hint says the daemon has no ceiling but never what the finite one *is*, for
-  the reason the existing idle hint names no number — it would be false on every
-  install that configured something else. The settings page is where a value is
-  read, and the two hints both point there.
-- **`gofmt -l .` still flags `internal/httpapi/render.go`** (iteration 3's
-  finding, unchanged and untouched). `golangci-lint run` reports 0 issues.
-- **`Fake.Seed` still silently drops `Label`, `WorkDir` and `StartCommand`**
-  (iteration 1's finding, unchanged).
+1. **Nothing in this repository ships a `cloudflared` unit, and two files now
+   assume one.** `deploy/README.md:105` ends its order of operations with
+   `systemctl --user enable --now cloudflared`, which presumes a user unit the
+   operator wrote themselves; the new step 10 says the same thing more carefully
+   (foreground run to prove the path, then "a service of cloudflared's own — its
+   `service install` subcommand writes one — or a unit beside the daemon's").
+   **Not fixed:** shipping `deploy/cloudflared.example.service` is a new deployment
+   file, not a doc edit, and `cloudflared service install` writes a *system* unit
+   while everything else on the page is `--user` — that difference deserves stating
+   once, in one place. Worth a task.
+2. **Iteration 4's findings 1 and 2 stand, and so do the older three** — the two
+   framings of the doors that T007 must choose between; `install.sh`'s next steps
+   omitting `loginctl enable-linger`; `docs/auth-and-sessions.md`'s colliding "two
+   doors" and its "the skill"; `deploy/README.md`'s Access-only "Verifying the
+   exposure model"; and the htmx claim under "Why it is built this way", **now
+   `README.md:832`** after this task's additions — still T007's.
+3. **Path 1 and Path 2 now disagree about what an operator starts from.** Path 1
+   says the installer already left `~/.config/crswd/config` holding `shared_secret`
+   and `allowed_roots` at `0600` and shows only the keys to *add*; Path 2 still
+   shows a four-line file from scratch, `shared_secret` included. **That is exactly
+   T006**, which is next — it is recorded here only so the next iteration knows the
+   two sections were written to the same shape deliberately.
 
 ---
 
-## Iteration 7 — 2026-08-12 — T006, the file that had become wrong about two bounds
+## Iteration 6 — 2026-08-12
 
-**Did:** `config.example`'s four lifetime blocks now describe the daemon that
-exists. `idle_timeout` says idle is measured from the later of two clocks — the
-last request that drove the session, and what tmux itself last saw it print —
-and that watching still advances neither. `session_lifetime_max` documents
-`never`; `session_lifetime` says why the same word is refused one block above
-it; `idle_timeout_max` says why it needs no such word. The header's "a value
-that would weaken a bound is a startup failure" was true until milestone 13 and
-is now qualified rather than deleted. One new guard,
-`TestConfigExampleSpellsNeverWhereTheDaemonTakesIt`.
+**Did:** T006. Path 2 now starts from the file the installer left — four numbered
+steps in Path 1's shape: add `dashboard_password` and `listen` to a
+`~/.config/crswd/config` that is already there and already `0600`, **clear the
+unit's own `CRSW_LISTEN`**, `crswd config check`, then the sign-in form.
 
 **Learned:**
 
-- **The guard is the asymmetry, not the word.** `strings.Contains(raw, "never")`
-  would pass on this file forever — "never" appears a dozen times as ordinary
-  English, which is what makes the obvious docs-guard here worthless. What is
-  checkable is the *behaviour the prose claims*: the ceiling accepts the word
-  and the default refuses it, both through `config.LoadFrom`. Same shape as
-  iteration 2's T000 guard, for the same reason — the claim is that a daemon
-  starts on this.
-- **⚠️ `CRSW_SESSION_LIFETIME` is a prefix of `CRSW_SESSION_LIFETIME_MAX`**, so
-  `strings.Contains(err, EnvSessionLifetime)` is satisfied by a refusal that
-  names only the ceiling. The first draft of the guard passed a break for that
-  reason. It now matches `EnvSessionLifetime + " "`, and both refusal messages
-  happen to be followed by a space. **Any assertion about which of these two
-  variables an error names needs that trailing space.**
-- **`session_lifetime = never` is refused three deep**, which is why breaking
-  the guard took three edits rather than one: `loadDuration` cannot parse the
-  word, `validateLifetimes` refuses `lifetime <= 0`, and `idle > lifetime`
-  refuses it again. Good news about the daemon, and worth knowing before
-  concluding a break "did not work" — with all three relaxed the guard goes red
-  naming the wrong variable, and with `NeverLifetime` dropped from
-  `loadLifetimeCeiling` the ceiling case goes red. Both restored.
-- **⚠️ Adoption gives a session the *package constant* 24h, not this daemon's
-  configured `session_lifetime`.** `Adopt` builds a record with `Lifetime`
-  unset, and `AbsoluteDeadline` reads `orDefault(s.Lifetime, AbsoluteLifetime)`
-  — the constant at `session.go:34`, never `m.defaultLifetime`. The restart-edge
-  sentence was drafted as "this host's ordinary lifetime" and corrected to "the
-  built-in 24h" before commit. Verify against `AbsoluteDeadline` before writing
-  any sentence about what an adopted session gets.
-- **The duplicate-key trap was checked mechanically, not by eye**: no line added
-  in this change contains an `=` at all, so none of them can be read as a second
-  `# <key> = …` line. `grep -n '=' config.example` lists exactly one line per
-  key plus the three prose lines that were always there.
-- Linter confirmed v2 (`2.12.2`, #26). `go test ./...`, `-tags tmux`, `-tags
-  dev` and `-tags quickstart ./cmd/crswd` (36s) all pass; quickstart run
-  **after** the commit, per iteration 1.
+- **The task's second key does not work as the plan describes it, and checking
+  was the whole value of the task.** `deploy/crswd.example.service:96` carries
+  `Environment=CRSW_LISTEN=127.0.0.1:8765`; `release.yml:102` ships that file
+  verbatim as `crswd.service`; `install.sh` writes it to
+  `~/.config/systemd/user/`. Precedence is **flag > environment > file > default**
+  (`internal/config/source.go:16`), so `listen = 0.0.0.0:8765` in the
+  configuration file **changes nothing on any installer-installed host** — the
+  daemon goes on binding loopback and is simply unreachable from the LAN. It is
+  the identical trap the installer's own file already spells out for
+  `allowed_roots` ("an edit here alone is one that appears to have done nothing"),
+  undocumented for the one setting this deployment exists to change.
+- **`crswd config check` cannot catch it.** `configCheck`
+  (`cmd/crswd/config_cmd.go:101`) reads only the file: grammar, keys, mode. It
+  never consults the environment, so it reports `listen` as set while the unit
+  wins. `GET /settings` is the thing that shows the layer that won, and
+  `ss -tlnp | grep crswd` is the check that needs no door to be open yet. Say
+  what `config check` does **not** do wherever this milestone folds it in.
+- **`dashboard_password` has no such collision** — grep the unit: it appears in a
+  comment (lines 67–71, telling an operator to put it in the `EnvironmentFile`)
+  and in no `Environment=` line. Only `listen` and `allowed_roots` are set both
+  places.
+- **The ordering of the two keys is load-bearing, not stylistic.** `loadListen`
+  (`config.go:1461`) refuses a non-loopback host when no door admits, so writing
+  `listen` first and restarting is a daemon that stops. One edit, both keys.
+- **`http://<the host's LAN address>:8765/login` survived byte for byte**, as
+  iteration 4 warned — `login_test.go:1004` builds it from the mux's own
+  `pathLogin` constant.
+- **The `journalctl` sweep nearly bit again, in a new way.** A wrapped line whose
+  first character is a **backtick** is safe (`trailCommands` strips whitespace and
+  a leading `#`, nothing else), but relying on that is how the next edit fails.
+  Rewrapped so the word sits mid-sentence, per iteration 5.
+- **The gate ran in full and green:** build, vet, `go test ./...`,
+  `golangci-lint run` (v2.12.2, #26's check passes, 0 issues), and
+  `go test -tags quickstart ./cmd/crswd` (35s).
 
-**Left:** T007 alone, and this iteration widened it — see the first finding.
+**Left:** T007, T008.
 
-**Findings:**
+**Findings (not fixed):**
 
-- **⚠️ `.env.example` carries the same four keys and is still wrong about both
-  changes**, in blunter words than `config.example` ever used: its
-  `CRSW_IDLE_TIMEOUT` block says "a long job you are watching is still reaped"
-  (false since T002 — a job producing output moves the tmux clock) and its
-  `CRSW_SESSION_LIFETIME` block says "there is deliberately no value meaning
-  never" (false since T004). T006 named `config.example` alone and T007 names
-  `README.md` and `docs/auth-and-sessions.md`, so this file fell between them.
-  **T007's line in the plan has been amended to include it** rather than left as
-  a finding to be rediscovered.
-- **Adopted sessions ignore the operator's configured default lifetime**
-  (above). On a daemon with `session_lifetime = 4h` an adopted session gets 24h
-  — *longer* than configured, which is the wrong direction for a bound. Not
-  fixed: outside T006, and it predates this milestone. Worth a task.
-- **`gofmt -l .` still flags `internal/httpapi/render.go`** (iteration 3's
-  finding, unchanged and untouched). `golangci-lint run` reports 0 issues.
-- **`Fake.Seed` still silently drops `Label`, `WorkDir` and `StartCommand`**
-  (iteration 1's finding, unchanged).
+1. **A systemd drop-in is probably the better answer to step 2 and is untested
+   here.** `systemctl --user edit crswd` with `Environment=CRSW_LISTEN=…` would
+   override the shipped unit *without* editing it, so `install.sh` would go on
+   replacing the unit on later runs instead of leaving it alone. Drop-ins parse
+   after the main file and a repeated `Environment=` assignment wins, so it
+   should work — but **this iteration could not verify it on this host**, and the
+   milestone's own rule is not to write down an unverified claim. The two options
+   the page does give are both readable off files in this repo. Worth a task:
+   verify it, and if it holds, it belongs in `deploy/README.md` once rather than
+   in both paths.
+2. **`install.sh`'s printed next steps and `README.md`'s three-line recipe both
+   say "edit the config, then enable" and neither mentions the unit.** The recipe
+   at `README.md:116` is now accurate for Path 1 and incomplete for Path 2, which
+   needs a second file opened. **Not fixed:** the Install section deliberately
+   defers detail ("what goes in that file is your path's business") and T007 owns
+   that section's trimming — it should decide whether the deferral still holds now
+   that one path has two files to edit.
+3. **Iteration 5's finding 1 and iteration 4's findings 1 and 2 stand, and so do
+   the older three** — no shipped `cloudflared` unit while two files assume one;
+   the two framings of the doors T007 must choose between; `install.sh`'s next
+   steps omitting `loginctl enable-linger`; `docs/auth-and-sessions.md`'s colliding
+   "two doors" and its "the skill"; `deploy/README.md`'s Access-only "Verifying the
+   exposure model"; and the htmx claim under "Why it is built this way", **now
+   `README.md:875`** after this task's additions — still T007's.
 
 ---
 
-## Iteration 8 — 2026-08-12 — T007, the last three files that described the old daemon
+## Iteration 7 — 2026-08-12
 
-**Did:** `.env.example`'s four lifetime blocks, `README.md`'s configuration table
-and its two clock notes, and `docs/auth-and-sessions.md` now describe the daemon
-milestone 13 built. `.env.example` lost both of the sentences iteration 7 named —
-"a long job you are watching is still reaped" and "there is deliberately no value
-meaning never" — plus a third nobody had flagged: its not-configurable footer
-still ended "and that no value spells never". README's "There are two clocks, and
-only one of them can be turned off" became "either of them", and its "Effectively
-never is a ceiling raised, not a bound removed" became the opposite claim with the
-cost and the restart edge attached. The binding spec got the smallest change of
-the three: three rows of the Lifetimes table, one paragraph beside the stream
-rule, one checklist line.
+**Did:** T007. `README.md` 913 → 872 lines: the startup probe is two sentences and
+a pointer at the two files that own it, the API door is a section of its own
+instead of a paragraph inside the browser doors' comparison, the twelve-milestone
+roadmap is gone, and so is the last htmx claim in the repository.
 
 **Learned:**
 
-- **No new guard, and that was the decision rather than an omission.** Everything
-  the two operator files now claim about `never` is already pinned through
-  `config.LoadFrom` by T006's `TestConfigExampleSpellsNeverWhereTheDaemonTakesIt`
-  — that test drives the **environment** path (`pairs[EnvSessionLifetimeMax]`),
-  which is exactly what `.env.example` documents, so a second guard would assert
-  the same daemon behaviour a second way. The idle half is T002's session tests.
-  What is left unguarded is prose, and iteration 7 already established that a
-  `strings.Contains(raw, "never")` guard over prose is worth nothing.
-- **⚠️ The idle disable has two spellings on the wire and only one is
-  documented.** `parseLifetimeOverrides` translates `idle_timeout: "0"` to a
-  negative, but a caller who sends `-1h` gets a duration that parses, stays
-  negative, and disables idle reaping just as well — `resolveLifetimes` refuses
-  only `idle > maxIdleAllowed`. `.env.example` said "pass a negative value" and
-  now says `"0"`, which is the spelling the daemon's own comment calls the
-  disable. Check `sessions.go:99` before writing either into a doc again.
-- **The lifetime switch is gated in the template and the idle switch is not**
-  (`create-form.html:338` vs `:285`), which is what the README note had to say
-  and the one thing a reader cannot infer from the config table. Verified in the
-  markup rather than from iteration 6's summary.
-- **`internal/config/docs_test.go` checks the README table's *rows*, not its
-  cells** — `readmeVarRow` matches the first cell only, deliberately, so every
-  factual claim in the fourth column is unchecked by construction. Editing a
-  description there is editing unguarded prose; editing a row name is not.
-- Linter confirmed v2 (`2.12.2`, #26). `go test ./...`, `-tags tmux`, `-tags dev`
-  and `-tags quickstart ./cmd/crswd` (35s) all pass; quickstart run **after** the
-  commit, per iteration 1.
+- **The plan's "move the two API-door bullets out of the operator's install
+  reading" names something that is not in the file, and never was.** The README
+  has no bullets about the API door at any revision — checked `f5f9113`, the
+  revision the audit read (its `README.md:656` htmx line matches). What is there
+  is one **paragraph** ("The API is a second door…") inside `## The two doors`,
+  plus the two-policies material that T005 has since turned into steps 7 and 8 of
+  Path 1, where it is required procedure rather than duplication. **Read as: get
+  the API-door explanation out of the door-choosing reading** — done, as
+  `## The API door` between the audit trail and "Why it is built this way",
+  linked from the "What it does" bullet and pointing back at steps 7–8. Undoing
+  T005's steps was not on the table; the plan asked for those steps by name.
+- **`docs/security.md` §4 "Fail closed" is where the probe's *why* lives**
+  (lines 334–368: the two failure modes, the constant script on stdin, once per
+  start, the 5s/1s bounds, note-not-claim, and the named trade). `deploy/README.md`
+  §"The unit's PATH is not the session's" owns the deployment consequence. The
+  README's version was the third and longest telling, table included. Anyone
+  tempted to re-expand it: **those two are the sources, and both are binding.**
+- **One fact died with the long version and it was already homeless:** the probe's
+  suggested install line comes from `/etc/os-release` rather than being guessed
+  from `GOOS`. `grep` says it now survives only in `specs/004-…` and
+  `depcheck_test.go` — an archived spec and a test. It is a behaviour, not a
+  bound, so it was not worth two sentences on the front page; recorded here so it
+  is a decision rather than a loss.
+- **The roadmap was the only thing linking to `#roadmap`,** and nothing outside
+  `ralph/` referenced it. Cutting a section means grepping `](#` first: the other
+  fourteen anchors are unchanged and still resolve.
+- **`readme_test.go`'s two content tests survive any trim as long as three phrases
+  do**: `dashboard_password`, `access_enabled` and `admits nobody` (`doorKeys` +
+  `doorClosedPhrase`, declared in `install_test.go:1082`), plus the rollback trio.
+  The trimmed sections held none of them, which is why 79 deleted lines cost
+  nothing.
+- **The gate ran in full and green:** build, vet, `go test ./...`,
+  `golangci-lint run` (v2.12.2, #26's check passes, 0 issues), and
+  `go test -tags quickstart ./cmd/crswd` (36s).
 
-**Left:** nothing in this plan. T000–T007 are done and the tree is green.
+**Left:** T008.
 
-**Findings:**
+**Findings (not fixed):**
 
-- **README's roadmap still says "Milestones 1 through 12 are complete" and has no
-  row for 13.** Deliberately not touched: T007 names the configuration table and
-  the idle clock, the milestone is not merged, and every previous milestone's row
-  was written by its own last task. Whoever merges this branch owes that row —
-  "Make idle mean what it says, and let a session live forever".
-- **⚠️ Three iterations have now logged the same gap one field over: nothing
-  announces what a create may ask for.** A skill cannot discover that `lifetime`
-  takes `never`, that this daemon would grant it, or what the effective idle
-  clock is, because there is no capability document and `GET /` has no such
-  shape. The browser learns all three from the form; the signed API learns them
-  from the README or not at all. One task, not three.
-- **Adopted sessions still take the package constant 24h rather than the
-  configured `session_lifetime`** (iteration 7's finding, unchanged). Both
-  `config.example` and now `.env.example` and `README.md` state the 24h as a
-  fact, so the docs are honest about a behaviour that is still worth fixing.
-- **`.env.example` has no blank line between `CRSW_DESTROY_ON_SHUTDOWN=` and the
-  comment block below it**, unlike every other pair in the file. Pre-existing,
-  cosmetic, and left alone under AR-008 — noted so the next reader does not read
-  the lifetime comment as belonging to the assignment above it.
-- **`gofmt -l .` still flags `internal/httpapi/render.go`** (iteration 3's
-  finding, unchanged and untouched). `golangci-lint run` reports 0 issues.
-- **`Fake.Seed` still silently drops `Label`, `WorkDir` and `StartCommand`**
-  (iteration 1's finding, unchanged).
+1. **`internal/httpapi`'s `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval`
+   is timing-flaky and failed once here** (`stream_test.go:991`: "the opening
+   screen arrived 11ms after the open, which is past the 10ms interval"), then
+   passed on re-run and passed with the whole package. **Nothing Go changed this
+   iteration** — the diff is `README.md` alone — so this is a 1ms margin against a
+   10ms interval on a loaded host, not a regression. **Not fixed:** widening the
+   assertion is a test change with a judgement call in it (what margin still proves
+   "did not wait for a tick"), and it belongs to whoever owns that file rather than
+   a docs milestone. Worth a task; CI will hit it eventually.
+2. **T007's two open decisions, both settled deliberately and recorded so nobody
+   re-opens them silently.** (a) **Iteration 4's finding 1: both framings of the
+   doors survive.** The front matter answers "what is this project", the install
+   opening answers "which of the two am I about to install", and they link to
+   different places — the comparison table and the two paths. Collapsing them
+   would leave a reader at line 10 with a choice and nowhere to make it. (b)
+   **Iteration 6's finding 2: the three-line recipe keeps deferring**, now with
+   the deferral made honest — path 2 is "two keys here and one line to take back
+   out of the unit". Naming `CRSW_LISTEN` in the recipe would mean explaining the
+   precedence trap 400 lines above the path that hits it.
+3. **Iteration 5's finding 1, iteration 6's finding 1, iteration 4's finding 2 and
+   the two older ones stand** — no shipped `cloudflared` unit while two files assume
+   one; the systemd drop-in that is probably the better answer to Path 2 step 2 and
+   is unverified; `install.sh`'s next steps omitting `loginctl enable-linger`;
+   `docs/auth-and-sessions.md`'s colliding "two doors" and its "the skill"; and
+   `deploy/README.md`'s Access-only "Verifying the exposure model". **No live doc
+   claims htmx any more:** `grep -ril htmx` leaves `AGENTS.md`, where T001 made it
+   the negation "no htmx", and `specs/002-access-dashboard/` — five archived
+   milestone-2 artifacts that planned the dashboard with it, before it was dropped.
+   Those are a record of what was decided then, not instructions, and `docs/` and
+   `README.md` are now clean.
+
+---
+
+## Iteration 8 — 2026-08-12
+
+**Did:** T008. `docs/components.md` 906 → 893 lines: the four passages that
+narrated the document's own revisions — Toast leaving the not-built list, the
+settings page that used to be read-only, the Switch section that once had one
+switch, the fleet-announcement rule that once said the opposite — are one
+sentence each plus their issue number. No class name moved.
+
+**Learned:**
+
+- **Exactly one test reads this file, and only for four class families.**
+  `stylesheet_test.go:798` (`TestTheComponentsDocumentNamesThePickerTheSwitchTheHeaderAndTheToast`)
+  reads `componentsDocPath` and sweeps
+  `\.(combo|switch|masthead|action-toast)[\w-]*` **in both directions** against
+  `crswd.css`. Nothing else in the tree opens `docs/*.md` — `grep -rn '\.\./\.\./docs/'`
+  over `*.go` returns two constants, this one and `designSystemPath`. So prose in
+  this file is free to change as long as that class set does not, and the cheap
+  proof is `git show HEAD:docs/components.md | grep -o '\.\(combo\|switch\|masthead\|action-toast\)[a-zA-Z0-9_-]*' | sort -u`
+  against the same grep on the working copy. Identical here.
+- **The compressed Toast paragraph could drop `.action-toast` only because the
+  Toast section still names it.** A memoir passage that carries the *only*
+  mention of a guarded class is not compressible without moving the name
+  somewhere else first — the sweep does not care which paragraph it sits in, only
+  that the file says it.
+- **One surviving sentence was itself stale and is fixed in passing:** the
+  settings page's "the action gate those **two** routes sit behind" sat under a
+  paragraph listing **four**. All four are registered through `handleAction`
+  (`server.go:678, 688, 693, 729` — update, restart, settings edit, logout), so
+  it now reads "those four routes". Verified before writing, per this milestone's
+  own convention.
+- **The lesson really was already in the test.** `stylesheet_test.go:744-750`
+  carries the whole #119 argument — the toast shipped with #42, being rendered
+  *and* styled satisfies both code-facing sweeps, and the document-facing
+  direction is the only one that can see that drift. The doc's paragraph was a
+  second telling of it in the file an agent loads before touching a control.
+- **The gate ran in full and green:** build, vet, `go test ./...`,
+  `golangci-lint run` (v2.12.2, #26's check passes, 0 issues),
+  `go test -tags quickstart ./cmd/crswd` (36s), and `go test -tags tmux ./...`.
+  Iteration 7's flaky `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` did
+  not recur across three full runs of `internal/httpapi`.
+
+**Left:** nothing. All eight tasks of milestone 14 are ticked.
+
+**Findings (not fixed):**
+
+1. **Iteration 7's "no live doc claims htmx any more" is wrong, and
+   `docs/components.md` is the file it missed.** `grep -c htmx docs/components.md`
+   is **4**. Two are the negation the tree wants (the preamble's "There is no htmx
+   in this tree", and the pane's "never an htmx swap that treats the payload as
+   markup"). The other two are in the pane viewer's blockquote and one of them is
+   a live positive recommendation: **"htmx is still the right tool for the rest of
+   the dashboard."** That contradicts `AGENTS.md`'s `web/` row ("no htmx"), which
+   T001 wrote this milestone, and the same page's own preamble. The sentence is
+   inherited from `specs/002-access-dashboard/research.md:129`, written before the
+   library was dropped. **Not fixed:** T008's scope is self-history, one task per
+   iteration, and the blockquote around it is half a security rule — deleting a
+   clause out of it is a `docs/security.md` reader's job, not a passing edit.
+   Worth a task: it is one sentence, and it is the last htmx claim in a live doc.
+2. **The pane blockquote is a fifth self-narrating site, and it duplicates the
+   bullet three lines under it.** "This snippet used to show exactly that, and it
+   was wrong: a session printing `<img src=x onerror=...>` would have executed
+   it" is memoir; the rule it guards ("**Text nodes only** … never an htmx swap
+   that treats the payload as markup") is already the first bullet of the section.
+   T008 named four passages and this is not one of them, so it stands. **Whoever
+   takes finding 1 should take this with it** — same six lines, and the concrete
+   `<img src=x onerror=...>` example is the part worth keeping.
+3. **Two smaller self-references were left deliberately, because they are already
+   at the size T008 asks for**: "this is what fills the action-row parameter
+   earlier versions of this document described as present-but-empty" (Action
+   controls), and "this bullet used to end by saying an outcome needs no live
+   region at all…" (Accessibility floor). One clause and one sentence — compressing
+   further would cost the reason and save nothing.
+4. **Iteration 7's finding 1 stands:** `TestTheOpeningScreenIsSentWithoutWaiting-
+   OutAnInterval` (`stream_test.go:991`) is a 1ms margin against a 10ms interval
+   and will fail on a loaded CI host. It did not recur here, which is not
+   evidence it is fixed.
+5. **The standing operational findings all stand, none of them touched by
+   milestone 14:** no shipped `cloudflared` unit while two files assume one; the
+   systemd drop-in that is probably the better answer to Path 2 step 2 and is
+   unverified on this host; `install.sh`'s printed next steps omitting
+   `loginctl enable-linger`; `docs/auth-and-sessions.md`'s colliding "two doors"
+   and its "the skill"; and `deploy/README.md`'s Access-only "Verifying the
+   exposure model". **All five are the next milestone's material** — four of them
+   are `deploy/` and installer work that this documentation milestone had no task
+   for, and the fifth is a file the plan put out of scope by name.
 
 RALPH_COMPLETE

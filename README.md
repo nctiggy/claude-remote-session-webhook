@@ -21,7 +21,8 @@ what each costs you, is [The two doors](#the-two-doors).
 - Read the whole configuration on `/settings` — every value and where it came from
 - Edit one non-secret setting, update the daemon to a signed release, and restart
   it, from that same page
-- Drive the sessions from a script instead of a browser, over a signed HTTP API
+- Drive the sessions from a script instead of a browser, over a
+  [signed HTTP API](#the-api-door)
 
 **Everything works with scripting switched off.** Every action is a plain form
 post; the live pane and the fleet updates are the enhancement, not the mechanism.
@@ -29,7 +30,8 @@ The pages are built for a phone as well as a desktop.
 
 **Two things are not built yet**, and are named here so nobody goes looking for
 them: relaying Claude's own device-code login when a session asks for it, and the
-companion Claude skill that would drive the API. See [Roadmap](#roadmap).
+companion Claude skill that would drive the API. Everything else on this page
+describes what the daemon does today.
 
 ## The security posture, stated plainly
 
@@ -53,6 +55,37 @@ lifetime enforced by a reaper — deadlines a create can switch off only as far 
 
 ## Install
 
+**There are two deployments, and choosing between them comes before anything you
+type.** Both run the same installer and the same daemon; what differs is which
+door the dashboard has, and therefore where the daemon is allowed to listen.
+
+1. **On the internet** — a Cloudflare Tunnel dials out and **Cloudflare Access**
+   decides who reaches it. Needs a Cloudflare account with a domain on it, and
+   `cloudflared` on this host.
+   → [Path 1](#path-1--on-the-internet-cloudflare-tunnel-and-access)
+2. **On a network you control** — a **dashboard password**, and the daemon
+   listening on a LAN address. Needs nothing you do not already have, and gives
+   you no TLS unless you put a reverse proxy in front of it.
+   → [Path 2](#path-2--on-your-own-network-the-dashboard-password)
+
+What each one costs you is [The two doors](#the-two-doors) — read that first if
+the choice is not obvious. You can install before you decide: a daemon with
+neither door runs, serves the API, and admits nobody to the dashboard.
+
+**What the host needs, either way:**
+
+- **Linux with a systemd user session.** Everything here is a `systemctl --user`
+  unit, running as you and not as root.
+- **`tmux`.** Every session is a tmux window, so the installer refuses a host
+  without it and so does the daemon at startup.
+- **`claude`, installed and already signed in**, as the user the daemon will run
+  as. Run it once in a terminal and finish its login first. **Relaying Claude's
+  own device-code login is not built**: a session that comes up at that prompt
+  sits there, and the only way to answer it is attaching to the tmux window by
+  hand on the host — which is the thing you installed this to avoid.
+
+Then, on that host, whichever path you picked:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nctiggy/claude-remote-session-webhook/main/install.sh | bash
 ```
@@ -74,12 +107,13 @@ That configuration is complete enough to start: it carries a generated
 created. What it does not carry is a **door** — neither can be invented for you,
 one being a credential and the other a Cloudflare account — so until you choose
 one the daemon serves the API and admits nobody to the dashboard. It is not
-broken; it is closed. Which door you want is [The two doors](#the-two-doors).
+broken; it is closed. Opening it is what the rest of your path does.
 
 It enables nothing and starts nothing. What would be enabled at boot is a daemon
 that spawns shells with the permission prompt turned off, and whether to run one —
 on which machine, admitting whom — is not a decision to take from inside a pipe.
-So the rest is yours:
+So the rest is yours, and it is the same three lines on both paths — only the
+first line's answer differs:
 
 ```bash
 $EDITOR ~/.config/crswd/config          # dashboard_password, or access_enabled + the access_* keys
@@ -90,6 +124,19 @@ systemctl --user enable --now crswd
 The middle line is the one that is easy to skip and expensive to skip: a
 `systemctl --user` unit enabled from an SSH session stops when that session ends,
 and the symptom arrives minutes later looking nothing like its cause.
+
+**What goes in that file is your path's business** —
+[path 1](#path-1--on-the-internet-cloudflare-tunnel-and-access) has more to set
+up in front of the daemon than in it,
+[path 2](#path-2--on-your-own-network-the-dashboard-password) is two keys here and
+one line to take back out of the unit — and both come back to the last two lines
+above.
+
+**If it does not come up, it has already said why.** Every bound in
+[Configuration](#configuration) is a startup failure with a reason attached,
+written to stderr and merged into the journal, naming the setting and what was
+wrong with it — so read the refusal with `journalctl --user -u crswd -e` before
+changing anything.
 
 **Run it again whenever.** It never replaces a configuration, and it replaces the
 unit only when the hash it recorded still matches what is on disk — a unit you
@@ -162,7 +209,7 @@ thing on this page.** A request that passes the browser door starts an unsandbox
 shell on this host, so the door is the product. Both run the daemon as a **systemd
 user service**; what differs is who is allowed to knock, and from where.
 
-| | On the internet | On your own network |
+| | 1 · On the internet | 2 · On your own network |
 |---|---|---|
 | Reached through | A Cloudflare Tunnel dialling out to `*.example.com` | The LAN, directly |
 | The browser door | **Cloudflare Access** — Google login and a one-email allowlist, enforced at the edge and re-checked here | **A dashboard password** — a sign-in form this daemon serves, and a cookie it signed |
@@ -179,36 +226,160 @@ Which one a running daemon actually has is on `GET /settings`, under **Who may r
 it**, in a sentence — read from the door the server was built with rather than from
 the file, so a daemon wired one way and configured another says what it *is*.
 
-**The API is a second door and neither of these is a share of it.** Whichever one
-the browser uses, every request to `/sessions…` carries an HMAC signature over its
-body, a timestamp inside a 300-second window, and — for anything naming a session —
-that session's own token, all checked by the daemon itself. On the internet the
-edge's Service Auth policy stands in front of that as well; on a LAN there is no
-edge, so the signature is the whole of it. `deploy/crswd-api` is the client, and it
-is a shell script so that reading it is the documentation.
+### Path 1 — on the internet: Cloudflare Tunnel and Access
 
-### On the internet — Cloudflare Tunnel and Access
+**What you are building:** a tunnel that dials out from this host to Cloudflare, a
+public hostname routed to that tunnel, and an **Access application** in front of
+that hostname deciding who reaches it. The daemon goes on listening on
+`127.0.0.1:8765` throughout — nothing below opens a port on the host or the router.
 
-Example files for both live in [`deploy/`](deploy/), and
-[`deploy/README.md`](deploy/README.md) is the operator's page: what you supply, in
-what order, and why three settings in the unit are load-bearing.
+You need a Cloudflare account with a domain on it. Steps 1 to 8 happen in
+Cloudflare and in `~/.cloudflared/`; only 9 onwards touch the daemon.
+
+> **A public hostname with no Access application in front of it leaves HMAC alone
+> between the internet and unsandboxed execution.** The daemon validates the
+> assertion the edge forwards — pinned audience, pinned algorithm, and its own copy
+> of the allowlist — so the edge and the daemon each get a say. But it can only
+> check an assertion the edge actually wrote, and there is none to write when there
+> is no application. Do not point a public name at this before step 8.
+
+**1 · Install and authenticate `cloudflared`.** Cloudflare publishes packages and a
+static binary; install it however this host prefers. Then:
+
+```bash
+cloudflared tunnel login
+```
+
+It opens a browser, asks which of your zones you are authorising, and writes a
+certificate to `~/.cloudflared/cert.pem`. That certificate is what authorises the
+next two commands against your account. It is not the tunnel's own credential —
+step 2 creates that.
+
+**2 · Create the tunnel.**
+
+```bash
+cloudflared tunnel create crswd
+```
+
+It prints a **tunnel ID**, a UUID, and writes that tunnel's credential to
+`~/.cloudflared/<tunnel-id>.json`. Both are values you fill in at step 4.
+
+**3 · Route the hostname to the tunnel.**
+
+```bash
+cloudflared tunnel route dns crswd crswd.example.com
+```
+
+This writes the DNS record — a proxied `CNAME` at that name, pointing at the
+tunnel. It is the step most easily missed, and missing it is a tunnel that runs
+correctly at a name that resolves to nothing. The name must be inside the zone you
+authorised in step 1.
+
+**4 · Fill in the tunnel's configuration.** Copy `cloudflared.example.yml` to
+`~/.cloudflared/config.yml` — from [`deploy/`](deploy/) in this repository, or from
+the release assets if you took the [one-line install](#install) — and edit four
+values:
+
+| In `~/.cloudflared/config.yml` | What goes there |
+|---|---|
+| `tunnel:` | the tunnel ID from step 2 |
+| `credentials-file:` | the JSON path printed beside it |
+| `hostname:` | the name you routed in step 3 |
+| `service:` | `http://127.0.0.1:8765` — leave it, unless you moved `listen` |
+
+**The `service` line and the daemon's `listen` are one address written twice.** A
+mismatch is a `502` from the edge with nothing in the daemon's journal to explain
+it, because nothing ever reached the daemon. Leave the catch-all
+`- service: http_status:404` last: it is what stops the tunnel proxying whatever
+else this host may serve later.
+
+**5 · Create the Access application.** In Cloudflare's Zero Trust dashboard, add a
+**self-hosted** application whose domain is the hostname from step 3. Two of the
+daemon's four settings come out of it:
+
+- the **Application Audience (AUD) tag**, on the application itself →
+  `access_aud`
+- your **team domain**, normally `<team>.cloudflareaccess.com` →
+  `access_team_domain`
+
+Cloudflare rearranges that dashboard from time to time; those two names are what to
+search it for.
+
+**6 · Configure the identity provider.** Add **Google** as a login method for the
+team, then select it on this application. Access runs the login at the edge, so an
+unauthenticated browser never reaches this host at all; what the daemon sees is the
+assertion Access writes afterwards.
+
+**7 · Create a service token** — skip this if you will only ever use a browser. It
+is what the API client presents at the edge in place of a login: a
+`CF-Access-Client-Id` and a `CF-Access-Client-Secret`, sent alongside the signature
+the daemon checks. **The client secret is shown once, when the token is created,**
+and cannot be recovered afterwards — only regenerated. Keep it with the shared
+secret; `deploy/crswd-api` reads both at call time.
+
+**8 · Give that application both policies.** On the one application:
+
+- an **Allow** policy naming your email address. That same address is
+  `access_allowed_emails` at step 9.
+- a **Service Auth** policy naming the token from step 7.
+
+**Both, or the door is wrong in one of two ways.** Without the Service Auth policy
+the edge answers the API client with a redirect to the login page and the daemon is
+never reached. Without at least one Allow policy beside it, Access never issues a
+usable assertion to anybody.
+
+**9 · Write the four settings the daemon reads.** The installer already left
+`~/.config/crswd/config` holding `shared_secret` and `allowed_roots`, at mode
+`0600`. What this path adds is the door:
+
+```
+access_enabled = true
+access_team_domain = <team>.cloudflareaccess.com
+access_aud = <the AUD tag from step 5>
+access_allowed_emails = you@example.com
+```
+
+Keep that file at `0600`: it now holds the allowlist as well, and the daemon
+refuses to start from a file naming a person that any other account can read.
+`listen` stays at its default `127.0.0.1:8765`, because the tunnel is the only way
+in and there is nothing to widen.
+
+**The first line is not what selects the Access door** — the other three do that on
+their own. What it buys is a refusal: with `access_enabled = true` and the three
+absent, the daemon stops instead of starting a dashboard that admits nobody, which
+on this deployment is the mistake worth making fatal.
+
+**10 · Check the file, then start both.**
+
+```bash
+crswd config check                  # parses the file, names the keys it sets
+systemctl --user restart crswd      # or enable --now, if you have not started it yet
+cloudflared tunnel run crswd        # in another terminal, the first time
+```
+
+`config check` reads the file the daemon would read and reports its grammar, the
+keys it sets — never a value — and the mode it is sitting on. The values themselves
+are checked against the environment at startup, so a start that fails is still read
+with `journalctl --user -u crswd -e`. Running the tunnel in the foreground is what
+proves the path end to end; what keeps it up across a reboot is a service of
+cloudflared's own — its `service install` subcommand writes one — or a unit beside
+the daemon's, which is the order [`deploy/README.md`](deploy/README.md) takes.
+
+**11 · Browse to `https://crswd.example.com/`.** Google's login, then the
+dashboard. **If the dashboard renders without a login, stop**: the Access
+application is not in front of that hostname, and every session on the host is a
+shell reachable from the internet. The check is
+[Verifying the exposure model](#verifying-the-exposure-model), and it is worth
+running once even when the login does appear.
 
 **Every file in `deploy/` is an example.** This repository is public, so no real
-hostname, tunnel ID, Access AUD tag, allowed email, or path appears in it — those
-come from the environment or 1Password at deploy time.
+hostname, tunnel ID, AUD tag, allowed email, or path appears in one — those come
+from the environment or a secret manager at deploy time.
+[`deploy/README.md`](deploy/README.md) is the operator's page behind this one: the
+`EnvironmentFile` shape for the four values, why three settings in the unit are
+load-bearing, and the service token's two halves.
 
-> **A public hostname needs an Access application in front of it, with two
-> policies.** The daemon validates the assertion the edge forwards — pinned
-> audience, pinned algorithm, and its own copy of the allowlist — so the edge and
-> the daemon each get a say. But the daemon can only check an assertion the edge
-> actually wrote: put a hostname in front of this without an Access application and
-> layer 1 has nothing to verify, leaving HMAC alone between the internet and
-> unsandboxed execution.
->
-> The two policies are an identity policy for the browser and a **Service Auth**
-> policy for the API client, on the same application. Access needs at least one
-> Allow policy alongside Service Auth, or it never issues a usable assertion. See
-> `deploy/README.md`.
+#### From a clone instead
 
 The [one-line install](#install) does the first two lines below for you, from a
 published release. What follows is the same deployment done from a clone, and the
@@ -233,21 +404,64 @@ systemctl --user enable --now crswd
 `Environment=CRSW_SHARED_SECRET=` in the unit would be wrong even in a private
 repo: anyone who can run `systemctl --user show crswd` can read a unit back.
 
-### On your own network — the dashboard password
+### Path 2 — on your own network: the dashboard password
 
 No Cloudflare, no tunnel, no hostname: the daemon listens on an address the machine
-you are sitting at can reach, and serves its own sign-in form. The whole of it, in
-`~/.config/crswd/config`:
+you are sitting at can reach, and serves its own sign-in form. Nothing goes in front
+of it, so all four steps below are on this host.
+
+**1 · Add the door to the configuration you already have.** The installer left
+`~/.config/crswd/config` holding `shared_secret` and `allowed_roots`, at mode
+`0600`. What this path adds is two lines:
 
 ```
-shared_secret = <openssl rand -hex 32>
 dashboard_password = <a long passphrase, at least 16 characters>
 listen = 0.0.0.0:8765
-allowed_roots = /home/you/code
 ```
 
-The file must be mode `0600` — it holds two secrets, and the daemon refuses to start
-from one any other account can read. Then `systemctl --user enable --now crswd`, and:
+**Both in the same edit.** A non-loopback address on a daemon whose dashboard
+admits nobody is refused at startup — the bound at the end of this section — so
+`listen` written ahead of the password is a daemon that stops and names both
+doors. Keep the file at `0600`: the installer wrote it that way, and
+the daemon refuses to start from a file setting a secret that any other account
+can read. *Writing the file yourself rather than installing?* Then
+`shared_secret` and `allowed_roots` are yours to write too —
+[`config.example`](config.example) is the annotated copy, and the secret is the
+output of `openssl rand -hex 32`.
+
+**2 · Take the unit's copy of `listen` out of the way**, or the line you just
+wrote does nothing. The unit the installer wrote carries
+`Environment=CRSW_LISTEN=127.0.0.1:8765`, and **the environment beats the file**:
+leave it and the daemon goes on binding loopback, unreachable from the LAN, while
+the file says otherwise and `/settings` names the environment as the layer that
+won.
+
+```bash
+$EDITOR ~/.config/systemd/user/crswd.service   # delete the CRSW_LISTEN line
+systemctl --user daemon-reload
+```
+
+Putting the LAN address on that line instead of in the file works equally well;
+what does not work is setting it in both and expecting the file to win. Either
+way the unit becomes one you edited, so a later re-run of the
+[installer](#install) leaves it alone and says so.
+
+**3 · Check the file, then start.**
+
+```bash
+crswd config check                  # parses the file, names the keys it sets
+systemctl --user enable --now crswd
+```
+
+`config check` reads the file the daemon would read and reports its grammar, the
+keys it sets — never a value — and the mode it is sitting on. It says nothing
+about the unit and nothing about the values: those are checked against the
+environment at startup, so a start that fails is still read with the daemon's own
+refusal — `journalctl --user -u crswd -e`. That the port ended up where you meant
+it is `ss -tlnp | grep crswd`, under
+[Verifying the exposure model](#verifying-the-exposure-model).
+
+**4 · Browse to the sign-in form.**
 
 ```
 http://<the host's LAN address>:8765/login
@@ -561,44 +775,19 @@ use it:
 ### What it checks before it binds
 
 At startup the daemon probes what it shells out to, and the two dependencies fail
-differently on purpose:
+differently on purpose: **`tmux` missing is fatal**, because without it there is
+nothing this daemon can do and starting would only defer the failure to the first
+create, while **a start command's binary missing is a warning**, because a daemon
+that still serves the dashboard is the thing that can tell you so. It resolves a
+start command the way the session will — in a tmux pane's login shell, not on the
+service manager's `PATH` — so a `claude` under `~/.local/bin` is found rather than
+warned about, and a login shell that cannot be asked produces a note naming what
+was checked rather than a claim that the command is missing.
 
-- **`tmux` missing is fatal.** Without it there is nothing this daemon can do, so
-  starting would only defer the failure to the operator's first create. It is
-  looked for on the daemon's own `PATH` and nowhere else, because the daemon is
-  what runs it.
-- **A start command's binary missing is a warning.** It can still serve the
-  dashboard, adopt the sessions already on the host, and say what is wrong.
-
-The second probe reads the *configured* commands, not a fixed `claude`, and the
-install line it suggests comes from `/etc/os-release` rather than being guessed
-from `GOOS`. Nothing installs anything and nothing runs what it found.
-
-**It resolves a start command the way the session will, and that has three
-outcomes rather than two.** A start command is typed into a login shell inside a
-tmux pane, so the operator's profile has already run by the time the name is
-looked up — `claude` under `~/.local/bin` is on that `PATH` and not on the
-service manager's, which is the ordinary case for a tool installed under a home
-directory. So:
-
-| The binary is… | The daemon says |
-|---|---|
-| on the daemon's own `PATH` | nothing |
-| absent there but on the login shell's | nothing — the session will find it |
-| absent from both | a warning, naming the command, the setting it came from, and **both** places that were checked |
-| unresolvable, because the shell could not be asked | a **note** saying what was checked and what could not be — never that the command is missing |
-
-The last row is the point. A check that says "missing" about a command that works
-trains an operator to ignore it, which is worse than not checking at all.
-
-> **This makes the operator's login shell a startup dependency.** The daemon runs
-> `$SHELL -l` and asks it, on stdin, for one thing: the value of `$PATH`. It never
-> names the command to the shell — a `sh -lc "command -v $binary"` resolves
-> identically and is the shell string `docs/security.md` §2 forbids — and it asks
-> **at most once per start**, only after a command has already failed to resolve
-> on the daemon's own `PATH`. The ask is bounded by a 5s timeout and a 1s wait
-> delay, and a shell that cannot be run is the note above rather than a refusal.
-> A profile that blocks therefore costs a start five seconds; it cannot hang one.
+Why the daemon is allowed to run `$SHELL -l` at all, and every bound on the one
+thing it asks, is [`docs/security.md`](docs/security.md) §4; what it costs a
+deployment — the operator's own profile running before anything binds — is
+[`deploy/README.md`](deploy/README.md).
 
 ---
 
@@ -629,6 +818,20 @@ pane never is.
 
 ---
 
+## The API door
+
+**The API is a second door, and neither browser door is a share of it.** Whichever
+one the browser uses, every request to `/sessions…` carries an HMAC signature over
+its body, a timestamp inside a 300-second window, and — for anything naming a
+session — that session's own token, all checked by the daemon itself. On the
+internet the edge's Service Auth policy stands in front of that as well — the
+service token and the policy naming it are steps 7 and 8 of
+[path 1](#path-1--on-the-internet-cloudflare-tunnel-and-access) — while on a LAN
+there is no edge, so the signature is the whole of it. `deploy/crswd-api` is the
+client, and it is a shell script so that reading it is the documentation.
+
+---
+
 ## Why it is built this way
 
 **tmux, not bare subprocesses.** Sessions survive a daemon restart, you can attach
@@ -653,35 +856,10 @@ knowledge of one secret rather than identifying a person against an identity
 provider — strictly less than Access does, which is stated above rather than
 smoothed over.
 
-**Go templates + htmx, not an SPA.** Single static binary via `go:embed`. No npm,
-no second toolchain, no dependency at all — `go.sum` does not exist, and a test
-fails if one appears. SSE is a natural fit for tailing pane output.
-
-## Roadmap
-
-Each milestone is planned and run separately — one Ralph loop per milestone, not
-one loop for the lot.
-
-**Milestones 1 through 12 are complete**; the two doors are the most recent of
-them, and this page is that milestone's last task.
-
-| # | Milestone | Contents |
-|---|---|---|
-| 1 | Daemon core | config, `tmuxctl`, session CRUD, HMAC auth, audit log, reaper. No UI. |
-| 2 | Read-only dashboard | Access JWT validation, session list, live pane via SSE |
-| 3 | Dashboard actions | create, destroy, rename, compact |
-| 4 | Configure and operate | config file, read-only `/settings`, dependency probes, a dashboard that works without script |
-| 5 | Finish the dashboard | remote control as a mode, working-directory suggestions + themed picker, the settings link, the audit-trail and probe defects |
-| 6 | Ship it to someone else | `--version`, a release per merge, the one-line installer, signed self-update |
-| 7 | Make it work on a phone | one breakpoint, reachable controls, the components that had to become conditional |
-| 8 | Close the guard gaps | every invariant milestone 7 found stated in prose and enforced by nothing |
-| 9 | Two operator requests | booleans as checkboxes on `/settings`, and restarting the daemon from the page |
-| 10 | Let a session outlive the defaults | lifetimes and idle timeouts as settings, per-session overrides under a ceiling, the never-die-when-idle switch |
-| 11 | Make it installable by a stranger | an installer that generates the secret and writes a configuration complete enough to start |
-| 12 | A second front door | the dashboard password, the conditional bind, sign-out, and this page |
-
-**Still ahead of all of it**: the device-code login relay, and the companion
-Claude skill that drives the API.
+**Go templates and hand-written JavaScript, not an SPA.** Single static binary via
+`go:embed`. No npm, no framework, no second toolchain, no dependency at all —
+`go.sum` does not exist, and a test fails if one appears. SSE is a natural fit for
+tailing pane output.
 
 ## Working on it
 

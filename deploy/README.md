@@ -1,8 +1,20 @@
 # Deployment
 
+**This page is one of the two deployments: the daemon on the internet, behind a
+Cloudflare Tunnel with Access in front of the hostname.** Everything below assumes
+it.
+
+**On a network you control, you want the other one** — no tunnel, no Access
+application, no hostname. The browser door there is `CRSW_DASHBOARD_PASSWORD` and a
+sign-in form the daemon serves itself, and the whole configuration is four lines;
+[`README.md`](../README.md) has it under *On your own network*. Three sections here
+still apply to it — **Or configure it in a file**, **Why the unit looks the way it
+does** (it is the same unit), and **Reading the audit trail**. The rest is
+Cloudflare, and none of it is.
+
 **Nothing in this directory contains a real value.** Every file here is an example.
 Real hostnames, tunnel IDs, account IDs, usernames, paths, and secrets are supplied
-at deploy time from the environment or 1Password.
+at deploy time from the environment or a secret manager.
 
 This repository is public. Treat every file in it as published, because it is.
 
@@ -11,14 +23,16 @@ This repository is public. Treat every file in it as published, because it is.
 > key set, the AUD tag, and the allowlist before it renders anything; the API door
 > is unchanged and still checks the HMAC signature. Access at the edge stays in
 > front of both — no path gets an edge bypass — and the three `CRSW_ACCESS_*`
-> values below are what the daemon checks against. It refuses to start without them.
+> values below are what the daemon checks against. **This deployment sets all
+> three.** What the daemon enforces on them is all-or-nothing, not required — the
+> next section is what each one is and what setting none of them gets you.
 
 ## What you fill in yourself
 
 | Value | Where it comes from | Never |
 |---|---|---|
 | Public hostname | Your own DNS zone | In this repo |
-| `CRSW_SHARED_SECRET` | 1Password (`Lobster` vault) | In this repo, in a unit file, in a log |
+| `CRSW_SHARED_SECRET` | `openssl rand -hex 32`, kept in whatever secret manager you already use | In this repo, in a unit file, in a log |
 | `CRSW_ALLOWED_ROOTS` | Directories sessions may run in | In this repo |
 | Tunnel ID + credentials | `cloudflared tunnel create` | In this repo |
 | `CRSW_ACCESS_TEAM_DOMAIN` | Your Access team domain, normally `<team>.cloudflareaccess.com` | In this repo |
@@ -39,6 +53,15 @@ half-configured door would refuse every login while looking correctly configured
 Setting none is a supported deployment — the API works and the dashboard admits
 nobody — and the daemon says so in a banner at every start, so a dashboard that
 turns out to admit nobody is never a surprise found from the browser.
+
+**Which means forgetting all three is not a startup failure, and on this deployment
+that is the mistake worth making fatal.** `CRSW_ACCESS_ENABLED=true` is the operator
+saying out loud that Access is the browser door: with it set and the three absent,
+the daemon refuses to start instead of serving the API beside a dashboard nobody can
+enter. The unit already carries the line, empty — fill it in on your copy. It is not
+required for the Access door (the three select it on their own, as they did before
+the variable existed), and it is refused beside `CRSW_DASHBOARD_PASSWORD`, because
+two configured doors is the one question a daemon must not answer by guessing.
 
 Everything the daemon reads is named in [`.env.example`](../.env.example), with
 what each value refuses to start on. `CRSW_SHARED_SECRET` is required outright and
@@ -75,14 +98,18 @@ credential in the unit itself.
    that address is also `CRSW_ACCESS_ALLOWED_EMAILS`, and your team domain is
    `CRSW_ACCESS_TEAM_DOMAIN`
 3. Copy the AUD tag from the application's settings — it is `CRSW_ACCESS_AUD`
-4. Put `CRSW_SHARED_SECRET` in 1Password; generate it with `openssl rand -hex 32`
+4. Generate `CRSW_SHARED_SECRET` with `openssl rand -hex 32` and put it wherever
+   you keep secrets
 5. Copy both example files, fill them in **outside the repo**, install them
 6. `loginctl enable-linger "$USER"` — without it the unit stops at logout
 7. `systemctl --user enable --now crswd` then `systemctl --user enable --now cloudflared`
 
 **Four values** reach the daemon through an `EnvironmentFile` outside the repo,
-never through the unit. `EnvironmentFile` parses `NAME=value` lines, so write the
-assignments rather than the bare values:
+never through the unit. That is the shape, and it is the whole of it: a credential
+comes out of a secret manager at deploy time, lands in a file written under
+`umask 077` outside the repository, and never becomes an `Environment=` line.
+`EnvironmentFile` parses `NAME=value` lines, so write the assignments rather than
+the bare values:
 
 ```bash
 mkdir -p ~/.config/crswd
@@ -94,11 +121,19 @@ mkdir -p ~/.config/crswd
 ) > ~/.config/crswd/env
 ```
 
-Writing only the secret gets a daemon that refuses to start rather than one
-running with an unchecked browser door, and the startup error names the variable
-it is missing.
+**`op read` is one spelling of "out of a secret manager", not the procedure.** This
+deployment happens to use 1Password; `pass show`, `gopass`, `vault kv get`, a
+`systemd-creds` decrypt, or pasting the value in by hand produce the same file, and
+nothing in the daemon knows which you used. What is not interchangeable is the other
+two rules — a secret committed to the repo or set in the unit is the same secret
+either way.
 
-`Environment=` in a unit is the wrong place for any of them regardless of this
+Writing only the secret gets a daemon that **starts**, serves the API, and admits
+nobody to the dashboard — the banner at every start says exactly that. What refuses
+to start is writing one or two of the three, and that error names them. Making the
+first case a refusal as well is what `CRSW_ACCESS_ENABLED=true` is for, above.
+
+`Environment=` in a unit is the wrong place for any of the four regardless of this
 repo: anyone who can run `systemctl --user show crswd` can read them back. The
 secret is the obvious case; the other three name a Cloudflare team, an
 application, and a person.
@@ -110,8 +145,9 @@ readily as a stranger, so the client presents a **service token** at the edge �
 two headers, alongside the signature it already sends. The daemon never reads
 them; the edge does, and layers 2 and 3 are still enforced behind it.
 
-The same 1Password item carries all three values, so one item rebuilds the whole
-deployment:
+**Keep all three in one place, so one item rebuilds the whole deployment.** Here
+that is a single 1Password item — the shape is "one entry, three fields", and any
+manager does it:
 
 ```bash
 op read 'op://Lobster/crswd/shared-secret'          # the daemon's HMAC key
@@ -136,8 +172,8 @@ returns 200 is misconfigured.
 The client id is not a secret. The client secret is shown **once**, when the token
 is created, and is unrecoverable afterwards — regenerate the token if it is lost.
 The shared secret is worse: nothing can regenerate it, and losing it invalidates
-every live session token. It exists in exactly two places, 1Password and
-`~/.config/crswd/env`, and that is deliberate.
+every live session token. It exists in exactly two places — your manager and
+`~/.config/crswd/env` — and that is deliberate.
 
 ## Driving the API from a shell
 
@@ -155,7 +191,10 @@ crswd-api GET    /sessions/<id>/output '' <token>
 crswd-api DELETE /sessions/<id>        '' <token>
 ```
 
-`CRSWD_HOST` and `CRSWD_OP_ITEM` override the hostname and the vault item.
+`CRSWD_HOST` and `CRSWD_OP_ITEM` override the hostname and the vault item. **This
+is the one place 1Password is more than an example**: the script shells out to `op`,
+in three lines near the top. Another manager is those three lines changed — what the
+rest of it does with the values is the same either way.
 
 Three portability hazards it exists to avoid, each of which cost real time:
 
