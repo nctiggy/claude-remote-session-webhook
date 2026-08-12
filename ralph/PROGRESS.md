@@ -611,3 +611,78 @@ is now qualified rather than deleted. One new guard,
   finding, unchanged and untouched). `golangci-lint run` reports 0 issues.
 - **`Fake.Seed` still silently drops `Label`, `WorkDir` and `StartCommand`**
   (iteration 1's finding, unchanged).
+
+---
+
+## Iteration 8 — 2026-08-12 — T007, the last three files that described the old daemon
+
+**Did:** `.env.example`'s four lifetime blocks, `README.md`'s configuration table
+and its two clock notes, and `docs/auth-and-sessions.md` now describe the daemon
+milestone 13 built. `.env.example` lost both of the sentences iteration 7 named —
+"a long job you are watching is still reaped" and "there is deliberately no value
+meaning never" — plus a third nobody had flagged: its not-configurable footer
+still ended "and that no value spells never". README's "There are two clocks, and
+only one of them can be turned off" became "either of them", and its "Effectively
+never is a ceiling raised, not a bound removed" became the opposite claim with the
+cost and the restart edge attached. The binding spec got the smallest change of
+the three: three rows of the Lifetimes table, one paragraph beside the stream
+rule, one checklist line.
+
+**Learned:**
+
+- **No new guard, and that was the decision rather than an omission.** Everything
+  the two operator files now claim about `never` is already pinned through
+  `config.LoadFrom` by T006's `TestConfigExampleSpellsNeverWhereTheDaemonTakesIt`
+  — that test drives the **environment** path (`pairs[EnvSessionLifetimeMax]`),
+  which is exactly what `.env.example` documents, so a second guard would assert
+  the same daemon behaviour a second way. The idle half is T002's session tests.
+  What is left unguarded is prose, and iteration 7 already established that a
+  `strings.Contains(raw, "never")` guard over prose is worth nothing.
+- **⚠️ The idle disable has two spellings on the wire and only one is
+  documented.** `parseLifetimeOverrides` translates `idle_timeout: "0"` to a
+  negative, but a caller who sends `-1h` gets a duration that parses, stays
+  negative, and disables idle reaping just as well — `resolveLifetimes` refuses
+  only `idle > maxIdleAllowed`. `.env.example` said "pass a negative value" and
+  now says `"0"`, which is the spelling the daemon's own comment calls the
+  disable. Check `sessions.go:99` before writing either into a doc again.
+- **The lifetime switch is gated in the template and the idle switch is not**
+  (`create-form.html:338` vs `:285`), which is what the README note had to say
+  and the one thing a reader cannot infer from the config table. Verified in the
+  markup rather than from iteration 6's summary.
+- **`internal/config/docs_test.go` checks the README table's *rows*, not its
+  cells** — `readmeVarRow` matches the first cell only, deliberately, so every
+  factual claim in the fourth column is unchecked by construction. Editing a
+  description there is editing unguarded prose; editing a row name is not.
+- Linter confirmed v2 (`2.12.2`, #26). `go test ./...`, `-tags tmux`, `-tags dev`
+  and `-tags quickstart ./cmd/crswd` (35s) all pass; quickstart run **after** the
+  commit, per iteration 1.
+
+**Left:** nothing in this plan. T000–T007 are done and the tree is green.
+
+**Findings:**
+
+- **README's roadmap still says "Milestones 1 through 12 are complete" and has no
+  row for 13.** Deliberately not touched: T007 names the configuration table and
+  the idle clock, the milestone is not merged, and every previous milestone's row
+  was written by its own last task. Whoever merges this branch owes that row —
+  "Make idle mean what it says, and let a session live forever".
+- **⚠️ Three iterations have now logged the same gap one field over: nothing
+  announces what a create may ask for.** A skill cannot discover that `lifetime`
+  takes `never`, that this daemon would grant it, or what the effective idle
+  clock is, because there is no capability document and `GET /` has no such
+  shape. The browser learns all three from the form; the signed API learns them
+  from the README or not at all. One task, not three.
+- **Adopted sessions still take the package constant 24h rather than the
+  configured `session_lifetime`** (iteration 7's finding, unchanged). Both
+  `config.example` and now `.env.example` and `README.md` state the 24h as a
+  fact, so the docs are honest about a behaviour that is still worth fixing.
+- **`.env.example` has no blank line between `CRSW_DESTROY_ON_SHUTDOWN=` and the
+  comment block below it**, unlike every other pair in the file. Pre-existing,
+  cosmetic, and left alone under AR-008 — noted so the next reader does not read
+  the lifetime comment as belonging to the assignment above it.
+- **`gofmt -l .` still flags `internal/httpapi/render.go`** (iteration 3's
+  finding, unchanged and untouched). `golangci-lint run` reports 0 issues.
+- **`Fake.Seed` still silently drops `Label`, `WorkDir` and `StartCommand`**
+  (iteration 1's finding, unchanged).
+
+RALPH_COMPLETE

@@ -148,7 +148,7 @@ only because of it.
 
 - [x] **T006** Update `config.example` for both changes — what idle now measures, and how to spell an unlimited lifetime — **leading with the fact and putting the reasoning after it**. Mind the duplicate-key-line trap above. Also correct the four lifetime keys' prose if it now describes something that is no longer true.
 
-- [ ] **T007** Update `README.md`'s configuration table and `docs/auth-and-sessions.md` where either describes the idle clock. `auth-and-sessions.md` is a binding correctness spec — **change only what stopped being true** and leave its reasoning intact. **`.env.example` belongs to this task too** (found in T006, which named `config.example` alone): it carries the same four keys with the same prose, and its `CRSW_IDLE_TIMEOUT` block still tells the operator that "a long job you are watching is still reaped" — the exact sentence T002 made false, in the file most likely to be copied.
+- [x] **T007** Update `README.md`'s configuration table and `docs/auth-and-sessions.md` where either describes the idle clock. `auth-and-sessions.md` is a binding correctness spec — **change only what stopped being true** and leave its reasoning intact. **`.env.example` belongs to this task too** (found in T006, which named `config.example` alone): it carries the same four keys with the same prose, and its `CRSW_IDLE_TIMEOUT` block still tells the operator that "a long job you are watching is still reaped" — the exact sentence T002 made false, in the file most likely to be copied.
 
 ---
 
