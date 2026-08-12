@@ -21,7 +21,8 @@ what each costs you, is [The two doors](#the-two-doors).
 - Read the whole configuration on `/settings` — every value and where it came from
 - Edit one non-secret setting, update the daemon to a signed release, and restart
   it, from that same page
-- Drive the sessions from a script instead of a browser, over a signed HTTP API
+- Drive the sessions from a script instead of a browser, over a
+  [signed HTTP API](#the-api-door)
 
 **Everything works with scripting switched off.** Every action is a plain form
 post; the live pane and the fleet updates are the enhancement, not the mechanism.
@@ -29,7 +30,8 @@ The pages are built for a phone as well as a desktop.
 
 **Two things are not built yet**, and are named here so nobody goes looking for
 them: relaying Claude's own device-code login when a session asks for it, and the
-companion Claude skill that would drive the API. See [Roadmap](#roadmap).
+companion Claude skill that would drive the API. Everything else on this page
+describes what the daemon does today.
 
 ## The security posture, stated plainly
 
@@ -126,8 +128,9 @@ and the symptom arrives minutes later looking nothing like its cause.
 **What goes in that file is your path's business** —
 [path 1](#path-1--on-the-internet-cloudflare-tunnel-and-access) has more to set
 up in front of the daemon than in it,
-[path 2](#path-2--on-your-own-network-the-dashboard-password) is two keys — and
-both come back to the last two lines above.
+[path 2](#path-2--on-your-own-network-the-dashboard-password) is two keys here and
+one line to take back out of the unit — and both come back to the last two lines
+above.
 
 **If it does not come up, it has already said why.** Every bound in
 [Configuration](#configuration) is a startup failure with a reason attached,
@@ -222,14 +225,6 @@ and it serves the API, admits nobody to the dashboard, and says so at every star
 Which one a running daemon actually has is on `GET /settings`, under **Who may reach
 it**, in a sentence — read from the door the server was built with rather than from
 the file, so a daemon wired one way and configured another says what it *is*.
-
-**The API is a second door and neither of these is a share of it.** Whichever one
-the browser uses, every request to `/sessions…` carries an HMAC signature over its
-body, a timestamp inside a 300-second window, and — for anything naming a session —
-that session's own token, all checked by the daemon itself. On the internet the
-edge's Service Auth policy stands in front of that as well; on a LAN there is no
-edge, so the signature is the whole of it. `deploy/crswd-api` is the client, and it
-is a shell script so that reading it is the documentation.
 
 ### Path 1 — on the internet: Cloudflare Tunnel and Access
 
@@ -780,44 +775,19 @@ use it:
 ### What it checks before it binds
 
 At startup the daemon probes what it shells out to, and the two dependencies fail
-differently on purpose:
+differently on purpose: **`tmux` missing is fatal**, because without it there is
+nothing this daemon can do and starting would only defer the failure to the first
+create, while **a start command's binary missing is a warning**, because a daemon
+that still serves the dashboard is the thing that can tell you so. It resolves a
+start command the way the session will — in a tmux pane's login shell, not on the
+service manager's `PATH` — so a `claude` under `~/.local/bin` is found rather than
+warned about, and a login shell that cannot be asked produces a note naming what
+was checked rather than a claim that the command is missing.
 
-- **`tmux` missing is fatal.** Without it there is nothing this daemon can do, so
-  starting would only defer the failure to the operator's first create. It is
-  looked for on the daemon's own `PATH` and nowhere else, because the daemon is
-  what runs it.
-- **A start command's binary missing is a warning.** It can still serve the
-  dashboard, adopt the sessions already on the host, and say what is wrong.
-
-The second probe reads the *configured* commands, not a fixed `claude`, and the
-install line it suggests comes from `/etc/os-release` rather than being guessed
-from `GOOS`. Nothing installs anything and nothing runs what it found.
-
-**It resolves a start command the way the session will, and that has three
-outcomes rather than two.** A start command is typed into a login shell inside a
-tmux pane, so the operator's profile has already run by the time the name is
-looked up — `claude` under `~/.local/bin` is on that `PATH` and not on the
-service manager's, which is the ordinary case for a tool installed under a home
-directory. So:
-
-| The binary is… | The daemon says |
-|---|---|
-| on the daemon's own `PATH` | nothing |
-| absent there but on the login shell's | nothing — the session will find it |
-| absent from both | a warning, naming the command, the setting it came from, and **both** places that were checked |
-| unresolvable, because the shell could not be asked | a **note** saying what was checked and what could not be — never that the command is missing |
-
-The last row is the point. A check that says "missing" about a command that works
-trains an operator to ignore it, which is worse than not checking at all.
-
-> **This makes the operator's login shell a startup dependency.** The daemon runs
-> `$SHELL -l` and asks it, on stdin, for one thing: the value of `$PATH`. It never
-> names the command to the shell — a `sh -lc "command -v $binary"` resolves
-> identically and is the shell string `docs/security.md` §2 forbids — and it asks
-> **at most once per start**, only after a command has already failed to resolve
-> on the daemon's own `PATH`. The ask is bounded by a 5s timeout and a 1s wait
-> delay, and a shell that cannot be run is the note above rather than a refusal.
-> A profile that blocks therefore costs a start five seconds; it cannot hang one.
+Why the daemon is allowed to run `$SHELL -l` at all, and every bound on the one
+thing it asks, is [`docs/security.md`](docs/security.md) §4; what it costs a
+deployment — the operator's own profile running before anything binds — is
+[`deploy/README.md`](deploy/README.md).
 
 ---
 
@@ -848,6 +818,20 @@ pane never is.
 
 ---
 
+## The API door
+
+**The API is a second door, and neither browser door is a share of it.** Whichever
+one the browser uses, every request to `/sessions…` carries an HMAC signature over
+its body, a timestamp inside a 300-second window, and — for anything naming a
+session — that session's own token, all checked by the daemon itself. On the
+internet the edge's Service Auth policy stands in front of that as well — the
+service token and the policy naming it are steps 7 and 8 of
+[path 1](#path-1--on-the-internet-cloudflare-tunnel-and-access) — while on a LAN
+there is no edge, so the signature is the whole of it. `deploy/crswd-api` is the
+client, and it is a shell script so that reading it is the documentation.
+
+---
+
 ## Why it is built this way
 
 **tmux, not bare subprocesses.** Sessions survive a daemon restart, you can attach
@@ -872,35 +856,10 @@ knowledge of one secret rather than identifying a person against an identity
 provider — strictly less than Access does, which is stated above rather than
 smoothed over.
 
-**Go templates + htmx, not an SPA.** Single static binary via `go:embed`. No npm,
-no second toolchain, no dependency at all — `go.sum` does not exist, and a test
-fails if one appears. SSE is a natural fit for tailing pane output.
-
-## Roadmap
-
-Each milestone is planned and run separately — one Ralph loop per milestone, not
-one loop for the lot.
-
-**Milestones 1 through 12 are complete**; the two doors are the most recent of
-them, and this page is that milestone's last task.
-
-| # | Milestone | Contents |
-|---|---|---|
-| 1 | Daemon core | config, `tmuxctl`, session CRUD, HMAC auth, audit log, reaper. No UI. |
-| 2 | Read-only dashboard | Access JWT validation, session list, live pane via SSE |
-| 3 | Dashboard actions | create, destroy, rename, compact |
-| 4 | Configure and operate | config file, read-only `/settings`, dependency probes, a dashboard that works without script |
-| 5 | Finish the dashboard | remote control as a mode, working-directory suggestions + themed picker, the settings link, the audit-trail and probe defects |
-| 6 | Ship it to someone else | `--version`, a release per merge, the one-line installer, signed self-update |
-| 7 | Make it work on a phone | one breakpoint, reachable controls, the components that had to become conditional |
-| 8 | Close the guard gaps | every invariant milestone 7 found stated in prose and enforced by nothing |
-| 9 | Two operator requests | booleans as checkboxes on `/settings`, and restarting the daemon from the page |
-| 10 | Let a session outlive the defaults | lifetimes and idle timeouts as settings, per-session overrides under a ceiling, the never-die-when-idle switch |
-| 11 | Make it installable by a stranger | an installer that generates the secret and writes a configuration complete enough to start |
-| 12 | A second front door | the dashboard password, the conditional bind, sign-out, and this page |
-
-**Still ahead of all of it**: the device-code login relay, and the companion
-Claude skill that drives the API.
+**Go templates and hand-written JavaScript, not an SPA.** Single static binary via
+`go:embed`. No npm, no framework, no second toolchain, no dependency at all —
+`go.sum` does not exist, and a test fails if one appears. SSE is a natural fit for
+tailing pane output.
 
 ## Working on it
 
