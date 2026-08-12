@@ -286,9 +286,7 @@
 <input class="switch-input" id="create-never-die" type="checkbox" name="idle_timeout" value="0" aria-describedby="create-never-die-note">
 <label class="switch-label" for="create-never-die">Never die when idle</label>
 </div>
-<div class="field-hint" id="create-never-die-note">
-<p class="field-hint-text">Nothing reaps this session for sitting quiet. It still ends at the absolute lifetime this daemon is configured with, which is counted from when the session started and never renewed. {{ if .LifetimeCeilingRemoved }}The switch below is what turns that one off.{{ else }}Raise session_lifetime in settings if that is too soon.{{ end }}</p>
-</div>
+<p class="field-hint-text" id="create-never-die-note">Still ends at the absolute lifetime{{ if not .LifetimeCeilingRemoved }}, which settings moves{{ end }}.</p>
 </div>{{/*
   The absolute deadline, turned off for this session (T005, milestone 13) — the
   operator's second request, made twice: "I also want to allow for sessions to
@@ -340,10 +338,7 @@
 <input class="switch-input" id="create-never-expire" type="checkbox" name="lifetime" value="never" aria-describedby="create-never-expire-note">
 <label class="switch-label" for="create-never-expire">Never die at the lifetime limit</label>
 </div>
-<div class="field-hint" id="create-never-expire-note">
-<p class="field-hint-text">The absolute lifetime is off for this session: nothing ends it for having run long enough. With the switch above on as well, no clock reaps this session at all — it runs until you destroy it or this host stops. It is offered because this daemon is configured with no ceiling on how long a session may live.</p>
-<p class="field-hint-text">Restarting the daemon still ends such a session. It comes back with the lifetime an ordinary session here is given, and one already older than that is torn down as it is taken back.</p>
-</div>
+<p class="field-hint-text" id="create-never-expire-note">Removes the absolute lifetime. With both on, no clock reaps this session.</p>
 </div>{{ end }}
 <button class="button button-primary" type="submit">Start session</button>
 </form>
