@@ -185,6 +185,157 @@ func TestSweepEnforcesTheIdleBoundAtItsExactDeadline(t *testing.T) {
 	}
 }
 
+// The milestone's whole question, as a sweep: a session the host says is busy is
+// not idle, however long it has been since a request touched its record.
+//
+// This is the browser-driven session M13 was opened for. Nothing an operator does
+// in the dashboard advances LastActivity — reading never does, and there is no
+// route to type into a session from that door at all — so before this the reaper
+// took a session somebody had been watching all afternoon, on the sixty-minute
+// mark, and was right by its own reckoning.
+func TestSweepKeepsASessionTheHostSaysIsBusy(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+
+	// An hour with no request, and a host that saw this session print something
+	// a minute ago.
+	at := f.now.Add(IdleTimeout)
+	f.tmux.SetActivity(s.TmuxName(), at.Add(-time.Minute))
+
+	if reaped := mustSweep(t, reaperAt(t, f, at)); len(reaped) != 0 {
+		t.Fatalf("Sweep() reaped %d sessions the host says are still producing output, want none", len(reaped))
+	}
+	if _, ok := f.store.lookup(s.ID); !ok {
+		t.Error("Sweep() dropped the record of a session tmux says is busy")
+	}
+	if _, ok := f.tmux.WorkDir(s.TmuxName()); !ok {
+		t.Error("Sweep() killed the tmux session of a session tmux says is busy")
+	}
+}
+
+// The other half of the same clock: quiet on both readings is what idle now
+// means, and it still ends the session at the same instant it always did.
+func TestSweepReapsASessionQuietOnBothClocks(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+
+	// The host's last sighting is the session's own start: it has printed
+	// nothing since, and nobody has asked the daemon about it either.
+	f.tmux.SetActivity(s.TmuxName(), f.now)
+
+	reaped := mustSweep(t, reaperAt(t, f, f.now.Add(IdleTimeout)))
+
+	if len(reaped) != 1 {
+		t.Fatalf("Sweep() took %d sessions idle on both clocks, want exactly 1", len(reaped))
+	}
+	if reaped[0].Session.ID != s.ID {
+		t.Errorf("Sweep() reaped %q, want %q", reaped[0].Session.ID, s.ID)
+	}
+	if reaped[0].Expiry != ExpiryIdle {
+		t.Errorf("Sweep() reaped the session as %q, want %q", reaped[0].Expiry, ExpiryIdle)
+	}
+}
+
+// The guard this milestone turns on, and the one that must fail loudly if it is
+// ever written the other way round: an activity time the daemon could not read
+// is the zero time, and the zero time is not evidence of anything. It falls back
+// to the record's own clock — never to reaping.
+//
+// A daemon that read the zero time as "last active in 1970" would destroy every
+// session on a host whose tmux does not render #{session_activity}, which is a
+// far worse failure than keeping a dead session until its ceiling.
+func TestSweepFallsBackToTheRecordWhenTheHostGivesNoActivityTime(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		lastActive time.Duration // how long before the sweep a request touched it
+		want       int
+	}{
+		{"a session a request drove a minute ago", time.Minute, 0},
+		// Exactly as the build before this field existed: with nothing to say
+		// otherwise, the record's own clock is the whole answer.
+		{"a session nothing has driven for the full timeout", IdleTimeout, 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newManagerFixture(t)
+			s, _ := mustCreate(t, f, f.request())
+
+			at := f.now.Add(IdleTimeout)
+			f.tmux.SetActivity(s.TmuxName(), time.Time{})
+			if err := f.store.Touch(s.ID, at.Add(-tc.lastActive)); err != nil {
+				t.Fatalf("Touch() unexpected error: %v", err)
+			}
+
+			reaped := mustSweep(t, reaperAt(t, f, at))
+
+			if len(reaped) != tc.want {
+				t.Fatalf("Sweep() took %d sessions on an unreadable activity time, want %d", len(reaped), tc.want)
+			}
+			if _, ok := f.store.lookup(s.ID); ok != (tc.want == 0) {
+				t.Errorf("the record is present = %v after the sweep, want %v", ok, tc.want == 0)
+			}
+		})
+	}
+}
+
+// What the host says buys time against the idle bound and nothing else. A
+// session still printing at the 24-hour mark dies at the 24-hour mark, because
+// the ceiling is the bound Principle VI actually rests on and no reading moves
+// it.
+func TestSweepDestroysABusySessionPastItsCeiling(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+
+	ceiling := f.now.Add(AbsoluteLifetime)
+	f.tmux.SetActivity(s.TmuxName(), ceiling)
+
+	reaped := mustSweep(t, reaperAt(t, f, ceiling))
+
+	if len(reaped) != 1 {
+		t.Fatalf("Sweep() took %d sessions at the ceiling, want exactly 1", len(reaped))
+	}
+	if reaped[0].Expiry != ExpiryAbsolute {
+		t.Errorf("Sweep() reaped a session the host says is busy as %q, want %q", reaped[0].Expiry, ExpiryAbsolute)
+	}
+	if _, ok := f.store.lookup(s.ID); ok {
+		t.Error("Sweep() kept the record of a session past its ceiling because the host said it was busy")
+	}
+}
+
+// A host that cannot be listed changes nothing about what the sweep enforces.
+// The records keep the activity times they hold, every one of which can only
+// keep a session alive — and the ceiling, which has no other enforcer, is still
+// enforced. Stopping the sweep over it would be the failure that matters.
+func TestSweepEnforcesItsBoundsWhenTheHostCannotBeListed(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+	f.tmux.FailOp(tmuxctl.OpList, errors.New("tmux is not answering"))
+
+	reaped, err := reaperAt(t, f, f.now.Add(IdleTimeout)).Sweep(context.Background())
+	if err == nil {
+		t.Error("Sweep() reported success on a host it could not read the activity times from")
+	}
+	if len(reaped) != 1 {
+		t.Fatalf("Sweep() took %d sessions past their idle bound, want the 1 it could still judge", len(reaped))
+	}
+	if reaped[0].Session.ID != s.ID {
+		t.Errorf("Sweep() reaped %q, want %q", reaped[0].Session.ID, s.ID)
+	}
+}
+
 // The ceiling is not renewed by use (FR-038), and this is the shape that proves
 // it: a session driven right up to the 24-hour mark — its idle clock a full
 // timeout away from expiring — still dies at the mark. A reaper that only
@@ -253,6 +404,10 @@ func TestSweepTearsDownTheWayAnExplicitDestroyDoes(t *testing.T) {
 
 	name := s.TmuxName()
 	want := []tmuxctl.Call{
+		// One list for the whole sweep, ahead of everything it does: the host's
+		// own activity times are what a session is judged idle against, and
+		// asking per record would be a command per session every thirty seconds.
+		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{" + tmuxctl.OptionManaged + "}|#{" + tmuxctl.OptionName + "}|#{" + tmuxctl.OptionWorkDir + "}|#{" + tmuxctl.OptionStart + "}|#{session_activity}"}},
 		{Op: tmuxctl.OpKill, Argv: []string{"tmux", "kill-session", "-t", "=" + name}},
 		{Op: tmuxctl.OpHas, Argv: []string{"tmux", "has-session", "-t", "=" + name}},
 	}

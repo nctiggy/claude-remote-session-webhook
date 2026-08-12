@@ -2420,8 +2420,8 @@ func TestBrowserCreateCarriesTheOperatorsLifetimeChoice(t *testing.T) {
 
 			// The absolute deadline is still the operator's 12 hours, and still
 			// fires. Turning idle off does not make a session immortal — the bound
-			// is relaxed, not removed, which is why a negative idle is safe and a
-			// negative lifetime is refused.
+			// is relaxed rather than removed, and removing it is the other switch,
+			// which this daemon's ceiling does not permit.
 			if want := live.CreatedAt.Add(12 * time.Hour); !live.AbsoluteDeadline().Equal(want) {
 				t.Errorf("the absolute deadline = %v; want %v — the deadline that cannot be renewed still applies",
 					live.AbsoluteDeadline(), want)
@@ -2469,20 +2469,27 @@ func TestBrowserCreateCarriesTheOperatorsLifetimeChoice(t *testing.T) {
 // believing they have thirty days and nothing to tell them otherwise until the
 // session is gone.
 //
-// The negative lifetime is the case worth reading twice. A negative *idle* is the
-// disable and is accepted above; a negative lifetime would remove the deadline
-// that is never renewed, and it is refused on this door exactly as on the other.
+// The two never-expiring cases are the ones worth reading twice. A negative
+// *idle* is the disable and is accepted above; switching the absolute deadline
+// off removes the deadline that is never renewed, and this fixture's daemon has
+// a ceiling — so it is refused here for the reason 720h is, and would be granted
+// on a daemon whose operator had said so (milestone 13).
 func TestBrowserCreateRefusesALifetimeThisDaemonWillNotGrant(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]struct{ lifetime, idle string }{
 		// The fixture's manager was never given ceilings, so they are the daemon's
 		// own constants: 24 hours and 60 minutes.
-		"a lifetime past the ceiling":            {lifetime: "720h"},
-		"an idle timeout past the ceiling":       {idle: "90m"},
-		"a negative lifetime":                    {lifetime: "-1h"},
-		"an idle timeout that could never fire":  {lifetime: "30m", idle: "45m"},
+		"a lifetime past the ceiling":      {lifetime: "720h"},
+		"an idle timeout past the ceiling": {idle: "90m"},
+		"a negative lifetime":              {lifetime: "-1h"},
+		// The word this daemon's ceiling does not permit, and the word it has
+		// never had a meaning for. Both refused, and the second one is here so
+		// that "never" is a value the parser knows rather than every word being
+		// one.
+		"a lifetime that never expires":          {lifetime: config.NeverLifetime},
 		"a lifetime no clock can read":           {lifetime: "forever"},
+		"an idle timeout that could never fire":  {lifetime: "30m", idle: "45m"},
 		"an idle timeout no clock can read":      {idle: "a while"},
 		"a lifetime the ceiling would have been": {lifetime: "24h1s"},
 	}
@@ -2522,6 +2529,55 @@ func TestBrowserCreateRefusesALifetimeThisDaemonWillNotGrant(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestACreateMayAskForNoAbsoluteDeadlineWhereTheOperatorAllowedIt is the granted
+// half of milestone 13, asserted through a door rather than through the manager:
+// the word a request carries has to survive the parser, the ceiling check and the
+// store, and arrive as a record the reaper will leave alone.
+//
+// It is asserted here and not only in internal/session because the two doors
+// share one parser and one spelling, and the failure this repository keeps
+// shipping is a value that is correct everywhere except on the way in.
+//
+// **Must fail when** `never` reaches the record as an ordinary duration, as the
+// daemon's default, or as a refusal on a daemon whose operator removed the
+// ceiling — and when it is granted on one who did not, which is the case above.
+func TestACreateMayAskForNoAbsoluteDeadlineWhereTheOperatorAllowedIt(t *testing.T) {
+	t.Parallel()
+
+	c := newCreator(t)
+	// The operator's own decision, made once in configuration: no ceiling on how
+	// long a session may live. config.NeverLifetime is what they wrote; a
+	// negative is what it loads as, and this is the line server.go runs on it.
+	c.fixture.mgr.SetLifetimes(session.AbsoluteLifetime, -time.Hour, session.IdleTimeout, session.IdleTimeout)
+
+	form := c.wellFormed(t)
+	form.Set(lifetimeField, config.NeverLifetime)
+
+	wantOutcome(t, c.post(t, form), wantCreatedOutcome)
+
+	owned := c.owned()
+	if len(owned) != 1 {
+		t.Fatalf("the store holds %d records after one create; want exactly 1", len(owned))
+	}
+	live := owned[0]
+
+	if !live.LifetimeDisabled() {
+		t.Fatalf("the record's lifetime = %v, which still expires; the create asked for one that does not", live.Lifetime)
+	}
+	// A year on and the bound the operator removed has not quietly reappeared as
+	// a very distant one. The idle clock is untouched here — it is the other
+	// switch — so the session is asked about while it is in use.
+	inUse := live
+	aYearOn := live.CreatedAt.Add(365 * 24 * time.Hour)
+	inUse.LastActivity = aYearOn
+	if !inUse.AbsoluteDeadline().After(aYearOn) {
+		t.Errorf("a year on the absolute deadline (%v) has passed; the operator was told this session does not expire", inUse.AbsoluteDeadline())
+	}
+	if got := inUse.DisplayState(aYearOn); got != session.DisplayRunning {
+		t.Errorf("a year on the session reads %q; want %q", got, session.DisplayRunning)
 	}
 }
 

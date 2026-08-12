@@ -289,6 +289,24 @@ const (
 	// command offers no switch at all rather than one that cannot work.
 	DefaultRemoteControlCommandName = "rc"
 
+	// NeverLifetime is the one value EnvSessionLifetimeMax takes that is not a
+	// duration: no ceiling at all, and therefore a daemon on which a create may
+	// ask for a session that never expires (milestone 13).
+	//
+	// A word rather than a number, and this is the whole argument for it. The
+	// spelling could not be `0`, because zero is what "the operator said
+	// nothing" already looks like by the time a duration has been parsed — but
+	// it could have been a negative duration, which is how the *record* spells
+	// the same thing. It is not, because the two surfaces fail differently: a
+	// negative on a record is written by this daemon's own code, while a
+	// duration in a configuration file is typed by a person, and `0` or `-1h` in
+	// that file are both easy to write meaning "no time at all". Getting that
+	// backwards switches off the one bound that is never renewed, on a host
+	// running unsandboxed shells. `never` cannot be misread in that direction,
+	// and loadLifetimeCeiling refuses a negative rather than accepting it as a
+	// second spelling of this one.
+	NeverLifetime = "never"
+
 	// StartCommandNamePlaceholder is the one substitution a configured start
 	// command may carry: the session's own name, so that a `claude
 	// remote-control --name {name}` shows in claude.ai under the name the
@@ -428,6 +446,11 @@ type Config struct {
 
 	// SessionLifetime and IdleTimeout are what a create that asks for nothing
 	// gets; the Max pair are the ceilings an override is checked against (#37).
+	//
+	// SessionLifetimeMax alone may be negative, which is NeverLifetime loaded:
+	// no ceiling, and therefore a daemon on which a create may ask for a session
+	// that never expires. Read it through the sign and never through a
+	// comparison that assumes a duration in the future.
 	SessionLifetime    time.Duration
 	SessionLifetimeMax time.Duration
 	IdleTimeout        time.Duration
@@ -721,7 +744,7 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 	if err != nil {
 		return nil, err
 	}
-	lifetimeMax, err := loadDuration(getenv, EnvSessionLifetimeMax, lifetime)
+	lifetimeMax, err := loadLifetimeCeiling(getenv, EnvSessionLifetimeMax, lifetime)
 	if err != nil {
 		return nil, err
 	}
@@ -1709,8 +1732,16 @@ func validateDoors(accessEnabled bool, teamDomain string, password []byte, bypas
 func validateLifetimes(lifetime, lifetimeMax, idle, idleMax time.Duration) error {
 	switch {
 	case lifetime <= 0:
-		return fmt.Errorf("%s must be positive, got %s; there is no such thing as a session that never expires", EnvSessionLifetime, lifetime)
-	case lifetimeMax < lifetime:
+		// The *default* has no "never", and that asymmetry is deliberate: this
+		// is what every session gets without asking, and a daemon whose every
+		// session is immortal by default is not what a per-session override is
+		// for. Where "never" is spelled is the ceiling, which opens the door,
+		// and the create, which walks through it.
+		return fmt.Errorf("%s must be positive, got %s; every session gets this one without asking, so %s is where a lifetime with no end is allowed and a create is what asks for it", EnvSessionLifetime, lifetime, EnvSessionLifetimeMax)
+	case lifetimeMax >= 0 && lifetimeMax < lifetime:
+		// Skipped for a ceiling that is not there (NeverLifetime, carried as a
+		// negative): no default sits above "no bound", and the arithmetic says
+		// the opposite.
 		return fmt.Errorf("%s (%s) is below %s (%s); every create would be refused by a ceiling under its own default", EnvSessionLifetimeMax, lifetimeMax, EnvSessionLifetime, lifetime)
 	case idle < 0:
 		return fmt.Errorf("%s may not be negative, got %s; use 0 to disable idle reaping", EnvIdleTimeout, idle)
@@ -1733,6 +1764,38 @@ func loadDuration(getenv func(string) string, name string, def time.Duration) (t
 	}
 	return d, nil
 }
+
+// loadLifetimeCeiling reads the one duration in this file that has a spelling
+// for no bound at all (NeverLifetime, milestone 13).
+//
+// It carries that value as a negative, which is how the session record spells
+// the same absence — so the manager reads one rule and not a translation. The
+// word is this loader's alone, and a negative typed into a configuration file is
+// refused here rather than accepted: two spellings of "never" is how one of them
+// becomes the one nobody documented, and a lone `-` is a keystroke away from a
+// duration somebody meant to be positive.
+//
+// noCeiling rather than the shortest negative duration for the reason the word
+// exists: a value read by eye in a log line should say what it is.
+func loadLifetimeCeiling(getenv func(string) string, name string, def time.Duration) (time.Duration, error) {
+	v := strings.TrimSpace(getenv(name))
+	if strings.EqualFold(v, NeverLifetime) {
+		return noCeiling, nil
+	}
+	d, err := loadDuration(getenv, name, def)
+	if err != nil {
+		return 0, err
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("%s %q is negative; a ceiling with no upper bound is spelled %q, which is the one value here that cannot be read as a duration somebody meant to be positive; refusing to start", name, v, NeverLifetime)
+	}
+	return d, nil
+}
+
+// noCeiling is NeverLifetime loaded: a negative, because that is what a session
+// record already means by "this bound is off", and one hour of it so that a
+// configuration dumped for support reads as -1h0m0s rather than as -1ns.
+const noCeiling = -time.Hour
 
 func loadInt64(getenv func(string) string, name string, def int64) (int64, error) {
 	v := getenv(name)

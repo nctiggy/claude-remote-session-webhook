@@ -101,6 +101,31 @@ type sessionView struct {
 	IdleDeadline     string
 	AbsoluteDeadline string
 
+	// IdleSince is how long ago the activity the idle deadline is counted from
+	// happened, formatted here for the reason Age is (T003).
+	//
+	// It is the row that makes the one above it answerable. "in 12 minutes" says
+	// when a session dies without saying why, and the operator's question was
+	// exactly that: whether a session they were using all afternoon was being
+	// judged on anything they had done. A deadline with the instant it is
+	// measured from beside it says what the clock is watching; a deadline alone
+	// asks the operator to take it on trust.
+	//
+	// It is session.IdleSince — the *later* of the record's two clocks — and
+	// never session.Session.LastActivity, which is the narrower fact the signed
+	// API's last_activity field carries: when a request last drove this session.
+	// Those two were one value until the tmux clock arrived, and a card rendering
+	// the narrow one beside a deadline computed from the wide one would be a page
+	// disagreeing with itself about the same session. The Go names are kept
+	// distinct here for that reason, and the card's label is the operator's word
+	// for it rather than either of them.
+	//
+	// Rendered for every card. Nothing here has to state an absence the way Name
+	// and WorkDir do: a record with no last-activity time is one the store
+	// refuses to hold at all (session.validate), so there is no session for which
+	// this is unknown.
+	IdleSince string
+
 	// PageToken is the value every action form on this card submits: minted
 	// for this render and bound to the identity layer 1 verified for it
 	// (FR-002b, FR-007, contracts/actions.md). It is the card's parameter rather
@@ -252,6 +277,28 @@ type createFormView struct {
 	// because FR-018a's rule is that a component states an absence rather than
 	// rendering something shaped like a value.
 	Suggestions []string
+
+	// LifetimeCeilingRemoved is the one daemon fact this form branches on: the
+	// operator has said, once in their configuration, that a session on this host
+	// may live forever (CRSW_SESSION_LIFETIME_MAX = never). It renders the second
+	// switch, the one that turns the absolute deadline off for a session (T005).
+	//
+	// The switch is gated on it because session.Manager.resolveLifetimes grants
+	// that request on exactly this condition and refuses it on every other daemon.
+	// A form offering it under a finite ceiling would be a control certain to be
+	// turned away — the same defect as a card rendering actions with no page token
+	// behind them, and worse than the card's, because this one would teach an
+	// operator that a box they must tick every time is simply broken. An operator
+	// who wants it removes their ceiling and the form starts offering it.
+	//
+	// It is read off the manager that will decide (LifetimeCeilingRemoved) rather
+	// than off the sign of s.cfg.SessionLifetimeMax here, so what the page offers
+	// and what the create grants cannot come to disagree.
+	//
+	// False is the shipped daemon, and it renders exactly the form that shipped
+	// before this field existed — which is also what makes the zero value right
+	// for every test and call site that says nothing about it.
+	LifetimeCeilingRemoved bool
 
 	// There is no StartCommands field either, and its absence is the requirement
 	// rather than an omission (US1, FR-002). It carried the operator's configured

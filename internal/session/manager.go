@@ -223,24 +223,64 @@ func (m *Manager) SetLifetimes(defaultLifetime, maxLifetime, defaultIdle, maxIdl
 	m.defaultIdle, m.maxIdle = defaultIdle, maxIdle
 }
 
+// LifetimeCeilingRemoved reports that this operator has said a session on this
+// host may live forever: CRSW_SESSION_LIFETIME_MAX = never, which config carries
+// as a negative (config.NeverLifetime, milestone 13).
+//
+// It is exported for the dashboard rather than for the daemon, which is the one
+// thing worth knowing before reading it as an ordinary accessor. resolveLifetimes
+// grants a never-expiring session on exactly this condition and refuses it on
+// every other daemon, so a create form that offered that switch anywhere else
+// would be offering a control this manager is certain to turn away — the defect
+// an absent page token already keeps off a card. Asking the object that decides,
+// rather than reading the sign of a configured duration a second time, is what
+// stops the offer and the grant from disagreeing the day the spelling changes.
+//
+// It is the ceiling and never a session's own bound: Session.LifetimeDisabled is
+// that one, and the two are deliberately different questions. This says what an
+// operator permits; that says what one session was granted.
+func (m *Manager) LifetimeCeilingRemoved() bool {
+	return orDefault(m.maxLifetime, AbsoluteLifetime) < 0
+}
+
 // resolveLifetimes turns what a create asked for into what the record carries.
 //
 // An override above its ceiling is refused rather than clamped. Silently
 // granting one day to a caller who asked for thirty is worse than refusing:
 // they believe they have thirty, and nothing tells them otherwise until the
 // session is gone.
+//
+// A negative lifetime used to be one of those refusals and is now the request to
+// switch the absolute deadline off (milestone 13). It is granted on exactly one
+// condition — the operator's own ceiling must already be unbounded — and that
+// condition is the whole of the change. A ceiling is the operator saying how
+// long a session on this host may live; "never" under a finite one is a caller
+// asking to be exempt from it, which is the one thing no override may be. So the
+// same daemon that refuses 100h under a 48h ceiling refuses this, for the same
+// reason and with the same shape of message, and an operator who wants it says
+// so once in their configuration rather than once per create.
 func (m *Manager) resolveLifetimes(req CreateRequest) (lifetime, idle time.Duration, err error) {
 	maxLife := orDefault(m.maxLifetime, AbsoluteLifetime)
 	maxIdleAllowed := orDefault(m.maxIdle, IdleTimeout)
+
+	// A negative ceiling is the operator's "no ceiling at all" — config spells
+	// it `never`, and orDefault leaves it alone because only zero is unset. It
+	// is asked first because every comparison below is against a bound that may
+	// not exist, and "is X over a ceiling that is not there" has no answer.
+	//
+	// Through the exported predicate rather than the sign of maxLife, so that the
+	// form which offers this and the method which grants it are one reading of
+	// the rule rather than two (LifetimeCeilingRemoved).
+	unbounded := m.LifetimeCeilingRemoved()
 
 	lifetime = req.Lifetime
 	if lifetime == 0 {
 		lifetime = m.defaultLifetime
 	}
 	switch {
-	case lifetime < 0:
-		return 0, 0, fmt.Errorf("%w: a session lifetime may not be negative", ErrInvalidLifetime)
-	case lifetime > maxLife:
+	case lifetime < 0 && !unbounded:
+		return 0, 0, fmt.Errorf("%w: a session that never expires is past the %s ceiling", ErrInvalidLifetime, maxLife)
+	case lifetime > 0 && !unbounded && lifetime > maxLife:
 		return 0, 0, fmt.Errorf("%w: %s exceeds the %s ceiling", ErrInvalidLifetime, lifetime, maxLife)
 	}
 
@@ -248,16 +288,24 @@ func (m *Manager) resolveLifetimes(req CreateRequest) (lifetime, idle time.Durat
 	if idle == 0 {
 		idle = m.defaultIdle
 	}
-	// A negative idle is the disable, not an error, and it is bounded by the
-	// absolute deadline still applying.
+	// A negative idle is the disable, not an error. On a session that still has
+	// an absolute deadline it is bounded by that deadline; on one that does not,
+	// both switches are off and nothing reaps the session at all — which is what
+	// the operator asked for twice and what the create form has to say plainly.
 	if idle > maxIdleAllowed {
 		return 0, 0, fmt.Errorf("%w: an idle timeout of %s exceeds the %s ceiling", ErrInvalidLifetime, idle, maxIdleAllowed)
 	}
 	// An idle timeout that can never fire is a setting that does nothing, which
-	// is worth refusing rather than accepting quietly.
-	effectiveLife := orDefault(lifetime, AbsoluteLifetime)
-	if idle > effectiveLife {
-		return 0, 0, fmt.Errorf("%w: an idle timeout of %s can never fire inside a %s lifetime", ErrInvalidLifetime, idle, effectiveLife)
+	// is worth refusing rather than accepting quietly. It is the finite
+	// lifetime's check alone: every idle timeout fires inside a lifetime with no
+	// end, so a session that never expires has no such thing to refuse — and
+	// comparing against a negative here would refuse every idle timeout there
+	// is, on exactly the sessions this milestone exists to keep alive.
+	if lifetime >= 0 {
+		effectiveLife := orDefault(lifetime, AbsoluteLifetime)
+		if idle > effectiveLife {
+			return 0, 0, fmt.Errorf("%w: an idle timeout of %s can never fire inside a %s lifetime", ErrInvalidLifetime, idle, effectiveLife)
+		}
 	}
 	return lifetime, idle, nil
 }
@@ -1549,6 +1597,44 @@ func (m *Manager) Adopt(ctx context.Context) ([]AdoptedSession, error) {
 	}
 
 	return adopted, errors.Join(failures...)
+}
+
+// syncActivity asks the host when each session it is running last did anything,
+// and records the answer against the daemon's own copy. The sweep calls it
+// before it judges anything.
+//
+// This is what makes the idle clock measure the session rather than the traffic
+// about it. LastActivity moves on three calls, two of them reachable only from
+// the signed API and none of them a read, so an operator watching a session in
+// the dashboard all afternoon — or working in it directly in an attached
+// terminal on this host — advanced nothing, and the reaper took a session
+// somebody was using. #{session_activity} is the one reading that sees both.
+//
+// It is one list-sessions per sweep, and the same command adoption already runs.
+// Asking per session would be a command per record every thirty seconds against
+// a host whose whole job is running those sessions.
+//
+// A host that cannot be listed is reported and changes nothing: every record
+// keeps whatever activity time it had, and the sweep goes on to judge them all
+// on LastActivity exactly as the build before this did. Refusing to sweep on it
+// would be far worse — the absolute deadline would stop being enforced by the
+// only thing that enforces it.
+//
+// Sessions that are not ours are skipped by the same three-signal test adoption
+// uses, so a lookalike on the host cannot postpone the reaping of a record it
+// has no relationship to.
+func (m *Manager) syncActivity(ctx context.Context) error {
+	infos, err := m.tmux.List(ctx)
+	if err != nil {
+		return fmt.Errorf("read the host's own activity times: %w", err)
+	}
+
+	for _, info := range infos {
+		if id, ours := adoptableID(info); ours {
+			m.store.setTmuxActivity(id, info.Activity)
+		}
+	}
+	return nil
 }
 
 // adoptableID is the whole of FR-022: which host sessions are ours to take back,

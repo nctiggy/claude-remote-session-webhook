@@ -252,11 +252,18 @@
 
   **The honest half is not decoration.** Turning off the idle clock does not
   make a session immortal: there are two clocks, and the absolute one is
-  counted from CreatedAt, never renewed, and refuses to be disabled at all
-  (resolveLifetimes turns a negative Lifetime away). A label reading "never
-  die" with nothing beside it would be this interface asserting something the
-  daemon does not do, which is the same defect as copy that claims a session was
-  compacted when the daemon only delivered the request.
+  counted from CreatedAt and never renewed. A label reading "never die" with
+  nothing beside it would be this interface asserting something the daemon does
+  not do, which is the same defect as copy that claims a session was compacted
+  when the daemon only delivered the request.
+
+  Which sentence says so depends on whether the second switch is below it
+  (T005), and that is not decoration either. On a daemon whose ceiling stands,
+  the remaining bound is configuration and the settings page is where it moves,
+  which is what this hint has always said. On one whose operator removed that
+  ceiling, the form itself offers the switch — and a hint still sending the
+  operator to a settings page for a control three lines further down would be
+  the page describing a daemon it is not being rendered by.
 
   So the sentence sits in the .field-hint the working-directory field already
   uses, named by aria-describedby exactly as that one is, and it says where the
@@ -280,9 +287,64 @@
 <label class="switch-label" for="create-never-die">Never die when idle</label>
 </div>
 <div class="field-hint" id="create-never-die-note">
-<p class="field-hint-text">Nothing reaps this session for sitting quiet. It still ends at the absolute lifetime this daemon is configured with, which is counted from when the session started and never renewed. Raise session_lifetime in settings if that is too soon.</p>
+<p class="field-hint-text">Nothing reaps this session for sitting quiet. It still ends at the absolute lifetime this daemon is configured with, which is counted from when the session started and never renewed. {{ if .LifetimeCeilingRemoved }}The switch below is what turns that one off.{{ else }}Raise session_lifetime in settings if that is too soon.{{ end }}</p>
 </div>
+</div>{{/*
+  The absolute deadline, turned off for this session (T005, milestone 13) — the
+  operator's second request, made twice: "I also want to allow for sessions to
+  have an infinite lifetime."
+
+  It is rendered only where this daemon's own ceiling is already gone, and that
+  condition is the whole of why the control is safe to offer at all.
+  resolveLifetimes grants a never-expiring session on exactly that condition, so
+  under a finite ceiling this box would be refused on every submission an
+  operator ever made with it ticked — a control certain to be turned away, which
+  is what the page token's `if` above keeps off a card and what config.Editable
+  keeps off the settings page. The offer follows the daemon rather than teaching
+  an operator that one of its switches is simply broken.
+
+  So switching this bound off takes *two* decisions by the same person, in two
+  places: CRSW_SESSION_LIFETIME_MAX = never in their configuration, and this box
+  per session. That is deliberate — the ceiling is the containment control here,
+  and a form that could remove it would be a caller exempting itself from the
+  operator's own bound rather than an operator exercising it.
+
+  `lifetime=never` is the field and the word POST /sessions already takes, read
+  by that route's own parser: one door offering a session that outlives the
+  defaults and the other refusing the same word would be two sets of rules for
+  one bound. Not "0" and not "-1h", for config.NeverLifetime's reason — both are
+  things a person writes meaning *no time at all*, and reading either as
+  "forever" switches off the one deadline that is never renewed. An unticked box
+  posts nothing, which is the daemon's configured default.
+
+  **The hint says what is being switched off, not that it is free.** With both
+  switches on, no clock reaps this session — that is the operator's decision to
+  make on their own host, and the containment control is allowed_roots and the
+  doors rather than the reaper, but the interface has to state it plainly rather
+  than present it as a convenience.
+
+  The second sentence is the one nobody would find out any other way: a
+  never-expiring session does not survive a restart as one. Adoption rebuilds a
+  record from what tmux knows and tmux does not know about Lifetime, so it comes
+  back with this daemon's default and is torn down at once if it is already
+  older than that (FR-025). Saying "nothing reaps this session" and leaving that
+  out would be the same defect this whole hint exists to avoid.
+
+  No new class. The row is .field-switch, the box .switch-input, the label
+  .switch-label, and the aside .field-hint named by aria-describedby — the same
+  arrangement the switch above it uses, with the outer .field binding the two
+  because .field-switch is a column flow and a hint inside the row would be a
+  third column beside the box.
+*/}}{{ if .LifetimeCeilingRemoved }}<div class="field">
+<div class="field field-switch">
+<input class="switch-input" id="create-never-expire" type="checkbox" name="lifetime" value="never" aria-describedby="create-never-expire-note">
+<label class="switch-label" for="create-never-expire">Never die at the lifetime limit</label>
 </div>
+<div class="field-hint" id="create-never-expire-note">
+<p class="field-hint-text">The absolute lifetime is off for this session: nothing ends it for having run long enough. With the switch above on as well, no clock reaps this session at all — it runs until you destroy it or this host stops. It is offered because this daemon is configured with no ceiling on how long a session may live.</p>
+<p class="field-hint-text">Restarting the daemon still ends such a session. It comes back with the lifetime an ordinary session here is given, and one already older than that is torn down as it is taken back.</p>
+</div>
+</div>{{ end }}
 <button class="button button-primary" type="submit">Start session</button>
 </form>
 <p class="create-note" id="create-busy" hidden>Starting a session. This page reloads with the fleet when the host answers.</p>

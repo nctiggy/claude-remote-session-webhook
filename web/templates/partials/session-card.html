@@ -148,6 +148,35 @@
   than naming an instant when reaping is off for the session — see
   formatIdleDeadline.
 */}}
+{{/*
+  What the idle clock is watching, immediately above the deadline it decides.
+
+  The order is the argument. "in 12 minutes" says when a session dies and
+  nothing about why, and why is what the operator asked: whether a session they
+  had been using all afternoon was being judged on anything they had done. It
+  had not been — the idle clock moved on three calls, none of them reachable by
+  watching or by typing into the session on the host — and the row below said
+  so in a language nobody could check. These two rows read as one sentence:
+  last active this long ago, therefore due then.
+
+  It is the later of the two clocks a session has, which is the same value the
+  reaper measures from and never the narrower "when a request last drove this"
+  the signed API reports (view.go). A card naming one and counting from the
+  other would be this page disagreeing with itself about one session.
+
+  A row of the meta list, like the mode and the two deadlines: the list already
+  renders a label beside a value, so this needs no class, no token and no
+  stylesheet rule — which is also what keeps the label column the width
+  "working directory" already set.
+
+  Rendered unconditionally, including for a session whose operator turned idle
+  reaping off. When it dies is a different question from when it was last
+  active, and the second has an answer for every record here — the store
+  refuses one without a last-activity time — so there is no session for which
+  this is unknown and none for which it is untrue.
+*/}}
+<dt>last activity</dt>
+<dd>{{ .IdleSince }}</dd>
 <dt>idle deadline</dt>
 <dd>{{ .IdleDeadline }}</dd>
 <dt>lifetime deadline</dt>
