@@ -91,6 +91,15 @@ type (
 		Swap(ctx context.Context, staged, version string) error
 		ExitForRestart()
 	}
+
+	// configMigrator is the half of an update that is not the binary: the
+	// operator's configuration file, brought to the schema this release
+	// understands. It is a fourth collaborator rather than something the swapper
+	// does on the way past, because it is the one step here that must not be able
+	// to refuse an update — by the time it runs the binary is already installed.
+	configMigrator interface {
+		Migrate() (bool, error)
+	}
 )
 
 // selfUpdate is the update path as one field on the Server, so that a route
@@ -100,6 +109,7 @@ type selfUpdate struct {
 	releases  releaseSource
 	staging   releaseStager
 	installer releaseInstaller
+	migrator  configMigrator
 }
 
 // liveSelfUpdate is the update path as the shipping build wires it: this
@@ -114,17 +124,26 @@ type selfUpdate struct {
 // already running. TestTheShippingBuildWiresTheRealUpdatePath is the other half
 // of that arrangement: a seam that could be left unwired in production is a
 // dashboard button that quietly does nothing.
-func liveSelfUpdate() selfUpdate {
+// configFile is the file this daemon loaded at startup, which is the one an
+// update migrates — never the one a second look at the environment would find.
+func liveSelfUpdate(configFile string) selfUpdate {
 	return selfUpdate{
 		releases:  updater.NewFetcher(),
 		staging:   updater.NewStager(os.Getenv),
 		installer: updater.NewSwapper(os.Getenv),
+		migrator:  updater.NewConfigMigrator(configFile, os.Getenv),
 	}
 }
 
 // wired reports whether there is an update path behind this route at all.
+//
+// The migrator is counted with the other three rather than treated as optional,
+// and that is deliberate: a daemon with no configuration file still has one — it
+// answers "nothing to do" — so a nil here means the wiring was dropped, not that
+// this host has no file. An update that quietly stopped carrying the
+// configuration would look exactly like one that had nothing to carry.
 func (u selfUpdate) wired() bool {
-	return u.releases != nil && u.staging != nil && u.installer != nil
+	return u.releases != nil && u.staging != nil && u.installer != nil && u.migrator != nil
 }
 
 // The refusals this route authors, one per step so that the journal says which
@@ -215,6 +234,30 @@ func (s *Server) updateFromBrowser(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.refuseBrowserUpdate(w, r, err)
 		return
+	}
+
+	// The other half of what an update carries, and it runs here rather than
+	// inside updateTo for two reasons that point the same way.
+	//
+	// It runs *after* the binary is in place, because an update that refused must
+	// leave the host exactly as it found it — nothing on this path is renamed on
+	// the way to a refusal, and the operator's configuration is the last file
+	// that should be an exception.
+	//
+	// And its failure is reported rather than refused. Every step above can turn
+	// an update away because none of them has changed anything yet; this one runs
+	// after the only irreversible line in the path, and a refusal here would tell
+	// the operator that nothing was installed while the new binary sat at
+	// ExecStart waiting for the restart. A configuration that could not be
+	// migrated is one this daemon was running perfectly well on a moment ago.
+	//
+	// The cause goes to stderr and never to the trail, like every other reported
+	// failure on this door. It carries a path this daemon chose and whatever the
+	// loader says about the operator's own file — the same sentence a refusing
+	// start already writes to the same journal, and one docs/security.md §3
+	// already forbids from naming the value it refused over.
+	if _, err := s.updates.migrator.Migrate(); err != nil {
+		s.report(fmt.Errorf("migrate the configuration file during the update to %s: %w", version, err))
 	}
 
 	// Step 7, in the order the two things that must survive it require. The

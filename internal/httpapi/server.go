@@ -456,7 +456,7 @@ func newWithLayer1(
 	// server built through newServer has none, and its update route refuses;
 	// every server a daemon runs has this one, which is what
 	// TestTheShippingBuildWiresTheRealUpdatePath pins from the other side.
-	srv.updates = liveSelfUpdate()
+	srv.updates = liveSelfUpdate(cfg.FilePath)
 	return srv, nil
 }
 

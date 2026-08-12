@@ -103,12 +103,14 @@ type fakeUpdatePath struct {
 	assetErr   error
 	stageErr   error
 	swapErr    error
+	migrateErr error
 
 	// What was asked of it.
 	askedVersions []string
 	fetched       []string
 	staged        []stageCall
 	swapped       []swapCall
+	migrations    int
 	exits         int
 
 	// atExit runs inside ExitForRestart, which is the only moment from which the
@@ -165,6 +167,15 @@ func (f *fakeUpdatePath) Stage(version, name string, asset, sums, signature []by
 func (f *fakeUpdatePath) Swap(_ context.Context, staged, version string) error {
 	f.swapped = append(f.swapped, swapCall{staged: staged, version: version})
 	return f.swapErr
+}
+
+// Migrate stands in for the configuration half of an update. It writes nothing:
+// what the cases here assert is that the route ran it, and when — the migration
+// itself is internal/updater's to be right about, against files in a directory
+// of its own.
+func (f *fakeUpdatePath) Migrate() (bool, error) {
+	f.migrations++
+	return f.migrateErr == nil, f.migrateErr
 }
 
 func (f *fakeUpdatePath) ExitForRestart() {
@@ -250,7 +261,7 @@ func newUpdateDoor(t *testing.T) *updateDoor {
 	keys := newKeyServer(t)
 	steps := newFakeUpdatePath(t)
 	d := &updateDoor{testServer: newAuditedServerWith(t, keys.validator(t)), keys: keys, steps: steps}
-	d.updates = selfUpdate{releases: steps, staging: steps, installer: steps}
+	d.updates = selfUpdate{releases: steps, staging: steps, installer: steps, migrator: steps}
 	return d
 }
 
@@ -458,6 +469,58 @@ func TestUpdateInstallsTheReleaseAndExitsForRestart(t *testing.T) {
 	}
 
 	d.record(t, audit.Allow)
+}
+
+// TestUpdateCarriesTheConfigurationFile is the half of an update that is not the
+// binary, checked from the side that has to run it.
+//
+// The migration itself is internal/updater's to be right about. What this asserts
+// is that something calls it — the defect this milestone exists about is a
+// `crswd config migrate` that was written, tested and never wired to anything, so
+// the binary moved forward release after release while the file it reads stayed
+// where it was.
+//
+// **Must fail when** the call is dropped from the route: every other case in this
+// file still passes, and an operator's configuration silently stops being carried
+// by their updates.
+func TestUpdateCarriesTheConfigurationFile(t *testing.T) {
+	t.Parallel()
+
+	t.Run("an installed release migrates the configuration once", func(t *testing.T) {
+		t.Parallel()
+
+		d := newUpdateDoor(t)
+
+		w := d.post(t, d.confirmed(t))
+
+		wantUpdatingPage(t, w, fixtureVersion)
+		d.steps.waitForExit(t)
+		if got := d.steps.migrations; got != 1 {
+			t.Errorf("migrated %d times; want exactly 1 — %s", got, d.steps.reached())
+		}
+	})
+
+	// The ordering that makes the failure survivable. By the time the migration
+	// runs the binary is already at ExecStart, so a refusal here would tell the
+	// operator that nothing was installed while the new release waited for the
+	// restart — and the configuration they still have is the one this daemon was
+	// running perfectly well on a moment ago.
+	t.Run("a migration that failed does not refuse the update", func(t *testing.T) {
+		t.Parallel()
+
+		d := newUpdateDoor(t)
+		d.steps.migrateErr = updater.ErrConfigWouldNotLoad
+
+		w := d.post(t, d.confirmed(t))
+
+		wantUpdatingPage(t, w, fixtureVersion)
+		d.steps.waitForExit(t)
+		if got := len(d.steps.swapped); got != 1 {
+			t.Errorf("swapped %d times; want 1 — the binary is installed whatever the configuration did", got)
+		}
+		// Allowed, not denied. The update happened.
+		d.record(t, audit.Allow)
+	})
 }
 
 // TestUpdateNamesTheVersionForARollback is FR-022 from this door: the field
@@ -861,6 +924,12 @@ func TestARefusedUpdateNeverInstallsAndNeverExits(t *testing.T) {
 			if d.steps.exits != 0 {
 				t.Errorf("a refused update ended the process anyway: %s", d.steps.reached())
 			}
+			// Nothing on this path is renamed on the way to a refusal, and the
+			// operator's configuration file is the last thing that should be an
+			// exception: an update that refused must leave the host as it found it.
+			if d.steps.migrations != 0 {
+				t.Errorf("a refused update rewrote the operator's configuration anyway: %s", d.steps.reached())
+			}
 			rec := d.record(t, audit.Deny)
 			if got, want := rec["reason"], tc.reason.Error(); got != want {
 				t.Errorf("reason = %v; want %q — the step that refused is the whole of what the journal has to say", got, want)
@@ -967,6 +1036,16 @@ func TestTheShippingBuildWiresTheRealUpdatePath(t *testing.T) {
 		}
 		if _, ok := srv.updates.installer.(*updater.Swapper); !ok {
 			t.Errorf("installer = %T; want *updater.Swapper — the swapper is the object that smoke-tests before it renames", srv.updates.installer)
+		}
+		migrator, ok := srv.updates.migrator.(*updater.ConfigMigrator)
+		if !ok {
+			t.Fatalf("migrator = %T; want *updater.ConfigMigrator — an update that stopped carrying the configuration looks exactly like one with no configuration to carry", srv.updates.migrator)
+		}
+		// The file this daemon loaded, not the one a second look at the
+		// environment would find. Migrating a file the daemon does not read is a
+		// change with no visible effect, which is the worst kind.
+		if got, want := migrator.Path(), testConfig(loopbackListen).FilePath; got != want {
+			t.Errorf("the migrator rewrites %q; want the file this daemon loaded, %q", got, want)
 		}
 	})
 
