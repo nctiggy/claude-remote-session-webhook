@@ -1,86 +1,67 @@
 # Implementation Plan
 
-**Milestone 14 — Say what is true, then say it clearly.**
+**Milestone 15 — Updates that carry the files, not just the binary.**
 
-> *"The explanations in the config.example are very long and not super human
-> readable… the readme should really include all the instructions needed to
-> complete an install."*
+> *"How do we make it so that the updates also grab or update the systemd unit
+> file as well? I feel like the config and systemd files should update as part of
+> the updates… values saved as part of the updates but the files updated."*
 
-Eight tasks, ordered by a Fable 5 audit that read every markdown file,
-`config.example`, `.env.example`, and the six test files that pin docs to code.
+Seven tasks.
 
 ---
 
-## Wrong beats wordy
+## Two files, two different answers
 
-The audit disagreed with the premise, usefully. `config.example` **is** hard to
-read — but the cause is **ordering, not length**: nearly every block leads with the
-justification and buries the operative fact. And the worst problems in the doc set
-are not verbosity at all. **Fix the false statements first.**
-
-| File | What it says | What is true |
+| File | What an update should do | Why |
 |---|---|---|
-| `deploy/README.md:14` | The daemon "refuses to start without" the three `CRSW_ACCESS_*` values | Lines 38–41 of the same file say setting none is supported. It is. |
-| `AGENTS.md:22` | `web/` holds "Templates, htmx, CSS"; a `skill/` directory exists | There is no htmx (`docs/components.md` says so emphatically) and no `skill/` |
-| `AGENTS.md:10` | The browser door is Cloudflare Access | Milestone 12 added the password door |
-| `AGENTS.md:50`, `CONTRIBUTING.md:22-27` | CI runs the untagged commands "and nothing else" | The tmux and quickstart suites run too |
+| **config** | Migrate it in place, keeping every value and every comment | The daemon knows every key, and `crswd config migrate` already does exactly this. Nothing calls it. |
+| **unit** | **Never overwrite an edited one.** Write the new one alongside and say so. | An edited unit carries decisions. Overwriting reverts them silently, every release. |
 
-**`AGENTS.md` is the first file every agent loads.** In a Ralph-loop project a
-stale one is compounding error — every iteration of every milestone begins by
-reading it — which is why it is T001 rather than a tidy-up at the end.
+**The operator proved the second one in the same session they asked for this.**
+They hand-edited their unit to relax `NoNewPrivileges`, `RestrictSUIDSGID` and
+`ProtectSystem` so `sudo` works in a session. An update that replaced units would
+undo that on every release, and they would have to rediscover it each time.
 
----
-
-## ⚠️ The docs are test fixtures. Do not move them.
-
-`config.example`, `.env.example`, the README's configuration table,
-`docs/design-system.md`'s tokens and `docs/components.md`'s class names are read
-**at relative paths** and held to the code **in both directions**.
-
-- `internal/config/file_test.go` — `config.example`, one `# key = value` line per
-  key, in `config.Vars()` order, each parsing to exactly the value shown
-- `internal/config/envexample_test.go` — `.env.example`, names every variable,
-  carries no values
-- `internal/config/docs_test.go` — the README's table, one row per `CRSW_` variable
-- `internal/httpapi/stylesheet_test.go` — component classes and design tokens
-- `internal/release/readme_test.go` — the install one-liner verbatim and first
-- the quickstart suite — every documented `journalctl` command
-
-**A rewrite that renames a key, drops one, or reorders `Vars()` fails the suite.**
-That is the guard working, not an obstacle.
-
-**A landmine for T003:** any comment line beginning `# <known_key> = …` counts as
-that key's line. Prose like `# idle_timeout = 0 disables nothing` fails as a
-duplicate. Use the env spelling in examples (`CRSW_IDLE_TIMEOUT=…`) as
-`.env.example` already does, or do not lead with the key.
+**The rule that protects them stays.** What changes is the silence around it.
 
 ---
 
-## ⚠️ What must survive a rewrite
+## What already exists
 
-The audit named these load-bearing. They are long because the reasoning is the
-point, and compressing them is how the next person "simplifies" a security
-property into a bug.
+`crswd config migrate` — `internal/config/migrate.go` — rewrites a config into the
+current schema **line by line**, copying every line it has no reason to touch byte
+for byte, spacing and line endings included. Its own comment says why:
 
-- `config.example` — `$HOME` is never the default root (SSH keys, cloud
-  credentials, browser profiles live directly under it); no trailing comments
-  because a secret may contain `#`; first-`=` separator because `start_commands`
-  carries `=` in its value; the listen/door invariant; the password crossing a LAN
-  in clear; what `;`, control characters and `{name}` mean in a start command.
-- `docs/security.md` and `docs/auth-and-sessions.md` — **essentially whole**. Why
-  method and path are in the signed payload (a live milestone-1 bug), *"no email
-  must never read as allow"*, the bounds on the two pre-layer-1 login routes, why
-  the page token is stateless and `pageKey` unrelated to the shared secret, the
-  `$SHELL -l` probe trade.
-- `README.md` — the security posture section, "Never both", the TLS warning
-  including the `Secure`/`X-Forwarded-Proto` paragraph, signature-before-executable
-  ordering, the rollback recipe, both halves of "Verifying the exposure model".
-- `deploy/README.md` — the unit rationale (`KillMode=process`, `TimeoutStopSec`,
-  no `PrivateTmp`), the `journalctl | grep '^{'` explanation, the `crswd-api` zsh
-  `path` hazard.
+> Comments are the reason this format is not JSON: they carry why each bound is
+> what it is, and a migration that reproduced the settings and dropped the
+> commentary would take away more than it fixed.
 
-**The voice stays.** "Says why, not just what" is right for this project. The fix
-is *order* — fact, bounds, default, then why — not deleting the why.
+It is a manual command. **The updater never runs it.** T001 is wiring, not
+invention.
+
+---
+
+## ⚠️ The current failure is silence, and this operator is living it
+
+Their unit has **no recorded hash**, so the installer will never touch it — and
+nothing has ever told them. It still carries `ExecStart=%h/bin/crswd`, the path
+v0.80 fixed, and no `EnvironmentFile` line at all.
+
+**They are two fixes behind with no way to find out.** That is the defect this
+milestone is really about. "Never overwrite" was right; "never mention" was not.
+
+---
+
+## ⚠️ A migration that breaks a config is worse than one that never ran
+
+The daemon refuses to start on a config it cannot load. An update that migrates a
+config into something unloadable turns a working daemon into a boot loop, and it
+does so **at the moment the operator is least able to look** — mid-update, from a
+phone.
+
+So: migrate to a temporary file, **load it and validate it**, and only then move it
+into place, keeping the previous one. A migration that does not validate must not
+be written at all.
 
 ---
 
@@ -89,40 +70,41 @@ is *order* — fact, bounds, default, then why — not deleting the why.
 - `- [ ]` open · `- [x]` done · `- [!]` blocked (reason in `PROGRESS.md`)
 - Priority order is meaningful — the loop always takes the topmost open item.
 - **Every task ends green**: `go build ./... && go vet ./... && go test ./... && golangci-lint run`,
-  plus `-tags quickstart` for anything touching a documented command.
+  plus `-tags tmux` / `-tags quickstart` where touched.
 - **Check the linter is v2 before trusting it** (#26).
+- `go.sum` must never appear.
 - **AR-008: no refactoring outside the task.**
-- **Verify a claim before writing it down.** This milestone exists because four
-  files asserted things nobody checked.
+- **A task is not done when the code exists. It is done when something calls it.**
+  This milestone exists because `config migrate` was written and never called.
+- **A new guard must be proven by breaking it.**
 
 ---
 
 ## Tasks
 
-- [x] **T001** Fix `AGENTS.md`. Remove `htmx` and the `skill/` directory from the project map; correct the browser-door description to name both doors; correct the CI claim to include the tmux and quickstart suites. **Check every other claim in the file against the tree while you are there** — it is the file every agent reads first, and it has been wrong in four places at once.
+- [ ] **T001** 🔒 Run the config migration as part of an update, in `internal/updater/`. Migrate to a temporary file, **load and validate the result**, and only then move it into place — keeping the previous file as a backup. A migration that does not validate is discarded and the update proceeds with the config untouched; **it must never leave the daemon unable to start**. Test: a config missing keys a newer schema adds comes back with them and every existing value intact; a migration that would produce an unloadable file leaves the original in place.
 
-- [x] **T002** Fix `deploy/README.md:14` and `CONTRIBUTING.md:22-27`. The Access values are optional; setting none is a supported deployment that admits nobody to the dashboard. Say which deployment the file is for at the top, and note that a LAN operator wants the password door instead. Reposition the 1Password paths as **one example of a shape** — a secret in a manager, `EnvironmentFile` under `umask 077`, never in the unit — rather than the procedure.
+- [ ] **T002** 🔒 Ship the unit as a release asset the daemon can compare against. The installer already fetches `crswd.service` and records its hash at `~/.local/share/crswd/crswd.service.sha256`. The updater needs the same file to answer "is the operator's unit the one this release ships?" — reuse the existing asset and the existing checksum path rather than inventing a second delivery.
 
-- [x] **T003** Reshape `config.example` to lead with the fact. Per key: **name and what it does; format, bounds and what a wrong value does; then the why where the why is load-bearing; then the default; then the one commented line.** Cut the 81-line preamble to roughly 30 — keep the file locations, the `CRSW_CONFIG_FILE` relative-path trap, `crswd config check`, the `config.bak` fallback, one precedence line, and the three format rules; replace the "why not JSON/YAML/TOML" argument with a pointer to `docs/security.md` §5. Target ~215 lines from 401. **Mind the duplicate-key-line landmine above, and keep every passage named as load-bearing.**
+- [ ] **T003** 🔒 On update, decide what to do with the unit, and **never overwrite one this daemon did not write**: recorded hash matches → replace it and re-record; hash differs, or no record exists → **write the new one alongside as `crswd.service.new` and leave theirs alone**. Test all three branches. **The one that matters most**: an operator who relaxed `NoNewPrivileges` still has it relaxed afterwards, and has a `.new` file naming what they are missing.
 
-- [x] **T004** Restructure `README.md`'s install into **two numbered paths, chosen up front**: "on the internet" (Access) and "on a network you control" (password). Add the prerequisites nobody is told: Linux with a systemd user session, `tmux`, and **`claude` installed and authenticated on the host** — the device-code relay is not built, so a session that hits a login prompt is stuck. Add one troubleshooting line pointing at `journalctl --user -u crswd -e`, since the daemon's refusals are its best operator feature and nothing points at them.
+- [ ] **T004** Tell the operator, on the settings page, reusing existing classes — **no new class**. Say which of the three happened: the unit was updated, a newer one is waiting as `.new`, or theirs is current. When one is waiting, name the file and the command to compare it (`diff`) — an operator who cannot see the difference cannot decide, and this daemon's whole update story is that a change is visible before it is taken.
 
-- [x] **T005** Write the Access path end to end, as a stranger must follow it: install and authenticate `cloudflared`; `cloudflared tunnel create`; **route DNS to the tunnel** (mentioned nowhere today); what to edit in `cloudflared.example.yml` — the hostname and the service URL, since the README says "then edit" and never says what; create the Access application (self-hosted, on that hostname); configure the identity provider; **both policies — an identity Allow and a Service Auth for the API**, which are required today and shown nowhere; where the AUD tag lives; the service token; the four config lines; `crswd config check`; restart; and finally **"browse to https://your-hostname/"**, which the README never says.
+- [ ] **T005** Surface the same thing at startup, into the journal. The daemon already warns about an absent identity provider for the same reason: a deployment that is quietly behind looks identical to one that is current, and the journal is where an operator looks when something is wrong.
 
-- [x] **T006** Reconcile the LAN path with the installer. It currently shows a config from scratch, but a one-line-install reader already has `shared_secret` and `allowed_roots` written — the real edit is **adding** `dashboard_password` and `listen`. Say that. Note the installer already wrote the file `0600`, and fold `crswd config check` in as the pre-restart verification.
+- [ ] **T006** Document it in `README.md` and `deploy/README.md`: what an update does to each of the two files, why the unit is never overwritten when it has been edited, and how to take a `.new` unit when you want it. Say plainly that a hand-written unit — one this installer never wrote — is never replaced and will always produce a `.new`.
 
-- [x] **T007** Trim `README.md`'s duplication. The startup probe and login-shell `PATH` material is stated three times (here, `deploy/README.md`, `docs/security.md`) — security.md owns the why, deploy owns the operational consequence, the front page gets two sentences and a link. Move the two API-door bullets out of the operator's install reading. Cut the twelve-milestone roadmap: "what is not built yet" already exists in two sentences near the top.
-
-- [x] **T008** Compress `docs/components.md`'s self-history. Four passages narrate the document's own revisions ("That paragraph replaced one asserting the opposite…"). The lesson each carries is already encoded in `stylesheet_test.go`; keep one sentence plus the issue number per site and lose the memoir. **Do not touch any class name** — the both-directions sweep reads them.
+- [ ] **T007** Make `crswd config migrate` and the update path share one implementation, if T001 did not already. Two code paths that rewrite an operator's configuration differently is the drift this repository keeps finding; one of them is a command an operator runs and the other runs unattended during an update, which is the worse place to discover a difference.
 
 ---
 
 ## Out of scope
 
-- **A documentation site.** The audit's answer is no, and the reason is that these
-  docs are test fixtures: moving them breaks the guards, copying them creates the
-  one unguarded copy that rots. If navigation is the itch, a short "which file
-  answers what" index costs nothing — that is T004's business, not a toolchain's.
-- **`docs/security.md` and `docs/auth-and-sessions.md`.** Binding correctness
-  specs, correctly served by their length.
+- **Overwriting an edited unit, under any condition.** The operator's `sudo`
+  relaxation is the standing counter-example.
+- **Migrating a config the daemon cannot load.** It is refused at startup today
+  and that stays; this milestone must not paper over it.
+- **A settings-page editor for the unit.** It is a systemd file, not daemon
+  configuration, and a route that wrote one would be a route that edits how the
+  daemon is launched.
 - **#120, #121.** Unchanged. **Q2** is still the operator's to answer.
