@@ -1,0 +1,339 @@
+package updater
+
+// What unit.go has to be true of, against files in a directory of this test's
+// own — never the unit of the daemon running the suite.
+//
+// The case this file exists for is the one an operator is living: they relaxed
+// three hardening settings in their unit so that `sudo` works inside a session,
+// and every update from here on has to leave that edit exactly where it is.
+// TestAnOperatorsHardeningEditIsNeverThisDaemonsToReplace is that case, and it
+// is written with the real setting names because the failure it guards against
+// is somebody deciding that a unit "close enough" to the published one is ours.
+//
+// The rest of the table is the other three answers, and each is a different
+// action in T003: absent, already current, and ours-and-out-of-date. They are
+// four values rather than a bool for that reason — "replace it" and "leave it
+// alone" are not the whole question, and a comparison that answered only those
+// two would give a host with no unit at all the same treatment as a host whose
+// operator wrote one.
+//
+// The digests here are computed with crypto/sha256 rather than through
+// unitDigest, so that what the record has to hold is stated independently of the
+// code that reads it. A test that built the record with the production helper
+// would pass against any hash function both halves happened to share.
+
+import (
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+// publishedUnit is the unit a release ships, in the fixtures here and in
+// verify_test.go's release. Short, and shaped like the real one: what every
+// comparison below turns on is whether the bytes are equal, and a longer file
+// would say nothing more.
+const publishedUnit = "[Unit]\nDescription=crswd\n\n[Service]\nExecStart=%h/.local/bin/crswd\nRestart=always\n"
+
+// unitFixture is a host: a home directory with whatever unit and whatever record
+// a case needs, and nothing else.
+type unitFixture struct {
+	home   string
+	unit   *Unit
+	path   string
+	record string
+}
+
+// newUnitFixture builds that host. A nil unit or record means the file is not
+// there, which is a state two of the cases below are entirely about.
+func newUnitFixture(t *testing.T, unit, record []byte) *unitFixture {
+	t.Helper()
+
+	home := t.TempDir()
+	path := filepath.Join(home, unitPath)
+	recordPath := filepath.Join(home, unitRecordPath)
+
+	for at, contents := range map[string][]byte{path: unit, recordPath: record} {
+		if contents == nil {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(at), 0o700); err != nil {
+			t.Fatalf("make the fixture directory for %s: %v", at, err)
+		}
+		if err := os.WriteFile(at, contents, 0o600); err != nil {
+			t.Fatalf("write the fixture %s: %v", at, err)
+		}
+	}
+
+	return &unitFixture{home: home, unit: newUnit(path, recordPath), path: path, record: recordPath}
+}
+
+// digestOf is the record install.sh would have written for these bytes.
+func digestOf(contents string) []byte {
+	return []byte(fmt.Sprintf("%x\n", sha256.Sum256([]byte(contents))))
+}
+
+// TestUnitStandingAnswersWhatAnUpdateHasToDecide is the four answers, one row
+// each.
+//
+// **Must fail when** any of them is folded into another. The pairs that look
+// alike and are not: absent and not-ours both mean "this daemon did not write
+// what is there", and only one of them is a file being protected; current and
+// ours both mean "we know what that file is", and only one of them has anything
+// to carry forward.
+func TestUnitStandingAnswersWhatAnUpdateHasToDecide(t *testing.T) {
+	t.Parallel()
+
+	// A unit this project wrote and then superseded: it is not the published
+	// bytes, and its digest is what the record holds.
+	const older = "[Unit]\nDescription=crswd\n\n[Service]\nExecStart=%h/bin/crswd\n"
+
+	for _, c := range []struct {
+		name   string
+		unit   []byte
+		record []byte
+		want   UnitStanding
+		why    string
+	}{
+		{
+			name: "no unit on this host",
+			want: UnitAbsent,
+			why:  "there is nothing at that path, so nothing is being protected from anything and the decision is open",
+		},
+		{
+			name:   "no unit and a record left over from one",
+			record: digestOf(older),
+			want:   UnitAbsent,
+			why:    "a record describes a file that is not there; the host still has no unit",
+		},
+		{
+			name: "the unit the release publishes",
+			unit: []byte(publishedUnit),
+			want: UnitCurrent,
+			why:  "the bytes are identical, so there is nothing to carry forward whoever wrote them",
+		},
+		{
+			name:   "the unit the release publishes, with a stale record",
+			unit:   []byte(publishedUnit),
+			record: digestOf(older),
+			want:   UnitCurrent,
+			why:    "what the record says cannot make identical bytes out of date",
+		},
+		{
+			name:   "a unit this daemon wrote, superseded by the release",
+			unit:   []byte(older),
+			record: digestOf(older),
+			want:   UnitOurs,
+			why:    "untouched since this project wrote it, which is the one case where replacing it takes nothing away",
+		},
+		{
+			name: "a unit with no record of one",
+			unit: []byte(older),
+			want: UnitTheirs,
+			why:  "every host deployed before the installer existed is in this state, and absence of evidence that we wrote a file is not permission to replace it",
+		},
+		{
+			name:   "a unit that has been edited since we wrote it",
+			unit:   []byte(older + "Environment=CRSW_MAX_SESSIONS=1\n"),
+			record: digestOf(older),
+			want:   UnitTheirs,
+			why:    "the record describes bytes that are no longer there, so somebody changed them on purpose",
+		},
+		{
+			name:   "a record that is not a digest",
+			unit:   []byte(older),
+			record: []byte("whatever was in there\n"),
+			want:   UnitTheirs,
+			why:    "there is no information in an unreadable record, so it decides nothing and the file is left alone",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			fixture := newUnitFixture(t, c.unit, c.record)
+			got, err := fixture.unit.Standing([]byte(publishedUnit))
+			if err != nil {
+				t.Fatalf("Standing() = _, %v; want %v", err, c.want)
+			}
+			if got != c.want {
+				t.Errorf("Standing() = %v, want %v.\n%s", got, c.want, c.why)
+			}
+		})
+	}
+}
+
+// TestAnOperatorsHardeningEditIsNeverThisDaemonsToReplace is the case this
+// milestone was asked for, in the operator's own words: they relaxed three
+// settings so `sudo` works inside a session, and an update must not take that
+// back.
+//
+// **Must fail when** ownership is decided by anything other than the recorded
+// digest — a comparison against "looks like ours", against the published bytes
+// with the edits ignored, or against the file merely existing. Each of those
+// reads this unit as replaceable, and each costs the operator the same
+// afternoon, every release.
+func TestAnOperatorsHardeningEditIsNeverThisDaemonsToReplace(t *testing.T) {
+	t.Parallel()
+
+	// The unit as this project shipped it, hardened.
+	const ours = "[Service]\nExecStart=%h/.local/bin/crswd\nNoNewPrivileges=yes\nRestrictSUIDSGID=yes\nProtectSystem=strict\n"
+	// The same file after the operator made sudo work in a session.
+	const relaxed = "[Service]\nExecStart=%h/.local/bin/crswd\nNoNewPrivileges=no\nRestrictSUIDSGID=no\nProtectSystem=no\n"
+
+	fixture := newUnitFixture(t, []byte(relaxed), digestOf(ours))
+
+	standing, err := fixture.unit.Standing([]byte(publishedUnit))
+	if err != nil {
+		t.Fatalf("Standing() = _, %v; want the operator's edited unit read as theirs", err)
+	}
+	if standing != UnitTheirs {
+		t.Fatalf("Standing() = %v, want %v.\nThis is the unit an operator edited so that sudo works inside a session; a release that replaced it would undo that silently, and they would rediscover it every time", standing, UnitTheirs)
+	}
+
+	// Nothing on this path writes. The reading half of the answer has to be
+	// exactly that — T003 is where a file is placed, and a comparison that
+	// touched the operator's unit would already have taken the decision.
+	after, err := os.ReadFile(fixture.path) //nolint:gosec // G304: a path inside this test's own temporary directory.
+	if err != nil {
+		t.Fatalf("read the unit back: %v", err)
+	}
+	if string(after) != relaxed {
+		t.Errorf("the comparison changed the operator's unit:\ngot:\n%s\nwant:\n%s", after, relaxed)
+	}
+	if _, err := os.Stat(fixture.path + ".new"); err == nil {
+		t.Error("the comparison wrote a .new unit. Putting one beside theirs is T003's, and a step that both decides and writes is one nothing can stand in front of")
+	}
+}
+
+// TestUnitStandingRefusesWithoutAHomeToLookIn holds the difference between "this
+// host has no unit" and "this daemon cannot tell".
+//
+// **Must fail when** an unresolvable home is answered with UnitAbsent. That is a
+// fact about the daemon's own environment reported as a fact about the
+// operator's host, and the action T003 takes on it — placing a unit where one
+// was thought to be missing — is the one an empty answer must never trigger.
+func TestUnitStandingRefusesWithoutAHomeToLookIn(t *testing.T) {
+	t.Parallel()
+
+	for _, home := range []string{"", "  ", "relative/home"} {
+		u := NewUnit(func(string) string { return home })
+		if u.Path() != "" || u.RecordPath() != "" {
+			t.Errorf("NewUnit with HOME=%q named %q and %q; neither is a path this daemon may act on", home, u.Path(), u.RecordPath())
+		}
+
+		standing, err := u.Standing([]byte(publishedUnit))
+		if !errors.Is(err, ErrNoUnitHome) {
+			t.Errorf("Standing() with HOME=%q = _, %v; want ErrNoUnitHome", home, err)
+		}
+		if standing != UnitTheirs {
+			t.Errorf("Standing() with HOME=%q = %v; a standing this daemon could not compute must read as a file to leave alone", home, standing)
+		}
+	}
+}
+
+// TestNewUnitLooksWhereTheInstallerWrote pins the composition itself: the two
+// paths are under this process's home, and they are the installer's.
+func TestNewUnitLooksWhereTheInstallerWrote(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	u := NewUnit(func(name string) string {
+		if name != envHome {
+			t.Errorf("the unit was resolved from %s; install.sh composes both paths from %s alone", name, envHome)
+		}
+		return home
+	})
+
+	if want := filepath.Join(home, unitPath); u.Path() != want {
+		t.Errorf("NewUnit reads %q, want %q", u.Path(), want)
+	}
+	if want := filepath.Join(home, unitRecordPath); u.RecordPath() != want {
+		t.Errorf("NewUnit records at %q, want %q", u.RecordPath(), want)
+	}
+}
+
+// TestUnitAssetAndPathsAreTheInstallersOwn holds this package and install.sh to
+// one asset name and two paths.
+//
+// **Must fail when** either file moves. They cannot share a constant — one is Go
+// and one is shell — and every drift here is silent: an asset name that has
+// drifted asks a release for a file it does not publish, a unit path that has
+// drifted reports every host as having no unit, and a record path that has
+// drifted reads every unit as one this project never wrote and hands out a .new
+// beside a file that is already current.
+func TestUnitAssetAndPathsAreTheInstallersOwn(t *testing.T) {
+	t.Parallel()
+
+	installer, err := os.ReadFile(installerSource)
+	if err != nil {
+		t.Fatalf("read %s: %v", installerSource, err)
+	}
+
+	for _, c := range []struct {
+		declared string
+		here     string
+		cost     string
+	}{
+		{declared: "UNIT_ASSET", here: UnitAsset, cost: "an update asks a release for an asset it does not publish, and every host is told its unit could not be checked"},
+		{declared: "UNIT", here: unitPath, cost: "an update reads a file systemd never loads, so every host looks like one with no unit at all"},
+		{declared: "UNIT_RECORD", here: unitRecordPath, cost: "an update finds no record anywhere, so no unit is ever this project's to replace and every host is handed a .new it does not need"},
+	} {
+		t.Run(c.declared, func(t *testing.T) {
+			t.Parallel()
+
+			pattern := regexp.MustCompile(`(?m)^readonly ` + c.declared + `="([^"]+)"`)
+			declared := pattern.FindStringSubmatch(string(installer))
+			if declared == nil {
+				t.Fatalf("%s declares no %s, so this test can no longer see what the installer uses.\nIf it moved rather than went away, move this pattern with it — these two files agree by nothing but this test", installerSource, c.declared)
+			}
+			if declared[1] != c.here {
+				t.Errorf("%s uses %q and this package uses %q.\n%s", installerSource, declared[1], c.here, c.cost)
+			}
+		})
+	}
+}
+
+// TestThePublishedUnitIsDeliveredLikeEveryOtherAsset is the other half of T002:
+// the unit an update compares against arrives through the delivery that already
+// exists, and is held to it.
+//
+// **Must fail when** the unit is fetched or trusted some other way. A second
+// channel for it would be a second thing to verify and, being the one nobody
+// looks at, the one that gets verified less — and what it delivers is written
+// into ~/.config/systemd/user, where systemd executes whatever it says.
+func TestThePublishedUnitIsDeliveredLikeEveryOtherAsset(t *testing.T) {
+	t.Parallel()
+
+	release, private := published(t)
+
+	if err := verifyAgainst(UnitAsset, []byte(publishedUnit), release.sums, release.signature, release.keys); err != nil {
+		t.Fatalf("the published unit did not verify against the release that published it: %v.\nIt is summed in SHA256SUMS beside the tarball and covered by the same signature; if it is not, an update has nothing it can trust to compare a host's unit against", err)
+	}
+
+	// The same list and the same signature, over a unit somebody changed on the
+	// way. Nothing about the record path or the comparison saves a host from
+	// this — only the delivery does.
+	tampered := []byte(publishedUnit + "ExecStart=/tmp/theirs\n")
+	if err := verifyAgainst(UnitAsset, tampered, release.sums, release.signature, release.keys); !errors.Is(err, ErrChecksumMismatch) {
+		t.Errorf("a tampered unit verified: %v; want ErrChecksumMismatch.\nThose bytes are placed in ~/.config/systemd/user, where they decide what this host executes and with which privileges", err)
+	}
+
+	// And a release that publishes no checksum for the unit at all is a refusal
+	// rather than a unit taken on trust — the same answer FR-025 requires of a
+	// missing signature, for the same reason.
+	unsummed := regexp.MustCompile(`(?m)^.*`+regexp.QuoteMeta(UnitAsset)+`\n`).ReplaceAllString(string(release.sums), "")
+	if unsummed == string(release.sums) {
+		t.Fatalf("the fixture release does not sum %s, so this case is asserting nothing", UnitAsset)
+	}
+	release.resum(private, []byte(unsummed))
+	if err := verifyAgainst(UnitAsset, []byte(publishedUnit), release.sums, release.signature, release.keys); !errors.Is(err, ErrUnsummedAsset) {
+		t.Errorf("a unit no checksum covers was accepted: %v; want ErrUnsummedAsset.\nSilence about an asset is not permission to install it", err)
+	}
+	if !strings.Contains(string(release.sums), AssetName(testVersion, "amd64")) {
+		t.Fatal("the fixture lost the tarball's own line, so the case above proved something else")
+	}
+}
