@@ -393,3 +393,78 @@ block survives unchanged under a new `#### From a clone instead`.
    shows a four-line file from scratch, `shared_secret` included. **That is exactly
    T006**, which is next — it is recorded here only so the next iteration knows the
    two sections were written to the same shape deliberately.
+
+---
+
+## Iteration 6 — 2026-08-12
+
+**Did:** T006. Path 2 now starts from the file the installer left — four numbered
+steps in Path 1's shape: add `dashboard_password` and `listen` to a
+`~/.config/crswd/config` that is already there and already `0600`, **clear the
+unit's own `CRSW_LISTEN`**, `crswd config check`, then the sign-in form.
+
+**Learned:**
+
+- **The task's second key does not work as the plan describes it, and checking
+  was the whole value of the task.** `deploy/crswd.example.service:96` carries
+  `Environment=CRSW_LISTEN=127.0.0.1:8765`; `release.yml:102` ships that file
+  verbatim as `crswd.service`; `install.sh` writes it to
+  `~/.config/systemd/user/`. Precedence is **flag > environment > file > default**
+  (`internal/config/source.go:16`), so `listen = 0.0.0.0:8765` in the
+  configuration file **changes nothing on any installer-installed host** — the
+  daemon goes on binding loopback and is simply unreachable from the LAN. It is
+  the identical trap the installer's own file already spells out for
+  `allowed_roots` ("an edit here alone is one that appears to have done nothing"),
+  undocumented for the one setting this deployment exists to change.
+- **`crswd config check` cannot catch it.** `configCheck`
+  (`cmd/crswd/config_cmd.go:101`) reads only the file: grammar, keys, mode. It
+  never consults the environment, so it reports `listen` as set while the unit
+  wins. `GET /settings` is the thing that shows the layer that won, and
+  `ss -tlnp | grep crswd` is the check that needs no door to be open yet. Say
+  what `config check` does **not** do wherever this milestone folds it in.
+- **`dashboard_password` has no such collision** — grep the unit: it appears in a
+  comment (lines 67–71, telling an operator to put it in the `EnvironmentFile`)
+  and in no `Environment=` line. Only `listen` and `allowed_roots` are set both
+  places.
+- **The ordering of the two keys is load-bearing, not stylistic.** `loadListen`
+  (`config.go:1461`) refuses a non-loopback host when no door admits, so writing
+  `listen` first and restarting is a daemon that stops. One edit, both keys.
+- **`http://<the host's LAN address>:8765/login` survived byte for byte**, as
+  iteration 4 warned — `login_test.go:1004` builds it from the mux's own
+  `pathLogin` constant.
+- **The `journalctl` sweep nearly bit again, in a new way.** A wrapped line whose
+  first character is a **backtick** is safe (`trailCommands` strips whitespace and
+  a leading `#`, nothing else), but relying on that is how the next edit fails.
+  Rewrapped so the word sits mid-sentence, per iteration 5.
+- **The gate ran in full and green:** build, vet, `go test ./...`,
+  `golangci-lint run` (v2.12.2, #26's check passes, 0 issues), and
+  `go test -tags quickstart ./cmd/crswd` (35s).
+
+**Left:** T007, T008.
+
+**Findings (not fixed):**
+
+1. **A systemd drop-in is probably the better answer to step 2 and is untested
+   here.** `systemctl --user edit crswd` with `Environment=CRSW_LISTEN=…` would
+   override the shipped unit *without* editing it, so `install.sh` would go on
+   replacing the unit on later runs instead of leaving it alone. Drop-ins parse
+   after the main file and a repeated `Environment=` assignment wins, so it
+   should work — but **this iteration could not verify it on this host**, and the
+   milestone's own rule is not to write down an unverified claim. The two options
+   the page does give are both readable off files in this repo. Worth a task:
+   verify it, and if it holds, it belongs in `deploy/README.md` once rather than
+   in both paths.
+2. **`install.sh`'s printed next steps and `README.md`'s three-line recipe both
+   say "edit the config, then enable" and neither mentions the unit.** The recipe
+   at `README.md:116` is now accurate for Path 1 and incomplete for Path 2, which
+   needs a second file opened. **Not fixed:** the Install section deliberately
+   defers detail ("what goes in that file is your path's business") and T007 owns
+   that section's trimming — it should decide whether the deferral still holds now
+   that one path has two files to edit.
+3. **Iteration 5's finding 1 and iteration 4's findings 1 and 2 stand, and so do
+   the older three** — no shipped `cloudflared` unit while two files assume one;
+   the two framings of the doors T007 must choose between; `install.sh`'s next
+   steps omitting `loginctl enable-linger`; `docs/auth-and-sessions.md`'s colliding
+   "two doors" and its "the skill"; `deploy/README.md`'s Access-only "Verifying the
+   exposure model"; and the htmx claim under "Why it is built this way", **now
+   `README.md:875`** after this task's additions — still T007's.
