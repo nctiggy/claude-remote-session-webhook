@@ -214,3 +214,78 @@ its session elsewhere.
   `go test -tags quickstart`**. Not run this iteration — nothing under
   `cmd/crswd` changed. `go vet -tags quickstart ./...` and `-tags dev` compile;
   `go test -tags tmux ./...` passes.
+
+---
+
+## Iteration 3 — 2026-08-12 — T002, the clock that watches the session
+
+**Did:** `Session.TmuxActivity` holds what the host last saw the session do, and
+`IdleDeadline` is measured from `idleFrom()` — the later of it and
+`LastActivity`. `Reaper.Sweep` calls the new `Manager.syncActivity` before it
+judges anything: one `list-sessions` per sweep, `adoptableID` to decide which
+rows are ours, and `Store.setTmuxActivity` to record them. The operator's
+session — watched all afternoon in the dashboard, driven by nobody through the
+API — is no longer reaped at sixty minutes.
+
+**Learned:**
+
+- **Where the value had to live was decided by FR-019c, not by taste.** The
+  reaper could have read the host's times and thrown them away inside `Sweep`,
+  storing nothing. It must not: the card renders `s.IdleDeadline()` directly
+  (`dashboard.go:388` → `formatIdleDeadline`), so a deadline the sweep knew
+  about and the record did not would make the dashboard and the reaper disagree
+  about the same session — exactly the drift FR-019c forbids. Hence a field on
+  the record, refreshed by the sweep, read by both.
+- **The fail-safe rule is a comparison, deliberately not a branch.**
+  `idleFrom()` is `if TmuxActivity.After(LastActivity)`. Absent, unparsable,
+  stale, and from-a-disagreeing-clock are not four cases — none of them can be
+  *later*, so all four fall through to `LastActivity` and none can shorten a
+  session's life. There is no "is this usable?" test to get the wrong way round.
+- **⚠️ The fake stamped tmux activity with `time.Now()` while the fixture's
+  daemon clock stood at `contractCreatedAt`, ten days earlier**, so the first
+  run had every managed session looking busy days into its own future and
+  **thirteen reaper tests failed at once**. Fixed by pinning the fake's clock to
+  the fixture's in `newManagerFixture` — one clock for the host and the daemon,
+  because they are one clock in production. A test that wants "the host says
+  busy" now says so with `SetActivity`. `manager_test.go:2269` pins the same
+  thing locally and is now redundant; left alone (AR-008).
+- **Only one existing assertion had to move**, and it is the right one:
+  `TestSweepTearsDownTheWayAnExplicitDestroyDoes` pins the exact argv a sweep
+  runs, so the new `list-sessions` at the head of it is now in `want`. Grep
+  `OpList` before changing the sweep's command sequence again.
+- **`setTmuxActivity` is unexported and returns nothing**, breaking the pattern
+  every other `Store` mutator follows, for reasons written at the call site: the
+  sweep acts on the daemon's own behalf and has no owner to check (as `lookup`
+  and `snapshot` do not), and "the host listed a session this store has no
+  record of" is the ordinary case rather than a failure.
+- **Proved by breaking it, three ways.** `idleFrom` returning `LastActivity`
+  alone fails the new sweep test, the store test and one table case; returning
+  `TmuxActivity` alone — the parse-failure-makes-a-live-session-reapable bug
+  T002 names — fails the fallback test plus a dozen existing ones; disabling the
+  `syncActivity` call fails three. All restored.
+- Linter confirmed v2 (`2.12.2`, #26). `go test ./...`, `-tags tmux`, `-tags
+  dev`, and `-tags quickstart ./cmd/crswd` all pass; quickstart was run **after**
+  the commit, per iteration 1.
+
+**Left:** T003–T007.
+
+**Findings:**
+
+- **The card's idle deadline is up to one sweep interval stale.** tmux activity
+  reaches a record only when a sweep stores it, so a session that started
+  printing five seconds ago still shows the old deadline for up to 30s. That is
+  the reaper's own resolution and consistent with it — but T003 is about telling
+  the operator what the clock is watching, and "watching, as of the last sweep"
+  is the honest wording.
+- **`gofmt -l .` flags `internal/httpapi/render.go`** — an import of
+  `internal/buildinfo` sorted above the stdlib block. It is committed that way,
+  was not touched here, and `golangci-lint run` reports 0 issues, so nothing
+  gates on it. One `gofmt -w` fixes it; out of scope for T002 (AR-008).
+- **`Fake.Seed` still silently drops `Label`, `WorkDir` and `StartCommand`**
+  (iteration 1's finding, unchanged). It does carry `Activity`, which is what
+  T002 needed.
+- **The API's `last_activity` still means "when a request last drove this"** and
+  was deliberately not changed: `entryFor` renders `s.LastActivity`, not
+  `idleFrom()`. Nothing on the wire claims an idle deadline, so nothing there
+  became inconsistent — but if T003 or a later task exposes the effective clock
+  through the API, it needs a name that does not collide with this one.

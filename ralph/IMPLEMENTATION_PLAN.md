@@ -138,7 +138,7 @@ only because of it.
 
 - [x] **T001** Add `#{session_activity}` as a seventh field to `argvList()` in `internal/tmuxctl/`, parse it in `parseSessions`, and carry it on the reconciled session. The existing tests assert the six-field argv and will need updating — that is expected and correct, not a signal to route around them. `Fake` must serve it too, with a knob to set it, or nothing downstream is testable. **Unparsable or absent is not an error**: it yields a zero time, and T002 decides what that means.
 
-- [ ] **T002** 🔒 Compute the idle deadline from **the later of** `LastActivity` and the tmux activity time. A zero or unusable tmux time falls back to `LastActivity` alone — **never to reaping**. Test: a session with old `LastActivity` and recent tmux activity is **not** reaped; one with both old is; one with an unparsable tmux time behaves exactly as today. **Must fail when** a parse failure makes a live session reapable.
+- [x] **T002** 🔒 Compute the idle deadline from **the later of** `LastActivity` and the tmux activity time. A zero or unusable tmux time falls back to `LastActivity` alone — **never to reaping**. Test: a session with old `LastActivity` and recent tmux activity is **not** reaped; one with both old is; one with an unparsable tmux time behaves exactly as today. **Must fail when** a parse failure makes a live session reapable.
 
 - [ ] **T003** Show the operator what the clock is actually watching. The card already carries `idle deadline`; add the last activity it is measured from, so "why is this about to die" is answerable from the page. Reuse `.card-meta`'s `dt`/`dd`; **no new class**.
 
