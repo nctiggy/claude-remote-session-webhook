@@ -66,3 +66,61 @@ this repository's whole discipline exists to kill.
 **A landmine for T003:** any comment line in `config.example` beginning
 `# <known_key> = …` counts as that key's line. Illustrative prose like
 `# idle_timeout = 0 disables nothing` fails the suite as a duplicate key.
+
+---
+
+## Iteration 1 — 2026-08-12
+
+**Did:** T001. Corrected `AGENTS.md` against the tree — the audit named four false
+claims and checking the rest found two more.
+
+**Learned:**
+
+- **`AGENTS.md` has almost no room to grow. CI fails it at ≥150 lines** (`ci.yml`,
+  "AGENTS.md stays skimmable"), and it sits at **147**. Any future edit must budget
+  lines, not just words. Deleting the phantom `skill/` row is what paid for the two
+  lines the corrected CI paragraph needed.
+- **The audit's count was low; it was wrong in six places.** Beyond the four named:
+  `internal/` was listed as five packages when there are ten (`access`, `audit`,
+  `auth`, `buildinfo`, `config`, `httpapi`, `release`, `session`, `tmuxctl`,
+  `updater`), and `cmd/crswd/` was "flag parsing and wiring only" when it carries
+  three subcommands (`config check`, `config migrate`, `keygen`).
+- **The `Why` paragraph also claimed the device-code relay works.** It does not —
+  `internal/session/session.go:105`, `status-pill.html:14` and `crswd.js:498` all
+  park it on "milestone 4's device-code relay", and no `httpapi` route mentions it.
+  The `README.md` already names it and the companion skill as the two unbuilt
+  things; `AGENTS.md` now does too, so T004 does not have to re-derive this.
+- **The two tagged suites are broader than the table said.** `-tags tmux` also
+  covers `internal/session/mode_test.go` (a session name round-tripping through a
+  real tmux user option); `-tags dev` spans `internal/access`, `internal/httpapi`
+  **and** `cmd/crswd`, not just the first.
+- **CI runs Install, Lint, Typecheck, Test, Build, `-tags tmux`, `-tags quickstart`
+  — and not Format or `-tags dev`.** `.golangci.yml` has a `formatters:` block with
+  exclusions but enables no formatter, so nothing in CI checks `gofmt`. That is why
+  the corrected sentence names the commands rather than saying "the untagged ones".
+- **No test parses `AGENTS.md`.** Every Go reference to it is a comment citing a
+  rule. It is the one context file that is *not* a fixture — unlike `config.example`,
+  `.env.example` and the README table. Its only mechanical guard is the line count.
+- **`golangci-lint` here is v2.12.2, matching the CI pin** — the #26 check passes,
+  so a green local lint is a real one this iteration.
+
+**Left:** T002–T008.
+
+**Findings (not fixed):**
+
+1. **`docs/auth-and-sessions.md` §"Two doors, one hostname" (line 48) is about the
+   Access-vs-API split, and calls the API client "the skill" — which does not
+   exist.** With milestone 12's password door, the phrase "two doors" now names two
+   different pairs in two different files, which is exactly the kind of collision
+   that makes a reader trust the wrong one. **Deliberately not touched**: that file
+   is named out of scope in the plan and is a binding correctness spec, so changing
+   it needs its own task, not a drive-by. Worth a task in the next milestone.
+2. **`README.md:656` still says "Go templates + htmx, not an SPA."** Same falsehood
+   T001 removed from `AGENTS.md`. It is inside T007's territory (the roadmap and
+   duplication trim) — **T007 should fix it rather than leave the last htmx claim
+   standing in the front-page file.**
+3. **The quickstart suite cannot run on this host**: the deployed daemon holds
+   `127.0.0.1:8765` (confirmed via `ss -ltn`), and two startup cases bind that exact
+   port. `go vet -tags quickstart ./...` is the fallback and it passes. Any task
+   whose gate is "run quickstart" will hit this — CI's self-hosted runners are where
+   it actually executes.

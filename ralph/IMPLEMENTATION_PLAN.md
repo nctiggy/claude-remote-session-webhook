@@ -99,7 +99,7 @@ is *order* — fact, bounds, default, then why — not deleting the why.
 
 ## Tasks
 
-- [ ] **T001** Fix `AGENTS.md`. Remove `htmx` and the `skill/` directory from the project map; correct the browser-door description to name both doors; correct the CI claim to include the tmux and quickstart suites. **Check every other claim in the file against the tree while you are there** — it is the file every agent reads first, and it has been wrong in four places at once.
+- [x] **T001** Fix `AGENTS.md`. Remove `htmx` and the `skill/` directory from the project map; correct the browser-door description to name both doors; correct the CI claim to include the tmux and quickstart suites. **Check every other claim in the file against the tree while you are there** — it is the file every agent reads first, and it has been wrong in four places at once.
 
 - [ ] **T002** Fix `deploy/README.md:14` and `CONTRIBUTING.md:22-27`. The Access values are optional; setting none is a supported deployment that admits nobody to the dashboard. Say which deployment the file is for at the top, and note that a LAN operator wants the password door instead. Reposition the 1Password paths as **one example of a shape** — a secret in a manager, `EnvironmentFile` under `umask 077`, never in the unit — rather than the procedure.
 
