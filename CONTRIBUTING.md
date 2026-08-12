@@ -19,11 +19,19 @@ go test ./...
 golangci-lint run
 ```
 
-A change is not done until those four pass, which are the commands CI runs and
-nothing else. **Three suites are behind build tags and neither `go test ./...`
-nor CI's untagged run reaches them**, so a tagged suite reports nothing whether
-or not it still compiles: `tmux`, `quickstart` and `dev`. `AGENTS.md` says which
-one covers what, and what each needs on the host.
+A change is not done until those four pass. **CI runs more than them**, so passing
+them locally is the floor and not the whole gate: the same four, plus
+`go vet ./...`, plus the `tmux` and `quickstart` suites, plus a guardrails job
+that checks the required context files exist, shellchecks the hooks and runs their
+behaviour tests, scans the history with gitleaks, and fails if `AGENTS.md` reaches
+150 lines.
+
+**Three suites are behind build tags, and `go test ./...` reaches none of them**,
+so a tagged suite reports nothing whether or not it still compiles: `tmux`,
+`quickstart` and `dev`. CI runs the first two; `dev` runs nowhere but on your
+machine, as does `gofmt`. `AGENTS.md` says which one covers what, and what each
+needs on the host — run the one that matches what you touched, or
+`go vet -tags <tag> ./...` when its environment is not available.
 
 The standards themselves are in [`.specify/memory/constitution.md`](.specify/memory/constitution.md)
 and `docs/`, and they are enforced by the hooks in `.claude/hooks/` rather than
