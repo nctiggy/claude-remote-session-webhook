@@ -267,6 +267,14 @@ func TestTmuxListReportsProvenanceAndCreation(t *testing.T) {
 	if got := seen[ours].Created; got.Before(before) || got.After(time.Now().Add(time.Minute)) {
 		t.Errorf("Created = %v, want a time around now (%v)", got, time.Now())
 	}
+	// The whole premise of measuring idle from the host: that #{session_activity}
+	// is a format this tmux knows and renders as a Unix timestamp. A tmux that
+	// did not would render the literal text, the parser would read it as
+	// unreadable, and every session would quietly fall back to the old clock
+	// with nothing failing to say so. This is what notices.
+	if got := seen[ours].Activity; got.Before(before) || got.After(time.Now().Add(time.Minute)) {
+		t.Errorf("Activity = %v, want a time around now (%v) — this tmux may not render #{session_activity}", got, time.Now())
+	}
 }
 
 // Byte-for-byte delivery of the payloads research D4 showed send-keys -l

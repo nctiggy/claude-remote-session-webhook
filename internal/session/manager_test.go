@@ -2241,7 +2241,7 @@ func TestAdoptTakesBackASurvivingSessionWithAFreshCredential(t *testing.T) {
 	// argv is spelled out rather than built from tmuxctl's helpers: this asserts
 	// the command line tmux will receive, not that Adopt called a builder.
 	want := []tmuxctl.Call{
-		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}"}},
+		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}|#{session_activity}"}},
 		{Op: tmuxctl.OpHas, Argv: []string{"tmux", "has-session", "-t", "=" + name}},
 	}
 	calls := f.tmux.Calls()[before:]

@@ -129,4 +129,16 @@ type SessionInfo struct {
 	// an error: it is the correct reading of a session this daemon started under
 	// an older build, and every one of those was started with the default.
 	StartCommand string
+
+	// Activity is tmux's own #{session_activity} — when the session last
+	// produced output. It is the only reading of "in use" that can see an agent
+	// still printing or a human typing in an attached terminal, neither of which
+	// ever reaches the daemon as a request. The idle clock without it measures
+	// daemon-mediated mutating calls and nothing else, which is why a session
+	// somebody was watching all afternoon got reaped at sixty minutes.
+	//
+	// Zero means tmux gave no readable value. That is not an error, and it must
+	// never be read as "idle": a session with no usable activity time falls back
+	// to the record's own LastActivity, never to being reaped.
+	Activity time.Time
 }

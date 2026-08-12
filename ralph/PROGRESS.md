@@ -55,3 +55,66 @@ already happens, not a new call.
 It also answers the objection that killed the obvious fix: counting browser reads
 would let a forgotten tab hold an unsandboxed shell open forever. Real tmux
 activity is not a forgotten tab.
+
+---
+
+## Iteration 1 — 2026-08-12 — T001, the seventh field
+
+**Did:** `argvList()` now asks tmux for `#{session_activity}` as a seventh field,
+`parseSessions` reads it, and it rides on `SessionInfo.Activity`. The `Fake`
+stores it, stamps it from the injected clock in `New`, carries it through `Seed`,
+and exposes `SetActivity` for a test that needs a session tmux says is busy while
+the daemon has not heard from it. Nothing consumes `Activity` yet — that is T002.
+
+**Learned:**
+
+- **The real tmux here renders `#{session_activity}` as a Unix timestamp.**
+  Verified, not assumed: `TestTmuxListReportsProvenanceAndCreation` now asserts
+  it lands within seconds of now, so a tmux that did not know the format (it
+  would emit the literal text) fails loudly instead of silently falling every
+  session back to the old clock. `go test -tags tmux ./internal/tmuxctl` passes.
+- **Activity is the last field, so it is the first cut from the right.** The
+  start-command name moved to second-from-right. Everything after the session
+  name is still digits, a flag, a validated label, base64, and a validated
+  command name — nothing that can carry a `|` — so cutting from the right still
+  holds. Only the session name may contain the separator.
+- **The parse is deliberately asymmetric.** An unreadable *creation* time still
+  fails the row; an unreadable *activity* time yields the zero time and the row
+  parses. Failing the row would abandon reconciliation and leave every managed
+  session on the host unadopted, which is far worse than measuring idle the way
+  yesterday's build did. Two table cases pin this and two more pin that a bad
+  creation time still errors.
+- **Three places assert the six-field argv**, and all three had to move together:
+  `internal/tmuxctl/fake_test.go`, `internal/tmuxctl/exec_test.go`, and
+  `internal/session/manager_test.go` (the Adopt argv). Grep for
+  `session_created` before changing the format string again.
+- **Proved by breaking it.** With the seventh field removed the real-tmux test
+  fails on `unreadable row`; with the `Activity` assignments dropped, seven
+  parse cases and the fake round-trip test fail. Both restored.
+
+**Left:** T002–T007. T002 is the one that makes any of this matter — nothing
+reads `SessionInfo.Activity` yet, and per `docs/conventions.md` a test that
+cannot fail is not a test: assert the caller.
+
+**Findings:**
+
+- **⚠️ `go test -tags quickstart ./cmd/crswd` ran while this iteration's tree was
+  dirty, and the tree came back clean with the work in `git stash`.** Nothing in
+  the repo runs `git stash` (grepped `.claude/`, `.githooks/`, `ralph/`, and the
+  suite itself), so the stash came from outside it — the reflog shows the branch
+  was also moved from `feat/m13b-idle-real` to `main` at the same moment. **The
+  lesson stands regardless of cause: commit before running the quickstart
+  acceptance suite, never with uncommitted work in the tree.** That suite builds
+  a real binary and binds a real port; it is the one command here with a foot
+  outside the process.
+- **A leftover `stash@{0}` on this branch is a duplicate of this commit** and can
+  be dropped. `stash@{1}` is older and from `fix/42-prg` — not mine, left alone.
+- **An iteration can find itself on a different branch than it started on.**
+  This one did, and nearly committed T001 onto `main`, which the hard rules
+  forbid. `git branch --show-current` before `git commit` is cheap; the loop's
+  clean-tree check at `ralph/loop.sh:32` does not cover this.
+- **`Fake.Seed` silently drops `Label`, `WorkDir` and `StartCommand`** from the
+  `SessionInfo` it is handed — it only carries `Created` and `Managed` (and now
+  `Activity`). A test that seeds a labelled session and asserts the label back
+  would be testing nothing. Not fixed: outside T001, and no caller relies on it
+  today.

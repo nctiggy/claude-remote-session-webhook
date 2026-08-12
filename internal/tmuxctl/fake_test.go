@@ -65,7 +65,7 @@ func TestFakeRecordsExactArgv(t *testing.T) {
 		{Op: tmuxctl.OpCapturePane, Argv: []string{"tmux", "capture-pane", "-p", "-t", "=" + fakeName + ":"}},
 		{Op: tmuxctl.OpKill, Argv: []string{"tmux", "kill-session", "-t", "=" + fakeName}},
 		{Op: tmuxctl.OpHas, Argv: []string{"tmux", "has-session", "-t", "=" + fakeName}},
-		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}"}},
+		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}|#{session_activity}"}},
 	}
 
 	got := f.Calls()
@@ -416,6 +416,71 @@ func TestFakeNewStampsCreatedFromTheInjectedClock(t *testing.T) {
 	}
 	if got[0].Managed {
 		t.Error("a session is managed only once @crswd-managed is set, not by New alone")
+	}
+}
+
+// The activity time has to survive the round trip through the fake, or nothing
+// downstream of it can be tested: a fake that took a value and returned zero
+// would let the idle clock pass against a daemon that never reads the field.
+func TestFakeListReportsTheActivityTime(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	created := time.Date(2026, 8, 2, 11, 0, 0, 0, time.UTC)
+	busy := created.Add(90 * time.Minute)
+	const seeded = "crswd-1111111111111111111111111111abcd"
+
+	f := tmuxctl.NewFake()
+	f.SetNow(func() time.Time { return created })
+	if err := f.New(ctx, fakeName, fakeWorkDir); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// A session that survived a restart brings its own activity time with it,
+	// the way a real one does — adoption reads it off the host, it is not reset
+	// to the moment the daemon noticed.
+	f.Seed(tmuxctl.SessionInfo{Name: seeded, Created: created, Activity: busy, Managed: true})
+
+	got, err := f.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("List returned %d sessions, want 2: %v", len(got), got)
+	}
+	byName := map[string]tmuxctl.SessionInfo{got[0].Name: got[0], got[1].Name: got[1]}
+
+	// A session that has just been created has done nothing since, which is the
+	// only honest reading of "last activity" for it.
+	if a := byName[fakeName].Activity; !a.Equal(created) {
+		t.Errorf("a new session's Activity = %v, want its creation time %v", a, created)
+	}
+	if a := byName[seeded].Activity; !a.Equal(busy) {
+		t.Errorf("a seeded session's Activity = %v, want the seeded %v", a, busy)
+	}
+
+	f.SetActivity(fakeName, busy)
+	got, err = f.List(ctx)
+	if err != nil {
+		t.Fatalf("List after SetActivity: %v", err)
+	}
+	for _, s := range got {
+		if s.Name == fakeName && !s.Activity.Equal(busy) {
+			t.Errorf("Activity after SetActivity = %v, want %v", s.Activity, busy)
+		}
+	}
+
+	// The zero time is a host that gave no readable answer. It must come back as
+	// zero rather than as anything a caller could mistake for a real reading —
+	// deciding what it means is the caller's job, and it is not "reap it".
+	f.SetActivity(fakeName, time.Time{})
+	got, err = f.List(ctx)
+	if err != nil {
+		t.Fatalf("List after clearing the activity time: %v", err)
+	}
+	for _, s := range got {
+		if s.Name == fakeName && !s.Activity.IsZero() {
+			t.Errorf("Activity = %v, want the zero time", s.Activity)
+		}
 	}
 }
 
