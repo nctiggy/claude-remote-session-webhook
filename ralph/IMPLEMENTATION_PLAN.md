@@ -67,7 +67,14 @@ placed.
 
 ## Tasks
 
-- [ ] **T001** Create `deploy/crswd.example.config` — the complete configuration in the file format the daemon reads (`key = value`), carrying **every** key the daemon understands, each commented out, each with the explanation an operator needs to decide. Values are never present: the file is keys and prose only. Take the explanations from `.env.example` and the README rather than writing new ones, and keep this project's voice — say what a setting is for and what happens if it is wrong, not just what it is.
+> **The whole milestone is blocked on one answer.** `config.example` already
+> exists at the repository root, already carries every one of the twenty-three
+> keys in `key = value` form with the prose, and is already guarded in both
+> directions. T001 as written creates a second one. Whether the shipped template
+> is that file or a new one decides T001 through T006, so nothing below can
+> start until it is answered — see `NEEDS CLARIFICATION` in `PROGRESS.md`.
+
+- [!] **T001** Create `deploy/crswd.example.config` — the complete configuration in the file format the daemon reads (`key = value`), carrying **every** key the daemon understands, each commented out, each with the explanation an operator needs to decide. Values are never present: the file is keys and prose only. Take the explanations from `.env.example` and the README rather than writing new ones, and keep this project's voice — say what a setting is for and what happens if it is wrong, not just what it is.
 
 - [ ] **T002** 🔒 Guard it, mirroring `TestEnvExampleNamesEveryVariable` in `internal/config/`. Three assertions, all in both directions where that applies: **every key the daemon reads is named** in the file and nothing is named that the daemon does not read; **no key carries a value**, which is the committed-secret guard and the precondition for any `gitleaks` allowlist; and **every key is described** rather than merely listed. **Prove each by breaking it**: add a key to the loader and watch it fail, put a value in and watch it fail.
 
