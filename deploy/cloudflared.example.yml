@@ -4,11 +4,11 @@
 # The tunnel dials OUT to Cloudflare. No inbound port is opened on the host or the
 # router, and the daemon itself only ever listens on loopback.
 #
-# The tunnel is reachability, not authentication. In milestone 1 the daemon does
-# not validate a Cloudflare Access JWT — HMAC on the API is the only check there
-# is — so the hostname below is world-reachable the moment this is running. Put
-# an Access application in front of it, and read "Not shippable before T037" in
-# ralph/IMPLEMENTATION_PLAN.md before pointing a public name at this at all.
+# The tunnel is reachability, not authentication. The hostname below is
+# world-reachable the moment this is running, so put an Access application in
+# front of it first: the daemon validates the assertion the edge forwards, and
+# there is none to validate when there is no application. README.md's "Path 1 —
+# on the internet" is the order to do it in.
 
 tunnel: 00000000-0000-0000-0000-000000000000        # your tunnel ID
 credentials-file: /home/YOURUSER/.cloudflared/00000000-0000-0000-0000-000000000000.json

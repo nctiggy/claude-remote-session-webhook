@@ -233,26 +233,158 @@ is a shell script so that reading it is the documentation.
 
 ### Path 1 — on the internet: Cloudflare Tunnel and Access
 
-Example files for both live in [`deploy/`](deploy/), and
-[`deploy/README.md`](deploy/README.md) is the operator's page: what you supply, in
-what order, and why three settings in the unit are load-bearing.
+**What you are building:** a tunnel that dials out from this host to Cloudflare, a
+public hostname routed to that tunnel, and an **Access application** in front of
+that hostname deciding who reaches it. The daemon goes on listening on
+`127.0.0.1:8765` throughout — nothing below opens a port on the host or the router.
+
+You need a Cloudflare account with a domain on it. Steps 1 to 8 happen in
+Cloudflare and in `~/.cloudflared/`; only 9 onwards touch the daemon.
+
+> **A public hostname with no Access application in front of it leaves HMAC alone
+> between the internet and unsandboxed execution.** The daemon validates the
+> assertion the edge forwards — pinned audience, pinned algorithm, and its own copy
+> of the allowlist — so the edge and the daemon each get a say. But it can only
+> check an assertion the edge actually wrote, and there is none to write when there
+> is no application. Do not point a public name at this before step 8.
+
+**1 · Install and authenticate `cloudflared`.** Cloudflare publishes packages and a
+static binary; install it however this host prefers. Then:
+
+```bash
+cloudflared tunnel login
+```
+
+It opens a browser, asks which of your zones you are authorising, and writes a
+certificate to `~/.cloudflared/cert.pem`. That certificate is what authorises the
+next two commands against your account. It is not the tunnel's own credential —
+step 2 creates that.
+
+**2 · Create the tunnel.**
+
+```bash
+cloudflared tunnel create crswd
+```
+
+It prints a **tunnel ID**, a UUID, and writes that tunnel's credential to
+`~/.cloudflared/<tunnel-id>.json`. Both are values you fill in at step 4.
+
+**3 · Route the hostname to the tunnel.**
+
+```bash
+cloudflared tunnel route dns crswd crswd.example.com
+```
+
+This writes the DNS record — a proxied `CNAME` at that name, pointing at the
+tunnel. It is the step most easily missed, and missing it is a tunnel that runs
+correctly at a name that resolves to nothing. The name must be inside the zone you
+authorised in step 1.
+
+**4 · Fill in the tunnel's configuration.** Copy `cloudflared.example.yml` to
+`~/.cloudflared/config.yml` — from [`deploy/`](deploy/) in this repository, or from
+the release assets if you took the [one-line install](#install) — and edit four
+values:
+
+| In `~/.cloudflared/config.yml` | What goes there |
+|---|---|
+| `tunnel:` | the tunnel ID from step 2 |
+| `credentials-file:` | the JSON path printed beside it |
+| `hostname:` | the name you routed in step 3 |
+| `service:` | `http://127.0.0.1:8765` — leave it, unless you moved `listen` |
+
+**The `service` line and the daemon's `listen` are one address written twice.** A
+mismatch is a `502` from the edge with nothing in the daemon's journal to explain
+it, because nothing ever reached the daemon. Leave the catch-all
+`- service: http_status:404` last: it is what stops the tunnel proxying whatever
+else this host may serve later.
+
+**5 · Create the Access application.** In Cloudflare's Zero Trust dashboard, add a
+**self-hosted** application whose domain is the hostname from step 3. Two of the
+daemon's four settings come out of it:
+
+- the **Application Audience (AUD) tag**, on the application itself →
+  `access_aud`
+- your **team domain**, normally `<team>.cloudflareaccess.com` →
+  `access_team_domain`
+
+Cloudflare rearranges that dashboard from time to time; those two names are what to
+search it for.
+
+**6 · Configure the identity provider.** Add **Google** as a login method for the
+team, then select it on this application. Access runs the login at the edge, so an
+unauthenticated browser never reaches this host at all; what the daemon sees is the
+assertion Access writes afterwards.
+
+**7 · Create a service token** — skip this if you will only ever use a browser. It
+is what the API client presents at the edge in place of a login: a
+`CF-Access-Client-Id` and a `CF-Access-Client-Secret`, sent alongside the signature
+the daemon checks. **The client secret is shown once, when the token is created,**
+and cannot be recovered afterwards — only regenerated. Keep it with the shared
+secret; `deploy/crswd-api` reads both at call time.
+
+**8 · Give that application both policies.** On the one application:
+
+- an **Allow** policy naming your email address. That same address is
+  `access_allowed_emails` at step 9.
+- a **Service Auth** policy naming the token from step 7.
+
+**Both, or the door is wrong in one of two ways.** Without the Service Auth policy
+the edge answers the API client with a redirect to the login page and the daemon is
+never reached. Without at least one Allow policy beside it, Access never issues a
+usable assertion to anybody.
+
+**9 · Write the four settings the daemon reads.** The installer already left
+`~/.config/crswd/config` holding `shared_secret` and `allowed_roots`, at mode
+`0600`. What this path adds is the door:
+
+```
+access_enabled = true
+access_team_domain = <team>.cloudflareaccess.com
+access_aud = <the AUD tag from step 5>
+access_allowed_emails = you@example.com
+```
+
+Keep that file at `0600`: it now holds the allowlist as well, and the daemon
+refuses to start from a file naming a person that any other account can read.
+`listen` stays at its default `127.0.0.1:8765`, because the tunnel is the only way
+in and there is nothing to widen.
+
+**The first line is not what selects the Access door** — the other three do that on
+their own. What it buys is a refusal: with `access_enabled = true` and the three
+absent, the daemon stops instead of starting a dashboard that admits nobody, which
+on this deployment is the mistake worth making fatal.
+
+**10 · Check the file, then start both.**
+
+```bash
+crswd config check                  # parses the file, names the keys it sets
+systemctl --user restart crswd      # or enable --now, if you have not started it yet
+cloudflared tunnel run crswd        # in another terminal, the first time
+```
+
+`config check` reads the file the daemon would read and reports its grammar, the
+keys it sets — never a value — and the mode it is sitting on. The values themselves
+are checked against the environment at startup, so a start that fails is still read
+with `journalctl --user -u crswd -e`. Running the tunnel in the foreground is what
+proves the path end to end; what keeps it up across a reboot is a service of
+cloudflared's own — its `service install` subcommand writes one — or a unit beside
+the daemon's, which is the order [`deploy/README.md`](deploy/README.md) takes.
+
+**11 · Browse to `https://crswd.example.com/`.** Google's login, then the
+dashboard. **If the dashboard renders without a login, stop**: the Access
+application is not in front of that hostname, and every session on the host is a
+shell reachable from the internet. The check is
+[Verifying the exposure model](#verifying-the-exposure-model), and it is worth
+running once even when the login does appear.
 
 **Every file in `deploy/` is an example.** This repository is public, so no real
-hostname, tunnel ID, Access AUD tag, allowed email, or path appears in it — those
-come from the environment or 1Password at deploy time.
+hostname, tunnel ID, AUD tag, allowed email, or path appears in one — those come
+from the environment or a secret manager at deploy time.
+[`deploy/README.md`](deploy/README.md) is the operator's page behind this one: the
+`EnvironmentFile` shape for the four values, why three settings in the unit are
+load-bearing, and the service token's two halves.
 
-> **A public hostname needs an Access application in front of it, with two
-> policies.** The daemon validates the assertion the edge forwards — pinned
-> audience, pinned algorithm, and its own copy of the allowlist — so the edge and
-> the daemon each get a say. But the daemon can only check an assertion the edge
-> actually wrote: put a hostname in front of this without an Access application and
-> layer 1 has nothing to verify, leaving HMAC alone between the internet and
-> unsandboxed execution.
->
-> The two policies are an identity policy for the browser and a **Service Auth**
-> policy for the API client, on the same application. Access needs at least one
-> Allow policy alongside Service Auth, or it never issues a usable assertion. See
-> `deploy/README.md`.
+#### From a clone instead
 
 The [one-line install](#install) does the first two lines below for you, from a
 published release. What follows is the same deployment done from a clone, and the
