@@ -113,3 +113,67 @@ rename into place. `updateFromBrowser` calls it after a successful `Swap`.
   screen arrived 14ms after the open, which is past the 10ms interval" — and passed
   on every rerun. It asserts a wall-clock deadline of 10ms, which a parallel suite
   on a busy host will miss regardless of the code. CI will hit this eventually.
+
+---
+
+## Iteration 2 — 2026-08-12
+
+**Did:** T002. `internal/updater/unit.go` — `UnitAsset` (the release's own
+`crswd.service`), install.sh's two paths, and `Unit.Standing(published)` answering
+one of four: `UnitAbsent`, `UnitCurrent`, `UnitOurs`, `UnitTheirs`. Reads only;
+nothing is written and nothing is fetched here.
+
+**Learned — things the next iteration would otherwise rediscover:**
+
+- **The delivery half of T002 was already done and needed nothing.** The release
+  workflow publishes `dist/crswd.service`, SHA256SUMS covers it, and the signature
+  covers SHA256SUMS. `Verify(UnitAsset, bytes, sums, sig)` works today —
+  `Verify` takes the asset name, so there is no second code path to write.
+  `TestThePublishedUnitIsDeliveredLikeEveryOtherAsset` pins it, including the
+  unsummed-asset refusal. **T003 just fetches `updater.UnitAsset` alongside the
+  tarball in `updateTo` and hands the bytes to `Standing`.**
+- **Ownership is the recorded digest, never the published bytes**, and the
+  comment in unit.go says why at length: an operator's unit differs from an
+  *older* published unit exactly as it differs from a *newer* one, so comparing
+  against the release refuses to correct any host that ever took a unit.
+  `internal/release/install_test.go`'s `TestInstallNeverOverwritesEditedUnit`
+  makes the same point from install.sh's side; read it before touching this.
+- **`UnitTheirs` is the zero value on purpose.** A standing nobody computed reads
+  as "leave that file alone". Do not reorder the `iota` block.
+- **Paths come from `HOME`, not XDG**, because install.sh composes them from
+  `$HOME` — `stage.go` already made the same choice for the staging directory.
+  `TestUnitAssetAndPathsAreTheInstallersOwn` reads `readonly UNIT_ASSET|UNIT|UNIT_RECORD`
+  out of install.sh; if those shell names ever move, move that pattern with them.
+- **Test fixtures are cheap here.** `newUnitFixture(t, unit, record)` builds a
+  whole host in a `t.TempDir()`; `nil` means the file is absent. `published(t)`
+  in `verify_test.go` already carries the unit as a published asset — it now uses
+  `UnitAsset` and the shared `publishedUnit` const rather than a literal.
+- **Mutation-checked, not just green:** flipping the no-record branch to
+  `UnitOurs` and drifting `unitRecordPath` each failed the new tests. Worth doing
+  again for T003 — the branch that matters most there is the one that does nothing.
+
+**Left:** T003–T007. T003 is next: fetch the unit during an update, act on the
+standing, never overwrite `UnitTheirs`, and write `crswd.service.new` beside it.
+
+**Findings — noticed, not fixed:**
+
+- **⚠️ T003 has one decision T002 could not make: `UnitCurrent` with no record.**
+  A host whose hand-written unit happens to be byte-identical to the published one
+  is current, so there is nothing to write — but there is still no record, so the
+  *next* release will read it as `UnitTheirs` and hand out a `.new`. Recording its
+  digest then would claim ownership of a file this daemon did not write, which is
+  the thing install.sh is careful never to do. Both answers are defensible; pick
+  one deliberately in T003 and say why in the code.
+- **`Unit` has no `wired()` seat yet.** `selfUpdate` in `internal/httpapi/update.go`
+  counts its four members so a dropped wiring refuses loudly (see Iteration 1).
+  T003 adds a fifth — add it to `wired()` too, or an update that stops carrying the
+  unit will look exactly like one that had nothing to carry.
+- **`internal/httpapi/render.go` is not gofmt-clean** (its `buildinfo` import sorts
+  above the stdlib block). Pre-existing, untouched, and invisible to CI because
+  AGENTS.md says Format runs nowhere but locally — `gofmt -l .` names it. One-line
+  fix for the fix lane.
+- **Still open from Iteration 1:** the migration runs in the *old* binary (schema
+  changes land one update late); `cmd/crswd/config_cmd.go` still duplicates
+  `internal/config/write.go` (T007); `internal/config/migrate.go`'s header comment
+  claims cmd/crswd is the only config writer, which is wrong; and
+  `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is wall-clock flaky.
