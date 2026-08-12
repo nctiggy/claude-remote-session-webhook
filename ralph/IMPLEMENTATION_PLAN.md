@@ -140,7 +140,7 @@ only because of it.
 
 - [x] **T002** 🔒 Compute the idle deadline from **the later of** `LastActivity` and the tmux activity time. A zero or unusable tmux time falls back to `LastActivity` alone — **never to reaping**. Test: a session with old `LastActivity` and recent tmux activity is **not** reaped; one with both old is; one with an unparsable tmux time behaves exactly as today. **Must fail when** a parse failure makes a live session reapable.
 
-- [ ] **T003** Show the operator what the clock is actually watching. The card already carries `idle deadline`; add the last activity it is measured from, so "why is this about to die" is answerable from the page. Reuse `.card-meta`'s `dt`/`dd`; **no new class**.
+- [x] **T003** Show the operator what the clock is actually watching. The card already carries `idle deadline`; add the last activity it is measured from, so "why is this about to die" is answerable from the page. Reuse `.card-meta`'s `dt`/`dd`; **no new class**.
 
 - [ ] **T004** 🔒 Give the absolute lifetime a spelling for **never**, matching the discipline the idle disable already follows: it may not collide with "unset". Apply it to both the per-session override **and** `session_lifetime_max`, since a per-session never under a finite ceiling is a setting that always refuses. `resolveLifetimes` currently refuses a negative lifetime — that refusal is what changes, deliberately and with the reason recorded.
 

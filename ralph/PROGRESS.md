@@ -289,3 +289,74 @@ API — is no longer reaped at sixty minutes.
   `idleFrom()`. Nothing on the wire claims an idle deadline, so nothing there
   became inconsistent — but if T003 or a later task exposes the effective clock
   through the API, it needs a name that does not collide with this one.
+
+---
+
+## Iteration 4 — 2026-08-12 — T003, the row that answers "why is this dying"
+
+**Did:** The card carries a `last activity` row directly above `idle deadline`,
+rendering the instant the reaper measures from. `idleFrom` is now exported as
+`Session.IdleSince`; `cardOf` formats `now.Sub(live.IdleSince())` through a new
+`formatSince`, in `formatAge`'s vocabulary. Another `.card-meta` `dt`/`dd`, no
+new class, no CSS.
+
+**Learned:**
+
+- **The row is above the deadline, not below it, and that is the argument.**
+  The two read as one sentence — last active this long ago, therefore due then.
+  A deadline followed by its evidence reads as a footnote; evidence followed by
+  a consequence reads as a reason.
+- **Iteration 3's naming warning was live, and this is where it landed.** The
+  view field is `IdleSince` and never `LastActivity`, because `httpapi` already
+  has a `LastActivity` meaning the narrower "a request drove this" —
+  `sessions.go:149`, the signed API's `last_activity`. Two fields with one name
+  and two meanings in one package is the collision that finding predicted. The
+  *label* is still "last activity", because that is the operator's word for it;
+  the Go names are what stay apart. `view.go` says so at the field.
+- **Coarseness is the honest rendering, not a shortcut.** tmux's reading reaches
+  a record only when a sweep stores it (iteration 3's finding), so the value is
+  up to one sweep interval — 30s — stale. A minute's granularity absorbs that;
+  a timestamp would show a precision the daemon does not have. That reasoning is
+  at `formatSince`, so the next hand reaching for `2026-08-12T11:58:03Z` meets it.
+- **Exported the accessor rather than taking the later of two fields in the
+  dashboard.** `IdleDisabled` exists for exactly that reason and says so — a
+  second reading of the rule is free to disagree with the first the day the
+  spelling changes. Renaming `idleFrom` touched three lines in `session.go` and
+  nothing else in the tree.
+- **Proved by breaking it, twice.** Rendering `live.LastActivity` instead of
+  `IdleSince()` fails the busy-on-the-host case with the exact defect it
+  describes — "1 hour ago" printed beside "in 57 minutes", the page contradicting
+  itself; deleting the two template lines fails all five cases. Both restored.
+- **`docs/components.md` was updated in the same commit**, because #119's lesson
+  is that the drift this document cannot see is the code moving under it. The
+  Session card's inventory sentence, its `cardOf` parameter list and one rule
+  bullet.
+- Linter confirmed v2 (`2.12.2`, #26). `go test ./...`, `-tags tmux`, `-tags
+  dev`, `-tags quickstart ./cmd/crswd` all pass; quickstart run **after** the
+  commit, per iteration 1.
+
+**Left:** T004–T007. T004 is the next one and it is 🔒: a spelling for a
+*never* absolute lifetime that cannot collide with "unset", on the per-session
+override **and** on `session_lifetime_max`.
+
+**Findings:**
+
+- **The single-session page and the fleet both gained the row, because there is
+  one card** — which is the component rule working, and worth stating because
+  the row was designed against the fleet. On the session page it sits above a
+  pane that may be showing the very output that moved the clock.
+- **Nothing on the signed API exposes the effective idle clock**, and this
+  iteration did not add it. `entryFor` still renders `s.LastActivity` under
+  `last_activity`. A skill asking "when does this die" gets a deadline it cannot
+  derive from the fields beside it — the browser can now answer that question and
+  the API still cannot. Not a defect anybody has hit; the milestone names no task
+  for it.
+- **`gofmt -l .` still flags `internal/httpapi/render.go`** (iteration 3's
+  finding, unchanged and untouched). `golangci-lint run` reports 0 issues, so
+  nothing gates on it.
+- **`session.validate` refusing a zero `LastActivity` is what makes the row
+  unconditional**, and no test pins the two together. A record with neither clock
+  set would render "56 years ago" rather than stating an absence — unreachable
+  through `Store.Add` today, and a guard for it would be code no caller can
+  execute, so it was deliberately not written. If that invariant is ever relaxed,
+  this row is one of the things that breaks quietly.
