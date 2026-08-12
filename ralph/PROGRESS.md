@@ -453,3 +453,88 @@ literally true: with both switches on, nothing reaps the session.
 - **`config.example`'s `session_lifetime` prose is now wrong** — it says "There
   is deliberately no way to say 'never'". That is T006's line to fix and is
   named here so it is not read as still true in the meantime.
+
+---
+
+## Iteration 6 — 2026-08-12 — T005, the switch, offered only where it works
+
+**Did:** The create form carries a second override switch — `lifetime=never`,
+labelled "Never die at the lifetime limit", `.field-switch`/`.switch-input`/
+`.switch-label` and a `.field-hint`, no new class. It is rendered **only** on a
+daemon whose operator removed their own lifetime ceiling, decided by a new
+`session.Manager.LifetimeCeilingRemoved()` that `resolveLifetimes` now reads
+too. The idle switch's hint points at the switch below it on those daemons and
+at the settings page on every other.
+
+**Learned:**
+
+- **The gate is the interesting decision, and the plan already named it.** T004
+  said a per-session never under a finite ceiling "is a setting that always
+  refuses"; drawn unconditionally, this box would be refused on *every*
+  submission an operator ever ticked it for. `docs/components.md` has one answer
+  for that shape — a card with no page token offers no actions, a settings row
+  `config.Editable` refuses is not rendered as a form — so the switch follows
+  the daemon. An operator who wants it removes the ceiling and the form starts
+  offering it.
+- **One reading of the rule, and the break proved it is load-bearing both
+  ways.** `resolveLifetimes` now calls the exported predicate instead of testing
+  `maxLife < 0` locally, so miswriting it fails *the ceiling suite* as well as
+  the form's — `TestALifetimeThatNeverExpiresNeedsTheOperatorsCeiling` and four
+  cases of `TestBrowserCreateRefusesALifetimeThisDaemonWillNotGrant` went red on
+  a one-character change. The dashboard asks the manager and never
+  `s.cfg.SessionLifetimeMax < 0`: substituting the config read passes `go test`
+  everywhere except the new page test, because the fixture sets lifetimes on the
+  *manager*, exactly as `server.go` does at startup.
+- **⚠️ `TestCreateFormRendersNoCommandName` counts configured command names as
+  substrings of the whole create section**, and `default` is one of them
+  (`config.DefaultStartCommandName`). The hint's first draft said "adopted back
+  with this daemon's default lifetime" and tripped it the moment the switch
+  rendered on that fixture. Reworded to "the lifetime an ordinary session here
+  is given". **Prose in this form may not contain a configured command name**,
+  and `rc` is two letters inside a great many English words.
+- **Proved by breaking it, four ways.** Dropping the `{{ if }}` fails both
+  withheld-case tests; posting `value="0"` instead of `never` fails with the
+  parser's own reading — the exact "never must not be spellable as unset" trap
+  the plan warns about, caught because the assertion goes through
+  `parseLifetimeOverrides` rather than matching the string; reading the config
+  instead of the manager fails the projection test; and `m.maxLifetime <= 0`
+  fails six pre-existing cases. All restored.
+- **`docs/components.md` was updated in the same commit** (#119). Its Switch
+  section said there were two switches and that the absolute lifetime "cannot be
+  disabled at all" — false since iteration 5. It now also carries the
+  conditional-rendering rule, which is the one thing about this control that the
+  markup cannot show.
+- Linter confirmed v2 (`2.12.2`, #26). `go test ./...`, `-tags tmux`, `-tags
+  dev`, `-tags quickstart ./cmd/crswd` (36s) all pass; quickstart run **after**
+  the commit, per iteration 1.
+
+**Left:** T006 and T007, both documentation. T006 must fix `config.example`'s
+"There is deliberately no way to say 'never'" (iteration 5's finding) and now
+also owes a line about the browser form, since `session_lifetime_max = never` is
+what makes a switch appear on the dashboard.
+
+**Findings:**
+
+- **The restart edge is now told to the operator, in the hint**, rather than
+  waiting for T006/T007 as iteration 5 proposed: saying "no clock reaps this
+  session" and omitting that adoption gives it back the default lifetime — and
+  tears it down on the spot if it is already older (FR-025) — would have been
+  the same overstatement the whole hint exists to prevent. T006 and T007 should
+  still say it; this is the one place an operator meets it at the moment of
+  choosing.
+- **⚠️ The signed API can ask for `lifetime=never` and gets no such gate.** It
+  is refused by `resolveLifetimes` on a daemon with a ceiling, which is correct
+  — but a skill has no way to ask *whether* this daemon would grant it, so the
+  browser can now see the daemon's answer in advance and the API still cannot.
+  Third iteration running that the same gap has been logged one field over
+  (iteration 3's effective idle clock, iteration 4's `last_activity`). Worth one
+  capability document rather than three separate fixes.
+- **Nothing renders the ceiling itself on the create form**, deliberately: the
+  hint says the daemon has no ceiling but never what the finite one *is*, for
+  the reason the existing idle hint names no number — it would be false on every
+  install that configured something else. The settings page is where a value is
+  read, and the two hints both point there.
+- **`gofmt -l .` still flags `internal/httpapi/render.go`** (iteration 3's
+  finding, unchanged and untouched). `golangci-lint run` reports 0 issues.
+- **`Fake.Seed` still silently drops `Label`, `WorkDir` and `StartCommand`**
+  (iteration 1's finding, unchanged).

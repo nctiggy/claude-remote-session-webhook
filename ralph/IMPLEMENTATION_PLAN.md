@@ -144,7 +144,7 @@ only because of it.
 
 - [x] **T004** 🔒 Give the absolute lifetime a spelling for **never**, matching the discipline the idle disable already follows: it may not collide with "unset". Apply it to both the per-session override **and** `session_lifetime_max`, since a per-session never under a finite ceiling is a setting that always refuses. `resolveLifetimes` currently refuses a negative lifetime — that refusal is what changes, deliberately and with the reason recorded.
 
-- [ ] **T005** Offer it on the create form beside the existing never-die-when-idle switch, reusing `.field-switch`, `.switch-input`, `.switch-label`. **No new class.** The label must say what it switches off: with both switches on, nothing reaps this session, and the operator has said so twice.
+- [x] **T005** Offer it on the create form beside the existing never-die-when-idle switch, reusing `.field-switch`, `.switch-input`, `.switch-label`. **No new class.** The label must say what it switches off: with both switches on, nothing reaps this session, and the operator has said so twice.
 
 - [ ] **T006** Update `config.example` for both changes — what idle now measures, and how to spell an unlimited lifetime — **leading with the fact and putting the reasoning after it**. Mind the duplicate-key-line trap above. Also correct the four lifetime keys' prose if it now describes something that is no longer true.
 
