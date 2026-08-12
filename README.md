@@ -53,6 +53,37 @@ lifetime enforced by a reaper — deadlines a create can switch off only as far 
 
 ## Install
 
+**There are two deployments, and choosing between them comes before anything you
+type.** Both run the same installer and the same daemon; what differs is which
+door the dashboard has, and therefore where the daemon is allowed to listen.
+
+1. **On the internet** — a Cloudflare Tunnel dials out and **Cloudflare Access**
+   decides who reaches it. Needs a Cloudflare account with a domain on it, and
+   `cloudflared` on this host.
+   → [Path 1](#path-1--on-the-internet-cloudflare-tunnel-and-access)
+2. **On a network you control** — a **dashboard password**, and the daemon
+   listening on a LAN address. Needs nothing you do not already have, and gives
+   you no TLS unless you put a reverse proxy in front of it.
+   → [Path 2](#path-2--on-your-own-network-the-dashboard-password)
+
+What each one costs you is [The two doors](#the-two-doors) — read that first if
+the choice is not obvious. You can install before you decide: a daemon with
+neither door runs, serves the API, and admits nobody to the dashboard.
+
+**What the host needs, either way:**
+
+- **Linux with a systemd user session.** Everything here is a `systemctl --user`
+  unit, running as you and not as root.
+- **`tmux`.** Every session is a tmux window, so the installer refuses a host
+  without it and so does the daemon at startup.
+- **`claude`, installed and already signed in**, as the user the daemon will run
+  as. Run it once in a terminal and finish its login first. **Relaying Claude's
+  own device-code login is not built**: a session that comes up at that prompt
+  sits there, and the only way to answer it is attaching to the tmux window by
+  hand on the host — which is the thing you installed this to avoid.
+
+Then, on that host, whichever path you picked:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nctiggy/claude-remote-session-webhook/main/install.sh | bash
 ```
@@ -74,12 +105,13 @@ That configuration is complete enough to start: it carries a generated
 created. What it does not carry is a **door** — neither can be invented for you,
 one being a credential and the other a Cloudflare account — so until you choose
 one the daemon serves the API and admits nobody to the dashboard. It is not
-broken; it is closed. Which door you want is [The two doors](#the-two-doors).
+broken; it is closed. Opening it is what the rest of your path does.
 
 It enables nothing and starts nothing. What would be enabled at boot is a daemon
 that spawns shells with the permission prompt turned off, and whether to run one —
 on which machine, admitting whom — is not a decision to take from inside a pipe.
-So the rest is yours:
+So the rest is yours, and it is the same three lines on both paths — only the
+first line's answer differs:
 
 ```bash
 $EDITOR ~/.config/crswd/config          # dashboard_password, or access_enabled + the access_* keys
@@ -90,6 +122,18 @@ systemctl --user enable --now crswd
 The middle line is the one that is easy to skip and expensive to skip: a
 `systemctl --user` unit enabled from an SSH session stops when that session ends,
 and the symptom arrives minutes later looking nothing like its cause.
+
+**What goes in that file is your path's business** —
+[path 1](#path-1--on-the-internet-cloudflare-tunnel-and-access) has more to set
+up in front of the daemon than in it,
+[path 2](#path-2--on-your-own-network-the-dashboard-password) is two keys — and
+both come back to the last two lines above.
+
+**If it does not come up, it has already said why.** Every bound in
+[Configuration](#configuration) is a startup failure with a reason attached,
+written to stderr and merged into the journal, naming the setting and what was
+wrong with it — so read the refusal with `journalctl --user -u crswd -e` before
+changing anything.
 
 **Run it again whenever.** It never replaces a configuration, and it replaces the
 unit only when the hash it recorded still matches what is on disk — a unit you
@@ -162,7 +206,7 @@ thing on this page.** A request that passes the browser door starts an unsandbox
 shell on this host, so the door is the product. Both run the daemon as a **systemd
 user service**; what differs is who is allowed to knock, and from where.
 
-| | On the internet | On your own network |
+| | 1 · On the internet | 2 · On your own network |
 |---|---|---|
 | Reached through | A Cloudflare Tunnel dialling out to `*.example.com` | The LAN, directly |
 | The browser door | **Cloudflare Access** — Google login and a one-email allowlist, enforced at the edge and re-checked here | **A dashboard password** — a sign-in form this daemon serves, and a cookie it signed |
@@ -187,7 +231,7 @@ edge's Service Auth policy stands in front of that as well; on a LAN there is no
 edge, so the signature is the whole of it. `deploy/crswd-api` is the client, and it
 is a shell script so that reading it is the documentation.
 
-### On the internet — Cloudflare Tunnel and Access
+### Path 1 — on the internet: Cloudflare Tunnel and Access
 
 Example files for both live in [`deploy/`](deploy/), and
 [`deploy/README.md`](deploy/README.md) is the operator's page: what you supply, in
@@ -233,7 +277,7 @@ systemctl --user enable --now crswd
 `Environment=CRSW_SHARED_SECRET=` in the unit would be wrong even in a private
 repo: anyone who can run `systemctl --user show crswd` can read a unit back.
 
-### On your own network — the dashboard password
+### Path 2 — on your own network: the dashboard password
 
 No Cloudflare, no tunnel, no hostname: the daemon listens on an address the machine
 you are sitting at can reach, and serves its own sign-in form. The whole of it, in
