@@ -196,6 +196,21 @@ func run(ctx context.Context) error {
 		return err
 	}
 
+	// Beside the sweep because it is the same question asked of the other file an
+	// update carries: what is on this host, and is it what a release would have
+	// left here? (M15/T005.) It reads two files and no release, so it costs
+	// nothing and cannot fail the start over somebody else's API.
+	//
+	// os.Stderr for the reason the dependency probe's banner is: this is a
+	// diagnostic, and stdout carries records only. See "The two streams", above.
+	// The read's own error is passed on rather than returned from here: a host
+	// whose unit cannot be read is a host that says so in the journal, not one
+	// that refuses to start over a file systemd has already finished with.
+	unitReport, unitErr := updater.NewUnit(os.Getenv).Report()
+	if err := sayWhatBecameOfTheUnit(os.Stderr, unitReport, unitErr); err != nil {
+		return err
+	}
+
 	srv, err := newDaemon(cfg)
 	if err != nil {
 		return err
