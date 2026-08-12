@@ -86,7 +86,7 @@ be written at all.
 
 - [x] **T002** 🔒 Ship the unit as a release asset the daemon can compare against. The installer already fetches `crswd.service` and records its hash at `~/.local/share/crswd/crswd.service.sha256`. The updater needs the same file to answer "is the operator's unit the one this release ships?" — reuse the existing asset and the existing checksum path rather than inventing a second delivery.
 
-- [ ] **T003** 🔒 On update, decide what to do with the unit, and **never overwrite one this daemon did not write**: recorded hash matches → replace it and re-record; hash differs, or no record exists → **write the new one alongside as `crswd.service.new` and leave theirs alone**. Test all three branches. **The one that matters most**: an operator who relaxed `NoNewPrivileges` still has it relaxed afterwards, and has a `.new` file naming what they are missing.
+- [x] **T003** 🔒 On update, decide what to do with the unit, and **never overwrite one this daemon did not write**: recorded hash matches → replace it and re-record; hash differs, or no record exists → **write the new one alongside as `crswd.service.new` and leave theirs alone**. Test all three branches. **The one that matters most**: an operator who relaxed `NoNewPrivileges` still has it relaxed afterwards, and has a `.new` file naming what they are missing.
 
 - [ ] **T004** Tell the operator, on the settings page, reusing existing classes — **no new class**. Say which of the three happened: the unit was updated, a newer one is waiting as `.new`, or theirs is current. When one is waiting, name the file and the command to compare it (`diff`) — an operator who cannot see the difference cannot decide, and this daemon's whole update story is that a change is visible before it is taken.
 

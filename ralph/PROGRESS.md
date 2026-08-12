@@ -177,3 +177,89 @@ standing, never overwrite `UnitTheirs`, and write `crswd.service.new` beside it.
   `internal/config/write.go` (T007); `internal/config/migrate.go`'s header comment
   claims cmd/crswd is the only config writer, which is wrong; and
   `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is wall-clock flaky.
+
+---
+
+## Iteration 3 — 2026-08-12
+
+**Did:** T003. `internal/updater/place.go` — `Unit.Place(asset, sums, signature)`
+acts on the standing T002 computes and returns a `UnitOutcome`: `UnitOurs` →
+replace and re-record, `UnitAbsent` → install and record, `UnitTheirs` → write
+`crswd.service.new` beside theirs and touch nothing else, `UnitCurrent` →
+nothing. `updateTo` fetches `updater.UnitAsset` as a fourth asset and the handler
+calls `Place` after `Swap`, beside the config migration.
+
+**The two decisions T002 left open, and why:**
+
+- **`UnitCurrent` records nothing**, even when there is no record. A record is
+  what licenses the *next* release to replace a file, so writing one for a unit
+  this daemon did not write is install.sh's "this refusal undoing itself one
+  command later". Such a host is offered a `.new` at the release after this one,
+  which is correct — by then it really has fallen behind.
+- **`UnitAbsent` installs the published unit and records it**, which is
+  install.sh's own first row: nothing to protect, nothing to take away, and what
+  lands is inert until somebody runs `daemon-reload` and enables it.
+
+**Learned — things the next iteration would otherwise rediscover:**
+
+- **`Place` verifies its own bytes**; the caller cannot hand it unverified ones.
+  `Unit` grew a `verify` seam exactly like `Stager`'s, defaulted to
+  `updater.Verify` and pinned by `TestTheUnitIsVerifiedWithTheCommittedKey`. That
+  is why the httpapi seam is `Place(asset, sums, signature)` and not "the route
+  verifies then places" — update.go's header forbids a second copy of a check on
+  the route side (FR-029b).
+- **The unit is fetched with the other three, before the swap**, in install.sh's
+  own order (tarball, SHA256SUMS, SHA256SUMS.sig, crswd.service). A release with
+  no unit is refused while nothing on the host has changed. **Every tag from
+  v0.58 publishes it**, so this costs no rollback — checked, not assumed.
+- **`updateTo` now returns an `installed` struct**, not a version string: the
+  unit bytes have to survive out to the handler, because the steps that cannot
+  refuse an update run *after* the only irreversible line.
+- **A `.new` is withdrawn on every path that makes it untrue.** After a
+  replacement a leftover one names an *older* unit than the one just installed,
+  which is worse than the silence this milestone set out to fix.
+- **A replacement keeps the operator's mode.** A chmod does not change a digest,
+  so a unit narrowed to 0600 on purpose still reads as ours; widening it back to
+  install.sh's 0644 would be the same silent revert in the one dimension the
+  ownership check is blind to. New files get 0644 (`unitMode`), the record 0600.
+- **Writes go through `config.WriteFile`** rather than a fourth copy of
+  write-to-a-temp-and-rename. See the finding below about its temp-file name.
+- **Mutation-checked, five ways**, all caught: replacing a `UnitTheirs` unit,
+  recording a `UnitCurrent` one, dropping the verification, dropping
+  `withdrawOffer` from `settle`, and dropping `Place` from the route.
+
+**Left:** T004–T007. T004 is next: say on the settings page which of the three
+happened, with the `.new` filename and the `diff` command, reusing existing
+classes.
+
+**Findings — noticed, not fixed:**
+
+- **⚠️ T004 needs an outcome the handler currently drops.** `Place`'s
+  `UnitOutcome` is discarded at the call site on purpose — nothing renders it
+  yet, and the page the handler is composing is the one that waits for the
+  restart. **T004 has to decide where it comes from**: either the settings page
+  recomputes a `Standing` at render time (which needs the published unit, i.e. a
+  fetch on a page render — probably not), or the update persists what it did.
+  Note `Unit.NewPath()` already exists for naming the file, and the file on disk
+  is itself evidence: `crswd.service.new` being present *is* "a newer one is
+  waiting". That may be all T004 needs, and it needs no new state.
+- **`config.WriteFile`'s temporary file is named `.crswd-config-*`**, and
+  place.go now writes systemd units through it. A leftover from a crash
+  mid-write would be a `.crswd-config-…` file in `~/.config/systemd/user`, which
+  names the wrong thing. Reusing the one tested atomic writer is still right —
+  a fourth copy is what T007 exists to prevent — but the prefix should stop
+  saying "config" when T007 collapses the write paths.
+- **`config/write.go`'s header is now two callers out of date.** It says "Two
+  callers reach it, both explicit: `crswd config migrate`, and the settings
+  page's edit". `internal/updater/config.go` was the third and place.go is the
+  fourth. Same fix-lane one-liner as `migrate.go`'s header.
+- **The `quickstart` suite could not be run here**: `127.0.0.1:8765` is held by
+  the deployed daemon, which AGENTS.md documents as that suite's requirement.
+  `go vet -tags quickstart ./...` is clean, and so are `-tags tmux` and
+  `-tags dev`.
+- **Still open from Iterations 1 and 2:** the migration runs in the *old* binary;
+  `cmd/crswd/config_cmd.go` duplicates `internal/config/write.go` (T007);
+  `internal/config/migrate.go`'s header comment is wrong;
+  `internal/httpapi/render.go` is still not gofmt-clean (`gofmt -l .` names it and
+  nothing else); and `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is
+  wall-clock flaky.
