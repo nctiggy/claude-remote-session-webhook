@@ -40,7 +40,7 @@ Single Go project at the repository root: `internal/`, `cmd/crswd/`, `deploy/`,
 **Purpose**: The names and paths more than one story spells. Getting these wrong is the drift this repo keeps finding.
 
 - [X] T003 Add the drop-in directory and file name as exported constants in `internal/updater/unit.go`, beside the existing `unitPath` and `unitRecordPath`, composed from HOME the same way and for the same stated reason
-- [ ] T004 Add a test in `internal/release/install_test.go` holding those constants against the path `install.sh` writes, in the shape of the existing `TestUnitPathsAreWhereTheInstallerWrites` — two languages, one path, drift not allowed **(deferred to Phase 4: asserts against the drop-in path install.sh gains in T026)**
+- [X] T004 Add a test in `internal/release/install_test.go` holding those constants against the path `install.sh` writes, in the shape of the existing `TestUnitPathsAreWhereTheInstallerWrites` — two languages, one path, drift not allowed **(deferred to Phase 4: asserts against the drop-in path install.sh gains in T026)**
 
 **Checkpoint**: US1 and US2 can now proceed independently.
 
@@ -83,23 +83,23 @@ Single Go project at the repository root: `internal/`, `cmd/crswd/`, `deploy/`,
 
 ### Tests (write first — each must fail)
 
-- [ ] T018 [P] [US2] Add a test in `internal/release/install_test.go` asserting the shipped `deploy/crswd.example.service` still carries its four hardening settings — FR-008's guard, so no future edit quietly relaxes the default
-- [ ] T019 [P] [US2] Add a test asserting the example drop-in overrides **`ProtectKernelTunables`** and not only `NoNewPrivileges`; the measured trap from research R5, where the obvious override alone is inert (FR-011, V14)
-- [ ] T020 [P] [US2] Add a test reading `install.sh` as text asserting the answer is read from `/dev/tty` and **not** from stdin, since the documented install path is `curl | bash` where stdin is the script (FR-009, research R4)
-- [ ] T021 [P] [US2] Add a test asserting `install.sh` treats an unopenable `/dev/tty` as no, and that no code path writes the drop-in without an affirmative answer (FR-010)
-- [ ] T022 [P] [US2] Add a test asserting neither `install.sh` nor `internal/updater` contains a write, rename or remove targeting the drop-in directory outside the single first-run creation (FR-012, FR-014, V16)
-- [ ] T023 [P] [US2] Add tests in `internal/updater/unit_test.go` for the new report fact: override present with a matching unit must **not** report as simply matching the release (FR-013, V18)
+- [X] T018 [P] [US2] Add a test in `internal/release/install_test.go` asserting the shipped `deploy/crswd.example.service` still carries its four hardening settings — FR-008's guard, so no future edit quietly relaxes the default
+- [X] T019 [P] [US2] Add a test asserting the example drop-in overrides **`ProtectKernelTunables`** and not only `NoNewPrivileges`; the measured trap from research R5, where the obvious override alone is inert (FR-011, V14)
+- [X] T020 [P] [US2] Add a test reading `install.sh` as text asserting the answer is read from `/dev/tty` and **not** from stdin, since the documented install path is `curl | bash` where stdin is the script (FR-009, research R4)
+- [X] T021 [P] [US2] Add a test asserting `install.sh` treats an unopenable `/dev/tty` as no, and that no code path writes the drop-in without an affirmative answer (FR-010)
+- [X] T022 [P] [US2] Add a test asserting neither `install.sh` nor `internal/updater` contains a write, rename or remove targeting the drop-in directory outside the single first-run creation (FR-012, FR-014, V16)
+- [X] T023 [P] [US2] Add tests in `internal/updater/unit_test.go` for the new report fact: override present with a matching unit must **not** report as simply matching the release (FR-013, V18)
 
 ### Implementation
 
-- [ ] T024 [P] [US2] Create `deploy/crswd.service.d/10-relax.conf.example` with the four overrides from [contracts/hardening-dropin.md](./contracts/hardening-dropin.md), carrying in comments why `ProtectKernelTunables` is load-bearing and the measurement behind it
-- [ ] T025 [US2] Add the prompt to `install.sh` reading from `/dev/tty`, with the wording fixed in [contracts/installer-prompt.md](./contracts/installer-prompt.md) — it must name **root**, not sudo, because Principle VI's standard for a widening is naming what becomes reachable
-- [ ] T026 [US2] Write the drop-in on an affirmative answer only, reporting the path written; leave hardening intact otherwise (FR-009, V15)
-- [ ] T027 [US2] Make a later `install.sh` run idempotent: do not re-ask, rewrite, duplicate or remove an existing drop-in; report that one is present and where (FR-014)
-- [ ] T028 [US2] Extend `UnitReport` in `internal/updater/unit.go` with whether an override is in effect, read off the files like every other fact that surface reports (FR-013, research R6)
-- [ ] T029 [P] [US2] Render the fact on the settings page via `internal/httpapi/settings.go`'s `unitFactsOf`, as a row of the existing `.version-facts` list — no new component, per `docs/components.md`
-- [ ] T030 [P] [US2] Say the same thing in the journal from `cmd/crswd/unit.go`'s `sayWhatBecameOfTheUnit`, from the shared vocabulary rather than a second computation (V19)
-- [ ] T031 [US2] Update `web/templates/settings.html` for the added row, per `docs/design-system.md`
+- [X] T024 [P] [US2] Create `deploy/crswd.service.d/10-relax.conf.example` with the four overrides from [contracts/hardening-dropin.md](./contracts/hardening-dropin.md), carrying in comments why `ProtectKernelTunables` is load-bearing and the measurement behind it
+- [X] T025 [US2] Add the prompt to `install.sh` reading from `/dev/tty`, with the wording fixed in [contracts/installer-prompt.md](./contracts/installer-prompt.md) — it must name **root**, not sudo, because Principle VI's standard for a widening is naming what becomes reachable
+- [X] T026 [US2] Write the drop-in on an affirmative answer only, reporting the path written; leave hardening intact otherwise (FR-009, V15)
+- [X] T027 [US2] Make a later `install.sh` run idempotent: do not re-ask, rewrite, duplicate or remove an existing drop-in; report that one is present and where (FR-014)
+- [X] T028 [US2] Extend `UnitReport` in `internal/updater/unit.go` with whether an override is in effect, read off the files like every other fact that surface reports (FR-013, research R6)
+- [X] T029 [P] [US2] Render the fact on the settings page via `internal/httpapi/settings.go`'s `unitFactsOf`, as a row of the existing `.version-facts` list — no new component, per `docs/components.md`
+- [X] T030 [P] [US2] Say the same thing in the journal from `cmd/crswd/unit.go`'s `sayWhatBecameOfTheUnit`, from the shared vocabulary rather than a second computation (V19)
+- [X] T031 [US2] Update `web/templates/settings.html` for the added row, per `docs/design-system.md`
 
 **Checkpoint**: SC-002, SC-003 and SC-004 provable.
 

@@ -2281,3 +2281,72 @@ func TestTheSettingsPageSaysWhatBecameOfTheUnit(t *testing.T) {
 // internal/updater/facts_test.go with the vocabulary (M15/T005). They were never
 // about this page: the journal says the same sentences at startup, and a check
 // that lived in one reader would leave the other unproven.
+
+// TestTheSettingsPageSaysWhenHardeningIsOverridden is FR-013 on the page.
+//
+// The case that matters is the first one below: the unit is byte-for-byte the
+// release's, every existing fact about it is true, and the host still is not
+// running under the hardening that unit describes — because systemd merges
+// <unit>.d/*.conf over it. A page saying only "the one this daemon installed"
+// would be accurate about a file and misleading about the host, which is the
+// same silence the sentences above this test exist to end.
+func TestTheSettingsPageSaysWhenHardeningIsOverridden(t *testing.T) {
+	t.Parallel()
+
+	const published = "[Service]\nExecStart=%h/.local/bin/crswd\nNoNewPrivileges=yes\n"
+
+	for _, c := range []struct {
+		name     string
+		override bool
+		why      string
+	}{
+		{
+			name:     "an override beside a unit this daemon installed",
+			override: true,
+			why:      "the unit matches the release and the host still runs relaxed; saying only the first is the false reassurance this milestone ends",
+		},
+		{
+			name:     "no override, which is most hosts",
+			override: false,
+			why:      "the default posture says nothing extra, so the row is the absence of a file rather than a fact nobody looked for",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFleet(t)
+			carrier := unitOnHost(t, f, published, recordFor(published), "")
+
+			if c.override {
+				at := carrier.DropInPath()
+				if err := os.MkdirAll(filepath.Dir(at), 0o700); err != nil {
+					t.Fatalf("make the drop-in directory: %v", err)
+				}
+				if err := os.WriteFile(at, []byte("[Service]\nProtectKernelTunables=false\n"), 0o600); err != nil {
+					t.Fatalf("write the drop-in: %v", err)
+				}
+			}
+
+			page := settingsSectionBody(t, f, sectionUpdates)
+
+			said := strings.Contains(page, html.EscapeString(updater.UnitSentenceOverridden))
+			if said != c.override {
+				t.Errorf("the Updates section states the override: %t; want %t.\n%s\n%s", said, c.override, c.why, page)
+			}
+
+			// Naming the file is the point: this daemon reads that the override
+			// exists and never what it contains, so the operator has to be able
+			// to go and read the settings themselves.
+			named := strings.Contains(page, html.EscapeString(carrier.DropInPath()))
+			if named != c.override {
+				t.Errorf("the page names %s: %t; want %t", carrier.DropInPath(), named, c.override)
+			}
+
+			// The unit sentence is still said. The override is an additional
+			// fact, never a replacement for the four arrangements.
+			if !strings.Contains(page, html.EscapeString(updater.UnitSentenceOurs)) {
+				t.Errorf("the Updates section stopped saying what became of the unit itself:\n%s", page)
+			}
+		})
+	}
+}

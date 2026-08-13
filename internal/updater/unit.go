@@ -336,6 +336,20 @@ type UnitReport struct {
 	// every host deployed before the installer existed, the one that publishes
 	// these releases included.
 	Ours bool
+
+	// Override is the drop-in changing what this unit produces, or empty when
+	// there is none.
+	//
+	// **Without it every other field here can be true and the report still
+	// misleading.** systemd merges <unit>.d/*.conf over the unit, so a host can
+	// carry the release's unit byte for byte and run under hardening the release
+	// never shipped. "The one this release ships" is then a true statement about
+	// a file and a false impression of a host — which is the silence milestone 15
+	// set out to end, arriving by a different route.
+	//
+	// It names the file rather than reporting a boolean, because the point of
+	// telling an operator is that they can go and read it.
+	Override string
 }
 
 // Report reads this host's unit, the record beside it and the offer beside that,
@@ -378,6 +392,19 @@ func (u *Unit) Report() (UnitReport, error) {
 		// Every host that has never been offered a unit, which is most of them.
 	default:
 		return UnitReport{}, fmt.Errorf("look for the unit a release left beside this host's own %s: %w", u.NewPath(), err)
+	}
+
+	// Asked whether the unit is present or not. A drop-in beside a unit that is
+	// missing is a real arrangement — an operator part-way through a migration —
+	// and reporting "absent" while a file sits in the .d directory would send
+	// them looking for something this daemon had already seen.
+	switch _, err := os.Stat(u.DropInPath()); {
+	case err == nil:
+		report.Override = u.DropInPath()
+	case errors.Is(err, fs.ErrNotExist):
+		// The default posture, and most hosts.
+	default:
+		return UnitReport{}, fmt.Errorf("look for the hardening override beside this host's unit %s: %w", u.DropInPath(), err)
 	}
 
 	return report, nil

@@ -51,6 +51,17 @@ readonly UNIT=".config/systemd/user/crswd.service"
 readonly UNIT_RECORD=".local/share/crswd/crswd.service.sha256"
 readonly CONFIG=".config/crswd/config"
 
+# The operator's hardening override. systemd merges <unit>.d/*.conf over the
+# unit, so this is where a host's own deviation lives WITHOUT making the unit
+# one this installer will never replace again.
+#
+# Written at most once, only on an affirmative answer, and never touched again
+# by this script or by the updater — see ask_about_sudo. internal/updater/unit.go
+# derives the same directory from the unit path; the two are held together by
+# TestTheDropInPathIsWhereTheInstallerWrites.
+readonly DROPIN_DIR=".config/systemd/user/crswd.service.d"
+readonly DROPIN=".config/systemd/user/crswd.service.d/10-relax.conf"
+
 # The one directory a session may run in, created beside a new configuration
 # and named by it. `code` is the daemon's own default, spelled the same way in
 # internal/config and in config.example. $HOME itself is never it: SSH keys,
@@ -291,6 +302,121 @@ place_unit() {
   record_unit
 }
 
+# Whether sudo should work inside a session, asked once, at install time.
+#
+# ---------------------------------------------------------------------------
+# Why this is asked rather than shipped either way
+# ---------------------------------------------------------------------------
+#
+# Shipping the relaxation in the unit would give every install a path from an
+# authenticated request to root. Constitution Principle VI is non-negotiable and
+# its standard for any widening is naming what becomes reachable, so the unit
+# stays hardened and the operator is asked — every install is asked, and none
+# gains the privilege without somebody saying so.
+#
+# Not asking at all was the status quo, and it is what sent this project's own
+# operator to hand-edit their unit: the only place the setting lives is systemd's,
+# and editing the unit costs its updatability forever.
+#
+# ---------------------------------------------------------------------------
+# Why /dev/tty and not read from stdin
+# ---------------------------------------------------------------------------
+#
+# The documented way to run this script is `curl -fsSL … | bash`, where STDIN IS
+# THE SCRIPT. A `read` would consume the script's own remaining bytes, and
+# `[ -t 0 ]` is false even with a human at the keyboard — so the obvious
+# interactivity test gives the wrong answer for the primary install path, in the
+# direction that silently skips the question.
+#
+# /dev/tty is the controlling terminal whatever stdin was redirected to. Its
+# absence is exactly the automation case: CI, a container build, a cron job.
+# Those answer no, because the direction to be wrong in is the one where a host
+# does not silently gain a path to root.
+ask_about_sudo() {
+  # Already answered on a previous run. Not re-asked, not rewritten, not removed:
+  # the answer is the operator's, and an installer that asked again would
+  # eventually get a different answer by accident.
+  if [ -e "$HOME/$DROPIN" ]; then
+    say "~/$DROPIN is already here — leaving your hardening override alone"
+    return 0
+  fi
+
+  if ! [ -r /dev/tty ]; then
+    say "no terminal to ask on — leaving hardening at the shipped default"
+    say "  sessions cannot use sudo. See deploy/README.md to change that later."
+    return 0
+  fi
+
+  local answer=""
+  local attempt=0
+  while [ "$attempt" -lt 3 ]; do
+    attempt=$((attempt + 1))
+    printf '\n'
+    printf 'Sessions run as you, with hardening that blocks sudo.\n\n'
+    printf 'Allowing sudo means a request that passes authentication can reach root on\n'
+    printf 'this host, not just your account. Your allowed_roots setting does not bound\n'
+    printf 'this.\n\n'
+    printf 'You can change this later: see deploy/README.md.\n\n'
+    printf 'Allow sudo inside sessions? [y/N] '
+
+    # `|| true`: a closed tty mid-read must not kill a script running under
+    # `set -e` after the binary is already installed.
+    read -r answer < /dev/tty || true
+
+    case "$answer" in
+      y | Y | yes | Yes | YES)
+        write_dropin
+        return 0
+        ;;
+      n | N | no | No | NO | "")
+        say "hardening left at the shipped default — sessions cannot use sudo"
+        return 0
+        ;;
+      *)
+        say "please answer y or n"
+        ;;
+    esac
+  done
+
+  # Three unusable answers is somebody piping junk, not somebody consenting.
+  say "no clear answer — leaving hardening at the shipped default"
+}
+
+# The override itself. Written inline rather than fetched as a fifth release
+# asset: what it becomes is a file systemd executes under, so a second delivery
+# channel would be a second thing to verify and the one that gets verified less.
+#
+# deploy/crswd.service.d/10-relax.conf.example is the documented copy, and
+# TestTheDropInGrantsWhatItClaims holds the two together so this heredoc cannot
+# quietly lose a line.
+write_dropin() {
+  mkdir -p -- "$HOME/$DROPIN_DIR" ||
+    die "could not create ~/$DROPIN_DIR"
+
+  cat > "$HOME/$DROPIN" <<'DROPIN' ||
+# Written by the crswd installer because you asked for sudo inside sessions.
+#
+# Delete this file, then `systemctl --user daemon-reload && systemctl --user
+# restart crswd`, to give that privilege back.
+#
+# ProtectKernelTunables is the line that does the work. Setting
+# NoNewPrivileges=false alone has NO effect: ProtectKernelTunables=true implies
+# NoNewPrivileges, and systemd treats that as a floor rather than a value, so an
+# explicit `no` does not lower it back. Only overriding the implying option
+# removes the implication.
+[Service]
+NoNewPrivileges=false
+RestrictSUIDSGID=false
+ProtectKernelTunables=false
+ProtectSystem=false
+DROPIN
+    die "could not write ~/$DROPIN"
+
+  chmod 0644 -- "$HOME/$DROPIN" || die "could not set the mode on ~/$DROPIN"
+  say "wrote ~/$DROPIN — sudo will work inside sessions"
+  say "  this is a path from an authenticated request to root; delete the file to undo it"
+}
+
 # The configuration, and only when there is none. The operator's file is the one
 # thing on this host they authored; an installer that replaced it would destroy
 # it during an operation they think of as safe.
@@ -519,6 +645,9 @@ main() {
   ensure_path
   place_unit
   write_config
+  # After the unit, because the override is only meaningful beside one, and
+  # before next_steps, so the summary can reflect the answer.
+  ask_about_sudo
   next_steps
 }
 

@@ -515,3 +515,98 @@ func TestTheOperatorPagesNameTheFilesThisPackageWrites(t *testing.T) {
 		})
 	}
 }
+
+// writeOverride puts a hardening drop-in beside the fixture's unit, the way
+// install.sh does when an operator asks for sudo inside sessions.
+func (f *unitFixture) writeOverride(t *testing.T) string {
+	t.Helper()
+
+	at := f.unit.DropInPath()
+	if err := os.MkdirAll(filepath.Dir(at), 0o700); err != nil {
+		t.Fatalf("make the drop-in directory: %v", err)
+	}
+	if err := os.WriteFile(at, []byte("[Service]\nProtectKernelTunables=false\n"), 0o600); err != nil {
+		t.Fatalf("write the drop-in: %v", err)
+	}
+	return at
+}
+
+// TestReportNamesAnOverrideBesideAMatchingUnit is FR-013, and it is the case
+// that would otherwise be reported wrongly with every existing field correct.
+//
+// systemd merges <unit>.d/*.conf over the unit, so this host runs the release's
+// unit byte for byte AND under hardening the release never shipped. Reporting
+// only "the one this release ships" would be a true statement about a file and a
+// false impression of a host.
+func TestReportNamesAnOverrideBesideAMatchingUnit(t *testing.T) {
+	t.Parallel()
+
+	const shipped = "[Service]\nExecStart=%h/.local/bin/crswd\n"
+	f := newUnitFixture(t, []byte(shipped), digestOf(shipped))
+	want := f.writeOverride(t)
+
+	got, err := f.unit.Report()
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if !got.Ours {
+		t.Error("the fixture's unit is recorded and unmodified, so Ours should hold; this test is checking the wrong thing")
+	}
+	if got.Override != want {
+		t.Errorf("Override = %q, want %q — a host running relaxed hardening must not read as simply matching the release", got.Override, want)
+	}
+}
+
+// TestReportIsSilentWithoutAnOverride is the default posture, which is most
+// hosts. An empty Override is the absence of a file, never a fact not looked for.
+func TestReportIsSilentWithoutAnOverride(t *testing.T) {
+	t.Parallel()
+
+	const shipped = "[Service]\nExecStart=%h/.local/bin/crswd\n"
+	f := newUnitFixture(t, []byte(shipped), digestOf(shipped))
+
+	got, err := f.unit.Report()
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if got.Override != "" {
+		t.Errorf("Override = %q on a host with no drop-in", got.Override)
+	}
+}
+
+// TestReportNamesAnOverrideWithNoUnitAtAll is the operator part-way through a
+// migration. Reporting the unit as absent while a drop-in sits beside where it
+// should be would send them looking for something this daemon had already seen.
+func TestReportNamesAnOverrideWithNoUnitAtAll(t *testing.T) {
+	t.Parallel()
+
+	f := newUnitFixture(t, nil, nil)
+	want := f.writeOverride(t)
+
+	got, err := f.unit.Report()
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if got.Present {
+		t.Error("the fixture has no unit, so Present should not hold")
+	}
+	if got.Override != want {
+		t.Errorf("Override = %q, want %q", got.Override, want)
+	}
+}
+
+// TestTheDropInSitsWhereSystemdLooks pins the derivation rather than a second
+// constant. systemd reads overrides from <unit>.d, so a directory composed any
+// other way is a file systemd never reads — an override that is present,
+// correct, and silently not in effect.
+func TestTheDropInSitsWhereSystemdLooks(t *testing.T) {
+	t.Parallel()
+
+	f := newUnitFixture(t, nil, nil)
+	if got, want := f.unit.DropInDir(), f.path+".d"; got != want {
+		t.Errorf("DropInDir() = %q, want %q — systemd merges <unit>.d and nothing else", got, want)
+	}
+	if got, want := f.unit.DropInPath(), filepath.Join(f.path+".d", DropInName); got != want {
+		t.Errorf("DropInPath() = %q, want %q", got, want)
+	}
+}
