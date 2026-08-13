@@ -190,10 +190,11 @@ func TestConfigCheckDoesNotStart(t *testing.T) {
 	})
 }
 
-// FR-009's second half. `config migrate` is the only code in this repository
-// that writes a configuration file, and the backup is what makes that
-// tolerable: the file it replaced is still there, both for the operator and for
-// the fallback in FR-010.
+// FR-009's second half, on the real binary. `config migrate` is one of the two
+// things in this repository that rewrite a configuration file — the other is an
+// update, through the same config.MigrateFile — and the backup is what makes
+// either tolerable: the file it replaced is still there, both for the operator
+// and for the fallback in FR-010.
 func TestMigrateKeepsBackup(t *testing.T) {
 	h := newHost(t)
 
@@ -294,16 +295,23 @@ start_commands = default=claude --dangerously-skip-permissions
 	})
 
 	t.Run("nothing else was left in the directory", func(t *testing.T) {
-		// The temporary file the atomic write goes through is renamed into
-		// place, never left beside the configuration where the next reader would
-		// have to work out which of two files the daemon reads.
+		// Two files go through this directory and neither survives it: the
+		// migration waits at config.migrating until it has been read back and
+		// checked, and the atomic write itself goes through a .crswd-tmp- file.
+		// Either one left beside the configuration is a second file for the next
+		// reader to work out which of them the daemon reads.
+		//
+		// The names are spelled here rather than borrowed from internal/config,
+		// because this suite is about the shipping binary: a rename of either
+		// constant that this assertion followed silently would leave it asserting
+		// nothing.
 		entries, err := os.ReadDir(h.dir)
 		if err != nil {
 			t.Fatalf("read %s: %v", h.dir, err)
 		}
 		for _, entry := range entries {
-			if strings.Contains(entry.Name(), ".tmp-") {
-				t.Errorf("`config migrate` left %s behind", entry.Name())
+			if name := entry.Name(); strings.HasSuffix(name, ".migrating") || strings.Contains(name, ".crswd-tmp-") {
+				t.Errorf("`config migrate` left %s behind", name)
 			}
 		}
 	})

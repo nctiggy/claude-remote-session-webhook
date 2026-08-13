@@ -954,8 +954,9 @@ func TestAnUnreadableFileIsStillARefusal(t *testing.T) {
 
 // file.go has no write path at all — not a formatter, not a normaliser, not an
 // "upgrade in place". The operator's file is the operator's, and under source
-// control a reformat is a diff nobody asked for. `crswd config migrate` is the
-// only code in this repository that writes one (FR-008).
+// control a reformat is a diff nobody asked for. Reading one is never an
+// occasion to write one (FR-008); write.go is where that happens, and only
+// because somebody asked.
 func TestParserNeverWrites(t *testing.T) {
 	t.Parallel()
 

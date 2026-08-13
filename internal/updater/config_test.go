@@ -132,7 +132,7 @@ max_sessions = 2
 	if got := fixture.read(t, config.BackupPath(fixture.path)); got != before {
 		t.Errorf("the backup is not the file that was replaced:\n%s", got)
 	}
-	fixture.absent(t, fixture.path+migratingSuffix, "succeeded")
+	fixture.absent(t, config.StagedPath(fixture.path), "succeeded")
 
 	// And the result is a file this daemon starts on, which is the only claim
 	// that makes the write safe to have done at all.
@@ -205,7 +205,7 @@ func TestMigrateDiscardsAMigrationThatWouldNotLoad(t *testing.T) {
 	// a file that was never replaced would put a second copy of a configuration
 	// beside the first for no reason anybody could reconstruct later.
 	fixture.absent(t, config.BackupPath(fixture.path), "was refused")
-	fixture.absent(t, fixture.path+migratingSuffix, "was refused")
+	fixture.absent(t, config.StagedPath(fixture.path), "was refused")
 }
 
 // TestMigrateWritesNothingForAFileThatIsCurrent is FR-008 surviving this file.

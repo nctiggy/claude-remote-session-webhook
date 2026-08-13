@@ -166,10 +166,10 @@ func TestMigrateRefusesAFileThatWillNotParse(t *testing.T) {
 	}
 }
 
-// FR-008 from the inside: nothing in internal/config has a write path, so
-// producing a migration cannot touch the file it is a migration of. The whole
-// division of labour behind `crswd config migrate` rests on this — the write
-// lives in cmd/crswd, on purpose, where an operator asked for it by name.
+// FR-008 from the inside: producing a migration cannot touch the file it is a
+// migration of. The whole division of labour behind `crswd config migrate`
+// rests on this — the bytes are worked out here, and the write happens in
+// write.go, only after somebody asked for it by name.
 func TestMigrateNeverWrites(t *testing.T) {
 	t.Parallel()
 

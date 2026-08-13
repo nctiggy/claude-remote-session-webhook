@@ -33,31 +33,22 @@ package updater
 // migration that does not validate is discarded and the update carries on with
 // the configuration exactly as it was.
 //
-// The read-back is not ceremony. What gets validated has to be what gets
-// renamed, and the only way to say that about bytes on a disk is to read them
-// from there.
+// # Why so little of that is in this file
+//
+// The staging, the read-back and the backup are config.MigrateFile's, and so is
+// `crswd config migrate`'s — the command an operator runs and the migration an
+// update runs unattended are one implementation, because the unattended one is
+// the worse of the two places to discover a difference. What is left here is the
+// part that is an update's alone: which file, whose environment, and the answer
+// to "would this daemon still start on it".
 
 import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 )
-
-// migratingSuffix names the migrated file while it is being checked, beside the
-// operator's own so the rename that follows is inside one directory and
-// therefore atomic.
-//
-// A deterministic name rather than a random one, because this is a file the
-// operator may find: a host that lost power between the write and the rename
-// leaves it behind, and `config.migrating` beside `config` says what it is. The
-// next migration overwrites it — config.WriteFile renames over the name rather
-// than opening it, so neither a leftover nor a symlink planted under it is
-// followed.
-const migratingSuffix = ".migrating"
 
 // ErrConfigWouldNotLoad is the migration that was thrown away: the rewritten
 // file did not load, so the operator still has the one they had.
@@ -120,80 +111,27 @@ func (m *ConfigMigrator) Path() string { return m.path }
 // Nothing here refuses an update. By the time this runs the binary is already
 // installed, and a configuration that could not be migrated is a configuration
 // the daemon was running perfectly well on a moment ago.
-func (m *ConfigMigrator) Migrate() (migrated bool, err error) {
+func (m *ConfigMigrator) Migrate() (bool, error) {
 	if m.path == "" {
 		return false, nil
 	}
-
-	info, err := os.Stat(m.path)
-	if errors.Is(err, fs.ErrNotExist) {
-		// Absence is not a failure here for the reason it is not one at startup
-		// (FR-003): a daemon with no configuration file runs on its environment
-		// and its defaults, and an update is no occasion to give it one.
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("inspect the configuration file %s: %w", m.path, err)
-	}
-	// The operator's own mode, carried onto both files this writes. A file they
-	// deliberately left readable by their own group does not silently become
-	// 0600, and one holding a secret was refused at startup if it was not.
-	mode := info.Mode().Perm()
-
-	current, err := os.ReadFile(m.path) //nolint:gosec // G304: the path is the configuration file this daemon loaded at startup, not anything a request named.
-	if err != nil {
-		return false, fmt.Errorf("read the configuration file %s: %w", m.path, err)
-	}
-
 	// Warnings are discarded rather than written into the journal. This daemon
 	// parsed this same file at startup and said whatever there was to say about
 	// it then; a second copy of those lines, hours later and attributed to an
 	// update, tells the operator nothing they were not already told.
-	next, changed, err := config.Migrate(m.path, current, io.Discard)
-	if err != nil {
-		return false, fmt.Errorf("migrate the configuration file %s: %w", m.path, err)
-	}
-	if !changed {
-		// Nothing written, not even a backup. A migration that rewrote a file it
-		// had no change to make is FR-008 in different clothes.
-		return false, nil
-	}
+	return config.MigrateFile(m.path, io.Discard, m.wouldStillStart)
+}
 
-	staged := m.path + migratingSuffix
-	defer func() {
-		// Every ending removes it, the successful one included — after the rename
-		// there is nothing at this name, and Remove says so. What is being
-		// prevented is the other endings: a candidate configuration left beside
-		// the real one is a second file for the next reader to work out the
-		// standing of.
-		if rmErr := os.Remove(staged); rmErr != nil && !errors.Is(rmErr, fs.ErrNotExist) {
-			err = errors.Join(err, fmt.Errorf("remove the discarded migration %s: %w", staged, rmErr))
-		}
-	}()
-
-	if err = config.WriteFile(staged, next, mode); err != nil {
-		return false, fmt.Errorf("stage the migrated configuration: %w", err)
+// wouldStillStart is what an update asks of the migration that landed beside the
+// operator's file, and it is the whole reason an update may write one at all: the
+// candidate goes through the loader a start goes through, in this daemon's own
+// environment, before anything is replaced.
+//
+// The failure is named rather than described, because the caller two layers up
+// renders it: an update that discarded a migration is not an update that failed.
+func (m *ConfigMigrator) wouldStillStart(landed []byte) error {
+	if err := m.validate(landed, m.getenv); err != nil {
+		return fmt.Errorf("%w: %w", ErrConfigWouldNotLoad, err)
 	}
-
-	// Read back off the disk rather than validated from the bytes still in hand,
-	// so that what this daemon approves is what the next one will read.
-	landed, err := os.ReadFile(staged) //nolint:gosec // G304: the path is the configuration file's own name with a constant suffix, composed here.
-	if err != nil {
-		return false, fmt.Errorf("read back the migrated configuration %s: %w", staged, err)
-	}
-	if err = m.validate(landed, m.getenv); err != nil {
-		return false, fmt.Errorf("%w: %w", ErrConfigWouldNotLoad, err)
-	}
-
-	// The backup is written before the file it is a backup of is replaced, so the
-	// ending where one of the two writes fails is the ending where the operator
-	// still has both copies of something. It is also the file LoadFrom falls back
-	// to when the live one stops loading (FR-010).
-	if err = config.WriteFile(config.BackupPath(m.path), current, mode); err != nil {
-		return false, fmt.Errorf("keep the configuration this update replaces: %w", err)
-	}
-	if err = os.Rename(staged, m.path); err != nil {
-		return false, fmt.Errorf("install the migrated configuration over %s: %w", m.path, err)
-	}
-	return true, nil
+	return nil
 }

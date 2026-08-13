@@ -3,18 +3,21 @@ package main
 // `crswd config check` and `crswd config migrate` (FR-009) — the two things an
 // operator does to a configuration file that are not starting a daemon.
 //
-// This file holds the only code in the repository that writes a configuration
-// file (FR-008). internal/config parses one, and produces the bytes a migration
-// should have, and opens nothing for writing at all; the write is here, it
-// happens only when the operator asks for it by name, and it keeps the file it
-// replaced. That division is what makes "the daemon never rewrites your file" a
-// claim a reader can check rather than one they have to trust.
+// Neither of them starts anything, and that is the property both are about: a
+// daemon is already serving on this host, and a subcommand that bound its port
+// or rewrote the file under it would be the accident it was written to prevent.
+// Nothing on a start writes a configuration file (FR-008); a migration is the
+// operator asking for one by name, and it keeps the file it replaced.
+//
+// The rewrite itself is config.MigrateFile's, shared with the migration an
+// update runs unattended (internal/updater/config.go). What is this command's
+// own is below: which file, what it reports, and how much of the result it can
+// honestly check from a shell that is not the daemon's.
 
 import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 )
@@ -134,11 +137,15 @@ func configCheck(out io.Writer, path string) error {
 // configMigrate rewrites the file into the current schema, keeping the one it
 // replaced at config.bak (FR-009).
 //
-// The backup is written first and the file second, so the ending where one of
-// the two writes fails is the ending where the operator still has both copies
-// of something. It is also the file LoadFrom falls back to (FR-010), which is
-// why a migration is worth doing before an edit rather than after: it is what
-// puts a known-good copy on disk.
+// The rewrite is config.MigrateFile's, which stages the result beside the
+// operator's file and replaces nothing until it has been read back and
+// accepted; the backup it keeps is the file LoadFrom falls back to (FR-010),
+// which is why a migration is worth doing before an edit rather than after — it
+// is what puts a known-good copy on disk.
+//
+// What is this command's own is the decision to run it at all, and the report:
+// an operator typed this, so they are told which of the three endings happened
+// and where their previous file is.
 func configMigrate(out io.Writer, path string) error {
 	// The daemon's own answer to "is this file acceptable" first, so a migration
 	// refuses exactly what a start refuses — including the mode, since migrating
@@ -152,94 +159,44 @@ func configMigrate(out io.Writer, path string) error {
 		return fmt.Errorf("there is no configuration file at %s to migrate", path)
 	}
 
-	data, mode, err := readFileAndMode(path)
-	if err != nil {
-		return err
-	}
-	next, changed, err := config.Migrate(path, data, out)
-	if err != nil {
-		return err
-	}
-	if !changed {
+	migrated, err := config.MigrateFile(path, out, migrationReadsBack(path))
+	switch {
+	case err != nil && migrated:
+		// The migration landed and something after it did not. Every other
+		// ending leaves the operator's file exactly as it was, and telling them
+		// that here would send them to look at the wrong file.
+		return fmt.Errorf("%s was migrated to schema %d, and then: %w", path, config.SchemaVersion, err)
+	case err != nil:
+		return fmt.Errorf("%s is unchanged: %w", path, err)
+	case !migrated:
 		say(out, "config file %s is already schema %d. Nothing was written.\n", path, config.SchemaVersion)
 		return nil
 	}
 
-	backup := config.BackupPath(path)
-	if err := writeConfigFile(backup, data, mode); err != nil {
-		return fmt.Errorf("%s is unchanged, because its backup could not be written: %w", path, err)
-	}
-	if err := writeConfigFile(path, next, mode); err != nil {
-		return fmt.Errorf("%s is unchanged, and a copy of it is at %s: %w", path, backup, err)
-	}
-
 	say(out, "config file %s migrated to schema %d.\nThe file it replaced is at %s, which is what the daemon falls back to if this one stops loading.\n",
-		path, config.SchemaVersion, backup)
+		path, config.SchemaVersion, config.BackupPath(path))
 	return nil
 }
 
-// readFileAndMode reads the bytes to migrate and the mode to write them back
-// under. The mode is the operator's: a file they deliberately left readable by
-// their own group does not silently become 0600, and one holding a secret has
-// already been refused by the check above if it was not.
-func readFileAndMode(path string) ([]byte, os.FileMode, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, 0, fmt.Errorf("inspect %s: %w", path, err)
-	}
-	data, err := os.ReadFile(path) //nolint:gosec // G304: the path is the operator's own config file, named by the operator on their own command line.
-	if err != nil {
-		return nil, 0, fmt.Errorf("read %s: %w", path, err)
-	}
-	return data, info.Mode().Perm(), nil
-}
-
-// writeConfigFile replaces path with data, atomically, at mode.
+// migrationReadsBack is this command's last look at what it staged: the bytes
+// that landed on disk go back through the parser, and a migration that does not
+// come back is discarded with the operator's file untouched.
 //
-// Written to a temporary file in the same directory and renamed over the
-// target, because the alternative — truncating the operator's file and writing
-// into it — has a window in which a full disk, a signal or a power cut leaves
-// them holding half a configuration. A rename inside one directory is atomic,
-// so at every instant the path holds either the whole old file or the whole new
-// one, which is the property that makes running this on a live host reasonable.
-//
-// The mode is set explicitly rather than left to the umask: this file may hold
-// the shared secret, and a umask of 022 would publish it to every account on
-// the host — the exact condition config.ReadFile refuses to start on.
-func writeConfigFile(path string, data []byte, mode os.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create a temporary file beside %s: %w", path, err)
+// The parser and not the loader, for the reason configCheck states above. The
+// values are checked against the environment the *daemon* runs in, and an
+// operator running this from their own shell has a different one — a migration
+// refused because their terminal carries no CRSW_SHARED_SECRET would be refusing
+// a file the daemon starts on perfectly well, and teaching them not to migrate.
+// The update path asks the loader as well, and may: it runs inside that
+// environment, unattended, moments before the restart that would find out
+// (internal/updater/config.go).
+func migrationReadsBack(path string) func([]byte) error {
+	return func(landed []byte) error {
+		if _, err := config.ParseFile(path, landed, io.Discard); err != nil {
+			return fmt.Errorf("the migration of %s did not read back, so it was discarded: %w", path, err)
+		}
+		return nil
 	}
-	name := tmp.Name()
-
-	err = writeAndSync(tmp, data, mode)
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err == nil {
-		err = os.Rename(name, path)
-	}
-	if err != nil {
-		// The half-written temporary file is removed rather than left beside the
-		// configuration, where the next reader would have to work out which of
-		// two files the daemon reads.
-		_ = os.Remove(name) //nolint:errcheck // the write already failed; a failed cleanup of its leftovers changes neither the error returned nor what the operator must do.
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	return nil
-}
-
-func writeAndSync(f *os.File, data []byte, mode os.FileMode) error {
-	if err := f.Chmod(mode); err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		return err
-	}
-	// Synced before the rename, so the ending where the host loses power between
-	// the two is a directory entry pointing at bytes that are actually there.
-	return f.Sync()
 }
 
 // say and sayln write to a report stream and drop the write error, in one place
