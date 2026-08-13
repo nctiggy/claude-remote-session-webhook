@@ -1752,7 +1752,7 @@ func TestNothingAutomatedTouchesTheOverrideAgain(t *testing.T) {
 	// The updater must not learn to touch it either. It carries the unit
 	// forward precisely so the override beside it can survive that.
 	for _, name := range []string{"place.go", "unit.go", "config.go"} {
-		body, err := os.ReadFile(repoRoot + "/internal/updater/" + name)
+		body, err := os.ReadFile(repoRoot + "/internal/updater/" + name) //nolint:gosec // G304: name comes from the literal slice above, not from anything a caller supplies.
 		if err != nil {
 			t.Fatalf("read internal/updater/%s: %v", name, err)
 		}
