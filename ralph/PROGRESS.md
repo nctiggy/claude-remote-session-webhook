@@ -521,3 +521,103 @@ and the update path. That is the last task in the plan.
   named `.crswd-config-*` while place.go writes systemd units through it;
   `internal/httpapi/render.go` is still the only file `gofmt -l .` names; and
   `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is wall-clock flaky.
+
+---
+
+## Iteration 7 — 2026-08-13
+
+**Did:** T007, the last task. `config.MigrateFile` in `internal/config/write.go`
+is now the whole rewrite — stat for the mode, read, `config.Migrate`, stage at
+`config.migrating`, read back, offer to the caller's `accept`, write
+`config.bak`, rename — and both callers are it. `internal/updater`'s
+`ConfigMigrator.Migrate` is four lines and a `wouldStillStart` predicate;
+`cmd/crswd`'s `configMigrate` is the `ReadFile` check, the call, and the report.
+`writeConfigFile`/`writeAndSync`/`readFileAndMode` are gone from `cmd/crswd`, so
+`config.WriteFile` is the only atomic write of an operator's file left in the
+tree.
+
+**The one thing the two callers still choose for themselves, and why:**
+
+- **The check on what landed is a parameter, not a shared constant.** An update
+  asks `config.Validate` — the loader, in the daemon's own environment, moments
+  before the restart that would otherwise discover the answer. The command asks
+  `config.ParseFile` instead, because `configCheck`'s own comment already
+  settles it: values are checked against the environment the *daemon* runs in,
+  and a migration refused because the operator's terminal carries no
+  `CRSW_SHARED_SECRET` would be refusing a file the daemon starts on perfectly
+  well, and would teach them to stop migrating. **Sharing the loader here would
+  have been the drift T007 exists to end, pointed the other way.**
+- **`crswd config migrate` therefore gained the staging and the read-back**, and
+  that is a real behaviour change, not a refactor: it used to write the backup
+  and then write over the operator's file with bytes nothing had looked at
+  again.
+
+**Learned — things the next iteration would otherwise rediscover:**
+
+- **`accept`'s error is returned verbatim**, which is what keeps
+  `updater.ErrConfigWouldNotLoad` where its meaning is. `errors.Is` still reaches
+  it through `MigrateFile`, and `internal/httpapi/update.go`'s two cases needed
+  no change at all. A sentinel moved into `internal/config` would have had to
+  mean "would not load" for a caller that cannot ask that question.
+- **`config.StagedPath(path)` exists for the same reason `BackupPath` does**:
+  `internal/updater/config_test.go` asserts nothing was left at that name, and a
+  test spelling `.migrating` itself would pass vacuously the day the constant
+  moved.
+- **`configMigrate` reports on `(migrated, err)` and not on `err` alone.**
+  `MigrateFile`'s deferred cleanup can join an error onto a *successful*
+  migration; "your file is unchanged" would then be a lie that sends the
+  operator to the wrong file. It is the only branch there where `migrated` is
+  true and `err` is not nil.
+- **The quickstart leftover check was asserting nothing.** It looked for
+  `.tmp-`, which was `cmd/crswd`'s own writer's prefix; `config.WriteFile` never
+  wrote such a name. It now names `.migrating` and `.crswd-tmp-` — and the
+  temporary file is `.crswd-tmp-` rather than `.crswd-config-` because
+  `place.go` writes systemd units through the same call (Iteration 3's finding,
+  which was handed to this task).
+- **Mutation-checked, four ways**, all caught: renaming into place before
+  `accept` sees the bytes (failed in *both* packages), dropping the staged
+  file's removal (both again), and each half of the drift guard — a caller that
+  stops calling `MigrateFile`, and a caller that grows an `os.Rename` of its own.
+- **The guard is an AST scan of two files by path** (`../../cmd/crswd/config_cmd.go`,
+  `../updater/config.go`) from `internal/config`'s own test, where
+  `docs_test.go` already reads `../../README.md`. It parses rather than compiles,
+  so it still runs when the file it is judging does not build.
+
+**Left:** nothing in the plan. T001–T007 are all ticked.
+
+**Findings — noticed, not fixed:**
+
+- **⚠️ Still open, and it is a spec question, not a bug:** the migration runs in
+  the **old** binary, so a rename shipped in v0.90 is applied by the update
+  *after* the one that installs v0.90. Today that costs nothing (`renamedKeys`
+  is empty, `SchemaVersion` is 1). T007 makes one of the two fixes cheaper —
+  `crswd config migrate` in the staged candidate is now the same code the
+  updater runs, so exec-ing it would change *when* it runs and nothing else —
+  but which fix is right needs somebody to decide. **Do not "fix" it silently.**
+- **`internal/httpapi/settings_edit.go` was left alone** (AR-008). It writes one
+  key rather than migrating a schema, and it validates *before* it writes rather
+  than after, which it can because it has the daemon's environment and no
+  rewrite to stage. It already goes through `config.WriteFile`, so it is not a
+  fourth write path — it is a different operation through the one writer.
+- **`README.md:801` says `config migrate` is "the only thing that rewrites a
+  configuration file wholesale".** Line 198 already says an update is that
+  command run for you, so the two read consistently — but if anyone edits either
+  sentence, they are now describing one implementation and should say so.
+- **`internal/httpapi/render.go` is still the only file `gofmt -l .` names**, and
+  `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is still wall-clock
+  flaky (10ms deadline). Both are fix-lane one-liners nobody has taken.
+- **The `quickstart` suite as a whole still could not be run**: `127.0.0.1:8765`
+  is held by the deployed daemon. `go vet -tags quickstart ./...` is clean and
+  the four cases that take their own port were run in full and pass
+  (`TestMigrateKeepsBackup`, `TestConfigCheckDoesNotStart`,
+  `TestFallsBackToBackupLoudly`, `TestEveryDocumentedTrailCommandSurvivesTheStream`).
+  `-tags tmux` and `-tags dev` were run in full and pass, as did
+  `golangci-lint run` (v2.12.2, 0 issues).
+
+---
+
+Every task in the plan is checked and the tree is green: build, vet, `go test ./...`,
+`-tags tmux`, `-tags dev` and `golangci-lint run` all pass, as do the quickstart
+cases that do not need the port the deployed daemon holds.
+
+RALPH_COMPLETE
