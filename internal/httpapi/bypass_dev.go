@@ -14,6 +14,7 @@ package httpapi
 import (
 	"errors"
 	"io"
+	"os"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
@@ -60,7 +61,7 @@ func NewWithBypass(cfg *config.Config, warn io.Writer) (*Server, error) {
 	// Its own tmux server, for the reason New gives — and this is the build a
 	// developer runs *alongside* the real daemon to check a template change,
 	// which is precisely the case #22 describes.
-	tmux, err := tmuxctl.NewExec(tmuxctl.SocketFor(cfg.Listen), cfg.PaneBound)
+	tmux, err := tmuxctl.NewExec(tmuxctl.SocketFor(cfg.Listen), cfg.PaneBound, config.SessionEnvironment(os.Environ(), cfg.SessionEnvironment))
 	if err != nil {
 		return nil, err
 	}

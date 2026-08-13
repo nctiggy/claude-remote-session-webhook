@@ -83,6 +83,26 @@ const (
 	// could ever accept — see loadWorkdirSuggestions.
 	EnvWorkdirSuggestions = "CRSW_WORKDIR_SUGGESTIONS"
 
+	// EnvSessionEnvironment is the operator's list of additional variable NAMES
+	// a session receives, on top of the base set in sessionenv.go.
+	//
+	// It exists because an allowlist has a cost, and this is what pays it: a
+	// workflow that quietly depended on some variable the daemon happened to
+	// inherit stops working when the boundary closes, with nothing to point at.
+	// Rather than widen the base set for everybody's edge case, the operator
+	// names theirs.
+	//
+	// **Names, never values.** The value comes from the daemon's own
+	// environment; this list only says which of them may cross. A list of values
+	// would be a second place to configure things that already have one, and a
+	// place an operator would eventually put a credential.
+	//
+	// An entry naming a secret, or anything CRSW_, is a startup failure rather
+	// than a silent drop — see loadSessionEnvironment. An escape hatch that
+	// quietly ignored the dangerous case would be an escape hatch an operator
+	// believes is working.
+	EnvSessionEnvironment = "CRSW_SESSION_ENVIRONMENT"
+
 	// EnvDestroyOnShutdown restores the pre-#63 behaviour: tear every session
 	// down when the daemon stops. Default is off — a restart preserves them and
 	// startup adoption reclaims them.
@@ -199,6 +219,11 @@ const (
 	// suggested, which costs the operator a path they type instead of pick —
 	// the field is free text either way (FR-008).
 	workdirSuggestionListSeparator = ","
+
+	// sessionEnvironmentListSeparator is "," rather than the ":" the root list
+	// uses: these are variable names, which cannot contain either character, and
+	// a comma is what an operator writing a list of names reaches for.
+	sessionEnvironmentListSeparator = ","
 
 	// The two separators EnvStartCommands is spelled with. A command line may
 	// therefore not contain a comma, which is a limit worth stating rather than
@@ -438,6 +463,11 @@ type Config struct {
 	// the picker unions and it authorises nothing on its own: a path taken from it
 	// meets Roots on the create it is submitted with, exactly as a typed one does.
 	WorkdirSuggestions []string
+
+	// SessionEnvironment is the operator's list of additional variable names a
+	// session receives. Empty on almost every deployment, which is the intent:
+	// the base set in sessionenv.go is meant to be enough.
+	SessionEnvironment []string
 
 	// DestroyOnShutdown tears every session down on a clean stop. Off by
 	// default: a graceful restart is overwhelmingly the common case, and
@@ -713,6 +743,10 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 	if err != nil {
 		return nil, err
 	}
+	sessionEnvironment, err := loadSessionEnvironment(getenv)
+	if err != nil {
+		return nil, err
+	}
 	// Read here for the first time since #63 shipped the variable. The constant
 	// existed, server.go branched on the field, and the settings page rendered
 	// it — but nothing ever assigned it, so it was false on every daemon that
@@ -824,6 +858,7 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 		Roots:               roots,
 		DiscoverRoots:       discoverRoots,
 		WorkdirSuggestions:  workdirSuggestions,
+		SessionEnvironment:  sessionEnvironment,
 		DestroyOnShutdown:   destroyOnShutdown,
 		Listen:              listen,
 		MaxSessions:         maxSessions,
@@ -1042,6 +1077,53 @@ func loadWorkdirSuggestions(getenv func(string) string) ([]string, error) {
 		suggestions = append(suggestions, path)
 	}
 	return suggestions, nil
+}
+
+// loadSessionEnvironment reads the operator's list of additional variable names
+// a session may receive, and refuses the entries that would undo the boundary.
+//
+// The refusal is a startup failure rather than a warning or a silent drop, for
+// the reason every refusal in this file is one: a daemon that starts, works, and
+// never mentions it again leaves the operator believing they configured
+// something. Here the something is a credential reaching an unsandboxed shell,
+// which is the case where "starts anyway" is least acceptable.
+//
+// **No error here ever names a value**, only the entry — which is a variable
+// NAME, so naming it discloses nothing. That is the same rule the configuration
+// file's refusals follow.
+func loadSessionEnvironment(getenv func(string) string) ([]string, error) {
+	raw := strings.TrimSpace(getenv(EnvSessionEnvironment))
+	if raw == "" {
+		return nil, nil
+	}
+
+	parts := strings.Split(raw, sessionEnvironmentListSeparator)
+	names := make([]string, 0, len(parts))
+	for _, part := range parts {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			return nil, fmt.Errorf("%s contains an empty entry; refusing to start", EnvSessionEnvironment)
+		}
+
+		// The daemon's own configuration, by the prefix rule. Passing one on
+		// would put this daemon's settings in the environment of the code it
+		// starts, and is also what makes this project's own test suite fail when
+		// run from inside a session.
+		if strings.HasPrefix(name, envPrefix) {
+			return nil, fmt.Errorf("%s names %s, which is this daemon's own configuration and is never given to a session; refusing to start",
+				EnvSessionEnvironment, name)
+		}
+
+		// Belt and braces: a secret that one day is not spelled with the prefix
+		// above is still refused, and the two answers cannot drift apart.
+		if IsSecret(KeyForVar(name)) {
+			return nil, fmt.Errorf("%s names the secret %s, which a session must never receive; refusing to start",
+				EnvSessionEnvironment, name)
+		}
+
+		names = append(names, name)
+	}
+	return names, nil
 }
 
 // RenderStartCommand substitutes a session's own name into a configured start

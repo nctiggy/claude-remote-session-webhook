@@ -92,6 +92,16 @@ version = 1
 # allowed_roots is the control. Default: empty.
 # workdir_suggestions = /srv/scratch,/srv/second
 
+# Additional environment variable NAMES a session receives, comma-separated, on
+# top of the base set the daemon always gives one: HOME, PATH, SHELL, USER,
+# LOGNAME, TERM, LANG, LC_* and XDG_RUNTIME_DIR.
+#
+# A session never inherits this daemon's environment — not the shared secret, not
+# the Access values, not any CRSW_ setting. This is the escape hatch for the one
+# more variable a particular workflow needs. It holds names, never values, and
+# naming a secret or anything CRSW_ is a startup failure. Default: empty.
+# session_environment = SSH_AUTH_SOCK
+
 # host:port for the daemon's own listener. The host must be an IP literal — a
 # name can be pointed anywhere by /etc/hosts or a resolver, which would move the
 # bind without changing this value — and `:8765` is a name too, an empty host,

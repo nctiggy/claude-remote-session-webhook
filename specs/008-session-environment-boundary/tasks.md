@@ -30,8 +30,8 @@ Single Go project at the repository root: `internal/`, `cmd/crswd/`, `deploy/`,
 
 **Purpose**: Confirm the environment the later phases assert against, before writing anything that depends on it.
 
-- [ ] T001 Confirm the `tmux` suite runs on this host with `go test -tags tmux ./...`, and record the tmux version; US1's reconciliation test is behind that tag and `set-environment` behaviour is what it asserts
-- [ ] T002 [P] Confirm a systemd user manager is present and `systemd-run --user` works, since US2's drop-in assertions depend on it
+- [X] T001 Confirm the `tmux` suite runs on this host with `go test -tags tmux ./...`, and record the tmux version; US1's reconciliation test is behind that tag and `set-environment` behaviour is what it asserts
+- [X] T002 [P] Confirm a systemd user manager is present and `systemd-run --user` works, since US2's drop-in assertions depend on it
 
 ---
 
@@ -39,8 +39,8 @@ Single Go project at the repository root: `internal/`, `cmd/crswd/`, `deploy/`,
 
 **Purpose**: The names and paths more than one story spells. Getting these wrong is the drift this repo keeps finding.
 
-- [ ] T003 Add the drop-in directory and file name as exported constants in `internal/updater/unit.go`, beside the existing `unitPath` and `unitRecordPath`, composed from HOME the same way and for the same stated reason
-- [ ] T004 Add a test in `internal/release/install_test.go` holding those constants against the path `install.sh` writes, in the shape of the existing `TestUnitPathsAreWhereTheInstallerWrites` — two languages, one path, drift not allowed
+- [X] T003 Add the drop-in directory and file name as exported constants in `internal/updater/unit.go`, beside the existing `unitPath` and `unitRecordPath`, composed from HOME the same way and for the same stated reason
+- [ ] T004 Add a test in `internal/release/install_test.go` holding those constants against the path `install.sh` writes, in the shape of the existing `TestUnitPathsAreWhereTheInstallerWrites` — two languages, one path, drift not allowed **(deferred to Phase 4: asserts against the drop-in path install.sh gains in T026)**
 
 **Checkpoint**: US1 and US2 can now proceed independently.
 
@@ -54,22 +54,22 @@ Single Go project at the repository root: `internal/`, `cmd/crswd/`, `deploy/`,
 
 ### Tests (write first — each must fail)
 
-- [ ] T005 [P] [US1] Add `internal/config/sessionenv_test.go` asserting the composed set excludes every key `IsSecret` names and every `CRSW_`-prefixed name, and includes the base names when present in the source environment (data-model V1, V2, V3)
-- [ ] T006 [P] [US1] Add a case asserting a base name absent from the source environment is **omitted, not passed empty** (V3), and that `PATH` is carried through unchanged (V4)
-- [ ] T007 [P] [US1] Add a case in `internal/config/sessionenv_test.go` proving the composed set is the *whole* environment — no merge with the parent — so V1 and V2 are properties of the result rather than of caller discipline (V5)
-- [ ] T008 [P] [US1] Add tests in `internal/config/config_test.go` for the pass-through list: a normal name passes; a name absent from the environment is not an error (V8); a name `IsSecret` classifies **fails startup** naming the entry (V6); a `CRSW_` name fails the same way (V7)
-- [ ] T009 [US1] Add a `//go:build tmux` test in `internal/tmuxctl` that starts a server on a private `-L` socket with a marker variable set, runs the reconciliation, creates a **new** session, and asserts the pane process does not carry the marker — the R2 finding, asserted rather than trusted
-- [ ] T010 [US1] Add a case to the same file asserting reconciliation leaves a **running** session's pane untouched (V12) and removes only names, never adding or overwriting (V11)
+- [X] T005 [P] [US1] Add `internal/config/sessionenv_test.go` asserting the composed set excludes every key `IsSecret` names and every `CRSW_`-prefixed name, and includes the base names when present in the source environment (data-model V1, V2, V3)
+- [X] T006 [P] [US1] Add a case asserting a base name absent from the source environment is **omitted, not passed empty** (V3), and that `PATH` is carried through unchanged (V4)
+- [X] T007 [P] [US1] Add a case in `internal/config/sessionenv_test.go` proving the composed set is the *whole* environment — no merge with the parent — so V1 and V2 are properties of the result rather than of caller discipline (V5)
+- [X] T008 [P] [US1] Add tests in `internal/config/config_test.go` for the pass-through list: a normal name passes; a name absent from the environment is not an error (V8); a name `IsSecret` classifies **fails startup** naming the entry (V6); a `CRSW_` name fails the same way (V7)
+- [X] T009 [US1] Add a `//go:build tmux` test in `internal/tmuxctl` that starts a server on a private `-L` socket with a marker variable set, runs the reconciliation, creates a **new** session, and asserts the pane process does not carry the marker — the R2 finding, asserted rather than trusted
+- [X] T010 [US1] Add a case to the same file asserting reconciliation leaves a **running** session's pane untouched (V12) and removes only names, never adding or overwriting (V11)
 
 ### Implementation
 
-- [ ] T011 [US1] Create `internal/config/sessionenv.go` as the single definition of a session's environment: the base list from [contracts/session-environment.md](./contracts/session-environment.md), composed from a `getenv`, reusing `IsSecret` from `internal/config/secret.go` rather than restating it (FR-002, FR-005)
-- [ ] T012 [US1] Add the pass-through configuration variable to `internal/config/config.go` following the key rule stated at `internal/config/file.go:17` — the variable minus `CRSW_`, lower-cased — so no table needs editing (FR-006, research R7)
-- [ ] T013 [US1] Make an entry naming a secret or a `CRSW_` variable a **startup failure** in `internal/config/config.go`, naming the offending entry and the reason, never the value (FR-007; `docs/security.md` forbids a refusal that names what it refused over)
-- [ ] T014 [US1] Set `cmd.Env` from the composed set in `internal/tmuxctl/exec.go`'s `run`, at the single `exec.CommandContext` chokepoint all eight builders funnel through (FR-001)
-- [ ] T015 [US1] Create `internal/tmuxctl/env.go` reconciling a running server's **global** environment against the allowlist via `set-environment -g -u`, kept out of `exec.go` so a future early return cannot silently skip it (research R2)
-- [ ] T016 [US1] Call the reconciliation once at daemon startup from `internal/session/manager.go`, before any session is created, so an **adopted** server is corrected rather than left dirty for the server's lifetime
-- [ ] T017 [US1] Thread the composed environment from configuration load into `tmuxctl` construction, so the pass-through list reaches the chokepoint without `tmuxctl` reading the environment itself
+- [X] T011 [US1] Create `internal/config/sessionenv.go` as the single definition of a session's environment: the base list from [contracts/session-environment.md](./contracts/session-environment.md), composed from a `getenv`, reusing `IsSecret` from `internal/config/secret.go` rather than restating it (FR-002, FR-005)
+- [X] T012 [US1] Add the pass-through configuration variable to `internal/config/config.go` following the key rule stated at `internal/config/file.go:17` — the variable minus `CRSW_`, lower-cased — so no table needs editing (FR-006, research R7)
+- [X] T013 [US1] Make an entry naming a secret or a `CRSW_` variable a **startup failure** in `internal/config/config.go`, naming the offending entry and the reason, never the value (FR-007; `docs/security.md` forbids a refusal that names what it refused over)
+- [X] T014 [US1] Set `cmd.Env` from the composed set in `internal/tmuxctl/exec.go`'s `run`, at the single `exec.CommandContext` chokepoint all eight builders funnel through (FR-001)
+- [X] T015 [US1] Create `internal/tmuxctl/env.go` reconciling a running server's **global** environment against the allowlist via `set-environment -g -u`, kept out of `exec.go` so a future early return cannot silently skip it (research R2)
+- [X] T016 [US1] Call the reconciliation once at daemon startup from `internal/session/manager.go`, before any session is created, so an **adopted** server is corrected rather than left dirty for the server's lifetime
+- [X] T017 [US1] Thread the composed environment from configuration load into `tmuxctl` construction, so the pass-through list reaches the chokepoint without `tmuxctl` reading the environment itself
 
 **Checkpoint**: SC-001 and SC-005 both provable. `go test ./...` should now pass **from inside a session**, which it does not today.
 

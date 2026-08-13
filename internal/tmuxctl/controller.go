@@ -57,6 +57,20 @@ type Controller interface {
 	// startup reconciliation needs. A server that is not running yields an
 	// empty slice, not an error — that is the normal first-boot case.
 	List(ctx context.Context) ([]SessionInfo, error)
+
+	// ReconcileServerEnvironment removes from the tmux server's global
+	// environment everything a session's own environment would not carry, and
+	// returns the names it removed.
+	//
+	// On the interface rather than only on *Exec because the daemon must be
+	// able to call it at startup without reaching past the abstraction, and
+	// because a fake that could not answer it would let a test claim a clean
+	// startup path that was never exercised.
+	//
+	// A server that is not running is not an error: there is nothing to clean,
+	// and the first session created will start one from a client this package
+	// has already given a composed environment.
+	ReconcileServerEnvironment(ctx context.Context) ([]string, error)
 }
 
 // The tmux user options the daemon writes onto every session it creates, and

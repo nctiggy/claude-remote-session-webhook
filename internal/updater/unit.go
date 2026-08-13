@@ -87,6 +87,20 @@ const (
 	// replace, which is why it is read from the installer's own location rather
 	// than from somewhere this package would prefer.
 	unitRecordPath = ".local/share/crswd/crswd.service.sha256"
+
+	// DropInName is the file install.sh writes inside the unit's drop-in
+	// directory when the operator asks for elevated privileges inside sessions.
+	//
+	// **The directory itself is never spelled as a constant.** systemd defines it
+	// as the unit's own path with `.d` appended, so DropInDir derives it from
+	// unitPath rather than declaring a second string that could drift from the
+	// first. A drop-in directory that does not sit beside the unit is not a
+	// drop-in at all — it is a file systemd never reads, which is the failure
+	// mode that looks exactly like success.
+	DropInName = "10-relax.conf"
+
+	// dropInSuffix is systemd's own rule, stated once.
+	dropInSuffix = ".d"
 )
 
 // ErrNoUnitHome is a process with no absolute HOME, and so nowhere to look for
@@ -209,6 +223,34 @@ func (u *Unit) Path() string { return u.path }
 // RecordPath is where the digest of the unit this project wrote is kept, or ""
 // if it cannot name one.
 func (u *Unit) RecordPath() string { return u.record }
+
+// DropInDir is the directory systemd reads overrides for this unit from, or ""
+// if this daemon cannot name the unit itself.
+//
+// Derived from the unit path rather than declared, because systemd's rule is
+// exactly that: the unit's own name with `.d` appended. A second constant could
+// be edited to point somewhere systemd never looks, and the symptom would be an
+// override that is present, readable, and silently not in effect.
+func (u *Unit) DropInDir() string {
+	if u.path == "" {
+		return ""
+	}
+	return u.path + dropInSuffix
+}
+
+// DropInPath is the override file install.sh writes, or "" if this daemon
+// cannot name the unit.
+//
+// It names one file rather than describing the directory's contents, because
+// this project writes exactly one and reads exactly one. An operator is free to
+// add others — systemd merges them all — and this daemon says nothing about
+// those beyond noticing the directory is not empty.
+func (u *Unit) DropInPath() string {
+	if u.path == "" {
+		return ""
+	}
+	return filepath.Join(u.DropInDir(), DropInName)
+}
 
 // Standing compares the unit on this host against the one a release publishes.
 //

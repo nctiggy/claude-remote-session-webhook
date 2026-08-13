@@ -446,6 +446,11 @@ const (
 	// unresolved and unread, so the cell is the line they wrote and stays one
 	// they could paste back.
 	workdirSuggestionsSeparator = ","
+
+	// sessionEnvironmentSeparator matches the one config parses the list with.
+	// A page that joined on something else would show the operator a value they
+	// could not paste back into their configuration file.
+	sessionEnvironmentSeparator = ","
 )
 
 // settingValue is the effective value of one non-secret setting, and whether
@@ -485,6 +490,12 @@ func settingValue(cfg *config.Config, name string) (value string, known bool) {
 		return strconv.FormatBool(cfg.DiscoverRoots), true
 	case config.EnvWorkdirSuggestions:
 		return strings.Join(cfg.WorkdirSuggestions, workdirSuggestionsSeparator), true
+	case config.EnvSessionEnvironment:
+		// Names, never values — which is what makes this safe to render at all.
+		// The variables it names hold whatever the daemon's environment holds,
+		// and this page states configuration rather than reading the process's
+		// environment back to the browser.
+		return strings.Join(cfg.SessionEnvironment, sessionEnvironmentSeparator), true
 	case config.EnvListen:
 		return cfg.Listen, true
 	case config.EnvMaxSessions:

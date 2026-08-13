@@ -30,6 +30,21 @@ type Exec struct {
 	// not — the same lesson the //go:build tmux tests learned.
 	socket string
 
+	// sessionEnv is the whole environment every tmux process this package starts
+	// receives, composed by config.SessionEnvironment. It is never this daemon's
+	// own.
+	//
+	// **It is a field rather than something run computes** because the daemon's
+	// environment is not the source of truth for it: the operator's pass-through
+	// list is, and that arrives from configuration. Reading os.Environ() here
+	// would put the decision back inside the package that must not be making it.
+	//
+	// Never empty on an Exec NewExec built. An empty slice means "this process
+	// has no environment" to exec.Cmd — a session with no PATH and no HOME,
+	// which starts and then fails in ways that look like a bug in tmux. There is
+	// no value of this field meaning "inherit"; that is the whole point.
+	sessionEnv []string
+
 	// paneBound is the largest screen CapturePane will hand back, counted in
 	// lines. It comes from the operator's pane_bound setting (FR-052) and is
 	// never zero on an Exec NewExec built: a bound that defaults to "no bound"
@@ -48,6 +63,14 @@ var ErrNoSocket = errors.New("tmuxctl: no tmux server name; refusing to drive tm
 // there is no value of this field meaning "unbounded" to fall back to.
 var ErrNoPaneBound = errors.New("tmuxctl: no pane bound; refusing to capture a screen of unstated size")
 
+// ErrNoSessionEnv is returned by NewExec for an empty session environment, and
+// by run on an Exec that somehow has one.
+//
+// A refusal rather than a fallback to the daemon's own environment, which is
+// what nil Env means to exec.Cmd and is exactly the defect this field exists to
+// close. "Inherit" must not be reachable by forgetting an argument.
+var ErrNoSessionEnv = errors.New("tmuxctl: no session environment; refusing to hand a session this daemon's own")
+
 // ErrPaneTooLarge is returned instead of a shortened screen. Callers branch on
 // it to tell "the screen is unusable" from "tmux would not answer", and neither
 // is a screen they may render (FR-053).
@@ -61,14 +84,17 @@ var ErrPaneTooLarge = errors.New("tmuxctl: the captured pane is past the bound")
 // the operator's setting, and it is required rather than defaulted because a
 // caller that forgot it would silently get the unbounded capture this package
 // no longer performs.
-func NewExec(socket string, paneBound int) (*Exec, error) {
+func NewExec(socket string, paneBound int, sessionEnv []string) (*Exec, error) {
 	if socket == "" {
 		return nil, ErrNoSocket
 	}
 	if paneBound < 1 {
 		return nil, ErrNoPaneBound
 	}
-	return &Exec{socket: socket, paneBound: paneBound}, nil
+	if len(sessionEnv) == 0 {
+		return nil, ErrNoSessionEnv
+	}
+	return &Exec{socket: socket, paneBound: paneBound, sessionEnv: sessionEnv}, nil
 }
 
 // SocketFor derives a daemon's tmux server name from the address it listens on,
@@ -378,6 +404,13 @@ func (e *Exec) run(ctx context.Context, argv []string, stdin []byte) (string, st
 		return "", "", ErrNoSocket
 	}
 
+	// The guard that makes a scrubbed environment a property of the type rather
+	// than of its constructor, for ErrNoSocket's reason: a struct literal is one
+	// keystroke away, and the zero value of this field is the one that leaks.
+	if len(e.sessionEnv) == 0 {
+		return "", "", ErrNoSessionEnv
+	}
+
 	// G204 fires on any exec whose program or arguments are not literals here,
 	// and the whole design of this package is the answer to it: argv comes only
 	// from the builders above, each one a fixed sequence of literals, and the
@@ -387,6 +420,22 @@ func (e *Exec) run(ctx context.Context, argv []string, stdin []byte) (string, st
 	// hard-coding "tmux" instead of argv[0] would only cost the tests their
 	// ability to assert the argv tmux actually receives.
 	cmd := exec.CommandContext(ctx, argv[0], e.args(argv[1:])...) //nolint:gosec // argv is built from literals; see above
+
+	// The boundary, and the whole of it on this side. A nil Env inherits this
+	// daemon's environment — the shared secret that signs API requests, the
+	// Access values naming who may reach the host, every configured bound — and
+	// hands it to a process running `claude --dangerously-skip-permissions`,
+	// where it is one `env` away from being pane content that leaves the machine.
+	//
+	// Set here rather than in each of the eight builders above, for the reason
+	// the socket argument is: eight call sites is eight chances for a ninth to
+	// forget, and forgetting is silent.
+	//
+	// This governs the tmux CLIENT. A tmux SERVER keeps whatever environment it
+	// was started with for its whole life, and this daemon's server outlives the
+	// daemon by design, so a server already running when this shipped still
+	// holds the old one — see env.go, which is the other half and not optional.
+	cmd.Env = e.sessionEnv
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

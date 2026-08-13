@@ -50,6 +50,17 @@ const (
 	ActionReaperDestroy  Action = "reaper.destroy"
 	ActionStartupAdopt   Action = "startup.adopt"
 
+	// ActionStartupScrubEnv records that the daemon removed variables an older
+	// build left in the tmux server's global environment.
+	//
+	// Recorded rather than passed over in silence because it is evidence of a
+	// host having been exposed: a server holding this daemon's shared secret
+	// handed it to every session created on it, and the operator of such a host
+	// has a rotation to consider. It counts what was removed and never names a
+	// variable — the names are this daemon's configuration, and one of them is
+	// the secret itself.
+	ActionStartupScrubEnv Action = "startup.scrub-env"
+
 	// The three read operations. data-model.md's action column lists the six
 	// above as examples and names no action for a read, but FR-041 wants one
 	// record for *every* request and contracts/http-api.md defines six routes —
