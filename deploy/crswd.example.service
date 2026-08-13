@@ -77,47 +77,59 @@ StandardError=journal
 # set up, since the installer writes a config and never an env.
 EnvironmentFile=-%h/.config/crswd/env
 
-# The rest, inline. This is every remaining variable the daemon reads, and each
-# value shown is the daemon's own default, so a line deleted here changes
-# nothing. `.env.example` says what each one refuses to start on.
-Environment=CRSW_ALLOWED_ROOTS=%h/code
+# The rest, as comments. This is every remaining variable the daemon reads, and
+# each value shown is the daemon's own default. `.env.example` says what each one
+# refuses to start on.
+#
+# **They are commented out, and that is the point.** Precedence is
+# `environment > file > default` (internal/config/config.go, withFile), so a
+# variable this unit assigns beats the same key in %h/.config/crswd/config —
+# silently, with the operator looking at a configuration file that has stopped
+# meaning anything. install.sh writes `allowed_roots` into that file and this
+# unit used to assign CRSW_ALLOWED_ROOTS on top of it, so an operator who
+# narrowed their roots kept running on the old ones and was never told.
+#
+# Uncommenting a line here is therefore a decision to take that key away from the
+# configuration file for good. Set values in %h/.config/crswd/config instead.
+# TestUnitNeverShadowsTheConfigFile keeps this file honest.
+# Environment=CRSW_ALLOWED_ROOTS=%h/code
 
 # Whether the create form suggests the immediate subdirectories of the roots
 # above. Default: off — listing a filesystem is a disclosure, however mild, and
 # one to opt into. It widens nothing: the roots are still the control, and a
 # suggested path is checked against them on create exactly as a typed one is.
-Environment=CRSW_DISCOVER_ROOTS=
+# Environment=CRSW_DISCOVER_ROOTS=
 
 # Extra directories the create form offers, comma-separated and absolute, on top
 # of the roots above — which are always offered. Default: empty. It reads no
 # filesystem, and a path listed here that is outside the roots is refused on
 # create exactly as a typed one is.
-Environment=CRSW_WORKDIR_SUGGESTIONS=
-Environment=CRSW_LISTEN=127.0.0.1:8765
-Environment=CRSW_MAX_SESSIONS=5
+# Environment=CRSW_WORKDIR_SUGGESTIONS=
+# Environment=CRSW_LISTEN=127.0.0.1:8765
+# Environment=CRSW_MAX_SESSIONS=5
 
 # Whether a clean stop destroys every session. Default: off, so a redeploy does
 # not cost the fleet — startup adoption reclaims them with their deadlines
 # intact. Set true if a stopped daemon should mean nothing left running. A crash
 # leaves sessions either way; this governs the clean stop only.
-Environment=CRSW_DESTROY_ON_SHUTDOWN=
+# Environment=CRSW_DESTROY_ON_SHUTDOWN=
 
 # Whether Cloudflare Access is the browser door. Default: off, and off does not
 # turn Access away — the three values in the environment file above select it on
 # their own, as they always have. Set true to say so, which makes those three
 # required rather than optional and makes configuring a password door alongside
 # them a startup failure instead of a guess.
-Environment=CRSW_ACCESS_ENABLED=
-Environment=CRSW_CREATE_RATE_PER_MIN=6
-Environment=CRSW_MAX_BODY_BYTES=65536
-Environment=CRSW_MAX_STREAMS=10
+# Environment=CRSW_ACCESS_ENABLED=
+# Environment=CRSW_CREATE_RATE_PER_MIN=6
+# Environment=CRSW_MAX_BODY_BYTES=65536
+# Environment=CRSW_MAX_STREAMS=10
 
 # The largest screen a pane capture may return, in lines. A capture past it is
 # refused rather than shortened — half a screen is a wrong screen, not a smaller
 # one. The daemon never attaches to the sessions it starts, so they keep tmux's
 # 80x24 default and nothing real approaches this; it is a tripwire on the
 # assumption, not a display limit.
-Environment=CRSW_PANE_BOUND=200
+# Environment=CRSW_PANE_BOUND=200
 
 # The two start-command variables are quoted because a command line has spaces
 # in it, and an unquoted `Environment=` assignment ends at the first one.
@@ -128,8 +140,8 @@ Environment=CRSW_PANE_BOUND=200
 # from the set BY NAME and can never send a command line of its own — see
 # `.env.example`, and read `docs/security.md` before adding an entry that starts
 # a second unsupervised path into the same unsandboxed shell.
-Environment="CRSW_START_COMMAND=claude --dangerously-skip-permissions"
-Environment="CRSW_START_COMMANDS="
+# Environment="CRSW_START_COMMAND=claude --dangerously-skip-permissions"
+# Environment="CRSW_START_COMMANDS="
 
 # Which name in that set the dashboard's remote-control switch means (#58).
 # Default: `rc`. With the empty set above there is no such command, so the form
@@ -137,7 +149,7 @@ Environment="CRSW_START_COMMANDS="
 # A command line in the set may carry `{name}` and nothing else in braces — it
 # becomes the session's own name, so `--name {name}` puts the operator's name on
 # the other side instead of one Claude invented.
-Environment=CRSW_REMOTE_CONTROL_COMMAND=
+# Environment=CRSW_REMOTE_CONTROL_COMMAND=
 
 # Session lifetimes (#37). Empty means the daemon's own defaults: 24h absolute,
 # 60m idle. The MAX pair are ceilings a per-session override may not exceed, and
@@ -146,10 +158,10 @@ Environment=CRSW_REMOTE_CONTROL_COMMAND=
 #
 # There is no value meaning "never expires". The ceiling moves as far as an
 # operator wants; it does not go away.
-Environment=CRSW_SESSION_LIFETIME=
-Environment=CRSW_SESSION_LIFETIME_MAX=
-Environment=CRSW_IDLE_TIMEOUT=
-Environment=CRSW_IDLE_TIMEOUT_MAX=
+# Environment=CRSW_SESSION_LIFETIME=
+# Environment=CRSW_SESSION_LIFETIME_MAX=
+# Environment=CRSW_IDLE_TIMEOUT=
+# Environment=CRSW_IDLE_TIMEOUT_MAX=
 
 # There is no unit setting for the signed-request timestamp window (300s). It is
 # a constant in the code: it bounds the host, and a deployment that could widen
