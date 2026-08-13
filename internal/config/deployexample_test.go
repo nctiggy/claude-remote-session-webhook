@@ -70,11 +70,61 @@ func unitSettings(t *testing.T) map[string][]string {
 }
 
 // unitEnvironment returns the CRSW_ variables the unit sets inline, by name.
+//
+// It is expected to be empty, and TestUnitNeverShadowsTheConfigFile is why: an
+// assignment here beats %h/.config/crswd/config for that key. The helper stays
+// because "nothing is assigned" is a claim something has to check.
 func unitEnvironment(t *testing.T) map[string]string {
 	t.Helper()
 
+	return parseUnitAssignments(t, unitSettings(t)["Environment"])
+}
+
+// unitDocumentedEnvironment returns the CRSW_ variables the unit documents as
+// commented-out `# Environment=NAME=value` lines, by name.
+//
+// The values moved behind a `#` so they stop overriding the configuration file,
+// and everything that made them worth checking survived the move: this file is
+// still the one place an operator sees the whole configuration at once, and a
+// documented default that has drifted from config.go is still how the unit came
+// to advertise 8787 and a cap of 8. A comment nothing parses is a comment that
+// rots, so these are parsed.
+func unitDocumentedEnvironment(t *testing.T) map[string]string {
+	t.Helper()
+
+	raw, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", unitPath, err)
+	}
+
+	var assignments []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		// Only `# Environment=…`, so the surrounding prose — which names these
+		// variables constantly — does not read as a documented assignment.
+		body := strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+		if assignment, ok := strings.CutPrefix(body, "Environment="); ok {
+			assignments = append(assignments, assignment)
+		}
+	}
+
+	env := parseUnitAssignments(t, assignments)
+	if len(env) == 0 {
+		t.Fatalf("%s documents no Environment= defaults; this test is not checking anything", unitPath)
+	}
+	return env
+}
+
+// parseUnitAssignments turns systemd Environment= values into a name→value map,
+// shared so the live form and the documented form are read exactly alike.
+func parseUnitAssignments(t *testing.T, assignments []string) map[string]string {
+	t.Helper()
+
 	env := make(map[string]string)
-	for _, assignment := range unitSettings(t)["Environment"] {
+	for _, assignment := range assignments {
 		// systemd's own quoting, undone here: an unquoted Environment= ends at
 		// the first space, so a value with a space in it — a start command line —
 		// can only be written `Environment="NAME=a b"`. Reading past the quotes is
@@ -193,12 +243,12 @@ func TestUnitSetsOnlyVariablesTheDaemonReads(t *testing.T) {
 	t.Parallel()
 
 	declared := declaredVars(t)
-	set := unitEnvironment(t)
+	set := unitDocumentedEnvironment(t)
 	private := deploymentSpecific()
 
 	for name := range set {
 		if !declared[name] {
-			t.Errorf("%s sets %s and nothing in config.go reads it, so the operator who sets it runs on the default and is never told", unitPath, name)
+			t.Errorf("%s documents %s and nothing in config.go reads it, so the operator who sets it runs on the default and is never told", unitPath, name)
 		}
 	}
 
@@ -217,8 +267,40 @@ func TestUnitSetsOnlyVariablesTheDaemonReads(t *testing.T) {
 			continue
 		}
 		if _, ok := set[name]; !ok {
-			t.Errorf("config.go reads %s and %s never sets it, so the unit is no longer the one place the whole configuration is visible", name, unitPath)
+			t.Errorf("config.go reads %s and %s never documents it, so the unit is no longer the one place the whole configuration is visible", name, unitPath)
 		}
+	}
+}
+
+// TestUnitNeverShadowsTheConfigFile is the silent-wrong guard for the precedence
+// chain itself.
+//
+// Precedence is `flag > environment > file > default` (config.go, withFile), so
+// a CRSW_ variable assigned in this unit beats the same key in
+// %h/.config/crswd/config. The unit shipped eight of them, every value equal to
+// the daemon's own default — which is exactly what made it invisible: the
+// effective setting was right, so nothing looked wrong, and an operator who
+// edited the configuration file got a daemon that ignored the edit and never
+// said so.
+//
+// CRSW_ALLOWED_ROOTS is the case that matters. install.sh writes `allowed_roots`
+// into the configuration file and tells the operator it is "the only thing
+// bounding what a session can reach"; the unit then overrode it. An operator who
+// narrowed their roots after install kept running on the old ones.
+//
+// **Must fail when** any CRSW_ variable is assigned in the unit rather than
+// documented behind a `#`. Non-emptiness is not the test: an empty assignment is
+// inert only because withFile treats unset and empty alike, and a rule that
+// holds by way of another file's subtlety is a rule that breaks when that
+// subtlety is revisited.
+func TestUnitNeverShadowsTheConfigFile(t *testing.T) {
+	t.Parallel()
+
+	for name, value := range unitEnvironment(t) {
+		if !strings.HasPrefix(name, envPrefix) {
+			continue
+		}
+		t.Errorf("%s assigns %s=%q, which beats the same key in the operator's configuration file; comment it out so the file stays the place values are set", unitPath, name, value)
 	}
 }
 
@@ -230,10 +312,15 @@ func TestUnitNeverCarriesADeploymentValue(t *testing.T) {
 	t.Parallel()
 
 	settings := unitSettings(t)
-	set := unitEnvironment(t)
+	// Both forms. A commented `# Environment=CRSW_SHARED_SECRET=…` is still a
+	// secret committed to a public repository — the `#` stops systemd reading it,
+	// not GitHub.
 	for name := range deploymentSpecific() {
-		if _, ok := set[name]; ok {
+		if _, ok := unitEnvironment(t)[name]; ok {
 			t.Errorf("%s sets %s inline; it must arrive through EnvironmentFile, which is not committed", unitPath, name)
+		}
+		if _, ok := unitDocumentedEnvironment(t)[name]; ok {
+			t.Errorf("%s documents %s with a value; it must arrive through EnvironmentFile, which is not committed", unitPath, name)
 		}
 	}
 	if len(settings["EnvironmentFile"]) == 0 {
@@ -254,15 +341,16 @@ func TestUnitExecStartPassesNoFlags(t *testing.T) {
 	}
 }
 
-// TestUnitInlineValuesAreTheDaemonDefaults enforces the claim the unit makes
-// about itself: every value it sets inline is the daemon's own default, so a
-// line deleted from it changes nothing. That is the only reason it is safe to
-// ship a unit that hard-codes numbers at all — and an unenforced claim of that
-// shape is how the file came to say 8787 and a cap of 8 in the first place.
-func TestUnitInlineValuesAreTheDaemonDefaults(t *testing.T) {
+// TestUnitDocumentedValuesAreTheDaemonDefaults enforces the claim the unit makes
+// about itself: every value it documents is the daemon's own default, so an
+// operator reading this file to find out what a setting defaults to is reading
+// the truth. An unenforced claim of that shape is how the file came to say 8787
+// and a cap of 8 in the first place, and moving these behind a `#` so they stop
+// overriding the configuration file did nothing to make them self-checking.
+func TestUnitDocumentedValuesAreTheDaemonDefaults(t *testing.T) {
 	t.Parallel()
 
-	set := unitEnvironment(t)
+	set := unitDocumentedEnvironment(t)
 	for name, want := range map[string]string{
 		config.EnvMaxSessions:      strconv.Itoa(config.DefaultMaxSessions),
 		config.EnvCreateRatePerMin: strconv.Itoa(config.DefaultCreateRatePerMin),
@@ -275,14 +363,14 @@ func TestUnitInlineValuesAreTheDaemonDefaults(t *testing.T) {
 		config.EnvStartCommands: "",
 	} {
 		if got := set[name]; got != want {
-			t.Errorf("%s sets %s=%s, want the daemon's default %s", unitPath, name, got, want)
+			t.Errorf("%s documents %s=%s, want the daemon's default %s", unitPath, name, got, want)
 		}
 	}
 
 	// %h is systemd's expansion of the home directory, so the unit's root is the
 	// default root spelled the only way a unit file can spell it.
 	if roots, want := set[config.EnvAllowedRoots], "%h/"+config.DefaultRootName; roots != want {
-		t.Errorf("%s sets %s=%s, want %s to match the built-in default root", unitPath, config.EnvAllowedRoots, roots, want)
+		t.Errorf("%s documents %s=%s, want %s to match the built-in default root", unitPath, config.EnvAllowedRoots, roots, want)
 	}
 }
 
@@ -293,8 +381,8 @@ func TestUnitInlineValuesAreTheDaemonDefaults(t *testing.T) {
 func TestOriginAddressesAgreeWithTheDefault(t *testing.T) {
 	t.Parallel()
 
-	if listen := unitEnvironment(t)[config.EnvListen]; listen != config.DefaultListen {
-		t.Errorf("%s sets %s=%s, want the daemon's default %s", unitPath, config.EnvListen, listen, config.DefaultListen)
+	if listen := unitDocumentedEnvironment(t)[config.EnvListen]; listen != config.DefaultListen {
+		t.Errorf("%s documents %s=%s, want the daemon's default %s", unitPath, config.EnvListen, listen, config.DefaultListen)
 	}
 
 	raw, err := os.ReadFile(cloudflaredPath)
