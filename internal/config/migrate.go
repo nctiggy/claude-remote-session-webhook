@@ -4,10 +4,10 @@ package config
 //
 // This file turns the bytes of a configuration file into the bytes that file
 // should have under the current schema, and stops there: it returns them, and
-// nothing here opens anything for writing. cmd/crswd is the only code in this
-// repository that writes a config file, which is what makes FR-008 checkable by
-// reading one package rather than by trusting a promise — file.go opens
-// read-only, and this file opens nothing at all.
+// nothing here opens anything for writing. Every write in this package is in
+// write.go and none of it happens at a start, which is what makes FR-008
+// checkable by reading one file rather than by trusting a promise — file.go
+// opens read-only, and this file opens nothing at all.
 //
 // The rewrite is line by line rather than a re-serialisation of what parsed,
 // and that is the whole design. Comments are the reason this format is not

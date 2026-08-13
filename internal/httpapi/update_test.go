@@ -52,6 +52,7 @@ const (
 	fixtureBinary   = "the bytes of a release tarball"
 	fixtureSums     = "the published checksum list"
 	fixtureSignedBy = "the signature over that list"
+	fixtureUnit     = "the crswd.service this release ships"
 )
 
 // fixtureAsset is the tarball's name for this machine. It is composed here the
@@ -76,6 +77,17 @@ type stageCall struct {
 type swapCall struct {
 	staged  string
 	version string
+}
+
+// placeCall is what the unit step was handed: the release's own crswd.service,
+// and the two files that vouch for it. All three are recorded because the whole
+// claim on this side is that the carrier gets what it needs to verify — a route
+// that passed the unit along without them would leave the one file systemd
+// executes as the only asset nothing checked.
+type placeCall struct {
+	unit      []byte
+	sums      []byte
+	signature []byte
 }
 
 // fakeUpdatePath stands in for all three collaborators behind the route: the
@@ -103,12 +115,16 @@ type fakeUpdatePath struct {
 	assetErr   error
 	stageErr   error
 	swapErr    error
+	migrateErr error
+	placeErr   error
 
 	// What was asked of it.
 	askedVersions []string
 	fetched       []string
 	staged        []stageCall
 	swapped       []swapCall
+	migrations    int
+	placed        []placeCall
 	exits         int
 
 	// atExit runs inside ExitForRestart, which is the only moment from which the
@@ -126,6 +142,7 @@ func newFakeUpdatePath(t *testing.T) *fakeUpdatePath {
 			fixtureAsset():         []byte(fixtureBinary),
 			updater.ChecksumsAsset: []byte(fixtureSums),
 			updater.SignatureAsset: []byte(fixtureSignedBy),
+			updater.UnitAsset:      []byte(fixtureUnit),
 		},
 	}
 }
@@ -165,6 +182,38 @@ func (f *fakeUpdatePath) Stage(version, name string, asset, sums, signature []by
 func (f *fakeUpdatePath) Swap(_ context.Context, staged, version string) error {
 	f.swapped = append(f.swapped, swapCall{staged: staged, version: version})
 	return f.swapErr
+}
+
+// Migrate stands in for the configuration half of an update. It writes nothing:
+// what the cases here assert is that the route ran it, and when — the migration
+// itself is internal/updater's to be right about, against files in a directory
+// of its own.
+func (f *fakeUpdatePath) Migrate() (bool, error) {
+	f.migrations++
+	return f.migrateErr == nil, f.migrateErr
+}
+
+// Place stands in for the unit half of an update, and writes nothing for
+// Migrate's reason: which file ends up where is internal/updater's to be right
+// about, against a home directory of its own. What is asserted here is that the
+// route reached this step, when, and with the three assets that let it verify.
+func (f *fakeUpdatePath) Place(unit, sums, signature []byte) (updater.UnitOutcome, error) {
+	f.placed = append(f.placed, placeCall{unit: unit, sums: sums, signature: signature})
+	if f.placeErr != nil {
+		return updater.UnitUnchanged, f.placeErr
+	}
+	return updater.UnitReplaced, nil
+}
+
+// Report stands in for the read the settings page makes about this host's unit.
+//
+// It answers the zero report, which is the honest thing for a fake with no home
+// directory behind it: the cases in this file are about the update route, and
+// what the page says about a unit is asserted in settings_test.go against a real
+// updater.Unit over a temporary home. A fake that invented an offer here would
+// put a filename this host does not have into every page these cases render.
+func (f *fakeUpdatePath) Report() (updater.UnitReport, error) {
+	return updater.UnitReport{}, nil
 }
 
 func (f *fakeUpdatePath) ExitForRestart() {
@@ -215,14 +264,15 @@ func (f *fakeUpdatePath) count() int {
 // that expected an update to be refused before it began is more useful when it
 // prints how far it actually got.
 func (f *fakeUpdatePath) reached() string {
-	return fmt.Sprintf("asked for %v, fetched %v, staged %d, swapped %d, exited %d",
-		f.askedVersions, f.fetched, len(f.staged), len(f.swapped), f.exits)
+	return fmt.Sprintf("asked for %v, fetched %v, staged %d, swapped %d, placed %d, exited %d",
+		f.askedVersions, f.fetched, len(f.staged), len(f.swapped), len(f.placed), f.exits)
 }
 
 // untouched reports whether nothing on the update path ran at all — which is what
 // every refusal ahead of step 1 has to be able to claim.
 func (f *fakeUpdatePath) untouched() bool {
-	return len(f.askedVersions) == 0 && len(f.fetched) == 0 && len(f.staged) == 0 && len(f.swapped) == 0 && f.exits == 0
+	return len(f.askedVersions) == 0 && len(f.fetched) == 0 && len(f.staged) == 0 &&
+		len(f.swapped) == 0 && len(f.placed) == 0 && f.exits == 0
 }
 
 // updateDoor is the registered update route with the four steps behind it
@@ -250,7 +300,7 @@ func newUpdateDoor(t *testing.T) *updateDoor {
 	keys := newKeyServer(t)
 	steps := newFakeUpdatePath(t)
 	d := &updateDoor{testServer: newAuditedServerWith(t, keys.validator(t)), keys: keys, steps: steps}
-	d.updates = selfUpdate{releases: steps, staging: steps, installer: steps}
+	d.updates = selfUpdate{releases: steps, staging: steps, installer: steps, migrator: steps, unit: steps}
 	return d
 }
 
@@ -388,12 +438,13 @@ func TestUpdateInstallsTheReleaseAndExitsForRestart(t *testing.T) {
 
 	wantUpdatingPage(t, w, fixtureVersion)
 
-	// Step 1: the latest release, and exactly the three assets it takes to
-	// install one.
+	// Step 1: the latest release, and exactly the four assets it takes to install
+	// one — the tarball, the list, the signature over it, and the unit, in
+	// install.sh's own order.
 	if got, want := d.steps.askedVersions, []string{""}; len(got) != 1 || got[0] != want[0] {
 		t.Errorf("asked for releases %v; want exactly one, for the latest — %s", got, d.steps.reached())
 	}
-	wantFetched := []string{fixtureAsset(), "SHA256SUMS", "SHA256SUMS.sig"}
+	wantFetched := []string{fixtureAsset(), "SHA256SUMS", "SHA256SUMS.sig", "crswd.service"}
 	if len(d.steps.fetched) != len(wantFetched) {
 		t.Fatalf("fetched %v; want exactly %v", d.steps.fetched, wantFetched)
 	}
@@ -458,6 +509,140 @@ func TestUpdateInstallsTheReleaseAndExitsForRestart(t *testing.T) {
 	}
 
 	d.record(t, audit.Allow)
+}
+
+// TestUpdateCarriesTheConfigurationFile is the half of an update that is not the
+// binary, checked from the side that has to run it.
+//
+// The migration itself is internal/updater's to be right about. What this asserts
+// is that something calls it — the defect this milestone exists about is a
+// `crswd config migrate` that was written, tested and never wired to anything, so
+// the binary moved forward release after release while the file it reads stayed
+// where it was.
+//
+// **Must fail when** the call is dropped from the route: every other case in this
+// file still passes, and an operator's configuration silently stops being carried
+// by their updates.
+func TestUpdateCarriesTheConfigurationFile(t *testing.T) {
+	t.Parallel()
+
+	t.Run("an installed release migrates the configuration once", func(t *testing.T) {
+		t.Parallel()
+
+		d := newUpdateDoor(t)
+
+		w := d.post(t, d.confirmed(t))
+
+		wantUpdatingPage(t, w, fixtureVersion)
+		d.steps.waitForExit(t)
+		if got := d.steps.migrations; got != 1 {
+			t.Errorf("migrated %d times; want exactly 1 — %s", got, d.steps.reached())
+		}
+	})
+
+	// The ordering that makes the failure survivable. By the time the migration
+	// runs the binary is already at ExecStart, so a refusal here would tell the
+	// operator that nothing was installed while the new release waited for the
+	// restart — and the configuration they still have is the one this daemon was
+	// running perfectly well on a moment ago.
+	t.Run("a migration that failed does not refuse the update", func(t *testing.T) {
+		t.Parallel()
+
+		d := newUpdateDoor(t)
+		d.steps.migrateErr = updater.ErrConfigWouldNotLoad
+
+		w := d.post(t, d.confirmed(t))
+
+		wantUpdatingPage(t, w, fixtureVersion)
+		d.steps.waitForExit(t)
+		if got := len(d.steps.swapped); got != 1 {
+			t.Errorf("swapped %d times; want 1 — the binary is installed whatever the configuration did", got)
+		}
+		// Allowed, not denied. The update happened.
+		d.record(t, audit.Allow)
+	})
+}
+
+// TestUpdateCarriesTheSystemdUnit is the third file an update has an answer
+// about, checked from the side that has to run the step.
+//
+// What the step itself does — replace a unit this daemon wrote, leave one it did
+// not, offer the release's own alongside — is internal/updater's to be right
+// about, against a home directory of its own. What this asserts is that
+// something calls it, and that it is handed the three assets it needs to prove
+// the bytes are the published ones.
+//
+// **Must fail when** the call is dropped: every other case in this file still
+// passes, and an operator's host quietly goes back to being unable to say
+// whether its unit is the one this release ships — the silence this milestone
+// exists to end.
+func TestUpdateCarriesTheSystemdUnit(t *testing.T) {
+	t.Parallel()
+
+	t.Run("an installed release carries the unit once, with what verifies it", func(t *testing.T) {
+		t.Parallel()
+
+		d := newUpdateDoor(t)
+
+		w := d.post(t, d.confirmed(t))
+
+		wantUpdatingPage(t, w, fixtureVersion)
+		d.steps.waitForExit(t)
+		if got := len(d.steps.placed); got != 1 {
+			t.Fatalf("carried the unit %d times; want exactly 1 — %s", got, d.steps.reached())
+		}
+		place := d.steps.placed[0]
+		switch {
+		case string(place.unit) != fixtureUnit:
+			t.Errorf("carried unit = %q; want the crswd.service this release published", place.unit)
+		case string(place.sums) != fixtureSums:
+			t.Errorf("carried sums = %q; want the published checksum list — without it the one file systemd executes is the only asset nothing checked", place.sums)
+		case string(place.signature) != fixtureSignedBy:
+			t.Errorf("carried signature = %q; want the signature over that list", place.signature)
+		}
+	})
+
+	// The ordering that makes the failure survivable, and it is the migration's:
+	// by the time the unit is carried the binary is already at ExecStart, so a
+	// refusal here would tell the operator that nothing was installed while the
+	// new release waited for the restart. A unit that could not be carried leaves
+	// the host running the unit it was already running.
+	t.Run("a unit that could not be carried does not refuse the update", func(t *testing.T) {
+		t.Parallel()
+
+		d := newUpdateDoor(t)
+		d.steps.placeErr = updater.ErrNoUnitHome
+
+		w := d.post(t, d.confirmed(t))
+
+		wantUpdatingPage(t, w, fixtureVersion)
+		d.steps.waitForExit(t)
+		if got := len(d.steps.swapped); got != 1 {
+			t.Errorf("swapped %d times; want 1 — the binary is installed whatever the unit did", got)
+		}
+		// Allowed, not denied. The update happened.
+		d.record(t, audit.Allow)
+	})
+
+	// Both halves of an update run, and neither is conditional on the other. They
+	// are different files with different rules — the configuration is migrated in
+	// place, the unit is never overwritten — and an update that carried one only
+	// when the other worked would make one operator's broken configuration the
+	// reason another host never hears about its unit.
+	t.Run("the configuration and the unit are carried independently", func(t *testing.T) {
+		t.Parallel()
+
+		d := newUpdateDoor(t)
+		d.steps.migrateErr = updater.ErrConfigWouldNotLoad
+
+		w := d.post(t, d.confirmed(t))
+
+		wantUpdatingPage(t, w, fixtureVersion)
+		d.steps.waitForExit(t)
+		if got := len(d.steps.placed); got != 1 {
+			t.Errorf("carried the unit %d times; want 1 even though the migration failed — %s", got, d.steps.reached())
+		}
+	})
 }
 
 // TestUpdateNamesTheVersionForARollback is FR-022 from this door: the field
@@ -816,6 +1001,16 @@ func TestARefusedUpdateNeverInstallsAndNeverExits(t *testing.T) {
 			outcome: wantUpdateNotFetchedOutcome,
 			reason:  errUpdateNotFetched,
 		},
+		// Refused while nothing on this host has changed, which is why the unit is
+		// fetched with the other three rather than after the swap: an update that
+		// installed a binary and then found it had nothing to compare the unit
+		// against would have to report a job it only half did. install.sh refuses
+		// the same release for the same reason.
+		"the release publishes no unit": {
+			inject:  func(f *fakeUpdatePath) { delete(f.published, updater.UnitAsset) },
+			outcome: wantUpdateNotFetchedOutcome,
+			reason:  errUpdateNotFetched,
+		},
 		"the checksum does not match": {
 			inject:  func(f *fakeUpdatePath) { f.stageErr = updater.ErrChecksumMismatch },
 			outcome: wantUpdateUnverifiedOutcome,
@@ -860,6 +1055,18 @@ func TestARefusedUpdateNeverInstallsAndNeverExits(t *testing.T) {
 			}
 			if d.steps.exits != 0 {
 				t.Errorf("a refused update ended the process anyway: %s", d.steps.reached())
+			}
+			// Nothing on this path is renamed on the way to a refusal, and the
+			// operator's configuration file is the last thing that should be an
+			// exception: an update that refused must leave the host as it found it.
+			if d.steps.migrations != 0 {
+				t.Errorf("a refused update rewrote the operator's configuration anyway: %s", d.steps.reached())
+			}
+			// And the same for the unit, where the file at stake is what systemd
+			// executes: a refused update must not have written anything into
+			// ~/.config/systemd/user, not even alongside.
+			if len(d.steps.placed) != 0 {
+				t.Errorf("a refused update carried the systemd unit anyway: %s", d.steps.reached())
 			}
 			rec := d.record(t, audit.Deny)
 			if got, want := rec["reason"], tc.reason.Error(); got != want {
@@ -967,6 +1174,35 @@ func TestTheShippingBuildWiresTheRealUpdatePath(t *testing.T) {
 		}
 		if _, ok := srv.updates.installer.(*updater.Swapper); !ok {
 			t.Errorf("installer = %T; want *updater.Swapper — the swapper is the object that smoke-tests before it renames", srv.updates.installer)
+		}
+		migrator, ok := srv.updates.migrator.(*updater.ConfigMigrator)
+		if !ok {
+			t.Fatalf("migrator = %T; want *updater.ConfigMigrator — an update that stopped carrying the configuration looks exactly like one with no configuration to carry", srv.updates.migrator)
+		}
+		// The file this daemon loaded, not the one a second look at the
+		// environment would find. Migrating a file the daemon does not read is a
+		// change with no visible effect, which is the worst kind.
+		if got, want := migrator.Path(), testConfig(loopbackListen).FilePath; got != want {
+			t.Errorf("the migrator rewrites %q; want the file this daemon loaded, %q", got, want)
+		}
+		unit, ok := srv.updates.unit.(*updater.Unit)
+		if !ok {
+			t.Fatalf("unit = %T; want *updater.Unit — an update that stopped carrying the systemd unit looks exactly like one with nothing to carry, which is the silence this milestone exists to end", srv.updates.unit)
+		}
+		// The installer's own path, composed from this process's HOME. A carrier
+		// looking anywhere else reports every host as having no unit and installs
+		// one where systemd will never read it.
+		//
+		// A suite running without an absolute HOME asserts the other half of the
+		// same rule rather than skipping: there is no unit such a daemon may act
+		// on, and a relative path joined to whatever directory it started in is
+		// the answer that must never appear.
+		if home := os.Getenv("HOME"); filepath.IsAbs(home) {
+			if want := filepath.Join(home, ".config/systemd/user/crswd.service"); unit.Path() != want {
+				t.Errorf("the carrier reads %q; want the unit install.sh writes, %q", unit.Path(), want)
+			}
+		} else if unit.Path() != "" {
+			t.Errorf("the carrier names %q on a process with no absolute HOME; there is nowhere it may write a unit", unit.Path())
 		}
 	})
 

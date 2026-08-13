@@ -150,7 +150,7 @@ func published(t *testing.T) (fixture, ed25519.PrivateKey) {
 	assets := map[string][]byte{
 		name:                            []byte("the bytes of the amd64 tarball"),
 		AssetName(testVersion, "arm64"): []byte("the bytes of the arm64 tarball"),
-		"crswd.service":                 []byte("[Unit]\nDescription=crswd\n"),
+		UnitAsset:                       []byte(publishedUnit),
 		"cloudflared.example.yml":       []byte("tunnel: crswd\n"),
 		"crswd-api":                     []byte("#!/bin/sh\n"),
 	}

@@ -91,6 +91,38 @@ type (
 		Swap(ctx context.Context, staged, version string) error
 		ExitForRestart()
 	}
+
+	// configMigrator is the half of an update that is not the binary: the
+	// operator's configuration file, brought to the schema this release
+	// understands. It is a fourth collaborator rather than something the swapper
+	// does on the way past, because it is the one step here that must not be able
+	// to refuse an update — by the time it runs the binary is already installed.
+	configMigrator interface {
+		Migrate() (bool, error)
+	}
+
+	// unitCarrier is the third file an update has an answer about, and the answer
+	// is not the configuration's. A unit is what systemd executes and under which
+	// hardening, so one this daemon did not write is never replaced — it is left
+	// exactly as it is with the release's own beside it. See internal/updater's
+	// place.go for why that is the rule and what it costs to break it.
+	//
+	// It is handed the asset with the checksum list and the signature rather than
+	// bytes this route vouched for, because the verification is the carrier's:
+	// what these bytes become is a file in ~/.config/systemd/user, and a route
+	// able to hand it something unverified would be a route able to choose what
+	// this host runs.
+	//
+	// Report is the read the settings page makes on every render (M15/T004), and
+	// it is on this interface rather than on a second one because it answers the
+	// same question about the same two files: whether the unit on this host is
+	// this daemon's, and whether a release's own is waiting beside it. Two seams
+	// onto one pair of files is two answers a page and an update could disagree
+	// with each other about.
+	unitCarrier interface {
+		Place(asset, sums, signature []byte) (updater.UnitOutcome, error)
+		Report() (updater.UnitReport, error)
+	}
 )
 
 // selfUpdate is the update path as one field on the Server, so that a route
@@ -100,6 +132,8 @@ type selfUpdate struct {
 	releases  releaseSource
 	staging   releaseStager
 	installer releaseInstaller
+	migrator  configMigrator
+	unit      unitCarrier
 }
 
 // liveSelfUpdate is the update path as the shipping build wires it: this
@@ -114,17 +148,29 @@ type selfUpdate struct {
 // already running. TestTheShippingBuildWiresTheRealUpdatePath is the other half
 // of that arrangement: a seam that could be left unwired in production is a
 // dashboard button that quietly does nothing.
-func liveSelfUpdate() selfUpdate {
+// configFile is the file this daemon loaded at startup, which is the one an
+// update migrates — never the one a second look at the environment would find.
+func liveSelfUpdate(configFile string) selfUpdate {
 	return selfUpdate{
 		releases:  updater.NewFetcher(),
 		staging:   updater.NewStager(os.Getenv),
 		installer: updater.NewSwapper(os.Getenv),
+		migrator:  updater.NewConfigMigrator(configFile, os.Getenv),
+		unit:      updater.NewUnit(os.Getenv),
 	}
 }
 
 // wired reports whether there is an update path behind this route at all.
+//
+// The migrator and the unit carrier are counted with the other three rather than
+// treated as optional, and that is deliberate: a daemon with no configuration
+// file still has a migrator — it answers "nothing to do" — and a host with no
+// unit still has a carrier, which is the case that installs one. A nil here
+// means the wiring was dropped, not that this host has nothing to carry, and an
+// update that quietly stopped carrying either file would look exactly like one
+// that had nothing to carry.
 func (u selfUpdate) wired() bool {
-	return u.releases != nil && u.staging != nil && u.installer != nil
+	return u.releases != nil && u.staging != nil && u.installer != nil && u.migrator != nil && u.unit != nil
 }
 
 // The refusals this route authors, one per step so that the journal says which
@@ -211,10 +257,54 @@ func (s *Server) updateFromBrowser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	version, err := s.updateTo(r.Context(), r.PostForm.Get(fieldVersion))
+	done, err := s.updateTo(r.Context(), r.PostForm.Get(fieldVersion))
 	if err != nil {
 		s.refuseBrowserUpdate(w, r, err)
 		return
+	}
+	version := done.version
+
+	// The other half of what an update carries, and it runs here rather than
+	// inside updateTo for two reasons that point the same way.
+	//
+	// It runs *after* the binary is in place, because an update that refused must
+	// leave the host exactly as it found it — nothing on this path is renamed on
+	// the way to a refusal, and the operator's configuration is the last file
+	// that should be an exception.
+	//
+	// And its failure is reported rather than refused. Every step above can turn
+	// an update away because none of them has changed anything yet; this one runs
+	// after the only irreversible line in the path, and a refusal here would tell
+	// the operator that nothing was installed while the new binary sat at
+	// ExecStart waiting for the restart. A configuration that could not be
+	// migrated is one this daemon was running perfectly well on a moment ago.
+	//
+	// The cause goes to stderr and never to the trail, like every other reported
+	// failure on this door. It carries a path this daemon chose and whatever the
+	// loader says about the operator's own file — the same sentence a refusing
+	// start already writes to the same journal, and one docs/security.md §3
+	// already forbids from naming the value it refused over.
+	if _, err := s.updates.migrator.Migrate(); err != nil {
+		s.report(fmt.Errorf("migrate the configuration file during the update to %s: %w", version, err))
+	}
+
+	// The third file, on the same terms and after the same line: the binary is in
+	// place, so this cannot refuse, and a host whose unit could not be carried is
+	// a host still running the unit it was running a moment ago.
+	//
+	// The bytes are the release's own crswd.service, handed over unverified on
+	// purpose — the carrier verifies them against the checksum list and the
+	// signature this route fetched, because a check re-implemented on this side is
+	// a second copy free to be the weaker one (FR-029b).
+	//
+	// The outcome is deliberately not read here. What was done about the unit is
+	// something the operator has to be told — on the settings page (T004) and in
+	// the journal at startup (T005) — and neither of those is a sentence this
+	// handler writes: the answer it is composing is the page that waits for the
+	// restart. Nothing is lost by dropping it *here*; the file on disk is the
+	// record, and it is what both of those read.
+	if _, err := s.updates.unit.Place(done.unit, done.sums, done.signature); err != nil {
+		s.report(fmt.Errorf("carry the systemd unit during the update to %s: %w", version, err))
 	}
 
 	// Step 7, in the order the two things that must survive it require. The
@@ -278,8 +368,30 @@ func (s *Server) updateFromBrowser(w http.ResponseWriter, r *http.Request) {
 // reloads itself.
 const exitGrace = 250 * time.Millisecond
 
+// installed is what an update carried: the release now at ExecStart, and the
+// three assets the step after the swap needs to decide what to do with this
+// host's systemd unit.
+//
+// The unit's bytes travel out of updateTo rather than being acted on inside it
+// because of where the only irreversible line is. Everything updateTo does can
+// still refuse; placing a unit runs after the rename, where a refusal would tell
+// the operator nothing was installed while the new binary sat waiting for the
+// restart. Same reason the configuration migration is a statement in the handler
+// and not a step here.
+type installed struct {
+	version string
+
+	// unit, sums and signature are the release's own crswd.service and the two
+	// files that vouch for it. They are passed on together and unverified for the
+	// reason unitCarrier documents: whatever checks them has to be whatever
+	// writes them.
+	unit      []byte
+	sums      []byte
+	signature []byte
+}
+
 // updateTo is steps 1 to 6, in the order contracts/self-update.md numbers them,
-// and it returns the version that is now installed.
+// and it returns what was installed.
 //
 // asked is the operator's `version` field: empty means whatever `latest`
 // resolves to. What every step after the first is given is the version the
@@ -292,7 +404,7 @@ const exitGrace = 250 * time.Millisecond
 // can say which one refused without any of them having to be told about the
 // others. The cause travels with it for the operator's stderr and never for the
 // trail — the record gets the sentinel alone (FR-042).
-func (s *Server) updateTo(ctx context.Context, asked string) (string, error) {
+func (s *Server) updateTo(ctx context.Context, asked string) (installed, error) {
 	rel, err := s.updates.releases.Release(ctx, asked)
 	if err != nil {
 		if errors.Is(err, updater.ErrMalformedVersion) {
@@ -300,9 +412,9 @@ func (s *Server) updateTo(ctx context.Context, asked string) (string, error) {
 			// this path reached by something the caller wrote, and the value stops
 			// here. Every other error below quotes at most a version internal/updater
 			// has already matched against its own shape.
-			return "", errUpdateVersionNotOffered
+			return installed{}, errUpdateVersionNotOffered
 		}
-		return "", fmt.Errorf("%w: %w", errUpdateNotFetched, err)
+		return installed{}, fmt.Errorf("%w: %w", errUpdateNotFetched, err)
 	}
 
 	// This host's own architecture, asked of the toolchain rather than of the
@@ -314,7 +426,7 @@ func (s *Server) updateTo(ctx context.Context, asked string) (string, error) {
 
 	asset, err := s.updates.releases.Asset(ctx, rel, name)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", errUpdateNotFetched, err)
+		return installed{}, fmt.Errorf("%w: %w", errUpdateNotFetched, err)
 	}
 	// The checksum list and the signature over it are two more assets of the same
 	// release, fetched by exactly their names. A release that publishes no
@@ -322,11 +434,20 @@ func (s *Server) updateTo(ctx context.Context, asked string) (string, error) {
 	// not "nothing to verify against" (FR-025).
 	sums, err := s.updates.releases.Asset(ctx, rel, updater.ChecksumsAsset)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", errUpdateNotFetched, err)
+		return installed{}, fmt.Errorf("%w: %w", errUpdateNotFetched, err)
 	}
 	signature, err := s.updates.releases.Asset(ctx, rel, updater.SignatureAsset)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", errUpdateNotFetched, err)
+		return installed{}, fmt.Errorf("%w: %w", errUpdateNotFetched, err)
+	}
+	// And the unit, which every release since v0.58 publishes and install.sh
+	// fetches unconditionally in exactly this position. Fetched here rather than
+	// after the swap so that a release missing it is refused while nothing on this
+	// host has changed — an update that installed a binary and then found it had
+	// nothing to compare the unit against would have to report a half-done job.
+	unit, err := s.updates.releases.Asset(ctx, rel, updater.UnitAsset)
+	if err != nil {
+		return installed{}, fmt.Errorf("%w: %w", errUpdateNotFetched, err)
 	}
 
 	// Steps 2 to 4. The bytes are handed over rather than a path, so nothing this
@@ -336,16 +457,16 @@ func (s *Server) updateTo(ctx context.Context, asked string) (string, error) {
 	// entry.
 	staged, err := s.updates.staging.Stage(rel.Version, name, asset, sums, signature)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", errUpdateNotVerified, err)
+		return installed{}, fmt.Errorf("%w: %w", errUpdateNotVerified, err)
 	}
 
 	// Steps 5 and 6. The candidate is executed once before it is renamed, which is
 	// the step no cryptographic check can stand in for, and the rename is the only
 	// irreversible line in this path.
 	if err := s.updates.installer.Swap(ctx, staged, rel.Version); err != nil {
-		return "", fmt.Errorf("%w: %w", errUpdateNotInstalled, err)
+		return installed{}, fmt.Errorf("%w: %w", errUpdateNotInstalled, err)
 	}
-	return rel.Version, nil
+	return installed{version: rel.Version, unit: unit, sums: sums, signature: signature}, nil
 }
 
 // refuseBrowserUpdate maps a refused update onto the answer this route gives, and

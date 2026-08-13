@@ -266,6 +266,67 @@ sandbox a session: sessions run `claude --dangerously-skip-permissions` as you,
 so anything the daemon can reach, a session can reach. `CRSW_ALLOWED_ROOTS` is the
 real control.
 
+### What an update does to this file
+
+**An update never replaces a unit this daemon did not write** — and the three
+settings above are why. They are decisions somebody makes once, and a release that
+overwrote units would undo them every time and make each one a rediscovery. The
+rule is install.sh's and it has held since it shipped; what is new is the other
+half of it, because refusing quietly meant a host two fixes behind looked exactly
+like a current one.
+
+So an update does one of four things with
+`~/.config/systemd/user/crswd.service`, decided by the digest recorded at
+`~/.local/share/crswd/crswd.service.sha256`: replaces the unit and re-records it
+while that digest still describes the file; installs and records one where there is
+none; does nothing at all when the file is already the release's own, byte for
+byte; and otherwise — **you edited it, or you wrote it** — leaves it untouched and
+puts the release's unit beside it as `crswd.service.new`. The table is in
+[`README.md`](../README.md#updating-and-rolling-back).
+
+**A hand-written unit has no record, so it is never replaced and is offered a
+`.new` by every release that ships a different one.** Every host deployed before
+the installer existed is in that state. It is the intended ending rather than a
+state to be cleared.
+
+**Taking one is a copy, a reload and a restart**, after the `diff` the daemon
+prints for you:
+
+```bash
+diff ~/.config/systemd/user/crswd.service ~/.config/systemd/user/crswd.service.new
+cp ~/.config/systemd/user/crswd.service.new ~/.config/systemd/user/crswd.service
+systemctl --user daemon-reload
+systemctl --user restart crswd
+```
+
+**What that does not do is hand the file over.** Copying writes no record, so the
+unit is still yours: the next release that changes it offers a `.new` again, which
+is the only honest answer about a file this daemon has no evidence it wrote. If you
+would rather updates carried the unit for you, say so by recording it — and read
+the sentence after the command before you run it:
+
+```bash
+mkdir -p ~/.local/share/crswd
+sha256sum < ~/.config/systemd/user/crswd.service | cut -d' ' -f1 \
+  > ~/.local/share/crswd/crswd.service.sha256
+```
+
+The digest alone and a newline, with no filename — that is the format install.sh
+writes and the only one this daemon reads back. From then on it reads that unit as
+its own and **replaces it on every update, with no `.new` and no diff to read
+first**, so record only a unit you have not edited and do not intend to. Deleting
+the record puts the file back in your hands and back on the last case above.
+
+**Where your unit stands is said in two places, and they are one read of the same
+two files**: on `/settings` under *Updates*, and in the journal at every start.
+Neither is fresher than the other, so read whichever you have — the journal on a
+host nobody browses, the page otherwise. **The one difference is a read that
+failed.** Naming a path on this disk and the reason it could not be read is a
+diagnostic for whoever administers the host rather than something a browser is
+owed, so the page says only that it happened and the journal says why. The daemon's
+own lines are the ones prefixed `crswd: `, beside its other startup banners in
+`journalctl --user -u crswd -e`.
+
 ### The unit's PATH is not the session's, and the daemon knows it
 
 A start command is typed into a login shell inside a tmux pane, so it is resolved

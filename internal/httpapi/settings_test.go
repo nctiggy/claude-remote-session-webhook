@@ -9,12 +9,16 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"html"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -2126,3 +2130,154 @@ func TestTheRenderedRestartFormIsAcceptedByTheRoute(t *testing.T) {
 		t.Errorf("the form this page rendered ended the process %d times; want exactly 1 — a control its own route refuses is a button that does nothing and says nothing", got)
 	}
 }
+
+// unitOnHost wires a fleet's update path to a real updater.Unit over a home
+// directory of this test's own, and puts whichever of the three files a case
+// needs into it.
+//
+// A real Unit rather than a fake, because what these cases assert is what an
+// operator is told about files on a disk: a fake would let the page and the
+// updater agree with each other about a host neither had looked at, which is the
+// one failure this whole milestone is about. The home is a t.TempDir, so nothing
+// here reads or writes the unit of the daemon running the suite.
+//
+// An empty string means the file is not there, which is what three of the cases
+// below are entirely about. The record holds the digest install.sh writes —
+// computed here with crypto/sha256 rather than through internal/updater, so that
+// what a record has to contain is stated independently of the code that reads it.
+func unitOnHost(t *testing.T, f *fleet, unit, record, offer string) *updater.Unit {
+	t.Helper()
+
+	home := t.TempDir()
+	carrier := updater.NewUnit(func(name string) string {
+		if name == "HOME" {
+			return home
+		}
+		return ""
+	})
+
+	for path, contents := range map[string]string{
+		carrier.Path():       unit,
+		carrier.RecordPath(): record,
+		carrier.NewPath():    offer,
+	} {
+		if contents == "" {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("make the fixture directory for %s: %v", path, err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatalf("write the fixture %s: %v", path, err)
+		}
+	}
+
+	f.updates = selfUpdate{unit: carrier}
+	return carrier
+}
+
+// recordFor is the record install.sh keeps for a unit it wrote: the digest
+// alone, lowercase hex, and a newline.
+func recordFor(unit string) string {
+	return fmt.Sprintf("%x\n", sha256.Sum256([]byte(unit)))
+}
+
+// TestTheSettingsPageSaysWhatBecameOfTheUnit is M15/T004, and it is this
+// milestone's answer to a silence rather than to a bug.
+//
+// The rule that an edited unit is never overwritten was always right. What was
+// missing is everything after it: a host running a unit two fixes behind looked
+// exactly like a current one, because no page on it could say which it was. The
+// operator this milestone is for is on such a host — their unit still carries the
+// ExecStart path v0.80 fixed and no EnvironmentFile line at all.
+//
+// **Must fail when** any two of these arrangements produce the same sentence. In
+// particular a host with a newer unit waiting and a host with nothing waiting
+// must not read alike: that pair is the defect, and telling them apart is the
+// whole of what was asked for.
+func TestTheSettingsPageSaysWhatBecameOfTheUnit(t *testing.T) {
+	t.Parallel()
+
+	// The unit this project ships, and the operator's own after they relaxed the
+	// three settings that stop `sudo` working inside a session.
+	const published = "[Service]\nExecStart=%h/.local/bin/crswd\nNoNewPrivileges=yes\n"
+	const theirs = "[Service]\nExecStart=%h/bin/crswd\nNoNewPrivileges=no\n"
+
+	for _, c := range []struct {
+		name    string
+		unit    string
+		record  string
+		offer   string
+		want    string
+		unwant  string
+		waiting bool
+		why     string
+	}{
+		{
+			name:    "a newer unit is waiting beside the operator's own",
+			unit:    theirs,
+			offer:   published,
+			want:    updater.UnitSentenceOffered,
+			waiting: true,
+			why:     "this is the case the milestone exists for: their edit kept, and the release's own unit named so they can diff it",
+		},
+		{
+			name:   "the unit is this daemon's to replace",
+			unit:   published,
+			record: recordFor(published),
+			want:   updater.UnitSentenceOurs,
+			unwant: updater.UnitSentenceTheirs,
+			why:    "the digest install.sh recorded describes the file that is there, so an update brings it forward and nothing is waiting",
+		},
+		{
+			name:   "the operator wrote their own and nothing is waiting",
+			unit:   theirs,
+			want:   updater.UnitSentenceTheirs,
+			unwant: updater.UnitSentenceOurs,
+			why:    "no record is every host deployed before the installer existed, and this page has to say that an update will never replace that file",
+		},
+		{
+			name:   "this host has no unit at all",
+			want:   updater.UnitSentenceAbsent,
+			unwant: updater.UnitSentenceTheirs,
+			why:    "nothing is being protected from anything, so what an update does is install one — which is a different sentence from leaving a file alone",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFleet(t)
+			carrier := unitOnHost(t, f, c.unit, c.record, c.offer)
+			page := settingsSectionBody(t, f, sectionUpdates)
+
+			if !strings.Contains(page, html.EscapeString(c.want)) {
+				t.Errorf("the Updates section does not say %q.\n%s\n%s", c.want, c.why, page)
+			}
+			if c.unwant != "" && strings.Contains(page, html.EscapeString(c.unwant)) {
+				t.Errorf("the Updates section says %q about this host as well, so it is telling the operator two things about one file:\n%s", c.unwant, page)
+			}
+
+			// The file and the command, which are the half an operator acts on.
+			// A sentence saying a newer unit exists and no way to find it is a
+			// difference nobody can see, and a difference nobody can see is a
+			// decision nobody can take.
+			// The command is spelled out here rather than built with the helper
+			// that composes it, so that a page rendering something other than
+			// updater's own diff line fails rather than agreeing with itself.
+			named := strings.Contains(page, html.EscapeString(carrier.NewPath()))
+			compared := strings.Contains(page, html.EscapeString("diff '"+carrier.Path()+"' '"+carrier.NewPath()+"'"))
+			if named != c.waiting {
+				t.Errorf("the page names %s: %t; want %t", carrier.NewPath(), named, c.waiting)
+			}
+			if compared != c.waiting {
+				t.Errorf("the page carries the diff command: %t; want %t.\nOn a host with nothing waiting it would send the operator to compare a file that is not there", compared, c.waiting)
+			}
+		})
+	}
+}
+
+// The two cases that were here about the vocabulary itself — the sentence for a
+// report nobody could take, and the quoting of the diff command — moved to
+// internal/updater/facts_test.go with the vocabulary (M15/T005). They were never
+// about this page: the journal says the same sentences at startup, and a check
+// that lived in one reader would leave the other unproven.

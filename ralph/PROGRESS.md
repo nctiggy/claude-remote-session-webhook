@@ -21,621 +21,603 @@ When the whole plan is done and green, append a line containing exactly
 
 ---
 
-## Iteration 0 — say what is true, then say it clearly
+## Iteration 0 — updates that carry the files, not just the binary
 
-**Did:** Archived milestone 13.
+**Did:** Archived milestone 14.
 
-**Left:** the tasks below, ranked by a Fable 5 audit that read every markdown file,
-`config.example`, `.env.example`, and the six test files that pin docs to code.
+**The operator:** *"How do we make it so that the updates also grab or update the
+systemd unit file as well? I feel like the config and systemd files should update
+as part of the updates… values saved as part of the updates but the files
+updated."*
 
-**The audit disagreed with the premise, usefully.** The operator asked for shorter,
-clearer docs. `config.example` is genuinely hard to read — but the cause is
-**ordering, not length**: nearly every block leads with the justification and
-buries the operative fact. And the worst problems in the doc set are not verbosity
-at all. **Wrong beats wordy.**
+**Findings:**
 
-**Three files state things that are no longer true:**
+- **Half of it exists and nothing calls it.** `crswd config migrate`
+  (`internal/config/migrate.go`) already rewrites a config into the current schema
+  **line by line**, copying every line it has no reason to touch byte for byte,
+  spacing and line endings included — because "a migration that reproduced the
+  settings and dropped the commentary would take away more than it fixed". It is a
+  manual command. The updater never runs it.
+- **The unit needs a different answer, and the operator proved why in the same
+  session.** They hand-edited their unit to relax three hardening settings so
+  `sudo` works. An update that overwrote units would silently revert that on every
+  release. **The existing rule — never overwrite a unit this installer did not
+  write — is what protects them.**
+- **But the current behaviour is silence.** Their unit has no recorded hash, so it
+  will never be touched again and nothing ever says so. It still carries
+  `ExecStart=%h/bin/crswd`, the path v0.80 fixed, and no `EnvironmentFile` line at
+  all. **They are two fixes behind and have no way to find out.**
+- **So the shape is `.pacnew`, not overwrite**: keep refusing to replace an edited
+  unit, and stop being quiet about it — write the new one alongside and say so,
+  with a way to see the difference.
 
-- `deploy/README.md:14` says the daemon "refuses to start without" the three
-  `CRSW_ACCESS_*` values, and line 38-41 of the same file says setting none is a
-  supported deployment. Both cannot be right; the second one is.
-- `AGENTS.md:22` lists `htmx` (there is none — `docs/components.md` says so
-  emphatically) and a `skill/` directory that does not exist. Line 10 describes an
-  Access-only browser door, which milestone 12 superseded. Line 50 says CI runs
-  the untagged commands "and nothing else", false since the tmux and quickstart
-  suites were added.
-- `CONTRIBUTING.md:22-27` carries the same stale CI claim.
-
-**`AGENTS.md` is the first file every agent loads.** In a Ralph-loop project a
-stale one is compounding error, not a cosmetic issue — every iteration of every
-milestone starts by reading it.
-
-**The README cannot get a stranger through a Cloudflare install.** No DNS routing,
-no Access application steps, no Google IdP setup, no AUD location, no service
-token, and it never says "now browse to your hostname". It also never says to
-install and authenticate `claude` first — and since the device-code relay is not
-built, a session that hits a login prompt is simply stuck.
-
-**On mkdocs the audit says no, firmly, and the best reason is one I had not
-considered: these docs are test fixtures.** `config.example`, `.env.example`, the
-README's table, the design tokens and the component class names are read at
-relative paths and held to the code in both directions. Move them and the guards
-break; copy them and you have created the one unguarded copy — which is the drift
-this repository's whole discipline exists to kill.
-
-**A landmine for T003:** any comment line in `config.example` beginning
-`# <known_key> = …` counts as that key's line. Illustrative prose like
-`# idle_timeout = 0 disables nothing` fails the suite as a duplicate key.
+**The test that matters:** an operator who relaxed `NoNewPrivileges` must still
+have it relaxed after an update, and must be told a newer unit exists.
 
 ---
 
 ## Iteration 1 — 2026-08-12
 
-**Did:** T001. Corrected `AGENTS.md` against the tree — the audit named four false
-claims and checking the rest found two more.
+**Did:** T001. `internal/updater/config.go` — a `ConfigMigrator` that rewrites the
+operator's configuration into the current schema during an update: stage beside
+their file, read the staged bytes back off disk, run them through `config.Validate`
+(the same loader a startup uses), then back up the original to `config.bak` and
+rename into place. `updateFromBrowser` calls it after a successful `Swap`.
 
-**Learned:**
+**Learned — things the next iteration would otherwise rediscover:**
 
-- **`AGENTS.md` has almost no room to grow. CI fails it at ≥150 lines** (`ci.yml`,
-  "AGENTS.md stays skimmable"), and it sits at **147**. Any future edit must budget
-  lines, not just words. Deleting the phantom `skill/` row is what paid for the two
-  lines the corrected CI paragraph needed.
-- **The audit's count was low; it was wrong in six places.** Beyond the four named:
-  `internal/` was listed as five packages when there are ten (`access`, `audit`,
-  `auth`, `buildinfo`, `config`, `httpapi`, `release`, `session`, `tmuxctl`,
-  `updater`), and `cmd/crswd/` was "flag parsing and wiring only" when it carries
-  three subcommands (`config check`, `config migrate`, `keygen`).
-- **The `Why` paragraph also claimed the device-code relay works.** It does not —
-  `internal/session/session.go:105`, `status-pill.html:14` and `crswd.js:498` all
-  park it on "milestone 4's device-code relay", and no `httpapi` route mentions it.
-  The `README.md` already names it and the companion skill as the two unbuilt
-  things; `AGENTS.md` now does too, so T004 does not have to re-derive this.
-- **The two tagged suites are broader than the table said.** `-tags tmux` also
-  covers `internal/session/mode_test.go` (a session name round-tripping through a
-  real tmux user option); `-tags dev` spans `internal/access`, `internal/httpapi`
-  **and** `cmd/crswd`, not just the first.
-- **CI runs Install, Lint, Typecheck, Test, Build, `-tags tmux`, `-tags quickstart`
-  — and not Format or `-tags dev`.** `.golangci.yml` has a `formatters:` block with
-  exclusions but enables no formatter, so nothing in CI checks `gofmt`. That is why
-  the corrected sentence names the commands rather than saying "the untagged ones".
-- **No test parses `AGENTS.md`.** Every Go reference to it is a comment citing a
-  rule. It is the one context file that is *not* a fixture — unlike `config.example`,
-  `.env.example` and the README table. Its only mechanical guard is the line count.
-- **`golangci-lint` here is v2.12.2, matching the CI pin** — the #26 check passes,
-  so a green local lint is a real one this iteration.
+- **`internal/config` writes after all.** `migrate.go`'s header says "cmd/crswd is
+  the only code in this repository that writes a config file"; that has been stale
+  since the settings page shipped — `internal/config/write.go` has `WriteFile`,
+  `Validate`, `BackupPath`, and `internal/httpapi/settings_edit.go` is a second
+  writer. **`settings_edit.go` is the template to copy** for anything that writes
+  the operator's file: validate → back up → write, all through `config.*`. I reused
+  `config.WriteFile` for both the staged file and the backup rather than adding a
+  third copy of `writeAndSync` — `cmd/crswd/config_cmd.go` has its own.
+- **`config.Validate` needs a real environment.** It runs the whole loader, so a
+  test fixture needs `CRSW_SHARED_SECRET` (64 chars is safe) *and* a resolvable
+  `allowed_roots` — and it layers env **over** the file, so a fixture that sets
+  `CRSW_ALLOWED_ROOTS` in the environment cannot then test a bad root in the file.
+- **The one value that parses and does not load** is `allowed_roots` naming a
+  directory that is not there: `parseFile` only checks grammar, keys and schema, so
+  it sails through the migration and is refused by the loader. That is the whole
+  fixture for "a migration that would not validate".
+- **Where the migration could NOT go.** Startup is the obvious home and it is
+  closed: FR-008 and `specs/004-configure-and-operate/quickstart.md` both say the
+  daemon never writes the file it reads, and `cmd/crswd/config_cmd_test.go` asserts
+  it. An update is the exception because the operator asked for it by name.
+- `selfUpdate` now has a fourth member and `wired()` counts it, so a dropped wiring
+  refuses loudly rather than quietly stopping carrying the file.
 
-**Left:** T002–T008.
+**Left:** T002–T007. T002 is next (ship the unit as a comparable release asset).
 
-**Findings (not fixed):**
+**Findings — noticed, not fixed:**
 
-1. **`docs/auth-and-sessions.md` §"Two doors, one hostname" (line 48) is about the
-   Access-vs-API split, and calls the API client "the skill" — which does not
-   exist.** With milestone 12's password door, the phrase "two doors" now names two
-   different pairs in two different files, which is exactly the kind of collision
-   that makes a reader trust the wrong one. **Deliberately not touched**: that file
-   is named out of scope in the plan and is a binding correctness spec, so changing
-   it needs its own task, not a drive-by. Worth a task in the next milestone.
-2. **`README.md:656` still says "Go templates + htmx, not an SPA."** Same falsehood
-   T001 removed from `AGENTS.md`. It is inside T007's territory (the roadmap and
-   duplication trim) — **T007 should fix it rather than leave the last htmx claim
-   standing in the front-page file.**
-3. **The quickstart suite cannot run on this host**: the deployed daemon holds
-   `127.0.0.1:8765` (confirmed via `ss -ltn`), and two startup cases bind that exact
-   port. `go vet -tags quickstart ./...` is the fallback and it passes. Any task
-   whose gate is "run quickstart" will hit this — CI's self-hosted runners are where
-   it actually executes.
+- **⚠️ The migration runs in the OLD binary, so a new release's schema changes land
+  one update late.** `config.SchemaVersion` and `renamedKeys` come from the code
+  that is running, and that is v-current, not v-next. A rename shipped in v0.90 is
+  applied by the update *after* the one that installs v0.90. Today this costs
+  nothing (`renamedKeys` is empty and `SchemaVersion` is 1) and it is what the plan
+  asked for. The fixes, if it ever matters: exec the staged candidate's own
+  `crswd config migrate` (T007 territory), or migrate on the first start after an
+  update — which needs an exception to FR-008 that nobody has written yet.
+  **Do not "fix" this silently; it is a spec question.**
+- **`cmd/crswd/config_cmd.go` still has its own `writeConfigFile`/`writeAndSync`,
+  duplicating `internal/config/write.go`.** Left alone on purpose (AR-008) — that
+  is exactly T007's job, and T007 should collapse three write paths, not two.
+- **`internal/config/migrate.go`'s header comment is wrong.** It claims cmd/crswd
+  is the only writer in the repository. Two other writers exist now. One-line doc
+  fix for the fix lane; not touched here.
+- **Flaky test:** `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval`
+  (`internal/httpapi/stream_test.go`) failed once on a loaded machine — "the opening
+  screen arrived 14ms after the open, which is past the 10ms interval" — and passed
+  on every rerun. It asserts a wall-clock deadline of 10ms, which a parallel suite
+  on a busy host will miss regardless of the code. CI will hit this eventually.
 
 ---
 
 ## Iteration 2 — 2026-08-12
 
-**Did:** T002. `deploy/README.md` now says which deployment it is for, states what
-the daemon actually refuses on the `CRSW_ACCESS_*` group, and treats 1Password as an
-example of a shape rather than the procedure; `CONTRIBUTING.md`'s CI claim is true.
+**Did:** T002. `internal/updater/unit.go` — `UnitAsset` (the release's own
+`crswd.service`), install.sh's two paths, and `Unit.Standing(published)` answering
+one of four: `UnitAbsent`, `UnitCurrent`, `UnitOurs`, `UnitTheirs`. Reads only;
+nothing is written and nothing is fetched here.
 
-**Learned:**
+**Learned — things the next iteration would otherwise rediscover:**
 
-- **Iteration 1's finding #3 is wrong — retract it. `go test -tags quickstart ./...`
-  runs green on this host with the deployed daemon still holding `127.0.0.1:8765`**
-  (34s; `ss -ltn` confirms the port is held). The two startup cases stopped binding
-  8765 when `freeAddrOn` landed (`quickstart_test.go:468`) — its comment describes
-  exactly the symptom that finding reported, so the fix predates the finding. **Do
-  not skip the quickstart gate on that premise.**
-- **`deploy/README.md` is a fixture, twice over, and neither guard is obvious.**
-  `internal/config/deployexample_test.go` splits it on ``` fences, takes every block
-  containing `/.config/crswd/env`, harvests the `CRSW_*=` names from *all* of them
-  into one environment, and asserts that environment starts a daemon. **A second
-  env-file recipe is therefore not additive — it merges.** Adding a
-  `CRSW_DASHBOARD_PASSWORD=` block beside the Access one would fail two ways:
-  `validateDoors` refuses password-beside-Access, and `baseEnv` (`config_test.go:39`)
-  has no sample value for that variable, which is a `t.Fatalf`. That is why T002's
-  LAN note is a pointer to `README.md` and not a recipe. Separately,
-  `quickstart_test.go:2114` sweeps this file's `journalctl` lines against a real
-  stream.
-- **The false claim had a second copy** below the recipe ("writing only the secret
-  gets a daemon that refuses to start"). It does not: `loadBool` reads the unit's
-  empty `Environment=CRSW_ACCESS_ENABLED=` as false, `validateAccessGroup` passes on
-  zero of three, and the daemon starts with `warnNoIdentityProvider`'s banner. **When
-  a plan names a false statement by line number, grep the file for the claim** — the
-  audit found the loudest copy, not the only one.
-- **`CRSW_ACCESS_ENABLED=true` is the fix for the gap that falsehood was papering
-  over**, and the file had never mentioned it: it turns "none of the three" from a
-  supported deployment into a refusal, which is what an Access deployment wants.
-- **The `dev` tag and `gofmt` are the only things in `AGENTS.md`'s command table
-  that run nowhere but locally** — `.golangci.yml` has a `formatters:` block that
-  enables no formatter. That is now stated in `CONTRIBUTING.md` too.
+- **The delivery half of T002 was already done and needed nothing.** The release
+  workflow publishes `dist/crswd.service`, SHA256SUMS covers it, and the signature
+  covers SHA256SUMS. `Verify(UnitAsset, bytes, sums, sig)` works today —
+  `Verify` takes the asset name, so there is no second code path to write.
+  `TestThePublishedUnitIsDeliveredLikeEveryOtherAsset` pins it, including the
+  unsummed-asset refusal. **T003 just fetches `updater.UnitAsset` alongside the
+  tarball in `updateTo` and hands the bytes to `Standing`.**
+- **Ownership is the recorded digest, never the published bytes**, and the
+  comment in unit.go says why at length: an operator's unit differs from an
+  *older* published unit exactly as it differs from a *newer* one, so comparing
+  against the release refuses to correct any host that ever took a unit.
+  `internal/release/install_test.go`'s `TestInstallNeverOverwritesEditedUnit`
+  makes the same point from install.sh's side; read it before touching this.
+- **`UnitTheirs` is the zero value on purpose.** A standing nobody computed reads
+  as "leave that file alone". Do not reorder the `iota` block.
+- **Paths come from `HOME`, not XDG**, because install.sh composes them from
+  `$HOME` — `stage.go` already made the same choice for the staging directory.
+  `TestUnitAssetAndPathsAreTheInstallersOwn` reads `readonly UNIT_ASSET|UNIT|UNIT_RECORD`
+  out of install.sh; if those shell names ever move, move that pattern with them.
+- **Test fixtures are cheap here.** `newUnitFixture(t, unit, record)` builds a
+  whole host in a `t.TempDir()`; `nil` means the file is absent. `published(t)`
+  in `verify_test.go` already carries the unit as a published asset — it now uses
+  `UnitAsset` and the shared `publishedUnit` const rather than a literal.
+- **Mutation-checked, not just green:** flipping the no-record branch to
+  `UnitOurs` and drifting `unitRecordPath` each failed the new tests. Worth doing
+  again for T003 — the branch that matters most there is the one that does nothing.
 
-**Left:** T003–T008.
+**Left:** T003–T007. T003 is next: fetch the unit during an update, act on the
+standing, never overwrite `UnitTheirs`, and write `crswd.service.new` beside it.
 
-**Findings (not fixed):**
+**Findings — noticed, not fixed:**
 
-1. **Findings 1 and 2 from iteration 1 still stand** — `docs/auth-and-sessions.md`'s
-   colliding "two doors" and the API client called "the skill" (needs its own task,
-   that file is out of scope here), and `README.md:656`'s surviving htmx claim
-   (T007's territory).
-2. **`deploy/README.md`'s "Verifying the exposure model" is Access-only and does not
-   say so.** `ss -tlnp | grep crswd` "must show 127.0.0.1, never 0.0.0.0" is exactly
-   backwards for the LAN deployment, where `listen = 0.0.0.0:8765` is the documented
-   configuration. T002's header now tells a LAN reader which three sections apply,
-   which bounds the damage, but the section itself still reads as universal. **Not
-   fixed**: rewriting it is a security-doc change in a file T002 was scoped to
-   correct, not extend — worth a task.
-3. **Checked and *not* a finding, so nobody spends an iteration on it:**
-   `.env.example` (lines 86–97) and `crswd.example.service` (lines 67–71) both
-   already document the password door properly — what it is, that it is never a door
-   as well as Access, that it belongs in the `EnvironmentFile`, and the clear-wire
-   warning. The stale Access-only framing was `deploy/README.md`'s alone.
+- **⚠️ T003 has one decision T002 could not make: `UnitCurrent` with no record.**
+  A host whose hand-written unit happens to be byte-identical to the published one
+  is current, so there is nothing to write — but there is still no record, so the
+  *next* release will read it as `UnitTheirs` and hand out a `.new`. Recording its
+  digest then would claim ownership of a file this daemon did not write, which is
+  the thing install.sh is careful never to do. Both answers are defensible; pick
+  one deliberately in T003 and say why in the code.
+- **`Unit` has no `wired()` seat yet.** `selfUpdate` in `internal/httpapi/update.go`
+  counts its four members so a dropped wiring refuses loudly (see Iteration 1).
+  T003 adds a fifth — add it to `wired()` too, or an update that stops carrying the
+  unit will look exactly like one that had nothing to carry.
+- **`internal/httpapi/render.go` is not gofmt-clean** (its `buildinfo` import sorts
+  above the stdlib block). Pre-existing, untouched, and invisible to CI because
+  AGENTS.md says Format runs nowhere but locally — `gofmt -l .` names it. One-line
+  fix for the fix lane.
+- **Still open from Iteration 1:** the migration runs in the *old* binary (schema
+  changes land one update late); `cmd/crswd/config_cmd.go` still duplicates
+  `internal/config/write.go` (T007); `internal/config/migrate.go`'s header comment
+  claims cmd/crswd is the only config writer, which is wrong; and
+  `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is wall-clock flaky.
 
 ---
 
 ## Iteration 3 — 2026-08-12
 
-**Did:** T003. `config.example` now leads with the fact on every key — name and
-purpose, then format/bounds/what a wrong value does, then the why where it is
-load-bearing, then the default, then the one commented line. 465 → 306 lines.
+**Did:** T003. `internal/updater/place.go` — `Unit.Place(asset, sums, signature)`
+acts on the standing T002 computes and returns a `UnitOutcome`: `UnitOurs` →
+replace and re-record, `UnitAbsent` → install and record, `UnitTheirs` → write
+`crswd.service.new` beside theirs and touch nothing else, `UnitCurrent` →
+nothing. `updateTo` fetches `updater.UnitAsset` as a fourth asset and the handler
+calls `Place` after `Swap`, beside the config migration.
 
-**Learned:**
+**The two decisions T002 left open, and why:**
 
-- **The plan's ~215-line target was measured against a 401-line file, and the file
-  is 465 today.** Milestone 13 added ~64 lines the plan itself protects: what
-  `never` costs on the lifetime ceiling, and the two idle clocks. 465 → 306 is a
-  34% cut where 401 → 215 was 46%. **Getting to 215 from here means deleting a
-  named load-bearing passage, which the same plan forbids** ("The voice stays…
-  the fix is *order*, not deleting the why"). Reordering and de-paragraphing is
-  worth roughly a third; the rest of that target was never available. **The next
-  file with a line target should be measured before it is trusted.**
-- **Folding `Default: x.` into the end of the block's last sentence, instead of
-  giving it its own stanza, is the single biggest structural saving** — two lines
-  per key, 46 lines across 23 keys, and it reads better because the default lands
-  next to the bounds it belongs to rather than as a footnote.
-- **The duplicate-key landmine has a twin that bit nothing but nearly did.** The
-  test cuts each comment line on its first `=` and matches the left side against
-  the known keys, so `#   key = value` in the format illustration is safe (`key`
-  is not a setting) — but a wrapped line is not. Writing `# … Default: claude`
-  followed by `# --dangerously-skip-permissions, byte for byte …` is fine, yet the
-  same wrap one word earlier would have started a line with a real key. **Keep the
-  key name off the start of any wrapped line.**
-- **Every documented value must round-trip, secrets included.** `IsSecret` only
-  suppresses the value from the failure message — `file_test.go:1408` still
-  compares. Keeping the illustration strings byte-for-byte (`paste the output of
-  openssl rand -hex 32 here`, `rc=claude --dangerously-skip-permissions "/rc
-  {name}"`) is what makes a rewrite of this file safe.
-- **The gate is real and it all ran here:** `go build`, `go vet`, `go test ./...`,
-  `golangci-lint run` (v2.12.2, so #26's check passes), and
-  `go test -tags quickstart ./cmd/crswd` (36s, green — iteration 2's retraction
-  holds).
+- **`UnitCurrent` records nothing**, even when there is no record. A record is
+  what licenses the *next* release to replace a file, so writing one for a unit
+  this daemon did not write is install.sh's "this refusal undoing itself one
+  command later". Such a host is offered a `.new` at the release after this one,
+  which is correct — by then it really has fallen behind.
+- **`UnitAbsent` installs the published unit and records it**, which is
+  install.sh's own first row: nothing to protect, nothing to take away, and what
+  lands is inert until somebody runs `daemon-reload` and enables it.
 
-**Left:** T004–T008.
+**Learned — things the next iteration would otherwise rediscover:**
 
-**Findings (not fixed):**
+- **`Place` verifies its own bytes**; the caller cannot hand it unverified ones.
+  `Unit` grew a `verify` seam exactly like `Stager`'s, defaulted to
+  `updater.Verify` and pinned by `TestTheUnitIsVerifiedWithTheCommittedKey`. That
+  is why the httpapi seam is `Place(asset, sums, signature)` and not "the route
+  verifies then places" — update.go's header forbids a second copy of a check on
+  the route side (FR-029b).
+- **The unit is fetched with the other three, before the swap**, in install.sh's
+  own order (tarball, SHA256SUMS, SHA256SUMS.sig, crswd.service). A release with
+  no unit is refused while nothing on the host has changed. **Every tag from
+  v0.58 publishes it**, so this costs no rollback — checked, not assumed.
+- **`updateTo` now returns an `installed` struct**, not a version string: the
+  unit bytes have to survive out to the handler, because the steps that cannot
+  refuse an update run *after* the only irreversible line.
+- **A `.new` is withdrawn on every path that makes it untrue.** After a
+  replacement a leftover one names an *older* unit than the one just installed,
+  which is worse than the silence this milestone set out to fix.
+- **A replacement keeps the operator's mode.** A chmod does not change a digest,
+  so a unit narrowed to 0600 on purpose still reads as ours; widening it back to
+  install.sh's 0644 would be the same silent revert in the one dimension the
+  ownership check is blind to. New files get 0644 (`unitMode`), the record 0600.
+- **Writes go through `config.WriteFile`** rather than a fourth copy of
+  write-to-a-temp-and-rename. See the finding below about its temp-file name.
+- **Mutation-checked, five ways**, all caught: replacing a `UnitTheirs` unit,
+  recording a `UnitCurrent` one, dropping the verification, dropping
+  `withdrawOffer` from `settle`, and dropping `Place` from the route.
 
-1. **Iteration 1's findings 1 and 2 and iteration 2's finding 2 all still stand** —
-   `docs/auth-and-sessions.md`'s colliding "two doors" and its "the skill",
-   `README.md:656`'s htmx claim (T007's), and `deploy/README.md`'s Access-only
-   "Verifying the exposure model".
-2. **`.env.example` is 376 lines documenting the same 23 settings this file
-   documents, in the same voice.** Neither points at the other, and nothing holds
-   them to each other beyond `envexample_test.go` checking that the names are all
-   present and carry no values — so the *prose* in the two files can drift apart
-   silently, and a setting whose bounds change needs both edited. **Not fixed:**
-   `.env.example` is outside T003's scope and the fix is a judgement call (make one
-   the reference and have the other point at it, or accept the duplication because
-   an operator reads exactly one of them). Worth a task in the next milestone.
-3. **`# --- Required. There is no default, and no way to start without it. ---`
-   heads a section of exactly one key** (`shared_secret`). That is fine and it is
-   deliberate — the header is where "required" is stated, since the key's own block
-   no longer carries a `Default:` line — but a later task adding a second required
-   setting should put it here rather than inventing a second heading.
+**Left:** T004–T007. T004 is next: say on the settings page which of the three
+happened, with the `.new` filename and the `diff` command, reusing existing
+classes.
+
+**Findings — noticed, not fixed:**
+
+- **⚠️ T004 needs an outcome the handler currently drops.** `Place`'s
+  `UnitOutcome` is discarded at the call site on purpose — nothing renders it
+  yet, and the page the handler is composing is the one that waits for the
+  restart. **T004 has to decide where it comes from**: either the settings page
+  recomputes a `Standing` at render time (which needs the published unit, i.e. a
+  fetch on a page render — probably not), or the update persists what it did.
+  Note `Unit.NewPath()` already exists for naming the file, and the file on disk
+  is itself evidence: `crswd.service.new` being present *is* "a newer one is
+  waiting". That may be all T004 needs, and it needs no new state.
+- **`config.WriteFile`'s temporary file is named `.crswd-config-*`**, and
+  place.go now writes systemd units through it. A leftover from a crash
+  mid-write would be a `.crswd-config-…` file in `~/.config/systemd/user`, which
+  names the wrong thing. Reusing the one tested atomic writer is still right —
+  a fourth copy is what T007 exists to prevent — but the prefix should stop
+  saying "config" when T007 collapses the write paths.
+- **`config/write.go`'s header is now two callers out of date.** It says "Two
+  callers reach it, both explicit: `crswd config migrate`, and the settings
+  page's edit". `internal/updater/config.go` was the third and place.go is the
+  fourth. Same fix-lane one-liner as `migrate.go`'s header.
+- **The `quickstart` suite could not be run here**: `127.0.0.1:8765` is held by
+  the deployed daemon, which AGENTS.md documents as that suite's requirement.
+  `go vet -tags quickstart ./...` is clean, and so are `-tags tmux` and
+  `-tags dev`.
+- **Still open from Iterations 1 and 2:** the migration runs in the *old* binary;
+  `cmd/crswd/config_cmd.go` duplicates `internal/config/write.go` (T007);
+  `internal/config/migrate.go`'s header comment is wrong;
+  `internal/httpapi/render.go` is still not gofmt-clean (`gofmt -l .` names it and
+  nothing else); and `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is
+  wall-clock flaky.
 
 ---
 
 ## Iteration 4 — 2026-08-12
 
-**Did:** T004. `README.md`'s install now opens with the two deployments as numbered
-paths, states the three prerequisites nobody was told, and points at the daemon's
-own refusals. The two door sections are renamed **Path 1** and **Path 2** so the
-choice and the instructions share a vocabulary.
+**Did:** T004. `updater.Unit.Report()` reads this host's unit, the record beside
+it and the offer beside that — no release, no network. `unitFactsOf` in
+`internal/httpapi/settings.go` turns it into one of five sentences, and the
+Updates section renders it as three rows of the **existing** `.version-facts`
+list: the sentence, `Waiting at` naming `crswd.service.new`, and `Compare them`
+carrying the `diff` command. No new CSS class, and no CSS change at all.
 
-**Learned:**
+**The decision T004 inherited, and the answer:**
 
-- **A troubleshooting `journalctl` line cannot be written as a command.**
-  `quickstart_test.go:2050` (`trailCommands`) takes **every line in `README.md` or
-  `deploy/README.md` that begins with `journalctl`** once a leading `#` is stripped,
-  and `filterOf` then **`t.Fatal`s** unless that line pipes (`|`) *and* its producer
-  names `journalctl`, `--user`, `-u crswd` **and** `-o cat`. That sweep exists for
-  audit-trail commands; a diagnostics command is the opposite — it wants the stderr
-  banners the documented filter removes (#88). So `journalctl --user -u crswd -e`
-  is written **inline in prose, mid-line**, never in a fenced block and never at the
-  start of a source line. **T005–T008: the same trap fires on a wrapped line.**
-- **Five tests read `README.md`, and T005/T006 will walk straight into three of
-  them.** `internal/httpapi/login_test.go:1004` requires the literal string
-  `http://<the host's LAN address>:8765/login` — **T006 rewrites exactly that
-  paragraph and must keep that address byte for byte**, path included, since it is
-  read from the mux's own constant. `internal/release/readme_test.go` needs the
-  installer's one-liner verbatim with no `go build` / `git clone` /
-  `go mod download` **above** it (the from-a-clone block in Path 1 is the only one
-  left, and it must stay below), the rollback trio (`~/.local/bin/crswd.previous`,
-  `POST /dashboard/update`, `version=`), and the door vocabulary
-  (`dashboard_password`, `access_enabled`, `admits nobody`).
-  `internal/config/docs_test.go` reads the configuration table one row per line.
-- **Anchors: `](#` is still the only check that exists, and an em dash makes a
-  double hyphen.** `### Path 1 — on the internet: Cloudflare Tunnel and Access`
-  slugs to `#path-1--on-the-internet-cloudflare-tunnel-and-access` — GitHub strips
-  the em dash and the colon without collapsing the spaces either side. All six
-  in-page links were re-checked after the rename.
-- **The installer already warns about `claude` and points here.** `advise_tools`
-  (`install.sh:106`) warns when `cloudflared` or `claude` is off `PATH`, "see the
-  README" — so the prerequisite bullet is what that warning was pointing at all
-  along. The installer says nothing about `claude` being *authenticated*, which is
-  the half that actually strands a session, and the page now carries it.
-- **The gate ran in full and green:** build, vet, `go test ./...`,
-  `golangci-lint run` (v2.12.2, so #26's check passes, 0 issues), and
-  `go test -tags quickstart ./cmd/crswd` (36s) — the last one is not optional here,
-  since it is the suite that reads this file.
+- **Where the outcome comes from: the files, not persisted state.** Iteration 3
+  left this open. `Place`'s `UnitOutcome` is still dropped at the call site. The
+  `crswd.service.new` an operator diffs *is* the claim "there is a newer unit
+  than yours", so it is what decides what the page says — a second account
+  written by the update would be free to go stale the moment somebody took the
+  offer and deleted it. **No new state, and nothing fetched on a render.**
+- **⚠️ The one place I did not do what T004 literally says.** T004 asks for
+  "theirs is current". A page cannot honestly say that from disk: absence of an
+  offer means *no update has left one*, which on a host that has never been
+  updated — the operator this milestone is for — is exactly the false
+  reassurance the milestone exists to end. So `unitSentenceTheirs` says "an
+  update never replaces it. Nothing newer is *waiting* beside it." The stronger
+  claim needs the published bytes, i.e. a fetch on a page render, which
+  Iteration 3 already priced as "probably not". **If somebody wants the literal
+  wording, the fix is to compare against the release on the existing Check
+  (three more asset fetches plus a `Verify`), not to soften the sentence.**
 
-**Left:** T005–T008.
+**Learned — things the next iteration would otherwise rediscover:**
 
-**Findings (not fixed):**
+- **`unitCarrier` in `internal/httpapi/update.go` grew `Report()`**, rather than
+  a second seam. One pair of files answered by two seams is two answers a page
+  and an update could disagree about. `fakeUpdatePath` in `update_test.go`
+  answers the zero report deliberately — the page assertions run against a
+  **real** `updater.Unit` over a `t.TempDir()` home (`unitOnHost` in
+  `settings_test.go`), because a fake would let the page and the updater agree
+  about a host neither looked at.
+- **`updatePanelFor` is the composer, and it returns `nil` with no page token.**
+  So a mint failure costs the unit sentence as well as the update button. Left
+  as is: that server has no forms at all. The nil check is on
+  `s.updates.unit`, because `newServer` (every test in the package) wires no
+  update path — `newWithLayer1` is the only constructor that does.
+- **`.version-facts` was the whole answer to "reuse a class".** It is a `<dl>`
+  documented as "two terms, two answers", so a fact stated as a `dt`/`dd` pair
+  needs no name of its own. Adding a class would have needed a stylesheet rule,
+  and `stylesheet_test.go` holds every value in it to `docs/design-system.md`.
+- **`updater.Report` refuses rather than returning the zero `UnitReport`**, and
+  the reason is the sentence it would produce: the zero value reads as "no unit
+  on this host", whose sentence *promises an update will install one*. A read
+  that failed has its own sentence, and `unitFactsOf` takes the error to pick it.
+- **Mutation-checked, four ways**, all caught: composing `Offer` from the unit
+  path instead of stat-ing it (failed 6 cases across both packages), dropping
+  the two `.new` rows from the template, collapsing `UnitOurs` into
+  `UnitTheirs`, and dropping the `panel.Unit` wiring entirely (failed all four
+  page arrangements — the T001 lesson, tested).
 
-1. **The install opening and the front-matter paragraph (`README.md:10-14`) now
-   both frame the two doors** — deliberately, since one is "what this project is"
-   and the other is "the first step of installing it", and they link to different
-   places (the comparison table vs. the two paths). **T007 owns the duplication
-   trim and should decide whether both survive**; if only one does, the install
-   copy is the one an operator is actually reading at that moment.
-2. **`install.sh`'s printed next steps never mention `loginctl enable-linger`,**
-   while the README calls it "easy to skip and expensive to skip" and the symptom
-   (the unit dying when the SSH session ends) arrives minutes later looking like
-   something else. `next_steps` (`install.sh:461`) lists two things: pick a door,
-   then `systemctl --user enable --now crswd`. **Not fixed:** that output is pinned
-   by `TestInstallPrintsNextSteps`, so it is a script change plus a test change, not
-   a doc task. Worth a task.
-3. **Iteration 1's findings 1 and 2 and iteration 2's finding 2 all still stand** —
-   `docs/auth-and-sessions.md`'s colliding "two doors" and its "the skill",
-   `deploy/README.md`'s Access-only "Verifying the exposure model", and the htmx
-   claim under "Why it is built this way" — **now `README.md:700`, not the `:656`
-   the last three entries name**, because this task added lines above it. T007
-   still owns it. The README's own "Verifying the exposure model" is **not** an
-   instance of the `deploy/` problem: it has both halves, tunnel and LAN.
+**Left:** T005–T007. T005 is next: the same three facts at startup, into the
+journal. It needs `updater.NewUnit(os.Getenv).Report()` in `cmd/crswd` beside the
+absent-identity-provider warning — **the sentences are `internal/httpapi`
+constants today**, so T005 either moves them somewhere both callers can reach or
+writes the journal's own wording; picking the second means two vocabularies for
+one fact, which is the drift T007 exists to collapse. Decide it deliberately.
+
+**Findings — noticed, not fixed:**
+
+- **`docs/components.md` gained the paragraph, `docs/design-system.md` did
+  not**, and it needed none: no token, no rule, no new class. Worth knowing
+  before T006 goes looking for a design doc to update.
+- **The `diff` command is shell-quoted by `shellQuoted` in `settings.go`.** It
+  is printed, never run — nothing in this daemon executes a shell — but an
+  operator pastes it, and an unquoted path with a space in it is a command that
+  silently diffs two other files. `TestTheDiffCommandSurvivesAHomeWithASpaceInIt`
+  is the only thing in the tree that would notice: every path a test builds is
+  under a temporary directory with no spaces in it.
+- **The `quickstart` suite still could not be run here.** `127.0.0.1:8765` is
+  held by the deployed daemon (checked with `ss -ltn`), which AGENTS.md
+  documents as that suite's requirement. `go vet -tags quickstart ./...` is
+  clean; `-tags tmux` and `-tags dev` were run in full and pass.
+- **Still open from Iterations 1–3:** the migration runs in the *old* binary;
+  `cmd/crswd/config_cmd.go` duplicates `internal/config/write.go` (T007);
+  `internal/config/migrate.go`'s and `internal/config/write.go`'s header
+  comments both name the wrong set of callers; `config.WriteFile`'s temp file is
+  still named `.crswd-config-*` while place.go writes systemd units through it;
+  `internal/httpapi/render.go` is still the only file `gofmt -l .` names; and
+  `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is wall-clock flaky.
 
 ---
 
 ## Iteration 5 — 2026-08-12
 
-**Did:** T005. `README.md`'s Path 1 is now eleven numbered steps — `cloudflared`
-login, tunnel create, **DNS route**, the four values to edit in
-`cloudflared.example.yml`, the self-hosted Access application, the Google IdP, the
-service token, **both policies**, the four config keys, `crswd config check` and
-the restart, and finally "browse to `https://crswd.example.com/`". The from-a-clone
-block survives unchanged under a new `#### From a clone instead`.
+**Did:** T005. `cmd/crswd/unit.go` — `sayWhatBecameOfTheUnit` writes this host's
+unit standing to stderr, called from `run` immediately after the staging sweep.
+The vocabulary moved out of `internal/httpapi/settings.go` into
+`internal/updater/facts.go` (`UnitFacts`, the five `UnitSentence*` constants,
+`DescribeUnit`, `unitCompare`, `shellQuoted`), so the page and the journal are
+one implementation. The page now renders `updater.UnitFacts` and calls
+`updater.DescribeUnit`; the template is untouched, because the three field names
+are identical.
 
-**Learned:**
+**The decision T004 left open, and the answer:**
 
-- **`deploy/cloudflared.example.yml`'s header was still milestone 1.** It said the
-  daemon "does not validate a Cloudflare Access JWT" and told the reader to consult
-  *"Not shippable before T037" in `ralph/IMPLEMENTATION_PLAN.md`* — a section that
-  has not existed since milestone 1's plan was archived. **Corrected here rather
-  than logged**, because step 4 of the new procedure hands that exact file to a
-  stranger, and its header told them the opposite of the page sending them. The one
-  line in it that is a fixture is `service: http://127.0.0.1:8765`
-  (`deployexample_test.go:300` matches lines starting `service: http://` after
-  trimming `- `, and compares against `config.DefaultListen`) — comments are safe
-  because the match happens after the `#`, not before it.
-- **`crswd config check` does not check values, and saying it does would be the
-  milestone's own mistake.** `configCheck` (`cmd/crswd/config_cmd.go:101`) reports
-  the file's grammar, the keys it sets — never a value — and the mode; its last
-  printed line says the values are checked at startup against the environment the
-  daemon starts in. **T006 folds the same command in as its pre-restart step and
-  should describe it the same way.**
-- **The `journalctl` trap from iteration 4 is avoidable in one move: keep the word
-  off the start of a source line.** `filterOf` strips a leading `#` and nothing
-  else, so `journalctl --user -u crswd -e` is safe written mid-sentence and fatal
-  written at a line start or as the first word of a wrapped line. The whole
-  diagnostics reference in step 10 is one inline clause for that reason.
-- **Nothing mechanical checks a README anchor**, so the two links into this
-  section were re-verified by hand against the heading list: `#configuration`,
-  `#install`, `#path-1--…`, `#path-2--…`, `#roadmap`, `#the-two-doors`,
-  `#verifying-the-exposure-model` all resolve. The new `#### From a clone instead`
-  is deliberately unlinked — it is a subsection of Path 1, not a destination.
-- **`go build` stays legal here only because it is below the one-liner.**
-  `TestReadmeLeadsWithTheOneLiner` fails on `go build`, `git clone` or
-  `go mod download` appearing at a lower byte offset than the install command, and
-  the from-a-clone block is the only place any of the three appears. Adding
-  material *above* it is free; moving it up the page is not.
-- **The gate ran in full and green:** build, vet, `go test ./...`,
-  `golangci-lint run` (v2.12.2, so #26's check passes, 0 issues), and
-  `go test -tags quickstart ./cmd/crswd` (36s), which is the suite that reads this
-  file.
+- **Move the vocabulary, do not write a second one.** Iteration 4 handed this
+  over explicitly. Two sets of words for one file is exactly the drift T007
+  exists to collapse, and its shape here would be a page and a journal
+  disagreeing about whether an update replaces this operator's unit — a question
+  with no tie-breaker anywhere on the host. `internal/updater` is the home
+  because it owns `UnitReport`, both callers already import it, and a startup
+  banner about a systemd unit must not come out of the HTTP package.
+- **The journal carries one thing the page does not: the read error.** The page
+  says `UnitSentenceUnknown` and stops, because the error names a path on this
+  disk. In the journal that detail is the whole value — "could not read the
+  unit" with no reason is a line that sends somebody looking.
 
-**Left:** T006–T008.
+**Learned — things the next iteration would otherwise rediscover:**
 
-**Findings (not fixed):**
+- **`sayWhatBecameOfTheUnit(w, report, err)` takes three arguments, and the
+  middle one cannot be spread.** Go refuses a multi-value call mixed with other
+  arguments, so `run` does `unitReport, unitErr := ...Report()` on its own line.
+  `updater.DescribeUnit(s.updates.unit.Report())` still spreads in httpapi
+  because the report is its *only* argument.
+- **`run` does not fail on a unit it cannot read**, and that is deliberate: the
+  read error becomes a sentence. What *is* fatal is a write that fails, on
+  `warnNoIdentityProvider`'s terms — a stream that will not take a line has
+  nowhere to report anything below that point, and the alternative is a
+  swallowed error.
+- **`cmd/crswd/main_test.go` already had the AST-wiring pattern** —
+  `TestStartupDiagnosticsGoToStderr` parses main.go, finds the call by name and
+  checks `render(call.Args[0]) == "os.Stderr"`. `TestStartupSaysWhatBecameOfTheUnit`
+  is that shape, and it is the assertion this milestone is about: not that the
+  code exists, but that a start runs it.
+- **The banner is safe for the documented `grep '^{' | jq` filter** — every line
+  is prefixed `crswd: `. `TestDocumentedCommandParses` (quickstart) asserts the
+  trail contains a `crswd: ` diagnostic *and* that the filter still parses, so it
+  gets stronger rather than weaker from this.
+- **The page test no longer builds its expected diff command with the
+  implementation's own helper.** It spells `diff '<unit>' '<offer>'` out, so a
+  page rendering some other command fails instead of agreeing with itself. The
+  journal test does the same.
+- **Mutation-checked, six ways**, all caught: dropping the call from `run`
+  (wiring test, 0 calls), pointing it at `os.Stdout` (that test *and*
+  `TestDiagnosticsGoToStderr`), dropping the read-error line, dropping the
+  waiting/compare lines, swallowing the write error, and collapsing
+  `UnitTheirs` into `UnitAbsent` — that last one failed in all three packages,
+  which is the point of there being one vocabulary.
 
-1. **Nothing in this repository ships a `cloudflared` unit, and two files now
-   assume one.** `deploy/README.md:105` ends its order of operations with
-   `systemctl --user enable --now cloudflared`, which presumes a user unit the
-   operator wrote themselves; the new step 10 says the same thing more carefully
-   (foreground run to prove the path, then "a service of cloudflared's own — its
-   `service install` subcommand writes one — or a unit beside the daemon's").
-   **Not fixed:** shipping `deploy/cloudflared.example.service` is a new deployment
-   file, not a doc edit, and `cloudflared service install` writes a *system* unit
-   while everything else on the page is `--user` — that difference deserves stating
-   once, in one place. Worth a task.
-2. **Iteration 4's findings 1 and 2 stand, and so do the older three** — the two
-   framings of the doors that T007 must choose between; `install.sh`'s next steps
-   omitting `loginctl enable-linger`; `docs/auth-and-sessions.md`'s colliding "two
-   doors" and its "the skill"; `deploy/README.md`'s Access-only "Verifying the
-   exposure model"; and the htmx claim under "Why it is built this way", **now
-   `README.md:832`** after this task's additions — still T007's.
-3. **Path 1 and Path 2 now disagree about what an operator starts from.** Path 1
-   says the installer already left `~/.config/crswd/config` holding `shared_secret`
-   and `allowed_roots` at `0600` and shows only the keys to *add*; Path 2 still
-   shows a four-line file from scratch, `shared_secret` included. **That is exactly
-   T006**, which is next — it is recorded here only so the next iteration knows the
-   two sections were written to the same shape deliberately.
+**Left:** T006 (README + deploy/README) and T007 (one config-write
+implementation). T006 is next.
+
+**Findings — noticed, not fixed:**
+
+- **T006 has a doc question to answer, not just prose to write.** T005 gave the
+  journal the read error and the page nothing; if `deploy/README.md` is going to
+  tell an operator how to find out where their unit stands, it should say which
+  of the two to read and why they differ.
+- **`internal/httpapi/settings.go` lost ~115 lines and gained an import it
+  already had.** Nothing else in that file used `shellQuoted`, so no caller was
+  left behind — checked by grep before the move, and by the build after.
+- **The `quickstart` suite still could not be run here.** `127.0.0.1:8765` is
+  held by the deployed daemon (`ss -ltn`), which AGENTS.md documents as that
+  suite's requirement. `go vet -tags quickstart ./...` is clean; `-tags tmux` and
+  `-tags dev` were run in full and pass.
+- **Still open from Iterations 1–4:** the migration runs in the *old* binary;
+  `cmd/crswd/config_cmd.go` duplicates `internal/config/write.go` (T007);
+  `internal/config/migrate.go`'s and `internal/config/write.go`'s header
+  comments both name the wrong set of callers; `config.WriteFile`'s temp file is
+  still named `.crswd-config-*` while place.go writes systemd units through it;
+  `internal/httpapi/render.go` is still the only file `gofmt -l .` names; and
+  `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is wall-clock flaky.
 
 ---
 
 ## Iteration 6 — 2026-08-12
 
-**Did:** T006. Path 2 now starts from the file the installer left — four numbered
-steps in Path 1's shape: add `dashboard_password` and `listen` to a
-`~/.config/crswd/config` that is already there and already `0600`, **clear the
-unit's own `CRSW_LISTEN`**, `crswd config check`, then the sign-in form.
+**Did:** T006. `README.md` gains *The other two files an update carries* under
+*Updating, and rolling back* — the migration (staged, loaded, `config.bak`,
+discarded if it would not load) and the unit's four branches as a table, with the
+`diff`/`cp`/`daemon-reload`/`restart` that takes a `.new`. `deploy/README.md`
+gains *What an update does to this file* under *Why the unit looks the way it
+does*. `TestTheOperatorPagesNameTheFilesThisPackageWrites` in
+`internal/updater/unit_test.go` holds both pages to `unitPath`, `unitRecordPath`
+and `UnitAsset + newSuffix`.
 
-**Learned:**
+**The question T005 left open, and the answer:**
 
-- **The task's second key does not work as the plan describes it, and checking
-  was the whole value of the task.** `deploy/crswd.example.service:96` carries
-  `Environment=CRSW_LISTEN=127.0.0.1:8765`; `release.yml:102` ships that file
-  verbatim as `crswd.service`; `install.sh` writes it to
-  `~/.config/systemd/user/`. Precedence is **flag > environment > file > default**
-  (`internal/config/source.go:16`), so `listen = 0.0.0.0:8765` in the
-  configuration file **changes nothing on any installer-installed host** — the
-  daemon goes on binding loopback and is simply unreachable from the LAN. It is
-  the identical trap the installer's own file already spells out for
-  `allowed_roots` ("an edit here alone is one that appears to have done nothing"),
-  undocumented for the one setting this deployment exists to change.
-- **`crswd config check` cannot catch it.** `configCheck`
-  (`cmd/crswd/config_cmd.go:101`) reads only the file: grammar, keys, mode. It
-  never consults the environment, so it reports `listen` as set while the unit
-  wins. `GET /settings` is the thing that shows the layer that won, and
-  `ss -tlnp | grep crswd` is the check that needs no door to be open yet. Say
-  what `config check` does **not** do wherever this milestone folds it in.
-- **`dashboard_password` has no such collision** — grep the unit: it appears in a
-  comment (lines 67–71, telling an operator to put it in the `EnvironmentFile`)
-  and in no `Environment=` line. Only `listen` and `allowed_roots` are set both
-  places.
-- **The ordering of the two keys is load-bearing, not stylistic.** `loadListen`
-  (`config.go:1461`) refuses a non-loopback host when no door admits, so writing
-  `listen` first and restarting is a daemon that stops. One edit, both keys.
-- **`http://<the host's LAN address>:8765/login` survived byte for byte**, as
-  iteration 4 warned — `login_test.go:1004` builds it from the mux's own
-  `pathLogin` constant.
-- **The `journalctl` sweep nearly bit again, in a new way.** A wrapped line whose
-  first character is a **backtick** is safe (`trailCommands` strips whitespace and
-  a leading `#`, nothing else), but relying on that is how the next edit fails.
-  Rewrapped so the word sits mid-sentence, per iteration 5.
-- **The gate ran in full and green:** build, vet, `go test ./...`,
-  `golangci-lint run` (v2.12.2, #26's check passes, 0 issues), and
-  `go test -tags quickstart ./cmd/crswd` (35s).
+- **Which of the two accounts to read: either, and the journal when the read
+  failed.** They are one read of the same two files through
+  `updater.DescribeUnit`, so neither is fresher. The single difference is stated
+  in `deploy/README.md`: a failed read names a path on this disk and why, which
+  is a diagnostic for whoever administers the host rather than something a
+  browser is owed — so the page says only that it happened.
 
-**Left:** T007, T008.
+**The one thing documented beyond the task's literal ask**, deliberately: **how
+to hand a unit over.** T006 asks how to *take* a `.new`, and the honest answer
+raises the next question immediately — a hand copy writes no record, so the unit
+stays the operator's and the next differing release offers again. `deploy/README.md`
+therefore also documents writing the digest into
+`~/.local/share/crswd/crswd.service.sha256` by hand, with the price stated in the
+same breath (every future update then replaces that file with no `.new` and no
+diff). Verified `sha256sum < file | cut -d' ' -f1` produces exactly what
+install.sh's `${sum%% *}` records, and the recipe `mkdir -p`s the directory
+because a host whose unit the installer never placed has never had one made.
 
-**Findings (not fixed):**
+**Learned — things the next iteration would otherwise rediscover:**
 
-1. **A systemd drop-in is probably the better answer to step 2 and is untested
-   here.** `systemctl --user edit crswd` with `Environment=CRSW_LISTEN=…` would
-   override the shipped unit *without* editing it, so `install.sh` would go on
-   replacing the unit on later runs instead of leaving it alone. Drop-ins parse
-   after the main file and a repeated `Environment=` assignment wins, so it
-   should work — but **this iteration could not verify it on this host**, and the
-   milestone's own rule is not to write down an unverified claim. The two options
-   the page does give are both readable off files in this repo. Worth a task:
-   verify it, and if it holds, it belongs in `deploy/README.md` once rather than
-   in both paths.
-2. **`install.sh`'s printed next steps and `README.md`'s three-line recipe both
-   say "edit the config, then enable" and neither mentions the unit.** The recipe
-   at `README.md:116` is now accurate for Path 1 and incomplete for Path 2, which
-   needs a second file opened. **Not fixed:** the Install section deliberately
-   defers detail ("what goes in that file is your path's business") and T007 owns
-   that section's trimming — it should decide whether the deferral still holds now
-   that one path has two files to edit.
-3. **Iteration 5's finding 1 and iteration 4's findings 1 and 2 stand, and so do
-   the older three** — no shipped `cloudflared` unit while two files assume one;
-   the two framings of the doors T007 must choose between; `install.sh`'s next
-   steps omitting `loginctl enable-linger`; `docs/auth-and-sessions.md`'s colliding
-   "two doors" and its "the skill"; `deploy/README.md`'s Access-only "Verifying the
-   exposure model"; and the htmx claim under "Why it is built this way", **now
-   `README.md:875`** after this task's additions — still T007's.
+- **⚠️ A line beginning `journalctl` in either README is executed by the
+  quickstart suite.** `trailCommands` in `cmd/crswd/quickstart_test.go` collects
+  every line whose trimmed text (leading `#` stripped) starts with `journalctl`
+  from `README.md` and `deploy/README.md`; `filterOf` then *fatals* unless it
+  contains `--user`, `-u crswd`, `-o cat` **and** a pipe, and the command must
+  both survive a stream carrying `crswd: ` diagnostics and **reject** a truncated
+  record. `… | grep 'crswd: '` would fail that second half. A leading backtick
+  saves an inline mention, which is why every journal command added here is prose
+  rather than a fenced line.
+- **That sweep is runnable on this host even though the rest of `quickstart` is
+  not.** `go test -tags quickstart ./cmd/crswd -run TestEveryDocumentedTrailCommandSurvivesTheStream`
+  passes — it takes its own port; only the two startup cases need `127.0.0.1:8765`,
+  which the deployed daemon still holds. Worth running for any README change.
+- **Two other tests read these pages**: `internal/release/readme_test.go` (the
+  install one-liner must come before any `go build`/`git clone`, and the rollback
+  path, `POST /dashboard/update` and `version=` must all appear) and
+  `internal/config/deployexample_test.go` (only fenced blocks containing
+  `/.config/crswd/env` are scanned for `CRSW_` assignments — a new block is
+  invisible to it unless it names that file).
+- **`os.ReadFile` over a loop variable needs a `//nolint:gosec // G304` even in a
+  test.** The linter is v2.12.2 (#26 checked) and flagged it.
+- **Mutation-checked:** flipping `newSuffix` to `.pacnew` failed the new test on
+  both pages, which is the drift it exists to catch — a page naming an offer that
+  is not there is the "difference nobody can see" this milestone is about.
 
----
+**Left:** T007 — one config-write implementation shared by `crswd config migrate`
+and the update path. That is the last task in the plan.
 
-## Iteration 7 — 2026-08-12
+**Findings — noticed, not fixed:**
 
-**Did:** T007. `README.md` 913 → 872 lines: the startup probe is two sentences and
-a pointer at the two files that own it, the API door is a section of its own
-instead of a paragraph inside the browser doors' comparison, the twelve-milestone
-roadmap is gone, and so is the last htmx claim in the repository.
-
-**Learned:**
-
-- **The plan's "move the two API-door bullets out of the operator's install
-  reading" names something that is not in the file, and never was.** The README
-  has no bullets about the API door at any revision — checked `f5f9113`, the
-  revision the audit read (its `README.md:656` htmx line matches). What is there
-  is one **paragraph** ("The API is a second door…") inside `## The two doors`,
-  plus the two-policies material that T005 has since turned into steps 7 and 8 of
-  Path 1, where it is required procedure rather than duplication. **Read as: get
-  the API-door explanation out of the door-choosing reading** — done, as
-  `## The API door` between the audit trail and "Why it is built this way",
-  linked from the "What it does" bullet and pointing back at steps 7–8. Undoing
-  T005's steps was not on the table; the plan asked for those steps by name.
-- **`docs/security.md` §4 "Fail closed" is where the probe's *why* lives**
-  (lines 334–368: the two failure modes, the constant script on stdin, once per
-  start, the 5s/1s bounds, note-not-claim, and the named trade). `deploy/README.md`
-  §"The unit's PATH is not the session's" owns the deployment consequence. The
-  README's version was the third and longest telling, table included. Anyone
-  tempted to re-expand it: **those two are the sources, and both are binding.**
-- **One fact died with the long version and it was already homeless:** the probe's
-  suggested install line comes from `/etc/os-release` rather than being guessed
-  from `GOOS`. `grep` says it now survives only in `specs/004-…` and
-  `depcheck_test.go` — an archived spec and a test. It is a behaviour, not a
-  bound, so it was not worth two sentences on the front page; recorded here so it
-  is a decision rather than a loss.
-- **The roadmap was the only thing linking to `#roadmap`,** and nothing outside
-  `ralph/` referenced it. Cutting a section means grepping `](#` first: the other
-  fourteen anchors are unchanged and still resolve.
-- **`readme_test.go`'s two content tests survive any trim as long as three phrases
-  do**: `dashboard_password`, `access_enabled` and `admits nobody` (`doorKeys` +
-  `doorClosedPhrase`, declared in `install_test.go:1082`), plus the rollback trio.
-  The trimmed sections held none of them, which is why 79 deleted lines cost
-  nothing.
-- **The gate ran in full and green:** build, vet, `go test ./...`,
-  `golangci-lint run` (v2.12.2, #26's check passes, 0 issues), and
-  `go test -tags quickstart ./cmd/crswd` (36s).
-
-**Left:** T008.
-
-**Findings (not fixed):**
-
-1. **`internal/httpapi`'s `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval`
-   is timing-flaky and failed once here** (`stream_test.go:991`: "the opening
-   screen arrived 11ms after the open, which is past the 10ms interval"), then
-   passed on re-run and passed with the whole package. **Nothing Go changed this
-   iteration** — the diff is `README.md` alone — so this is a 1ms margin against a
-   10ms interval on a loaded host, not a regression. **Not fixed:** widening the
-   assertion is a test change with a judgement call in it (what margin still proves
-   "did not wait for a tick"), and it belongs to whoever owns that file rather than
-   a docs milestone. Worth a task; CI will hit it eventually.
-2. **T007's two open decisions, both settled deliberately and recorded so nobody
-   re-opens them silently.** (a) **Iteration 4's finding 1: both framings of the
-   doors survive.** The front matter answers "what is this project", the install
-   opening answers "which of the two am I about to install", and they link to
-   different places — the comparison table and the two paths. Collapsing them
-   would leave a reader at line 10 with a choice and nowhere to make it. (b)
-   **Iteration 6's finding 2: the three-line recipe keeps deferring**, now with
-   the deferral made honest — path 2 is "two keys here and one line to take back
-   out of the unit". Naming `CRSW_LISTEN` in the recipe would mean explaining the
-   precedence trap 400 lines above the path that hits it.
-3. **Iteration 5's finding 1, iteration 6's finding 1, iteration 4's finding 2 and
-   the two older ones stand** — no shipped `cloudflared` unit while two files assume
-   one; the systemd drop-in that is probably the better answer to Path 2 step 2 and
-   is unverified; `install.sh`'s next steps omitting `loginctl enable-linger`;
-   `docs/auth-and-sessions.md`'s colliding "two doors" and its "the skill"; and
-   `deploy/README.md`'s Access-only "Verifying the exposure model". **No live doc
-   claims htmx any more:** `grep -ril htmx` leaves `AGENTS.md`, where T001 made it
-   the negation "no htmx", and `specs/002-access-dashboard/` — five archived
-   milestone-2 artifacts that planned the dashboard with it, before it was dropped.
-   Those are a record of what was decided then, not instructions, and `docs/` and
-   `README.md` are now clean.
+- **T007 now has four write paths to consider, not three.** `cmd/crswd/config_cmd.go`'s
+  `writeConfigFile`/`writeAndSync`, `internal/config/write.go`'s `WriteFile`,
+  `internal/updater/config.go` (staged + backup) and `internal/updater/place.go`
+  (units and the record) all go through or around the same idea. Note the
+  documentation now *claims* the update runs `crswd config migrate` "for you";
+  after T007 that should be literally true rather than nearly so.
+- **`README.md` documents `crswd.service.new` as never loadable by systemd**
+  (a unit must end in `.service`). That is true of systemd, not enforced here —
+  if `newSuffix` ever changes, it has to keep that property, and the new test
+  checks only that the pages agree with the constant.
+- **The `quickstart` suite as a whole still could not be run**: `ss -ltn` shows
+  `127.0.0.1:8765` held by the deployed daemon. `go vet -tags quickstart ./...`
+  is clean; `-tags tmux` and `-tags dev` were run in full and pass, as did
+  `golangci-lint run` (0 issues).
+- **Still open from Iterations 1–5:** the migration runs in the *old* binary;
+  `cmd/crswd/config_cmd.go` duplicates `internal/config/write.go` (T007);
+  `internal/config/migrate.go`'s and `internal/config/write.go`'s header comments
+  both name the wrong set of callers; `config.WriteFile`'s temp file is still
+  named `.crswd-config-*` while place.go writes systemd units through it;
+  `internal/httpapi/render.go` is still the only file `gofmt -l .` names; and
+  `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is wall-clock flaky.
 
 ---
 
-## Iteration 8 — 2026-08-12
+## Iteration 7 — 2026-08-13
 
-**Did:** T008. `docs/components.md` 906 → 893 lines: the four passages that
-narrated the document's own revisions — Toast leaving the not-built list, the
-settings page that used to be read-only, the Switch section that once had one
-switch, the fleet-announcement rule that once said the opposite — are one
-sentence each plus their issue number. No class name moved.
+**Did:** T007, the last task. `config.MigrateFile` in `internal/config/write.go`
+is now the whole rewrite — stat for the mode, read, `config.Migrate`, stage at
+`config.migrating`, read back, offer to the caller's `accept`, write
+`config.bak`, rename — and both callers are it. `internal/updater`'s
+`ConfigMigrator.Migrate` is four lines and a `wouldStillStart` predicate;
+`cmd/crswd`'s `configMigrate` is the `ReadFile` check, the call, and the report.
+`writeConfigFile`/`writeAndSync`/`readFileAndMode` are gone from `cmd/crswd`, so
+`config.WriteFile` is the only atomic write of an operator's file left in the
+tree.
 
-**Learned:**
+**The one thing the two callers still choose for themselves, and why:**
 
-- **Exactly one test reads this file, and only for four class families.**
-  `stylesheet_test.go:798` (`TestTheComponentsDocumentNamesThePickerTheSwitchTheHeaderAndTheToast`)
-  reads `componentsDocPath` and sweeps
-  `\.(combo|switch|masthead|action-toast)[\w-]*` **in both directions** against
-  `crswd.css`. Nothing else in the tree opens `docs/*.md` — `grep -rn '\.\./\.\./docs/'`
-  over `*.go` returns two constants, this one and `designSystemPath`. So prose in
-  this file is free to change as long as that class set does not, and the cheap
-  proof is `git show HEAD:docs/components.md | grep -o '\.\(combo\|switch\|masthead\|action-toast\)[a-zA-Z0-9_-]*' | sort -u`
-  against the same grep on the working copy. Identical here.
-- **The compressed Toast paragraph could drop `.action-toast` only because the
-  Toast section still names it.** A memoir passage that carries the *only*
-  mention of a guarded class is not compressible without moving the name
-  somewhere else first — the sweep does not care which paragraph it sits in, only
-  that the file says it.
-- **One surviving sentence was itself stale and is fixed in passing:** the
-  settings page's "the action gate those **two** routes sit behind" sat under a
-  paragraph listing **four**. All four are registered through `handleAction`
-  (`server.go:678, 688, 693, 729` — update, restart, settings edit, logout), so
-  it now reads "those four routes". Verified before writing, per this milestone's
-  own convention.
-- **The lesson really was already in the test.** `stylesheet_test.go:744-750`
-  carries the whole #119 argument — the toast shipped with #42, being rendered
-  *and* styled satisfies both code-facing sweeps, and the document-facing
-  direction is the only one that can see that drift. The doc's paragraph was a
-  second telling of it in the file an agent loads before touching a control.
-- **The gate ran in full and green:** build, vet, `go test ./...`,
-  `golangci-lint run` (v2.12.2, #26's check passes, 0 issues),
-  `go test -tags quickstart ./cmd/crswd` (36s), and `go test -tags tmux ./...`.
-  Iteration 7's flaky `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` did
-  not recur across three full runs of `internal/httpapi`.
+- **The check on what landed is a parameter, not a shared constant.** An update
+  asks `config.Validate` — the loader, in the daemon's own environment, moments
+  before the restart that would otherwise discover the answer. The command asks
+  `config.ParseFile` instead, because `configCheck`'s own comment already
+  settles it: values are checked against the environment the *daemon* runs in,
+  and a migration refused because the operator's terminal carries no
+  `CRSW_SHARED_SECRET` would be refusing a file the daemon starts on perfectly
+  well, and would teach them to stop migrating. **Sharing the loader here would
+  have been the drift T007 exists to end, pointed the other way.**
+- **`crswd config migrate` therefore gained the staging and the read-back**, and
+  that is a real behaviour change, not a refactor: it used to write the backup
+  and then write over the operator's file with bytes nothing had looked at
+  again.
 
-**Left:** nothing. All eight tasks of milestone 14 are ticked.
+**Learned — things the next iteration would otherwise rediscover:**
 
-**Findings (not fixed):**
+- **`accept`'s error is returned verbatim**, which is what keeps
+  `updater.ErrConfigWouldNotLoad` where its meaning is. `errors.Is` still reaches
+  it through `MigrateFile`, and `internal/httpapi/update.go`'s two cases needed
+  no change at all. A sentinel moved into `internal/config` would have had to
+  mean "would not load" for a caller that cannot ask that question.
+- **`config.StagedPath(path)` exists for the same reason `BackupPath` does**:
+  `internal/updater/config_test.go` asserts nothing was left at that name, and a
+  test spelling `.migrating` itself would pass vacuously the day the constant
+  moved.
+- **`configMigrate` reports on `(migrated, err)` and not on `err` alone.**
+  `MigrateFile`'s deferred cleanup can join an error onto a *successful*
+  migration; "your file is unchanged" would then be a lie that sends the
+  operator to the wrong file. It is the only branch there where `migrated` is
+  true and `err` is not nil.
+- **The quickstart leftover check was asserting nothing.** It looked for
+  `.tmp-`, which was `cmd/crswd`'s own writer's prefix; `config.WriteFile` never
+  wrote such a name. It now names `.migrating` and `.crswd-tmp-` — and the
+  temporary file is `.crswd-tmp-` rather than `.crswd-config-` because
+  `place.go` writes systemd units through the same call (Iteration 3's finding,
+  which was handed to this task).
+- **Mutation-checked, four ways**, all caught: renaming into place before
+  `accept` sees the bytes (failed in *both* packages), dropping the staged
+  file's removal (both again), and each half of the drift guard — a caller that
+  stops calling `MigrateFile`, and a caller that grows an `os.Rename` of its own.
+- **The guard is an AST scan of two files by path** (`../../cmd/crswd/config_cmd.go`,
+  `../updater/config.go`) from `internal/config`'s own test, where
+  `docs_test.go` already reads `../../README.md`. It parses rather than compiles,
+  so it still runs when the file it is judging does not build.
 
-1. **Iteration 7's "no live doc claims htmx any more" is wrong, and
-   `docs/components.md` is the file it missed.** `grep -c htmx docs/components.md`
-   is **4**. Two are the negation the tree wants (the preamble's "There is no htmx
-   in this tree", and the pane's "never an htmx swap that treats the payload as
-   markup"). The other two are in the pane viewer's blockquote and one of them is
-   a live positive recommendation: **"htmx is still the right tool for the rest of
-   the dashboard."** That contradicts `AGENTS.md`'s `web/` row ("no htmx"), which
-   T001 wrote this milestone, and the same page's own preamble. The sentence is
-   inherited from `specs/002-access-dashboard/research.md:129`, written before the
-   library was dropped. **Not fixed:** T008's scope is self-history, one task per
-   iteration, and the blockquote around it is half a security rule — deleting a
-   clause out of it is a `docs/security.md` reader's job, not a passing edit.
-   Worth a task: it is one sentence, and it is the last htmx claim in a live doc.
-2. **The pane blockquote is a fifth self-narrating site, and it duplicates the
-   bullet three lines under it.** "This snippet used to show exactly that, and it
-   was wrong: a session printing `<img src=x onerror=...>` would have executed
-   it" is memoir; the rule it guards ("**Text nodes only** … never an htmx swap
-   that treats the payload as markup") is already the first bullet of the section.
-   T008 named four passages and this is not one of them, so it stands. **Whoever
-   takes finding 1 should take this with it** — same six lines, and the concrete
-   `<img src=x onerror=...>` example is the part worth keeping.
-3. **Two smaller self-references were left deliberately, because they are already
-   at the size T008 asks for**: "this is what fills the action-row parameter
-   earlier versions of this document described as present-but-empty" (Action
-   controls), and "this bullet used to end by saying an outcome needs no live
-   region at all…" (Accessibility floor). One clause and one sentence — compressing
-   further would cost the reason and save nothing.
-4. **Iteration 7's finding 1 stands:** `TestTheOpeningScreenIsSentWithoutWaiting-
-   OutAnInterval` (`stream_test.go:991`) is a 1ms margin against a 10ms interval
-   and will fail on a loaded CI host. It did not recur here, which is not
-   evidence it is fixed.
-5. **The standing operational findings all stand, none of them touched by
-   milestone 14:** no shipped `cloudflared` unit while two files assume one; the
-   systemd drop-in that is probably the better answer to Path 2 step 2 and is
-   unverified on this host; `install.sh`'s printed next steps omitting
-   `loginctl enable-linger`; `docs/auth-and-sessions.md`'s colliding "two doors"
-   and its "the skill"; and `deploy/README.md`'s Access-only "Verifying the
-   exposure model". **All five are the next milestone's material** — four of them
-   are `deploy/` and installer work that this documentation milestone had no task
-   for, and the fifth is a file the plan put out of scope by name.
+**Left:** nothing in the plan. T001–T007 are all ticked.
+
+**Findings — noticed, not fixed:**
+
+- **⚠️ Still open, and it is a spec question, not a bug:** the migration runs in
+  the **old** binary, so a rename shipped in v0.90 is applied by the update
+  *after* the one that installs v0.90. Today that costs nothing (`renamedKeys`
+  is empty, `SchemaVersion` is 1). T007 makes one of the two fixes cheaper —
+  `crswd config migrate` in the staged candidate is now the same code the
+  updater runs, so exec-ing it would change *when* it runs and nothing else —
+  but which fix is right needs somebody to decide. **Do not "fix" it silently.**
+- **`internal/httpapi/settings_edit.go` was left alone** (AR-008). It writes one
+  key rather than migrating a schema, and it validates *before* it writes rather
+  than after, which it can because it has the daemon's environment and no
+  rewrite to stage. It already goes through `config.WriteFile`, so it is not a
+  fourth write path — it is a different operation through the one writer.
+- **`README.md:801` says `config migrate` is "the only thing that rewrites a
+  configuration file wholesale".** Line 198 already says an update is that
+  command run for you, so the two read consistently — but if anyone edits either
+  sentence, they are now describing one implementation and should say so.
+- **`internal/httpapi/render.go` is still the only file `gofmt -l .` names**, and
+  `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is still wall-clock
+  flaky (10ms deadline). Both are fix-lane one-liners nobody has taken.
+- **The `quickstart` suite as a whole still could not be run**: `127.0.0.1:8765`
+  is held by the deployed daemon. `go vet -tags quickstart ./...` is clean and
+  the four cases that take their own port were run in full and pass
+  (`TestMigrateKeepsBackup`, `TestConfigCheckDoesNotStart`,
+  `TestFallsBackToBackupLoudly`, `TestEveryDocumentedTrailCommandSurvivesTheStream`).
+  `-tags tmux` and `-tags dev` were run in full and pass, as did
+  `golangci-lint run` (v2.12.2, 0 issues).
+
+---
+
+Every task in the plan is checked and the tree is green: build, vet, `go test ./...`,
+`-tags tmux`, `-tags dev` and `golangci-lint run` all pass, as do the quickstart
+cases that do not need the port the deployed daemon holds.
 
 RALPH_COMPLETE

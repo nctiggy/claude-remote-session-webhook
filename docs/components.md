@@ -140,6 +140,26 @@ input is labelled by `aria-label` rather than a visible `<label>`, because the r
 header beside it already says the key and a second copy is the same word twice to
 anybody reading it aloud.
 
+**The Updates section says what became of this host's systemd unit, and it does
+it with no class of its own.** It is three rows of the same `.version-facts`
+list the versions are in — a sentence under "Systemd unit", and, only when there
+really is a file on the disk, "Waiting at" naming `crswd.service.new` and
+"Compare them" carrying the `diff` command. That list is already two terms and
+two answers, so a fourth fact stated in the shape the page has needs no fourth
+name; a spelling of its own would be the second vocabulary this document exists
+to prevent.
+
+It belongs in that section because the unit is the other file an update carries.
+Which sentence applies is chosen in Go (`unitFactsOf`) from the files on this
+host, never from a comparison made in the template and never from a release this
+render went and asked — and the sentence for a unit this daemon did not write
+says that nothing newer is *waiting*, which is what the daemon observed, rather
+than that theirs is current, which only an update is in a position to know. **It
+is the one sentence on this page that carries a value**, and the value is a path:
+an operator who cannot find the new unit cannot diff it, and a difference nobody
+can see is a decision nobody can take. The command is rendered as text like
+everything else here — this daemon prints it and never runs it.
+
 No rain sits behind it: the effect is permitted behind the header and in the empty
 state and nowhere else, and a table of values is content being read.
 

@@ -59,6 +59,7 @@ import (
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/updater"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
@@ -220,6 +221,22 @@ type updatePanel struct {
 	AvailableNotes string
 	Reachable      bool
 	Token          string
+
+	// Unit is what became of this host's systemd unit, which belongs in this
+	// section because it is the other file an update carries (M15/T004).
+	//
+	// It is updater.UnitFacts rather than a projection of this page's own,
+	// because the journal says the same thing at startup (M15/T005) and one file
+	// described two ways is two accounts an operator has no way to reconcile.
+	// The sentences, the waiting file and the diff command are all
+	// internal/updater's — see facts.go, which argues that at length.
+	//
+	// The zero value renders nothing at all, which is a daemon with no update
+	// path wired behind it — every server this package's own tests build. A
+	// shipping daemon always has one (liveSelfUpdate), and selfUpdate.wired
+	// refuses the update route rather than letting a dropped wiring look like a
+	// host with nothing to carry.
+	Unit updater.UnitFacts
 }
 
 // settingRow is one configuration key as the page states it.
@@ -756,6 +773,23 @@ func (s *Server) updatePanelFor(r *http.Request, operator *access.VerifiedOperat
 	}
 
 	panel := &updatePanel{Installed: buildinfo.Version, Token: token}
+
+	// What became of the other file an update carries, read off this disk and
+	// composed on every render — before the Check below, because it costs no
+	// network at all (M15/T004).
+	//
+	// It reads the files rather than anything an update recorded, which is
+	// updater.UnitReport's whole design: the crswd.service.new an operator
+	// diffs *is* the claim that there is a newer unit than theirs, so it is what
+	// decides what this page says. A second account, persisted by the update,
+	// would be free to go stale the moment somebody took the offer.
+	//
+	// Nil is a daemon with no update path behind it, which is every server this
+	// package's tests build and no daemon New returns. The zero UnitFacts renders
+	// nothing rather than a sentence about a host nothing looked at.
+	if s.updates.unit != nil {
+		panel.Unit = updater.DescribeUnit(s.updates.unit.Report())
+	}
 
 	// Asked for, never assumed. Without this the page is only as fast and as
 	// available as somebody else's API, on behalf of an operator who may have
