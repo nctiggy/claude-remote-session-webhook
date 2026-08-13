@@ -68,6 +68,23 @@ var sessionBase = []string{
 	// session that starts and then behaves strangely, which is the worst of the
 	// available failures.
 	"XDG_RUNTIME_DIR",
+
+	// Where tmux puts its socket directory. Dropping it does not fail — it
+	// relocates: the server this daemon starts lands under /tmp/tmux-$UID while
+	// anything else on the host looks under $TMUX_TMPDIR, so a session is
+	// created successfully and is then invisible to every client that asks.
+	//
+	// Found by the quickstart suite, which sets it to isolate each run's servers
+	// from the operator's own, and which failed with "the first session is not on
+	// the host" — the session existed, on a server nobody was looking at. It is
+	// in the base set rather than left to the operator's pass-through list
+	// because a deployment that sets it would break in exactly that way, and the
+	// symptom names nothing that would lead anyone here.
+	//
+	// TMUX itself is deliberately NOT carried: it marks a process as running
+	// inside a tmux pane, and passing this daemon's would tell every session it
+	// was nested inside one.
+	"TMUX_TMPDIR",
 }
 
 // sessionBasePrefix is the family matched by prefix rather than by name.

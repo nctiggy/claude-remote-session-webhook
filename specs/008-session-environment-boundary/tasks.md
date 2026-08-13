@@ -130,10 +130,10 @@ Single Go project at the repository root: `internal/`, `cmd/crswd/`, `deploy/`,
 
 ## Phase 6: Polish & Cross-Cutting
 
-- [ ] T039 Run the full gate: `go build ./...`, `go vet ./...`, `go test ./...`, `-tags tmux`, `-tags dev`, `golangci-lint run`, `gofmt -l .`
-- [ ] T040 Run `go test ./internal/httpapi -run TestEditRefusesAValueThatWouldNotLoad` **from inside a session** and confirm it passes — SC-005, and the end-to-end proof that FR-003 holds
-- [ ] T041 [P] Walk [quickstart.md](./quickstart.md) scenarios 1–8 against a real host and record which could not be run and why, rather than reporting green on unrun cases
-- [ ] T042 Confirm `deploy/crswd.example.service` is **unchanged** by this feature — it stays hardened, and PR #137's guard against inline `CRSW_` assignments still passes
+- [X] T039 Run the full gate: `go build ./...`, `go vet ./...`, `go test ./...`, `-tags tmux`, `-tags dev`, `golangci-lint run`, `gofmt -l .`
+- [X] T040 Run `go test ./internal/httpapi -run TestEditRefusesAValueThatWouldNotLoad` **from inside a session** and confirm it passes — SC-005, and the end-to-end proof that FR-003 holds
+- [X] T041 [P] Walk [quickstart.md](./quickstart.md) scenarios 1–8 against a real host and record which could not be run and why, rather than reporting green on unrun cases
+- [X] T042 Confirm `deploy/crswd.example.service` is **unchanged** by this feature — it stays hardened, and PR #137's guard against inline `CRSW_` assignments still passes
 
 ---
 
@@ -189,3 +189,30 @@ Two things not to defer inside US1:
 2. **T036's limitation is documented in the same change**, not later. Sessions running at
    upgrade stay exposed until recreated, and a host that is quietly still leaking while
    being reported as fixed is the failure this whole feature exists to end.
+
+---
+
+## Implementation notes (recorded during Phase 6)
+
+- **T004 ran in Phase 4, not Phase 2.** It asserts against the drop-in path
+  `install.sh` only gains in T026, so running it where the plan placed it would
+  have meant committing a red tree. The constant it holds (T003) did land in
+  Phase 2 as planned.
+- **`TMUX_TMPDIR` was missing from the base set and the quickstart suite caught
+  it.** Dropping it does not fail, it *relocates*: the daemon's tmux server lands
+  under `/tmp/tmux-$UID` while every client looks under `$TMUX_TMPDIR`, so a
+  session is created successfully and is then invisible to everything that asks.
+  The symptom was "the first session is not on the host" and named nothing that
+  would lead anyone to the cause. This is exactly the risk R3 recorded for an
+  allowlist, arriving on the first real run.
+- **The tmux stub is driven entirely through the environment**, so it stopped
+  being told it was a stub the moment `run` stopped passing one. The harness now
+  carries its control variables explicitly — the change working, not a concession.
+- **`TestMigrateKeepsBackup` is wall-clock fragile**: it took 21.4s against a
+  20s per-command budget and fails under load. Pre-existing, unrelated to this
+  feature, and worth a fix-lane task of its own.
+- **SC-005 is proven but not observable from this session.** The session running
+  this work was created by the *old* daemon and still holds `CRSW_MAX_SESSIONS`;
+  a process's environment cannot be changed from outside it. The test passes with
+  that one variable cleared and fails without — which is the whole of what the
+  fix changes for sessions created from now on.

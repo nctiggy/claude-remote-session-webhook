@@ -43,8 +43,13 @@ func daemonEnvironment() []string {
 		"LANG=en_US.UTF-8",
 		"LC_TIME=en_GB.UTF-8",
 		"XDG_RUNTIME_DIR=/run/user/1000",
+		"TMUX_TMPDIR=/run/user/1000/tmux",
 		"SSH_AUTH_SOCK=/run/user/1000/keyring/ssh",
 		"EDITOR=vim",
+
+		// Never carried: it marks a process as running inside a tmux pane, and
+		// passing this daemon's would tell every session it was nested.
+		"TMUX=/tmp/tmux-1000/default,123,0",
 
 		// The three the daemon must never pass on, and the reason this file
 		// exists. All arrive through EnvironmentFile in the shipped unit.
@@ -93,10 +98,23 @@ func TestSessionEnvironmentIsAWorkingShell(t *testing.T) {
 
 	got := envOf(t, config.SessionEnvironment(daemonEnvironment(), nil))
 
-	for _, name := range []string{"HOME", "PATH", "SHELL", "USER", "LOGNAME", "TERM", "LANG", "XDG_RUNTIME_DIR"} {
+	for _, name := range []string{"HOME", "PATH", "SHELL", "USER", "LOGNAME", "TERM", "LANG", "XDG_RUNTIME_DIR", "TMUX_TMPDIR"} {
 		if _, ok := got[name]; !ok {
 			t.Errorf("a session would start without %s", name)
 		}
+	}
+
+	// TMUX_TMPDIR earns its own sentence because dropping it does not fail, it
+	// relocates: the server lands under /tmp/tmux-$UID while every client looks
+	// under $TMUX_TMPDIR, so sessions are created and are then invisible.
+	if got["TMUX_TMPDIR"] != "/run/user/1000/tmux" {
+		t.Errorf("TMUX_TMPDIR = %q; a session whose tmux socket directory moved is one nothing can find", got["TMUX_TMPDIR"])
+	}
+
+	// TMUX is the opposite case: carrying it would tell every session it was
+	// running inside a tmux pane that is not its own.
+	if _, ok := got["TMUX"]; ok {
+		t.Error("TMUX was carried into a session, which claims it is nested inside this daemon's own pane")
 	}
 
 	// LC_* is a family rather than a name. Locale variables are numerous and
@@ -157,7 +175,7 @@ func TestSessionEnvironmentIsTheWholeEnvironment(t *testing.T) {
 		if strings.HasPrefix(name, "LC_") {
 			return true
 		}
-		return slices.Contains([]string{"HOME", "PATH", "SHELL", "USER", "LOGNAME", "TERM", "LANG", "XDG_RUNTIME_DIR"}, name)
+		return slices.Contains([]string{"HOME", "PATH", "SHELL", "USER", "LOGNAME", "TERM", "LANG", "XDG_RUNTIME_DIR", "TMUX_TMPDIR"}, name)
 	}
 	for name := range got {
 		if !allowed(name) {
