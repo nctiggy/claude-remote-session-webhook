@@ -26,6 +26,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/updater"
 )
 
 const readmePath = repoRoot + "/README.md"
@@ -153,5 +155,85 @@ func TestReleaseHasNoDependencies(t *testing.T) {
 	}
 	if bytes.Contains(mod, []byte("require")) {
 		t.Errorf("%s carries a require block:\n%s", modulePath, mod)
+	}
+}
+
+// deployREADMEPath is the operator's longer half of the deployment story.
+const deployREADMEPath = repoRoot + "/deploy/README.md"
+
+// TestTheDocsSendOperatorsToPathsThatExist holds the prose to the constants the
+// code composes.
+//
+// Every path named in these documents is one an operator will type. A drop-in
+// path that drifts from the one systemd reads sends them to edit a file that
+// changes nothing — present, correct, and silently not in effect, which is the
+// hardest possible thing to debug and exactly what this milestone set out to
+// stop producing.
+func TestTheDocsSendOperatorsToPathsThatExist(t *testing.T) {
+	t.Parallel()
+
+	home := "/home/operator"
+	unit := updater.NewUnit(func(name string) string {
+		if name == "HOME" {
+			return home
+		}
+		return ""
+	})
+
+	// As an operator reads them: `~/…` rather than an absolute path.
+	tilde := func(p string) string { return "~" + strings.TrimPrefix(p, home) }
+
+	for _, path := range []string{deployREADMEPath, readmePath} {
+		body, err := os.ReadFile(path) //nolint:gosec // G304: path comes from the two constants above.
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(body), tilde(unit.DropInPath())) {
+			t.Errorf("%s never names %s, so an operator told to add a hardening override has no path to add it at",
+				path, tilde(unit.DropInPath()))
+		}
+	}
+}
+
+// TestTheDeployDocsNameTheProtectKernelTunablesTrap is FR-015.
+//
+// Measured: relaxing NoNewPrivileges alone leaves NoNewPrivs at 1, because
+// ProtectKernelTunables=true implies it and systemd treats that as a floor. An
+// operator who trims the override to "just the setting I need" gets a file that
+// does nothing, and `sudo` still fails with no visible cause. Documentation that
+// omitted this would be documentation that produces that afternoon.
+func TestTheDeployDocsNameTheProtectKernelTunablesTrap(t *testing.T) {
+	t.Parallel()
+
+	body, err := os.ReadFile(deployREADMEPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", deployREADMEPath, err)
+	}
+	for _, want := range []string{"ProtectKernelTunables", "implies"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("%s does not mention %q; an override missing that line is inert rather than weaker", deployREADMEPath, want)
+		}
+	}
+}
+
+// TestTheDeployDocsSayRunningSessionsKeepTheirEnvironment is the limit stated
+// rather than papered over.
+//
+// A process's environment cannot be changed from outside it, so a pane started
+// by an older build keeps the secret it was given until it is recreated — and
+// nothing on the host can tell the operator that, because nothing can look. A
+// host reported as fixed while still leaking is worse than one reported as
+// leaking, so the documentation is the only place this can be said.
+func TestTheDeployDocsSayRunningSessionsKeepTheirEnvironment(t *testing.T) {
+	t.Parallel()
+
+	body, err := os.ReadFile(deployREADMEPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", deployREADMEPath, err)
+	}
+	for _, want := range []string{"recreate", "cannot be changed from outside"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("%s does not tell the operator that already-running sessions keep their environment (%q missing)", deployREADMEPath, want)
+		}
 	}
 }

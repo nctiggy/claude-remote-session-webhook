@@ -254,6 +254,25 @@ sentence from one read — because a host nobody has ever pointed a browser at i
 still owed the answer. What taking a `.new` does *not* hand over, and how to hand it
 over deliberately, is [`deploy/README.md`](deploy/README.md).
 
+**If you need `sudo` inside a session, do not edit the unit for it.** That is what
+puts a host in the last row above permanently. Hardening lives in systemd's file
+rather than in the daemon's configuration, so it goes in a drop-in at
+`~/.config/systemd/user/crswd.service.d/10-relax.conf` — which nothing here ever
+touches, so your unit stays replaceable and your change survives every update.
+`install.sh` asks at install time and writes it if you say yes; the file, the trap
+that makes a careless copy of it do nothing, and how to migrate a unit you already
+edited are all in [`deploy/README.md`](deploy/README.md).
+
+**A session does not get the daemon's environment.** It receives `HOME`, `PATH`,
+`SHELL`, `USER`, `LOGNAME`, `TERM`, `LANG`, `LC_*` and `XDG_RUNTIME_DIR`, and
+nothing else — the shared secret, the Access values and every `CRSW_` setting stay
+on this side of it, because a session runs `claude --dangerously-skip-permissions`
+and whatever is in its environment is one `env` away from being pane content.
+`CRSW_SESSION_ENVIRONMENT` names anything more a particular workflow needs.
+**Sessions already running when you upgrade keep the environment they were started
+with** — a process's environment cannot be changed from outside — so recreate them,
+and rotate the shared secret if one of them ever held it.
+
 ### A release, without the installer
 
 Every release carries a tarball per architecture, `SHA256SUMS`, `SHA256SUMS.sig`,

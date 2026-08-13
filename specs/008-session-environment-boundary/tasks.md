@@ -113,16 +113,16 @@ Single Go project at the repository root: `internal/`, `cmd/crswd/`, `deploy/`,
 
 ### Tests
 
-- [ ] T032 [P] [US3] Extend the documentation test in `internal/config/deployexample_test.go` (or `internal/release/readme_test.go`) so the drop-in path, the unit path and the record path named in prose are held to the constants from T003 — an operator must never be sent to diff a file that is not there
-- [ ] T033 [P] [US3] Assert `deploy/README.md` names the `ProtectKernelTunables` trap, since an operator who relaxes only the obvious setting finds `sudo` still broken with nothing that looks like the cause (FR-015)
+- [X] T032 [P] [US3] Extend the documentation test in `internal/config/deployexample_test.go` (or `internal/release/readme_test.go`) so the drop-in path, the unit path and the record path named in prose are held to the constants from T003 — an operator must never be sent to diff a file that is not there
+- [X] T033 [P] [US3] Assert `deploy/README.md` names the `ProtectKernelTunables` trap, since an operator who relaxes only the obvious setting finds `sudo` still broken with nothing that looks like the cause (FR-015)
 
 ### Implementation
 
-- [ ] T034 [US3] Document in `deploy/README.md` what taking the drop-in does and does **not** hand over, under the section that already explains why the unit looks the way it does
-- [ ] T035 [US3] Document the migration procedure in `deploy/README.md`: move deviations into the drop-in, restore the shipped unit, and record the digest — noting that migration also moves the binary to the shipped `ExecStart` path (FR-016)
-- [ ] T036 [US3] Document in `deploy/README.md` that sessions **running** at upgrade keep their old environment and must be recreated, since a process's environment cannot be changed from outside (data-model V13) — the limit stated rather than papered over
-- [ ] T037 [P] [US3] Add the branches to `README.md` beside the update table it already carries, so an operator can read what an update does before deciding to run one
-- [ ] T038 [P] [US3] Record the session-environment boundary in `docs/security.md` beside the existing "Session output is secret" rule, which this feature makes enforceable from the inside
+- [X] T034 [US3] Document in `deploy/README.md` what taking the drop-in does and does **not** hand over, under the section that already explains why the unit looks the way it does
+- [X] T035 [US3] Document the migration procedure in `deploy/README.md`: move deviations into the drop-in, restore the shipped unit, and record the digest — noting that migration also moves the binary to the shipped `ExecStart` path (FR-016)
+- [X] T036 [US3] Document in `deploy/README.md` that sessions **running** at upgrade keep their old environment and must be recreated, since a process's environment cannot be changed from outside (data-model V13) — the limit stated rather than papered over
+- [X] T037 [P] [US3] Add the branches to `README.md` beside the update table it already carries, so an operator can read what an update does before deciding to run one
+- [X] T038 [P] [US3] Record the session-environment boundary in `docs/security.md` beside the existing "Session output is secret" rule, which this feature makes enforceable from the inside
 
 **⚠️ Trap inherited from milestone 14**: any line beginning `journalctl` in either README is executed by the `quickstart` suite against a captured stream and must reject a truncated record. Adding one to a fenced block fails a suite that may not be runnable on this host.
 
