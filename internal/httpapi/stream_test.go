@@ -1658,14 +1658,15 @@ func TestAReapedSessionEndsTheStreamThatWasWatchingIt(t *testing.T) {
 	// elapsed time and the manager's is pinned, and the two must not have to agree
 	// about anything.
 	live, _ := f.fixture.plant(t, session.Session{
-		Name: "watch me", WorkDir: f.fixture.repo, LastActivity: idleAt(testTime),
+		Name: "watch me", WorkDir: f.fixture.repo,
+		CreatedAt: pastItsCeilingAt(testTime), LastActivity: pastItsCeilingAt(testTime),
 	})
 	f.fixture.tmux.SetPane(live.TmuxName(), screen)
 
 	opened := time.Now()
 	resp := f.watch(t, addr, live.ID) //nolint:bodyclose // watch closes it in t.Cleanup, which the linter cannot see through.
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /sessions/%s/stream = %d; want %d — a session past its idle bound is still running until the sweep takes it",
+		t.Fatalf("GET /sessions/%s/stream = %d; want %d — a session past its ceiling is still running until the sweep takes it",
 			live.ID, resp.StatusCode, http.StatusOK)
 	}
 

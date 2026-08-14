@@ -65,7 +65,7 @@ func TestFakeRecordsExactArgv(t *testing.T) {
 		{Op: tmuxctl.OpCapturePane, Argv: []string{"tmux", "capture-pane", "-p", "-t", "=" + fakeName + ":"}},
 		{Op: tmuxctl.OpKill, Argv: []string{"tmux", "kill-session", "-t", "=" + fakeName}},
 		{Op: tmuxctl.OpHas, Argv: []string{"tmux", "has-session", "-t", "=" + fakeName}},
-		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}|#{session_activity}"}},
+		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}|#{@crswd-lifetime}"}},
 	}
 
 	got := f.Calls()
@@ -419,15 +419,17 @@ func TestFakeNewStampsCreatedFromTheInjectedClock(t *testing.T) {
 	}
 }
 
-// The activity time has to survive the round trip through the fake, or nothing
-// downstream of it can be tested: a fake that took a value and returned zero
-// would let the idle clock pass against a daemon that never reads the field.
-func TestFakeListReportsTheActivityTime(t *testing.T) {
+// The lifetime has to survive the round trip through the fake, or nothing
+// downstream of it can be tested. This is the exact shape of the milestone 15
+// defect, one layer down: the daemon wrote a lifetime nobody stored and read one
+// nobody returned, and every adoption test passed while a never-expiring session
+// came back mortal. A fake that agrees with the daemon about a field neither of
+// them carries proves nothing at all.
+func TestFakeListReportsTheLifetime(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	created := time.Date(2026, 8, 2, 11, 0, 0, 0, time.UTC)
-	busy := created.Add(90 * time.Minute)
 	const seeded = "crswd-1111111111111111111111111111abcd"
 
 	f := tmuxctl.NewFake()
@@ -435,10 +437,13 @@ func TestFakeListReportsTheActivityTime(t *testing.T) {
 	if err := f.New(ctx, fakeName, fakeWorkDir); err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// A session that survived a restart brings its own activity time with it,
-	// the way a real one does — adoption reads it off the host, it is not reset
-	// to the moment the daemon noticed.
-	f.Seed(tmuxctl.SessionInfo{Name: seeded, Created: created, Activity: busy, Managed: true})
+	if err := f.SetOption(ctx, fakeName, tmuxctl.OptionLifetime, "72h0m0s"); err != nil {
+		t.Fatalf("SetOption: %v", err)
+	}
+	// A session that survived a restart brings its own lifetime with it, the way
+	// a real one does — adoption reads it off the host rather than assuming the
+	// daemon's default, which is the whole of the fix.
+	f.Seed(tmuxctl.SessionInfo{Name: seeded, Created: created, Lifetime: "never", Managed: true})
 
 	got, err := f.List(ctx)
 	if err != nil {
@@ -449,38 +454,35 @@ func TestFakeListReportsTheActivityTime(t *testing.T) {
 	}
 	byName := map[string]tmuxctl.SessionInfo{got[0].Name: got[0], got[1].Name: got[1]}
 
-	// A session that has just been created has done nothing since, which is the
-	// only honest reading of "last activity" for it.
-	if a := byName[fakeName].Activity; !a.Equal(created) {
-		t.Errorf("a new session's Activity = %v, want its creation time %v", a, created)
+	if l := byName[fakeName].Lifetime; l != "72h0m0s" {
+		t.Errorf("a created session's Lifetime = %q, want %q", l, "72h0m0s")
 	}
-	if a := byName[seeded].Activity; !a.Equal(busy) {
-		t.Errorf("a seeded session's Activity = %v, want the seeded %v", a, busy)
+	if l := byName[seeded].Lifetime; l != "never" {
+		t.Errorf("a seeded session's Lifetime = %q, want %q", l, "never")
+	}
+}
+
+// A session whose lifetime was never set reads back empty, which is "unknown"
+// and not "none". Every session created before the option existed is this case,
+// and adoption must hand it the daemon's default rather than refuse it.
+func TestFakeListReportsNoLifetimeWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	f := tmuxctl.NewFake()
+	if err := f.New(ctx, fakeName, fakeWorkDir); err != nil {
+		t.Fatalf("New: %v", err)
 	}
 
-	f.SetActivity(fakeName, busy)
-	got, err = f.List(ctx)
+	got, err := f.List(ctx)
 	if err != nil {
-		t.Fatalf("List after SetActivity: %v", err)
+		t.Fatalf("List: %v", err)
 	}
-	for _, s := range got {
-		if s.Name == fakeName && !s.Activity.Equal(busy) {
-			t.Errorf("Activity after SetActivity = %v, want %v", s.Activity, busy)
-		}
+	if len(got) != 1 {
+		t.Fatalf("List returned %d sessions, want 1", len(got))
 	}
-
-	// The zero time is a host that gave no readable answer. It must come back as
-	// zero rather than as anything a caller could mistake for a real reading —
-	// deciding what it means is the caller's job, and it is not "reap it".
-	f.SetActivity(fakeName, time.Time{})
-	got, err = f.List(ctx)
-	if err != nil {
-		t.Fatalf("List after clearing the activity time: %v", err)
-	}
-	for _, s := range got {
-		if s.Name == fakeName && !s.Activity.IsZero() {
-			t.Errorf("Activity = %v, want the zero time", s.Activity)
-		}
+	if got[0].Lifetime != "" {
+		t.Errorf("Lifetime = %q, want empty for a session that never had one set", got[0].Lifetime)
 	}
 }
 

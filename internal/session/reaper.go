@@ -14,7 +14,7 @@ import (
 //
 // plan.md fixes it at 30 seconds, and the only thing that matters about the
 // number is the property behind it: the sweep's resolution must be finer than
-// the timeouts it enforces, or the bounds an operator reads in
+// the lifetime it enforces, or the bound an operator reads in
 // docs/auth-and-sessions.md are not the bounds the host applies. The deadlines
 // themselves stay exact — they are derived from the record, never from whenever
 // a sweep happened to run — so the interval only decides how long a session
@@ -27,21 +27,21 @@ const SweepInterval = 30 * time.Second
 
 // Expiry is which bound a session was past when the reaper took it.
 //
-// The distinction is not the caller's — nobody is holding a request open for a
-// reaped session — it is the operator's. "Idle for an hour" and "ran for a day"
-// are different facts about how the host is being used, and the trail is where
-// they are read (T038 emits reaper.destroy).
+// There is one, and the type is kept anyway. The trail names the bound in every
+// reaper.destroy record, and a record that stopped naming it would be a change to
+// the operator's own vocabulary made in passing while removing something else —
+// which is the churn Principle IV rules out. A second bound added here later
+// finds the shape it needs already in place.
 type Expiry string
 
 const (
-	// ExpiryIdle is IdleTimeout since the last request touched the record
-	// (FR-038). It is the bound a session that was abandoned rather than
-	// destroyed dies of.
-	ExpiryIdle Expiry = "idle"
-
 	// ExpiryAbsolute is AbsoluteLifetime since the session began, and it is the
 	// one that cannot be renewed: no amount of use moves it, which is exactly
-	// what makes it a ceiling rather than a longer idle timeout.
+	// what makes it a ceiling.
+	//
+	// It became the only one in milestone 15. There was an idle bound beside it
+	// until then — the bound that destroyed four sessions on 2026-08-14 one hour
+	// after a restart re-adopted them — and constitution 2.0.0 withdrew it.
 	ExpiryAbsolute Expiry = "absolute"
 )
 
@@ -75,11 +75,11 @@ func systemTicker(d time.Duration) (<-chan time.Time, func()) {
 
 // Reaper is FR-038: the thing that ends a session nobody came back for.
 //
-// It exists because the alternative is enforcing the two lifetimes on the next
+// It exists because the alternative is enforcing the lifetime on the next
 // request, and the session that most needs to die is the one no request is
-// coming for. Principle VI names an idle timeout and an absolute lifetime
-// "enforced by a reaper, not by the next request" for that reason, and it is the
-// difference between a bound and a hope.
+// coming for. Principle VI names the absolute lifetime "enforced by a reaper,
+// not by the next request" for that reason, and it is the difference between a
+// bound and a hope.
 //
 // Everything it decides from belongs to the Manager it was built on — the same
 // clock, the same store, the same verified teardown. That is deliberate: a
@@ -186,15 +186,11 @@ func (r *Reaper) Sweep(ctx context.Context) ([]Reaped, error) {
 	var reaped []Reaped
 	var failures []error
 
-	// Ask the host what it has seen before judging anything on what the daemon
-	// was asked to do. A failure here is reported and swept through: the records
-	// keep the activity times they had, which is the reading that can only keep a
-	// session alive — and a sweep that stopped for it would stop enforcing the
-	// ceiling, which is the bound that has no other enforcer.
-	if err := r.mgr.syncActivity(ctx); err != nil {
-		failures = append(failures, err)
-	}
-
+	// No question is put to the host before judging. There was one until
+	// milestone 15 — the sweep read every session's #{session_activity} so the
+	// idle bound could see output the daemon never mediated — and the bound it
+	// served is gone. The ceiling is measured from CreatedAt, which the record
+	// already holds and nothing on the host can revise.
 	for _, s := range r.mgr.store.snapshot() {
 		expiry := expiredAt(s, now)
 		if expiry == "" {
@@ -224,12 +220,11 @@ func (r *Reaper) Sweep(ctx context.Context) ([]Reaped, error) {
 // (FR-042), and a reason built at the call site out of an error, a name, or a
 // path is how one gets in.
 const (
-	reasonPastIdle     = "the session was idle past its idle timeout"
 	reasonPastAbsolute = "the session had reached its absolute lifetime"
 
-	// reasonPastUnnamedBound is unreachable — expiredAt returns one of the two
-	// above or nothing at all — and fails closed rather than recording a bound
-	// the daemon did not decide, the same ruling errScopeRefused makes.
+	// reasonPastUnnamedBound is unreachable — expiredAt returns the one above or
+	// nothing at all — and fails closed rather than recording a bound the daemon
+	// did not decide, the same ruling errScopeRefused makes.
 	reasonPastUnnamedBound = "the session was past a bound this daemon has no name for"
 
 	// reasonUnconfirmed prefixes the reason of a teardown tmux would not
@@ -269,8 +264,6 @@ func reapRecord(s Session, expiry Expiry, err error) audit.Record {
 
 func reapReason(expiry Expiry) string {
 	switch expiry {
-	case ExpiryIdle:
-		return reasonPastIdle
 	case ExpiryAbsolute:
 		return reasonPastAbsolute
 	default:
@@ -279,28 +272,22 @@ func reapReason(expiry Expiry) string {
 }
 
 // expiredAt reports which bound s is past at now, or "" for a session still
-// inside both.
+// inside it.
 //
-// The ceiling is asked about first, so a session past both is recorded as having
-// hit the bound that cannot be renewed. That ordering is for the trail: an
-// operator reading "idle" about a session that had also been running for a day
-// would be reading the smaller of two true facts, and the one that could have
-// been avoided by using it.
-//
-// Both comparisons put the boundary on the dying side, matching CheckToken: at
+// The comparison puts the boundary on the dying side, matching CheckToken: at
 // the deadline the session is already over. A lifetime that is "24 hours plus
 // however long until the next tick" is not a lifetime anyone bounded — the tick
 // decides when the daemon notices, and it may not also decide when the session
 // was allowed to live until.
+//
+// A session whose absolute deadline is switched off is never past it: the
+// deadline is a century out (neverSpan), so this returns "" for the whole of any
+// real uptime rather than by way of a case that has to remember to skip it.
 func expiredAt(s Session, now time.Time) Expiry {
-	switch {
-	case !now.Before(s.AbsoluteDeadline()):
+	if !now.Before(s.AbsoluteDeadline()) {
 		return ExpiryAbsolute
-	case !now.Before(s.IdleDeadline()):
-		return ExpiryIdle
-	default:
-		return ""
 	}
+	return ""
 }
 
 // reportToLog is the last-resort channel for what a sweep could not say in the

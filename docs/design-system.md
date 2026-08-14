@@ -76,7 +76,7 @@ legibility at a glance beats theme purity:
 | State | Token | Value | Why this colour | Rendered when |
 |---|---|---|---|---|
 | `running` | `--state-running` | `#00ff41` | Alive, the phosphor itself | **Milestone 2** |
-| `idle` | `--state-idle` | `#3fa85c` | Alive but waiting — dimmer, not absent | **Milestone 2** |
+| `idle` | `--state-idle` | `#3fa85c` | Alive but waiting — dimmer, not absent | Withdrawn in milestone 15 |
 | `needs-auth` | `--state-auth` | `#ffb000` | Amber phosphor. In-world: real terminals had amber | Milestone 4 |
 | `dead` | `--state-dead` | `#ff4d4d` | The red pill — the one non-green the palette has earned | Not currently reachable |
 
@@ -85,10 +85,17 @@ for the sake of the theme. A dead session that reads as green is a bug.
 
 **Display state is derived, not stored.** The daemon writes only `starting` and
 `running` to a record, and deletes a record rather than marking it dead, so the
-interface computes what to show: **idle** when a session has had no activity for
-longer than the reaper's own idle threshold, **running** otherwise. `starting` has
-no token and never appears — the distinction from `running` lasts milliseconds and
-means nothing to an operator watching a fleet.
+interface computes what to show — and since milestone 15 it computes **running**
+for every live session. `starting` has no token and never appears: the distinction
+from `running` lasts milliseconds and means nothing to an operator watching a
+fleet.
+
+`idle` was the second derived state, shown when a session had produced nothing for
+longer than the reaper's idle threshold. The bound was withdrawn with constitution
+2.0.0 and the state went with it. **The token stays** — like `needs-auth` and
+`dead`, it must keep working in the status component, and a palette that lost a
+colour every time a state was withdrawn would be a palette rewritten by feature
+work.
 
 `needs-auth` and `dead` keep their tokens and must keep working in the status
 component. `needs-auth` arrives with the device-code relay; `dead` is unreachable
@@ -201,7 +208,7 @@ session grid.
 ┌──────────────────────────────────────────────┐
 │ CRSWD  session control        [operator ▾]   │  ← rain behind, .16
 ├──────────────────────────────────────────────┤
-│ [running] [idle] [needs auth] [dead]         │  ← summary first
+│ [running]                                    │  ← summary first
 │ ┌────────┐ ┌────────┐ ┌────────┐             │
 │ │ card   │ │ card   │ │ card   │             │  ← auto-fill, min 310px
 └──────────────────────────────────────────────┘

@@ -114,6 +114,26 @@ const (
 	// newline that would end the row early.
 	OptionStart = "@crswd-start"
 
+	// OptionLifetime carries the session's own absolute-lifetime override, and
+	// exists because until milestone 15 it did not (spec 009).
+	//
+	// A session created never to expire was adopted back after a restart with
+	// the daemon's default lifetime, because this was the one field of the
+	// record that the host did not hold — and on 2026-08-14 four such sessions
+	// were destroyed an hour after a redeploy. A switch that works until the
+	// next restart is a switch that works until it matters.
+	//
+	// Three values, and they are the configuration's own vocabulary rather than
+	// a fourth spelling of it: "" for unset, `never` for the deadline switched
+	// off, and a Go duration otherwise. internal/session parses it; this package
+	// carries it, because what a lifetime means belongs to the type that owns
+	// the rule.
+	//
+	// Raw, like OptionName and OptionStart. A duration is digits and unit
+	// letters and `never` is five letters, so neither can carry the "|" that
+	// separates list-sessions fields nor a newline that would end a row early.
+	OptionLifetime = "@crswd-lifetime"
+
 	// OptionManagedValue is what OptionManaged is set to. List only tests the
 	// option for emptiness, so this is a marker rather than data — but it is
 	// spelled once so a future reader does not have to check whether the value
@@ -144,15 +164,12 @@ type SessionInfo struct {
 	// an older build, and every one of those was started with the default.
 	StartCommand string
 
-	// Activity is tmux's own #{session_activity} — when the session last
-	// produced output. It is the only reading of "in use" that can see an agent
-	// still printing or a human typing in an attached terminal, neither of which
-	// ever reaches the daemon as a request. The idle clock without it measures
-	// daemon-mediated mutating calls and nothing else, which is why a session
-	// somebody was watching all afternoon got reaped at sixty minutes.
+	// Lifetime is OptionLifetime read back verbatim — "", `never`, or a duration
+	// string. It is a string rather than a time.Duration on purpose: this
+	// package executes tmux and reports what it said, and a parse here would be
+	// a second place that decides what a lifetime means.
 	//
-	// Zero means tmux gave no readable value. That is not an error, and it must
-	// never be read as "idle": a session with no usable activity time falls back
-	// to the record's own LastActivity, never to being reaped.
-	Activity time.Time
+	// Empty for a session created before OptionLifetime existed, which every
+	// caller must read as "unknown" and none as "none".
+	Lifetime string
 }

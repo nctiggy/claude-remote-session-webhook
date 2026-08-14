@@ -166,17 +166,21 @@ EnvironmentFile=-%h/.config/crswd/env
 # the other side instead of one Claude invented.
 # Environment=CRSW_REMOTE_CONTROL_COMMAND=
 
-# Session lifetimes (#37). Empty means the daemon's own defaults: 24h absolute,
-# 60m idle. The MAX pair are ceilings a per-session override may not exceed, and
-# default to the values above — so overrides buy nothing until a ceiling is
-# raised on purpose.
+# The session lifetime (#37). Empty means the daemon's own default of 24h. The
+# MAX ceiling bounds what a per-session override may ask for and defaults to the
+# value above — so an override buys nothing until the ceiling is raised on
+# purpose.
 #
-# There is no value meaning "never expires". The ceiling moves as far as an
-# operator wants; it does not go away.
+# CRSW_SESSION_LIFETIME_MAX takes `never`, which is what makes a session that
+# never expires reachable at all: a create may then switch its own absolute
+# deadline off, and that choice now survives a restart (@crswd-lifetime,
+# milestone 15). Two decisions by the same person, in two places.
+#
+# There was an idle timeout beside this, CRSW_IDLE_TIMEOUT and its _MAX. Both
+# were withdrawn with the bound in milestone 15. A configuration file still
+# setting either is refused at startup; `crswd config migrate` removes them.
 # Environment=CRSW_SESSION_LIFETIME=
 # Environment=CRSW_SESSION_LIFETIME_MAX=
-# Environment=CRSW_IDLE_TIMEOUT=
-# Environment=CRSW_IDLE_TIMEOUT_MAX=
 
 # There is no unit setting for the signed-request timestamp window (300s). It is
 # a constant in the code: it bounds the host, and a deployment that could widen

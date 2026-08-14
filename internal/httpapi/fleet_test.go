@@ -534,12 +534,12 @@ func TestTheReaperTakingASessionIsSeenByAnOpenFleet(t *testing.T) {
 	t.Parallel()
 
 	f, addr := watching(t)
-	// Idle past its deadline at the fixture's instant, and one that is not: a
-	// sweep that took the whole fleet would otherwise pass, and the second session
-	// is also what makes "one vanished" a claim rather than a coincidence.
+	// Past its ceiling at the fixture's instant, and one that is not: a sweep that
+	// took the whole fleet would otherwise pass, and the second session is also
+	// what makes "one vanished" a claim rather than a coincidence.
 	abandoned, _ := f.fixture.plant(t, session.Session{
 		Name: "abandoned", WorkDir: f.fixture.repo,
-		CreatedAt: idleAt(testTime), LastActivity: idleAt(testTime),
+		CreatedAt: pastItsCeilingAt(testTime), LastActivity: pastItsCeilingAt(testTime),
 	})
 	kept, _ := f.fixture.plant(t, session.Session{
 		Name: "still working", WorkDir: f.fixture.repo,
@@ -561,8 +561,8 @@ func TestTheReaperTakingASessionIsSeenByAnOpenFleet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sweep = _, %v; want a clean sweep", err)
 	}
-	if len(reaped) != 1 || reaped[0].Session.ID != abandoned.ID || reaped[0].Expiry != session.ExpiryIdle {
-		t.Fatalf("the sweep took %v; want the one session past its idle bound (%s)", reaped, abandoned.ID)
+	if len(reaped) != 1 || reaped[0].Session.ID != abandoned.ID || reaped[0].Expiry != session.ExpiryAbsolute {
+		t.Fatalf("the sweep took %v; want the one session past its ceiling (%s)", reaped, abandoned.ID)
 	}
 
 	if want := fleetChange(session.FleetVanished, abandoned.ID); !slices.Equal(awaitFleetChange(t, body, opened), want) {
@@ -570,7 +570,7 @@ func TestTheReaperTakingASessionIsSeenByAnOpenFleet(t *testing.T) {
 	}
 	onlyHeartbeatsFollow(t, body, opened, "the reaper took the abandoned session")
 
-	// The session inside both bounds is still there, so the card that stayed on
+	// The session inside its bound is still there, so the card that stayed on
 	// the page is a card the daemon still has.
 	if _, err := f.fixture.store.Get(kept.ID, auth.CallerOperator); err != nil {
 		t.Errorf("the sweep also took the session inside its bounds (%s): %v", kept.ID, err)

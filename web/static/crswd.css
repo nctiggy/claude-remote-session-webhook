@@ -760,6 +760,37 @@ body {
   margin: 0;
 }
 
+/* The create form's command readout (milestone 15, contracts/command-preview.md).
+
+   It is the pane's vocabulary at the form's scale: a command line is what a
+   terminal shows, and setting it in the body face would be this interface
+   describing shell in prose. Tokens only — no colour, size or face is written
+   here that the design system does not already name.
+
+   `white-space: pre-wrap` rather than the pane's `pre`. A pane is a fixed grid
+   the daemon must not reflow, and a long command line in a narrow column is a
+   line an operator on a phone would otherwise have to scroll horizontally to
+   read — which docs/design-system.md rules out for reading content. Wrapping is
+   safe here for the reason it is not there: this is one line of text to read,
+   not a rendered screen whose columns carry meaning.
+
+   `user-select: all` so a tap or a click takes the whole command, which is
+   FR-018's copyability without a button. A button would be a second control
+   beside a readout, and docs/components.md keeps one of those. */
+.command-preview {
+  overflow-wrap: anywhere;
+  margin: 0;
+  padding: var(--s3);
+  background: var(--surface);
+  border: var(--edge-width) solid var(--edge);
+  border-radius: var(--r);
+  color: var(--dim);
+  font: var(--fs-pane)/var(--lh-pane) var(--mono);
+  font-variant-ligatures: none;
+  white-space: pre-wrap;
+  user-select: all;
+}
+
 /* No marker: the roots are a set the operator scans, not an ordered argument,
    and a bullet column beside a monospace path reads as two columns. */
 .field-hint-list {

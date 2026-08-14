@@ -261,7 +261,7 @@ response happens until all four have been answered:
 |---|---|---|
 | 1 | Layer 1 — a validated **identity** assertion; a service-token assertion is refused as everywhere on this door | Nothing session-shaped is asked before the caller is known |
 | 2 | Cross-site refusal on `Sec-Fetch-Site` | Decided from one header, so a request the browser itself calls cross-site never causes a session to be looked up |
-| 3 | Ownership, through the read that does **not** advance the idle clock | Unknown, unowned, and already-dead are one uniform 404 — which it really was goes on the trail |
+| 3 | Ownership, through the read that records **no** driving | Unknown, unowned, and already-dead are one uniform 404 — which it really was goes on the trail |
 | 4 | Capacity, **last** | So a caller who was going to be refused anyway can never observe how much of this host is being watched |
 
 `Sec-Fetch-Site` is **present-and-wrong refuses; absent does not**. Browsers send it
@@ -293,24 +293,19 @@ the open closed over. A session that ended, expired, or stopped being the viewer
 stops delivering within one interval and **says so** rather than going quiet.
 Teardown does not have to find the watchers; the watchers keep asking.
 
-**Watching is not driving.** A stream must never advance the idle clock — milestone 1
-advances it in the single place a request resolves to a session, and the stream takes
-a second path that does not — and must never delay session teardown or daemon
-shutdown. A forgotten tab that postponed an idle deadline would hold an unsandboxed
-shell open for as long as it lives.
+**Watching is not driving.** A stream must never record a driving — milestone 1
+records one in the single place a request resolves to a session, and the stream
+takes a second path that does not — and must never delay session teardown or
+daemon shutdown.
 
-**The clock that rule is about is not the only one.** The idle deadline is measured
-from the later of two instants: the daemon's own last-activity stamp, advanced in that
-single place, and what tmux last saw the session itself produce. The rule above is
-unchanged by that and still binding — a stream advances neither — and the second clock
-is what makes declining browser reads affordable rather than merely strict: a session
-being worked in stays alive whether the work is the agent printing or a person typing
-in a terminal attached to it on this host, while a forgotten tab produces no output and
-so still keeps nothing alive. **The comparison is the fail-safe, and it must stay a
-comparison rather than becoming a usability test.** A tmux time that is absent,
-unparsable, or from a clock that disagrees can only fail to be the later of the two, so
-it falls back to the daemon's own stamp and can never shorten a session's life — there
-is no "is this value usable?" branch to get the wrong way round.
+**The stakes of that rule changed in milestone 15, and the rule did not.** It used
+to guard the idle deadline: a forgotten tab that postponed one would have held an
+unsandboxed shell open for as long as it lived. The idle bound was withdrawn with
+constitution 2.0.0, so what a stream could now corrupt is a card that says a
+session was driven more recently than it was. That is a smaller harm and not a
+reason to relax the rule — the property holds by construction rather than by
+discipline, and a path that started recording drivings would be a path that has to
+be re-reasoned about the next time something is measured from that stamp.
 
 Two more, for the same reason the session cap exists (constitution VI):
 
@@ -515,11 +510,15 @@ This is the most fragile thing in the project and the most sensitive:
 | Dashboard session cookie | 12 hours, on the password door only — the page token's number, chosen the same way. Carried *inside* the signed value and measured on the server's clock; the cookie's own `Max-Age` is a request to the browser, and a client that ignores it presents an expired value and is refused |
 | Sign-in attempts | 6 a minute per source address, burst 3, on the create route's own token bucket. A constant rather than a setting: it is an attacker's budget, not the operator's work. It is not what makes the password hard to guess — the sixteen-character minimum is — and it is spent before the two sides are compared, so a correct password does not buy its way past a spent budget |
 | Session bearer token TTL | 24 hours — deliberately equal to the absolute lifetime, and still equal to it on a session whose absolute deadline was removed, so that session's token does not expire either |
-| Session idle timeout | 60 minutes, then auto-destroy. Counted from the later of the session's two activity clocks: the last request that drove it, and what tmux itself last saw it print. A create may switch it off for its own session |
-| Session absolute lifetime | 24 hours, no renewal. A create may remove it altogether, but only on a daemon whose configured ceiling is itself unbounded (`CRSW_SESSION_LIFETIME_MAX=never`) — the one deadline that is never renewed is the operator's to remove and never a caller's alone |
+| Session absolute lifetime | 24 hours, no renewal. A create may remove it altogether, but only on a daemon whose configured ceiling is itself unbounded (`CRSW_SESSION_LIFETIME_MAX=never`) — the one deadline that is never renewed is the operator's to remove and never a caller's alone. What a create chooses is written onto the tmux session and restored on adoption, so the choice survives a restart |
 
-Idle and absolute timeouts are enforced by a reaper goroutine, not by the next
-request — an abandoned session must die on its own.
+There was a session idle timeout here — 60 minutes, counted from the later of two
+activity clocks — until milestone 15. Constitution 2.0.0 withdrew it: a session
+waiting for a human is quiet, and being quiet was never a reason to destroy one.
+
+The absolute lifetime is enforced by a reaper goroutine, not by the next request —
+an abandoned session must die on its own, and after this change it is the only
+thing that ends one nobody destroys.
 
 **The token TTL must never be shorter than the absolute lifetime.** A shorter token
 leaves a window where a live unsandboxed session exists that its owner cannot drive,
@@ -539,10 +538,12 @@ one of these two numbers, shorten both.
 - [ ] Unobtainable keys refuse rather than admit, and every layer-1 failure answers
       byte-identically
 - [ ] No `Access-Control-Allow-*` on any route, swept across every registered one
-- [ ] A stream re-evaluates authorisation every tick, never advances the idle clock,
-      and never delays teardown or shutdown
-- [ ] The idle deadline is the later of the two activity clocks, and a tmux time that
-      is absent or unusable falls back to the daemon's own stamp — never to reaping
+- [ ] A stream re-evaluates authorisation every tick, records no driving, and never
+      delays teardown or shutdown
+- [ ] A per-session lifetime override is written to `@crswd-lifetime` on create and
+      restored on adoption, and a restored value the *current* ceiling would refuse
+      is replaced by the configured default rather than honoured — with the
+      substitution on the trail
 - [ ] Every mutating browser route goes through the action gate, in the order layer 1
       → same-origin → page token, all of it before the handler runs
 - [ ] Each half of that gate has a test that refuses with the *other* half satisfied,

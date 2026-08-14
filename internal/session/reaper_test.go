@@ -134,213 +134,10 @@ func (m *manualTicker) run(t *testing.T, r *Reaper, ctx context.Context) func() 
 	}
 }
 
-// FR-038's first bound, at the instant it is reached. The nanosecond on either
-// side is the assertion: a session is not reaped early, and the deadline is not
-// "60 minutes and whatever the sweep felt like adding".
-func TestSweepEnforcesTheIdleBoundAtItsExactDeadline(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name  string
-		after time.Duration
-		want  bool
-	}{
-		{"a nanosecond before the deadline", IdleTimeout - time.Nanosecond, false},
-		{"exactly at the deadline", IdleTimeout, true},
-		{"long past the deadline", IdleTimeout + 3*time.Hour, true},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			f := newManagerFixture(t)
-			s, _ := mustCreate(t, f, f.request())
-
-			reaped := mustSweep(t, reaperAt(t, f, f.now.Add(tc.after)))
-
-			if !tc.want {
-				if len(reaped) != 0 {
-					t.Fatalf("Sweep() took %d sessions %v before the idle deadline, want none", len(reaped), IdleTimeout-tc.after)
-				}
-				if _, ok := f.store.lookup(s.ID); !ok {
-					t.Error("Sweep() dropped the record of a session still inside its bounds")
-				}
-				return
-			}
-
-			if len(reaped) != 1 {
-				t.Fatalf("Sweep() took %d sessions, want exactly 1", len(reaped))
-			}
-			if reaped[0].Session.ID != s.ID {
-				t.Errorf("Sweep() reaped %q, want %q", reaped[0].Session.ID, s.ID)
-			}
-			if reaped[0].Expiry != ExpiryIdle {
-				t.Errorf("Sweep() reaped the session as %q, want %q", reaped[0].Expiry, ExpiryIdle)
-			}
-			if _, ok := f.store.lookup(s.ID); ok {
-				t.Error("Sweep() kept the record of a session it reported destroyed")
-			}
-		})
-	}
-}
-
-// The milestone's whole question, as a sweep: a session the host says is busy is
-// not idle, however long it has been since a request touched its record.
-//
-// This is the browser-driven session M13 was opened for. Nothing an operator does
-// in the dashboard advances LastActivity — reading never does, and there is no
-// route to type into a session from that door at all — so before this the reaper
-// took a session somebody had been watching all afternoon, on the sixty-minute
-// mark, and was right by its own reckoning.
-func TestSweepKeepsASessionTheHostSaysIsBusy(t *testing.T) {
-	t.Parallel()
-
-	f := newManagerFixture(t)
-	s, _ := mustCreate(t, f, f.request())
-
-	// An hour with no request, and a host that saw this session print something
-	// a minute ago.
-	at := f.now.Add(IdleTimeout)
-	f.tmux.SetActivity(s.TmuxName(), at.Add(-time.Minute))
-
-	if reaped := mustSweep(t, reaperAt(t, f, at)); len(reaped) != 0 {
-		t.Fatalf("Sweep() reaped %d sessions the host says are still producing output, want none", len(reaped))
-	}
-	if _, ok := f.store.lookup(s.ID); !ok {
-		t.Error("Sweep() dropped the record of a session tmux says is busy")
-	}
-	if _, ok := f.tmux.WorkDir(s.TmuxName()); !ok {
-		t.Error("Sweep() killed the tmux session of a session tmux says is busy")
-	}
-}
-
-// The other half of the same clock: quiet on both readings is what idle now
-// means, and it still ends the session at the same instant it always did.
-func TestSweepReapsASessionQuietOnBothClocks(t *testing.T) {
-	t.Parallel()
-
-	f := newManagerFixture(t)
-	s, _ := mustCreate(t, f, f.request())
-
-	// The host's last sighting is the session's own start: it has printed
-	// nothing since, and nobody has asked the daemon about it either.
-	f.tmux.SetActivity(s.TmuxName(), f.now)
-
-	reaped := mustSweep(t, reaperAt(t, f, f.now.Add(IdleTimeout)))
-
-	if len(reaped) != 1 {
-		t.Fatalf("Sweep() took %d sessions idle on both clocks, want exactly 1", len(reaped))
-	}
-	if reaped[0].Session.ID != s.ID {
-		t.Errorf("Sweep() reaped %q, want %q", reaped[0].Session.ID, s.ID)
-	}
-	if reaped[0].Expiry != ExpiryIdle {
-		t.Errorf("Sweep() reaped the session as %q, want %q", reaped[0].Expiry, ExpiryIdle)
-	}
-}
-
-// The guard this milestone turns on, and the one that must fail loudly if it is
-// ever written the other way round: an activity time the daemon could not read
-// is the zero time, and the zero time is not evidence of anything. It falls back
-// to the record's own clock — never to reaping.
-//
-// A daemon that read the zero time as "last active in 1970" would destroy every
-// session on a host whose tmux does not render #{session_activity}, which is a
-// far worse failure than keeping a dead session until its ceiling.
-func TestSweepFallsBackToTheRecordWhenTheHostGivesNoActivityTime(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name       string
-		lastActive time.Duration // how long before the sweep a request touched it
-		want       int
-	}{
-		{"a session a request drove a minute ago", time.Minute, 0},
-		// Exactly as the build before this field existed: with nothing to say
-		// otherwise, the record's own clock is the whole answer.
-		{"a session nothing has driven for the full timeout", IdleTimeout, 1},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			f := newManagerFixture(t)
-			s, _ := mustCreate(t, f, f.request())
-
-			at := f.now.Add(IdleTimeout)
-			f.tmux.SetActivity(s.TmuxName(), time.Time{})
-			if err := f.store.Touch(s.ID, at.Add(-tc.lastActive)); err != nil {
-				t.Fatalf("Touch() unexpected error: %v", err)
-			}
-
-			reaped := mustSweep(t, reaperAt(t, f, at))
-
-			if len(reaped) != tc.want {
-				t.Fatalf("Sweep() took %d sessions on an unreadable activity time, want %d", len(reaped), tc.want)
-			}
-			if _, ok := f.store.lookup(s.ID); ok != (tc.want == 0) {
-				t.Errorf("the record is present = %v after the sweep, want %v", ok, tc.want == 0)
-			}
-		})
-	}
-}
-
-// What the host says buys time against the idle bound and nothing else. A
-// session still printing at the 24-hour mark dies at the 24-hour mark, because
-// the ceiling is the bound Principle VI actually rests on and no reading moves
-// it.
-func TestSweepDestroysABusySessionPastItsCeiling(t *testing.T) {
-	t.Parallel()
-
-	f := newManagerFixture(t)
-	s, _ := mustCreate(t, f, f.request())
-
-	ceiling := f.now.Add(AbsoluteLifetime)
-	f.tmux.SetActivity(s.TmuxName(), ceiling)
-
-	reaped := mustSweep(t, reaperAt(t, f, ceiling))
-
-	if len(reaped) != 1 {
-		t.Fatalf("Sweep() took %d sessions at the ceiling, want exactly 1", len(reaped))
-	}
-	if reaped[0].Expiry != ExpiryAbsolute {
-		t.Errorf("Sweep() reaped a session the host says is busy as %q, want %q", reaped[0].Expiry, ExpiryAbsolute)
-	}
-	if _, ok := f.store.lookup(s.ID); ok {
-		t.Error("Sweep() kept the record of a session past its ceiling because the host said it was busy")
-	}
-}
-
-// A host that cannot be listed changes nothing about what the sweep enforces.
-// The records keep the activity times they hold, every one of which can only
-// keep a session alive — and the ceiling, which has no other enforcer, is still
-// enforced. Stopping the sweep over it would be the failure that matters.
-func TestSweepEnforcesItsBoundsWhenTheHostCannotBeListed(t *testing.T) {
-	t.Parallel()
-
-	f := newManagerFixture(t)
-	s, _ := mustCreate(t, f, f.request())
-	f.tmux.FailOp(tmuxctl.OpList, errors.New("tmux is not answering"))
-
-	reaped, err := reaperAt(t, f, f.now.Add(IdleTimeout)).Sweep(context.Background())
-	if err == nil {
-		t.Error("Sweep() reported success on a host it could not read the activity times from")
-	}
-	if len(reaped) != 1 {
-		t.Fatalf("Sweep() took %d sessions past their idle bound, want the 1 it could still judge", len(reaped))
-	}
-	if reaped[0].Session.ID != s.ID {
-		t.Errorf("Sweep() reaped %q, want %q", reaped[0].Session.ID, s.ID)
-	}
-}
-
 // The ceiling is not renewed by use (FR-038), and this is the shape that proves
-// it: a session driven right up to the 24-hour mark — its idle clock a full
-// timeout away from expiring — still dies at the mark. A reaper that only
-// enforced the idle bound would keep this session alive forever, one request at
-// a time, which is the arrangement the absolute lifetime exists to refuse.
+// it: a session driven right up to the 24-hour mark still dies at the mark. A
+// reaper that renewed on use would keep this session alive forever, one request
+// at a time, which is the arrangement the absolute lifetime exists to refuse.
 func TestSweepDestroysASessionPastItsCeilingHoweverRecentlyItWasUsed(t *testing.T) {
 	t.Parallel()
 
@@ -360,32 +157,8 @@ func TestSweepDestroysASessionPastItsCeilingHoweverRecentlyItWasUsed(t *testing.
 	if reaped[0].Expiry != ExpiryAbsolute {
 		t.Errorf("Sweep() reaped an actively used session as %q, want %q", reaped[0].Expiry, ExpiryAbsolute)
 	}
-	if idle := reaped[0].Session.IdleDeadline(); !idle.After(ceiling) {
-		t.Fatalf("the fixture's session was idle-expired at %s as well; the test proves nothing", idle)
-	}
 	if _, ok := f.store.lookup(s.ID); ok {
 		t.Error("Sweep() kept the record of a session past its ceiling")
-	}
-}
-
-// A session past both bounds is recorded as having hit the one that could not
-// have been avoided. Only the trail can tell the difference, and "idle" about a
-// session that had also been running for a day is the smaller of two true facts.
-func TestSweepNamesTheCeilingForASessionPastBothBounds(t *testing.T) {
-	t.Parallel()
-
-	f := newManagerFixture(t)
-	if _, _, err := f.mgr.Create(context.Background(), f.request()); err != nil {
-		t.Fatalf("Create() unexpected error: %v", err)
-	}
-
-	reaped := mustSweep(t, reaperAt(t, f, f.now.Add(AbsoluteLifetime)))
-
-	if len(reaped) != 1 {
-		t.Fatalf("Sweep() took %d sessions, want exactly 1", len(reaped))
-	}
-	if reaped[0].Expiry != ExpiryAbsolute {
-		t.Errorf("Sweep() reaped a session past both bounds as %q, want %q", reaped[0].Expiry, ExpiryAbsolute)
 	}
 }
 
@@ -400,14 +173,15 @@ func TestSweepTearsDownTheWayAnExplicitDestroyDoes(t *testing.T) {
 	s, _ := mustCreate(t, f, f.request())
 	before := len(f.tmux.Calls())
 
-	mustSweep(t, reaperAt(t, f, f.now.Add(IdleTimeout)))
+	mustSweep(t, reaperAt(t, f, f.now.Add(AbsoluteLifetime)))
 
 	name := s.TmuxName()
 	want := []tmuxctl.Call{
-		// One list for the whole sweep, ahead of everything it does: the host's
-		// own activity times are what a session is judged idle against, and
-		// asking per record would be a command per session every thirty seconds.
-		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{" + tmuxctl.OptionManaged + "}|#{" + tmuxctl.OptionName + "}|#{" + tmuxctl.OptionWorkDir + "}|#{" + tmuxctl.OptionStart + "}|#{session_activity}"}},
+		// No list. The sweep asked the host for every session's activity time
+		// until milestone 15, so the idle bound could see output the daemon never
+		// mediated; with that bound withdrawn the ceiling is measured from
+		// CreatedAt, which the record already holds. A list here would be an exec
+		// per sweep for a question nothing asks.
 		{Op: tmuxctl.OpKill, Argv: []string{"tmux", "kill-session", "-t", "=" + name}},
 		{Op: tmuxctl.OpHas, Argv: []string{"tmux", "has-session", "-t", "=" + name}},
 	}
@@ -426,32 +200,35 @@ func TestSweepTearsDownTheWayAnExplicitDestroyDoes(t *testing.T) {
 	}
 }
 
-// Every record is judged against its own deadlines and nothing else's. The two
-// sessions here are the same age, and only the one nobody came back for dies.
+// Every record is judged against its own deadline and nothing else's. The two
+// sessions here are the same age and only one of them is past its own bound —
+// which is what a per-session lifetime override has to mean if it means anything.
 func TestSweepLeavesEverySessionInsideItsBoundsAlone(t *testing.T) {
 	t.Parallel()
 
 	f := newManagerFixture(t)
-	used, _ := mustCreate(t, f, f.request())
-	abandoned, _ := mustCreate(t, f, f.request())
+	f.mgr.SetLifetimes(AbsoluteLifetime, 72*time.Hour)
 
-	// A request a minute after creation, which is all "not idle" means.
-	if err := f.store.Touch(used.ID, f.now.Add(time.Minute)); err != nil {
-		t.Fatalf("Touch() unexpected error: %v", err)
+	longer := f.request()
+	longer.Lifetime = 48 * time.Hour
+	kept, _, err := f.mgr.Create(context.Background(), longer)
+	if err != nil {
+		t.Fatalf("Create(48h) = %v", err)
 	}
+	expired, _ := mustCreate(t, f, f.request())
 
-	reaped := mustSweep(t, reaperAt(t, f, f.now.Add(IdleTimeout)))
+	reaped := mustSweep(t, reaperAt(t, f, f.now.Add(AbsoluteLifetime)))
 
 	if len(reaped) != 1 {
 		t.Fatalf("Sweep() took %d sessions, want exactly 1", len(reaped))
 	}
-	if reaped[0].Session.ID != abandoned.ID {
-		t.Errorf("Sweep() reaped %q, want the abandoned %q", reaped[0].Session.ID, abandoned.ID)
+	if reaped[0].Session.ID != expired.ID {
+		t.Errorf("Sweep() reaped %q, want the expired %q", reaped[0].Session.ID, expired.ID)
 	}
-	if _, ok := f.store.lookup(used.ID); !ok {
-		t.Error("Sweep() destroyed a session whose idle clock had been moved forward")
+	if _, ok := f.store.lookup(kept.ID); !ok {
+		t.Error("Sweep() destroyed a session still inside its own longer lifetime")
 	}
-	if _, ok := f.tmux.WorkDir(used.TmuxName()); !ok {
+	if _, ok := f.tmux.WorkDir(kept.TmuxName()); !ok {
 		t.Error("Sweep() killed the tmux session of a record it left in the store")
 	}
 }
@@ -467,7 +244,7 @@ func TestSweepKeepsARecordItCouldNotConfirmGoneAndTriesAgain(t *testing.T) {
 	s, _ := mustCreate(t, f, f.request())
 	f.tmux.SurviveKill(s.TmuxName())
 
-	r := reaperAt(t, f, f.now.Add(IdleTimeout))
+	r := reaperAt(t, f, f.now.Add(AbsoluteLifetime))
 
 	reaped, err := r.Sweep(context.Background())
 	if err == nil {
@@ -499,7 +276,7 @@ func TestSweepReportsOneFailureWithoutStoppingAtIt(t *testing.T) {
 	doomed, _ := mustCreate(t, f, f.request())
 	f.tmux.SurviveKill(stuck.TmuxName())
 
-	reaped, err := reaperAt(t, f, f.now.Add(IdleTimeout)).Sweep(context.Background())
+	reaped, err := reaperAt(t, f, f.now.Add(AbsoluteLifetime)).Sweep(context.Background())
 	if !errors.Is(err, ErrOrphanedSession) {
 		t.Errorf("Sweep() error = %v, want one wrapping %v", err, ErrOrphanedSession)
 	}
@@ -524,7 +301,7 @@ func TestDestroyRacingTheReaperReportsSuccessToBoth(t *testing.T) {
 
 	f := newManagerFixture(t)
 	s, _ := mustCreate(t, f, f.request())
-	r := reaperAt(t, f, f.now.Add(IdleTimeout))
+	r := reaperAt(t, f, f.now.Add(AbsoluteLifetime))
 
 	var (
 		wg                   sync.WaitGroup
@@ -570,7 +347,7 @@ func TestSweepRecordsEverySessionItTakes(t *testing.T) {
 	first, _ := mustCreate(t, f, f.request())
 	second, _ := mustCreate(t, f, f.request())
 
-	r, sink := auditedReaperAt(t, f, f.now.Add(IdleTimeout))
+	r, sink := auditedReaperAt(t, f, f.now.Add(AbsoluteLifetime))
 	if n := len(mustSweep(t, r)); n != 2 {
 		t.Fatalf("Sweep() took %d sessions, want both", n)
 	}
@@ -608,9 +385,10 @@ func TestSweepRecordsEverySessionItTakes(t *testing.T) {
 	}
 }
 
-// "Idle for an hour" and "ran for a day" are different facts about how the host
-// is being used, and the trail is the only place either is readable. An operator
-// greps one string to find every session that hit a ceiling.
+// The trail is the only place the bound a session died of is readable, and an
+// operator greps one string to find every session that hit a ceiling. There were
+// two bounds to name until milestone 15 and there is one now; the table stays a
+// table, because Expiry stays a type and a second bound would be a row.
 func TestSweepNamesTheBoundItEnforcedInTheRecord(t *testing.T) {
 	t.Parallel()
 
@@ -619,7 +397,6 @@ func TestSweepNamesTheBoundItEnforcedInTheRecord(t *testing.T) {
 		after time.Duration
 		want  string
 	}{
-		{"idle", IdleTimeout, reasonPastIdle},
 		{"absolute", AbsoluteLifetime, reasonPastAbsolute},
 	}
 
@@ -651,7 +428,7 @@ func TestSweepRecordsATeardownItCouldNotConfirmAsARefusal(t *testing.T) {
 	s, _ := mustCreate(t, f, f.request())
 	f.tmux.SurviveKill(s.TmuxName())
 
-	r, sink := auditedReaperAt(t, f, f.now.Add(IdleTimeout))
+	r, sink := auditedReaperAt(t, f, f.now.Add(AbsoluteLifetime))
 	if _, err := r.Sweep(context.Background()); !errors.Is(err, ErrOrphanedSession) {
 		t.Fatalf("Sweep() error = %v, want one wrapping %v", err, ErrOrphanedSession)
 	}
@@ -670,7 +447,7 @@ func TestSweepRecordsATeardownItCouldNotConfirmAsARefusal(t *testing.T) {
 	if !strings.HasPrefix(reason, reasonUnconfirmed) {
 		t.Errorf("the refusal reads %q, and does not say the teardown was unconfirmed", reason)
 	}
-	if !strings.Contains(reason, reasonPastIdle) {
+	if !strings.Contains(reason, reasonPastAbsolute) {
 		t.Errorf("the refusal reads %q, and does not name the bound the session was past", reason)
 	}
 }
@@ -684,9 +461,9 @@ func TestSweepRecordsNothingForASessionInsideItsBounds(t *testing.T) {
 	f := newManagerFixture(t)
 	mustCreate(t, f, f.request())
 
-	r, sink := auditedReaperAt(t, f, f.now.Add(IdleTimeout-time.Nanosecond))
+	r, sink := auditedReaperAt(t, f, f.now.Add(AbsoluteLifetime-time.Nanosecond))
 	if n := len(mustSweep(t, r)); n != 0 {
-		t.Fatalf("Sweep() took %d sessions that are inside both bounds", n)
+		t.Fatalf("Sweep() took %d sessions that are inside their bound", n)
 	}
 
 	if got := reapRecords(t, sink); len(got) != 0 {
@@ -712,7 +489,7 @@ func TestSweepReportsAnAuditWriteItCouldNotMake(t *testing.T) {
 	s, _ := mustCreate(t, f, f.request())
 
 	want := errors.New("the journal went away")
-	at := f.now.Add(IdleTimeout)
+	at := f.now.Add(AbsoluteLifetime)
 	r, err := NewReaper(f.managerAt(t, f.store, at), audit.NewTo(brokenSink{err: want}, func() time.Time { return at }))
 	if err != nil {
 		t.Fatalf("NewReaper() unexpected error: %v", err)
@@ -738,7 +515,7 @@ func TestRunSweepsOnEveryTickAndStopsWithItsContext(t *testing.T) {
 	f := newManagerFixture(t)
 	s, _ := mustCreate(t, f, f.request())
 
-	r := reaperAt(t, f, f.now.Add(IdleTimeout))
+	r := reaperAt(t, f, f.now.Add(AbsoluteLifetime))
 	tk := newManualTicker()
 	stop := tk.run(t, r, context.Background())
 
@@ -792,7 +569,7 @@ func TestRunReportsAFailedSweepRatherThanSwallowingIt(t *testing.T) {
 	s, _ := mustCreate(t, f, f.request())
 	f.tmux.SurviveKill(s.TmuxName())
 
-	r := reaperAt(t, f, f.now.Add(IdleTimeout))
+	r := reaperAt(t, f, f.now.Add(AbsoluteLifetime))
 	// Non-blocking, so a later sweep cannot wedge the loop against a full
 	// channel and hang the test instead of failing it.
 	reports := make(chan error, 1)
@@ -872,8 +649,8 @@ func TestTheSweepIsFinerThanTheBoundsItEnforces(t *testing.T) {
 	if r.interval != SweepInterval {
 		t.Errorf("NewReaper() sweeps every %s, want the documented %s", r.interval, SweepInterval)
 	}
-	if SweepInterval >= IdleTimeout || SweepInterval >= AbsoluteLifetime {
-		t.Errorf("a %s sweep cannot resolve a %s idle timeout and a %s ceiling", SweepInterval, IdleTimeout, AbsoluteLifetime)
+	if SweepInterval >= AbsoluteLifetime {
+		t.Errorf("a %s sweep cannot resolve a %s ceiling", SweepInterval, AbsoluteLifetime)
 	}
 	if r.ticker == nil || r.report == nil {
 		t.Error("NewReaper() left the reaper without a heartbeat or somewhere to report a failure")

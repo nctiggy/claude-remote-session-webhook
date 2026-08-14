@@ -35,6 +35,25 @@ const claudeStartCommand = "claude --dangerously-skip-permissions"
 // arguments in order, so one exec both types the line and runs it.
 const enterKey = "Enter"
 
+// The Claude CLI's own flags for continuing a conversation (milestone 15).
+//
+// Long forms rather than -c and -r, because these end up in the command line the
+// create form shows the operator and a preview reading `claude -c -r 88e5…` is a
+// preview nobody can check against what they asked for.
+//
+// They are constants in this repository and never configuration: an operator who
+// could spell these could put an arbitrary flag on the line that starts an
+// unsandboxed shell, which is the execution surface FR-016 keeps closed.
+//
+// Exported because the create form's preview has to show them and must not spell
+// them itself: a script with its own copy is a second speller, free to show an
+// operator a flag the daemon stopped passing. The page reads these off the
+// daemon exactly as it reads the command lines.
+const (
+	ResumeLatestFlag = "--continue"
+	ResumeOneFlag    = "--resume"
+)
+
 // interruptKey is tmux's name for Ctrl-C, which the pane's line discipline turns
 // into SIGINT for whatever holds the terminal. It is how a mode change ends the
 // running process **without** ending the session (FR-028).
@@ -149,16 +168,14 @@ var (
 // construction except the subscriber set, which carries its own lock, and the
 // store and controller are both concurrency-safe.
 type Manager struct {
-	// maxLifetime and maxIdle are the ceilings a per-session override may not
-	// exceed (#37). Zero means the built-in constants, so a manager nobody
-	// configured refuses any override beyond what the daemon always allowed.
+	// maxLifetime is the ceiling a per-session override may not exceed (#37).
+	// Zero means the built-in constant, so a manager nobody configured refuses
+	// any override beyond what the daemon always allowed.
 	maxLifetime time.Duration
-	maxIdle     time.Duration
 
-	// defaultLifetime and defaultIdle are what a create that asks for nothing
-	// gets. Zero means the built-in constants.
+	// defaultLifetime is what a create that asks for nothing gets. Zero means
+	// the built-in constant.
 	defaultLifetime time.Duration
-	defaultIdle     time.Duration
 
 	// startCommands is the operator's named set (#38). The zero value means
 	// "only the daemon's own default", which is what every caller predating
@@ -214,13 +231,15 @@ func (m *Manager) SetStartCommands(cmds config.StartCommands) { m.startCommands 
 // it after a restart — the second source of truth research R5 rejected.
 func (m *Manager) SetRemoteControlCommand(name string) { m.remoteControlCommand = name }
 
-// SetLifetimes gives the manager the operator's configured defaults and
-// ceilings (#37). A setter for the reason SetStartCommands is one: every
-// existing caller means "the constants", and threading four arguments through
-// them all to say so is the churn AR-008 forbids.
-func (m *Manager) SetLifetimes(defaultLifetime, maxLifetime, defaultIdle, maxIdle time.Duration) {
+// SetLifetimes gives the manager the operator's configured default and ceiling
+// (#37). A setter for the reason SetStartCommands is one: every existing caller
+// means "the constants", and threading the arguments through them all to say so
+// is the churn AR-008 forbids.
+//
+// It took four arguments until milestone 15. Two of them were the idle default
+// and its ceiling, and they went with the bound.
+func (m *Manager) SetLifetimes(defaultLifetime, maxLifetime time.Duration) {
 	m.defaultLifetime, m.maxLifetime = defaultLifetime, maxLifetime
-	m.defaultIdle, m.maxIdle = defaultIdle, maxIdle
 }
 
 // LifetimeCeilingRemoved reports that this operator has said a session on this
@@ -259,9 +278,20 @@ func (m *Manager) LifetimeCeilingRemoved() bool {
 // same daemon that refuses 100h under a 48h ceiling refuses this, for the same
 // reason and with the same shape of message, and an operator who wants it says
 // so once in their configuration rather than once per create.
-func (m *Manager) resolveLifetimes(req CreateRequest) (lifetime, idle time.Duration, err error) {
+func (m *Manager) resolveLifetimes(req CreateRequest) (time.Duration, error) {
+	return m.resolveLifetime(req.Lifetime)
+}
+
+// resolveLifetime is resolveLifetimes' rule with the request taken apart, so
+// that adoption can put a lifetime read back off the host through exactly the
+// check a create goes through (milestone 15, FR-011).
+//
+// That reuse is the point of the split. A restored `never` on a daemon whose
+// operator has since narrowed their ceiling is the same request as a create
+// asking for one, arriving by a slower route — and a second copy of the rule
+// here is how the two would come to disagree about which the daemon grants.
+func (m *Manager) resolveLifetime(requested time.Duration) (time.Duration, error) {
 	maxLife := orDefault(m.maxLifetime, AbsoluteLifetime)
-	maxIdleAllowed := orDefault(m.maxIdle, IdleTimeout)
 
 	// A negative ceiling is the operator's "no ceiling at all" — config spells
 	// it `never`, and orDefault leaves it alone because only zero is unset. It
@@ -273,41 +303,17 @@ func (m *Manager) resolveLifetimes(req CreateRequest) (lifetime, idle time.Durat
 	// the rule rather than two (LifetimeCeilingRemoved).
 	unbounded := m.LifetimeCeilingRemoved()
 
-	lifetime = req.Lifetime
+	lifetime := requested
 	if lifetime == 0 {
 		lifetime = m.defaultLifetime
 	}
 	switch {
 	case lifetime < 0 && !unbounded:
-		return 0, 0, fmt.Errorf("%w: a session that never expires is past the %s ceiling", ErrInvalidLifetime, maxLife)
+		return 0, fmt.Errorf("%w: a session that never expires is past the %s ceiling", ErrInvalidLifetime, maxLife)
 	case lifetime > 0 && !unbounded && lifetime > maxLife:
-		return 0, 0, fmt.Errorf("%w: %s exceeds the %s ceiling", ErrInvalidLifetime, lifetime, maxLife)
+		return 0, fmt.Errorf("%w: %s exceeds the %s ceiling", ErrInvalidLifetime, lifetime, maxLife)
 	}
-
-	idle = req.Idle
-	if idle == 0 {
-		idle = m.defaultIdle
-	}
-	// A negative idle is the disable, not an error. On a session that still has
-	// an absolute deadline it is bounded by that deadline; on one that does not,
-	// both switches are off and nothing reaps the session at all — which is what
-	// the operator asked for twice and what the create form has to say plainly.
-	if idle > maxIdleAllowed {
-		return 0, 0, fmt.Errorf("%w: an idle timeout of %s exceeds the %s ceiling", ErrInvalidLifetime, idle, maxIdleAllowed)
-	}
-	// An idle timeout that can never fire is a setting that does nothing, which
-	// is worth refusing rather than accepting quietly. It is the finite
-	// lifetime's check alone: every idle timeout fires inside a lifetime with no
-	// end, so a session that never expires has no such thing to refuse — and
-	// comparing against a negative here would refuse every idle timeout there
-	// is, on exactly the sessions this milestone exists to keep alive.
-	if lifetime >= 0 {
-		effectiveLife := orDefault(lifetime, AbsoluteLifetime)
-		if idle > effectiveLife {
-			return 0, 0, fmt.Errorf("%w: an idle timeout of %s can never fire inside a %s lifetime", ErrInvalidLifetime, idle, effectiveLife)
-		}
-	}
-	return lifetime, idle, nil
+	return lifetime, nil
 }
 
 // resolveStartCommand turns the name a create asked for into the command line
@@ -548,11 +554,21 @@ type CreateRequest struct {
 	// Owner is the authenticated identity, derived server-side (FR-012).
 	Owner auth.CallerID
 
-	// Lifetime and Idle are optional per-session overrides (#37). Zero means the
-	// daemon's default; a negative Idle disables idle reaping for this session.
-	// Both are checked against the daemon's ceilings before anything is built.
+	// Lifetime is an optional per-session override (#37). Zero means the
+	// daemon's default; a negative switches the absolute deadline off, which is
+	// granted only on a daemon whose own ceiling is already unbounded. It is
+	// checked against that ceiling before anything is built.
 	Lifetime time.Duration
-	Idle     time.Duration
+
+	// Resume asks the new session to pick up a prior Claude conversation instead
+	// of starting an empty one (milestone 15, spec 009): ResumeLatest for the most
+	// recent in the working directory, or a conversation identifier for one in
+	// particular. Empty starts fresh, which is every create made before this
+	// field existed.
+	//
+	// It is validated here and again before it is rendered, and the second check
+	// is not redundant — read ValidateResume for what is being defended against.
+	Resume string
 
 	// StartCommand names which configured command to type into the new session's
 	// shell (#38). Empty means the daemon's default. It is a name, never a
@@ -607,7 +623,16 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 		return nil, "", err
 	}
 
-	lifetime, idle, err := m.resolveLifetimes(req)
+	lifetime, err := m.resolveLifetimes(req)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Refused here for resolveStartCommand's reason: a create naming a
+	// conversation this daemon will not put on a command line must produce no
+	// record, no tmux session and no token. It is the boundary check; start makes
+	// it again before the value reaches a line (ValidateResume).
+	resume, err := ValidateResume(req.Resume)
 	if err != nil {
 		return nil, "", err
 	}
@@ -644,12 +669,11 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 		Name:         req.Name,
 		StartCommand: req.StartCommand,
 		Lifetime:     lifetime,
-		Idle:         idle,
 		WorkDir:      workDir,
 		TokenHash:    hash,
 		CreatedAt:    now,
 		// Equal to CreatedAt, not a second reading of the clock: a session that
-		// has never been used has been idle since it was created.
+		// has never been driven was last driven when it was made.
 		LastActivity: now,
 		State:        StateStarting,
 	}
@@ -666,7 +690,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 		return nil, "", fmt.Errorf("create session %s: %w", id, err)
 	}
 
-	if err := m.start(ctx, s); err != nil {
+	if err := m.start(ctx, s, resume); err != nil {
 		return nil, "", m.rollback(ctx, s, err)
 	}
 
@@ -719,25 +743,20 @@ func (m *Manager) Resolve(id string, owner auth.CallerID, presented string) (Ses
 		return Session{}, fmt.Errorf("resolve session: %w", ErrSessionDead)
 	}
 
-	// The idle clock moves here, and only here. This is no longer the only path
-	// from a request to a session — View is a second one, for callers that watch
-	// rather than drive — but it is the only path that drives, and every route
-	// that acts on a session still reaches its record through this call. A
-	// handler touching the clock instead would be a rule each new route has to
-	// remember, and the cost of forgetting is a live session the reaper destroys
-	// out from under an operator who is using it.
+	// The last-driven clock moves here, and only here. This is no longer the only
+	// path from a request to a session — View is a second one, for callers that
+	// watch rather than drive — but it is the only path that drives, and every
+	// route that acts on a session still reaches its record through this call.
 	//
-	// The asymmetry between the two is deliberate and must not be tidied away.
-	// View is *required* not to touch the clock (FR-034f): a browser tab left
-	// open on a session nobody is driving would otherwise postpone its idle
-	// deadline for as long as the tab lived, which is the bound Principle VI
-	// calls non-negotiable. An iteration that "fixes" the inconsistency by adding
-	// the touch to View is the failure this paragraph exists to prevent.
+	// The asymmetry between the two is deliberate. View is *required* not to
+	// touch the clock (FR-034f), and "watching is not driving" remains the rule
+	// even though the stakes changed in milestone 15: no deadline is measured
+	// from this field any more, so a tab left open now costs an overstated
+	// "last driven" on a card rather than a session that outlives its bound.
 	//
 	// After the checks, never before: a request that failed the owner or the
-	// credential is not activity on the session, and letting it postpone the
-	// deadline would let anyone who can reach the listener keep a session alive
-	// forever without ever authenticating to it.
+	// credential is not activity on the session, and recording it as such would
+	// let anyone who can reach the listener write to a record they cannot drive.
 	//
 	// The returned copy is the pre-touch one. LastActivity is the field this just
 	// wrote, so re-reading the record to carry it back would cost a second lock
@@ -750,15 +769,17 @@ func (m *Manager) Resolve(id string, owner auth.CallerID, presented string) (Ses
 	}
 	s.LastActivity = now
 
-	// Activity that brings a session back from idle changes what the dashboard
-	// draws, so the card an open page is showing is now wrong — which is a fleet
-	// change by any definition an operator would recognise, even though no
-	// record entered or left.
+	// A change of display state changes what the dashboard draws, so the card an
+	// open page is showing would be wrong — a fleet change by any definition an
+	// operator would recognise, even though no record entered or left.
 	//
-	// The two readings are compared rather than the one transition being spelled
-	// out, so a third display state (milestone 4's needs-auth) is covered here
-	// without this line being revisited. Both are taken from the same instant:
-	// what changed is LastActivity, not the time it is being judged at.
+	// **It cannot fire today.** Milestone 15 left one display state, so the two
+	// readings are always equal. It stays because the comparison, not the
+	// transition, is what makes this correct: milestone 4's needs-auth is a
+	// second state arriving on a known road, and a driving path that had stopped
+	// asking would be a card that silently failed to update the day it lands.
+	// Both readings are taken from the same instant, so what changed is the
+	// record, not the time it is judged at.
 	if after := s.DisplayState(now); after != displayed {
 		m.emit(FleetChanged, s)
 	}
@@ -782,10 +803,11 @@ func (m *Manager) Resolve(id string, owner auth.CallerID, presented string) (Ses
 // to tell apart callers who all authenticate as one secret, and a verified
 // person who owns the session is already told apart.
 //
-// The idle clock is *not advanced*, which is the whole reason this is a second
-// method rather than a flag on Resolve. Watching is not driving (FR-034f). The
-// property holds by construction — there is no clock reading in this method to
-// hand to Touch — rather than by every call site passing the right argument.
+// The last-driven clock is *not advanced*, which is the whole reason this is a
+// second method rather than a flag on Resolve. Watching is not driving
+// (FR-034f). The property holds by construction — there is no clock reading in
+// this method to hand to Touch — rather than by every call site passing the
+// right argument.
 //
 // Nothing expires here either, and that is not an omission: what Resolve
 // refuses past a deadline is the *credential*, and this call presents none. A
@@ -1010,12 +1032,12 @@ func (m *Manager) Compact(ctx context.Context, s Session) error {
 	// decisions.
 	//
 	// It moves at all because compact is activity: it delivers into the session
-	// exactly as a prompt does, so it defers the idle deadline exactly as a
-	// prompt does (data-model.md). On the API path Resolve is what does this, and
-	// this is not that path — a browser presents no per-session credential, so it
-	// reaches its session through View, which is required *not* to touch the
-	// clock (FR-034f). A compact that left it alone too would be an operator
-	// driving a session the reaper is still measuring as idle.
+	// exactly as a prompt does, so it records a driving exactly as a prompt does
+	// (data-model.md). On the API path Resolve is what does this, and this is not
+	// that path — a browser presents no per-session credential, so it reaches its
+	// session through View, which is required *not* to touch the clock (FR-034f).
+	// A compact that left it alone too would be an operator driving a session the
+	// fleet goes on describing as untouched.
 	//
 	// It moves first because Touch is the store's own answer to whether this
 	// record is still there and still live, taken under the store's lock rather
@@ -1030,9 +1052,9 @@ func (m *Manager) Compact(ctx context.Context, s Session) error {
 	}
 	s.LastActivity = now
 
-	// Resolve's comparison, here for Resolve's reason: a deferred idle deadline
-	// can move a card from idle back to running (data-model.md), which is a fleet
-	// change an operator would recognise even though no record entered or left.
+	// Resolve's comparison, here for Resolve's reason and with Resolve's caveat:
+	// one display state means it cannot fire today, and it stays so that a second
+	// one is drawn without this line being revisited.
 	// It sits beside the store mutation rather than after the delivery, so the
 	// event stays true whatever tmux then says — what changed is the record, and
 	// the record changed on the line above.
@@ -1171,7 +1193,7 @@ func (m *Manager) SetMode(ctx context.Context, s Session, mode Mode) (Session, e
 	}
 
 	// Compact's touch, first and for Compact's reasons: a mode change drives the
-	// session, so it defers the idle deadline as a prompt does, and Touch is the
+	// session, so it is recorded as a driving like a prompt, and Touch is the
 	// store's own answer — under the store's lock — to whether this record is still
 	// there and still live. A record the reaper collected between the caller's View
 	// and this call is refused here, before the pane is interrupted.
@@ -1279,7 +1301,7 @@ func (m *Manager) Output(ctx context.Context, s Session) (Capture, error) {
 // The daemon verifies teardown when *it* destroys a session (FR-019). A session
 // that dies on its own — a host reboot, a tmux server restart, an operator's own
 // kill-session — had no equivalent path, so its record outlived it until the
-// reaper's idle bound or the 24-hour ceiling collected it (#21). The evidence
+// reaper's ceiling collected it (#21). The evidence
 // arrives here, because the capture is the one thing the daemon does per request
 // that touches the window rather than the record.
 //
@@ -1297,7 +1319,7 @@ func (m *Manager) Output(ctx context.Context, s Session) (Capture, error) {
 // nothing is marked instead, because a record kept in StateDead would still be a
 // card on the fleet, which is the defect rather than the fix.
 //
-// The idle clock is untouched here, so this remains safe on the watching path:
+// The last-driven clock is untouched here, so this stays safe on the watching path:
 // what a stream discovers through Output is that the session is over, and the
 // next tick's View turns that into the terminal event a viewer can read
 // (FR-034f).
@@ -1452,6 +1474,21 @@ func (m *Manager) DestroyAll(ctx context.Context) ([]Session, error) {
 // credential is minted by ClaimPending, in the reply that delivers it.
 type AdoptedSession struct {
 	Session Session
+
+	// LifetimeNarrowed marks a session whose recorded lifetime the daemon's
+	// current ceiling would not grant, and which was therefore adopted with the
+	// configured default instead (FR-011, milestone 15).
+	//
+	// It is on the result rather than resolved into a reason inside Adopt for
+	// the reason the credential is not in the record: what reaches the trail is
+	// authored at the boundary that writes the trail, out of constants that live
+	// there. This is the fact; the sentence about it is httpapi's.
+	//
+	// The ordinary case is false, and false is also what every session created
+	// before OptionLifetime existed gets: an absent lifetime is not a narrowed
+	// one, and reporting it as such would put a line in the trail about every
+	// session on the host on the first boot after an upgrade.
+	LifetimeNarrowed bool
 }
 
 // Adopt reconciles the daemon with the host: every live tmux session it created
@@ -1565,10 +1602,36 @@ func (m *Manager) Adopt(ctx context.Context) ([]AdoptedSession, error) {
 			Adopted:      true,
 		}
 
-		// FR-025: a session that outlived its ceiling while the daemon was down
-		// is torn down, not adopted into an already-expired state. Destroy
-		// verifies rather than assumes, and the record was never added — so the
-		// delete it ends with is the harmless no-op it already tolerates.
+		// The session's own lifetime, restored (milestone 15, FR-008). Without
+		// this the record above carried a zero here, which means "the daemon's
+		// default" — so a session created never to expire came back mortal and
+		// was destroyed at the next sweep it was old enough for. That is the
+		// 2026-08-14 incident, and it is the whole reason this field is on the
+		// host at all.
+		//
+		// Then re-checked against the ceiling in force *now*, not the one in
+		// force when the session was created (FR-011). A ceiling is the operator
+		// saying how long a session on this host may live, and one narrowed while
+		// the daemon was down is still the operator's current answer. Honouring a
+		// `never` written under a wider one would be a value on the host
+		// exempting a session from a bound its operator currently sets — the one
+		// thing an override may never be.
+		//
+		// A refusal is not a failure here, where the same refusal on a create is.
+		// The session is already running: the choice is between adopting it under
+		// today's rules and leaving an unowned unsandboxed shell on the host, and
+		// FR-010 settles which of those the daemon prefers.
+		restored := decodeLifetime(info.Lifetime)
+		lifetime, lifetimeErr := m.resolveLifetime(restored)
+		if lifetimeErr != nil {
+			lifetime = m.defaultLifetime
+		}
+		s.Lifetime = lifetime
+
+		// Before the ceiling check below, so the session is judged against the
+		// deadline it will actually be adopted with. Judging it on a lifetime it
+		// is not going to keep would destroy sessions that are inside the bound
+		// they are about to be given, and keep ones that are outside it.
 		if !now.Before(s.AbsoluteDeadline()) {
 			if err := m.Destroy(ctx, s); err != nil {
 				failures = append(failures, fmt.Errorf("a session was past its ceiling at startup: %w", err))
@@ -1620,48 +1683,10 @@ func (m *Manager) Adopt(ctx context.Context) ([]AdoptedSession, error) {
 		// whose events somebody happens to be reading does. A reconciliation run
 		// with the daemon up would otherwise be the silent one.
 		m.emit(FleetAppeared, s)
-		adopted = append(adopted, AdoptedSession{Session: s})
+		adopted = append(adopted, AdoptedSession{Session: s, LifetimeNarrowed: lifetimeErr != nil})
 	}
 
 	return adopted, errors.Join(failures...)
-}
-
-// syncActivity asks the host when each session it is running last did anything,
-// and records the answer against the daemon's own copy. The sweep calls it
-// before it judges anything.
-//
-// This is what makes the idle clock measure the session rather than the traffic
-// about it. LastActivity moves on three calls, two of them reachable only from
-// the signed API and none of them a read, so an operator watching a session in
-// the dashboard all afternoon — or working in it directly in an attached
-// terminal on this host — advanced nothing, and the reaper took a session
-// somebody was using. #{session_activity} is the one reading that sees both.
-//
-// It is one list-sessions per sweep, and the same command adoption already runs.
-// Asking per session would be a command per record every thirty seconds against
-// a host whose whole job is running those sessions.
-//
-// A host that cannot be listed is reported and changes nothing: every record
-// keeps whatever activity time it had, and the sweep goes on to judge them all
-// on LastActivity exactly as the build before this did. Refusing to sweep on it
-// would be far worse — the absolute deadline would stop being enforced by the
-// only thing that enforces it.
-//
-// Sessions that are not ours are skipped by the same three-signal test adoption
-// uses, so a lookalike on the host cannot postpone the reaping of a record it
-// has no relationship to.
-func (m *Manager) syncActivity(ctx context.Context) error {
-	infos, err := m.tmux.List(ctx)
-	if err != nil {
-		return fmt.Errorf("read the host's own activity times: %w", err)
-	}
-
-	for _, info := range infos {
-		if id, ours := adoptableID(info); ours {
-			m.store.setTmuxActivity(id, info.Activity)
-		}
-	}
-	return nil
 }
 
 // adoptableID is the whole of FR-022: which host sessions are ours to take back,
@@ -1753,7 +1778,7 @@ func (m *Manager) confirmGone(ctx context.Context, name string) (bool, error) {
 // property #95's removal restored — the one caller-supplied word that used to be
 // appended here is gone, so there is no request-shaped path to a command line
 // left to keep an alphabet for.
-func (m *Manager) start(ctx context.Context, s Session) error {
+func (m *Manager) start(ctx context.Context, s Session, resume string) error {
 	name := s.TmuxName()
 
 	if err := m.tmux.New(ctx, name, s.WorkDir); err != nil {
@@ -1792,6 +1817,18 @@ func (m *Manager) start(ctx context.Context, s Session) error {
 	if err := m.tmux.SetOption(ctx, name, tmuxctl.OptionStart, s.StartCommand); err != nil {
 		return fmt.Errorf("record the session start command: %w", err)
 	}
+	// The fourth fact, and the one whose absence was a defect rather than a
+	// missing convenience (milestone 15, spec 009). A name or a working directory
+	// the host had lost left an operator with an unlabelled card; a lifetime the
+	// host had lost left a session the operator was promised would never expire
+	// being destroyed an hour after the next redeploy.
+	//
+	// Written even when it is empty, for OptionStart's reason: set-to-nothing and
+	// never-set read back identically, and a branch that skipped one of them is a
+	// branch adoption could not tell from the other.
+	if err := m.tmux.SetOption(ctx, name, tmuxctl.OptionLifetime, encodeLifetime(s.Lifetime)); err != nil {
+		return fmt.Errorf("record the session lifetime: %w", err)
+	}
 	// The command is resolved from the name the record carries, not from the
 	// request: by the time a session is being started its name has already been
 	// checked against the configured set, and re-reading caller input here would
@@ -1800,11 +1837,7 @@ func (m *Manager) start(ctx context.Context, s Session) error {
 	if err != nil {
 		return fmt.Errorf("resolve the start command for session %s: %w", s.ID, err)
 	}
-	// The session's own name goes into the command line here and nowhere else
-	// (#58). Create has already refused anything RenderStartCommand would, so a
-	// failure at this point is a record that reached start without passing
-	// ValidateName — fail closed rather than type a line with a hole in it.
-	command, err := config.RenderStartCommand(template, s.Name)
+	command, err := m.renderStart(template, resume, s.Name)
 	if err != nil {
 		return fmt.Errorf("render the start command for session %s: %w", s.ID, err)
 	}
@@ -1813,6 +1846,111 @@ func (m *Manager) start(ctx context.Context, s Session) error {
 	}
 
 	return nil
+}
+
+// renderStart turns a resolved command template into the line that will be typed
+// into a session's shell.
+//
+// **It is the one implementation, and that is the requirement.** start calls it
+// to produce what runs and StartCommandLine calls it to produce what the create
+// form shows, so FR-015 — the displayed command line is what actually runs —
+// holds by construction rather than by two functions being kept in step. A
+// preview assembled anywhere else, in Go or in the browser, would be a second
+// renderer free to disagree with this one the day either grows a rule.
+//
+// The resume value is validated here rather than trusted from the caller. This is
+// the last point before it becomes part of a line typed at an unsandboxed shell,
+// and a future caller reaching Create by another route would otherwise arrive
+// with nothing between them and that line. Failing closed rather than dropping
+// the flag: a create that asked to continue a conversation and silently started a
+// fresh one is FR-024's defect, found out by reading a pane that has forgotten
+// everything.
+//
+// Order matters. The flags go on before the name is substituted, so a session
+// name can never be read as a flag no matter what it contains — and it cannot
+// anyway, because ValidateName's alphabet has no leading hyphen in it. Two
+// defences, and this one is free.
+func (m *Manager) renderStart(template, resume, sessionName string) (string, error) {
+	flagged, err := m.resumeFlagged(template, resume)
+	if err != nil {
+		return "", err
+	}
+	// The session's own name goes into the command line here and nowhere else
+	// (#58). Create has already refused anything RenderStartCommand would, so a
+	// failure at this point is a record that reached start without passing
+	// ValidateName — fail closed rather than type a line with a hole in it.
+	return config.RenderStartCommand(flagged, sessionName)
+}
+
+// resumeFlagged is renderStart without the name substitution: the half both the
+// preview and the create share, split out so the preview can stop before the
+// step that needs a name.
+func (m *Manager) resumeFlagged(template, resume string) (string, error) {
+	checked, err := ValidateResume(resume)
+	if err != nil {
+		return "", err
+	}
+	switch checked {
+	case "":
+		// Nothing to add, and the line is byte-identical to the one this daemon
+		// typed before the option existed.
+		return template, nil
+	case ResumeLatest:
+		return config.InsertStartFlags(template, ResumeLatestFlag), nil
+	default:
+		return config.InsertStartFlags(template, ResumeOneFlag, checked), nil
+	}
+}
+
+// StartCommandLine is what a create with these options would type, for the create
+// form to show the operator (FR-014, FR-015, contracts/command-preview.md).
+//
+// It is a **readout and never a route to execution**. Nothing a browser sends
+// selects a command line other than by mode and resume state: the template still
+// comes from the operator's configured set, resolved here from a mode exactly as
+// a create resolves it, and this method returns a string to render rather than
+// anything to run. The set of commands this daemon can be made to execute is the
+// same before and after it exists (FR-016).
+//
+// It answers a refusal for a mode this daemon has no command for, which is the
+// same refusal a create would get — so a form that cannot show a line is a form
+// whose control would have been turned away, and FR-018a's discipline about
+// absent values applies: render nothing rather than an empty preview.
+//
+// # An empty name leaves the placeholder standing
+//
+// The create form renders before its name field has been filled in, and the
+// operator's name is exactly the part of the line that changes as they type. So
+// an empty sessionName here means "the line, with the name not yet chosen", and
+// the configured template's own `{name}` is returned untouched for the page to
+// substitute into.
+//
+// It is a rule of this method and deliberately not of renderStart, which start
+// uses: a *create* reaching RenderStartCommand with no name is a record that got
+// past ValidateName, and that must go on failing closed rather than typing a line
+// with a hole in it. Preview and execution differ on exactly one thing, and this
+// is it.
+//
+// Getting this wrong is not hypothetical. RenderStartCommand re-checks the
+// alphabet, so passing the placeholder itself as a name is refused for its
+// braces — which silently removed the preview from every daemon whose remote
+// command carries `{name}`, which is the deployed shape.
+func (m *Manager) StartCommandLine(mode Mode, resume, sessionName string) (string, error) {
+	name, err := m.commandForMode(mode)
+	if err != nil {
+		return "", err
+	}
+	template, err := m.resolveStartCommand(name)
+	if err != nil {
+		return "", err
+	}
+	if sessionName == "" {
+		// The flags go on and the substitution does not, so the template's own
+		// placeholder survives for the page to fill in. A template carrying none
+		// is already the whole line.
+		return m.resumeFlagged(template, resume)
+	}
+	return m.renderStart(template, resume, sessionName)
 }
 
 // rollback undoes a half-started session and returns the error Create answers
@@ -1825,8 +1963,8 @@ func (m *Manager) start(ctx context.Context, s Session) error {
 //     returned. Nothing survives the failed create.
 //   - Confirmed still there, or tmux could not be asked: the record is **kept**
 //     and ErrOrphanedSession is wrapped in. A kept record is a session with an
-//     owner, an idle deadline, and an absolute deadline, which is the only thing
-//     that will ever collect it — adoption runs at startup, so a live session
+//     owner and an absolute deadline, which is the only thing that will ever
+//     collect it — adoption runs at startup, so a live session
 //     the running daemon has forgotten is forgotten for good. The cost is a
 //     record for a session that may already be dead, which the reaper resolves;
 //     the alternative cost is an unowned unsandboxed shell, which nothing does.

@@ -108,15 +108,18 @@ const (
 	// startup adoption reclaims them.
 	EnvDestroyOnShutdown = "CRSW_DESTROY_ON_SHUTDOWN"
 
-	// The four lifetime variables (#37). Defaults reproduce the constants the
+	// The two lifetime variables (#37). Defaults reproduce the constants the
 	// daemon shipped with, so an operator who sets none of them sees no change.
-	// The MAX pair are ceilings a per-session override may not exceed; without
-	// them an override would be unbounded, which is the thing that must not be
-	// true of a bound.
+	// MAX is the ceiling a per-session override may not exceed; without it an
+	// override would be unbounded, which is the thing that must not be true of a
+	// bound.
+	//
+	// There were four until milestone 15. CRSW_IDLE_TIMEOUT and
+	// CRSW_IDLE_TIMEOUT_MAX went with the bound they configured; they are named
+	// in retiredKeys so that a file still carrying one is refused rather than
+	// read as though it still did something.
 	EnvSessionLifetime    = "CRSW_SESSION_LIFETIME"
 	EnvSessionLifetimeMax = "CRSW_SESSION_LIFETIME_MAX"
-	EnvIdleTimeout        = "CRSW_IDLE_TIMEOUT"
-	EnvIdleTimeoutMax     = "CRSW_IDLE_TIMEOUT_MAX"
 	EnvCreateRatePerMin   = "CRSW_CREATE_RATE_PER_MIN"
 	EnvMaxBodyBytes       = "CRSW_MAX_BODY_BYTES"
 
@@ -474,17 +477,15 @@ type Config struct {
 	// destroying a fleet to redeploy a binary is a cost nobody asked for.
 	DestroyOnShutdown bool
 
-	// SessionLifetime and IdleTimeout are what a create that asks for nothing
-	// gets; the Max pair are the ceilings an override is checked against (#37).
+	// SessionLifetime is what a create that asks for nothing gets;
+	// SessionLifetimeMax is the ceiling an override is checked against (#37).
 	//
-	// SessionLifetimeMax alone may be negative, which is NeverLifetime loaded:
-	// no ceiling, and therefore a daemon on which a create may ask for a session
+	// SessionLifetimeMax may be negative, which is NeverLifetime loaded: no
+	// ceiling, and therefore a daemon on which a create may ask for a session
 	// that never expires. Read it through the sign and never through a
 	// comparison that assumes a duration in the future.
 	SessionLifetime    time.Duration
 	SessionLifetimeMax time.Duration
-	IdleTimeout        time.Duration
-	IdleTimeoutMax     time.Duration
 	CreateRatePerMin   int
 	MaxBodyBytes       int64
 
@@ -782,15 +783,7 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 	if err != nil {
 		return nil, err
 	}
-	idle, err := loadDuration(getenv, EnvIdleTimeout, session_IdleTimeout)
-	if err != nil {
-		return nil, err
-	}
-	idleMax, err := loadDuration(getenv, EnvIdleTimeoutMax, idle)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateLifetimes(lifetime, lifetimeMax, idle, idleMax); err != nil {
+	if err := validateLifetimes(lifetime, lifetimeMax); err != nil {
 		return nil, err
 	}
 
@@ -873,8 +866,6 @@ func loadWith(getenv func(string) string, file *File, warn io.Writer, o loadOpti
 		PaneBound:           paneBound,
 		SessionLifetime:     lifetime,
 		SessionLifetimeMax:  lifetimeMax,
-		IdleTimeout:         idle,
-		IdleTimeoutMax:      idleMax,
 		StartCommands:       startCommands,
 
 		RemoteControlCommand: remoteControl,
@@ -1156,6 +1147,66 @@ func RenderStartCommand(command, sessionName string) (string, error) {
 		}
 	}
 	return strings.ReplaceAll(command, StartCommandNamePlaceholder, sessionName), nil
+}
+
+// InsertStartFlags puts flags on a configured start command, immediately after
+// the binary and before everything else (milestone 15, spec 009).
+//
+// It lives here rather than at the call site because command-line construction
+// belongs to one package: RenderStartCommand is the only other thing that edits
+// one, and two places that assemble a line typed at an unsandboxed shell is one
+// more than this daemon should have.
+//
+// # Why after the first token and not at the end
+//
+// The configured commands end in a quoted prompt argument —
+// `claude --dangerously-skip-permissions "/rc {name}"` is the deployed shape —
+// and whether an argument parser honours a flag that follows a positional is the
+// parser's business, not something this daemon may assume. Insertion after the
+// binary is a rule that can be stated, tested, and read off the preview the
+// operator is shown.
+//
+// The first token is found by whitespace, which is the same split a shell makes
+// of the same line. A command whose binary is a quoted path with a space in it
+// would be split wrongly here — and would already be split wrongly by the shell
+// that runs it, since nothing quotes these lines on the way out, so this is the
+// existing contract rather than a new limitation.
+//
+// # What it does not do
+//
+// It does not validate the flags. Everything reaching here is either a constant
+// in this repository or a value a caller-facing validator has already reduced to
+// an alphabet that cannot change the shape of a line (session.ValidateResume).
+// Adding a second, weaker check here would invite a caller to be routed through
+// this one instead.
+//
+// Empty flags are dropped rather than inserted as empty arguments, and a call
+// with no flags at all returns the command unchanged — so the ordinary create,
+// which asks for nothing, types exactly the line it always typed.
+func InsertStartFlags(command string, flags ...string) string {
+	kept := make([]string, 0, len(flags))
+	for _, f := range flags {
+		if strings.TrimSpace(f) != "" {
+			kept = append(kept, f)
+		}
+	}
+	if len(kept) == 0 {
+		return command
+	}
+
+	// TrimSpace first so a configured command with leading whitespace does not
+	// yield an empty binary and put the flags in front of nothing.
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return command
+	}
+
+	binary, rest, found := strings.Cut(trimmed, " ")
+	inserted := binary + " " + strings.Join(kept, " ")
+	if !found {
+		return inserted
+	}
+	return inserted + " " + rest
 }
 
 // unknownPlaceholder finds the first `{identifier}` in a command line that is
@@ -1716,24 +1767,20 @@ func loadInt(getenv func(string) string, name string, def int) (int, error) {
 
 // loadDuration reads a Go duration, defaulting when unset (#37).
 //
-// A negative value is refused rather than clamped everywhere except the idle
-// timeout, where the caller allows it as the disable — so the check belongs to
-// each caller and not here, and this only refuses what cannot be parsed.
+// A negative value is the caller's business rather than this function's — the
+// lifetime ceiling allows one as NeverLifetime — so the check belongs to each
+// caller, and this only refuses what cannot be parsed.
 // The daemon's built-in bounds, duplicated here rather than imported: internal
 // /session imports this package, so importing it back would be a cycle. They are
 // the values internal/session declares, and config_test pins them equal so the
 // duplication cannot drift silently.
-const (
-	session_AbsoluteLifetime = 24 * time.Hour
-	session_IdleTimeout      = 60 * time.Minute
-)
+const session_AbsoluteLifetime = 24 * time.Hour
 
 // validateLifetimes refuses at startup what cannot be corrected at runtime (#37).
 //
 // A ceiling below its own default would mean every create is refused by a bound
-// the operator set without meaning to, and an idle timeout longer than the
-// session it sits in can never fire — a setting that does nothing is worse than
-// one that refuses, because nothing tells you it did nothing.
+// the operator set without meaning to — a setting that does nothing is worse
+// than one that refuses, because nothing tells you it did nothing.
 // validateAccessGroup enforces all-or-nothing on the identity provider (#70).
 //
 // None of the three means the dashboard admits nobody, which is a deployment
@@ -1811,7 +1858,7 @@ func validateDoors(accessEnabled bool, teamDomain string, password []byte, bypas
 	return nil
 }
 
-func validateLifetimes(lifetime, lifetimeMax, idle, idleMax time.Duration) error {
+func validateLifetimes(lifetime, lifetimeMax time.Duration) error {
 	switch {
 	case lifetime <= 0:
 		// The *default* has no "never", and that asymmetry is deliberate: this
@@ -1825,12 +1872,6 @@ func validateLifetimes(lifetime, lifetimeMax, idle, idleMax time.Duration) error
 		// negative): no default sits above "no bound", and the arithmetic says
 		// the opposite.
 		return fmt.Errorf("%s (%s) is below %s (%s); every create would be refused by a ceiling under its own default", EnvSessionLifetimeMax, lifetimeMax, EnvSessionLifetime, lifetime)
-	case idle < 0:
-		return fmt.Errorf("%s may not be negative, got %s; use 0 to disable idle reaping", EnvIdleTimeout, idle)
-	case idleMax < idle:
-		return fmt.Errorf("%s (%s) is below %s (%s)", EnvIdleTimeoutMax, idleMax, EnvIdleTimeout, idle)
-	case idle > lifetime:
-		return fmt.Errorf("%s (%s) exceeds %s (%s), so it could never fire", EnvIdleTimeout, idle, EnvSessionLifetime, lifetime)
 	}
 	return nil
 }

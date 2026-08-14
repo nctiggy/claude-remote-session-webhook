@@ -245,7 +245,7 @@ func TestExecSendsTheContractArgv(t *testing.T) {
 		{Argv: []string{"tmux", "-L", execSocket, "capture-pane", "-p", "-t", "=" + execName + ":"}},
 		{Argv: []string{"tmux", "-L", execSocket, "kill-session", "-t", "=" + execName}},
 		{Argv: []string{"tmux", "-L", execSocket, "has-session", "-t", "=" + execName}},
-		{Argv: []string{"tmux", "-L", execSocket, "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}|#{session_activity}"}},
+		{Argv: []string{"tmux", "-L", execSocket, "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}|#{@crswd-lifetime}"}},
 	}
 
 	got := recorded(t)
@@ -536,7 +536,7 @@ func TestExecListDoesNotSwallowOtherFailures(t *testing.T) {
 }
 
 func TestExecListParsesTmuxOutput(t *testing.T) {
-	stub{stdout: "crswd-abc123|1785706480|1||||1785710000\ncrswd-abc123-decoy|1785706480|||||1785710000\nnotours|1785706480|||||1785710000\n"}.install(t)
+	stub{stdout: "crswd-abc123|1785706480|1||||\ncrswd-abc123-decoy|1785706480|||||\nnotours|1785706480|||||\n"}.install(t)
 
 	got, err := newStubExec(t).List(context.Background())
 	if err != nil {
@@ -544,9 +544,9 @@ func TestExecListParsesTmuxOutput(t *testing.T) {
 	}
 
 	want := []SessionInfo{
-		{Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true, Activity: time.Unix(1785710000, 0)},
-		{Name: "crswd-abc123-decoy", Created: time.Unix(1785706480, 0), Activity: time.Unix(1785710000, 0)},
-		{Name: "notours", Created: time.Unix(1785706480, 0), Activity: time.Unix(1785710000, 0)},
+		{Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true},
+		{Name: "crswd-abc123-decoy", Created: time.Unix(1785706480, 0)},
+		{Name: "notours", Created: time.Unix(1785706480, 0)},
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("List =\n  %v\nwant\n  %v", got, want)
@@ -569,11 +569,11 @@ func TestParseSessions(t *testing.T) {
 		},
 		{
 			name:   "managed, lookalike, and unrelated",
-			stdout: "crswd-abc123|1785706480|1||||1785710000\ncrswd-abc123-decoy|1785706480|||||1785710000\nnotours|1785706480|||||1785710000\n",
+			stdout: "crswd-abc123|1785706480|1||||\ncrswd-abc123-decoy|1785706480|||||\nnotours|1785706480|||||\n",
 			want: []SessionInfo{
-				{Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true, Activity: time.Unix(1785710000, 0)},
-				{Name: "crswd-abc123-decoy", Created: time.Unix(1785706480, 0), Activity: time.Unix(1785710000, 0)},
-				{Name: "notours", Created: time.Unix(1785706480, 0), Activity: time.Unix(1785710000, 0)},
+				{Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true},
+				{Name: "crswd-abc123-decoy", Created: time.Unix(1785706480, 0)},
+				{Name: "notours", Created: time.Unix(1785706480, 0)},
 			},
 		},
 		{
@@ -583,68 +583,39 @@ func TestParseSessions(t *testing.T) {
 			// failing the whole call — and with it, adoption of every managed
 			// session on the host.
 			name:   "a pipe in someone else's session name",
-			stdout: "weird|name|1785706480|||||1785710000\n",
+			stdout: "weird|name|1785706480|||||\n",
 			want: []SessionInfo{
-				{Name: "weird|name", Created: time.Unix(1785706480, 0), Activity: time.Unix(1785710000, 0)},
+				{Name: "weird|name", Created: time.Unix(1785706480, 0)},
 			},
 		},
 		{
 			name:   "a pipe in a managed session name",
-			stdout: "a|b|c|1785706480|1||||1785710000\n",
+			stdout: "a|b|c|1785706480|1||||\n",
 			want: []SessionInfo{
-				{Name: "a|b|c", Created: time.Unix(1785706480, 0), Managed: true, Activity: time.Unix(1785710000, 0)},
+				{Name: "a|b|c", Created: time.Unix(1785706480, 0), Managed: true},
 			},
 		},
 		{
 			// Provenance is the marker being set at all, never the name.
 			name:   "any non-empty marker means ours",
-			stdout: "crswd-abc123|1785706480|yes||||1785710000\n",
+			stdout: "crswd-abc123|1785706480|yes||||\n",
 			want: []SessionInfo{
-				{Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true, Activity: time.Unix(1785710000, 0)},
+				{Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true},
 			},
 		},
 		{
 			name:   "no trailing newline",
-			stdout: "crswd-abc123|1785706480|1||||1785710000\n",
+			stdout: "crswd-abc123|1785706480|1||||\n",
 			want: []SessionInfo{
-				{Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true, Activity: time.Unix(1785710000, 0)},
+				{Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true},
 			},
 		},
 		{
 			// The fifth user option, which mode is derived from. It sits second
 			// from the right in the format string, so a parser that lost count
 			// would put a command name where the base64 workdir goes, or the
-			// activity time where the command name goes, and lose both.
+			// lifetime where the command name goes, and lose both.
 			name:   "the start-command name comes back off the host",
-			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=|rc|1785710000\n",
-			want: []SessionInfo{
-				{
-					Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true,
-					Label: "deploy", WorkDir: "/repo", StartCommand: "rc",
-					Activity: time.Unix(1785710000, 0),
-				},
-			},
-		},
-		{
-			// A session started before the option existed. tmux renders an unset
-			// user option as an empty field, which is the daemon's default and
-			// therefore local — not a row that failed to parse.
-			name:   "no start-command name is not an error",
-			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=||1785710000\n",
-			want: []SessionInfo{
-				{
-					Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true,
-					Label: "deploy", WorkDir: "/repo", Activity: time.Unix(1785710000, 0),
-				},
-			},
-		},
-		{
-			// The activity time is the one clock the daemon does not own, so it
-			// is the one that must not be able to fail a row. Absent yields the
-			// zero time and the row still parses — the caller then measures idle
-			// from LastActivity alone, exactly as it did before this field
-			// existed.
-			name:   "no activity time is not an error",
 			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=|rc|\n",
 			want: []SessionInfo{
 				{
@@ -654,12 +625,39 @@ func TestParseSessions(t *testing.T) {
 			},
 		},
 		{
-			// Nor may garbage in it fail the row. A tmux that reworded this
-			// field would otherwise take reconciliation down with it, leaving
-			// every managed session on the host unadopted — a far worse outcome
-			// than measuring idle the way yesterday's build did.
-			name:   "an unreadable activity time is not an error",
-			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=|rc|whenever\n",
+			// A session started before the option existed. tmux renders an unset
+			// user option as an empty field, which is the daemon's default and
+			// therefore local — not a row that failed to parse.
+			name:   "no start-command name is not an error",
+			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=||\n",
+			want: []SessionInfo{
+				{
+					Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true,
+					Label: "deploy", WorkDir: "/repo",
+				},
+			},
+		},
+		{
+			// The sixth user option, and the one whose absence was a defect
+			// (milestone 15). It is the rightmost field, so a parser that lost
+			// count would read a lifetime where the command name goes.
+			name:   "the session's own lifetime comes back off the host",
+			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=|rc|never\n",
+			want: []SessionInfo{
+				{
+					Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true,
+					Label: "deploy", WorkDir: "/repo", StartCommand: "rc",
+					Lifetime: "never",
+				},
+			},
+		},
+		{
+			// A session started before the option existed. Empty is "unknown"
+			// and never "none": internal/session hands such a session the
+			// daemon's configured default rather than refusing to adopt it,
+			// because an unadopted session is an unowned unsandboxed shell.
+			name:   "no lifetime is not an error",
+			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=|rc|\n",
 			want: []SessionInfo{
 				{
 					Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true,
@@ -668,16 +666,32 @@ func TestParseSessions(t *testing.T) {
 			},
 		},
 		{
+			// Nor may garbage in it fail the row. This package forms no opinion
+			// about what a lifetime means — it carries the bytes — so an
+			// unreadable value reaches internal/session and is read as absence
+			// there. A row that failed over it would take reconciliation down,
+			// leaving every managed session on the host unadopted.
+			name:   "an unreadable lifetime is not an error here",
+			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=|rc|whenever\n",
+			want: []SessionInfo{
+				{
+					Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true,
+					Label: "deploy", WorkDir: "/repo", StartCommand: "rc",
+					Lifetime: "whenever",
+				},
+			},
+		},
+		{
 			// Well formed but for the field under test, so the error is that
 			// field's and not a miscount: this is the case that must keep
 			// failing now that the row beside it may fail softly.
 			name:    "creation time is not a number",
-			stdout:  "crswd-abc123|whenever|1||||1785710000\n",
+			stdout:  "crswd-abc123|whenever|1||||\n",
 			wantErr: true,
 		},
 		{
 			name:    "creation time missing entirely",
-			stdout:  "crswd-abc123||1||||1785710000\n",
+			stdout:  "crswd-abc123||1||||\n",
 			wantErr: true,
 		},
 		{

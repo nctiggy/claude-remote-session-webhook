@@ -390,11 +390,12 @@ func TestCreateStartsTheSessionItPromised(t *testing.T) {
 			}
 		}
 	}
-	// Five options now, the fifth being the start-command name mode is derived
-	// from (contracts/session-mode.md).
+	// Six options now, the sixth being the session's own lifetime — the fact
+	// whose absence sent a never-expiring session back mortal from every restart
+	// (milestone 15).
 	wantOps := []tmuxctl.Op{
 		tmuxctl.OpNew,
-		tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption,
+		tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption,
 		tmuxctl.OpSendKeys,
 	}
 	if !slices.Equal(ops, wantOps) {

@@ -49,7 +49,7 @@ the blast radius bounded. Read both before touching a handler.
 
 What bounds the damage, once somebody is through the door, is configuration:
 sessions may only run under [allowlisted roots](#configuration), there is a cap on
-how many exist at once, and every one of them has an idle timeout and an absolute
+how many exist at once, and every one of them has an absolute
 lifetime enforced by a reaper — deadlines a create can switch off only as far as
 [the daemon's own configuration](#configuration) already allows.
 
@@ -648,8 +648,6 @@ stands in for the permission prompt that is gone.
 | `CRSW_DESTROY_ON_SHUTDOWN` | no | `false` | Tear every session down when the daemon stops. Off by default: sessions survive a clean stop and startup adoption reclaims them, so a redeploy no longer costs the fleet. `true` restores the old behaviour, for a host being decommissioned rather than updated |
 | `CRSW_SESSION_LIFETIME` | no | `24h` | How long a session may live from creation, never renewed. The default every create inherits, and a create may ask for another up to the ceiling below. Zero or negative refuses, and so does `never` — the word belongs to the ceiling, because a *default* of never would make every session on the host immortal without a create ever asking |
 | `CRSW_SESSION_LIFETIME_MAX` | no | `CRSW_SESSION_LIFETIME` | The ceiling a per-session lifetime override may not exceed — a create asking past it is refused, never clamped. Below the default refuses. It defaults to the default, so an override buys nothing until this is raised deliberately. `never` is the one value here that is not a duration: no ceiling at all, and so a daemon on which a create may ask for a session that never expires. A negative refuses rather than being read as a second spelling of it |
-| `CRSW_IDLE_TIMEOUT` | no | `60m` | How long a session may sit idle before the reaper takes it, counted from the later of two clocks and moving with whichever is more recent: the last request that drove the session, and what tmux itself last saw it print. Negative refuses; longer than the lifetime refuses |
-| `CRSW_IDLE_TIMEOUT_MAX` | no | `CRSW_IDLE_TIMEOUT` | The ceiling a per-session idle override may not exceed. Below the default refuses. It bounds an idle timeout set *longer*; the form's idle switch turns that clock off rather than lengthening it, which this does not bound and the absolute lifetime does. It takes no `never` and needs none — switching idle reaping off asks this ceiling for no room, because the absolute deadline still bounds such a session |
 | `CRSW_CREATE_RATE_PER_MIN` | no | `6` | Creates per minute per caller. Below 1 refuses |
 | `CRSW_MAX_BODY_BYTES` | no | `65536` | The largest request body read. Below 1 refuses |
 | `CRSW_ACCESS_ENABLED` | no | `false` | Declares Cloudflare Access to be the browser door. On with none of the three below, it refuses to start rather than serving a dashboard that admits nobody; on beside `CRSW_DASHBOARD_PASSWORD`, it refuses rather than choosing a door. It is not required for the Access door — the three values still select it on their own |
@@ -689,6 +687,27 @@ Notes worth having before you set these:
   and the same audit record. The list is a convenience and `CRSW_ALLOWED_ROOTS`
   is the control, which is why a suggestion outside the roots is legal to
   configure and refused on create.
+- **The create form shows the command line it will run.** A readout beside the
+  controls, updating as they change, carrying the exact line the session is
+  started with — the same renderer produces both, so it cannot drift. It is a
+  `<pre>` and not a field: the operator-configured `start_commands` set is still
+  the only source of commands this daemon will execute, and nothing the browser
+  sends selects one except by mode. With scripting off it shows the line for the
+  form's default state, which is what an unmodified submission runs.
+- **A create may continue a prior conversation.** Tick it to resume the most
+  recent conversation in the working directory (`--continue`), or pick a specific
+  one from the list (`--resume <id>`). The list is read from Claude's own
+  on-disk history for that directory: **no transcript is ever opened** — the file
+  name is the identifier and its mtime is the recency — and the directory passes
+  the same allowlist check a create does *before* it becomes a path, so a
+  directory you could not start a session in is one whose conversations are not
+  listed either. A host with no history renders a form without the control rather
+  than an offer with nothing behind it.
+
+  The identifier is accepted only as a strict lowercase `8-4-4-4-12` UUID.
+  That is not fussiness: the start command is typed into a live shell, so the
+  alphabet — no metacharacter, no whitespace, no quote, no newline — is what
+  stops a value from changing the shape of the line it lands on.
 - **Remote control is a mode, not a command name.** The create form renders one
   checkbox, and a ticked box posts `remote_control=on` while an unticked one
   posts nothing — so a lost or stripped field yields the *less* privileged mode.
@@ -697,25 +716,27 @@ Notes worth having before you set these:
   and a real configured name submitted in that field is refused like any other
   value. `CRSW_START_COMMANDS` is still how the API door names one, because that
   door takes names.
-- **There are two clocks, and either of them can be turned off.** The idle
-  timeout runs from the session's last activity — the later of the last request
-  that drove it and what tmux itself last saw it print — and moves with whichever
-  is more recent; the absolute lifetime runs from creation and is never renewed.
-  A create may override either under the `_MAX` ceiling beside it, and **the
-  dashboard offers both as switches**: *Never die when idle*, on every daemon,
-  and *Never die at the lifetime limit*, only on one whose operator removed the
-  lifetime ceiling — anywhere else that create would be refused, and a control
-  whose only outcome is a refusal is not drawn. With both ticked, nothing reaps
-  the session. Both deadlines are on the session's card, beside the activity the
-  idle one counts from, so which clock is coming is something to read rather than
-  infer.
+- **There is one clock, and it can be turned off.** The absolute lifetime runs
+  from creation and is never renewed. A create may override it under the `_MAX`
+  ceiling beside it, and **the dashboard offers it as a switch** — *Never die at
+  the lifetime limit* — but only on a daemon whose operator removed the lifetime
+  ceiling; anywhere else that create would be refused, and a control whose only
+  outcome is a refusal is not drawn. With it ticked, nothing reaps the session.
+  The deadline is on the session's card, and says there is no limit rather than
+  naming a date a century out.
+
+  There was a second clock until milestone 15: an idle timeout, running from the
+  later of the last request that drove a session and what tmux last saw it print.
+  It was withdrawn with constitution 2.0.0, because a session waiting for a human
+  is quiet and being quiet was never a reason to destroy one. Nothing replaced
+  it. `CRSW_IDLE_TIMEOUT` and `CRSW_IDLE_TIMEOUT_MAX` are gone; a configuration
+  file still setting either is refused at startup, and `crswd config migrate`
+  removes them and keeps a backup.
 - **Watching a session is still not driving it.** Reading — the dashboard, the
-  session page, the live stream — advances neither clock. What advances the idle
-  one is a request that drives the session, or the session producing output on
-  this host, so a long job you are watching is not reaped out from under you
-  while a tab left open over a weekend holds nothing alive. A tmux reading that
-  is missing or unusable can only fail to be the later of the two, so no session
-  is ever reaped *because* that reading failed.
+  session page, the live stream — records nothing against a session. It used to
+  matter a great deal, because a forgotten tab that postponed an idle deadline
+  would have held an unsandboxed shell open; with that bound gone the rule stands
+  and the stakes are a card that overstates when a session was last driven.
 - **"Never" is spellable, and it removes a bound rather than raising one.**
   `CRSW_SESSION_LIFETIME_MAX=never` is no ceiling at all: a create may then ask
   for a session that never expires, which is what puts the second switch on the
@@ -723,19 +744,24 @@ Notes worth having before you set these:
   immortal without a create asking. Read what it costs first — the absolute
   deadline is the one bound that is never renewed, so with it gone what contains
   a session is `CRSW_ALLOWED_ROOTS` and whichever door admits callers, not the
-  reaper. One edge comes with it: no session record survives the daemon, so a
-  restart adopts such a session back from tmux as an ordinary one carrying the
-  built-in 24h lifetime, and destroys it on the spot if it is already older.
+  reaper. **The edge that used to come with it is fixed**: until milestone 15 no
+  session record survived the daemon, so a restart adopted such a session back
+  from tmux as an ordinary one carrying the built-in 24h lifetime and destroyed
+  it on the spot if it was already older — a switch that worked until it
+  mattered. The lifetime is now written onto the tmux session itself and restored
+  on adoption, so "never" means never across a redeploy. A ceiling narrowed while
+  the daemon was down still wins: such a session is adopted under the ceiling now
+  in force, and the audit trail says so.
+
   Saying how long is still the smaller answer, and there is no upper bound on the
   parse, so a year is a legal one:
   ```
   CRSW_SESSION_LIFETIME=8760h     # the default every create inherits; the ceiling follows it
-  CRSW_IDLE_TIMEOUT=8760h         # or leave this and tick the form's switch per session
   ```
   Raising only `CRSW_SESSION_LIFETIME_MAX` widens what a create may *ask* for and
   changes nothing an operator gets by default — that is the shape for the API
-  door, which sends `lifetime` and `idle_timeout` per create, rather than for the
-  form, whose lifetime control is those two switches. Nothing is re-read while the
+  door, which sends `lifetime` per create, rather than for the form, whose
+  lifetime control is that switch. Nothing is re-read while the
   daemon runs and a session keeps the deadlines it was created with, so a raise
   reaches the next session and not the one already running.
 - **`CRSW_LISTEN` will not take a hostname, under either door.** `localhost` is
@@ -757,9 +783,9 @@ Notes worth having before you set these:
   absolute path or startup fails.
 
 One limit is still a **constant in the code, not a setting**: the signed-request
-timestamp window, 300s in both directions. The session lifetime and the idle
-timeout are settings now, and what bounds them is the `_MAX` ceiling beside each
-rather than their being unwritable — the ceiling is the operator's, the choice
+timestamp window, 300s in both directions. The session lifetime is a setting now,
+and what bounds it is the `_MAX` ceiling beside it rather than its being
+unwritable — the ceiling is the operator's, the choice
 under it is the session's, and the blast radius stays bounded because a session
 cannot reach past what the host was configured to allow.
 

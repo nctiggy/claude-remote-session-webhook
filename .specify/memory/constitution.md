@@ -59,8 +59,18 @@ so every constraint it used to provide must be re-established structurally:
   from the caller as a free-form path.
 - Concurrent sessions are **capped**; the daemon refuses rather than degrading
   the host.
-- Every session has an **idle timeout and an absolute lifetime**, enforced by a
-  reaper, not by the next request.
+- Every session has an **absolute lifetime**, enforced by a reaper, not by the
+  next request. It is renewed by nothing, and it is switched off only by an
+  operator who has first unbounded the daemon's own ceiling — two decisions, so
+  that a caller cannot reach it alone. **A session with it switched off is bounded
+  by nothing time-based at all**, and the four constraints around this one are
+  then the whole of the containment. That is a state an operator may choose; it is
+  not a state anything here prevents.
+
+  *Amended 2.0.0: an idle timeout was required here until 2026-08-14. It was
+  withdrawn because it bounded the wrong thing — a session waiting for a human is
+  quiet, and destroying it for that lost work the operator expected to keep — not
+  because it was mis-measured. What it cost to remove is written above.*
 - Teardown is **verified**, not assumed. An orphaned tmux window is a live
   unsandboxed shell with no owner.
 - The listener binds **loopback only**. Reachability comes from the tunnel.
@@ -124,4 +134,4 @@ justification.
 
 Agents: `AGENTS.md` is your runtime guide; this document is the authority behind it.
 
-**Version**: 1.0.0 | **Ratified**: 2026-08-02 | **Last Amended**: 2026-08-02
+**Version**: 2.0.0 | **Ratified**: 2026-08-02 | **Last Amended**: 2026-08-14

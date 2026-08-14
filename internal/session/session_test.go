@@ -72,13 +72,12 @@ func storeWith(t *testing.T, s Session) *Store {
 func TestLifetimesMatchTheContract(t *testing.T) {
 	t.Parallel()
 
-	// docs/auth-and-sessions.md's lifetimes table, transcribed. The two numbers
-	// are the ones Principle VI bounds the blast radius with.
+	// docs/auth-and-sessions.md's lifetimes table, transcribed. This is the
+	// number Principle VI bounds the blast radius with, and since milestone 15
+	// it is the only one — the idle timeout that stood beside it was withdrawn
+	// with constitution 2.0.0.
 	if got, want := AbsoluteLifetime, 24*time.Hour; got != want {
 		t.Errorf("AbsoluteLifetime = %v, want %v", got, want)
-	}
-	if got, want := IdleTimeout, 60*time.Minute; got != want {
-		t.Errorf("IdleTimeout = %v, want %v", got, want)
 	}
 }
 
@@ -239,192 +238,11 @@ func TestSessionStoresNoExpiryField(t *testing.T) {
 	}
 
 	// The other half of the claim: it is available, just not as a field.
-	for _, method := range []string{"TokenExpiry", "AbsoluteDeadline", "IdleDeadline"} {
+	for _, method := range []string{"TokenExpiry", "AbsoluteDeadline"} {
 		if _, ok := reflect.TypeOf(Session{}).MethodByName(method); !ok {
 			t.Errorf("Session has no %s method", method)
 		}
 	}
-}
-
-func TestIdleDeadlineFollowsLastActivity(t *testing.T) {
-	t.Parallel()
-
-	s := newTestSession(testID("d"), auth.CallerOperator)
-
-	if got, want := s.IdleDeadline(), contractCreatedAt.Add(IdleTimeout); !got.Equal(want) {
-		t.Errorf("IdleDeadline() = %v, want %v", got, want)
-	}
-
-	// The idle clock moves with LastActivity; the absolute one does not move at
-	// all. FR-038 has no renewal of the absolute lifetime, and a session that
-	// stays busy for a day must still die on schedule.
-	s.LastActivity = contractCreatedAt.Add(90 * time.Minute)
-	if got, want := s.IdleDeadline(), contractCreatedAt.Add(90*time.Minute+IdleTimeout); !got.Equal(want) {
-		t.Errorf("IdleDeadline() after activity = %v, want %v", got, want)
-	}
-	if got := s.AbsoluteDeadline(); !got.Equal(contractExpiresAt) {
-		t.Errorf("AbsoluteDeadline() moved with activity: %v, want %v", got, contractExpiresAt)
-	}
-}
-
-// M13 T002: the idle deadline is measured from the later of the two clocks,
-// because either one is genuinely activity.
-//
-// The case that opened the milestone is the third one: a session nothing has
-// asked the daemon about for an hour, which the host says printed something a
-// minute ago. Every other case is the fail-safe direction — an activity time
-// that is absent, unparsable, stale or from a clock that disagrees can only be
-// ignored, never used to bring a deadline forward.
-func TestIdleDeadlineTakesTheLaterOfTheTwoClocks(t *testing.T) {
-	t.Parallel()
-
-	const idle = 90 * time.Minute
-
-	tests := []struct {
-		name         string
-		lastActivity time.Duration // from contractCreatedAt
-		tmuxActivity time.Time
-		want         time.Duration // the instant the deadline is measured from
-	}{
-		{
-			name: "no reading from the host at all",
-			// What every record holds before a sweep has reached it, and what an
-			// absent or unparsable #{session_activity} yields (T001).
-			tmuxActivity: time.Time{},
-			want:         0,
-		},
-		{
-			name:         "a host reading older than the record's own clock",
-			lastActivity: idle,
-			tmuxActivity: contractCreatedAt,
-			want:         idle,
-		},
-		{
-			name:         "a host reading newer than the record's own clock",
-			tmuxActivity: contractCreatedAt.Add(idle),
-			want:         idle,
-		},
-		{
-			name:         "the two agreeing to the nanosecond",
-			lastActivity: idle,
-			tmuxActivity: contractCreatedAt.Add(idle),
-			want:         idle,
-		},
-		{
-			// The zero time is not "idle since 1970". A record whose own clock is
-			// current stays current whatever the host failed to say.
-			name:         "a live record and no reading from the host",
-			lastActivity: idle,
-			tmuxActivity: time.Time{},
-			want:         idle,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			s := newTestSession(testID("f"), auth.CallerOperator)
-			s.LastActivity = contractCreatedAt.Add(tc.lastActivity)
-			s.TmuxActivity = tc.tmuxActivity
-
-			want := contractCreatedAt.Add(tc.want + IdleTimeout)
-			if got := s.IdleDeadline(); !got.Equal(want) {
-				t.Errorf("IdleDeadline() = %v, want %v", got, want)
-			}
-			// FR-019c: the dashboard and the sweep put one question to one clock,
-			// so a session the host says is busy cannot read as idle on the card.
-			if got := s.DisplayState(want.Add(-time.Nanosecond)); got != DisplayRunning {
-				t.Errorf("DisplayState() just inside the deadline = %q, want %q", got, DisplayRunning)
-			}
-			// The ceiling is not one of the two clocks. Whatever the host says,
-			// the bound Principle VI rests on does not move (FR-038).
-			if got := s.AbsoluteDeadline(); !got.Equal(contractExpiresAt) {
-				t.Errorf("AbsoluteDeadline() = %v, want the unmoved %v", got, contractExpiresAt)
-			}
-		})
-	}
-}
-
-func TestStoreSetTmuxActivity(t *testing.T) {
-	t.Parallel()
-
-	id := testID("a")
-	busy := contractCreatedAt.Add(30 * time.Minute)
-
-	t.Run("moves the idle deadline forward without a request", func(t *testing.T) {
-		t.Parallel()
-
-		st := storeWith(t, newTestSession(id, auth.CallerOperator))
-		st.setTmuxActivity(id, busy)
-
-		got, err := st.Get(id, auth.CallerOperator)
-		if err != nil {
-			t.Fatalf("Get() unexpected error: %v", err)
-		}
-		if !got.TmuxActivity.Equal(busy) {
-			t.Errorf("TmuxActivity = %v, want %v", got.TmuxActivity, busy)
-		}
-		if want := busy.Add(IdleTimeout); !got.IdleDeadline().Equal(want) {
-			t.Errorf("IdleDeadline() = %v, want %v", got.IdleDeadline(), want)
-		}
-		// The record's own clock is untouched: what the daemon was asked to do
-		// and what the session did are two facts, and the trail reads the first.
-		if !got.LastActivity.Equal(contractCreatedAt) {
-			t.Errorf("LastActivity = %v, want the unmoved %v", got.LastActivity, contractCreatedAt)
-		}
-		if !got.AbsoluteDeadline().Equal(contractExpiresAt) {
-			t.Errorf("AbsoluteDeadline() = %v, want the unmoved %v", got.AbsoluteDeadline(), contractExpiresAt)
-		}
-	})
-
-	t.Run("never moves it backwards", func(t *testing.T) {
-		t.Parallel()
-
-		st := storeWith(t, newTestSession(id, auth.CallerOperator))
-		st.setTmuxActivity(id, busy)
-
-		// A lagging read, and the zero time an unparsable field yields — the
-		// reading that must never shorten a session's life.
-		for _, stale := range []time.Time{contractCreatedAt, time.Time{}} {
-			st.setTmuxActivity(id, stale)
-
-			got, err := st.Get(id, auth.CallerOperator)
-			if err != nil {
-				t.Fatalf("Get() unexpected error: %v", err)
-			}
-			if !got.TmuxActivity.Equal(busy) {
-				t.Errorf("setTmuxActivity(%v) moved TmuxActivity back to %v, want %v", stale, got.TmuxActivity, busy)
-			}
-		}
-	})
-
-	t.Run("leaves a dead record alone", func(t *testing.T) {
-		t.Parallel()
-
-		st := storeWith(t, newTestSession(id, auth.CallerOperator))
-		if err := st.SetState(id, StateDead); err != nil {
-			t.Fatalf("SetState(dead) unexpected error: %v", err)
-		}
-		st.setTmuxActivity(id, busy)
-
-		got, ok := st.lookup(id)
-		if !ok {
-			t.Fatal("the record went missing")
-		}
-		if !got.TmuxActivity.IsZero() {
-			t.Errorf("TmuxActivity = %v on a dead record, want the zero time: its idle clock has nobody left to run for", got.TmuxActivity)
-		}
-	})
-
-	t.Run("ignores an id it holds no record for", func(t *testing.T) {
-		t.Parallel()
-
-		// The ordinary case rather than a failure: the host lists sessions this
-		// daemon has no record of, and a destroy can drop one between the list
-		// and this call.
-		NewStore().setTmuxActivity(id, busy)
-	})
 }
 
 // FR-042 forbids the token hash in anything that leaves the daemon. Session is a
@@ -507,71 +325,6 @@ func TestStateValid(t *testing.T) {
 	}
 }
 
-// FR-019a–c: the label is derived from the clock at the reaper's own threshold,
-// and the boundary belongs to idle.
-func TestDisplayStateDerivesIdleFromTheIdleDeadline(t *testing.T) {
-	t.Parallel()
-
-	s := newTestSession(testID("1"), auth.CallerOperator)
-	deadline := s.IdleDeadline()
-
-	tests := []struct {
-		name string
-		now  time.Time
-		want DisplayState
-	}{
-		{name: "the instant of the last request", now: s.LastActivity, want: DisplayRunning},
-		{name: "a minute of idleness", now: s.LastActivity.Add(time.Minute), want: DisplayRunning},
-		{name: "one nanosecond before the deadline", now: deadline.Add(-time.Nanosecond), want: DisplayRunning},
-		{name: "exactly at the deadline", now: deadline, want: DisplayIdle},
-		{name: "one nanosecond after the deadline", now: deadline.Add(time.Nanosecond), want: DisplayIdle},
-		{name: "a sweep interval after the deadline", now: deadline.Add(SweepInterval), want: DisplayIdle},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			if got := s.DisplayState(tc.now); got != tc.want {
-				t.Errorf("DisplayState(%v) = %q, want %q", tc.now, got, tc.want)
-			}
-		})
-	}
-
-	// The tokens in docs/design-system.md's state table, transcribed. The CSS
-	// custom properties are named after these, so a constant renamed here is a
-	// card that loses its state colour without anything failing.
-	for state, want := range map[DisplayState]string{
-		DisplayRunning: "running",
-		DisplayIdle:    "idle",
-	} {
-		if string(state) != want {
-			t.Errorf("display state constant = %q, want %q", string(state), want)
-		}
-	}
-}
-
-// The threshold moves with the idle clock, because it is the idle clock. A
-// derivation measuring from CreatedAt would agree with this one until the first
-// request and then never again.
-func TestDisplayStateFollowsLastActivityAndNotCreation(t *testing.T) {
-	t.Parallel()
-
-	s := newTestSession(testID("2"), auth.CallerOperator)
-	now := s.CreatedAt.Add(IdleTimeout)
-
-	if got := s.DisplayState(now); got != DisplayIdle {
-		t.Errorf("DisplayState() on an untouched session = %q, want %q", got, DisplayIdle)
-	}
-
-	// One request, which in production is Store.Touch, and the same instant
-	// reads running again.
-	s.LastActivity = s.CreatedAt.Add(30 * time.Minute)
-	if got := s.DisplayState(now); got != DisplayRunning {
-		t.Errorf("DisplayState() after activity = %q, want %q", got, DisplayRunning)
-	}
-}
-
 // FR-019a: the stored lifecycle field takes no part in the derivation. StateDead
 // is included precisely because it has no production caller — a switch on State
 // is the implementation this forbids, and it would pass every other test here.
@@ -585,8 +338,12 @@ func TestDisplayStateIgnoresTheStoredLifecycleField(t *testing.T) {
 		now  time.Time
 		want DisplayState
 	}{
-		{name: "inside the idle bound", now: base.IdleDeadline().Add(-time.Minute), want: DisplayRunning},
-		{name: "past the idle bound", now: base.IdleDeadline(), want: DisplayIdle},
+		{name: "inside the lifetime", now: base.AbsoluteDeadline().Add(-time.Minute), want: DisplayRunning},
+		// Past the ceiling still reads running, and that is not a gap. A record
+		// this far along is one the reaper has already dropped, so no card is
+		// being rendered for it — the derivation answers for live sessions, and
+		// after milestone 15 every live session is running.
+		{name: "past the lifetime", now: base.AbsoluteDeadline(), want: DisplayRunning},
 	}
 
 	for _, state := range []State{StateStarting, StateRunning, StateDead} {
@@ -601,35 +358,6 @@ func TestDisplayStateIgnoresTheStoredLifecycleField(t *testing.T) {
 					t.Errorf("DisplayState() on a %q record = %q, want %q", state, got, tc.want)
 				}
 			})
-		}
-	}
-}
-
-// FR-019c stated as the property it exists for: the dashboard says idle about
-// exactly the sessions the reaper's sweep would take for idleness. Two constants
-// that agree today satisfy every other test in this file and fail this one the
-// day one of them is edited.
-func TestDisplayStateAndTheReaperAgreeOnIdle(t *testing.T) {
-	t.Parallel()
-
-	s := newTestSession(testID("4"), auth.CallerOperator)
-
-	// Every instant stays inside the ceiling: past the absolute deadline the
-	// reaper names the bound that cannot be renewed, and the dashboard has
-	// nothing to render at all, because the sweep has deleted the record.
-	for _, now := range []time.Time{
-		s.LastActivity,
-		s.IdleDeadline().Add(-time.Nanosecond),
-		s.IdleDeadline(),
-		s.IdleDeadline().Add(time.Hour),
-	} {
-		if !now.Before(s.AbsoluteDeadline()) {
-			t.Fatalf("test instant %v is past the absolute deadline %v; the premise no longer holds", now, s.AbsoluteDeadline())
-		}
-
-		reaperSaysIdle := expiredAt(s, now) == ExpiryIdle
-		if dashboardSaysIdle := s.DisplayState(now) == DisplayIdle; dashboardSaysIdle != reaperSaysIdle {
-			t.Errorf("at %v the dashboard says idle=%v and the reaper says idle=%v", now, dashboardSaysIdle, reaperSaysIdle)
 		}
 	}
 }
@@ -1105,7 +833,7 @@ func TestStoreTouch(t *testing.T) {
 
 	id := testID("a")
 
-	t.Run("moves the idle deadline forward", func(t *testing.T) {
+	t.Run("records when the session was last driven", func(t *testing.T) {
 		t.Parallel()
 
 		st := storeWith(t, newTestSession(id, auth.CallerOperator))
@@ -1121,10 +849,9 @@ func TestStoreTouch(t *testing.T) {
 		if !got.LastActivity.Equal(later) {
 			t.Errorf("LastActivity = %v, want %v", got.LastActivity, later)
 		}
-		if want := later.Add(IdleTimeout); !got.IdleDeadline().Equal(want) {
-			t.Errorf("IdleDeadline() = %v, want %v", got.IdleDeadline(), want)
-		}
-		// Activity does not buy time against the ceiling (FR-038).
+		// Activity does not buy time against the ceiling (FR-038), and since
+		// milestone 15 there is no other deadline for it to buy time against —
+		// this call moves a fact the interface shows and nothing acts on.
 		if !got.AbsoluteDeadline().Equal(contractExpiresAt) {
 			t.Errorf("AbsoluteDeadline() = %v, want %v", got.AbsoluteDeadline(), contractExpiresAt)
 		}

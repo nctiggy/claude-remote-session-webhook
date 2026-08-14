@@ -13,9 +13,11 @@ package config
 
 import "io"
 
-// ParseFileWithRenames is parseFile with the rename table injected.
+// ParseFileWithRenames is parseFile with the rename table injected. It refuses a
+// retired key, as startup does — the drop-retired half belongs to migrate and is
+// exercised through MigrateWithRenames.
 func ParseFileWithRenames(path string, data []byte, renames map[string]string, warn io.Writer) (*File, error) {
-	return parseFile(path, data, renames, warn)
+	return parseFile(path, data, renames, refuseRetired, warn)
 }
 
 // RenamedKeys reports how many renames ship today, so a test can pin that the

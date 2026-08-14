@@ -54,16 +54,9 @@ func ownedCard() sessionView {
 		WorkDir:      "/home/operator/code/crswd",
 		DisplayState: session.DisplayRunning,
 		Age:          "2 hours",
-		// Both deadlines, because this fixture is a session the daemon knows
-		// everything about and every record has both (T003). They are already
-		// formatted here, as the age is: what turns a record into these strings
-		// is cardOf's job and TestCardShowsBothDeadlines' subject.
-		IdleDeadline:     "in 43 minutes",
+		// The deadline, already formatted here as the age is: what turns a record
+		// into this string is cardOf's job and TestCardShowsItsDeadline's subject.
 		AbsoluteDeadline: "in 22 hours",
-		// The activity the idle row is counted from, and it is an hour before
-		// that row on purpose: this fixture is one session, so its strings should
-		// add up under the daemon's own default the way a rendered card's do.
-		IdleSince: "17 minutes ago",
 	}
 }
 
@@ -1013,7 +1006,12 @@ func TestTheStatusPillAlwaysCarriesItsLabelAsText(t *testing.T) {
 
 	for _, state := range []session.DisplayState{
 		session.DisplayRunning,
-		session.DisplayIdle,
+		// Two states the daemon does not derive. needs-auth arrives with the
+		// device-code relay; idle was derived until milestone 15 and its token
+		// stays in the design system. Both are here for the same reason: the
+		// class is derived from the value, and a two-armed conditional would pass
+		// every other assertion in this file.
+		"idle",
 		"needs-auth",
 	} {
 		t.Run(string(state), func(t *testing.T) {
@@ -1906,113 +1904,6 @@ func TestCreateFormRendersRemoteSwitch(t *testing.T) {
 	}
 }
 
-// TestCreateFormLetsASessionOutliveTheIdleClock is T002, and it is the assertion
-// milestone 10 exists because nobody wrote four times over.
-//
-// The per-session idle override has been on the record, bounded by the
-// operator's ceilings, covered by tests and named in the README since #37, and
-// until T001 the one surface an operator actually uses could not reach it. A
-// field the handler reads and no form submits is indistinguishable, from the
-// dashboard, from a field that does not exist — so this reads the markup a
-// browser receives and asks whether the control is really there.
-//
-// It does not stop at the name. The value is handed to parseLifetimeOverrides —
-// the route's own parser, not a second reading of what "0" ought to mean — and
-// the answer has to be a negative idle, which is what turns idle reaping off for
-// this session. A box posting a plausible-looking value nothing disables is
-// exactly the shape of the four failures before this one.
-//
-// **Must fail when** the switch is dropped, renamed away from the field
-// actions.go reads, posts a value that leaves the idle clock running, ships
-// ticked, is unlabelled, or loses the sentence saying the absolute lifetime
-// still applies.
-func TestCreateFormLetsASessionOutliveTheIdleClock(t *testing.T) {
-	t.Parallel()
-
-	out := renderComponent(t, "create-form", createForm())
-
-	// The constant, deliberately, and the opposite choice from the switch above:
-	// this template set is parsed with no function map, so the markup spells the
-	// field a second time and this is the thing that holds the two spellings
-	// together — the arrangement `confirm=yes` already has on the card.
-	var boxes []string
-	for _, input := range formInput.FindAllStringSubmatch(out, -1) {
-		kind, _ := attributeValue(t, input[1], "type")
-		name, _ := attributeValue(t, input[1], "name")
-		if kind == "checkbox" && name == fieldIdleTimeout {
-			boxes = append(boxes, input[1])
-		}
-	}
-	if len(boxes) != 1 {
-		t.Fatalf("the create form renders %d %q checkboxes; the operator's choice is one two-state control, and the handler reads the override out of that field:\n%s", len(boxes), fieldIdleTimeout, out)
-	}
-	box := boxes[0]
-
-	value, ok := attributeValue(t, box, "value")
-	if !ok {
-		t.Fatalf("the switch carries no value (<input%s>); a checkbox with none posts whatever its browser's convention is, and the parser reads a duration", box)
-	}
-	// Through the route's own parser. What matters is not that the markup says
-	// "0" but that what it submits arrives as idle reaping switched off, and a
-	// zero on the record means "unset" rather than "none" — one value cannot mean
-	// both, which is the translation parseLifetimeOverrides exists to do.
-	_, idle, err := parseLifetimeOverrides("", value)
-	if err != nil {
-		t.Fatalf("the switch submits %s=%q and the route's own parser refuses it: %v", fieldIdleTimeout, value, err)
-	}
-	if idle >= 0 {
-		t.Errorf("the switch submits %s=%q, which the route parses to an idle of %s; a session whose idle override is not negative is still reaped for sitting quiet, so this control says it does something it does not (<input%s>)", fieldIdleTimeout, value, idle, box)
-	}
-
-	// An unticked box posts nothing at all, which is the daemon's configured
-	// default — so a form submitted without touching this starts exactly the
-	// session this door started before the field existed. Shipping it ticked
-	// would make the relaxed bound the one an operator gets without choosing it.
-	if strings.Contains(box, "checked") {
-		t.Errorf("the switch renders already on (<input%s>); absence is the daemon's default, and a session that outlives the idle clock is a choice rather than a state to arrive in", box)
-	}
-
-	id, ok := attributeValue(t, box, "id")
-	if !ok {
-		t.Fatalf("the switch carries no id (<input%s>), so no label can name it", box)
-	}
-	var labelled bool
-	for _, label := range formLabel.FindAllStringSubmatch(out, -1) {
-		if label[1] != id {
-			continue
-		}
-		labelled = true
-		if strings.TrimSpace(label[2]) == "" {
-			t.Errorf("the switch's label is empty; a control announced as nothing is an unlabelled control:\n%s", out)
-		}
-	}
-	if !labelled {
-		t.Errorf("no <label for=%q> names the switch; a placeholder is not a label and neither is proximity (docs/components.md):\n%s", id, out)
-	}
-
-	// The honest half. There are two clocks and this control turns off one of
-	// them: the absolute deadline is counted from CreatedAt, is never renewed and
-	// cannot be disabled at all. A control offering "never die" with nothing
-	// beside it is this interface asserting something the daemon does not do —
-	// the same defect as copy claiming a session was compacted when the daemon
-	// only delivered the request.
-	//
-	// The word rather than the sentence, so the prose stays the template's to
-	// write: what is pinned is that the remaining bound is named where the
-	// operator is looking.
-	describes, ok := attributeValue(t, box, "aria-describedby")
-	if !ok {
-		t.Fatalf("the switch is described by nothing (<input%s>); turning off the idle clock does not make a session immortal, and a control that does not say so overstates what it does", box)
-	}
-	note := regexp.MustCompile(`(?s)<[^>]*\bid="` + regexp.QuoteMeta(describes) + `"[^>]*>(.*?)</div>`).FindStringSubmatch(out)
-	if note == nil {
-		t.Fatalf("the switch points at %q for its description and the render holds no such element:\n%s", describes, out)
-	}
-	if !strings.Contains(strings.ToLower(note[1]), "lifetime") {
-		t.Errorf("the switch's description never mentions the absolute lifetime (%q); that clock still ends this session and the operator asked for one that does not die", strings.TrimSpace(note[1]))
-	}
-}
-
 // switchesSubmitting is every checkbox in a rendered form that submits one named
 // field, read out of the markup a browser was handed.
 //
@@ -2075,7 +1966,7 @@ func TestCreateFormLetsASessionOutliveItsAbsoluteDeadline(t *testing.T) {
 		if !ok {
 			t.Fatalf("the switch carries no value (<input%s>); a checkbox with none posts whatever its browser's convention is, and the parser reads a duration or one word", box)
 		}
-		lifetime, _, err := parseLifetimeOverrides(value, "")
+		lifetime, err := parseLifetimeOverride(value)
 		if err != nil {
 			t.Fatalf("the switch submits %s=%q and the route's own parser refuses it: %v", fieldLifetime, value, err)
 		}
@@ -2135,12 +2026,13 @@ func TestCreateFormLetsASessionOutliveItsAbsoluteDeadline(t *testing.T) {
 		if boxes := switchesSubmitting(t, out, fieldLifetime); len(boxes) != 0 {
 			t.Errorf("a daemon whose ceiling stands renders %d %q checkboxes; every create ticking one is refused by resolveLifetimes, and a control certain to be turned away is not offered (docs/components.md):\n%s", len(boxes), fieldLifetime, out)
 		}
-		// And the switch that *is* there still says where the remaining bound
-		// moves. It is the settings page on this daemon, because the form offers
-		// nothing that could move it — the sentence and the control it names have
-		// to describe the same daemon.
+		// And the form still says where the remaining bound comes from. It is the
+		// settings page on this daemon, because the form offers nothing that could
+		// move it — the sentence and the control it names have to describe the same
+		// daemon. The sentence lived on the idle switch's hint until milestone 15
+		// withdrew that switch, and it was about this bound the whole time.
 		if !strings.Contains(out, "settings") {
-			t.Errorf("the idle switch's hint no longer says where the absolute lifetime comes from; on a daemon with a ceiling that page is the only way to move it:\n%s", out)
+			t.Errorf("the form no longer says where the lifetime comes from; on a daemon with a ceiling that page is the only way to move it:\n%s", out)
 		}
 	})
 }
@@ -2167,7 +2059,7 @@ func TestTheCreateFormOffersTheLifetimeSwitchOnlyWhereTheDaemonWouldGrantIt(t *t
 		f := newFleet(t)
 		// config.NeverLifetime is what an operator writes; a negative is what it
 		// loads as, and this is the line server.go runs on it.
-		f.fixture.mgr.SetLifetimes(session.AbsoluteLifetime, -time.Hour, session.IdleTimeout, session.IdleTimeout)
+		f.fixture.mgr.SetLifetimes(session.AbsoluteLifetime, -time.Hour)
 
 		create := sectionOf(t, f.view(t).Body.String(), "create")
 		if len(switchesSubmitting(t, create, fieldLifetime)) != 1 {
@@ -2188,8 +2080,8 @@ func TestTheCreateFormOffersTheLifetimeSwitchOnlyWhereTheDaemonWouldGrantIt(t *t
 // TestCreateFormRendersNoCommandName is FR-002 at the only place it can be
 // checked: against a daemon that really has commands configured.
 //
-// It is a page test rather than a component test, and it has to be. The view no
-// longer carries the names at all, so a component rendered from one could not
+// It is a page test rather than a component test, and it has to be. The view
+// carries no command *names* at all, so a component rendered from one could not
 // leak what it was never given — what can still go wrong is the projection
 // putting them back, in a label, a value, a title or a data attribute, which is a
 // fact about `fleet` and not about the template.
@@ -2199,7 +2091,20 @@ func TestTheCreateFormOffersTheLifetimeSwitchOnlyWhereTheDaemonWouldGrantIt(t *t
 // it: it describes a session that already exists rather than offering a choice of
 // what to start.
 //
-// **Must fail when** a name or a command line reaches the markup by any route.
+// # The command line is now shown, and the name still is not
+//
+// This test asserted both absences until milestone 15. The preview added by that
+// milestone renders the resolved command *line* on purpose (FR-014), so the
+// preview element is excluded from the sweep below and its own rules are
+// TestTheCreateFormPreviewIsAReadoutAndNotAChooser's.
+//
+// The distinction is not a loophole. A name in a control is a chooser — an
+// operator picking "rc" out of a list is choosing a command by name, which is
+// what FR-026 forbids and what this form used to do. A line in a `<pre>` is a
+// readout of what the mode they picked will run. What crosses to the browser is
+// wider than it was; what the browser can *select* is exactly what it was.
+//
+// **Must fail when** a configured name reaches any control on this form.
 func TestCreateFormRendersNoCommandName(t *testing.T) {
 	t.Parallel()
 
@@ -2211,46 +2116,80 @@ func TestCreateFormRendersNoCommandName(t *testing.T) {
 	f.cfg.StartCommands = config.NewStartCommands(commands)
 
 	create := sectionOf(t, f.view(t).Body.String(), "create")
+	controls := commandPreview.ReplaceAllString(create, "")
 
-	for name, command := range commands {
-		if n := strings.Count(create, name); n != 0 {
-			t.Errorf("the rendered create form names the configured command %q %d times; a mode is asked for without the daemon's vocabulary for it:\n%s", name, n, create)
-		}
-		// The command line was never offered even when the names were, and it
-		// stays out for the stronger reason: a page that carried one is a page
-		// that could be made to carry any of it.
-		if strings.Contains(create, command) {
-			t.Errorf("the rendered create form carries the command line %q, which is configuration and not a choice:\n%s", command, create)
+	for name := range commands {
+		if n := strings.Count(controls, name); n != 0 {
+			t.Errorf("the rendered create form names the configured command %q %d times outside its preview; a mode is asked for without the daemon's vocabulary for it:\n%s", name, n, controls)
 		}
 	}
-	// Non-vacuity: the section really did render, and it really does hold the
-	// control that replaced the chooser.
-	if !strings.Contains(create, `name="remote_control"`) {
-		t.Errorf("the rendered create form carries no remote_control switch, so the sweep above passed on markup that offers nothing:\n%s", create)
+	// Non-vacuity, in both directions: the section really did render and holds the
+	// control that replaced the chooser, and the strip above really did remove a
+	// preview rather than silently matching nothing.
+	if !strings.Contains(controls, `name="remote_control"`) {
+		t.Errorf("the rendered create form carries no remote_control switch, so the sweep above passed on markup that offers nothing:\n%s", controls)
+	}
+	if !commandPreview.MatchString(create) {
+		t.Errorf("the create form rendered no command preview, so the exclusion above is hiding nothing and this test is weaker than it reads:\n%s", create)
 	}
 }
 
-// TestViewCarriesNoStartCommands is the same removal one layer down, and it is
-// the half that keeps the chooser from coming back: a view still carrying the
-// names is a template edit away from listing them again.
+// commandPreview matches the readout block, so a sweep for command *names* can
+// exclude the one element that renders a command *line* on purpose.
+var commandPreview = regexp.MustCompile(`(?s)<pre class="command-preview".*?</pre>`)
+
+// TestTheCreateFormPreviewIsAReadoutAndNotAChooser is what remains of
+// TestViewCarriesNoStartCommands, and the change is worth reading.
 //
-// Written against the struct's own fields rather than against a call site, for
-// the reason TestViewCarriesNoConversations is — "left in place for later" is
-// exactly the state a call site cannot show, since an unpopulated field looks
-// like a daemon that configured nothing.
+// # Why the absolute guard went
 //
-// **Must fail when** any command-shaped field is kept on the create form's
-// parameter list, whatever it is named or typed.
-func TestViewCarriesNoStartCommands(t *testing.T) {
+// US1 removed the operator's configured command *names* from this view, because
+// the form rendered them as a `<select name="start_command">` — an operator
+// picking "rc" out of a list is choosing a command by name, which is the thing
+// FR-026 said not to do. The guard here asserted no command-shaped field existed
+// at all, which was the cheapest way to keep the chooser from coming back.
+//
+// Milestone 15 puts resolved command *lines* back on the view for the preview
+// (FR-014). That is a different thing in the way that matters: what crosses to the
+// browser is text to render, the switch still carries a mode, and the create still
+// resolves that mode to a command server-side out of the operator's own set. So
+// the rule to enforce is no longer "no commands on the view" but FR-016 — nothing
+// the browser sends may select a command line except by mode.
+//
+// **Must fail when** the preview becomes a form field, or the form regains a
+// control that names a command.
+func TestTheCreateFormPreviewIsAReadoutAndNotAChooser(t *testing.T) {
 	t.Parallel()
 
-	form := reflect.TypeOf(createFormView{})
-	for i := range form.NumField() {
-		field := form.Field(i)
-		if strings.Contains(strings.ToLower(field.Name), "command") ||
-			strings.Contains(strings.ToLower(field.Type.String()), "startcommand") {
-			t.Errorf("the create form's parameters still expose the daemon's command names: %s %s", field.Name, field.Type)
+	view := createForm()
+	view.Commands = map[bool]string{
+		false: "claude --dangerously-skip-permissions",
+		true:  `claude --dangerously-skip-permissions "/rc {name}"`,
+	}
+	out := renderComponent(t, "create-form", view)
+
+	// The preview is rendered, so what follows is asserting about markup that
+	// exists.
+	if !strings.Contains(out, "claude --dangerously-skip-permissions") {
+		t.Fatalf("the form renders no command preview, so this test asserts nothing:\n%s", out)
+	}
+
+	// Nothing that submits. A preview carrying a name attribute is a field, and a
+	// field carrying a command line is the execution surface FR-016 closes.
+	for _, forbidden := range []string{
+		`name="start_command"`,
+		`name="command"`,
+		"contenteditable",
+		"<textarea",
+	} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("the create form carries %s; the preview is a readout, and the configured set stays the only source of commands:\n%s", forbidden, out)
 		}
+	}
+
+	// And the control that decides which line runs is still a mode.
+	if !strings.Contains(out, `name="remote_control"`) {
+		t.Errorf("the create form carries no remote_control switch, so what selects the command is something else:\n%s", out)
 	}
 }
 
@@ -2768,17 +2707,46 @@ func TestCreateFormHasNoResumeField(t *testing.T) {
 // because "left in place for later" is exactly the state a call site cannot see —
 // an unpopulated field looks like an empty offer.
 //
-// **Must fail when** any conversation-shaped field is kept on the create form's
-// parameter list, whatever it is named or typed.
-func TestViewCarriesNoConversations(t *testing.T) {
+// **Must fail when** the conversation projection grows a field carrying any part
+// of what a conversation *said*.
+//
+// # This test replaced a stricter one, deliberately
+//
+// US5 removed conversations from this form outright, and the guard here asserted
+// that no conversation-shaped field existed at all. That was the right rule for
+// that milestone: the offer it removed listed every suggested directory's
+// conversations to fill a free-text identifier field with, which asked an
+// operator to resolve an ambiguity the daemon itself had refused to.
+//
+// Milestone 15 answers the question that milestone deferred — a picker, scoped to
+// one working directory that has passed the create's own allowlist check — so the
+// absolute guard is gone and this one takes its place. What is being protected is
+// no longer "no conversations" but FR-025: enough to choose between them and no
+// more. The transcript itself is the operator's work, and this daemon renders
+// none of it.
+func TestTheConversationProjectionCarriesNoContent(t *testing.T) {
 	t.Parallel()
 
-	form := reflect.TypeOf(createFormView{})
-	for i := range form.NumField() {
-		field := form.Field(i)
-		if strings.Contains(strings.ToLower(field.Name), "conversation") ||
-			strings.Contains(strings.ToLower(field.Type.String()), "conversation") {
-			t.Errorf("the create form's parameters still expose conversation data: %s %s", field.Name, field.Type)
+	// Everything a transcript holds, and the two things reading one would leak
+	// besides: how big the work was, and where it sits on this host.
+	forbidden := []string{"title", "message", "prompt", "summary", "text", "body", "content", "path", "file", "size", "bytes"}
+
+	view := reflect.TypeOf(conversationView{})
+	for i := range view.NumField() {
+		field := view.Field(i)
+		lower := strings.ToLower(field.Name)
+		for _, word := range forbidden {
+			if strings.Contains(lower, word) {
+				t.Errorf("the conversation projection carries %s %s, which is part of what a conversation said rather than which one it is", field.Name, field.Type)
+			}
+		}
+	}
+
+	// Non-vacuity: the projection really does carry the two fields FR-025 allows,
+	// so the sweep above is passing on a type with something in it.
+	for _, want := range []string{"ID", "Modified"} {
+		if _, ok := view.FieldByName(want); !ok {
+			t.Errorf("the conversation projection has no %s field; the sweep above is asserting nothing", want)
 		}
 	}
 }
@@ -2874,97 +2842,54 @@ func TestCardShowsMode(t *testing.T) {
 // The two deadline rows, read the way the mode row is: the label pins which
 // clock the value belongs to, so a card that showed one duration twice — or
 // swapped them — fails here rather than reading plausibly.
-var (
-	cardIdleRow     = regexp.MustCompile(`(?s)<dt>idle deadline</dt>\s*<dd>(.*?)</dd>`)
-	cardLifetimeRow = regexp.MustCompile(`(?s)<dt>lifetime deadline</dt>\s*<dd>(.*?)</dd>`)
-	cardActivityRow = regexp.MustCompile(`(?s)<dt>last activity</dt>\s*<dd>(.*?)</dd>`)
-)
+var cardLifetimeRow = regexp.MustCompile(`(?s)<dt>lifetime deadline</dt>\s*<dd>(.*?)</dd>`)
 
-// TestCardShowsBothDeadlines is T003: an operator can see when a session dies,
-// under each of the two bounds it has.
+// TestCardShowsItsDeadline is T003: an operator can see when a session dies.
 //
 // It renders through cardOf for the reason TestCardShowsMode does — the claim is
 // about what a page shows, and a template rendering a field nothing fills is the
 // shape of bug this milestone exists to close for the fifth time.
 //
-// The rows that matter most are the disabled ones, and they are why both
-// deadlines are asserted in every case rather than only the interesting one. A
-// session whose operator switched a bound off must say so *and* must still show
-// the bound that has not gone anywhere: a switched-off deadline answers a century
-// out, so a card that formatted it would read "in 36500 days" — a date nothing in
-// this daemon believes — and a card that dropped the other row beside it would
-// read as immortal when only half of it was.
+// It asserted two deadlines until milestone 15, and the idle one went with its
+// bound. The case that matters most is the disabled one: a switched-off deadline
+// answers a century out, so a card that formatted it would read "in 36500 days"
+// — a date nothing in this daemon believes — and it is now the *only* visible
+// evidence that the create form's switch took effect.
 //
-// The last case is the one where immortal is the truth. Both bounds off is what
-// the operator asked for twice and what a daemon whose ceiling was removed may
-// grant, and the two rows say it between them rather than in a sentence either
-// one could carry alone.
-//
-// **Must fail when** either row renders that far-future instant, when either row
-// goes missing, or when a deadline is measured against a clock reading other than
+// **Must fail when** the row renders that far-future instant, when it goes
+// missing, or when the deadline is measured against a clock reading other than
 // the render's.
-func TestCardShowsBothDeadlines(t *testing.T) {
+func TestCardShowsItsDeadline(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
 
 	for _, tc := range []struct {
 		name         string
-		idle         time.Duration
 		lifetime     time.Duration
-		lastActivity time.Time
-		wantIdle     string
 		wantLifetime string
 	}{
 		{
-			// The daemon's own defaults, which is every session a browser
-			// started before this milestone: 60m of idle from the last request,
-			// 24h of lifetime from a creation an hour ago.
-			name:         "the daemon's defaults",
-			lastActivity: now,
-			wantIdle:     "in 1 hour",
-			wantLifetime: "in 23 hours",
-		},
-		{
-			// The choice T001 and T002 gave the operator. The idle bound is
-			// gone; the one under it is not, and the card says both.
-			name:         "idle reaping turned off",
-			idle:         -1,
-			lastActivity: now,
-			wantIdle:     noIdleLimit,
-			wantLifetime: "in 23 hours",
-		},
-		{
-			// Past the idle bound and waiting for a sweep. The pill already
-			// reads idle here; the row says the reaper is entitled to take it
-			// rather than that there is time left.
-			name:         "already past the idle bound",
-			lastActivity: now.Add(-90 * time.Minute),
-			wantIdle:     "due now",
+			// The daemon's own default: 24h of lifetime from a creation an hour
+			// ago.
+			name:         "the daemon's default",
 			wantLifetime: "in 23 hours",
 		},
 		{
 			// Milestone 13: the deadline that is never renewed is not there at
-			// all, on a daemon whose operator removed the ceiling. The idle
-			// clock still runs, and the card still counts it down — one switch
-			// is one bound.
+			// all, on a daemon whose operator removed the ceiling. Since
+			// milestone 15 this is the whole of "nothing reaps this session",
+			// where it used to be half of it.
 			name:         "no absolute deadline",
 			lifetime:     -1,
-			lastActivity: now,
-			wantIdle:     "in 1 hour",
 			wantLifetime: noLifetimeLimit,
 		},
 		{
-			// Both, which is the only session on this daemon that nothing
-			// reaps. Neither row may report a distant date instead: that is the
-			// same defect as the one above, and here it would be the card
-			// inventing the very bound the operator removed.
-			name:         "nothing reaps this session",
-			idle:         -1,
-			lifetime:     -1,
-			lastActivity: now,
-			wantIdle:     noIdleLimit,
-			wantLifetime: noLifetimeLimit,
+			// A per-session lifetime shorter than the default, so the row cannot
+			// be the default arriving by coincidence.
+			name:         "a shorter lifetime than the default",
+			lifetime:     3 * time.Hour,
+			wantLifetime: "in 2 hours",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2974,151 +2899,18 @@ func TestCardShowsBothDeadlines(t *testing.T) {
 				ID:           strings.Repeat("d", 32),
 				Name:         "a session",
 				WorkDir:      "/home/operator/code/crswd",
-				Idle:         tc.idle,
 				Lifetime:     tc.lifetime,
 				CreatedAt:    now.Add(-time.Hour),
-				LastActivity: tc.lastActivity,
+				LastActivity: now,
 			}, now, testCardToken, "rc")
 
 			out := renderComponent(t, "session-card", card)
-			for _, row := range []struct {
-				clock string
-				match *regexp.Regexp
-				want  string
-			}{
-				{clock: "idle", match: cardIdleRow, want: tc.wantIdle},
-				{clock: "lifetime", match: cardLifetimeRow, want: tc.wantLifetime},
-			} {
-				found := row.match.FindStringSubmatch(out)
-				if found == nil {
-					t.Fatalf("the card carries no labelled %s deadline, so an operator cannot tell when this session dies:\n%s", row.clock, out)
-				}
-				if got := strings.TrimSpace(markupTags.ReplaceAllString(found[1], "")); got != row.want {
-					t.Errorf("the card's %s deadline reads %q, want %q:\n%s", row.clock, got, row.want, out)
-				}
+			found := cardLifetimeRow.FindStringSubmatch(out)
+			if found == nil {
+				t.Fatalf("the card carries no labelled lifetime deadline, so an operator cannot tell when this session dies:\n%s", out)
 			}
-		})
-	}
-}
-
-// TestCardSaysWhatTheIdleClockIsWatching is T003, and it is the operator's own
-// question rendered as an assertion: "even if I am using the session I think it
-// is still considered idle. How is idle determined… is it real?"
-//
-// The idle deadline alone cannot answer that. It says when a session dies and
-// nothing about what it was judged on, so an operator reading "in 12 minutes"
-// beside a session they have been working in all afternoon has no way to tell
-// whether the daemon can see them at all — which, before T002, it could not.
-// The row beside it names the activity the deadline is counted from, and the
-// two must be the same instant or the card explains itself with a fact it did
-// not use.
-//
-// The second case is the one with teeth. A session driven from the host — an
-// attached terminal, or an assistant printing into its own pane — moves tmux's
-// clock and no clock reachable from a request, so a card rendering
-// Session.LastActivity would show an hour and a half of silence beside a
-// deadline an hour away. That is not a cosmetic disagreement: it is the page
-// telling the operator the reaper is about to take a session it is not about to
-// take, on the one screen they would check.
-//
-// It renders through cardOf for the reason the deadline test does — the claim is
-// about what a page shows, and a template field nothing fills renders empty and
-// says nothing about it.
-//
-// **Must fail when** the row is measured from LastActivity alone, when it is
-// measured against a clock reading other than the render's, or when it goes
-// missing.
-func TestCardSaysWhatTheIdleClockIsWatching(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
-
-	for _, tc := range []struct {
-		name         string
-		idle         time.Duration
-		lastActivity time.Time
-		tmuxActivity time.Time
-		wantActivity string
-		wantIdle     string
-	}{
-		{
-			// A session driven through the API a few minutes ago and nothing
-			// since: one clock has an answer, and the card counts from it.
-			name:         "driven by a request",
-			lastActivity: now.Add(-5 * time.Minute),
-			wantActivity: "5 minutes ago",
-			wantIdle:     "in 55 minutes",
-		},
-		{
-			// The operator's session. Nobody has sent the daemon a mutating
-			// request in an hour and a half; the host saw it print three minutes
-			// ago. The deadline is an hour off and the row says why.
-			name:         "busy on the host, silent to the API",
-			lastActivity: now.Add(-90 * time.Minute),
-			tmuxActivity: now.Add(-3 * time.Minute),
-			wantActivity: "3 minutes ago",
-			wantIdle:     "in 57 minutes",
-		},
-		{
-			// The other direction, and the fail-safe one: a host reading older
-			// than the record's own — stale, from a clock that disagrees, or the
-			// zero time a session no sweep has reached yet holds — never shortens
-			// what the card shows any more than it shortens the deadline.
-			name:         "the host's reading is the older of the two",
-			lastActivity: now.Add(-2 * time.Minute),
-			tmuxActivity: now.Add(-40 * time.Minute),
-			wantActivity: "2 minutes ago",
-			wantIdle:     "in 58 minutes",
-		},
-		{
-			// A session doing something right now. Coarse rather than precise, in
-			// the vocabulary the age already uses, because the value behind it is
-			// as fresh as the last sweep and no fresher.
-			name:         "active as the page rendered",
-			lastActivity: now,
-			wantActivity: "less than a minute ago",
-			wantIdle:     "in 1 hour",
-		},
-		{
-			// Idle reaping off. When it dies and when it was last active are
-			// different questions, and turning the first off does not remove the
-			// answer to the second.
-			name:         "idle reaping turned off",
-			idle:         -1,
-			lastActivity: now.Add(-20 * time.Minute),
-			wantActivity: "20 minutes ago",
-			wantIdle:     noIdleLimit,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			card := cardOf(session.Session{
-				ID:           strings.Repeat("e", 32),
-				Name:         "a session",
-				WorkDir:      "/home/operator/code/crswd",
-				Idle:         tc.idle,
-				CreatedAt:    now.Add(-time.Hour),
-				LastActivity: tc.lastActivity,
-				TmuxActivity: tc.tmuxActivity,
-			}, now, testCardToken, "rc")
-
-			out := renderComponent(t, "session-card", card)
-			for _, row := range []struct {
-				what  string
-				match *regexp.Regexp
-				want  string
-			}{
-				{what: "last activity", match: cardActivityRow, want: tc.wantActivity},
-				{what: "idle deadline", match: cardIdleRow, want: tc.wantIdle},
-			} {
-				found := row.match.FindStringSubmatch(out)
-				if found == nil {
-					t.Fatalf("the card carries no %s row, so an operator cannot tell what the idle clock is watching:\n%s", row.what, out)
-				}
-				if got := strings.TrimSpace(markupTags.ReplaceAllString(found[1], "")); got != row.want {
-					t.Errorf("the card's %s reads %q, want %q:\n%s", row.what, got, row.want, out)
-				}
+			if got := strings.TrimSpace(markupTags.ReplaceAllString(found[1], "")); got != tc.wantLifetime {
+				t.Errorf("the card's lifetime deadline reads %q, want %q:\n%s", got, tc.wantLifetime, out)
 			}
 		})
 	}
@@ -3896,5 +3688,98 @@ func TestTheSettingsCommentDescribesThePage(t *testing.T) {
 	}
 	if present == 0 {
 		t.Fatal("settings.html renders no form, no token, no submit control and no live region, so every denial above was read against nothing; if the page really did become read-only again, this test and that comment are rewritten together")
+	}
+}
+
+// cardAgeRow is the meta list's age row, for the three-facts test below.
+var cardAgeRow = regexp.MustCompile(`(?s)<dt>age</dt>\s*<dd>(.*?)</dd>`)
+
+// TestACardSaysHowOldItIsWhatStartedItAndWhetherItDies is US5, and the reason it
+// is one test rather than three is the reason the operator asked for it: the
+// three facts are read together. A card that answers two of them is a card whose
+// reader has to go somewhere else for the third.
+//
+// The adopted half is the half that used to be wrong, and it is why this test
+// renders the same session twice. Before milestone 15 a restart rebuilt a record
+// from what tmux knew, and tmux did not know a lifetime — so a never-expiring
+// session came back saying it expired in 24 hours, which is a card stating a
+// fact about an operator's session that nothing in the daemon believed. The name
+// and the start command were restored by #72 and #58; this completes the set.
+//
+// **Must fail when** any of the three reads differently on an adopted session
+// than on the one it was adopted from.
+func TestACardSaysHowOldItIsWhatStartedItAndWhetherItDies(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	started := now.Add(-3 * time.Hour)
+
+	for _, tc := range []struct {
+		name         string
+		lifetime     time.Duration
+		start        string
+		wantMode     session.Mode
+		wantLifetime string
+	}{
+		{
+			name:         "remote control, and it never dies",
+			lifetime:     -1,
+			start:        "rc",
+			wantMode:     session.ModeRemote,
+			wantLifetime: noLifetimeLimit,
+		},
+		{
+			name:         "plain, and it dies at the ceiling",
+			start:        "",
+			wantMode:     session.ModeLocal,
+			wantLifetime: "in 21 hours",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			live := session.Session{
+				ID:           strings.Repeat("e", 32),
+				Name:         "a session",
+				WorkDir:      "/home/operator/code/crswd",
+				StartCommand: tc.start,
+				Lifetime:     tc.lifetime,
+				CreatedAt:    started,
+				LastActivity: started,
+			}
+			// The same session as a restart hands it back: a fresh record built
+			// from what the host held, which is what Adopt produces.
+			adopted := live
+			adopted.Adopted = true
+
+			for what, s := range map[string]session.Session{"created": live, "adopted": adopted} {
+				out := renderComponent(t, "session-card", cardOf(s, now, testCardToken, "rc"))
+
+				for _, row := range []struct {
+					fact  string
+					match *regexp.Regexp
+					want  string
+				}{
+					// How long it has been alive. Counted from CreatedAt, which
+					// for an adopted session is tmux's own start time and not the
+					// moment of adoption — so a restart does not make every
+					// session on the fleet look newborn.
+					{fact: "age", match: cardAgeRow, want: "3 hours"},
+					// What started it, which is what remote-control provenance is
+					// derived from (@crswd-start, #58).
+					{fact: "mode", match: cardModeRow, want: string(tc.wantMode)},
+					// Whether it can ever die (@crswd-lifetime, milestone 15).
+					{fact: "lifetime deadline", match: cardLifetimeRow, want: tc.wantLifetime},
+				} {
+					found := row.match.FindStringSubmatch(out)
+					if found == nil {
+						t.Fatalf("the %s card carries no %s row:\n%s", what, row.fact, out)
+					}
+					if got := strings.TrimSpace(markupTags.ReplaceAllString(found[1], "")); got != row.want {
+						t.Errorf("the %s card's %s reads %q, want %q:\n%s", what, row.fact, got, row.want, out)
+					}
+				}
+			}
+		})
 	}
 }

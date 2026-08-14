@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,32 +14,29 @@ import (
 	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 )
 
-// The two lifetimes every session is bounded by (FR-038, Principle VI). They are
-// the daemon's built-in defaults rather than the bound itself: the operator
-// configures both the defaults and their ceilings — CRSW_SESSION_LIFETIME and
-// CRSW_IDLE_TIMEOUT, CRSW_SESSION_LIFETIME_MAX and CRSW_IDLE_TIMEOUT_MAX, handed
-// over by SetLifetimes — and a create may override either for one session under
-// those ceilings, refused above one rather than clamped to it (#37). These are
-// what every one of those falls back to when nothing is configured.
+// AbsoluteLifetime is the one bound every session is measured against
+// (FR-038, Principle VI). It is the daemon's built-in default rather than the
+// bound itself: the operator configures both the default and its ceiling —
+// CRSW_SESSION_LIFETIME and CRSW_SESSION_LIFETIME_MAX, handed over by
+// SetLifetimes — and a create may override it for one session under that
+// ceiling, refused above it rather than clamped to it (#37).
 //
-// What bounds the blast radius is therefore the ceiling, not the constant. Every
-// session still carries both deadlines and the absolute one is never renewed —
-// so a relaxed bound is one the operator allowed, never one a caller took.
+// What bounds the blast radius is therefore the ceiling, not this constant. It is
+// measured from CreatedAt and is never renewed, so a relaxed bound is one the
+// operator allowed, never one a caller took.
 //
-// The absolute deadline can now be switched off outright (LifetimeDisabled,
-// milestone 13), and that stays true of it: switching it off takes *two*
-// operator decisions, because a create may only ask for it on a daemon whose
-// own ceiling is already unbounded. A caller alone cannot reach it.
-const (
-	// AbsoluteLifetime is measured from CreatedAt and is never renewed.
-	AbsoluteLifetime = 24 * time.Hour
+// It can be switched off outright (LifetimeDisabled, milestone 13), and switching
+// it off takes *two* operator decisions, because a create may only ask for it on
+// a daemon whose own ceiling is already unbounded. A caller alone cannot reach it.
+//
+// There was a second bound here until milestone 15: an idle timeout, measured
+// from the last activity. It was withdrawn with constitution 2.0.0 because it
+// bounded the wrong thing — a session waiting for a human is quiet, and being
+// quiet was never a reason to destroy one. Nothing replaced it, which is why the
+// sentence above about the ceiling is now the whole of the story.
+const AbsoluteLifetime = 24 * time.Hour
 
-	// IdleTimeout is measured from LastActivity and moves with it.
-	IdleTimeout = 60 * time.Minute
-)
-
-// neverSpan is how far past its origin a bound that has been switched off sits,
-// and it is one span for both of them deliberately.
+// neverSpan is how far past its origin a bound that has been switched off sits.
 //
 // A disabled bound is an unreachable deadline rather than a case in every
 // comparison. expiredAt, CheckToken and adoption each ask only "is now past this
@@ -47,13 +45,6 @@ const (
 // its operator was promised would live. What makes that sound is that the
 // instant is genuinely unreachable: a century out, and far enough below
 // time.Duration's own ceiling that adding it to any real CreatedAt cannot wrap.
-//
-// The idle bound alone used four hundred lifetimes, which was unreachable while
-// the absolute deadline underneath it always fired. Once that one could be
-// switched off too, two different spans would have meant a session with *both*
-// bounds off was still reaped — for idleness, after a year of it, by the shorter
-// of two numbers neither switch mentions. One span is what makes "nothing reaps
-// this session" a statement the daemon can keep.
 const neverSpan = 100 * 365 * 24 * time.Hour
 
 // tmuxNamePrefix is the daemon's reserved prefix (FR-018). Reconciliation reads
@@ -107,15 +98,16 @@ func (s State) Valid() bool {
 type DisplayState string
 
 const (
-	// DisplayRunning is a session still inside its idle bound. StateStarting
-	// displays this way too: the distinction lasts one tmux exec, and it is not
-	// one an operator watching a fleet could act on.
+	// DisplayRunning is a live session. StateStarting displays this way too: the
+	// distinction lasts one tmux exec, and it is not one an operator watching a
+	// fleet could act on.
+	//
+	// It is the only display state a live session has. There was a second until
+	// milestone 15 — a session the idle bound had caught up with, shown so an
+	// operator could see it was about to be destroyed — and it went when the
+	// bound did. A vocabulary of one is the honest size for a fleet where the
+	// only way a session ends is the operator or the ceiling.
 	DisplayRunning DisplayState = "running"
-
-	// DisplayIdle is a session the idle bound has caught up with. It is still
-	// alive — the reaper sweeps every SweepInterval rather than continuously —
-	// and this label is what tells an operator it is about to stop being.
-	DisplayIdle DisplayState = "idle"
 )
 
 // Mode is where a session is driven from: the operator's own dashboard, or
@@ -160,22 +152,26 @@ type Session struct {
 	// deliberately not part of any tmux target — see TmuxName.
 	Name string
 
-	// Lifetime is how long this session may live from CreatedAt, and Idle how
-	// long it may go untouched (#37). Zero means the daemon's configured
-	// default for either; a negative disables that bound for this session
-	// alone — idle reaping for Idle, the absolute deadline for Lifetime.
+	// Lifetime is how long this session may live from CreatedAt (#37). Zero
+	// means the daemon's configured default; a negative disables the absolute
+	// deadline for this session alone.
 	//
-	// Negative rather than zero for both, and for one reason: zero already
-	// means "the operator said nothing", and one value cannot also mean "the
-	// operator said none". The two are not equally safe to switch off, and
-	// which one is which is written at IdleDeadline and AbsoluteDeadline.
+	// Negative rather than zero, for one reason: zero already means "the
+	// operator said nothing", and one value cannot also mean "the operator said
+	// none". What switching it off costs is written at AbsoluteDeadline.
 	//
-	// They are durations rather than instants for the reason TokenExpiry is a
+	// **It is durable.** The value here is written onto the tmux session as
+	// @crswd-lifetime and read back by Adopt (milestone 15), because until it
+	// was, a session created never to expire came back from a restart carrying
+	// the daemon's default and was destroyed on the next sweep. A record whose
+	// most important field did not survive the thing it was meant to survive was
+	// the whole of that defect.
+	//
+	// It is a duration rather than an instant for the reason TokenExpiry is a
 	// method: a stored deadline is a second value that can disagree with the
-	// rule that produced it, and these are read through AbsoluteDeadline and
-	// IdleDeadline exactly so there is one expression of each.
+	// rule that produced it, and this is read through AbsoluteDeadline exactly
+	// so there is one expression of it.
 	Lifetime time.Duration
-	Idle     time.Duration
 
 	// StartCommand is the name — never the command line — of the command typed
 	// into this session's shell (#38). The name is what a card shows, what the
@@ -206,32 +202,15 @@ type Session struct {
 	CreatedAt time.Time
 
 	// LastActivity is when a request last drove this session, moved by
-	// Store.Touch. It is one of the two clocks the idle deadline is measured
-	// from — see TmuxActivity for the other, and IdleSince for the rule.
+	// Store.Touch on the three calls that drive one — Resolve, Compact, SetMode.
+	// Reading moves nothing, by construction (docs/auth-and-sessions.md,
+	// "watching is not driving").
+	//
+	// **No deadline is measured from it.** It was half of the idle clock until
+	// milestone 15 and is now a fact the interface shows and the daemon acts on
+	// nowhere: when this session was last driven, for an operator deciding what
+	// to do with it. Nothing here can shorten a session's life.
 	LastActivity time.Time
-
-	// TmuxActivity is when the host itself last saw this session produce output:
-	// tmux's own #{session_activity}, read by the sweep that is about to judge
-	// the record. Zero means the host gave no usable answer, which is also what
-	// every record holds until a sweep has reached it.
-	//
-	// It is a second clock rather than a correction to the first because the two
-	// measure different things and both are true. Exactly three calls move
-	// LastActivity — Resolve, Compact, SetMode — and reading moves nothing by
-	// construction (docs/auth-and-sessions.md, "watching is not driving"), so an
-	// operator who spent an afternoon watching a session in the dashboard, or
-	// working in it directly in an attached terminal on the host, advanced no
-	// clock the reaper could see and had the session taken at sixty minutes.
-	// This is the reading that sees both of them.
-	//
-	// A forgotten tab is still not activity, which is what makes counting this
-	// safe where counting browser reads was not: a tab produces no output.
-	//
-	// Never read alone and never as a reason to reap. It only ever raises the
-	// deadline, so a host that stops answering — or answers with something
-	// unparsable — leaves every session exactly as long-lived as the build
-	// before this field existed.
-	TmuxActivity time.Time
 
 	// State is the lifecycle position above.
 	State State
@@ -302,78 +281,72 @@ func (s Session) AbsoluteDeadline() time.Time {
 // LifetimeDisabled reports that the absolute deadline is off for this session,
 // which is what a negative Lifetime spells (milestone 13).
 //
-// It exists for the reason IdleDisabled does, and one more. The dashboard has to
+// It exists so that "negative means off" has one expression. The dashboard has to
 // know — a card must say there is no lifetime limit rather than render the
 // century-out instant AbsoluteDeadline returns for such a session — and a caller
 // comparing the duration against zero itself would be a second reading of the
 // rule, free to disagree with this one the day the spelling changes.
 //
-// The one more is that this is the bound whose absence is worth saying out loud
+// And this is now the *only* bound, so its absence is worth saying out loud
 // wherever it is asked about. A method named for the fact makes that possible;
 // a `< 0` at each call site does not.
 func (s Session) LifetimeDisabled() bool { return s.Lifetime < 0 }
 
-// IdleDisabled reports that idle reaping is off for this session, which is what
-// a negative Idle spells (#37).
-//
-// It exists so that "negative means off" has one expression rather than two. The
-// dashboard has to know: a card must say there is no idle limit rather than
-// render the far-future instant IdleDeadline returns for such a session, and a
-// caller comparing the duration against zero itself would be a second place the
-// rule lives — free to disagree with this one the day the spelling changes.
-func (s Session) IdleDisabled() bool { return s.Idle < 0 }
+// neverLifetime is the negative this package writes when a lifetime has been
+// switched off. Any negative reads as off (LifetimeDisabled); this is the one
+// that gets written, so that a value making a round trip through the host comes
+// back spelled the way it left.
+const neverLifetime = -1 * time.Nanosecond
 
-// IdleDeadline is when the session dies for want of use (FR-038).
+// encodeLifetime renders a session's own lifetime for the host to hold
+// (tmuxctl.OptionLifetime, milestone 15).
 //
-// A zero Idle means IdleTimeout, as above. A *negative* Idle means idle reaping
-// is off for this session, and on the daemon that shipped before milestone 13
-// that was safe in a way disabling the absolute deadline would not have been:
-// the absolute one still fired, so the bound was relaxed rather than removed.
-// That remains the ordinary case — the absolute deadline is off only where an
-// operator has switched it off as well (AbsoluteDeadline) — and it is why these
-// two switches are documented apart rather than as one "never die".
-//
-// It is measured from IdleSince rather than from LastActivity alone, which is
-// what makes "idle" mean the session was idle rather than that nobody sent the
-// daemon a mutating request about it.
-func (s Session) IdleDeadline() time.Time {
-	if s.IdleDisabled() {
-		// The span AbsoluteDeadline uses for its own switch, so that a session
-		// with both off is reaped by neither — see neverSpan.
-		return s.IdleSince().Add(neverSpan)
+// Three values, in the configuration's own vocabulary rather than a fourth
+// spelling of it: empty for unset, `never` for the deadline switched off, and a
+// Go duration otherwise. `never` rather than a negative number because a
+// negative duration written to a tmux option would be a value an operator
+// reading `tmux show-options` could not interpret, and because config already
+// took that word for this meaning.
+func encodeLifetime(d time.Duration) string {
+	switch {
+	case d == 0:
+		return ""
+	case d < 0:
+		return config.NeverLifetime
+	default:
+		return d.String()
 	}
-	return s.IdleSince().Add(orDefault(s.Idle, IdleTimeout))
 }
 
-// IdleSince is the instant the idle deadline is measured from: the later of the
-// two clocks a session has, because either one is genuinely activity.
+// decodeLifetime reads back what encodeLifetime wrote.
 //
-// It is exported for the dashboard rather than for the daemon, which is the one
-// thing worth knowing before reading it as an ordinary accessor. A card that
-// shows an idle deadline and not the activity it counts from cannot answer "why
-// is this about to die" (T003), and the two fields it is derived from are both
-// on the record — so a page computing the later of them itself would be a second
-// place this rule lives, free to disagree with this one the day it changes. That
-// is the reason IdleDisabled is exported too.
+// **Nothing here fails.** Every unreadable value — a truncated duration, a word
+// from a future build, a positive number with no unit — decodes to zero, which
+// means "unset" and hands the session the daemon's configured default. That is
+// FR-010: the alternative to a defaulted lifetime is a session left unadopted,
+// and an unadopted session is an unowned unsandboxed shell. The daemon has no
+// business preferring the second.
 //
-// This comparison is the whole of the fail-safe rule, and it is a comparison
-// rather than a branch on purpose. A tmux time that is absent, unparsable, from
-// a clock that disagrees, or simply older than the record's own can never be
-// *later*, so every one of those falls through to LastActivity and none of them
-// can shorten a session's life. There is no "is this value usable?" test to get
-// the wrong way round.
-//
-// The ceiling is untouched by any of it (AbsoluteDeadline), so what this can do
-// at worst is keep a session until the bound Principle VI actually rests on.
-func (s Session) IdleSince() time.Time {
-	if s.TmuxActivity.After(s.LastActivity) {
-		return s.TmuxActivity
+// A negative duration string is read as unset rather than as the switch. The
+// switch has one spelling and it is a word; accepting `-1ns` as well would be a
+// second way to reach the only bound Principle VI still rests on, arriving from
+// a string on the host rather than from the two operator decisions that grant it.
+func decodeLifetime(raw string) time.Duration {
+	if raw == "" {
+		return 0
 	}
-	return s.LastActivity
+	if strings.EqualFold(raw, config.NeverLifetime) {
+		return neverLifetime
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
-// orDefault is the zero-means-inherited rule both deadlines share, in one place
-// so they cannot come to disagree about what an unset field means.
+// orDefault is the zero-means-inherited rule, in one place so that what an unset
+// field means is settled once.
 func orDefault(d, fallback time.Duration) time.Duration {
 	if d == 0 {
 		return fallback
@@ -381,22 +354,26 @@ func orDefault(d, fallback time.Duration) time.Duration {
 	return d
 }
 
-// DisplayState is the label the dashboard shows for this session at now
-// (FR-019b).
+// DisplayState is the label the dashboard shows for this session (FR-019b).
 //
-// The comparison is against IdleDeadline — the reaper's own method, not a second
-// constant that agrees with IdleTimeout today — which is the whole of FR-019c:
-// the dashboard and the sweep put one question to one clock, so a session the
-// reaper is about to take cannot read as running. The boundary falls on the same
-// side as expiredAt's, too: at the deadline the session is already idle, exactly
-// as at the deadline it is already reapable.
+// It answers running for every session it is asked about, and the parameter it
+// ignores is kept deliberately. Until milestone 15 this compared the clock
+// against the idle deadline and could answer idle; with that bound withdrawn,
+// the only way a live session ends is the operator destroying it or the ceiling
+// passing, and a record in either of those states is not one a card is being
+// rendered for — the reaper drops it.
+//
+// The signature keeps its clock rather than becoming a constant because the
+// question "what does this session look like *now*" is the right question for a
+// fleet to ask, and a future state that does depend on the clock — a session
+// approaching its ceiling, say — would otherwise have to change every caller
+// back. FR-019c's rule is unchanged and now trivially true: the dashboard and
+// the sweep still read one clock, because the sweep is the only one left reading
+// one at all.
 //
 // State is not consulted at all. Reading it is what FR-019a forbids, and both
 // values it can hold in production are this method's running anyway.
-func (s Session) DisplayState(now time.Time) DisplayState {
-	if !now.Before(s.IdleDeadline()) {
-		return DisplayIdle
-	}
+func (s Session) DisplayState(_ time.Time) DisplayState {
 	return DisplayRunning
 }
 
@@ -490,9 +467,9 @@ var (
 	// no way to discover that is what happened (#38).
 	ErrUnknownStartCommand = errors.New("no such start command")
 
-	// ErrInvalidLifetime is a per-session lifetime or idle override the daemon
-	// will not grant: negative, past the operator's ceiling, or an idle timeout
-	// that could never fire inside the lifetime it sits in (#37).
+	// ErrInvalidLifetime is a per-session lifetime override the daemon will not
+	// grant: past the operator's ceiling, or asking for a session that never
+	// expires on a daemon whose ceiling still stands (#37).
 	ErrInvalidLifetime = errors.New("invalid session lifetime")
 
 	// ErrCredentialNotPending marks a claim on a session whose credential has
@@ -514,7 +491,7 @@ var (
 // It holds Sessions by value and hands out copies. A store of pointers would let
 // a handler mutate a live record without the lock, and the reaper reads every
 // record on its own goroutine — so the race would be real, and it would be over
-// the fields the idle and absolute deadlines derive from. Every mutation goes
+// the fields the absolute deadline derives from. Every mutation goes
 // through a method here, under the lock, or it does not happen.
 type Store struct {
 	mu   sync.RWMutex
@@ -745,16 +722,20 @@ func (st *Store) SetState(id string, next State) error {
 	return nil
 }
 
-// Touch moves the idle clock forward for a live session.
+// Touch records that a request drove this live session.
 //
 // It only ever moves forward. A reading behind the one already recorded is
-// dropped rather than stored, so a lagging clock read cannot shorten a session's
-// remaining idle time — the deadline this feeds is enforced by a reaper the
-// caller cannot see, and a silently shortened one would look like an arbitrary
-// disappearance.
+// dropped rather than stored, so a lagging clock read cannot make a session look
+// staler than it is.
 //
-// A dead session is refused: its idle clock has no one left to run for, and
-// advancing it would keep a record the reaper should be collecting.
+// **It feeds no deadline.** Until milestone 15 this moved the clock the reaper
+// judged idleness on, and a call missing from a driving path was a session
+// destroyed while in use. Now it records a fact for the operator to read and
+// nothing acts on it, so the cost of an omission here is a card that understates
+// how recently a session was driven.
+//
+// A dead session is still refused: advancing anything on a record the reaper
+// should be collecting would keep it.
 func (st *Store) Touch(id string, now time.Time) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -771,40 +752,6 @@ func (st *Store) Touch(id string, now time.Time) error {
 		st.byID[id] = s
 	}
 	return nil
-}
-
-// setTmuxActivity records what the host said about a session's own activity,
-// and is the only writer of that field.
-//
-// Forward-only, exactly as Touch is and for its reason plus one: tmux's activity
-// time only moves forward for a live session, so a reading behind the one
-// already held is a bad parse or a clock that jumped, and dropping it is the
-// direction that keeps sessions alive. The zero time a missing or unparsable
-// value yields is handled by the same comparison rather than by a case of its
-// own — it is never later, so it never wins.
-//
-// It is unexported for the reason lookup and snapshot are: the sweep acts on the
-// daemon's own behalf and has no caller to check a record against. Everything
-// reached from a request goes through a method that takes an owner.
-//
-// It returns nothing, unlike every other mutator here, because there is no
-// caller to answer and nothing that could be done differently. The host lists
-// sessions this store has no record of — one another daemon owns, one a destroy
-// dropped between the list and this call — and "no record" is the ordinary case
-// rather than a failure. A dead one is refused as Touch refuses one: its idle
-// clock has nobody left to run for.
-func (st *Store) setTmuxActivity(id string, at time.Time) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-
-	s, ok := st.byID[id]
-	if !ok || s.State == StateDead {
-		return
-	}
-	if at.After(s.TmuxActivity) {
-		s.TmuxActivity = at
-		st.byID[id] = s
-	}
 }
 
 // SetCredential replaces a record's token hash and clears CredentialPending. It

@@ -12,6 +12,7 @@ package config_test
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -45,10 +46,7 @@ start_commands = default=claude --dangerously-skip-permissions
 	}
 
 	lines := strings.Split(string(out), "\n")
-	stamp := "version = 1"
-	if config.SchemaVersion != 1 {
-		t.Fatalf("this fixture is written for schema 1 and the daemon is on %d", config.SchemaVersion)
-	}
+	stamp := fmt.Sprintf("version = %d", config.SchemaVersion)
 
 	// Below the header comment and above the first setting: the header is what
 	// an operator reads first, and a line in front of it reads as though the
@@ -94,7 +92,11 @@ start_commands = default=claude --dangerously-skip-permissions
 func TestMigrateIsANoOpOnACurrentFile(t *testing.T) {
 	t.Parallel()
 
-	out, changed, err := config.Migrate("fixture", []byte(workedExample), io.Discard)
+	// The worked example declares schema 1, which is a *migration* now that the
+	// daemon is on 2 — so the no-op case is that file with the current stamp.
+	current := strings.Replace(workedExample, "version = 1", fmt.Sprintf("version = %d", config.SchemaVersion), 1)
+
+	out, changed, err := config.Migrate("fixture", []byte(current), io.Discard)
 	if err != nil {
 		t.Fatalf("Migrate(): %v", err)
 	}

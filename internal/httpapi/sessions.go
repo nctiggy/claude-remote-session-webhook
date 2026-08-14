@@ -65,10 +65,25 @@ type createRequest struct {
 	// working unchanged.
 	StartCommand string `json:"start_command"`
 
-	// Lifetime and IdleTimeout are optional per-session overrides (#37), as Go
-	// duration strings: "72h", "90m", "0" for IdleTimeout meaning no idle
-	// reaping for this session, and "never" for Lifetime meaning no absolute
-	// deadline at all. Absent means the daemon's default.
+	// Resume asks the new session to continue a prior Claude conversation in its
+	// working directory instead of starting empty (milestone 15): "latest" for
+	// the most recent, or a conversation identifier for one in particular. Absent
+	// starts fresh.
+	//
+	// The signed door takes it for the reason it takes the lifetime: two doors
+	// offering different capabilities for one daemon is how a caller learns to
+	// prefer whichever one was written last. It is validated in the manager,
+	// which is where every caller meets the same check.
+	Resume string `json:"resume"`
+
+	// Lifetime is an optional per-session override (#37), as a Go duration
+	// string: "72h", or "never" meaning no absolute deadline at all. Absent
+	// means the daemon's default.
+	//
+	// There was an IdleTimeout beside it until milestone 15, whose "0" meant no
+	// idle reaping for this session. A client still sending that field is not
+	// refused for it — decode ignores unknown members — and gets a session with
+	// the one bound this daemon still has.
 	//
 	// "never" is granted only on a daemon whose own ceiling is unbounded
 	// (config.NeverLifetime), and refused with every other over-the-ceiling
@@ -78,54 +93,40 @@ type createRequest struct {
 	// Strings rather than numbers because a bare 3600 is a unit the caller and
 	// the daemon have to agree about silently, and "1h" is one nobody can read
 	// two ways.
-	Lifetime    string `json:"lifetime"`
-	IdleTimeout string `json:"idle_timeout"`
+	Lifetime string `json:"lifetime"`
 }
 
-// parseLifetimeOverrides turns the request's duration strings into what the
+// parseLifetimeOverride turns the request's duration string into what the
 // manager takes (#37).
 //
-// "0" for the idle timeout is the disable, and it arrives here as a zero
-// duration — which the manager reads as "unset". It is translated to a negative
-// so the two cannot be confused: one value cannot mean both "the operator said
-// nothing" and "the operator said none".
+// "never" is translated to a negative, so that "the operator said nothing" and
+// "the operator said none" cannot be one value. It is a word rather than "0"
+// for config.NeverLifetime's reason: a caller who sent zero meaning "no time at
+// all" would be handed a session nothing reaps, and the deadline being switched
+// off here is the one that is never renewed. Whether it is granted is not
+// decided here — resolveLifetimes weighs it against the operator's ceiling,
+// exactly as it weighs "8760h".
 //
-// "never" for the lifetime is the same translation for the other bound, and it
-// is a word rather than "0" for config.NeverLifetime's reason: a caller who sent
-// zero meaning "no time at all" would be handed a session nothing reaps, and the
-// deadline being switched off here is the one that is never renewed. Whether it
-// is granted is not decided here — resolveLifetimes weighs it against the
-// operator's ceiling, exactly as it weighs "8760h".
-func parseLifetimeOverrides(lifetime, idle string) (time.Duration, time.Duration, error) {
-	var out, outIdle time.Duration
-	if v := strings.TrimSpace(lifetime); v != "" {
-		switch {
-		case strings.EqualFold(v, config.NeverLifetime):
-			out = neverLifetimeDuration
-		default:
-			d, err := time.ParseDuration(v)
-			if err != nil {
-				return 0, 0, fmt.Errorf("%w: lifetime %q is not a duration such as 72h, or %q", session.ErrInvalidLifetime, v, config.NeverLifetime)
-			}
-			out = d
-		}
+// It parsed a second field until milestone 15, the idle timeout, whose "0" was
+// that bound's own spelling of the disable. Both went with the bound.
+func parseLifetimeOverride(lifetime string) (time.Duration, error) {
+	v := strings.TrimSpace(lifetime)
+	if v == "" {
+		return 0, nil
 	}
-	if v := strings.TrimSpace(idle); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			return 0, 0, fmt.Errorf("%w: idle_timeout %q is not a duration such as 90m", session.ErrInvalidLifetime, v)
-		}
-		if d == 0 {
-			d = neverLifetimeDuration
-		}
-		outIdle = d
+	if strings.EqualFold(v, config.NeverLifetime) {
+		return neverLifetimeDuration, nil
 	}
-	return out, outIdle, nil
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("%w: lifetime %q is not a duration such as 72h, or %q", session.ErrInvalidLifetime, v, config.NeverLifetime)
+	}
+	return d, nil
 }
 
-// neverLifetimeDuration is what both of this route's "switch that bound off"
-// spellings become: any negative does it, and one constant so the two doors
-// cannot come to disagree about which negative.
+// neverLifetimeDuration is what this route's "switch that bound off" spelling
+// becomes: any negative does it, and one constant so the two doors cannot come
+// to disagree about which negative.
 const neverLifetimeDuration = -1
 
 // createResponse is the contract's 201 body, in the contract's field order.
@@ -396,7 +397,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lifetime, idleOverride, err := parseLifetimeOverrides(req.Lifetime, req.IdleTimeout)
+	lifetime, err := parseLifetimeOverride(req.Lifetime)
 	if err != nil {
 		s.refuseCreate(w, r, err)
 		return
@@ -407,8 +408,8 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		Name:         req.Name,
 		WorkDir:      req.WorkDir,
 		StartCommand: req.StartCommand,
+		Resume:       req.Resume,
 		Lifetime:     lifetime,
-		Idle:         idleOverride,
 	})
 	if err != nil {
 		s.refuseCreate(w, r, err)

@@ -283,13 +283,59 @@ func TestTmuxListReportsProvenanceAndCreation(t *testing.T) {
 	if got := seen[ours].Created; got.Before(before) || got.After(time.Now().Add(time.Minute)) {
 		t.Errorf("Created = %v, want a time around now (%v)", got, time.Now())
 	}
-	// The whole premise of measuring idle from the host: that #{session_activity}
-	// is a format this tmux knows and renders as a Unix timestamp. A tmux that
-	// did not would render the literal text, the parser would read it as
-	// unreadable, and every session would quietly fall back to the old clock
-	// with nothing failing to say so. This is what notices.
-	if got := seen[ours].Activity; got.Before(before) || got.After(time.Now().Add(time.Minute)) {
-		t.Errorf("Activity = %v, want a time around now (%v) — this tmux may not render #{session_activity}", got, time.Now())
+}
+
+// The @crswd-lifetime round trip against a real tmux server (milestone 15, T016).
+//
+// The unit tests either side of this one prove the daemon writes the option and
+// that the parser reads the field; neither can prove tmux *keeps* a user option
+// under that name and renders it in a list-sessions format. That gap is exactly
+// where the defect this milestone fixes lived — the daemon and its fake agreed
+// about a value the host never held — so the round trip is asserted against the
+// real binary or not at all.
+//
+// `never` rather than a duration: it is the value whose loss destroyed four
+// sessions on 2026-08-14, and the one an operator is least able to notice the
+// absence of until it is too late.
+func TestTmuxListReportsTheLifetimeOption(t *testing.T) {
+	ctx := context.Background()
+	e := newTestExec(t)
+	const (
+		forever = "crswd-55555555555555555555555555555555"
+		plain   = "crswd-66666666666666666666666666666666"
+	)
+
+	dir := t.TempDir()
+	for _, name := range []string{forever, plain} {
+		if err := e.New(ctx, name, dir); err != nil {
+			t.Fatalf("New %s: %v", name, err)
+		}
+		if err := e.SetOption(ctx, name, OptionManaged, OptionManagedValue); err != nil {
+			t.Fatalf("SetOption managed on %s: %v", name, err)
+		}
+	}
+	if err := e.SetOption(ctx, forever, OptionLifetime, "never"); err != nil {
+		t.Fatalf("SetOption lifetime: %v", err)
+	}
+	// Written even when it is empty, exactly as the daemon writes it, because
+	// set-to-nothing and never-set have to read back the same.
+	if err := e.SetOption(ctx, plain, OptionLifetime, ""); err != nil {
+		t.Fatalf("SetOption empty lifetime: %v", err)
+	}
+
+	sessions, err := e.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	seen := make(map[string]SessionInfo, len(sessions))
+	for _, s := range sessions {
+		seen[s.Name] = s
+	}
+	if got := seen[forever].Lifetime; got != "never" {
+		t.Errorf("Lifetime = %q, want %q — this tmux may not keep or render %s", got, "never", OptionLifetime)
+	}
+	if got := seen[plain].Lifetime; got != "" {
+		t.Errorf("Lifetime = %q, want empty for a session whose option was set to nothing", got)
 	}
 }
 

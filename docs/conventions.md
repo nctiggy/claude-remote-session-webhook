@@ -52,9 +52,13 @@ tmux` for the integration suite, `//go:build quickstart` for an acceptance run â
 that `go test ./...` stays fast and hermetic. Both are in the command table in
 `AGENTS.md`; neither runs by default.
 
-**A test that cannot fail is not a test.** Two defects in this repo shipped with full
-green suites because the thing under test had no production caller: the reaper, and
-the idle clock. Assert the caller, not only the callee.
+**A test that cannot fail is not a test.** Three defects in this repo shipped with
+full green suites. Two because the thing under test had no production caller: the
+reaper, and the idle clock. The third because the fake agreed with the daemon
+about a field neither of them carried â€” the session lifetime was written to no
+tmux option and read back from none, and every adoption test passed while a
+never-expiring session came back mortal. Assert the caller, not only the callee,
+and make the fake hold what the host holds.
 
 ## Comments
 

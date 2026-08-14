@@ -406,6 +406,94 @@
   }
 
   /*
+   * The create form's command readout (US3, contracts/command-preview.md).
+   *
+   * It selects between the lines the server rendered into data-* attributes and
+   * substitutes the session name. **It assembles nothing.** String assembly here
+   * would be a second implementation of the daemon's own renderer, free to
+   * disagree with the one that actually runs — and the whole claim of this
+   * element is that what an operator reads is what the host is asked to type.
+   *
+   * So the enhancement is: pick local or remote, add the continue flag or not,
+   * put the name in. Three decisions, each of which the server has already told
+   * this script the answer to.
+   *
+   * Everything degrades to the server-rendered line. A page with no script shows
+   * the command for the form's default state, which is what an unmodified
+   * submission runs — the one state where being wrong would matter most is the
+   * one that needs no script at all.
+   *
+   * textContent and never innerHTML. The session name is operator input on its
+   * way into the document, and this is the same rule that renders pane output as
+   * text (Principle VII).
+   */
+  const previewCommand = (pre) => {
+    const form = pre.closest('form');
+    if (!form) {
+      return;
+    }
+
+    const remote = form.querySelector('input[name="remote_control"]');
+    const resume = form.querySelector('select[name="resume"]');
+    const name = form.querySelector('input[name="name"]');
+
+    // The placeholder the server left in the line, spelled once here because it
+    // is the daemon's own token and this script is substituting into a line the
+    // daemon composed.
+    const PLACEHOLDER = '{name}';
+
+    const render = () => {
+      const line =
+        remote && remote.checked && pre.dataset.commandRemote
+          ? pre.dataset.commandRemote
+          : pre.dataset.commandLocal;
+      if (!line) {
+        return;
+      }
+
+      // The flags go after the binary, which is where the daemon puts them
+      // (config.InsertStartFlags), and they are the daemon's own spelling read
+      // off the element rather than this script's copy of them.
+      //
+      // A specific conversation is previewed with an ellipsis instead of its
+      // identifier: the operator picked it from a list a moment ago, and a
+      // 36-character UUID in the middle of the line is noise in the one place
+      // this element exists to be readable.
+      const chosen = resume ? resume.value : '';
+      let flag = '';
+      if (chosen && chosen === pre.dataset.commandContinue) {
+        flag = pre.dataset.flagContinue || '';
+      } else if (chosen) {
+        flag = (pre.dataset.flagResume || '') + ' \u2026';
+      }
+
+      let shown = line;
+      if (flag) {
+        const space = line.indexOf(' ');
+        shown =
+          space < 0
+            ? line + ' ' + flag
+            : line.slice(0, space) + ' ' + flag + line.slice(space);
+      }
+
+      const typed = name && name.value ? name.value : PLACEHOLDER;
+      pre.textContent = shown.split(PLACEHOLDER).join(typed);
+    };
+
+    for (const control of [remote, resume, name]) {
+      if (control) {
+        control.addEventListener('input', render);
+        control.addEventListener('change', render);
+      }
+    }
+    render();
+  };
+
+  for (const pre of document.querySelectorAll('pre[data-command-preview]')) {
+    previewCommand(pre);
+  }
+
+  /*
    * The fleet's live half (US3, issue #15, contracts/fleet-stream.md).
    *
    * The daemon says *what* changed and never *what it now looks like*: one

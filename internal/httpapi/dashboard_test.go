@@ -91,12 +91,24 @@ func (f *fleet) view(t *testing.T) *httptest.ResponseRecorder {
 	return w
 }
 
-// idle is a record whose idle deadline has already passed at the fixture's
-// instant, and running is one comfortably inside it. Both are expressed against
-// session.IdleTimeout rather than against a duration written here, so a change to
-// the bound moves the fixtures with it.
-func idleAt(now time.Time) time.Time    { return now.Add(-session.IdleTimeout - time.Minute) }
+// staleAt is a record nothing has driven for a long time, and running is one
+// driven a moment ago.
+//
+// They were "past the idle deadline" and "inside it" until milestone 15, and the
+// distinction no longer decides anything — a quiet session is not a doomed one.
+// They are kept because a fleet whose records all carry the same last-driven
+// stamp is a fixture that cannot notice a page rendering one record's fields for
+// another.
+func staleAt(now time.Time) time.Time   { return now.Add(-9 * time.Hour) }
 func runningAt(now time.Time) time.Time { return now.Add(-time.Minute) }
+
+// pastItsCeilingAt is a creation time the absolute lifetime has already caught
+// up with, which since milestone 15 is the only way a session becomes reapable
+// without somebody asking. Expressed against session.AbsoluteLifetime so a
+// change to the bound moves the fixture with it.
+func pastItsCeilingAt(now time.Time) time.Time {
+	return now.Add(-session.AbsoluteLifetime - time.Minute)
+}
 
 // cardFor isolates the card naming one session, so an assertion about what a
 // *card* says cannot be satisfied by markup elsewhere on the page.
@@ -194,47 +206,6 @@ func TestTheFleetShowsEverySessionTheViewerOwnsAndNoOther(t *testing.T) {
 	}
 }
 
-// TestTheFleetDerivesEachStateFromTheReapersOwnDeadline is FR-019a–c. The stored
-// lifecycle field is deliberately the same on both records here — plant leaves
-// them starting — so a page that rendered Session.State would label them
-// identically and pass nothing below.
-func TestTheFleetDerivesEachStateFromTheReapersOwnDeadline(t *testing.T) {
-	t.Parallel()
-
-	f := newFleet(t)
-	stale, _ := f.fixture.plant(t, session.Session{
-		Name: "left open", WorkDir: f.fixture.repo, LastActivity: idleAt(testTime),
-	})
-	live, _ := f.fixture.plant(t, session.Session{
-		Name: "in use", WorkDir: f.fixture.repo, LastActivity: runningAt(testTime),
-	})
-
-	page := f.view(t).Body.String()
-	for _, want := range []struct {
-		id            string
-		state, notThe session.DisplayState
-	}{
-		{stale.ID, session.DisplayIdle, session.DisplayRunning},
-		{live.ID, session.DisplayRunning, session.DisplayIdle},
-	} {
-		// The label as text, which is FR-019 and the design system's fifth
-		// non-negotiable: both states are green, so colour alone separates
-		// nothing even for a reader who can see it.
-		card := cardFor(t, page, want.id)
-		if !strings.Contains(card, ">"+string(want.state)+"<") {
-			t.Errorf("the card for session %s does not read %q as text:\n%s", want.id, want.state, card)
-		}
-		if strings.Contains(card, ">"+string(want.notThe)+"<") {
-			t.Errorf("the card for session %s reads %q, and the reaper's own deadline says %q:\n%s", want.id, want.notThe, want.state, card)
-		}
-	}
-	for _, unwanted := range []session.State{session.StateStarting, session.StateDead} {
-		if strings.Contains(page, ">"+string(unwanted)+"<") {
-			t.Errorf("a card renders the stored lifecycle state %q; the label is derived, never read (FR-019a):\n%s", unwanted, page)
-		}
-	}
-}
-
 // TestTheFleetSummaryCountsTheCardsBelowIt is the summary row: derived from the
 // views it precedes, never a tracked counter (data-model.md).
 //
@@ -252,7 +223,7 @@ func TestTheFleetSummaryCountsTheCardsBelowIt(t *testing.T) {
 	for range 2 {
 		f.fixture.plant(t, session.Session{Name: "busy", WorkDir: f.fixture.repo, LastActivity: runningAt(testTime)})
 	}
-	f.fixture.plant(t, session.Session{Name: "left open", WorkDir: f.fixture.repo, LastActivity: idleAt(testTime)})
+	f.fixture.plant(t, session.Session{Name: "left open", WorkDir: f.fixture.repo, LastActivity: staleAt(testTime)})
 
 	page := f.view(t).Body.String()
 	if n := strings.Count(page, `<article class="card"`); n != 3 {
@@ -262,8 +233,7 @@ func TestTheFleetSummaryCountsTheCardsBelowIt(t *testing.T) {
 		state session.DisplayState
 		count string
 	}{
-		{session.DisplayRunning, "2"},
-		{session.DisplayIdle, "1"},
+		{session.DisplayRunning, "3"},
 	} {
 		if !strings.Contains(page, `pill-`+string(want.state)) {
 			t.Errorf("the summary carries no %s entry:\n%s", want.state, page)
@@ -273,15 +243,13 @@ func TestTheFleetSummaryCountsTheCardsBelowIt(t *testing.T) {
 		}
 	}
 
-	// A state none of the fleet is in still gets its entry. Without it the row
-	// changes shape between two page loads, which is a row an operator has to read
-	// rather than scan — and the summary comes before any detail precisely so that
-	// it can be scanned.
-	uniform := newFleet(t)
-	uniform.fixture.plant(t, session.Session{Name: "busy", WorkDir: uniform.fixture.repo, LastActivity: runningAt(testTime)})
-
-	if got := uniform.view(t).Body.String(); !strings.Contains(got, `<span class="summary-count">0</span>`) {
-		t.Errorf("a fleet with nothing idle in it dropped the idle entry from its summary:\n%s", got)
+	// An empty fleet still gets its entry. Without it the row changes shape
+	// between two page loads, which is a row an operator has to read rather than
+	// scan — and the summary comes before any detail precisely so that it can be
+	// scanned.
+	empty := newFleet(t)
+	if got := empty.view(t).Body.String(); !strings.Contains(got, `<span class="summary-count">0</span>`) {
+		t.Errorf("an empty fleet dropped its running entry from the summary:\n%s", got)
 	}
 }
 
@@ -300,22 +268,29 @@ func TestSummariseCountsWhatItIsGiven(t *testing.T) {
 		want  []stateCount
 	}{
 		"no sessions at all": {
-			want: []stateCount{{session.DisplayRunning, 0}, {session.DisplayIdle, 0}},
+			want: []stateCount{{session.DisplayRunning, 0}},
 		},
-		"a mixed fleet": {
+		"a fleet of running sessions": {
 			views: []sessionView{
-				{DisplayState: session.DisplayIdle},
 				{DisplayState: session.DisplayRunning},
-				{DisplayState: session.DisplayIdle},
+				{DisplayState: session.DisplayRunning},
+				{DisplayState: session.DisplayRunning},
 			},
-			want: []stateCount{{session.DisplayRunning, 1}, {session.DisplayIdle, 2}},
+			want: []stateCount{{session.DisplayRunning, 3}},
 		},
-		"a state this milestone cannot produce": {
+		"a state this daemon cannot produce": {
 			views: []sessionView{
 				{DisplayState: session.DisplayRunning},
 				{DisplayState: "needs-auth"},
 			},
-			want: []stateCount{{session.DisplayRunning, 1}, {session.DisplayIdle, 0}, {"needs-auth", 1}},
+			want: []stateCount{{session.DisplayRunning, 1}, {"needs-auth", 1}},
+		},
+		// The state milestone 15 withdrew. A record still carrying it — from a
+		// page rendered by an older build, or a future state reusing the name —
+		// is appended rather than dropped, exactly as needs-auth is.
+		"the withdrawn idle state is still counted if handed over": {
+			views: []sessionView{{DisplayState: "idle"}},
+			want:  []stateCount{{session.DisplayRunning, 0}, {"idle", 1}},
 		},
 	}
 
@@ -732,7 +707,7 @@ func TestOpeningTheFleetLeavesTheIdleClockWhereItWas(t *testing.T) {
 	// Deliberately behind the fixture's clock. A record whose LastActivity is the
 	// instant the manager stands at makes a Touch a no-op — Store.Touch only moves
 	// forward — so the two behaviours would be indistinguishable.
-	stale, _ := f.fixture.plant(t, session.Session{Name: "left open", LastActivity: idleAt(testTime)})
+	stale, _ := f.fixture.plant(t, session.Session{Name: "left open", LastActivity: staleAt(testTime)})
 
 	before, err := f.fixture.store.Get(stale.ID, auth.CallerOperator)
 	if err != nil {
@@ -875,9 +850,8 @@ func TestFormatAgeIsCoarseAndReadable(t *testing.T) {
 	t.Parallel()
 
 	// A slice rather than a map keyed by duration, because the two bounds a card
-	// really renders — the idle threshold and the absolute lifetime — are equal to
-	// two of the plain durations above them, and a map would silently drop one of
-	// each pair.
+	// really renders — the absolute lifetime — is equal to one of the plain
+	// durations above it, and a map would silently drop one of the pair.
 	cases := []struct {
 		d    time.Duration
 		want string
@@ -892,7 +866,6 @@ func TestFormatAgeIsCoarseAndReadable(t *testing.T) {
 		{23 * time.Hour, "23 hours"},
 		{24 * time.Hour, "1 day"},
 		{50 * time.Hour, "2 days"},
-		{session.IdleTimeout, "1 hour"},
 		{session.AbsoluteLifetime, "1 day"},
 	}
 
@@ -1102,7 +1075,7 @@ func TestOpeningASessionPageLeavesTheIdleClockWhereItWas(t *testing.T) {
 	f := newFleet(t)
 	// Behind the fixture's clock deliberately: Store.Touch only moves forward, so
 	// a record stamped at the manager's own instant would make a touch invisible.
-	stale, _ := f.fixture.plant(t, session.Session{Name: "watched", LastActivity: idleAt(testTime)})
+	stale, _ := f.fixture.plant(t, session.Session{Name: "watched", LastActivity: staleAt(testTime)})
 
 	before, err := f.fixture.store.Get(stale.ID, auth.CallerOperator)
 	if err != nil {
@@ -1292,7 +1265,7 @@ func TestEveryCardIsLegibleWithoutColour(t *testing.T) {
 
 	f := newFleet(t)
 	stale, _ := f.fixture.plant(t, session.Session{
-		Name: "left open", WorkDir: f.fixture.repo, LastActivity: idleAt(testTime),
+		Name: "left open", WorkDir: f.fixture.repo, LastActivity: staleAt(testTime),
 	})
 	live, _ := f.fixture.plant(t, session.Session{
 		Name: "in use", WorkDir: f.fixture.repo, LastActivity: runningAt(testTime),
@@ -1318,20 +1291,14 @@ func TestEveryCardIsLegibleWithoutColour(t *testing.T) {
 		t.Fatalf("the colourless page holds %d cards; want 3 — the card is the only <article> the dashboard renders:\n%s", n, colourless)
 	}
 
-	for _, want := range []struct {
-		id            string
-		state, notThe session.DisplayState
-	}{
-		{stale.ID, session.DisplayIdle, session.DisplayRunning},
-		{live.ID, session.DisplayRunning, session.DisplayIdle},
-		{other.ID, session.DisplayRunning, session.DisplayIdle},
-	} {
-		card := cardFor(t, colourless, want.id)
-		if !strings.Contains(card, ">"+string(want.state)+"<") {
-			t.Errorf("with the colour gone, the card for session %s no longer says it is %q:\n%s", want.id, want.state, card)
-		}
-		if strings.Contains(card, ">"+string(want.notThe)+"<") {
-			t.Errorf("the card for session %s reads %q as well as %q:\n%s", want.id, want.notThe, want.state, card)
+	// One display state since milestone 15, so what this asserts is that the
+	// label is present as *text* on every card rather than that two cards differ.
+	// A pill rendering nothing but a class would fail here and pass a page-wide
+	// search for the word.
+	for _, id := range []string{stale.ID, live.ID, other.ID} {
+		card := cardFor(t, colourless, id)
+		if !strings.Contains(card, ">"+string(session.DisplayRunning)+"<") {
+			t.Errorf("with the colour gone, the card for session %s no longer says it is %q:\n%s", id, session.DisplayRunning, card)
 		}
 	}
 
@@ -1339,16 +1306,8 @@ func TestEveryCardIsLegibleWithoutColour(t *testing.T) {
 	// unambiguous, but the state each one counts is carried by the pill beside it
 	// — and if that pill said nothing, the row would be three numbers whose
 	// meaning is a colour.
-	for _, want := range []struct {
-		state session.DisplayState
-		count string
-	}{
-		{session.DisplayRunning, "2"},
-		{session.DisplayIdle, "1"},
-	} {
-		if !summaryReads(colourless, want.state, want.count) {
-			t.Errorf("with the colour gone, no summary entry reads %q %s:\n%s", want.state, want.count, colourless)
-		}
+	if !summaryReads(colourless, session.DisplayRunning, "3") {
+		t.Errorf("with the colour gone, no summary entry reads %q 3:\n%s", session.DisplayRunning, colourless)
 	}
 }
 
@@ -1386,7 +1345,7 @@ func TestASecondOwnersSessionIsInvisibleThroughTheDashboardsOwnRoute(t *testing.
 
 	held := newFleet(t)
 	theirs, _ := held.fixture.plant(t, session.Session{
-		Owner: stranger, Name: "not yours", WorkDir: held.fixture.repo, LastActivity: idleAt(testTime),
+		Owner: stranger, Name: "not yours", WorkDir: held.fixture.repo, LastActivity: staleAt(testTime),
 	})
 	empty := newFleet(t)
 	// The one byte string on these two pages that differs for a reason having

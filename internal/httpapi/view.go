@@ -40,10 +40,9 @@ type sessionView struct {
 	// the same terms as Name and absent under the same circumstances.
 	WorkDir string
 
-	// DisplayState is derived per render from the reaper's own idle deadline
-	// (FR-019a–c). The stored lifecycle field is deliberately not in this
-	// struct: a view that carried it would be a second thing the card could
-	// render, and the one it must not.
+	// DisplayState is derived per render from the record (FR-019a–c). The stored
+	// lifecycle field is deliberately not in this struct: a view that carried it
+	// would be a second thing the card could render, and the one it must not.
 	DisplayState session.DisplayState
 
 	// StartCommand is the name of the command this session was running when the
@@ -80,51 +79,21 @@ type sessionView struct {
 	// to build.
 	Age string
 
-	// IdleDeadline and AbsoluteDeadline are how much longer this session has
-	// under each of the two bounds Principle VI gives it, formatted here for the
-	// reason Age is (T003).
+	// AbsoluteDeadline is how much longer this session has under the one bound
+	// Principle VI gives it, formatted here for the reason Age is (T003).
 	//
-	// There are two fields because there are two clocks, and a card showing one
-	// of them would be the interface asserting something the daemon does not do.
-	// The idle bound moves with every request and the operator may turn it off
-	// for a session; the absolute one is counted from creation, is never renewed,
-	// and cannot be turned off at all. So a card carrying only the idle deadline
-	// would read as "this session never dies" for exactly the session the
-	// operator relaxed — the same defect as copy claiming a session was compacted
-	// when the daemon only delivered the request.
+	// There were three fields here until milestone 15: an idle deadline, the
+	// activity it was measured from, and this. The card needed all three because
+	// a session could die of either bound and the operator had no way to check
+	// which clock was watching. With the idle bound withdrawn there is one
+	// question and one answer.
 	//
-	// IdleDeadline states that there is no idle limit for a session whose idle
-	// reaping is off, rather than the instant IdleDeadline returns for one: that
-	// instant is four hundred lifetimes out and means "never" rather than a date,
-	// and a card rendering it would be telling an operator a fact about their
-	// session that nothing in the daemon believes.
-	IdleDeadline     string
+	// It states that there is no lifetime limit for a session whose operator
+	// switched the deadline off, rather than the instant AbsoluteDeadline returns
+	// for one: that instant is a century out and means "never" rather than a
+	// date, and a card rendering it would be telling an operator a fact about
+	// their session that nothing in the daemon believes.
 	AbsoluteDeadline string
-
-	// IdleSince is how long ago the activity the idle deadline is counted from
-	// happened, formatted here for the reason Age is (T003).
-	//
-	// It is the row that makes the one above it answerable. "in 12 minutes" says
-	// when a session dies without saying why, and the operator's question was
-	// exactly that: whether a session they were using all afternoon was being
-	// judged on anything they had done. A deadline with the instant it is
-	// measured from beside it says what the clock is watching; a deadline alone
-	// asks the operator to take it on trust.
-	//
-	// It is session.IdleSince — the *later* of the record's two clocks — and
-	// never session.Session.LastActivity, which is the narrower fact the signed
-	// API's last_activity field carries: when a request last drove this session.
-	// Those two were one value until the tmux clock arrived, and a card rendering
-	// the narrow one beside a deadline computed from the wide one would be a page
-	// disagreeing with itself about the same session. The Go names are kept
-	// distinct here for that reason, and the card's label is the operator's word
-	// for it rather than either of them.
-	//
-	// Rendered for every card. Nothing here has to state an absence the way Name
-	// and WorkDir do: a record with no last-activity time is one the store
-	// refuses to hold at all (session.validate), so there is no session for which
-	// this is unknown.
-	IdleSince string
 
 	// PageToken is the value every action form on this card submits: minted
 	// for this render and bound to the identity layer 1 verified for it
@@ -310,17 +279,76 @@ type createFormView struct {
 	// read from configuration at the point a session starts, and crosses to the
 	// browser in neither direction.
 	//
-	// There is no Conversations field, and there is no projection behind one
-	// (US5). The form asked an operator for an opaque conversation identifier and
-	// offered the conversations of every *suggested directory* to fill it with,
-	// which is not the thing an operator wants back: what they want is the
-	// conversation *this session* was having, and FR-032 already refuses to
-	// resolve that ambiguity by guessing.
+	// Commands is the line each mode would run, for the preview beside the form
+	// (FR-014, contracts/command-preview.md). Keyed by whether remote control is
+	// on, which is the state the switch has and the only axis this form varies.
 	//
-	// The offer was also the only thing in this struct that read the filesystem
-	// on the render path for a fact no other component needed. What replaces the
-	// question is not designed yet and is deliberately not invented here
-	// (Principle II) — removing it is this milestone's, answering it is not.
+	// **It is a readout, and this field does not reopen what US1 closed.** The
+	// paragraph above removed the command *names* because a chooser of them is
+	// choosing a command by name; these are resolved command *lines*, rendered as
+	// text for an operator to read, and nothing a browser posts selects one except
+	// by mode. The switch still carries a mode and the create still resolves its
+	// command server-side from the operator's configured set.
+	//
+	// It discloses nothing to this caller that the interface does not already
+	// show them: the settings page renders the whole configured set to the same
+	// authenticated operator (startCommandSet), and start_commands is not a
+	// secret (config.IsSecret).
+	//
+	// A mode absent from the map is one this daemon has no command for, and the
+	// preview for it is not rendered at all — FR-018a's discipline about absent
+	// values, applied to a readout.
+	Commands map[bool]string
+
+	// Conversations is what this working directory has been used for before, for
+	// the resume control (FR-020). Newest first.
+	//
+	// The field US5 removed carried the same name and was a different thing: it
+	// offered the conversations of every *suggested* directory to fill a free-text
+	// identifier field with, which asked an operator to resolve an ambiguity the
+	// daemon had refused to. This one is the conversations of the working
+	// directory the form is being rendered for, and the operator picks rather than
+	// types.
+	//
+	// It is the only thing in this struct that reads the filesystem on the render
+	// path, which is why session.Conversations bounds it: the directory goes
+	// through the create's own allowlist check before it becomes a path, and every
+	// failure is an empty list rather than a page that will not render.
+	Conversations []conversationView
+
+	// ResumeLatest is the value the "continue" control posts, spelled by the
+	// daemon rather than by the markup so the form and the parser cannot come to
+	// disagree about the word.
+	ResumeLatest string
+
+	// ResumeLatestFlag and ResumeOneFlag are the CLI flags the preview shows when
+	// one of those is chosen, and they are here for the reason Commands is: the
+	// script must not spell the daemon's vocabulary. A copy in crswd.js would be
+	// a second speller, free to show an operator a flag the daemon stopped
+	// passing — and the whole claim of the preview is that it shows what runs.
+	ResumeLatestFlag string
+	ResumeOneFlag    string
+}
+
+// conversationView is one prior conversation on the create form.
+//
+// Two fields, and what is absent is the requirement (FR-025): no title, no first
+// message, no path, no size. Enough to choose between conversations and no more —
+// everything else in that transcript is the operator's work, and this daemon
+// renders none of it.
+type conversationView struct {
+	// ID is the value the control posts, and a validated UUID by the time it is
+	// here (session.ValidateResume).
+	ID string
+
+	// Short is the first group of the identifier, which is what a person actually
+	// distinguishes two conversations by. The full value rides in the control.
+	Short string
+
+	// Modified is how long ago the conversation was last written, formatted here
+	// for the reason a card's age is: there is no duration formatting in the
+	// template set and no function map to add one.
+	Modified string
 }
 
 // outcomeView is the banner the fleet renders for what an action just did (T014).

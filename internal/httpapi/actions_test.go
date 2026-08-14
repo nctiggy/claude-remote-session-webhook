@@ -2333,16 +2333,16 @@ func TestBrowserCreateRefusesAnUnusableName(t *testing.T) {
 	}
 }
 
-// --- The two clocks, asked for from the browser (milestone 10) --------------
+// --- The lifetime, asked for from the browser (milestone 10) ----------------
 
-// The lifetime overrides as a form carries them. Written out rather than read
-// from fieldLifetime and fieldIdleTimeout, for the reason remoteControlField is:
-// what a browser posts is the spelling the markup and the API door share, and a
-// test that asked the code what it reads could not notice the three parting
-// company.
+// The lifetime override as a form carries it. Written out rather than read from
+// fieldLifetime, for the reason remoteControlField is: what a browser posts is
+// the spelling the markup and the API door share, and a test that asked the code
+// what it reads could not notice the three parting company.
+//
+// There was an idle_timeout field beside it until milestone 15.
 const (
-	lifetimeField    = "lifetime"
-	idleTimeoutField = "idle_timeout"
+	lifetimeField = "lifetime"
 
 	// The create's own answer to a lifetime it will not grant. Spelled here for
 	// the reason the five above it are.
@@ -2351,85 +2351,56 @@ const (
 
 // TestBrowserCreateCarriesTheOperatorsLifetimeChoice is the claim milestone 10
 // exists to make, and the one the code could not make before it: the per-session
-// overrides are reachable from the surface the operator actually uses.
+// override is reachable from the surface the operator actually uses.
 //
-// The record carried Lifetime and Idle, resolveLifetimes bounded them, the reaper
-// enforced them and the README documented the ceilings — and this handler passed
-// Owner, Name, WorkDir and a start command, so every session a browser started
-// got the defaults and there was no way to ask for anything else. A ceiling on
-// something no operator can request bounds nothing.
+// The record carried Lifetime, resolveLifetimes bounded it, the reaper enforced
+// it and the README documented the ceiling — and this handler passed Owner, Name,
+// WorkDir and a start command, so every session a browser started got the
+// defaults and there was no way to ask for anything else. A ceiling on something
+// no operator can request bounds nothing.
 //
-// **Must fail when** the create stops reading either field, which returns the
+// **Must fail when** the create stops reading the field, which returns the
 // dashboard to exactly that state: the assertions below are about the record the
 // store holds, not about what the page was told.
 //
-// The idle half is asserted through the deadlines rather than through a sweep,
-// because the fixture's manager holds a clock that does not move. IdleDeadline is
-// the method the reaper compares against, so an idle deadline that cannot fall
-// before the absolute one is an idle branch that can never take this session —
-// and the absolute deadline is asserted beside it, because that is the bound this
-// milestone deliberately does not remove.
+// It asserted a second override until milestone 15, the idle timeout, and both
+// the field and the bound went together.
 func TestBrowserCreateCarriesTheOperatorsLifetimeChoice(t *testing.T) {
 	t.Parallel()
 
-	// Both spellings of "no idle limit": the "0" the control posts, which
-	// parseLifetimeOverrides turns into a negative because zero already means
-	// "unset", and a negative a hand-built form can send directly. One record
-	// state, reached two ways, so neither path can be the only one that works.
-	for what, asked := range map[string]string{
-		"the zero the control posts": "0",
-		"a negative duration":        "-30m",
-	} {
-		t.Run("a longer life and no idle limit, asked for with "+what, func(t *testing.T) {
-			t.Parallel()
+	t.Run("a longer life than the default", func(t *testing.T) {
+		t.Parallel()
 
-			c := newCreator(t)
-			form := c.wellFormed(t)
-			// Inside the fixture's ceilings, which are the daemon's own constants
-			// until an operator raises them: half the absolute lifetime, so the
-			// number asserted below cannot be the default arriving by coincidence.
-			form.Set(lifetimeField, "12h")
-			form.Set(idleTimeoutField, asked)
+		c := newCreator(t)
+		form := c.wellFormed(t)
+		// Inside the fixture's ceiling, which is the daemon's own constant until
+		// an operator raises it: half the absolute lifetime, so the number
+		// asserted below cannot be the default arriving by coincidence.
+		form.Set(lifetimeField, "12h")
 
-			wantOutcome(t, c.post(t, form), wantCreatedOutcome)
+		wantOutcome(t, c.post(t, form), wantCreatedOutcome)
 
-			owned := c.owned()
-			if len(owned) != 1 {
-				t.Fatalf("the store holds %d records after one create; want exactly 1", len(owned))
-			}
-			live := owned[0]
+		owned := c.owned()
+		if len(owned) != 1 {
+			t.Fatalf("the store holds %d records after one create; want exactly 1", len(owned))
+		}
+		live := owned[0]
 
-			if want := 12 * time.Hour; live.Lifetime != want {
-				t.Errorf("the record's lifetime = %v; want %v — the create did not carry the operator's choice", live.Lifetime, want)
-			}
-			if live.Idle >= 0 {
-				t.Errorf("the record's idle = %v; want a negative, which is idle reaping off for this session", live.Idle)
-			}
+		if want := 12 * time.Hour; live.Lifetime != want {
+			t.Errorf("the record's lifetime = %v; want %v — the create did not carry the operator's choice", live.Lifetime, want)
+		}
+		if want := live.CreatedAt.Add(12 * time.Hour); !live.AbsoluteDeadline().Equal(want) {
+			t.Errorf("the absolute deadline = %v; want %v — the deadline that cannot be renewed still applies",
+				live.AbsoluteDeadline(), want)
+		}
+		// Long after the withdrawn idle threshold would once have caught up with
+		// it, the fleet still draws it as running (FR-019c).
+		if got := live.DisplayState(testTime.Add(11 * time.Hour)); got != session.DisplayRunning {
+			t.Errorf("eleven hours into a twelve-hour session the card reads %q; want %q", got, session.DisplayRunning)
+		}
+	})
 
-			// The idle clock can never fire first, which is what "no idle limit"
-			// means to the reaper.
-			if live.IdleDeadline().Before(live.AbsoluteDeadline()) {
-				t.Errorf("the idle deadline (%v) falls before the absolute one (%v); idle reaping is still live for this session",
-					live.IdleDeadline(), live.AbsoluteDeadline())
-			}
-			// And the dashboard says the same thing the reaper does, long after the
-			// default idle threshold would have caught up with it (FR-019c).
-			if got := live.DisplayState(testTime.Add(session.IdleTimeout + time.Hour)); got != session.DisplayRunning {
-				t.Errorf("an hour past the default idle threshold the session reads %q; want %q", got, session.DisplayRunning)
-			}
-
-			// The absolute deadline is still the operator's 12 hours, and still
-			// fires. Turning idle off does not make a session immortal — the bound
-			// is relaxed rather than removed, and removing it is the other switch,
-			// which this daemon's ceiling does not permit.
-			if want := live.CreatedAt.Add(12 * time.Hour); !live.AbsoluteDeadline().Equal(want) {
-				t.Errorf("the absolute deadline = %v; want %v — the deadline that cannot be renewed still applies",
-					live.AbsoluteDeadline(), want)
-			}
-		})
-	}
-
-	t.Run("a form that asks for neither still gets the daemon's defaults", func(t *testing.T) {
+	t.Run("a form that asks for nothing still gets the daemon's default", func(t *testing.T) {
 		t.Parallel()
 
 		c := newCreator(t)
@@ -2443,17 +2414,13 @@ func TestBrowserCreateCarriesTheOperatorsLifetimeChoice(t *testing.T) {
 		live := owned[0]
 
 		// Zero on the record is "the daemon's configured default", which is what
-		// every create this door made before the fields existed carried. An absent
+		// every create this door made before the field existed carried. An absent
 		// field must not become a choice.
-		if live.Lifetime != 0 || live.Idle != 0 {
-			t.Errorf("a create naming neither override carries lifetime %v and idle %v; want both zero, which is the daemon's default",
-				live.Lifetime, live.Idle)
+		if live.Lifetime != 0 {
+			t.Errorf("a create naming no override carries lifetime %v; want zero, which is the daemon's default", live.Lifetime)
 		}
 		if want := live.CreatedAt.Add(session.AbsoluteLifetime); !live.AbsoluteDeadline().Equal(want) {
 			t.Errorf("the absolute deadline = %v; want the default %v", live.AbsoluteDeadline(), want)
-		}
-		if want := live.LastActivity.Add(session.IdleTimeout); !live.IdleDeadline().Equal(want) {
-			t.Errorf("the idle deadline = %v; want the default %v", live.IdleDeadline(), want)
 		}
 	})
 }
@@ -2469,28 +2436,24 @@ func TestBrowserCreateCarriesTheOperatorsLifetimeChoice(t *testing.T) {
 // believing they have thirty days and nothing to tell them otherwise until the
 // session is gone.
 //
-// The two never-expiring cases are the ones worth reading twice. A negative
-// *idle* is the disable and is accepted above; switching the absolute deadline
-// off removes the deadline that is never renewed, and this fixture's daemon has
-// a ceiling — so it is refused here for the reason 720h is, and would be granted
-// on a daemon whose operator had said so (milestone 13).
+// The never-expiring case is the one worth reading twice. Switching the absolute
+// deadline off removes the deadline that is never renewed, and this fixture's
+// daemon has a ceiling — so it is refused here for the reason 720h is, and would
+// be granted on a daemon whose operator had said so (milestone 13).
 func TestBrowserCreateRefusesALifetimeThisDaemonWillNotGrant(t *testing.T) {
 	t.Parallel()
 
-	cases := map[string]struct{ lifetime, idle string }{
-		// The fixture's manager was never given ceilings, so they are the daemon's
-		// own constants: 24 hours and 60 minutes.
-		"a lifetime past the ceiling":      {lifetime: "720h"},
-		"an idle timeout past the ceiling": {idle: "90m"},
-		"a negative lifetime":              {lifetime: "-1h"},
+	cases := map[string]struct{ lifetime string }{
+		// The fixture's manager was never given a ceiling, so it is the daemon's
+		// own constant: 24 hours.
+		"a lifetime past the ceiling": {lifetime: "720h"},
+		"a negative lifetime":         {lifetime: "-1h"},
 		// The word this daemon's ceiling does not permit, and the word it has
 		// never had a meaning for. Both refused, and the second one is here so
 		// that "never" is a value the parser knows rather than every word being
 		// one.
 		"a lifetime that never expires":          {lifetime: config.NeverLifetime},
 		"a lifetime no clock can read":           {lifetime: "forever"},
-		"an idle timeout that could never fire":  {lifetime: "30m", idle: "45m"},
-		"an idle timeout no clock can read":      {idle: "a while"},
 		"a lifetime the ceiling would have been": {lifetime: "24h1s"},
 	}
 
@@ -2502,9 +2465,6 @@ func TestBrowserCreateRefusesALifetimeThisDaemonWillNotGrant(t *testing.T) {
 			form := c.wellFormed(t)
 			if tc.lifetime != "" {
 				form.Set(lifetimeField, tc.lifetime)
-			}
-			if tc.idle != "" {
-				form.Set(idleTimeoutField, tc.idle)
 			}
 
 			w := c.post(t, form)
@@ -2523,7 +2483,7 @@ func TestBrowserCreateRefusesALifetimeThisDaemonWillNotGrant(t *testing.T) {
 			// The sentinel and nothing else. The parse refusal quotes what arrived,
 			// and a trail carrying it would be caller-authored text in the
 			// operator's journal (FR-042) — createReason is what keeps it out.
-			for _, sent := range []string{tc.lifetime, tc.idle} {
+			for _, sent := range []string{tc.lifetime} {
 				if sent != "" && strings.Contains(c.sink.String(), sent) {
 					t.Errorf("the trail carries the refused value %q:\n%s", sent, c.sink.String())
 				}
@@ -2551,7 +2511,7 @@ func TestACreateMayAskForNoAbsoluteDeadlineWhereTheOperatorAllowedIt(t *testing.
 	// The operator's own decision, made once in configuration: no ceiling on how
 	// long a session may live. config.NeverLifetime is what they wrote; a
 	// negative is what it loads as, and this is the line server.go runs on it.
-	c.fixture.mgr.SetLifetimes(session.AbsoluteLifetime, -time.Hour, session.IdleTimeout, session.IdleTimeout)
+	c.fixture.mgr.SetLifetimes(session.AbsoluteLifetime, -time.Hour)
 
 	form := c.wellFormed(t)
 	form.Set(lifetimeField, config.NeverLifetime)
@@ -2581,62 +2541,179 @@ func TestACreateMayAskForNoAbsoluteDeadlineWhereTheOperatorAllowedIt(t *testing.
 	}
 }
 
-// TestStrayResumeValueIsNotExecuted is what has to hold once the conversation
-// field is gone (#95): the name this daemon no longer reads is an unknown field
-// like any other, and an unknown field reaches nothing the host runs.
+// TestAStrayResumeValueIsRefusedRatherThanExecuted is the assertion that stands
+// where #95's used to, and the change of shape is the change of design.
 //
-// It is the assertion the deletion is worth making. Removing a field removes its
-// *guard* too — `resume` used to be checked against an alphabet before it was
-// appended to a command line, and a later hand that reads the abandoned name back
-// out of the form has no such check to inherit. So the claim is about the argv,
-// not about the answer: the create succeeds either way, which is exactly why an
-// outcome assertion could not notice this.
+// When the conversation field was removed, `resume` was a name this daemon no
+// longer read, and the claim was that an unknown field reaches nothing the host
+// runs. Milestone 15 reads it again — so the guard is no longer "nobody looks at
+// this" but session.ValidateResume, and the claim has to be the stronger one:
+// the value is refused, and *nothing* is started.
 //
-// The value is a command substitution rather than an identifier, because that is
-// what the alphabet existed to refuse. `$(whoami)` in a line typed into a shell
-// runs; in a form field this daemon ignores, it is bytes nobody looked at.
+// The values are shell syntax rather than identifiers, because that is what the
+// alphabet exists to refuse. `$(whoami)` in a line typed into a shell runs. The
+// start command is delivered by SendKeys — typed into a live shell — so this is
+// not a hypothetical about a future handler; it is what would happen today if
+// the validator were removed.
 //
-// **Must fail when** an abandoned field name is an unguarded path to a command —
-// which is what re-reading it would be, and the reason the field was removed
-// rather than left inert.
-func TestStrayResumeValueIsNotExecuted(t *testing.T) {
+// The argv sweep is kept from the original and is the half an outcome assertion
+// cannot replace: a create that answered "refused" while still having handed the
+// host a line would pass on the answer alone.
+//
+// **Must fail when** the resume value reaches a command line, on stdin, or as an
+// argument — or when a value this daemon will not run is accepted at all.
+func TestAStrayResumeValueIsRefusedRatherThanExecuted(t *testing.T) {
 	t.Parallel()
 
-	const stray = "$(whoami)"
+	for _, stray := range []string{
+		// A command substitution: the case the alphabet exists for.
+		"$(whoami)",
+		// A separator, so a refusal that merely stripped metacharacters would
+		// still leave the shell a second command to run.
+		"; id",
+		// A pipeline, which reaches a second program without a separator.
+		"x | id",
+		// Uppercase hex of the right shape. Refused rather than lowered: a daemon
+		// that normalised its input is one whose validator and whose command line
+		// disagree about what was asked for.
+		"88E5294C-D947-4527-B8C9-5EB8384BAE6A",
+		// The right alphabet, the wrong shape. A prefix is not an identifier, and
+		// accepting one would be this daemon guessing which conversation an
+		// operator meant.
+		"88e5294c",
+		// A path, which is what a caller reaching past the picker would try.
+		"../../etc/passwd",
+		// A newline, which ends a line at a shell and starts another.
+		"88e5294c-d947-4527-b8c9-5eb8384bae6a\nid",
+	} {
+		t.Run(stray, func(t *testing.T) {
+			t.Parallel()
 
-	c := newCreator(t)
-	form := c.wellFormed(t)
-	form.Set("resume", stray)
+			c := newCreator(t)
+			form := c.wellFormed(t)
+			form.Set("resume", stray)
 
-	w := c.post(t, form)
+			w := c.post(t, form)
 
-	// An unknown field changes nothing, so the ordinary create still happens. This
-	// is what keeps the sweep below from passing vacuously: the host was asked to
-	// start something, and the line it was asked to start is there to be read.
-	wantOutcome(t, w, wantCreatedOutcome)
-	if got := len(c.owned()); got != 1 {
-		t.Fatalf("the store holds %d records; want the session that was asked for", got)
-	}
-	if got := c.started(); got != 1 {
-		t.Fatalf("the host was asked to start %d sessions; want the one this create asked for", got)
-	}
-
-	// Every call, not only the send-keys: Argv is a command line and Stdin is the
-	// other way bytes reach a pane, and a value the daemon does not read may travel
-	// on neither.
-	for _, call := range c.fixture.tmux.Calls() {
-		for _, arg := range call.Argv {
-			if strings.Contains(arg, stray) {
-				t.Errorf("the host was handed %q; a field this daemon no longer reads reached a command line", call.Argv)
+			wantOutcome(t, w, outcome("bad-resume"))
+			if got := len(c.owned()); got != 0 {
+				t.Errorf("the store holds %d records after a refused resume; want none", got)
 			}
+			if got := c.started(); got != 0 {
+				t.Errorf("the host was asked to start %d sessions; want 0 — a conversation this daemon will not run costs no tmux command", got)
+			}
+
+			// Every call, not only the send-keys: Argv is a command line and
+			// Stdin is the other way bytes reach a pane, and a value this daemon
+			// refused may travel on neither.
+			for _, call := range c.fixture.tmux.Calls() {
+				for _, arg := range call.Argv {
+					if strings.Contains(arg, stray) {
+						t.Errorf("the host was handed %q; a refused resume value reached a command line", call.Argv)
+					}
+				}
+				if bytes.Contains(call.Stdin, []byte(stray)) {
+					t.Errorf("%v was handed %q on stdin; a refused resume value reached the pane", call.Op, call.Stdin)
+				}
+				if slices.Contains(call.Argv, resumeOneFlagForTest) {
+					t.Errorf("the host was handed %q; a refused create resumes nothing", call.Argv)
+				}
+			}
+			// The trail carries the sentinel and never the value (FR-042), which
+			// on this branch matters twice over: the value is the thing a shell
+			// would have run.
+			if strings.Contains(c.sink.String(), stray) {
+				t.Errorf("the trail carries the refused value %q:\n%s", stray, c.sink.String())
+			}
+		})
+	}
+}
+
+// TestACreateMayContinueAConversation is the granted half: the shapes the route
+// accepts, asserted as the line the host is asked to type.
+//
+// It is the argv rather than the record because the record does not carry this —
+// a resume is a fact about starting, not about the session that results — so the
+// command line is the only place the operator's choice is observable at all.
+//
+// **Must fail when** the flags land somewhere an argument parser would not honour
+// them, or when the ordinary create stops being byte-identical to what it was.
+func TestACreateMayContinueAConversation(t *testing.T) {
+	t.Parallel()
+
+	const conversation = "88e5294c-d947-4527-b8c9-5eb8384bae6a"
+
+	for _, tc := range []struct {
+		name  string
+		posts string
+		want  []string
+	}{
+		{name: "start fresh", posts: "", want: nil},
+		{name: "the most recent", posts: "latest", want: []string{resumeLatestFlagForTest}},
+		{name: "one in particular", posts: conversation, want: []string{resumeOneFlagForTest, conversation}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := newCreator(t)
+			form := c.wellFormed(t)
+			if tc.posts != "" {
+				form.Set("resume", tc.posts)
+			}
+
+			wantOutcome(t, c.post(t, form), wantCreatedOutcome)
+
+			line := typedCommand(t, c)
+			for _, want := range tc.want {
+				if !strings.Contains(line, want) {
+					t.Errorf("the host was asked to type %q, which carries no %q", line, want)
+				}
+			}
+			if tc.want == nil {
+				// The ordinary create, which must be exactly the line this daemon
+				// typed before any of this existed.
+				if strings.Contains(line, resumeLatestFlagForTest) || strings.Contains(line, resumeOneFlagForTest) {
+					t.Errorf("a create that asked to resume nothing typed %q", line)
+				}
+			}
+			// The flags go after the binary and before everything else, because
+			// the configured commands end in a quoted prompt argument and whether
+			// a parser honours a flag after a positional is not this daemon's to
+			// assume (config.InsertStartFlags).
+			if len(tc.want) > 0 {
+				fields := strings.Fields(line)
+				if len(fields) < 2 || fields[1] != tc.want[0] {
+					t.Errorf("the line is %q; the resume flag must follow the binary immediately", line)
+				}
+			}
+		})
+	}
+}
+
+// The Claude CLI's flags as a test spells them: written out rather than read from
+// the constants the daemon uses, so a rename that changed what is typed at a
+// shell fails here instead of passing against itself.
+const (
+	resumeLatestFlagForTest = "--continue"
+	resumeOneFlagForTest    = "--resume"
+)
+
+// typedCommand is the line the host was asked to type into the new session's
+// shell — the send-keys argument before the Enter.
+func typedCommand(t *testing.T, c *creator) string {
+	t.Helper()
+
+	for _, call := range c.fixture.tmux.Calls() {
+		if call.Op != tmuxctl.OpSendKeys {
+			continue
 		}
-		if bytes.Contains(call.Stdin, []byte(stray)) {
-			t.Errorf("%v was handed %q on stdin; a field this daemon no longer reads reached the pane", call.Op, call.Stdin)
-		}
-		if slices.Contains(call.Argv, "--resume") {
-			t.Errorf("the host was handed %q; nothing this daemon starts resumes a conversation", call.Argv)
+		// argv is: tmux send-keys -t <target> -- <command> Enter
+		if len(call.Argv) >= 7 {
+			return call.Argv[5]
 		}
 	}
+	t.Fatalf("the host was never asked to type anything: %v", c.fixture.tmux.Calls())
+	return ""
 }
 
 // --- US1: remote control at create time (T004) ------------------------------

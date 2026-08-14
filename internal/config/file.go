@@ -119,7 +119,12 @@ const (
 // declaring a higher one is refused rather than read optimistically: the reason
 // to bump this is that a key changed meaning, and guessing at the new meaning is
 // how a containment boundary ends up set to something the operator did not write.
-const SchemaVersion = 1
+const SchemaVersion = 2
+
+// Schema 2 retired the idle timeout (milestone 15, constitution 2.0.0). A file
+// written against schema 1 is still read — nothing that was valid then became
+// invalid, except the two keys named in retiredKeys, which is what makes this a
+// version bump rather than a silent removal.
 
 // renamedKeys maps a former spelling to its current one.
 //
@@ -134,6 +139,40 @@ const SchemaVersion = 1
 // shipped would invent version skew: an operator would be warned to migrate off
 // a key no released daemon ever read.
 var renamedKeys = map[string]string{}
+
+// retiredKeys maps a key that no longer configures anything to the sentence
+// explaining what happened to it.
+//
+// It is renamedKeys' opposite number and the difference matters: a renamed key
+// has somewhere to go and loads, while a retired one has nowhere and does not.
+// Both are distinguished from an unknown key, because "unknown key idle_timeout"
+// tells an operator whose file worked yesterday that they have a typo, which
+// sends them looking for the wrong thing entirely.
+//
+// A retired key is a refusal rather than a warning, for the reason every other
+// key that maps to no setting is: a file that still parses is the one thing that
+// will never prompt an operator to update it, and an operator who believes they
+// have an idle timeout configured is an operator with a wrong model of when
+// their sessions die. `crswd config migrate` is the way out, and the message
+// says so.
+var retiredKeys = map[string]string{
+	"idle_timeout":     "sessions are no longer destroyed for inactivity, so this setting has nothing to configure",
+	"idle_timeout_max": "sessions are no longer destroyed for inactivity, so this setting has nothing to configure",
+}
+
+// RetiredKeys is retiredKeys for the one caller outside this package that needs
+// it: `crswd config migrate`, which drops these keys from an operator's file
+// rather than making them do it by hand.
+//
+// A copy, not the map. A caller that could delete from the table would be a
+// caller that could make a retired key load again.
+func RetiredKeys() map[string]string {
+	out := make(map[string]string, len(retiredKeys))
+	for k, v := range retiredKeys {
+		out[k] = v
+	}
+	return out
+}
 
 // Vars is every environment variable the daemon reads, and therefore every key a
 // configuration file may set. Order is the order config.go declares them.
@@ -154,8 +193,6 @@ func Vars() []string {
 		EnvDestroyOnShutdown,
 		EnvSessionLifetime,
 		EnvSessionLifetimeMax,
-		EnvIdleTimeout,
-		EnvIdleTimeoutMax,
 		EnvCreateRatePerMin,
 		EnvMaxBodyBytes,
 		EnvAccessEnabled,
@@ -374,14 +411,31 @@ func (f *File) holdsSecret() bool {
 // maxKeyLen), because naming the misspelling is the difference between a
 // five-second fix and an afternoon.
 func ParseFile(path string, data []byte, warn io.Writer) (*File, error) {
-	return parseFile(path, data, renamedKeys, warn)
+	return parseFile(path, data, renamedKeys, refuseRetired, warn)
 }
+
+// How parseFile treats a key in retiredKeys.
+//
+// Two callers and two right answers. Startup must refuse: a file configuring
+// something that no longer exists describes a daemon its operator does not have.
+// `crswd config migrate` must not, because it is the thing that removes them —
+// a migration that refused the files it exists to fix would be a migration
+// nobody could run.
+//
+// A named type rather than a bool, because `parseFile(path, data, renames, true,
+// warn)` at a call site says nothing about what is true.
+type retiredPolicy int
+
+const (
+	refuseRetired retiredPolicy = iota
+	dropRetired
+)
 
 // parseFile takes the rename table as a parameter rather than reading the
 // package global, so the mechanism can be exercised with a fixture table instead
 // of requiring a real rename to exist before it is known to work. A rename that
 // is first proven by the release that needs it is a rename proven in production.
-func parseFile(path string, data []byte, renames map[string]string, warn io.Writer) (*File, error) {
+func parseFile(path string, data []byte, renames map[string]string, retired retiredPolicy, warn io.Writer) (*File, error) {
 	if warn == nil {
 		// Discarding here would make the renamed-key warning silent, and a file
 		// that still works is the one thing that will never prompt an operator
@@ -450,6 +504,19 @@ func parseFile(path string, data []byte, renames map[string]string, warn io.Writ
 			if err := checkSchemaVersion(path, line, value); err != nil {
 				return nil, err
 			}
+			continue
+		}
+
+		// Asked before the unknown-key refusal below, so an operator upgrading
+		// past a retirement is told what happened rather than told they cannot
+		// spell. Both refuse; only one of them is useful.
+		if why, isRetired := retiredKeys[key]; isRetired {
+			if retired == refuseRetired {
+				return nil, fmt.Errorf("%w %s:%d sets %q, which was retired: %s; remove it, or run `crswd config migrate` to update this file (a backup is kept); refusing to start", ErrConfigFile, path, line, key, why)
+			}
+			// Dropped rather than stored: the migration is about to delete the
+			// line, and a value kept here would be one the rewritten file no
+			// longer has and this File still claims.
 			continue
 		}
 
