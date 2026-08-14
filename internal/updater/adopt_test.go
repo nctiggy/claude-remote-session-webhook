@@ -1,10 +1,13 @@
 package updater
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 )
 
 // A commented directive is absent, and absent is systemd's default rather than
@@ -202,13 +205,40 @@ ProtectControlGroups=true
 ProtectSystem=full
 `
 
-// resolver stands in for what the daemon would load without an environment
-// assignment.
-type resolver map[string]string
+// resolver stands in for the operator's configuration file: what it would answer
+// for a variable the unit has stopped assigning, and where it lives.
+//
+// The path matters as much as the values now. A setting the file has no opinion
+// about is one that *moves into* it, so a resolver with no path turns every such
+// setting into a refusal — which is the honest answer for a host with no
+// configuration file and the wrong one for every host that has one.
+type resolver struct {
+	values map[string]string
+	path   string
+}
 
 func (r resolver) Resolve(name string) (string, bool) {
-	v, ok := r[name]
+	v, ok := r.values[name]
 	return v, ok
+}
+
+func (r resolver) Path() string { return r.path }
+
+// fileWith is a resolver over a real configuration file, so a test that adopts
+// can read back what was appended to it.
+func fileWith(t *testing.T, values map[string]string) resolver {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "config")
+	var b strings.Builder
+	b.WriteString("# the operator's own file\n")
+	for _, k := range sortedKeys(values) {
+		b.WriteString(strings.ToLower(strings.TrimPrefix(k, "CRSW_")) + " = " + values[k] + "\n")
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatalf("write the fixture configuration: %v", err)
+	}
+	return resolver{values: values, path: path}
 }
 
 // The whole feature on the host it was written for: a hand-edited unit, an offer
@@ -223,10 +253,10 @@ func TestPlanAdoptionCarriesTheOperatorsOwnRelaxations(t *testing.T) {
 	f.write(t, f.unit.Path(), handEditedUnit)
 	f.write(t, f.unit.NewPath(), shippedUnit)
 
-	plan, err := f.unit.PlanAdoption(resolver{
+	plan, err := f.unit.PlanAdoption(resolver{path: "/x/config", values: map[string]string{
 		"CRSW_LISTEN":       "127.0.0.1:8765",
 		"CRSW_MAX_SESSIONS": "5",
-	})
+	}})
 	if err != nil {
 		t.Fatalf("PlanAdoption: %v", err)
 	}
@@ -280,34 +310,32 @@ func TestPlanAdoptionRefuses(t *testing.T) {
 		noBinary              bool
 		want                  string
 	}{
-		"the binary the waiting unit names is not there": {
-			unit: handEditedUnit, waiting: shippedUnit,
-			resolve:  resolver{"CRSW_LISTEN": "127.0.0.1:8765", "CRSW_MAX_SESSIONS": "5"},
-			noBinary: true,
-			want:     "no executable there",
-		},
 		"a relaxation the drop-in cannot express": {
 			unit: handEditedUnit + "PrivateTmp=false\n",
 			waiting: shippedUnit + `PrivateTmp=true
 `,
-			resolve: resolver{"CRSW_LISTEN": "127.0.0.1:8765", "CRSW_MAX_SESSIONS": "5"},
+			resolve: resolver{path: "/x/config", values: map[string]string{"CRSW_LISTEN": "127.0.0.1:8765", "CRSW_MAX_SESSIONS": "5"}},
 			want:    "PrivateTmp",
 		},
-		"an environment assignment the file does not carry": {
+		"a setting that must move and nowhere to move it to": {
 			unit: handEditedUnit, waiting: shippedUnit,
-			// CRSW_MAX_SESSIONS is missing, so dropping the unit's line would
-			// change what the daemon loads.
-			resolve: resolver{"CRSW_LISTEN": "127.0.0.1:8765"},
-			want:    "CRSW_MAX_SESSIONS",
+			// A host with no configuration file at all. Creating one is the
+			// installer's job, and this command inventing a file the operator
+			// never asked for would be a bigger liberty than adopting a unit.
+			resolve: resolver{values: map[string]string{"CRSW_LISTEN": "127.0.0.1:8765"}},
+			want:    "this host has none",
 		},
+		// The one environment case that stays a refusal, and the reason it does:
+		// the unit says 5 and the file says 9, the unit has been winning, and
+		// which of the two the operator meant is not this command's to guess.
 		"an environment assignment the file disagrees with": {
 			unit: handEditedUnit, waiting: shippedUnit,
-			resolve: resolver{"CRSW_LISTEN": "127.0.0.1:8765", "CRSW_MAX_SESSIONS": "9"},
-			want:    "CRSW_MAX_SESSIONS",
+			resolve: resolver{path: "/x/config", values: map[string]string{"CRSW_LISTEN": "127.0.0.1:8765", "CRSW_MAX_SESSIONS": "9"}},
+			want:    "will not choose between them",
 		},
 		"an existing override that grants less": {
 			unit: handEditedUnit, waiting: shippedUnit,
-			resolve: resolver{"CRSW_LISTEN": "127.0.0.1:8765", "CRSW_MAX_SESSIONS": "5"},
+			resolve: resolver{path: "/x/config", values: map[string]string{"CRSW_LISTEN": "127.0.0.1:8765", "CRSW_MAX_SESSIONS": "5"}},
 			dropIn: `[Service]
 NoNewPrivileges=false
 `,
@@ -381,7 +409,7 @@ func TestPlanAdoptionSaysWhenThereIsNothingToDo(t *testing.T) {
 		f := newAdoptFixture(t)
 		f.write(t, f.unit.Path(), handEditedUnit)
 
-		plan, err := f.unit.PlanAdoption(resolver{})
+		plan, err := f.unit.PlanAdoption(resolver{path: "/x/config"})
 		if err != nil {
 			t.Fatalf("PlanAdoption: %v", err)
 		}
@@ -401,7 +429,7 @@ func TestPlanAdoptionSaysWhenThereIsNothingToDo(t *testing.T) {
 		f.write(t, f.unit.NewPath(), shippedUnit)
 		f.write(t, f.unit.RecordPath(), unitDigest([]byte(handEditedUnit))+"\n")
 
-		plan, err := f.unit.PlanAdoption(resolver{})
+		plan, err := f.unit.PlanAdoption(resolver{path: "/x/config"})
 		if err != nil {
 			t.Fatalf("PlanAdoption: %v", err)
 		}
@@ -432,7 +460,7 @@ func TestAdoptRelocatesTheRelaxationAndChangesNothingElse(t *testing.T) {
 
 	before := mergedHardening(parseUnit([]byte(handEditedUnit)), unitFile{})
 
-	plan, err := f.unit.PlanAdoption(resolver{"CRSW_LISTEN": "127.0.0.1:8765", "CRSW_MAX_SESSIONS": "5"})
+	plan, err := f.unit.PlanAdoption(resolver{path: "/x/config", values: map[string]string{"CRSW_LISTEN": "127.0.0.1:8765", "CRSW_MAX_SESSIONS": "5"}})
 	if err != nil {
 		t.Fatalf("PlanAdoption: %v", err)
 	}
@@ -502,7 +530,7 @@ ProtectSystem=false
 	f.write(t, f.unit.NewPath(), shippedUnit)
 	f.write(t, f.unit.DropInPath(), theirs)
 
-	plan, err := f.unit.PlanAdoption(resolver{"CRSW_LISTEN": "127.0.0.1:8765", "CRSW_MAX_SESSIONS": "5"})
+	plan, err := f.unit.PlanAdoption(resolver{path: "/x/config", values: map[string]string{"CRSW_LISTEN": "127.0.0.1:8765", "CRSW_MAX_SESSIONS": "5"}})
 	if err != nil {
 		t.Fatalf("PlanAdoption: %v", err)
 	}
@@ -564,7 +592,7 @@ ProtectSystem=false
 	f.write(t, f.unit.Path(), oneRelaxation)
 	f.write(t, f.unit.NewPath(), shippedUnit)
 
-	plan, err := f.unit.PlanAdoption(resolver{})
+	plan, err := f.unit.PlanAdoption(resolver{path: "/x/config"})
 	if err != nil {
 		t.Fatalf("PlanAdoption: %v", err)
 	}
@@ -668,7 +696,7 @@ ProtectSystem=false      # relaxed on this host so /usr is writable
 	f.write(t, f.unit.Path(), asDeployed)
 	f.write(t, f.unit.NewPath(), shippedUnit)
 
-	plan, err := f.unit.PlanAdoption(resolver{})
+	plan, err := f.unit.PlanAdoption(resolver{path: "/x/config"})
 	if err != nil {
 		t.Fatalf("PlanAdoption: %v", err)
 	}
@@ -685,5 +713,149 @@ ProtectSystem=false      # relaxed on this host so /usr is writable
 		if _, ok := normalise(r.Setting, r.Value); !ok {
 			t.Errorf("the drop-in would carry %s=%s, which systemd cannot parse", r.Setting, r.Value)
 		}
+	}
+}
+
+// A setting the unit assigns and the configuration file has no opinion about
+// moves into the file, rather than being a refusal that hands the operator a
+// chore this command could do itself.
+//
+// The property is the one that matters everywhere in this file: what the daemon
+// loads afterwards is what it loaded before. The setting is stated in a different
+// file, and in no other respect is the host different.
+//
+// **Must fail when** a movable setting becomes a refusal again, when the value
+// changes on the way across, or when the operator's own file is rewritten rather
+// than added to.
+func TestAdoptMovesAShadowedSettingIntoTheConfigurationFile(t *testing.T) {
+	t.Parallel()
+
+	f := newAdoptFixture(t)
+	f.write(t, f.unit.Path(), handEditedUnit)
+	f.write(t, f.unit.NewPath(), shippedUnit)
+
+	// The file knows about the listen address and nothing else, so max_sessions is
+	// the setting with nowhere to go but into it.
+	cfg := fileWith(t, map[string]string{"CRSW_LISTEN": "127.0.0.1:8765"})
+	before, err := os.ReadFile(cfg.Path())
+	if err != nil {
+		t.Fatalf("read the fixture configuration: %v", err)
+	}
+
+	plan, err := f.unit.PlanAdoption(cfg)
+	if err != nil {
+		t.Fatalf("PlanAdoption: %v", err)
+	}
+	if !plan.Adoptable {
+		t.Fatalf("refused: %+v", plan.Refusals)
+	}
+	if len(plan.ConfigWrites) != 1 ||
+		plan.ConfigWrites[0].Var != "CRSW_MAX_SESSIONS" ||
+		plan.ConfigWrites[0].Key != "max_sessions" ||
+		plan.ConfigWrites[0].Value != "5" {
+		t.Fatalf("the plan moves %+v; want CRSW_MAX_SESSIONS=5 as max_sessions", plan.ConfigWrites)
+	}
+
+	if err := f.unit.Adopt(plan); err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+
+	after, err := os.ReadFile(cfg.Path())
+	if err != nil {
+		t.Fatalf("read the configuration file: %v", err)
+	}
+	if !strings.Contains(string(after), "max_sessions = 5") {
+		t.Errorf("the setting did not move into the configuration file:\n%s", after)
+	}
+	// Appended, never rewritten. The file is the operator's — their comments,
+	// their ordering — and a writer that reformatted it would take away more than
+	// it added.
+	if !strings.HasPrefix(string(after), string(before)) {
+		t.Errorf("the operator's own file was rewritten rather than added to:\nwas:\n%s\nis:\n%s", before, after)
+	}
+	// And the copy they go back to.
+	backup, err := os.ReadFile(cfg.Path() + backupSuffix)
+	if err != nil {
+		t.Fatalf("read the configuration backup: %v", err)
+	}
+	if string(backup) != string(before) {
+		t.Error("the configuration backup is not the file that was replaced")
+	}
+
+	// The file the daemon will actually read has to parse, or this command has
+	// broken the thing it was moving a setting into.
+	if _, err := config.ParseFile(cfg.Path(), after, io.Discard); err != nil {
+		t.Errorf("the configuration file no longer parses after the move: %v", err)
+	}
+}
+
+// The binary the waiting unit names is placed rather than demanded.
+//
+// This was a refusal, and it should not have been: the file that has to be at
+// that path is the one already running the code. The self-update swaps the binary
+// in place at whatever path it was started from — right, because it updates what
+// is running — which leaves a host whose unit names the other path stuck exactly
+// there.
+//
+// **Must fail when** the binary is not placed, is placed unexecutable, or when
+// the copy left behind goes unreported.
+func TestAdoptPlacesTheBinaryTheWaitingUnitNames(t *testing.T) {
+	t.Parallel()
+
+	f := newAdoptFixture(t)
+	// The state this feature exists for: nothing at the path the release's unit
+	// runs from.
+	if err := os.Remove(filepath.Join(f.home, ".local", "bin", "crswd")); err != nil {
+		t.Fatalf("remove the binary: %v", err)
+	}
+	f.write(t, f.unit.Path(), handEditedUnit)
+	f.write(t, f.unit.NewPath(), shippedUnit)
+
+	plan, err := f.unit.PlanAdoption(fileWith(t, map[string]string{
+		"CRSW_LISTEN": "127.0.0.1:8765", "CRSW_MAX_SESSIONS": "5",
+	}))
+	if err != nil {
+		t.Fatalf("PlanAdoption: %v", err)
+	}
+	if !plan.Adoptable {
+		t.Fatalf("refused: %+v", plan.Refusals)
+	}
+
+	want := filepath.Join(f.home, ".local", "bin", "crswd")
+	if plan.PlaceBinary != want {
+		t.Fatalf("the plan places the binary at %q, want %q", plan.PlaceBinary, want)
+	}
+	// The copy left behind is on the operator's PATH, possibly ahead of the new
+	// one, so after this `crswd` at a prompt and `crswd` under systemd can be two
+	// different builds. Reported rather than deleted: removing a binary somebody
+	// may have put there on purpose is a bigger decision than this command takes.
+	if plan.StaleBinary == "" {
+		t.Error("the plan places a binary and does not say which copy becomes stale")
+	}
+
+	if err := f.unit.Adopt(plan); err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+
+	info, err := os.Stat(want)
+	if err != nil {
+		t.Fatalf("the binary was not placed: %v", err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Errorf("the binary was placed as %04o, which systemd cannot run", info.Mode().Perm())
+	}
+	// The one the unit is about to run must be the one that was running, byte for
+	// byte — a placement that copied something else would be this command
+	// installing a build nobody chose.
+	running, err := os.ReadFile(plan.binaryFrom)
+	if err != nil {
+		t.Fatalf("read the running binary: %v", err)
+	}
+	placed, err := os.ReadFile(want) //nolint:gosec // G304: the path is this test's own temporary directory joined with a constant.
+	if err != nil {
+		t.Fatalf("read the placed binary: %v", err)
+	}
+	if string(placed) != string(running) {
+		t.Error("the binary placed is not the one that was running")
 	}
 }

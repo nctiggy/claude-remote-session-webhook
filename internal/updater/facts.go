@@ -50,7 +50,27 @@ type UnitFacts struct {
 	// suggestion is noise, and the next real one is the one they do not read. The
 	// refusals are real and common — the binary at the wrong path is the case this
 	// project's own host is in — so this is not a theoretical caution.
+	//
+	// Filled in only by a caller that has planned an adoption, which is the
+	// startup banner. A render has not, which is why Inspect exists beside this.
 	Adopt string
+
+	// Inspect is the command that *reports* on the waiting unit, and is set
+	// wherever one is waiting at all — whether or not taking it would be granted.
+	//
+	// It exists because the other two fields left the settings page with nothing
+	// to say. The page named the waiting file and the diff and stopped, so an
+	// operator who read it — which is where this project's own operator read it —
+	// learned that a unit was waiting and not that anything on the host could do
+	// something about it. Adopt could not fill that gap: a page render has not
+	// planned an adoption and must not, because planning reads the operator's
+	// configuration and a page that did it per request would be as slow and as
+	// fallible as the file system underneath it.
+	//
+	// So the page points at the command that *can* answer, rather than answering.
+	// That is honest about what a render knows, and it is one step from where the
+	// operator already is.
+	Inspect string
 
 	// Compare is the command that shows what is in it and not in theirs.
 	//
@@ -96,6 +116,11 @@ type UnitFacts struct {
 // A sentence claiming "yours is current" on the strength of a missing file would
 // be exactly the false reassurance this milestone set out to end, on the host
 // where it is least true: one that has never been updated at all.
+// UnitInspectCommand reports whether the waiting unit can be taken, and why not
+// when it cannot. Spelled here because both the page and the journal name it, and
+// a command named two ways is one an operator gets wrong once.
+const UnitInspectCommand = "crswd unit check"
+
 const (
 	UnitSentenceOffered = "A newer systemd unit is waiting. An update never replaces a unit this daemon did not write, so nothing here was changed and this one is yours to take or to leave."
 
@@ -143,6 +168,7 @@ func DescribeUnit(report UnitReport, err error) UnitFacts {
 			Waiting:  report.Offer,
 			Compare:  unitCompare(report.Path, report.Offer),
 			Adopt:    report.AdoptCommand,
+			Inspect:  UnitInspectCommand,
 		}
 	case !report.Present:
 		facts = UnitFacts{Sentence: UnitSentenceAbsent}
