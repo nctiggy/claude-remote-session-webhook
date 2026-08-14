@@ -38,6 +38,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
@@ -90,6 +91,17 @@ type Relaxation struct {
 	Value   string
 }
 
+// ConfigWrite is one setting moving from the operator's unit into their
+// configuration file, so that dropping the unit's assignment of it changes
+// nothing about what the daemon loads.
+type ConfigWrite struct {
+	// Var is the environment variable the unit assigns, Key is how the
+	// configuration file spells the same setting, and Value is the unit's own
+	// value — carried across unchanged, because preserving what this host does is
+	// the whole point.
+	Var, Key, Value string
+}
+
 // Refusal is one reason this host cannot be adopted, in the operator's terms.
 //
 // It carries what to do as well as what is wrong, because a refusal an operator
@@ -126,14 +138,55 @@ type AdoptPlan struct {
 	// adoption concluded rather than being asked to trust it.
 	Dropped []string
 
+	// ConfigWrites is the settings that must move into the operator's
+	// configuration file for the unit's assignment of them to be droppable.
+	//
+	// **These used to be refusals**, and the refusal said "put that value in your
+	// configuration file, then try again". That is the daemon handing an operator
+	// a chore it can do itself: it knows the variable, it knows the value, it
+	// knows the file, and it already owns an atomic writer that keeps backups.
+	// A command whose whole purpose is "make this host adoptable" that stops to
+	// dictate homework is a command that has not finished.
+	//
+	// It is still a refusal where the file *disagrees* — see refuseOnConflict.
+	ConfigWrites []ConfigWrite
+
+	// PlaceBinary is where the running executable must be copied for the waiting
+	// unit's ExecStart to find one, and is empty when there is already an
+	// executable there.
+	//
+	// Also a refusal until now, and for the same reason it should not have been:
+	// the file that needs to be at that path is the one already running this
+	// code. The self-update swaps the binary in place at whatever path it was
+	// started from, which is right — it updates what is running — and leaves a
+	// host whose unit names the other path exactly where this one is.
+	PlaceBinary string
+
+	// StaleBinary is the copy left behind by PlaceBinary, or empty.
+	//
+	// Reported rather than removed. It is on the operator's PATH, possibly ahead
+	// of the new one, so after an adoption `crswd` at a prompt and `crswd` under
+	// systemd can be two different builds — which is a confusing enough state to
+	// be worth naming, and not one this command should resolve by deleting a
+	// binary somebody may have put there on purpose.
+	StaleBinary string
+
 	// Refusals is why not. Non-empty means Adoptable is false and Adopt writes
 	// nothing at all.
 	Refusals []Refusal
+
+	// ConfigFile is the file ConfigWrites are written to, and is empty when there
+	// are none.
+	ConfigFile string
 
 	// contents is the waiting unit's bytes, read during planning so that Adopt
 	// installs what was checked rather than re-reading a file that may have
 	// changed in between.
 	contents []byte
+
+	// binaryFrom is the executable PlaceBinary copies, captured during planning
+	// for contents' reason: what is installed is what was checked.
+	binaryFrom string
 }
 
 // ConfigResolver answers what this daemon would load for an environment variable
@@ -150,10 +203,17 @@ type AdoptPlan struct {
 // A test passes a map, which is the other half of why it is a seam.
 type ConfigResolver interface {
 	// Resolve returns what the daemon would load for name without an environment
-	// assignment, and whether it can answer at all. False refuses the adoption
-	// rather than guessing, which is the safe direction: an unanswerable key is
-	// one whose loss cannot be shown to be harmless.
+	// assignment, and whether it can answer at all. False means the file has no
+	// opinion, which is what makes a setting *movable* into it rather than a
+	// reason to refuse.
 	Resolve(name string) (string, bool)
+
+	// Path is the configuration file those answers came from, and where a setting
+	// moving out of the unit is written. Empty means this host has no
+	// configuration file to write to, which is a refusal rather than a guess:
+	// creating one is the installer's job and would be this command inventing a
+	// file the operator never asked for.
+	Path() string
 }
 
 // PlanAdoption decides whether this host's unit can be brought under management,
@@ -216,12 +276,28 @@ func (u *Unit) PlanAdoption(cfg ConfigResolver) (AdoptPlan, error) {
 	waitingUnit := parseUnit(waiting)
 
 	plan.Relaxations = relaxations(currentUnit, waitingUnit)
-	plan.Refusals = append(plan.Refusals, refuseOnExecStart(waitingUnit, u.home())...)
+	place, from, execRefusals := planExecStart(waitingUnit, u.home())
+	plan.PlaceBinary, plan.binaryFrom = place, from
+	if place != "" {
+		plan.StaleBinary = from
+	}
+	plan.Refusals = append(plan.Refusals, execRefusals...)
 	plan.Refusals = append(plan.Refusals, refuseOnUnexpressibleRelaxation(currentUnit, waitingUnit)...)
 
-	dropped, envRefusals := planEnvironment(currentUnit, waitingUnit, cfg)
+	dropped, writes, envRefusals := planEnvironment(currentUnit, waitingUnit, cfg)
 	plan.Dropped = dropped
+	plan.ConfigWrites = writes
 	plan.Refusals = append(plan.Refusals, envRefusals...)
+	if len(writes) > 0 {
+		if cfg == nil || cfg.Path() == "" {
+			plan.Refusals = append(plan.Refusals, Refusal{
+				What: "settings in your unit need to move into a configuration file and this host has none",
+				Fix:  "create one — deploy/README.md has the shape — then try again",
+			})
+		} else {
+			plan.ConfigFile = cfg.Path()
+		}
+	}
 
 	// An override the operator already wrote is theirs. What matters is whether it
 	// grants what their unit grants — a drop-in that relaxes less would silently
@@ -345,7 +421,9 @@ func isRelaxed(setting, value string) bool {
 	return ok && v == "false"
 }
 
-// refuseOnExecStart is FR-010, and it is the refusal most likely to fire.
+// planExecStart is FR-010: what has to be true of the binary the waiting unit
+// names, and — since milestone 11 — what to do about it rather than only what to
+// say.
 //
 // The release's unit names %h/.local/bin/crswd. The host this feature was written
 // for runs %h/bin/crswd, because it predates the installer that chose the other
@@ -355,10 +433,10 @@ func isRelaxed(setting, value string) bool {
 // A refusal rather than a rewrite: a unit adoption edited is a unit with no
 // recorded digest again, which is the whole problem returning through another
 // door.
-func refuseOnExecStart(waiting unitFile, home string) []Refusal {
+func planExecStart(waiting unitFile, home string) (dest, src string, refusals []Refusal) {
 	exec, ok := waiting.service("ExecStart")
 	if !ok || strings.TrimSpace(exec) == "" {
-		return []Refusal{{
+		return "", "", []Refusal{{
 			What: "the waiting unit names no ExecStart, so this daemon cannot tell what it would run",
 			Fix:  "re-run the installer, which writes a complete unit",
 		}}
@@ -373,20 +451,42 @@ func refuseOnExecStart(waiting unitFile, home string) []Refusal {
 		// systemd's prefixes for "ignore failure" and "override argv[0]". This
 		// project's unit uses neither, and a unit that did is one this check
 		// cannot reason about.
-		return []Refusal{{
+		return "", "", []Refusal{{
 			What: "the waiting unit's ExecStart carries a prefix this daemon does not interpret: " + exec,
 			Fix:  "adopt it by hand, or re-run the installer",
 		}}
 	}
 
 	info, err := os.Stat(path)
-	if err != nil || info.IsDir() || info.Mode().Perm()&0o111 == 0 {
-		return []Refusal{{
-			What: "the waiting unit runs " + path + ", and there is no executable there — adopting it would leave a service that cannot start",
+	if err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0 {
+		return "", "", nil
+	}
+
+	// Nothing usable at that path. This was a refusal until milestone 11, and it
+	// should not have been: the file that has to be there is the one already
+	// running this code. The self-update swaps the binary in place at whatever
+	// path it was started from — right, because it updates what is running — which
+	// leaves a host whose unit names the other path exactly here, forever.
+	//
+	// So the plan is to put it there, and the refusal is kept only for the case
+	// where this process cannot say what it is.
+	running, err := os.Executable()
+	if err != nil {
+		return "", "", []Refusal{{
+			What: "the waiting unit runs " + path + ", there is no executable there, and this process cannot tell where its own binary is",
 			Fix:  "re-run the installer, which puts the binary at that path, then try again",
 		}}
 	}
-	return nil
+	if running == path {
+		// It is running from the path it says is empty, which means the stat above
+		// failed for a reason other than absence — a permission, a broken mount.
+		// Copying a file onto itself would not fix that and might destroy it.
+		return "", "", []Refusal{{
+			What: "the waiting unit runs " + path + ", which is where this daemon is running from, and this daemon cannot read it",
+			Fix:  "check the permissions on " + path + ", then try again",
+		}}
+	}
+	return path, running, nil
 }
 
 // refuseOnUnexpressibleRelaxation is FR-011, and it is what makes "this grants
@@ -475,13 +575,17 @@ func refuseOnWeakerDropIn(existing unitFile, needed []Relaxation) []Refusal {
 // An empty assignment is always droppable and it is not a special case: config's
 // own precedence treats an empty environment value as unset, so the daemon
 // already loads that key from the file.
-func planEnvironment(current, waiting unitFile, cfg ConfigResolver) ([]string, []Refusal) {
+func planEnvironment(current, waiting unitFile, cfg ConfigResolver) ([]string, []ConfigWrite, []Refusal) {
 	theirs := waiting.environment()
 
 	var dropped []string
+	var writes []ConfigWrite
 	var refusals []Refusal
 
-	for name, mine := range current.environment() {
+	// Sorted, because a plan an operator reads twice should read the same twice,
+	// and a map range does not.
+	for _, name := range sortedKeys(current.environment()) {
+		mine := current.environment()[name]
 		if _, assigned := theirs[name]; assigned {
 			continue
 		}
@@ -496,17 +600,42 @@ func planEnvironment(current, waiting unitFile, cfg ConfigResolver) ([]string, [
 			})
 			continue
 		}
-		would, ok := cfg.Resolve(name)
-		if ok && would == mine {
+
+		switch would, ok := cfg.Resolve(name); {
+		case ok && would == mine:
+			// The file already produces this value, so the unit's line has been
+			// doing nothing. Dropping it is the fix #137 was about.
 			dropped = append(dropped, name)
-			continue
+
+		case ok:
+			// The file says something *else*. The daemon has been running on the
+			// unit's value, because an environment assignment beats a file — so
+			// the two are in genuine conflict and which one the operator meant is
+			// not this command's to guess. Writing the unit's value would silently
+			// overwrite what they wrote in the file; writing neither would change
+			// what the host does. Both values are named so they can decide.
+			refusals = append(refusals, Refusal{
+				What: "your unit sets " + name + " to " + mine + " and your configuration file sets it to " + would + "; the unit has been winning, and this daemon will not choose between them for you",
+				Fix:  "make the two agree — put " + mine + " in your configuration file to keep what this host does now — then try again",
+			})
+
+		default:
+			// The file has no opinion, so the unit's value can move into it with
+			// nothing overwritten and nothing changed.
+			writes = append(writes, ConfigWrite{Var: name, Key: config.KeyForVar(name), Value: mine})
 		}
-		refusals = append(refusals, Refusal{
-			What: "your unit sets " + name + " to a value your configuration file does not, so dropping the line would change what this daemon loads",
-			Fix:  "put that value in your configuration file, then try again",
-		})
 	}
-	return dropped, refusals
+	return dropped, writes, refusals
+}
+
+// sortedKeys is a map's keys in order, so that a plan reads the same way twice.
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Adopt performs the plan, and decides nothing.
@@ -528,6 +657,26 @@ func (u *Unit) Adopt(plan AdoptPlan) error {
 	}
 	if len(plan.contents) == 0 {
 		return errors.New("the plan carries no unit to install; nothing was written")
+	}
+
+	// The configuration file first, and before anything about the unit, because
+	// it is the only step whose *absence* would change what the daemon loads. A
+	// host that failed after this one is a host running its old unit against a
+	// file that now states what that unit was already assigning — which is the
+	// same daemon, described in one more place.
+	if len(plan.ConfigWrites) > 0 {
+		if err := appendSettings(plan.ConfigFile, plan.ConfigWrites); err != nil {
+			return err
+		}
+	}
+
+	// Then the binary, because a unit is what points at one: a host that failed
+	// after this step has a spare executable and its old unit, which is nothing.
+	// The other order leaves a unit naming a binary that is not there.
+	if plan.PlaceBinary != "" {
+		if err := copyExecutable(plan.binaryFrom, plan.PlaceBinary); err != nil {
+			return err
+		}
 	}
 
 	if len(plan.Relaxations) > 0 && !plan.DropInExists {
@@ -564,6 +713,78 @@ func (u *Unit) Adopt(plan AdoptPlan) error {
 	// stop making.
 	if err := os.Remove(u.NewPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove the offer now that it has been taken %s: %w", u.NewPath(), err)
+	}
+	return nil
+}
+
+// appendSettings adds the settings moving out of the unit to the operator's
+// configuration file, keeping what it replaced.
+//
+// **Appended, never rewritten.** The file is the operator's — their comments,
+// their ordering, their explanations of why a bound is what it is, which is the
+// reason this format is not JSON. A writer that reformatted it would take away
+// more than it added, which is the ruling internal/config's migration already
+// makes about the same file.
+//
+// Every value comes from the unit that has been assigning it, so what the daemon
+// loads after this is what it loaded before: the setting is stated in one file
+// instead of another. That is the whole claim, and it is why planEnvironment
+// refuses rather than writes when the file already says something different.
+func appendSettings(path string, writes []ConfigWrite) error {
+	current, err := os.ReadFile(path) //nolint:gosec // G304: the path is the configuration file this daemon itself resolves.
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read the configuration file %s: %w", path, err)
+	}
+	if err == nil {
+		// The copy an operator goes back to, beside the file it is a copy of and
+		// named the way this command names its other one.
+		if err := config.WriteFile(path+backupSuffix, current, 0o600); err != nil {
+			return fmt.Errorf("keep a copy of the configuration file %s: %w", path+backupSuffix, err)
+		}
+	}
+
+	var b strings.Builder
+	b.Write(current)
+	if len(current) > 0 && !strings.HasSuffix(string(current), "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString("\n# Moved here from this host's systemd unit by `crswd unit adopt`.\n")
+	b.WriteString("# The unit was assigning these, which silently beat this file; stating them\n")
+	b.WriteString("# here is what lets the unit be replaced without changing what this daemon\n")
+	b.WriteString("# loads. The values are the ones that were already in effect.\n")
+	for _, w := range writes {
+		b.WriteString(w.Key + " = " + w.Value + "\n")
+	}
+
+	// 0600, matching what the daemon requires of a file that may hold a secret,
+	// and what install.sh writes. A file created here must not be more readable
+	// than one created there.
+	if err := config.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		return fmt.Errorf("write the settings moving out of your unit into %s: %w", path, err)
+	}
+	return nil
+}
+
+// copyExecutable puts the running binary where the waiting unit expects to find
+// one.
+//
+// It copies rather than moves, and leaves the original where it is. The original
+// is on the operator's PATH — possibly ahead of the new location — so removing it
+// would change what `crswd` means at their prompt, which is a bigger decision
+// than this command is entitled to take. The plan reports it as stale instead.
+//
+// Written through the same atomic writer as everything else here, so a failure
+// mid-copy cannot leave a truncated executable at a path systemd is about to run.
+func copyExecutable(from, to string) error {
+	data, err := os.ReadFile(from) //nolint:gosec // G304: the path is this process's own executable, from os.Executable.
+	if err != nil {
+		return fmt.Errorf("read this daemon's own binary %s: %w", from, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
+		return fmt.Errorf("create the directory the waiting unit runs from %s: %w", filepath.Dir(to), err)
+	}
+	if err := config.WriteFile(to, data, 0o755); err != nil { //nolint:gosec // G302: it is an executable, and the unit runs it.
+		return fmt.Errorf("place this daemon's binary where the waiting unit runs it %s: %w", to, err)
 	}
 	return nil
 }

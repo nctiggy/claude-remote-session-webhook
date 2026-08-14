@@ -115,6 +115,17 @@ func runUnit(out io.Writer, adopt bool) error {
 	say(out, "\nAdopted.\n")
 	say(out, "  the unit that was replaced is at %s\n", plan.Backup)
 	say(out, "  the digest of the one now installed is at %s\n", plan.Record)
+	if plan.ConfigFile != "" {
+		say(out, "  the configuration file it replaced is at %s\n", plan.ConfigFile+".adopted.bak")
+	}
+	// Named rather than removed. It is on the operator's PATH, possibly ahead of
+	// the new location, so until they deal with it `crswd` at a prompt and `crswd`
+	// under systemd can be two different builds — which is worth saying out loud
+	// and is not this command's to resolve by deleting somebody's binary.
+	if plan.StaleBinary != "" {
+		say(out, "\nThere is now a second copy of this binary at %s, which is probably on your\nPATH ahead of the one systemd runs. Remove it when you are satisfied:\n", plan.StaleBinary)
+		say(out, "  rm %s\n", plan.StaleBinary)
+	}
 	// FR-008: a file on disk is not a running service. A command that reported
 	// success while systemd was still running the old unit would be stating a fact
 	// about a file as a fact about a host — which is the whole class of silence
@@ -141,6 +152,17 @@ func sayPlan(out io.Writer, plan updater.AdoptPlan) {
 			say(out, "  %s=%s\n", r.Setting, r.Value)
 		}
 		say(out, "\nThose are your own settings, read out of your own unit. This grants nothing\nthat is not already in effect on this host.\n")
+	}
+
+	if plan.PlaceBinary != "" {
+		say(out, "\nThe waiting unit runs %s, and there is nothing there. This daemon's own\nbinary would be copied to it.\n", plan.PlaceBinary)
+	}
+
+	if len(plan.ConfigWrites) > 0 {
+		say(out, "\nYour unit assigns these and your configuration file does not, so they would\nmove into %s — the same values, stated where the unit can stop stating them:\n", plan.ConfigFile)
+		for _, w := range plan.ConfigWrites {
+			say(out, "  %s = %s\n", w.Key, w.Value)
+		}
 	}
 
 	if len(plan.Dropped) > 0 {
@@ -179,19 +201,29 @@ func configResolver() updater.ConfigResolver {
 	}
 	data, err := os.ReadFile(path) //nolint:gosec // G304: the path is the one the daemon itself would read, from its own resolution rule.
 	if err != nil {
-		return fileResolver{}
+		// The path is still reported. A host whose configuration file does not
+		// exist yet is one a setting can be written *into* — the writer creates
+		// it — and a resolver that hid the path would turn that into a refusal
+		// over a file the operator is about to be given.
+		return fileResolver{path: path}
 	}
 	// io.Discard: a renamed-key warning belongs to a startup, and this command is
 	// not one. What it is doing with the file is asking what is in it.
 	file, err := config.ParseFile(path, data, io.Discard)
 	if err != nil {
+		// A file that does not parse is one this command must not append to: the
+		// daemon would refuse to start on it either way, and adding a line would
+		// bury the real problem under a second one.
 		return fileResolver{}
 	}
-	return fileResolver{file: file}
+	return fileResolver{file: file, path: path}
 }
 
 // fileResolver is the operator's configuration file as a ConfigResolver.
-type fileResolver struct{ file *config.File }
+type fileResolver struct {
+	file *config.File
+	path string
+}
 
 func (r fileResolver) Resolve(name string) (string, bool) {
 	if r.file == nil {
@@ -199,3 +231,5 @@ func (r fileResolver) Resolve(name string) (string, bool) {
 	}
 	return r.file.Lookup(name)
 }
+
+func (r fileResolver) Path() string { return r.path }

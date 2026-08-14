@@ -174,7 +174,23 @@
   this daemon prints it and never runs it.
 */}}{{ with .Unit.Sentence }}<dt>Systemd unit</dt><dd>{{ . }}</dd>{{ end }}
 {{ with .Unit.Waiting }}<dt>Waiting at</dt><dd>{{ . }}</dd>{{ end }}
-{{ with .Unit.Compare }}<dt>Compare them</dt><dd>{{ . }}</dd>{{ end }}
+{{ with .Unit.Compare }}<dt>Compare them</dt><dd>{{ . }}</dd>{{ end }}{{/*
+  The command that says whether this host can take the waiting unit, and what is
+  stopping it when it cannot.
+
+  It is here because without it this panel was a dead end. It named the file and
+  the diff and stopped — so an operator reading this page, which is where this
+  project's own operator read it, learned that a unit was waiting and not that
+  anything on the host could do something about it. The daemon had grown the
+  ability to take it and the one surface they were looking at never mentioned it.
+
+  The page points at the command rather than answering itself, and that is the
+  honest division: deciding whether a host is adoptable means reading the unit,
+  the offer, the record, the override and the operator's configuration, and a
+  render that did all that per request would be as slow and as fallible as the
+  file system under it. What a page can always say correctly is where to ask.
+*/}}
+{{ with .Unit.Inspect }}<dt>Can it be taken?</dt><dd>{{ . }}</dd>{{ end }}
 {{/*
   The override, in addition to the sentence above and never instead of it. A host
   can be running the release's own unit, byte for byte, and still not be running
