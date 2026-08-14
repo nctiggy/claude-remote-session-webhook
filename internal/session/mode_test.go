@@ -19,6 +19,7 @@ package session
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -86,7 +87,7 @@ func newModeFixture(t *testing.T) modeFixture {
 	socket := modeSocketFor(t.Name())
 	// The daemon's own bound, because these tests drive a real tmux and a screen
 	// it renders is exactly what production captures.
-	e, err := tmuxctl.NewExec(socket, config.DefaultPaneBound)
+	e, err := tmuxctl.NewExec(socket, config.DefaultPaneBound, config.SessionEnvironment(os.Environ(), nil))
 	if err != nil {
 		t.Fatalf("NewExec(%q): %v", socket, err)
 	}

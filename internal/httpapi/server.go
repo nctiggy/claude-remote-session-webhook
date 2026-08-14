@@ -24,6 +24,7 @@ import (
 	"html/template"
 	"net"
 	"net/http"
+	"os"
 	"path"
 	"slices"
 	"strings"
@@ -296,7 +297,7 @@ func New(cfg *config.Config) (*Server, error) {
 	//
 	// The pane bound travels with it: it is the operator's setting, so the only
 	// place it can enter the driver is where the driver is built.
-	tmux, err := tmuxctl.NewExec(tmuxctl.SocketFor(cfg.Listen), cfg.PaneBound)
+	tmux, err := tmuxctl.NewExec(tmuxctl.SocketFor(cfg.Listen), cfg.PaneBound, config.SessionEnvironment(os.Environ(), cfg.SessionEnvironment))
 	if err != nil {
 		return nil, err
 	}
@@ -962,8 +963,33 @@ func (s *Server) Reconcile(ctx context.Context) error {
 		return fmt.Errorf("httpapi: the host must be reconciled before the listener binds, and this one is already bound to %s", s.ln.Addr())
 	}
 
+	// Before Adopt, and before anything creates a session. A tmux server keeps
+	// the environment of whichever client started it for its whole life, and
+	// this daemon's server outlives the daemon — adoption is the reason it does.
+	// So a host that ran a build predating the environment boundary still has a
+	// server holding that build's whole environment, shared secret included, and
+	// hands it to every session created next.
+	//
+	// Reported rather than fatal. A daemon that refused to start because it
+	// could not tidy a tmux server would be trading a reachable host for a
+	// tidier one, and the sessions already running are unreachable to this
+	// either way (see internal/tmuxctl/env.go).
+	failures := []error{}
+	if removed, err := s.sessions.ReconcileEnvironment(ctx); err != nil {
+		failures = append(failures, fmt.Errorf("reconcile the tmux server environment: %w", err))
+	} else if len(removed) > 0 {
+		if err := s.trail.Emit(audit.Record{
+			Action:   audit.ActionStartupScrubEnv,
+			Caller:   string(auth.CallerOperator),
+			Decision: audit.Allow,
+			Reason:   fmt.Sprintf("removed %d variable(s) an older build left in the tmux server environment", len(removed)),
+		}); err != nil {
+			failures = append(failures, err)
+		}
+	}
+
 	adopted, err := s.sessions.Adopt(ctx)
-	failures := []error{err}
+	failures = append(failures, err)
 
 	for _, a := range adopted {
 		// The owner is the record's own, not a constant repeated here: the

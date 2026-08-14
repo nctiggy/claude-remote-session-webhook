@@ -1489,6 +1489,33 @@ type AdoptedSession struct {
 // Failures are collected rather than returned at the first one. A single session
 // the host cannot answer for must not leave the rest unowned, and startup treats
 // any returned error as fatal (T032), so nothing here is quietly skipped.
+// ReconcileEnvironment removes from the tmux server's global environment
+// everything a session's own environment would not carry, and returns the names
+// it removed.
+//
+// Called at startup before Adopt, and it belongs here rather than on the server
+// for the reason httpapi's own comment gives: nothing outside this package holds
+// a Controller, because everything standing in for the permission prompt lives
+// behind this one. A second holder would be a second thing able to cause
+// execution on the host.
+//
+// # Why this exists at all
+//
+// exec.go gives every tmux CLIENT a composed environment, which makes a server
+// this daemon starts correct. But a tmux server keeps the environment it was
+// started with for its whole life, and this daemon's server outlives the daemon
+// on purpose — Adopt below is the reason it does. So a host that ran a build
+// predating that boundary still has a server holding that build's whole
+// environment, this daemon's shared secret included, and it hands that to every
+// session created on it.
+//
+// Sessions already running are beyond reach: a process's environment cannot be
+// changed from outside it. They keep what they were started with until they are
+// recreated, which deploy/README.md tells the operator to do.
+func (m *Manager) ReconcileEnvironment(ctx context.Context) ([]string, error) {
+	return m.tmux.ReconcileServerEnvironment(ctx)
+}
+
 func (m *Manager) Adopt(ctx context.Context) ([]AdoptedSession, error) {
 	infos, err := m.tmux.List(ctx)
 	if err != nil {

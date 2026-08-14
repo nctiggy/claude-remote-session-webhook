@@ -51,6 +51,23 @@ type UnitFacts struct {
 	// directory with a space in it is a command that silently diffs two other
 	// files.
 	Compare string
+
+	// Override is the hardening drop-in changing what this unit produces, and
+	// Overridden is the sentence about it. Both empty on a host with none, which
+	// is most of them.
+	//
+	// **A separate fact rather than a fifth arrangement**, because it is
+	// orthogonal to the other four: a host can be in any of them AND carry an
+	// override. Folding it into Sentence would mean four more sentences and a
+	// combination somebody eventually forgets to write.
+	//
+	// It exists because without it the other four can each be true and the
+	// report still misleading. systemd merges <unit>.d/*.conf over the unit, so a
+	// host can run the release's unit byte for byte under hardening the release
+	// never shipped — "the one this release ships" is then a true statement about
+	// a file and a false impression of a host.
+	Override   string
+	Overridden string
 }
 
 // The whole vocabulary for what became of this host's unit (M15/T004, M15/T005),
@@ -79,6 +96,16 @@ const (
 	UnitSentenceAbsent = "This host has no systemd unit for this daemon. An update installs the one the release ships."
 
 	UnitSentenceUnknown = "This daemon could not read the systemd unit on this host."
+
+	// UnitSentenceOverridden is said in addition to one of the five above, never
+	// instead of one.
+	//
+	// It states what the file does rather than which settings it changes: this
+	// daemon reads the drop-in's existence, not its contents, and a sentence
+	// naming settings it never parsed would be a claim about a file somebody may
+	// since have edited. Naming the path is what lets the operator go and read
+	// the settings themselves.
+	UnitSentenceOverridden = "A hardening override is in effect, so this host does not run under the hardening its unit alone describes. An update never touches it."
 )
 
 // DescribeUnit turns what Report found on this disk into what an operator is
@@ -97,20 +124,31 @@ func DescribeUnit(report UnitReport, err error) UnitFacts {
 	if err != nil {
 		return UnitFacts{Sentence: UnitSentenceUnknown}
 	}
+
+	var facts UnitFacts
 	switch {
 	case report.Offer != "":
-		return UnitFacts{
+		facts = UnitFacts{
 			Sentence: UnitSentenceOffered,
 			Waiting:  report.Offer,
 			Compare:  unitCompare(report.Path, report.Offer),
 		}
 	case !report.Present:
-		return UnitFacts{Sentence: UnitSentenceAbsent}
+		facts = UnitFacts{Sentence: UnitSentenceAbsent}
 	case report.Ours:
-		return UnitFacts{Sentence: UnitSentenceOurs}
+		facts = UnitFacts{Sentence: UnitSentenceOurs}
 	default:
-		return UnitFacts{Sentence: UnitSentenceTheirs}
+		facts = UnitFacts{Sentence: UnitSentenceTheirs}
 	}
+
+	// Added to whichever of the four applies, never in place of one. A host with
+	// an override is still absent, ours, theirs or offered — the override says
+	// that the unit is not the whole story about what systemd runs.
+	if report.Override != "" {
+		facts.Override = report.Override
+		facts.Overridden = UnitSentenceOverridden
+	}
+	return facts
 }
 
 // unitCompare is the command an operator runs to see what they would be taking.

@@ -46,11 +46,35 @@ const execSocket = "crswd-127-0-0-1-8765"
 // day the number changed.
 const execPaneBound = 24
 
+// testSessionEnv is the composed environment every Exec below is built with.
+//
+// Written out rather than taken from config.SessionEnvironment: this package
+// does not import that one, for newStubExec's reason — a test that borrowed the
+// daemon's composition would stop testing this package's own guard the day the
+// composition changed.
+//
+// **The stub's own control variables are appended, and that is not a
+// concession.** The stub on PATH is a fake tmux driven entirely through the
+// environment, so when run stopped passing this process's environment to its
+// child — which is the whole point of sessionEnv — the stub stopped being told
+// it was a stub and fell through to Go's flag parser. Carrying them here is the
+// test harness saying out loud what a real session no longer gets by accident:
+// nothing crosses that boundary unless something puts it there.
+func testSessionEnv() []string {
+	env := []string{"HOME=/home/operator", "PATH=" + os.Getenv("PATH"), "TERM=xterm"}
+	for _, name := range []string{stubEnv, stubRecordEnv, stubStdoutEnv, stubStderrEnv, stubCodeEnv} {
+		if v := os.Getenv(name); v != "" {
+			env = append(env, name+"="+v)
+		}
+	}
+	return env
+}
+
 // newStubExec is the Exec the stub on PATH answers for.
 func newStubExec(t *testing.T) *Exec {
 	t.Helper()
 
-	e, err := NewExec(execSocket, execPaneBound)
+	e, err := NewExec(execSocket, execPaneBound, testSessionEnv())
 	if err != nil {
 		t.Fatalf("NewExec: %v", err)
 	}
@@ -360,7 +384,7 @@ func TestExecWithoutAPaneBoundCapturesNothing(t *testing.T) {
 	// open, the stub records the call and this test says so.
 	recorded := stub{stdout: "$ \n"}.install(t)
 
-	if _, err := NewExec(execSocket, 0); !errors.Is(err, ErrNoPaneBound) {
+	if _, err := NewExec(execSocket, 0, testSessionEnv()); !errors.Is(err, ErrNoPaneBound) {
 		t.Errorf("NewExec with no bound = %v, want ErrNoPaneBound", err)
 	}
 
@@ -711,11 +735,11 @@ func TestExecSocketSelection(t *testing.T) {
 func TestExecRefusesTheDefaultServer(t *testing.T) {
 	t.Parallel()
 
-	if _, err := NewExec("", execPaneBound); !errors.Is(err, ErrNoSocket) {
+	if _, err := NewExec("", execPaneBound, testSessionEnv()); !errors.Is(err, ErrNoSocket) {
 		t.Errorf("NewExec(\"\") error = %v, want ErrNoSocket", err)
 	}
 
-	got, err := NewExec("crswd-127-0-0-1-8765", execPaneBound)
+	got, err := NewExec("crswd-127-0-0-1-8765", execPaneBound, testSessionEnv())
 	if err != nil {
 		t.Fatalf("NewExec: %v", err)
 	}

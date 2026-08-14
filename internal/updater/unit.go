@@ -87,6 +87,20 @@ const (
 	// replace, which is why it is read from the installer's own location rather
 	// than from somewhere this package would prefer.
 	unitRecordPath = ".local/share/crswd/crswd.service.sha256"
+
+	// DropInName is the file install.sh writes inside the unit's drop-in
+	// directory when the operator asks for elevated privileges inside sessions.
+	//
+	// **The directory itself is never spelled as a constant.** systemd defines it
+	// as the unit's own path with `.d` appended, so DropInDir derives it from
+	// unitPath rather than declaring a second string that could drift from the
+	// first. A drop-in directory that does not sit beside the unit is not a
+	// drop-in at all — it is a file systemd never reads, which is the failure
+	// mode that looks exactly like success.
+	DropInName = "10-relax.conf"
+
+	// dropInSuffix is systemd's own rule, stated once.
+	dropInSuffix = ".d"
 )
 
 // ErrNoUnitHome is a process with no absolute HOME, and so nowhere to look for
@@ -210,6 +224,34 @@ func (u *Unit) Path() string { return u.path }
 // if it cannot name one.
 func (u *Unit) RecordPath() string { return u.record }
 
+// DropInDir is the directory systemd reads overrides for this unit from, or ""
+// if this daemon cannot name the unit itself.
+//
+// Derived from the unit path rather than declared, because systemd's rule is
+// exactly that: the unit's own name with `.d` appended. A second constant could
+// be edited to point somewhere systemd never looks, and the symptom would be an
+// override that is present, readable, and silently not in effect.
+func (u *Unit) DropInDir() string {
+	if u.path == "" {
+		return ""
+	}
+	return u.path + dropInSuffix
+}
+
+// DropInPath is the override file install.sh writes, or "" if this daemon
+// cannot name the unit.
+//
+// It names one file rather than describing the directory's contents, because
+// this project writes exactly one and reads exactly one. An operator is free to
+// add others — systemd merges them all — and this daemon says nothing about
+// those beyond noticing the directory is not empty.
+func (u *Unit) DropInPath() string {
+	if u.path == "" {
+		return ""
+	}
+	return filepath.Join(u.DropInDir(), DropInName)
+}
+
 // Standing compares the unit on this host against the one a release publishes.
 //
 // published is the verified bytes of the UnitAsset of the release being
@@ -294,6 +336,20 @@ type UnitReport struct {
 	// every host deployed before the installer existed, the one that publishes
 	// these releases included.
 	Ours bool
+
+	// Override is the drop-in changing what this unit produces, or empty when
+	// there is none.
+	//
+	// **Without it every other field here can be true and the report still
+	// misleading.** systemd merges <unit>.d/*.conf over the unit, so a host can
+	// carry the release's unit byte for byte and run under hardening the release
+	// never shipped. "The one this release ships" is then a true statement about
+	// a file and a false impression of a host — which is the silence milestone 15
+	// set out to end, arriving by a different route.
+	//
+	// It names the file rather than reporting a boolean, because the point of
+	// telling an operator is that they can go and read it.
+	Override string
 }
 
 // Report reads this host's unit, the record beside it and the offer beside that,
@@ -336,6 +392,19 @@ func (u *Unit) Report() (UnitReport, error) {
 		// Every host that has never been offered a unit, which is most of them.
 	default:
 		return UnitReport{}, fmt.Errorf("look for the unit a release left beside this host's own %s: %w", u.NewPath(), err)
+	}
+
+	// Asked whether the unit is present or not. A drop-in beside a unit that is
+	// missing is a real arrangement — an operator part-way through a migration —
+	// and reporting "absent" while a file sits in the .d directory would send
+	// them looking for something this daemon had already seen.
+	switch _, err := os.Stat(u.DropInPath()); {
+	case err == nil:
+		report.Override = u.DropInPath()
+	case errors.Is(err, fs.ErrNotExist):
+		// The default posture, and most hosts.
+	default:
+		return UnitReport{}, fmt.Errorf("look for the hardening override beside this host's unit %s: %w", u.DropInPath(), err)
 	}
 
 	return report, nil

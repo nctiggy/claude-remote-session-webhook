@@ -1,0 +1,65 @@
+# Hardening override for crswd.service — the file `install.sh` writes if you
+# answer yes when it asks whether sudo is needed inside sessions.
+#
+# Install it as:
+#
+#   ~/.config/systemd/user/crswd.service.d/10-relax.conf
+#
+# then `systemctl --user daemon-reload && systemctl --user restart crswd`.
+#
+# ---------------------------------------------------------------------------
+# Why this is a drop-in and not an edit to the unit
+# ---------------------------------------------------------------------------
+#
+# A unit this project did not write is one it will never update: it has no
+# recorded digest, so install.sh and the updater both correctly leave it alone,
+# every release that ships a changed unit offers a crswd.service.new beside it
+# forever, and the daemon says so on the settings page and in the journal for
+# good. An operator who edited their unit to make sudo work paid for one
+# capability with the unit's updatability.
+#
+# systemd merges everything in <unit>.d/*.conf over the unit itself, and nothing
+# in install.sh or the updater ever touches that directory. So the unit stays
+# byte-identical to the release's — replaceable, and reported as current —
+# while this file survives every update. The two facts stop being in tension.
+#
+# ---------------------------------------------------------------------------
+# What this actually grants, stated plainly
+# ---------------------------------------------------------------------------
+#
+# A path from an authenticated request to ROOT on this host, not just to your
+# account. Sessions already run `claude --dangerously-skip-permissions` as you;
+# this additionally lets one become root through setuid binaries such as sudo.
+#
+# `allowed_roots` does not bound this. It bounds which directories a session
+# starts in, and a root shell is not bounded by its working directory.
+#
+# Delete this file, `daemon-reload` and restart to give the privilege back.
+
+[Service]
+
+# ---------------------------------------------------------------------------
+# ProtectKernelTunables is the line that actually does the work
+# ---------------------------------------------------------------------------
+#
+# Setting NoNewPrivileges=false ALONE does nothing. Measured on a real host:
+#
+#   ProtectKernelTunables=true                              -> NoNewPrivs: 1
+#   ProtectKernelTunables=true + NoNewPrivileges=false      -> NoNewPrivs: 1
+#   ProtectKernelTunables overridden to false               -> NoNewPrivs: 0
+#
+# ProtectKernelTunables=true IMPLIES NoNewPrivileges, and systemd treats that as
+# a floor rather than a value: an explicit `no` in the merged unit does not lower
+# it back. Only overriding the implying option removes the implication.
+#
+# So an override missing the third line below produces a service where sudo still
+# fails, with nothing in either file that looks like the cause. That is a genuinely
+# hard thing to debug, and it is the reason this comment is longer than the
+# settings it explains.
+NoNewPrivileges=false
+RestrictSUIDSGID=false
+ProtectKernelTunables=false
+
+# /usr read-only would otherwise stop `apt`, and writes under /usr/local, from
+# inside a session that has just become root.
+ProtectSystem=false

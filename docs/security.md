@@ -315,6 +315,23 @@ Specific to this daemon:
 - **Session output is secret.** Captured pane content can contain anything on the
   host — keys, tokens, customer data. Never log it, never ship it to telemetry,
   never include it in an error message.
+- **A session never receives this daemon's environment**, and that rule is what
+  makes the one above enforceable rather than aspirational. A session is
+  `claude --dangerously-skip-permissions`; a credential in its environment is one
+  `env` away from being pane content, and pane content on this product travels
+  into model context and a transcript that leaves the host. So the environment is
+  **composed, never inherited** — `config.SessionEnvironment` is the single
+  definition, it is an allowlist rather than a denylist so that a new
+  secret-bearing setting is excluded on the day it is added, and it consults
+  `IsSecret` rather than restating which keys are secret. The operator may name
+  extra variables to pass through; naming a secret or any `CRSW_` variable is a
+  **startup failure**, because a warning about a credential is a credential that
+  ships. Two mechanisms enforce it: `cmd.Env` at `internal/tmuxctl`'s single exec
+  chokepoint, and a startup reconciliation of the tmux server's global
+  environment — the server outlives the daemon, so without the second every host
+  that ran an older build stays exposed for as long as its server lives. Neither
+  can clean a session already running; that limit is documented for the operator
+  rather than papered over.
 - Never log the shared secret, a bearer token, or a full signed body.
 - Rotate anything ever committed — assume it is public forever.
 - GitHub secret scanning + push protection are enabled on this repo.

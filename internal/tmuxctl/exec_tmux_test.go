@@ -40,7 +40,11 @@ func newTestExec(t *testing.T) *Exec {
 		t.Skipf("tmux is not installed: %v", err)
 	}
 
-	e := &Exec{socket: socketFor(t.Name()), paneBound: tmuxPaneBound}
+	// sessionEnv is set because run refuses without one. A struct literal here
+	// is exactly the "one keystroke away" case ErrNoSessionEnv guards, and these
+	// tests start real shells: a pane with no PATH would fail in ways that look
+	// like tmux misbehaving rather than like a test building the wrong Exec.
+	e := &Exec{socket: socketFor(t.Name()), paneBound: tmuxPaneBound, sessionEnv: realSessionEnv()}
 	t.Cleanup(func() {
 		// Constant argv, and -L keeps this off the operator's own server.
 		out, err := exec.Command("tmux", "-L", e.socket, "kill-server").CombinedOutput() //nolint:gosec // socket is socketFor(t.Name())
@@ -49,6 +53,18 @@ func newTestExec(t *testing.T) *Exec {
 		}
 	})
 	return e
+}
+
+// realSessionEnv is enough environment for a real shell to run in a real pane,
+// and nothing more. It is what a composed session environment looks like.
+func realSessionEnv() []string {
+	env := []string{"TERM=xterm"}
+	for _, name := range []string{"HOME", "PATH", "SHELL", "USER", "LOGNAME"} {
+		if v := os.Getenv(name); v != "" {
+			env = append(env, name+"="+v)
+		}
+	}
+	return env
 }
 
 // socketFor makes a test name usable as the filename tmux turns -L into.

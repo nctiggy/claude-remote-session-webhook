@@ -1562,3 +1562,219 @@ func TestEveryInstallerFunctionIsCalled(t *testing.T) {
 		}
 	}
 }
+
+// dropInExamplePath is the documented copy of the override install.sh writes.
+const dropInExamplePath = repoRoot + "/deploy/crswd.service.d/10-relax.conf.example"
+
+// hardeningRelaxed is every directive the override has to carry, and the third
+// one is the whole reason this list is asserted rather than eyeballed.
+//
+// Measured on a real host: `ProtectKernelTunables=true` IMPLIES NoNewPrivileges
+// and systemd treats that as a floor, so relaxing NoNewPrivileges alone leaves
+// the process with NoNewPrivs:1 and sudo still broken — with nothing in either
+// file that looks like the cause. An override missing that line is not a weaker
+// override, it is an inert one.
+var hardeningRelaxed = []string{
+	"NoNewPrivileges=false",
+	"RestrictSUIDSGID=false",
+	"ProtectKernelTunables=false",
+	"ProtectSystem=false",
+}
+
+// TestTheShippedUnitStaysHardened is FR-008's guard.
+//
+// **Must fail when** somebody relaxes the default for everyone rather than
+// leaving it to the per-host override. The unit is what every install gets
+// before anyone is asked anything, so a relaxation here is a path from an
+// authenticated request to root on hosts whose operator never consented to one.
+func TestTheShippedUnitStaysHardened(t *testing.T) {
+	t.Parallel()
+
+	unit, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", unitPath, err)
+	}
+	for _, want := range []string{"NoNewPrivileges=true", "RestrictSUIDSGID=true", "ProtectControlGroups=true"} {
+		if !strings.Contains(string(unit), want) {
+			t.Errorf("the shipped unit no longer sets %s; every install would get the relaxed posture without being asked", want)
+		}
+	}
+}
+
+// TestTheDropInGrantsWhatItClaims holds the installer's heredoc and the
+// documented example to the same four directives.
+//
+// They are two copies by necessity — the installer writes the file inline rather
+// than fetching a fifth release asset, because what it becomes is a file systemd
+// executes under and a second delivery channel would be a second thing to verify.
+// Two copies with no test is how one of them quietly loses the line that matters.
+func TestTheDropInGrantsWhatItClaims(t *testing.T) {
+	t.Parallel()
+
+	script, err := os.ReadFile(installerPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", installerPath, err)
+	}
+	example, err := os.ReadFile(dropInExamplePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", dropInExamplePath, err)
+	}
+
+	for _, directive := range hardeningRelaxed {
+		if !strings.Contains(string(script), directive) {
+			t.Errorf("install.sh writes an override without %s", directive)
+		}
+		if !strings.Contains(string(example), directive) {
+			t.Errorf("%s does not carry %s", dropInExamplePath, directive)
+		}
+	}
+
+	// The trap, named in both places or an operator debugs it from scratch.
+	for path, body := range map[string]string{installerPath: string(script), dropInExamplePath: string(example)} {
+		if !strings.Contains(body, "ProtectKernelTunables") || !strings.Contains(body, "implies") && !strings.Contains(body, "IMPLIES") {
+			t.Errorf("%s relaxes hardening without explaining that ProtectKernelTunables implies NoNewPrivileges; an operator who trims it gets a silently inert override", path)
+		}
+	}
+}
+
+// TestTheDropInPathIsWhereTheInstallerWrites is T004: two languages, one path.
+//
+// install.sh spells it in shell and internal/updater derives it in Go, and they
+// cannot share a constant. A daemon looking somewhere the installer never writes
+// would report every host as having no override, which is the "quietly wrong and
+// looks fine" failure this milestone exists to end.
+func TestTheDropInPathIsWhereTheInstallerWrites(t *testing.T) {
+	t.Parallel()
+
+	script, err := os.ReadFile(installerPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", installerPath, err)
+	}
+
+	declared := regexp.MustCompile(`(?m)^readonly DROPIN="([^"]+)"`).FindSubmatch(script)
+	if declared == nil {
+		t.Fatal("install.sh declares no DROPIN, so nothing here can check where it writes")
+	}
+
+	home := t.TempDir()
+	unit := updater.NewUnit(func(string) string { return home })
+	want := filepath.Join(home, string(declared[1]))
+	if got := unit.DropInPath(); got != want {
+		t.Errorf("the daemon looks for an override at %s and the installer writes ~/%s", got, declared[1])
+	}
+}
+
+// TestTheInstallerAsksOnTheTerminalAndNotOnStdin is FR-009 and FR-010, and it is
+// the one that would otherwise ship broken.
+//
+// The documented invocation is `curl -fsSL … | bash`, where STDIN IS THE SCRIPT.
+// A `read` without a redirect consumes the script's own remaining bytes, and
+// `[ -t 0 ]` is false even with a human at the keyboard — so the obvious
+// interactivity test skips the question exactly when it should be asked.
+func TestTheInstallerAsksOnTheTerminalAndNotOnStdin(t *testing.T) {
+	t.Parallel()
+
+	script, err := os.ReadFile(installerPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", installerPath, err)
+	}
+	body := string(script)
+
+	if !strings.Contains(body, "read -r answer < /dev/tty") {
+		t.Error("install.sh does not read its answer from /dev/tty; piped from curl, stdin is the script itself")
+	}
+	if regexp.MustCompile(`(?m)^\s*read -r \w+\s*$`).MatchString(body) {
+		t.Error("install.sh reads from stdin somewhere; under `curl | bash` that consumes the script")
+	}
+	// Code only. This file explains at length why `[ -t 0 ]` is the wrong test,
+	// and a check that read its own reasoning as the mistake would be one nobody
+	// could satisfy without deleting the explanation.
+	for i, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		if strings.Contains(line, "[ -t 0 ]") {
+			t.Errorf("install.sh:%d tests `[ -t 0 ]`, which is false under `curl | bash` even with a terminal present", i+1)
+		}
+	}
+	if !strings.Contains(body, "[ -r /dev/tty ]") {
+		t.Error("install.sh does not test whether /dev/tty can be opened, which is how the automation case is detected")
+	}
+}
+
+// TestTheInstallerNamesRootWhenItAsks is Principle VI's standard applied to a
+// prompt: a widening needs what becomes reachable named, not implied.
+//
+// "Enable sudo?" describes a convenience. The operator is consenting to a path
+// from an authenticated request to root on the host, and to the fact that
+// allowed_roots — which install.sh elsewhere calls the only thing bounding what a
+// session can reach — does not bound it.
+func TestTheInstallerNamesRootWhenItAsks(t *testing.T) {
+	t.Parallel()
+
+	script, err := os.ReadFile(installerPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", installerPath, err)
+	}
+	body := string(script)
+
+	for _, want := range []string{"root on", "allowed_roots"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the prompt does not mention %q; consent to a privilege nobody named is not consent", want)
+		}
+	}
+}
+
+// TestNothingAutomatedTouchesTheOverrideAgain is FR-012 and FR-014.
+//
+// The override is the operator's, permanently. The single creation in
+// write_dropin is the only write this project may ever make to it: an installer
+// that rewrote it would undo an edit, and one that removed it would revoke a
+// capability during an operation the operator thinks of as safe.
+func TestNothingAutomatedTouchesTheOverrideAgain(t *testing.T) {
+	t.Parallel()
+
+	script, err := os.ReadFile(installerPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", installerPath, err)
+	}
+
+	// One heredoc into $DROPIN, and no other write to it.
+	if n := strings.Count(string(script), `> "$HOME/$DROPIN"`); n != 1 {
+		t.Errorf("install.sh writes ~/$DROPIN %d times, want exactly 1", n)
+	}
+	for _, forbidden := range []string{`rm -f -- "$HOME/$DROPIN"`, `rm -- "$HOME/$DROPIN"`, `rm -rf -- "$HOME/$DROPIN_DIR"`} {
+		if strings.Contains(string(script), forbidden) {
+			t.Errorf("install.sh contains %q; the override is the operator's and is never removed by this script", forbidden)
+		}
+	}
+
+	// The updater must not learn to touch it either. It carries the unit
+	// forward precisely so the override beside it can survive that.
+	for _, name := range []string{"place.go", "unit.go", "config.go"} {
+		body, err := os.ReadFile(repoRoot + "/internal/updater/" + name) //nolint:gosec // G304: name comes from the literal slice above, not from anything a caller supplies.
+		if err != nil {
+			t.Fatalf("read internal/updater/%s: %v", name, err)
+		}
+		for _, forbidden := range []string{"os.WriteFile(u.DropInPath", "os.Remove(u.DropInPath", "os.RemoveAll(u.DropInDir"} {
+			if strings.Contains(string(body), forbidden) {
+				t.Errorf("internal/updater/%s contains %q; an update that touched the override would revert the operator's own deviation", name, forbidden)
+			}
+		}
+	}
+}
+
+// TestTheInstallerDoesNotReAskOnAHostThatAnswered is FR-014's other half. An
+// answer given once is the operator's; an installer that asked again would
+// eventually get a different answer by accident.
+func TestTheInstallerDoesNotReAskOnAHostThatAnswered(t *testing.T) {
+	t.Parallel()
+
+	script, err := os.ReadFile(installerPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", installerPath, err)
+	}
+	if !regexp.MustCompile(`if \[ -e "\$HOME/\$DROPIN" \]; then`).MatchString(string(script)) {
+		t.Error("ask_about_sudo does not return early when the override already exists, so a re-run re-asks a question already answered")
+	}
+}

@@ -148,6 +148,7 @@ func Vars() []string {
 		EnvAllowedRoots,
 		EnvDiscoverRoots,
 		EnvWorkdirSuggestions,
+		EnvSessionEnvironment,
 		EnvListen,
 		EnvMaxSessions,
 		EnvDestroyOnShutdown,

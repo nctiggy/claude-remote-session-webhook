@@ -254,6 +254,25 @@ sentence from one read — because a host nobody has ever pointed a browser at i
 still owed the answer. What taking a `.new` does *not* hand over, and how to hand it
 over deliberately, is [`deploy/README.md`](deploy/README.md).
 
+**If you need `sudo` inside a session, do not edit the unit for it.** That is what
+puts a host in the last row above permanently. Hardening lives in systemd's file
+rather than in the daemon's configuration, so it goes in a drop-in at
+`~/.config/systemd/user/crswd.service.d/10-relax.conf` — which nothing here ever
+touches, so your unit stays replaceable and your change survives every update.
+`install.sh` asks at install time and writes it if you say yes; the file, the trap
+that makes a careless copy of it do nothing, and how to migrate a unit you already
+edited are all in [`deploy/README.md`](deploy/README.md).
+
+**A session does not get the daemon's environment.** It receives `HOME`, `PATH`,
+`SHELL`, `USER`, `LOGNAME`, `TERM`, `LANG`, `LC_*`, `XDG_RUNTIME_DIR` and `TMUX_TMPDIR`, and
+nothing else — the shared secret, the Access values and every `CRSW_` setting stay
+on this side of it, because a session runs `claude --dangerously-skip-permissions`
+and whatever is in its environment is one `env` away from being pane content.
+`CRSW_SESSION_ENVIRONMENT` names anything more a particular workflow needs.
+**Sessions already running when you upgrade keep the environment they were started
+with** — a process's environment cannot be changed from outside — so recreate them,
+and rotate the shared secret if one of them ever held it.
+
 ### A release, without the installer
 
 Every release carries a tarball per architecture, `SHA256SUMS`, `SHA256SUMS.sig`,
@@ -623,6 +642,7 @@ stands in for the permission prompt that is gone.
 | `CRSW_ALLOWED_ROOTS` | no | `$HOME/code`, with a loud banner | Colon-separated absolute directories a session may run in. An entry that is empty, relative, missing, unresolvable, or not a directory refuses |
 | `CRSW_DISCOVER_ROOTS` | no | `false` | Offer each approved root's immediate subdirectories as working-directory suggestions. Anything but a boolean refuses |
 | `CRSW_WORKDIR_SUGGESTIONS` | no | empty | Comma-separated absolute directories offered on the create form beside the roots. An entry that is empty or relative refuses; one outside the roots is offered and refused on create, because the list is a convenience and `CRSW_ALLOWED_ROOTS` is the control |
+| `CRSW_SESSION_ENVIRONMENT` | no | empty | Comma-separated environment variable **names** a session receives on top of the base set (`HOME`, `PATH`, `SHELL`, `USER`, `LOGNAME`, `TERM`, `LANG`, `LC_*`, `XDG_RUNTIME_DIR`, `TMUX_TMPDIR`). A session never inherits this daemon's environment, so the shared secret and every `CRSW_` setting stay on this side; this is the escape hatch for the one more variable a workflow needs. Names, not values. Naming a secret or anything `CRSW_` refuses at startup |
 | `CRSW_LISTEN` | no | `127.0.0.1:8765` | The listener. The host must be an IP literal; a name refuses under every door. A non-loopback host such as `0.0.0.0` is permitted **only when the dashboard has a door** — Access or `CRSW_DASHBOARD_PASSWORD`. With neither, it refuses: a daemon that admits nobody may not be reachable by anybody. A port out of range refuses |
 | `CRSW_MAX_SESSIONS` | no | `5` | How many sessions may exist at once. Below 1 refuses |
 | `CRSW_DESTROY_ON_SHUTDOWN` | no | `false` | Tear every session down when the daemon stops. Off by default: sessions survive a clean stop and startup adoption reclaims them, so a redeploy no longer costs the fleet. `true` restores the old behaviour, for a host being decommissioned rather than updated |

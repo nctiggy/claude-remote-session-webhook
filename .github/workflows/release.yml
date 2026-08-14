@@ -329,7 +329,7 @@ jobs:
         # that shipped one of these paths would turn every assertion below into a
         # description of what was already there.
         #
-        # These five are every path install.sh writes, and a test holds the two
+        # These seven are every path install.sh writes, and a test holds the two
         # lists together — a sixth path added to the installer and not to this
         # loop is a file this job would find already present and report as
         # installed.
@@ -344,6 +344,8 @@ jobs:
           fresh=0
           for rel in .local/bin/crswd \
                      .config/systemd/user/crswd.service \
+                     .config/systemd/user/crswd.service.d \
+                     .config/systemd/user/crswd.service.d/10-relax.conf \
                      .local/share/crswd/crswd.service.sha256 \
                      .config/crswd/config \
                      code; do

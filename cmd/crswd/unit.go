@@ -74,6 +74,15 @@ func sayWhatBecameOfTheUnit(warn io.Writer, report updater.UnitReport, readErr e
 		banner.WriteString("crswd: compare them with: " + facts.Compare + "\n")
 	}
 
+	// Said in addition to the sentence above, because it is orthogonal to it: a
+	// host running the release's own unit can still be running under hardening
+	// the release never shipped, and a report that mentioned only the unit would
+	// be true about a file and misleading about the host.
+	if facts.Overridden != "" {
+		banner.WriteString("crswd: " + facts.Overridden + "\n")
+		banner.WriteString("crswd: the override is at " + facts.Override + "\n")
+	}
+
 	if _, err := io.WriteString(warn, banner.String()); err != nil {
 		return fmt.Errorf("emit the systemd-unit report: %w", err)
 	}

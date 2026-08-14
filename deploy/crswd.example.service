@@ -105,6 +105,21 @@ EnvironmentFile=-%h/.config/crswd/env
 # filesystem, and a path listed here that is outside the roots is refused on
 # create exactly as a typed one is.
 # Environment=CRSW_WORKDIR_SUGGESTIONS=
+
+# Additional environment variable NAMES a session receives, comma-separated, on
+# top of the base set the daemon always provides (HOME, PATH, SHELL, USER,
+# LOGNAME, TERM, LANG, LC_*, XDG_RUNTIME_DIR, TMUX_TMPDIR). Default: empty.
+#
+# A session gets a composed environment, never this daemon's own — the shared
+# secret and the Access values are not in it, and neither is any CRSW_ setting.
+# This list is the escape hatch for a workflow that needs one more variable, e.g.
+# SSH_AUTH_SOCK for a session that pushes over SSH.
+#
+# It carries NAMES, not values; the value comes from the daemon's environment.
+# Naming a secret, or anything CRSW_, is a startup failure rather than a silent
+# drop — an escape hatch that quietly ignored the dangerous case would be one an
+# operator believes is working.
+# Environment=CRSW_SESSION_ENVIRONMENT=
 # Environment=CRSW_LISTEN=127.0.0.1:8765
 # Environment=CRSW_MAX_SESSIONS=5
 

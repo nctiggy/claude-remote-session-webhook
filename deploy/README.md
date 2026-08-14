@@ -327,6 +327,111 @@ owed, so the page says only that it happened and the journal says why. The daemo
 own lines are the ones prefixed `crswd: `, beside its other startup banners in
 `journalctl --user -u crswd -e`.
 
+### Needing `sudo` in a session, without giving up the unit
+
+The section above is the trap this one exists to stop you walking into. Hardening
+lives in systemd's file, not in the daemon's configuration — there is no
+`allowed_roots`-style setting that could ever express `NoNewPrivileges` — so an
+operator who needed `sudo` inside a session had exactly one place to put that
+change, and editing the unit costs it every future update, permanently.
+
+**Put it in a drop-in instead.** systemd merges `<unit>.d/*.conf` over the unit,
+and nothing in `install.sh` or the updater ever touches that directory. Your unit
+then stays byte-identical to the release's — replaceable, reported as current —
+and your deviation survives every update.
+
+`install.sh` asks about this at install time and writes the file if you say yes.
+To add it later, or on a host installed before the question existed:
+
+```bash
+mkdir -p ~/.config/systemd/user/crswd.service.d
+cp deploy/crswd.service.d/10-relax.conf.example \
+   ~/.config/systemd/user/crswd.service.d/10-relax.conf
+systemctl --user daemon-reload
+systemctl --user restart crswd
+```
+
+**`ProtectKernelTunables=false` is the line that does the work, and dropping it
+gives you a file that changes nothing.** Measured on a real host:
+
+| Merged settings | Effective `NoNewPrivs` |
+|---|---|
+| `ProtectKernelTunables=true` | `1` |
+| `ProtectKernelTunables=true` + `NoNewPrivileges=false` | **`1`** |
+| `ProtectKernelTunables` overridden to `false` | `0` |
+
+`ProtectKernelTunables=true` *implies* `NoNewPrivileges`, and systemd treats that
+as a floor rather than a value: an explicit `no` in the merged unit does not lower
+it back. Relax the obvious setting alone and `sudo` still fails, with nothing in
+either file that looks like the cause.
+
+**What you are granting**: a path from an authenticated request to **root on this
+host**, not just to your account. `allowed_roots` does not bound it — that bounds
+which directory a session starts in, and a root shell is not bounded by its
+working directory. Delete the file, `daemon-reload` and restart to take it back.
+
+Check what is actually in effect rather than what the files suggest:
+
+```bash
+systemctl --user show crswd -p NoNewPrivileges -p ProtectKernelTunables
+```
+
+### Moving a hand-edited unit back onto the supported path
+
+If you edited your unit before drop-ins existed, this is the way home. It ends
+with a unit the daemon reports as its own and your deviations intact.
+
+```bash
+# 1. What did you actually change? This is the whole of the decision.
+diff deploy/crswd.example.service ~/.config/systemd/user/crswd.service
+
+# 2. Hardening differences go in the drop-in (previous section).
+#    Anything else -- an ExecStart path, an Environment= line -- belongs in
+#    ~/.config/crswd/config instead, which the unit no longer overrides.
+
+# 3. If your ExecStart names a different binary path, move the binary first.
+#    The shipped unit runs %h/.local/bin/crswd.
+mkdir -p ~/.local/bin && cp ~/bin/crswd ~/.local/bin/crswd
+
+# 4. Take the release's unit.
+cp ~/.config/systemd/user/crswd.service ~/crswd.service.backup
+cp deploy/crswd.example.service ~/.config/systemd/user/crswd.service
+
+# 5. Hand it over, so updates carry it from now on.
+mkdir -p ~/.local/share/crswd
+sha256sum < ~/.config/systemd/user/crswd.service | cut -d' ' -f1 \
+  > ~/.local/share/crswd/crswd.service.sha256
+
+systemctl --user daemon-reload
+systemctl --user restart crswd
+```
+
+Step 5 is the one that changes what future updates do, and the sentence about
+recording a digest two sections up applies in full: from then on the unit is
+replaced on every update with no `.new` and no diff first. That is safe here
+precisely because step 2 moved everything of yours out of it.
+
+### After upgrading, recreate your sessions
+
+A session no longer inherits the daemon's environment — the shared secret, the
+Access values and every `CRSW_` setting stay on the daemon's side of the
+boundary. The daemon also clears them out of the tmux server at startup, so
+sessions created from then on are clean.
+
+**Sessions that were already running are not, and cannot be.** A process's
+environment cannot be changed from outside it, so a pane started by an older
+build keeps what it was given until it is recreated. Nothing on the host will
+tell you those panes are still holding it, because nothing can.
+
+```bash
+# From inside a session, check what it actually has:
+env | grep -c '^CRSW_'      # 0 on a session created after the upgrade
+```
+
+If that returns anything other than `0`, destroy the session and create a new
+one. And if it ever held `CRSW_SHARED_SECRET`, treat that secret as disclosed:
+whatever ran in the pane could read it, and `crswd keygen` is how you replace it.
+
 ### The unit's PATH is not the session's, and the daemon knows it
 
 A start command is typed into a login shell inside a tmux pane, so it is resolved

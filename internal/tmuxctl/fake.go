@@ -16,14 +16,15 @@ import (
 type Op string
 
 const (
-	OpNew         Op = "New"
-	OpSetOption   Op = "SetOption"
-	OpSendKeys    Op = "SendKeys"
-	OpPaste       Op = "Paste"
-	OpCapturePane Op = "CapturePane"
-	OpKill        Op = "Kill"
-	OpHas         Op = "Has"
-	OpList        Op = "List"
+	OpNew          Op = "New"
+	OpSetOption    Op = "SetOption"
+	OpSendKeys     Op = "SendKeys"
+	OpPaste        Op = "Paste"
+	OpCapturePane  Op = "CapturePane"
+	OpKill         Op = "Kill"
+	OpHas          Op = "Has"
+	OpList         Op = "List"
+	OpReconcileEnv Op = "ReconcileServerEnvironment"
 )
 
 // Call is one recorded invocation. Argv is the complete command line, argv[0]
@@ -97,6 +98,13 @@ func argvHas(name string) []string {
 // own because this exec already runs on every reconciliation. Measuring what a
 // session is really doing therefore costs a longer format string and nothing
 // else — no new exec, and no new failure mode on the reconciliation path.
+// argvReconcileEnv is the read half of the reconciliation. The removals that
+// follow it are one command per name and depend on what the server answers, so
+// the fake records the question rather than pretending to know the answers.
+func argvReconcileEnv() []string {
+	return []string{"tmux", "show-environment", "-g"}
+}
+
 func argvList() []string {
 	return []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{" + OptionManaged + "}|#{" + OptionName + "}|#{" + OptionWorkDir + "}|#{" + OptionStart + "}|#{session_activity}"}
 }
@@ -259,6 +267,26 @@ func (f *Fake) Has(_ context.Context, name string) (bool, error) {
 // List returns every session, sorted by name so tests are not at the mercy of
 // map iteration order. No sessions is an empty slice and no error, which is the
 // normal first-boot case.
+// ReconcileServerEnvironment records the call and reports that it removed
+// nothing.
+//
+// **A fake server has no environment to clean**, and inventing removals it did
+// not make would let a test assert on a number this type made up. What it can
+// honestly answer is that the daemon asked — which is the thing worth asserting,
+// because the defect this method exists for is a startup path that never calls
+// it. The real behaviour is pinned in env_tmux_test.go against a real server,
+// which is the only place it can be.
+func (f *Fake) ReconcileServerEnvironment(_ context.Context) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.record(OpReconcileEnv, argvReconcileEnv(), nil)
+	if err := f.fail[OpReconcileEnv]; err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
 func (f *Fake) List(_ context.Context) ([]SessionInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

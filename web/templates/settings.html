@@ -175,6 +175,17 @@
 */}}{{ with .Unit.Sentence }}<dt>Systemd unit</dt><dd>{{ . }}</dd>{{ end }}
 {{ with .Unit.Waiting }}<dt>Waiting at</dt><dd>{{ . }}</dd>{{ end }}
 {{ with .Unit.Compare }}<dt>Compare them</dt><dd>{{ . }}</dd>{{ end }}
+{{/*
+  The override, in addition to the sentence above and never instead of it. A host
+  can be running the release's own unit, byte for byte, and still not be running
+  under the hardening that unit describes: systemd merges <unit>.d/*.conf over it.
+  Saying only "the one this release ships" would be true about a file and
+  misleading about the host, which is the same silence the rows above exist to end.
+
+  Two rows for the same reason as Waiting and Compare: the sentence is the fact
+  and the path is what lets an operator go and read it.
+*/}}{{ with .Unit.Overridden }}<dt>Hardening</dt><dd>{{ . }}</dd>{{ end }}
+{{ with .Unit.Override }}<dt>Override at</dt><dd>{{ . }}</dd>{{ end }}
 </dl>
 
 {{/*

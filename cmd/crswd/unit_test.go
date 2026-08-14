@@ -221,3 +221,56 @@ func TestStartupSaysWhatBecameOfTheUnit(t *testing.T) {
 		t.Fatalf("main.go calls %s %d times; want exactly one, in the startup sequence. A report nothing prints is this milestone's own defect repeated", report, calls)
 	}
 }
+
+// TestTheJournalSaysWhenHardeningIsOverridden is FR-013 on the other account.
+//
+// The page and the journal describe one file, so they say the same thing from
+// the same vocabulary — milestone 15 moved that vocabulary into internal/updater
+// precisely so a browser and a journal could not disagree about a host, with no
+// tie-breaker available on it. This is that discipline applied to the fact the
+// unit alone cannot carry.
+func TestTheJournalSaysWhenHardeningIsOverridden(t *testing.T) {
+	t.Parallel()
+
+	const override = "/home/operator/.config/systemd/user/crswd.service.d/10-relax.conf"
+
+	var journal strings.Builder
+	report := updater.UnitReport{
+		Path:     "/home/operator/.config/systemd/user/crswd.service",
+		Present:  true,
+		Ours:     true,
+		Override: override,
+	}
+	if err := sayWhatBecameOfTheUnit(&journal, report, nil); err != nil {
+		t.Fatalf("sayWhatBecameOfTheUnit() = %v; want the report written", err)
+	}
+
+	got := journal.String()
+	if !strings.Contains(got, updater.UnitSentenceOverridden) {
+		t.Errorf("the journal does not state the override:\n%s", got)
+	}
+	if !strings.Contains(got, override) {
+		t.Errorf("the journal does not name the override file, so nobody can go and read it:\n%s", got)
+	}
+	// Still said. The override is an additional fact about the host, not a
+	// replacement for what became of the unit.
+	if !strings.Contains(got, updater.UnitSentenceOurs) {
+		t.Errorf("the journal stopped saying what became of the unit itself:\n%s", got)
+	}
+}
+
+// TestTheJournalIsSilentWithoutAnOverride is the default posture. An empty
+// Override is the absence of a file, and a line about one that is not there
+// would send an operator to read nothing.
+func TestTheJournalIsSilentWithoutAnOverride(t *testing.T) {
+	t.Parallel()
+
+	var journal strings.Builder
+	report := updater.UnitReport{Path: "/home/operator/.config/systemd/user/crswd.service", Present: true, Ours: true}
+	if err := sayWhatBecameOfTheUnit(&journal, report, nil); err != nil {
+		t.Fatalf("sayWhatBecameOfTheUnit() = %v; want the report written", err)
+	}
+	if got := journal.String(); strings.Contains(got, updater.UnitSentenceOverridden) {
+		t.Errorf("the journal claims an override on a host with none:\n%s", got)
+	}
+}
