@@ -2080,8 +2080,8 @@ func TestTheCreateFormOffersTheLifetimeSwitchOnlyWhereTheDaemonWouldGrantIt(t *t
 // TestCreateFormRendersNoCommandName is FR-002 at the only place it can be
 // checked: against a daemon that really has commands configured.
 //
-// It is a page test rather than a component test, and it has to be. The view no
-// longer carries the names at all, so a component rendered from one could not
+// It is a page test rather than a component test, and it has to be. The view
+// carries no command *names* at all, so a component rendered from one could not
 // leak what it was never given — what can still go wrong is the projection
 // putting them back, in a label, a value, a title or a data attribute, which is a
 // fact about `fleet` and not about the template.
@@ -2091,7 +2091,20 @@ func TestTheCreateFormOffersTheLifetimeSwitchOnlyWhereTheDaemonWouldGrantIt(t *t
 // it: it describes a session that already exists rather than offering a choice of
 // what to start.
 //
-// **Must fail when** a name or a command line reaches the markup by any route.
+// # The command line is now shown, and the name still is not
+//
+// This test asserted both absences until milestone 15. The preview added by that
+// milestone renders the resolved command *line* on purpose (FR-014), so the
+// preview element is excluded from the sweep below and its own rules are
+// TestTheCreateFormPreviewIsAReadoutAndNotAChooser's.
+//
+// The distinction is not a loophole. A name in a control is a chooser — an
+// operator picking "rc" out of a list is choosing a command by name, which is
+// what FR-026 forbids and what this form used to do. A line in a `<pre>` is a
+// readout of what the mode they picked will run. What crosses to the browser is
+// wider than it was; what the browser can *select* is exactly what it was.
+//
+// **Must fail when** a configured name reaches any control on this form.
 func TestCreateFormRendersNoCommandName(t *testing.T) {
 	t.Parallel()
 
@@ -2103,46 +2116,80 @@ func TestCreateFormRendersNoCommandName(t *testing.T) {
 	f.cfg.StartCommands = config.NewStartCommands(commands)
 
 	create := sectionOf(t, f.view(t).Body.String(), "create")
+	controls := commandPreview.ReplaceAllString(create, "")
 
-	for name, command := range commands {
-		if n := strings.Count(create, name); n != 0 {
-			t.Errorf("the rendered create form names the configured command %q %d times; a mode is asked for without the daemon's vocabulary for it:\n%s", name, n, create)
-		}
-		// The command line was never offered even when the names were, and it
-		// stays out for the stronger reason: a page that carried one is a page
-		// that could be made to carry any of it.
-		if strings.Contains(create, command) {
-			t.Errorf("the rendered create form carries the command line %q, which is configuration and not a choice:\n%s", command, create)
+	for name := range commands {
+		if n := strings.Count(controls, name); n != 0 {
+			t.Errorf("the rendered create form names the configured command %q %d times outside its preview; a mode is asked for without the daemon's vocabulary for it:\n%s", name, n, controls)
 		}
 	}
-	// Non-vacuity: the section really did render, and it really does hold the
-	// control that replaced the chooser.
-	if !strings.Contains(create, `name="remote_control"`) {
-		t.Errorf("the rendered create form carries no remote_control switch, so the sweep above passed on markup that offers nothing:\n%s", create)
+	// Non-vacuity, in both directions: the section really did render and holds the
+	// control that replaced the chooser, and the strip above really did remove a
+	// preview rather than silently matching nothing.
+	if !strings.Contains(controls, `name="remote_control"`) {
+		t.Errorf("the rendered create form carries no remote_control switch, so the sweep above passed on markup that offers nothing:\n%s", controls)
+	}
+	if !commandPreview.MatchString(create) {
+		t.Errorf("the create form rendered no command preview, so the exclusion above is hiding nothing and this test is weaker than it reads:\n%s", create)
 	}
 }
 
-// TestViewCarriesNoStartCommands is the same removal one layer down, and it is
-// the half that keeps the chooser from coming back: a view still carrying the
-// names is a template edit away from listing them again.
+// commandPreview matches the readout block, so a sweep for command *names* can
+// exclude the one element that renders a command *line* on purpose.
+var commandPreview = regexp.MustCompile(`(?s)<pre class="command-preview".*?</pre>`)
+
+// TestTheCreateFormPreviewIsAReadoutAndNotAChooser is what remains of
+// TestViewCarriesNoStartCommands, and the change is worth reading.
 //
-// Written against the struct's own fields rather than against a call site, for
-// the reason TestViewCarriesNoConversations is — "left in place for later" is
-// exactly the state a call site cannot show, since an unpopulated field looks
-// like a daemon that configured nothing.
+// # Why the absolute guard went
 //
-// **Must fail when** any command-shaped field is kept on the create form's
-// parameter list, whatever it is named or typed.
-func TestViewCarriesNoStartCommands(t *testing.T) {
+// US1 removed the operator's configured command *names* from this view, because
+// the form rendered them as a `<select name="start_command">` — an operator
+// picking "rc" out of a list is choosing a command by name, which is the thing
+// FR-026 said not to do. The guard here asserted no command-shaped field existed
+// at all, which was the cheapest way to keep the chooser from coming back.
+//
+// Milestone 15 puts resolved command *lines* back on the view for the preview
+// (FR-014). That is a different thing in the way that matters: what crosses to the
+// browser is text to render, the switch still carries a mode, and the create still
+// resolves that mode to a command server-side out of the operator's own set. So
+// the rule to enforce is no longer "no commands on the view" but FR-016 — nothing
+// the browser sends may select a command line except by mode.
+//
+// **Must fail when** the preview becomes a form field, or the form regains a
+// control that names a command.
+func TestTheCreateFormPreviewIsAReadoutAndNotAChooser(t *testing.T) {
 	t.Parallel()
 
-	form := reflect.TypeOf(createFormView{})
-	for i := range form.NumField() {
-		field := form.Field(i)
-		if strings.Contains(strings.ToLower(field.Name), "command") ||
-			strings.Contains(strings.ToLower(field.Type.String()), "startcommand") {
-			t.Errorf("the create form's parameters still expose the daemon's command names: %s %s", field.Name, field.Type)
+	view := createForm()
+	view.Commands = map[bool]string{
+		false: "claude --dangerously-skip-permissions",
+		true:  `claude --dangerously-skip-permissions "/rc {name}"`,
+	}
+	out := renderComponent(t, "create-form", view)
+
+	// The preview is rendered, so what follows is asserting about markup that
+	// exists.
+	if !strings.Contains(out, "claude --dangerously-skip-permissions") {
+		t.Fatalf("the form renders no command preview, so this test asserts nothing:\n%s", out)
+	}
+
+	// Nothing that submits. A preview carrying a name attribute is a field, and a
+	// field carrying a command line is the execution surface FR-016 closes.
+	for _, forbidden := range []string{
+		`name="start_command"`,
+		`name="command"`,
+		"contenteditable",
+		"<textarea",
+	} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("the create form carries %s; the preview is a readout, and the configured set stays the only source of commands:\n%s", forbidden, out)
 		}
+	}
+
+	// And the control that decides which line runs is still a mode.
+	if !strings.Contains(out, `name="remote_control"`) {
+		t.Errorf("the create form carries no remote_control switch, so what selects the command is something else:\n%s", out)
 	}
 }
 
@@ -2660,17 +2707,46 @@ func TestCreateFormHasNoResumeField(t *testing.T) {
 // because "left in place for later" is exactly the state a call site cannot see —
 // an unpopulated field looks like an empty offer.
 //
-// **Must fail when** any conversation-shaped field is kept on the create form's
-// parameter list, whatever it is named or typed.
-func TestViewCarriesNoConversations(t *testing.T) {
+// **Must fail when** the conversation projection grows a field carrying any part
+// of what a conversation *said*.
+//
+// # This test replaced a stricter one, deliberately
+//
+// US5 removed conversations from this form outright, and the guard here asserted
+// that no conversation-shaped field existed at all. That was the right rule for
+// that milestone: the offer it removed listed every suggested directory's
+// conversations to fill a free-text identifier field with, which asked an
+// operator to resolve an ambiguity the daemon itself had refused to.
+//
+// Milestone 15 answers the question that milestone deferred — a picker, scoped to
+// one working directory that has passed the create's own allowlist check — so the
+// absolute guard is gone and this one takes its place. What is being protected is
+// no longer "no conversations" but FR-025: enough to choose between them and no
+// more. The transcript itself is the operator's work, and this daemon renders
+// none of it.
+func TestTheConversationProjectionCarriesNoContent(t *testing.T) {
 	t.Parallel()
 
-	form := reflect.TypeOf(createFormView{})
-	for i := range form.NumField() {
-		field := form.Field(i)
-		if strings.Contains(strings.ToLower(field.Name), "conversation") ||
-			strings.Contains(strings.ToLower(field.Type.String()), "conversation") {
-			t.Errorf("the create form's parameters still expose conversation data: %s %s", field.Name, field.Type)
+	// Everything a transcript holds, and the two things reading one would leak
+	// besides: how big the work was, and where it sits on this host.
+	forbidden := []string{"title", "message", "prompt", "summary", "text", "body", "content", "path", "file", "size", "bytes"}
+
+	view := reflect.TypeOf(conversationView{})
+	for i := range view.NumField() {
+		field := view.Field(i)
+		lower := strings.ToLower(field.Name)
+		for _, word := range forbidden {
+			if strings.Contains(lower, word) {
+				t.Errorf("the conversation projection carries %s %s, which is part of what a conversation said rather than which one it is", field.Name, field.Type)
+			}
+		}
+	}
+
+	// Non-vacuity: the projection really does carry the two fields FR-025 allows,
+	// so the sweep above is passing on a type with something in it.
+	for _, want := range []string{"ID", "Modified"} {
+		if _, ok := view.FieldByName(want); !ok {
+			t.Errorf("the conversation projection has no %s field; the sweep above is asserting nothing", want)
 		}
 	}
 }

@@ -65,6 +65,17 @@ type createRequest struct {
 	// working unchanged.
 	StartCommand string `json:"start_command"`
 
+	// Resume asks the new session to continue a prior Claude conversation in its
+	// working directory instead of starting empty (milestone 15): "latest" for
+	// the most recent, or a conversation identifier for one in particular. Absent
+	// starts fresh.
+	//
+	// The signed door takes it for the reason it takes the lifetime: two doors
+	// offering different capabilities for one daemon is how a caller learns to
+	// prefer whichever one was written last. It is validated in the manager,
+	// which is where every caller meets the same check.
+	Resume string `json:"resume"`
+
 	// Lifetime is an optional per-session override (#37), as a Go duration
 	// string: "72h", or "never" meaning no absolute deadline at all. Absent
 	// means the daemon's default.
@@ -397,6 +408,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		Name:         req.Name,
 		WorkDir:      req.WorkDir,
 		StartCommand: req.StartCommand,
+		Resume:       req.Resume,
 		Lifetime:     lifetime,
 	})
 	if err != nil {

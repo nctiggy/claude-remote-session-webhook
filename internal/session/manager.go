@@ -35,6 +35,25 @@ const claudeStartCommand = "claude --dangerously-skip-permissions"
 // arguments in order, so one exec both types the line and runs it.
 const enterKey = "Enter"
 
+// The Claude CLI's own flags for continuing a conversation (milestone 15).
+//
+// Long forms rather than -c and -r, because these end up in the command line the
+// create form shows the operator and a preview reading `claude -c -r 88e5…` is a
+// preview nobody can check against what they asked for.
+//
+// They are constants in this repository and never configuration: an operator who
+// could spell these could put an arbitrary flag on the line that starts an
+// unsandboxed shell, which is the execution surface FR-016 keeps closed.
+//
+// Exported because the create form's preview has to show them and must not spell
+// them itself: a script with its own copy is a second speller, free to show an
+// operator a flag the daemon stopped passing. The page reads these off the
+// daemon exactly as it reads the command lines.
+const (
+	ResumeLatestFlag = "--continue"
+	ResumeOneFlag    = "--resume"
+)
+
 // interruptKey is tmux's name for Ctrl-C, which the pane's line discipline turns
 // into SIGINT for whatever holds the terminal. It is how a mode change ends the
 // running process **without** ending the session (FR-028).
@@ -541,6 +560,16 @@ type CreateRequest struct {
 	// checked against that ceiling before anything is built.
 	Lifetime time.Duration
 
+	// Resume asks the new session to pick up a prior Claude conversation instead
+	// of starting an empty one (milestone 15, spec 009): ResumeLatest for the most
+	// recent in the working directory, or a conversation identifier for one in
+	// particular. Empty starts fresh, which is every create made before this
+	// field existed.
+	//
+	// It is validated here and again before it is rendered, and the second check
+	// is not redundant — read ValidateResume for what is being defended against.
+	Resume string
+
 	// StartCommand names which configured command to type into the new session's
 	// shell (#38). Empty means the daemon's default. It is a name, never a
 	// command line — a create route that accepted a command line would be a
@@ -599,6 +628,15 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 		return nil, "", err
 	}
 
+	// Refused here for resolveStartCommand's reason: a create naming a
+	// conversation this daemon will not put on a command line must produce no
+	// record, no tmux session and no token. It is the boundary check; start makes
+	// it again before the value reaches a line (ValidateResume).
+	resume, err := ValidateResume(req.Resume)
+	if err != nil {
+		return nil, "", err
+	}
+
 	if err := ValidateName(req.Name); err != nil {
 		return nil, "", fmt.Errorf("create session: %w", err)
 	}
@@ -652,7 +690,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 		return nil, "", fmt.Errorf("create session %s: %w", id, err)
 	}
 
-	if err := m.start(ctx, s); err != nil {
+	if err := m.start(ctx, s, resume); err != nil {
 		return nil, "", m.rollback(ctx, s, err)
 	}
 
@@ -1740,7 +1778,7 @@ func (m *Manager) confirmGone(ctx context.Context, name string) (bool, error) {
 // property #95's removal restored — the one caller-supplied word that used to be
 // appended here is gone, so there is no request-shaped path to a command line
 // left to keep an alphabet for.
-func (m *Manager) start(ctx context.Context, s Session) error {
+func (m *Manager) start(ctx context.Context, s Session, resume string) error {
 	name := s.TmuxName()
 
 	if err := m.tmux.New(ctx, name, s.WorkDir); err != nil {
@@ -1799,11 +1837,7 @@ func (m *Manager) start(ctx context.Context, s Session) error {
 	if err != nil {
 		return fmt.Errorf("resolve the start command for session %s: %w", s.ID, err)
 	}
-	// The session's own name goes into the command line here and nowhere else
-	// (#58). Create has already refused anything RenderStartCommand would, so a
-	// failure at this point is a record that reached start without passing
-	// ValidateName — fail closed rather than type a line with a hole in it.
-	command, err := config.RenderStartCommand(template, s.Name)
+	command, err := m.renderStart(template, resume, s.Name)
 	if err != nil {
 		return fmt.Errorf("render the start command for session %s: %w", s.ID, err)
 	}
@@ -1812,6 +1846,111 @@ func (m *Manager) start(ctx context.Context, s Session) error {
 	}
 
 	return nil
+}
+
+// renderStart turns a resolved command template into the line that will be typed
+// into a session's shell.
+//
+// **It is the one implementation, and that is the requirement.** start calls it
+// to produce what runs and StartCommandLine calls it to produce what the create
+// form shows, so FR-015 — the displayed command line is what actually runs —
+// holds by construction rather than by two functions being kept in step. A
+// preview assembled anywhere else, in Go or in the browser, would be a second
+// renderer free to disagree with this one the day either grows a rule.
+//
+// The resume value is validated here rather than trusted from the caller. This is
+// the last point before it becomes part of a line typed at an unsandboxed shell,
+// and a future caller reaching Create by another route would otherwise arrive
+// with nothing between them and that line. Failing closed rather than dropping
+// the flag: a create that asked to continue a conversation and silently started a
+// fresh one is FR-024's defect, found out by reading a pane that has forgotten
+// everything.
+//
+// Order matters. The flags go on before the name is substituted, so a session
+// name can never be read as a flag no matter what it contains — and it cannot
+// anyway, because ValidateName's alphabet has no leading hyphen in it. Two
+// defences, and this one is free.
+func (m *Manager) renderStart(template, resume, sessionName string) (string, error) {
+	flagged, err := m.resumeFlagged(template, resume)
+	if err != nil {
+		return "", err
+	}
+	// The session's own name goes into the command line here and nowhere else
+	// (#58). Create has already refused anything RenderStartCommand would, so a
+	// failure at this point is a record that reached start without passing
+	// ValidateName — fail closed rather than type a line with a hole in it.
+	return config.RenderStartCommand(flagged, sessionName)
+}
+
+// resumeFlagged is renderStart without the name substitution: the half both the
+// preview and the create share, split out so the preview can stop before the
+// step that needs a name.
+func (m *Manager) resumeFlagged(template, resume string) (string, error) {
+	checked, err := ValidateResume(resume)
+	if err != nil {
+		return "", err
+	}
+	switch checked {
+	case "":
+		// Nothing to add, and the line is byte-identical to the one this daemon
+		// typed before the option existed.
+		return template, nil
+	case ResumeLatest:
+		return config.InsertStartFlags(template, ResumeLatestFlag), nil
+	default:
+		return config.InsertStartFlags(template, ResumeOneFlag, checked), nil
+	}
+}
+
+// StartCommandLine is what a create with these options would type, for the create
+// form to show the operator (FR-014, FR-015, contracts/command-preview.md).
+//
+// It is a **readout and never a route to execution**. Nothing a browser sends
+// selects a command line other than by mode and resume state: the template still
+// comes from the operator's configured set, resolved here from a mode exactly as
+// a create resolves it, and this method returns a string to render rather than
+// anything to run. The set of commands this daemon can be made to execute is the
+// same before and after it exists (FR-016).
+//
+// It answers a refusal for a mode this daemon has no command for, which is the
+// same refusal a create would get — so a form that cannot show a line is a form
+// whose control would have been turned away, and FR-018a's discipline about
+// absent values applies: render nothing rather than an empty preview.
+//
+// # An empty name leaves the placeholder standing
+//
+// The create form renders before its name field has been filled in, and the
+// operator's name is exactly the part of the line that changes as they type. So
+// an empty sessionName here means "the line, with the name not yet chosen", and
+// the configured template's own `{name}` is returned untouched for the page to
+// substitute into.
+//
+// It is a rule of this method and deliberately not of renderStart, which start
+// uses: a *create* reaching RenderStartCommand with no name is a record that got
+// past ValidateName, and that must go on failing closed rather than typing a line
+// with a hole in it. Preview and execution differ on exactly one thing, and this
+// is it.
+//
+// Getting this wrong is not hypothetical. RenderStartCommand re-checks the
+// alphabet, so passing the placeholder itself as a name is refused for its
+// braces — which silently removed the preview from every daemon whose remote
+// command carries `{name}`, which is the deployed shape.
+func (m *Manager) StartCommandLine(mode Mode, resume, sessionName string) (string, error) {
+	name, err := m.commandForMode(mode)
+	if err != nil {
+		return "", err
+	}
+	template, err := m.resolveStartCommand(name)
+	if err != nil {
+		return "", err
+	}
+	if sessionName == "" {
+		// The flags go on and the substitution does not, so the template's own
+		// placeholder survives for the page to fill in. A template carrying none
+		// is already the whole line.
+		return m.resumeFlagged(template, resume)
+	}
+	return m.renderStart(template, resume, sessionName)
 }
 
 // rollback undoes a half-started session and returns the error Create answers

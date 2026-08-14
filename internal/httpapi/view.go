@@ -279,17 +279,76 @@ type createFormView struct {
 	// read from configuration at the point a session starts, and crosses to the
 	// browser in neither direction.
 	//
-	// There is no Conversations field, and there is no projection behind one
-	// (US5). The form asked an operator for an opaque conversation identifier and
-	// offered the conversations of every *suggested directory* to fill it with,
-	// which is not the thing an operator wants back: what they want is the
-	// conversation *this session* was having, and FR-032 already refuses to
-	// resolve that ambiguity by guessing.
+	// Commands is the line each mode would run, for the preview beside the form
+	// (FR-014, contracts/command-preview.md). Keyed by whether remote control is
+	// on, which is the state the switch has and the only axis this form varies.
 	//
-	// The offer was also the only thing in this struct that read the filesystem
-	// on the render path for a fact no other component needed. What replaces the
-	// question is not designed yet and is deliberately not invented here
-	// (Principle II) — removing it is this milestone's, answering it is not.
+	// **It is a readout, and this field does not reopen what US1 closed.** The
+	// paragraph above removed the command *names* because a chooser of them is
+	// choosing a command by name; these are resolved command *lines*, rendered as
+	// text for an operator to read, and nothing a browser posts selects one except
+	// by mode. The switch still carries a mode and the create still resolves its
+	// command server-side from the operator's configured set.
+	//
+	// It discloses nothing to this caller that the interface does not already
+	// show them: the settings page renders the whole configured set to the same
+	// authenticated operator (startCommandSet), and start_commands is not a
+	// secret (config.IsSecret).
+	//
+	// A mode absent from the map is one this daemon has no command for, and the
+	// preview for it is not rendered at all — FR-018a's discipline about absent
+	// values, applied to a readout.
+	Commands map[bool]string
+
+	// Conversations is what this working directory has been used for before, for
+	// the resume control (FR-020). Newest first.
+	//
+	// The field US5 removed carried the same name and was a different thing: it
+	// offered the conversations of every *suggested* directory to fill a free-text
+	// identifier field with, which asked an operator to resolve an ambiguity the
+	// daemon had refused to. This one is the conversations of the working
+	// directory the form is being rendered for, and the operator picks rather than
+	// types.
+	//
+	// It is the only thing in this struct that reads the filesystem on the render
+	// path, which is why session.Conversations bounds it: the directory goes
+	// through the create's own allowlist check before it becomes a path, and every
+	// failure is an empty list rather than a page that will not render.
+	Conversations []conversationView
+
+	// ResumeLatest is the value the "continue" control posts, spelled by the
+	// daemon rather than by the markup so the form and the parser cannot come to
+	// disagree about the word.
+	ResumeLatest string
+
+	// ResumeLatestFlag and ResumeOneFlag are the CLI flags the preview shows when
+	// one of those is chosen, and they are here for the reason Commands is: the
+	// script must not spell the daemon's vocabulary. A copy in crswd.js would be
+	// a second speller, free to show an operator a flag the daemon stopped
+	// passing — and the whole claim of the preview is that it shows what runs.
+	ResumeLatestFlag string
+	ResumeOneFlag    string
+}
+
+// conversationView is one prior conversation on the create form.
+//
+// Two fields, and what is absent is the requirement (FR-025): no title, no first
+// message, no path, no size. Enough to choose between conversations and no more —
+// everything else in that transcript is the operator's work, and this daemon
+// renders none of it.
+type conversationView struct {
+	// ID is the value the control posts, and a validated UUID by the time it is
+	// here (session.ValidateResume).
+	ID string
+
+	// Short is the first group of the identifier, which is what a person actually
+	// distinguishes two conversations by. The full value rides in the control.
+	Short string
+
+	// Modified is how long ago the conversation was last written, formatted here
+	// for the reason a card's age is: there is no duration formatting in the
+	// template set and no function map to add one.
+	Modified string
 }
 
 // outcomeView is the banner the fleet renders for what an action just did (T014).

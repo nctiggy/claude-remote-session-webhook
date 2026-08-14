@@ -3666,3 +3666,105 @@ func TestLifetimeEncodingRoundTrips(t *testing.T) {
 		t.Errorf("encodeLifetime(0) = %q, want the empty option that means unset", got)
 	}
 }
+
+// TestStartCommandLineIsWhatTheSessionTypes is FR-015 as a property: the create
+// form's preview and the line the host is asked to type come out of one
+// implementation, so they cannot disagree.
+//
+// It is asserted by running both for the same options and comparing, rather than
+// by checking either against a literal — a test with its own copy of the expected
+// line would pass on the day the two renderers drifted and both stopped matching
+// it.
+//
+// **Must fail when** the preview grows a second renderer, or the flags land in a
+// different place on one path than the other.
+func TestStartCommandLineIsWhatTheSessionTypes(t *testing.T) {
+	t.Parallel()
+
+	const conversation = "88e5294c-d947-4527-b8c9-5eb8384bae6a"
+
+	for _, resume := range []string{"", ResumeLatest, conversation} {
+		t.Run("resume="+resume, func(t *testing.T) {
+			t.Parallel()
+
+			f := newManagerFixture(t)
+			f.configuredForModes()
+
+			req := f.request()
+			req.Resume = resume
+			s, _, err := f.mgr.Create(context.Background(), req)
+			if err != nil {
+				t.Fatalf("Create(resume=%q) = %v", resume, err)
+			}
+
+			var typed string
+			for _, call := range f.tmux.Calls() {
+				if call.Op == tmuxctl.OpSendKeys && len(call.Argv) >= 7 {
+					typed = call.Argv[5]
+				}
+			}
+			if typed == "" {
+				t.Fatalf("the host was never asked to type anything: %v", f.tmux.Calls())
+			}
+
+			shown, err := f.mgr.StartCommandLine(ModeLocal, resume, s.Name)
+			if err != nil {
+				t.Fatalf("StartCommandLine(resume=%q) = %v", resume, err)
+			}
+			if shown != typed {
+				t.Errorf("the form would show %q and the host was asked to type %q", shown, typed)
+			}
+		})
+	}
+}
+
+// TestStartCommandLineLeavesThePlaceholderForThePage is the preview's one
+// departure from what a create does, and the bug it exists to keep fixed.
+//
+// The form renders before its name field is filled in, so the preview asks for a
+// line with no name — and RenderStartCommand re-checks the alphabet, which
+// refuses the placeholder itself for its braces. Passing it as a name therefore
+// removed the preview outright from every daemon whose remote command carries
+// `{name}`, which is the deployed shape. Silently: an errored preview renders as
+// no preview at all (FR-018a).
+//
+// **Must fail when** a preview with no name errors, loses the placeholder, or
+// starts substituting something for it.
+func TestStartCommandLineLeavesThePlaceholderForThePage(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	// The deployed shape, spelled here rather than taken from the mode fixture:
+	// that one's commands carry no placeholder, and the placeholder is the whole
+	// subject of this test.
+	f.mgr.SetStartCommands(config.NewStartCommands(map[string]string{
+		config.DefaultStartCommandName: "claude --dangerously-skip-permissions",
+		remoteCommandName:              `claude --dangerously-skip-permissions "/rc {name}"`,
+	}))
+	f.mgr.SetRemoteControlCommand(remoteCommandName)
+
+	for _, mode := range []Mode{ModeLocal, ModeRemote} {
+		line, err := f.mgr.StartCommandLine(mode, ResumeLatest, "")
+		if err != nil {
+			t.Fatalf("StartCommandLine(%s) with no name = %v; the form renders before a name is typed", mode, err)
+		}
+		if line == "" {
+			t.Fatalf("StartCommandLine(%s) with no name returned nothing to show", mode)
+		}
+		if !strings.Contains(line, ResumeLatestFlag) {
+			t.Errorf("the preview for %s is %q, which does not carry %q", mode, line, ResumeLatestFlag)
+		}
+	}
+
+	// The remote command is the one that carries the placeholder, and carrying it
+	// through is the whole of the fix: the page substitutes what the operator
+	// types into exactly this token.
+	remote, err := f.mgr.StartCommandLine(ModeRemote, "", "")
+	if err != nil {
+		t.Fatalf("StartCommandLine(remote) = %v", err)
+	}
+	if !strings.Contains(remote, config.StartCommandNamePlaceholder) {
+		t.Errorf("the remote preview is %q and has lost %s; the page has nothing to substitute into",
+			remote, config.StartCommandNamePlaceholder)
+	}
+}

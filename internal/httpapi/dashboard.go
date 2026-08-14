@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
@@ -309,10 +310,14 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string, outcome 
 		// daemon whose operator did not ask for discovery — the shipped default —
 		// the roots are still offered and no filesystem is touched to offer them.
 		//
-		// Nothing here asks the host what conversations it has recorded (US5). The
-		// form no longer carries the question, so the walk above is the only thing
-		// on this path that touches the filesystem — and on the shipped default,
-		// where discovery is off, it touches none.
+		// The prior conversations, and this path does touch the filesystem for
+		// them (milestone 15). US5 removed an earlier version of the same offer
+		// because it listed the conversations of every *suggested* directory to
+		// fill a free-text identifier with, which asked the operator to resolve an
+		// ambiguity the daemon had refused to. This one is scoped to a working
+		// directory that has passed the create's own allowlist check, shows a
+		// picker rather than a text box, and reads no transcript — see
+		// session.Conversations for what it discloses and what bounds it.
 		//
 		// Nothing here names a configured command either (US1, FR-002). The form
 		// asks for a mode and the daemon resolves the mode to a command, so the
@@ -330,9 +335,92 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string, outcome 
 			Roots:                  s.rootPaths(),
 			Suggestions:            suggestions,
 			LifetimeCeilingRemoved: s.sessions.LifetimeCeilingRemoved(),
+			Commands:               s.previewCommands(),
+			Conversations:          s.conversationsFor(now, suggestions),
+			ResumeLatest:           session.ResumeLatest,
+			ResumeLatestFlag:       session.ResumeLatestFlag,
+			ResumeOneFlag:          session.ResumeOneFlag,
 		},
 		Outcome: outcome,
 	}
+}
+
+// previewCommands is the line each mode would run, for the readout beside the
+// create form (FR-014, contracts/command-preview.md).
+//
+// The name is deliberately absent from the result. What crosses to the browser is
+// a resolved *line* to render as text, keyed by the mode switch's own two states —
+// so the form still asks for a mode, and the create still resolves that mode to a
+// command server-side out of the operator's configured set (FR-016).
+//
+// It asks the manager that will run the create, rather than composing a line from
+// configuration here, so what the page shows and what the session types are one
+// implementation (session.Manager.StartCommandLine). A second renderer in this
+// package would be the thing FR-015 exists to rule out.
+//
+// The session name is left as the template's own placeholder rather than filled
+// in — an empty name is what asks StartCommandLine for that — because the field
+// is empty when the page renders and the script substitutes what the operator
+// types. A name substituted here would be a preview that stopped being true the
+// moment they started typing.
+//
+// A mode this daemon has no command for is absent from the map rather than
+// present and empty — FR-018a, so the template renders no block for it.
+func (s *Server) previewCommands() map[bool]string {
+	out := make(map[bool]string, 2)
+	for remote, mode := range map[bool]session.Mode{false: session.ModeLocal, true: session.ModeRemote} {
+		line, err := s.sessions.StartCommandLine(mode, "", "")
+		if err != nil {
+			continue
+		}
+		out[remote] = line
+	}
+	return out
+}
+
+// conversationsFor is the prior conversations the resume control offers.
+//
+// It reads the *first* suggested directory and no other, which is the whole of
+// what a server-rendered form can honestly do: the working-directory field is
+// free text and empty when the page renders, so there is no directory to answer
+// for yet. What this provides is the offer for the directory an operator most
+// likely means, and the script narrows it as they type.
+//
+// This is a smaller promise than the removed US5 version made, and deliberately:
+// that one listed every suggested directory's conversations at once, which is how
+// it came to be an offer nobody could act on.
+//
+// Every failure is an empty list (session.Conversations), so a host with no
+// conversation history, no home directory, or a Claude release that moved the
+// directory renders a form that still works.
+func (s *Server) conversationsFor(now time.Time, suggestions []string) []conversationView {
+	if len(suggestions) == 0 {
+		return nil
+	}
+	found := s.sessions.Conversations(suggestions[0])
+	out := make([]conversationView, 0, len(found))
+	for _, c := range found {
+		out = append(out, conversationView{
+			ID:    c.ID,
+			Short: shortConversation(c.ID),
+			// formatAge's vocabulary, so one page cannot spell a duration two
+			// ways. A conversation written a moment ago reads "less than a
+			// minute ago" rather than as a timestamp nobody asked for.
+			Modified: formatAge(now.Sub(c.Modified)) + " ago",
+		})
+	}
+	return out
+}
+
+// shortConversation is the first group of a UUID, which is what a person
+// distinguishes two conversations by. The full value rides in the control's own
+// value attribute, so nothing is lost by shortening what is read.
+func shortConversation(id string) string {
+	first, _, found := strings.Cut(id, "-")
+	if !found {
+		return id
+	}
+	return first
 }
 
 // rootPaths is the configured allowlist as the create form's hint renders it.

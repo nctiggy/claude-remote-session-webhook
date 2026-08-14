@@ -2541,62 +2541,179 @@ func TestACreateMayAskForNoAbsoluteDeadlineWhereTheOperatorAllowedIt(t *testing.
 	}
 }
 
-// TestStrayResumeValueIsNotExecuted is what has to hold once the conversation
-// field is gone (#95): the name this daemon no longer reads is an unknown field
-// like any other, and an unknown field reaches nothing the host runs.
+// TestAStrayResumeValueIsRefusedRatherThanExecuted is the assertion that stands
+// where #95's used to, and the change of shape is the change of design.
 //
-// It is the assertion the deletion is worth making. Removing a field removes its
-// *guard* too — `resume` used to be checked against an alphabet before it was
-// appended to a command line, and a later hand that reads the abandoned name back
-// out of the form has no such check to inherit. So the claim is about the argv,
-// not about the answer: the create succeeds either way, which is exactly why an
-// outcome assertion could not notice this.
+// When the conversation field was removed, `resume` was a name this daemon no
+// longer read, and the claim was that an unknown field reaches nothing the host
+// runs. Milestone 15 reads it again — so the guard is no longer "nobody looks at
+// this" but session.ValidateResume, and the claim has to be the stronger one:
+// the value is refused, and *nothing* is started.
 //
-// The value is a command substitution rather than an identifier, because that is
-// what the alphabet existed to refuse. `$(whoami)` in a line typed into a shell
-// runs; in a form field this daemon ignores, it is bytes nobody looked at.
+// The values are shell syntax rather than identifiers, because that is what the
+// alphabet exists to refuse. `$(whoami)` in a line typed into a shell runs. The
+// start command is delivered by SendKeys — typed into a live shell — so this is
+// not a hypothetical about a future handler; it is what would happen today if
+// the validator were removed.
 //
-// **Must fail when** an abandoned field name is an unguarded path to a command —
-// which is what re-reading it would be, and the reason the field was removed
-// rather than left inert.
-func TestStrayResumeValueIsNotExecuted(t *testing.T) {
+// The argv sweep is kept from the original and is the half an outcome assertion
+// cannot replace: a create that answered "refused" while still having handed the
+// host a line would pass on the answer alone.
+//
+// **Must fail when** the resume value reaches a command line, on stdin, or as an
+// argument — or when a value this daemon will not run is accepted at all.
+func TestAStrayResumeValueIsRefusedRatherThanExecuted(t *testing.T) {
 	t.Parallel()
 
-	const stray = "$(whoami)"
+	for _, stray := range []string{
+		// A command substitution: the case the alphabet exists for.
+		"$(whoami)",
+		// A separator, so a refusal that merely stripped metacharacters would
+		// still leave the shell a second command to run.
+		"; id",
+		// A pipeline, which reaches a second program without a separator.
+		"x | id",
+		// Uppercase hex of the right shape. Refused rather than lowered: a daemon
+		// that normalised its input is one whose validator and whose command line
+		// disagree about what was asked for.
+		"88E5294C-D947-4527-B8C9-5EB8384BAE6A",
+		// The right alphabet, the wrong shape. A prefix is not an identifier, and
+		// accepting one would be this daemon guessing which conversation an
+		// operator meant.
+		"88e5294c",
+		// A path, which is what a caller reaching past the picker would try.
+		"../../etc/passwd",
+		// A newline, which ends a line at a shell and starts another.
+		"88e5294c-d947-4527-b8c9-5eb8384bae6a\nid",
+	} {
+		t.Run(stray, func(t *testing.T) {
+			t.Parallel()
 
-	c := newCreator(t)
-	form := c.wellFormed(t)
-	form.Set("resume", stray)
+			c := newCreator(t)
+			form := c.wellFormed(t)
+			form.Set("resume", stray)
 
-	w := c.post(t, form)
+			w := c.post(t, form)
 
-	// An unknown field changes nothing, so the ordinary create still happens. This
-	// is what keeps the sweep below from passing vacuously: the host was asked to
-	// start something, and the line it was asked to start is there to be read.
-	wantOutcome(t, w, wantCreatedOutcome)
-	if got := len(c.owned()); got != 1 {
-		t.Fatalf("the store holds %d records; want the session that was asked for", got)
-	}
-	if got := c.started(); got != 1 {
-		t.Fatalf("the host was asked to start %d sessions; want the one this create asked for", got)
-	}
-
-	// Every call, not only the send-keys: Argv is a command line and Stdin is the
-	// other way bytes reach a pane, and a value the daemon does not read may travel
-	// on neither.
-	for _, call := range c.fixture.tmux.Calls() {
-		for _, arg := range call.Argv {
-			if strings.Contains(arg, stray) {
-				t.Errorf("the host was handed %q; a field this daemon no longer reads reached a command line", call.Argv)
+			wantOutcome(t, w, outcome("bad-resume"))
+			if got := len(c.owned()); got != 0 {
+				t.Errorf("the store holds %d records after a refused resume; want none", got)
 			}
+			if got := c.started(); got != 0 {
+				t.Errorf("the host was asked to start %d sessions; want 0 — a conversation this daemon will not run costs no tmux command", got)
+			}
+
+			// Every call, not only the send-keys: Argv is a command line and
+			// Stdin is the other way bytes reach a pane, and a value this daemon
+			// refused may travel on neither.
+			for _, call := range c.fixture.tmux.Calls() {
+				for _, arg := range call.Argv {
+					if strings.Contains(arg, stray) {
+						t.Errorf("the host was handed %q; a refused resume value reached a command line", call.Argv)
+					}
+				}
+				if bytes.Contains(call.Stdin, []byte(stray)) {
+					t.Errorf("%v was handed %q on stdin; a refused resume value reached the pane", call.Op, call.Stdin)
+				}
+				if slices.Contains(call.Argv, resumeOneFlagForTest) {
+					t.Errorf("the host was handed %q; a refused create resumes nothing", call.Argv)
+				}
+			}
+			// The trail carries the sentinel and never the value (FR-042), which
+			// on this branch matters twice over: the value is the thing a shell
+			// would have run.
+			if strings.Contains(c.sink.String(), stray) {
+				t.Errorf("the trail carries the refused value %q:\n%s", stray, c.sink.String())
+			}
+		})
+	}
+}
+
+// TestACreateMayContinueAConversation is the granted half: the shapes the route
+// accepts, asserted as the line the host is asked to type.
+//
+// It is the argv rather than the record because the record does not carry this —
+// a resume is a fact about starting, not about the session that results — so the
+// command line is the only place the operator's choice is observable at all.
+//
+// **Must fail when** the flags land somewhere an argument parser would not honour
+// them, or when the ordinary create stops being byte-identical to what it was.
+func TestACreateMayContinueAConversation(t *testing.T) {
+	t.Parallel()
+
+	const conversation = "88e5294c-d947-4527-b8c9-5eb8384bae6a"
+
+	for _, tc := range []struct {
+		name  string
+		posts string
+		want  []string
+	}{
+		{name: "start fresh", posts: "", want: nil},
+		{name: "the most recent", posts: "latest", want: []string{resumeLatestFlagForTest}},
+		{name: "one in particular", posts: conversation, want: []string{resumeOneFlagForTest, conversation}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := newCreator(t)
+			form := c.wellFormed(t)
+			if tc.posts != "" {
+				form.Set("resume", tc.posts)
+			}
+
+			wantOutcome(t, c.post(t, form), wantCreatedOutcome)
+
+			line := typedCommand(t, c)
+			for _, want := range tc.want {
+				if !strings.Contains(line, want) {
+					t.Errorf("the host was asked to type %q, which carries no %q", line, want)
+				}
+			}
+			if tc.want == nil {
+				// The ordinary create, which must be exactly the line this daemon
+				// typed before any of this existed.
+				if strings.Contains(line, resumeLatestFlagForTest) || strings.Contains(line, resumeOneFlagForTest) {
+					t.Errorf("a create that asked to resume nothing typed %q", line)
+				}
+			}
+			// The flags go after the binary and before everything else, because
+			// the configured commands end in a quoted prompt argument and whether
+			// a parser honours a flag after a positional is not this daemon's to
+			// assume (config.InsertStartFlags).
+			if len(tc.want) > 0 {
+				fields := strings.Fields(line)
+				if len(fields) < 2 || fields[1] != tc.want[0] {
+					t.Errorf("the line is %q; the resume flag must follow the binary immediately", line)
+				}
+			}
+		})
+	}
+}
+
+// The Claude CLI's flags as a test spells them: written out rather than read from
+// the constants the daemon uses, so a rename that changed what is typed at a
+// shell fails here instead of passing against itself.
+const (
+	resumeLatestFlagForTest = "--continue"
+	resumeOneFlagForTest    = "--resume"
+)
+
+// typedCommand is the line the host was asked to type into the new session's
+// shell — the send-keys argument before the Enter.
+func typedCommand(t *testing.T, c *creator) string {
+	t.Helper()
+
+	for _, call := range c.fixture.tmux.Calls() {
+		if call.Op != tmuxctl.OpSendKeys {
+			continue
 		}
-		if bytes.Contains(call.Stdin, []byte(stray)) {
-			t.Errorf("%v was handed %q on stdin; a field this daemon no longer reads reached the pane", call.Op, call.Stdin)
-		}
-		if slices.Contains(call.Argv, "--resume") {
-			t.Errorf("the host was handed %q; nothing this daemon starts resumes a conversation", call.Argv)
+		// argv is: tmux send-keys -t <target> -- <command> Enter
+		if len(call.Argv) >= 7 {
+			return call.Argv[5]
 		}
 	}
+	t.Fatalf("the host was never asked to type anything: %v", c.fixture.tmux.Calls())
+	return ""
 }
 
 // --- US1: remote control at create time (T004) ------------------------------

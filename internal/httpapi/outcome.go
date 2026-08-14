@@ -102,6 +102,16 @@ const (
 	// control.
 	outcomeBadLifetime outcome = "bad-lifetime"
 
+	// outcomeBadResume is a create naming a conversation this daemon will not put
+	// on a command line (milestone 15). Its own code for the reason every
+	// bad-field code above is its own: what an operator has to fix is the control
+	// they used, and a sentence about lifetimes would send them to the wrong one.
+	//
+	// It is also the refusal most likely to be reached by something other than
+	// this form — the picker offers only values the daemon found — so the sentence
+	// it maps to has to make sense to whoever wrote the other client.
+	outcomeBadResume outcome = "bad-resume"
+
 	// outcomeBadVersion is a `version` field that is not shaped like a release
 	// tag, and it is the update's own bad-field code rather than a reuse of
 	// outcomeBadName for the reason each of the four above is per-field: what an
@@ -290,6 +300,17 @@ var banners = map[outcome]outcomeView{
 		// operator's own page — which is caller-authored text reaching the
 		// document, the thing the closed vocabulary above exists to prevent.
 		Message: "That is not a mode this daemon offers. Nothing was changed.",
+	},
+	outcomeBadResume: {
+		// Names the shape rather than quoting what arrived, for the reason every
+		// refusal here does: the value is caller-authored text on its way back out
+		// through a page (FR-042).
+		//
+		// It says the picker exists, because on this door the operator almost
+		// certainly did not type this — a value that reaches here from the
+		// dashboard means the page and the daemon disagree about what is on offer,
+		// and re-opening the form is the fix.
+		Message: "That is not a conversation this daemon can continue. Choose one from the list on the create form, or leave it on \u201cStart fresh\u201d. Nothing was started.",
 	},
 	outcomeBadLifetime: {
 		// Says what a usable answer looks like and where the bound comes from,

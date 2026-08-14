@@ -1149,6 +1149,66 @@ func RenderStartCommand(command, sessionName string) (string, error) {
 	return strings.ReplaceAll(command, StartCommandNamePlaceholder, sessionName), nil
 }
 
+// InsertStartFlags puts flags on a configured start command, immediately after
+// the binary and before everything else (milestone 15, spec 009).
+//
+// It lives here rather than at the call site because command-line construction
+// belongs to one package: RenderStartCommand is the only other thing that edits
+// one, and two places that assemble a line typed at an unsandboxed shell is one
+// more than this daemon should have.
+//
+// # Why after the first token and not at the end
+//
+// The configured commands end in a quoted prompt argument —
+// `claude --dangerously-skip-permissions "/rc {name}"` is the deployed shape —
+// and whether an argument parser honours a flag that follows a positional is the
+// parser's business, not something this daemon may assume. Insertion after the
+// binary is a rule that can be stated, tested, and read off the preview the
+// operator is shown.
+//
+// The first token is found by whitespace, which is the same split a shell makes
+// of the same line. A command whose binary is a quoted path with a space in it
+// would be split wrongly here — and would already be split wrongly by the shell
+// that runs it, since nothing quotes these lines on the way out, so this is the
+// existing contract rather than a new limitation.
+//
+// # What it does not do
+//
+// It does not validate the flags. Everything reaching here is either a constant
+// in this repository or a value a caller-facing validator has already reduced to
+// an alphabet that cannot change the shape of a line (session.ValidateResume).
+// Adding a second, weaker check here would invite a caller to be routed through
+// this one instead.
+//
+// Empty flags are dropped rather than inserted as empty arguments, and a call
+// with no flags at all returns the command unchanged — so the ordinary create,
+// which asks for nothing, types exactly the line it always typed.
+func InsertStartFlags(command string, flags ...string) string {
+	kept := make([]string, 0, len(flags))
+	for _, f := range flags {
+		if strings.TrimSpace(f) != "" {
+			kept = append(kept, f)
+		}
+	}
+	if len(kept) == 0 {
+		return command
+	}
+
+	// TrimSpace first so a configured command with leading whitespace does not
+	// yield an empty binary and put the flags in front of nothing.
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return command
+	}
+
+	binary, rest, found := strings.Cut(trimmed, " ")
+	inserted := binary + " " + strings.Join(kept, " ")
+	if !found {
+		return inserted
+	}
+	return inserted + " " + rest
+}
+
 // unknownPlaceholder finds the first `{identifier}` in a command line that is
 // not one this daemon substitutes.
 //

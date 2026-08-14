@@ -297,6 +297,17 @@ const (
 	// thirty days and silently has one learns otherwise when the session is gone.
 	fieldLifetime = "lifetime"
 
+	// fieldResume is the conversation this create should pick up instead of
+	// starting empty (milestone 15, contracts/conversation-resume.md). Absent or
+	// empty starts fresh, which is every create made before it existed.
+	//
+	// It is spelled here and read straight into the manager, which validates it
+	// (session.ValidateResume) and validates it again before it reaches a command
+	// line. Nothing in this package interprets the value: a second, weaker check
+	// at this boundary would be a check a future caller could be routed through
+	// instead of the real one.
+	fieldResume = "resume"
+
 	// fieldRemoteControl is the switch, and it carries a *mode* rather than a
 	// name (FR-003, FR-004). It replaced a `<select name="start_command">` that
 	// let the browser choose which configured command ran, which is the thing
@@ -503,6 +514,12 @@ func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
 		// The daemon's own answer to the mode above, never a byte the form
 		// carried. It is the whole of FR-004 in one assignment.
 		StartCommand: startCommand,
+		// Carried verbatim to the manager, which refuses anything it will not put
+		// on a command line. This is the one field on this form whose value ends
+		// up as an argument in a line typed at an unsandboxed shell, so it is
+		// worth being plain that nothing here is trusted for having come from the
+		// operator's own browser.
+		Resume: r.PostForm.Get(fieldResume),
 		// The operator's two overrides, which the manager checks against the
 		// operator's own ceiling before a record exists (resolveLifetimes). A
 		// negative Lifetime switches the absolute deadline off (milestone 13),
@@ -578,6 +595,15 @@ func (s *Server) refuseBrowserCreate(w http.ResponseWriter, r *http.Request, err
 		// than one fact, and the day they disagree this is the honest answer.
 		AuditFrom(r.Context()).Deny(createReason(err).Error())
 		s.redirectOutcome(w, r, outcomeBadStartCommand)
+	case errors.Is(err, session.ErrInvalidResume):
+		// Its own outcome for the reason the field refusals above have one each.
+		// This is the one field on this form whose value would become an argument
+		// in a line typed at an unsandboxed shell, so the refusal is the visible
+		// half of the control that keeps it from doing so (session.ValidateResume)
+		// — and the record carries the sentinel rather than the value, which on
+		// this branch is the whole point.
+		AuditFrom(r.Context()).Deny(createReason(err).Error())
+		s.redirectOutcome(w, r, outcomeBadResume)
 	case errors.Is(err, session.ErrInvalidLifetime):
 		// Its own outcome rather than the generic failure, for the reason the two
 		// field refusals above have one each: what an operator has to fix is a
