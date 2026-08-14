@@ -30,6 +30,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 )
 
 // runConfig runs `crswd config …` under a deadline.
@@ -233,8 +235,8 @@ start_commands = default=claude --dangerously-skip-permissions
 	if err != nil {
 		t.Fatalf("read the migrated file: %v", err)
 	}
-	if !strings.Contains(string(migrated), "version = 1") {
-		t.Errorf("the migrated file records no schema version:\n%s", migrated)
+	if want := fmt.Sprintf("version = %d", config.SchemaVersion); !strings.Contains(string(migrated), want) {
+		t.Errorf("the migrated file does not record schema %d:\n%s", config.SchemaVersion, migrated)
 	}
 	// Everything else survives. The commentary is why this format is not JSON,
 	// and start_commands' internal spacing is a command line.

@@ -3690,3 +3690,96 @@ func TestTheSettingsCommentDescribesThePage(t *testing.T) {
 		t.Fatal("settings.html renders no form, no token, no submit control and no live region, so every denial above was read against nothing; if the page really did become read-only again, this test and that comment are rewritten together")
 	}
 }
+
+// cardAgeRow is the meta list's age row, for the three-facts test below.
+var cardAgeRow = regexp.MustCompile(`(?s)<dt>age</dt>\s*<dd>(.*?)</dd>`)
+
+// TestACardSaysHowOldItIsWhatStartedItAndWhetherItDies is US5, and the reason it
+// is one test rather than three is the reason the operator asked for it: the
+// three facts are read together. A card that answers two of them is a card whose
+// reader has to go somewhere else for the third.
+//
+// The adopted half is the half that used to be wrong, and it is why this test
+// renders the same session twice. Before milestone 15 a restart rebuilt a record
+// from what tmux knew, and tmux did not know a lifetime — so a never-expiring
+// session came back saying it expired in 24 hours, which is a card stating a
+// fact about an operator's session that nothing in the daemon believed. The name
+// and the start command were restored by #72 and #58; this completes the set.
+//
+// **Must fail when** any of the three reads differently on an adopted session
+// than on the one it was adopted from.
+func TestACardSaysHowOldItIsWhatStartedItAndWhetherItDies(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	started := now.Add(-3 * time.Hour)
+
+	for _, tc := range []struct {
+		name         string
+		lifetime     time.Duration
+		start        string
+		wantMode     session.Mode
+		wantLifetime string
+	}{
+		{
+			name:         "remote control, and it never dies",
+			lifetime:     -1,
+			start:        "rc",
+			wantMode:     session.ModeRemote,
+			wantLifetime: noLifetimeLimit,
+		},
+		{
+			name:         "plain, and it dies at the ceiling",
+			start:        "",
+			wantMode:     session.ModeLocal,
+			wantLifetime: "in 21 hours",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			live := session.Session{
+				ID:           strings.Repeat("e", 32),
+				Name:         "a session",
+				WorkDir:      "/home/operator/code/crswd",
+				StartCommand: tc.start,
+				Lifetime:     tc.lifetime,
+				CreatedAt:    started,
+				LastActivity: started,
+			}
+			// The same session as a restart hands it back: a fresh record built
+			// from what the host held, which is what Adopt produces.
+			adopted := live
+			adopted.Adopted = true
+
+			for what, s := range map[string]session.Session{"created": live, "adopted": adopted} {
+				out := renderComponent(t, "session-card", cardOf(s, now, testCardToken, "rc"))
+
+				for _, row := range []struct {
+					fact  string
+					match *regexp.Regexp
+					want  string
+				}{
+					// How long it has been alive. Counted from CreatedAt, which
+					// for an adopted session is tmux's own start time and not the
+					// moment of adoption — so a restart does not make every
+					// session on the fleet look newborn.
+					{fact: "age", match: cardAgeRow, want: "3 hours"},
+					// What started it, which is what remote-control provenance is
+					// derived from (@crswd-start, #58).
+					{fact: "mode", match: cardModeRow, want: string(tc.wantMode)},
+					// Whether it can ever die (@crswd-lifetime, milestone 15).
+					{fact: "lifetime deadline", match: cardLifetimeRow, want: tc.wantLifetime},
+				} {
+					found := row.match.FindStringSubmatch(out)
+					if found == nil {
+						t.Fatalf("the %s card carries no %s row:\n%s", what, row.fact, out)
+					}
+					if got := strings.TrimSpace(markupTags.ReplaceAllString(found[1], "")); got != row.want {
+						t.Errorf("the %s card's %s reads %q, want %q:\n%s", what, row.fact, got, row.want, out)
+					}
+				}
+			}
+		})
+	}
+}

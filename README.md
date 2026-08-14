@@ -687,6 +687,27 @@ Notes worth having before you set these:
   and the same audit record. The list is a convenience and `CRSW_ALLOWED_ROOTS`
   is the control, which is why a suggestion outside the roots is legal to
   configure and refused on create.
+- **The create form shows the command line it will run.** A readout beside the
+  controls, updating as they change, carrying the exact line the session is
+  started with — the same renderer produces both, so it cannot drift. It is a
+  `<pre>` and not a field: the operator-configured `start_commands` set is still
+  the only source of commands this daemon will execute, and nothing the browser
+  sends selects one except by mode. With scripting off it shows the line for the
+  form's default state, which is what an unmodified submission runs.
+- **A create may continue a prior conversation.** Tick it to resume the most
+  recent conversation in the working directory (`--continue`), or pick a specific
+  one from the list (`--resume <id>`). The list is read from Claude's own
+  on-disk history for that directory: **no transcript is ever opened** — the file
+  name is the identifier and its mtime is the recency — and the directory passes
+  the same allowlist check a create does *before* it becomes a path, so a
+  directory you could not start a session in is one whose conversations are not
+  listed either. A host with no history renders a form without the control rather
+  than an offer with nothing behind it.
+
+  The identifier is accepted only as a strict lowercase `8-4-4-4-12` UUID.
+  That is not fussiness: the start command is typed into a live shell, so the
+  alphabet — no metacharacter, no whitespace, no quote, no newline — is what
+  stops a value from changing the shape of the line it lands on.
 - **Remote control is a mode, not a command name.** The create form renders one
   checkbox, and a ticked box posts `remote_control=on` while an unticked one
   posts nothing — so a lost or stripped field yields the *less* privileged mode.

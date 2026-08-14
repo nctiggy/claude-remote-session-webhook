@@ -780,6 +780,61 @@ And these are the lifetime override's:
   is `--s4` square. Sizing the row rather than the box is the same statement the
   bullet above makes, in geometry.
 
+## Command preview
+
+The create form's readout of the line it will run (milestone 15,
+`specs/009-session-lifetime-honesty/contracts/command-preview.md`).
+
+```gotemplate
+<pre class="command-preview" data-command-preview
+     data-command-local="…" data-command-remote="…">claude …</pre>
+```
+
+Rules:
+- **It is a readout, not a control.** No `name`, no `contenteditable`, no
+  `<textarea>`. A preview that submitted would be a path from a browser-supplied
+  string to an executed command, which is the surface the configured
+  `start_commands` set exists to close.
+- **What it shows is what runs.** The daemon renders it with the same function it
+  starts a session with, so the two cannot drift. A line assembled for display —
+  in Go or in the browser — would be a second renderer, and the day it disagreed
+  the operator would be reading a promise the host had not made.
+- **Server-rendered first.** The line for the form's default state is in the
+  markup; the script swaps between the lines the server supplied and substitutes
+  the session name. With no script the operator still sees what an unmodified
+  submission does, which is the state where being wrong would matter most.
+- **The script spells none of the daemon's vocabulary.** The CLI flags ride in
+  `data-*` attributes rather than as literals in `crswd.js`, so there is one
+  speller. A copy in the script is free to show a flag the daemon stopped passing.
+- **The session name is rendered as text**, by `html/template` on the server and
+  by `textContent` in the script. It is operator input on its way into the
+  document, and this is the rule that governs pane output.
+- `.command-preview` is the pane's face at the form's scale, and wraps where the
+  pane scrolls: a pane is a grid whose columns carry meaning, and this is one line
+  to read.
+
+## Conversation picker
+
+The create form's list of prior conversations for a working directory
+(`contracts/conversation-resume.md`).
+
+Rules:
+- **A `<select>`, never a text field** — and this is the one place that is the
+  right answer where it is the wrong one for the working directory. A path absent
+  from the suggestions must still be typeable, because the allowlist is the
+  control and the list is presentation; a conversation absent from the list does
+  not exist, and nothing is lost by refusing to name it. The route validates the
+  value regardless: the control is convenience, the validator is the control.
+- **Rendered only where there is something to continue.** A host with no history
+  gets no control rather than an offer with nothing behind it — the same rule that
+  keeps an empty `<datalist>` off the working-directory field.
+- **An identifier and a recency, and nothing else.** What a conversation *said* is
+  the operator's work; this daemon reads no transcript and renders none of it. The
+  identifier is shortened for reading and rides in full in the option's value.
+- The first two options are not conversations: start fresh, which posts nothing
+  and is the shipped behaviour, and continue-the-most-recent, which posts a word
+  the daemon spells rather than the markup.
+
 ## Modal
 
 **Not built, and nothing needs one.** The confirming step for the one destructive
