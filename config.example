@@ -94,7 +94,7 @@ version = 1
 
 # Additional environment variable NAMES a session receives, comma-separated, on
 # top of the base set the daemon always gives one: HOME, PATH, SHELL, USER,
-# LOGNAME, TERM, LANG, LC_* and XDG_RUNTIME_DIR.
+# LOGNAME, TERM, LANG, LC_*, XDG_RUNTIME_DIR and TMUX_TMPDIR.
 #
 # A session never inherits this daemon's environment — not the shared secret, not
 # the Access values, not any CRSW_ setting. This is the escape hatch for the one

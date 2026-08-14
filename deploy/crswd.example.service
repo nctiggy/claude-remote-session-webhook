@@ -108,7 +108,7 @@ EnvironmentFile=-%h/.config/crswd/env
 
 # Additional environment variable NAMES a session receives, comma-separated, on
 # top of the base set the daemon always provides (HOME, PATH, SHELL, USER,
-# LOGNAME, TERM, LANG, LC_*, XDG_RUNTIME_DIR). Default: empty.
+# LOGNAME, TERM, LANG, LC_*, XDG_RUNTIME_DIR, TMUX_TMPDIR). Default: empty.
 #
 # A session gets a composed environment, never this daemon's own — the shared
 # secret and the Access values are not in it, and neither is any CRSW_ setting.

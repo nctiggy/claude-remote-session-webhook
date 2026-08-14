@@ -20,6 +20,7 @@ reaches a session gets for free.
 | `TERM` | the daemon's | tmux needs it |
 | `LANG`, `LC_*` | the daemon's | locale-dependent tooling |
 | `XDG_RUNTIME_DIR` | the daemon's | tmux and the systemd user manager both use it |
+| `TMUX_TMPDIR` | the daemon's | decides where tmux puts its socket. Dropping it does not fail, it *relocates*: the server lands under `/tmp/tmux-$UID` while every client looks under `$TMUX_TMPDIR`, so sessions are created and are then invisible |
 
 ## Never present
 
@@ -29,6 +30,7 @@ reaches a session gets for free.
 | `CRSW_ACCESS_ALLOWED_EMAILS` | classified secret — names who may reach the host |
 | `CRSW_DASHBOARD_PASSWORD` | the browser door itself |
 | Any other `CRSW_*` | the daemon's configuration is not a session's business |
+| `TMUX` | it marks a process as running inside a pane; passing the daemon's would tell every session it was nested inside one |
 | Anything else in the daemon's environment not listed above or named by the operator | the allowlist is the whole set |
 
 **The three secret names are not a second list.** They are whatever
