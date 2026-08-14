@@ -381,6 +381,50 @@ systemctl --user show crswd -p NoNewPrivileges -p ProtectKernelTunables
 If you edited your unit before drop-ins existed, this is the way home. It ends
 with a unit the daemon reports as its own and your deviations intact.
 
+**The daemon does it for you.** These two commands read the unit you have, the one
+a release left waiting beside it, and your configuration file, and either perform
+the move or say exactly what is stopping them:
+
+```bash
+crswd unit check    # what it would do, changing nothing
+crswd unit adopt    # do it
+```
+
+`adopt` writes your hardening relaxation into
+`~/.config/systemd/user/crswd.service.d/10-relax.conf`, installs the waiting unit,
+and records its digest so every later release replaces it without a `.new` and
+without a diff first.
+
+**It grants nothing.** Every setting it puts in the drop-in is read out of your own
+unit — never from a list inside the daemon — so what the host permits afterwards
+is what it permitted a moment earlier. A relaxation the drop-in has no line for is
+a refusal, not something quietly left behind.
+
+It refuses, having written nothing at all, when:
+
+- the binary the waiting unit names is not on this host (it runs
+  `%h/.local/bin/crswd`; a unit from before the installer names `%h/bin/crswd`),
+- your unit relaxes a setting the drop-in cannot express,
+- dropping an `Environment=` line your unit sets would change what the daemon
+  loads — put that value in `~/.config/crswd/config` and run it again,
+- an override you already wrote grants less than your unit does. That file is
+  yours and is never rewritten.
+
+Each refusal names the thing and what to do about it. Fix them in any order and
+run it again; nothing is partly done in between.
+
+Afterwards it tells you where the unit it replaced is kept, and the two commands
+that put the change into effect — writing a file is not restarting a service:
+
+```bash
+systemctl --user daemon-reload && systemctl --user restart crswd
+```
+
+#### By hand, if you would rather
+
+The command exists because this is fiddly, not because it is secret. Every step
+it takes is one you can take yourself:
+
 ```bash
 # 1. What did you actually change? This is the whole of the decision.
 diff deploy/crswd.example.service ~/.config/systemd/user/crswd.service
@@ -410,6 +454,12 @@ Step 5 is the one that changes what future updates do, and the sentence about
 recording a digest two sections up applies in full: from then on the unit is
 replaced on every update with no `.new` and no diff first. That is safe here
 precisely because step 2 moved everything of yours out of it.
+
+**One thing to know if you do it by hand**: systemd has no trailing comments.
+`ProtectSystem=false      # why` is not `false` with a note — it is a value
+systemd cannot parse, so it warns and ignores the line, and the setting falls back
+to its default. That happens to be `false` too, which is why such a unit works and
+why the mistake is invisible. `crswd unit adopt` reads it the way systemd does.
 
 ### After upgrading, recreate your sessions
 

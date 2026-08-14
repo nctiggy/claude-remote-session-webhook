@@ -687,6 +687,26 @@ Notes worth having before you set these:
   and the same audit record. The list is a convenience and `CRSW_ALLOWED_ROOTS`
   is the control, which is why a suggestion outside the roots is legal to
   configure and refused on create.
+- **A hand-edited unit can be brought back under management**, with
+  `crswd unit check` and `crswd unit adopt`. Editing your unit to make `sudo`
+  work inside a session costs its updatability forever — no digest was recorded
+  for it, so no install and no update will ever replace it, and every release
+  that changes the unit leaves a `crswd.service.new` beside it that nothing on
+  the host can take.
+
+  `unit adopt` ends that: your relaxation moves into
+  `crswd.service.d/10-relax.conf`, the unit becomes the release's, and a digest
+  is recorded — so every later release lands by itself. **It grants nothing.**
+  Every line it writes into the drop-in is read out of your own unit, and a
+  relaxation the drop-in cannot express is a refusal rather than something left
+  behind. It refuses, writing nothing at all, if the binary the new unit names is
+  not there, if your unit relaxes something the drop-in has no line for, if
+  dropping an `Environment=` line would change what the daemon loads, or if an
+  override you already wrote grants less than your unit does. `unit check` reports
+  all of that without touching anything.
+
+  It keeps the unit it replaced beside the new one, and tells you the two commands
+  that put the change into effect — a file on disk is not a running service.
 - **The create form shows the command line it will run.** A readout beside the
   controls, updating as they change, carrying the exact line the session is
   started with — the same renderer produces both, so it cannot drift. It is a

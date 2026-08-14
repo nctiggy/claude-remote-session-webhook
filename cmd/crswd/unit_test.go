@@ -274,3 +274,55 @@ func TestTheJournalIsSilentWithoutAnOverride(t *testing.T) {
 		t.Errorf("the journal claims an override on a host with none:\n%s", got)
 	}
 }
+
+// FR-018: the banner names the adopt command where adoption would be granted,
+// and never where it would refuse.
+//
+// The second half is the one worth a test. A banner offering a command that goes
+// on to refuse teaches an operator that these lines are noise, and the next real
+// one is the one they skip — and the refusals here are common rather than
+// theoretical: the binary at the wrong path is the case this project's own host
+// is in.
+func TestTheBannerOffersTheAdoptCommandOnlyWhereItWouldBeGranted(t *testing.T) {
+	t.Parallel()
+
+	const waiting = "/home/o/.config/systemd/user/crswd.service.new"
+
+	t.Run("named when adoption would be granted", func(t *testing.T) {
+		t.Parallel()
+
+		var out strings.Builder
+		report := updater.UnitReport{
+			Path: "/home/o/.config/systemd/user/crswd.service", Present: true,
+			Offer: waiting, AdoptCommand: adoptCommandLine,
+		}
+		if err := sayWhatBecameOfTheUnit(&out, report, nil); err != nil {
+			t.Fatalf("sayWhatBecameOfTheUnit: %v", err)
+		}
+		if !strings.Contains(out.String(), adoptCommandLine) {
+			t.Errorf("the banner does not name the command that takes the waiting unit:\n%s", out.String())
+		}
+	})
+
+	t.Run("absent when it would refuse", func(t *testing.T) {
+		t.Parallel()
+
+		var out strings.Builder
+		report := updater.UnitReport{
+			Path: "/home/o/.config/systemd/user/crswd.service", Present: true,
+			Offer: waiting,
+		}
+		if err := sayWhatBecameOfTheUnit(&out, report, nil); err != nil {
+			t.Fatalf("sayWhatBecameOfTheUnit: %v", err)
+		}
+		if strings.Contains(out.String(), adoptCommandLine) {
+			t.Errorf("the banner offers a command this host would be refused:\n%s", out.String())
+		}
+		// The rest of the banner is unchanged: the operator is still told the
+		// file is there and how to look at it. An absent offer is this daemon
+		// declining to promise, never declining to speak.
+		if !strings.Contains(out.String(), waiting) {
+			t.Errorf("the banner stopped naming the waiting unit:\n%s", out.String())
+		}
+	})
+}

@@ -350,6 +350,16 @@ type UnitReport struct {
 	// It names the file rather than reporting a boolean, because the point of
 	// telling an operator is that they can go and read it.
 	Override string
+
+	// AdoptCommand is what an operator runs to take the waiting unit, and is
+	// empty unless adoption would actually be granted on this host (FR-018).
+	//
+	// Filled in by the caller that can afford to ask — planning reads several
+	// files and resolves the operator's configuration, which is more than a
+	// settings-page render should do per request. Report itself leaves it empty,
+	// so a caller that has not asked offers nothing rather than offering a
+	// command that might refuse.
+	AdoptCommand string
 }
 
 // Report reads this host's unit, the record beside it and the offer beside that,
