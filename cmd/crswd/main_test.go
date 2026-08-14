@@ -47,6 +47,15 @@ const theVersionReport = "printVersion"
 // pipe, copy, or read. Named as a call for the same reason as the two above.
 const theKeygenReport = "runKeygen"
 
+// theUnitReport is the fifth, on the terms of the first: `crswd unit …` runs
+// instead of the daemon, emits no record, and what it puts on stdout is a report
+// the operator asked for and must be able to pipe into a pager or a diff.
+//
+// It is named as a *call* rather than by file, like every entry above, so that
+// the exemption covers the two writers this dispatch hands the streams to and
+// nothing else in the file that grew one later.
+const theUnitReport = "runUnitCommand"
+
 // TestDiagnosticsGoToStderr is FR-023a as a property of the whole daemon rather
 // than of one sink: nothing it is built from writes a human-readable line to
 // standard output.
@@ -86,7 +95,8 @@ func TestDiagnosticsGoToStderr(t *testing.T) {
 		ast.Inspect(file, func(n ast.Node) bool {
 			if call, ok := n.(*ast.CallExpr); ok {
 				if fn, ok := call.Fun.(*ast.Ident); ok &&
-					(fn.Name == theSubcommandsReport || fn.Name == theVersionReport || fn.Name == theKeygenReport) {
+					(fn.Name == theSubcommandsReport || fn.Name == theVersionReport ||
+						fn.Name == theKeygenReport || fn.Name == theUnitReport) {
 					for _, arg := range call.Args {
 						permitted[arg.Pos()] = true
 					}

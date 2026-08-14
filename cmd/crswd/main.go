@@ -88,6 +88,13 @@ func main() {
 		if args[0] == keygenCommand {
 			os.Exit(runKeygen(os.Stdout, os.Stderr, args[1:]))
 		}
+		// `unit` is dispatched here for keygen's reason rather than under
+		// `config`: it is not about a configuration file, and the one thing it
+		// writes is what systemd executes. A door to that reached through the
+		// configuration command is one an operator could arrive at by a typo.
+		if args[0] == unitCommand {
+			os.Exit(runUnitCommand(os.Stdout, os.Stderr, args))
+		}
 		os.Exit(runConfigCommand(os.Stdout, os.Stderr, args))
 	}
 
@@ -206,7 +213,23 @@ func run(ctx context.Context) error {
 	// The read's own error is passed on rather than returned from here: a host
 	// whose unit cannot be read is a host that says so in the journal, not one
 	// that refuses to start over a file systemd has already finished with.
-	unitReport, unitErr := updater.NewUnit(os.Getenv).Report()
+	unit := updater.NewUnit(os.Getenv)
+	unitReport, unitErr := unit.Report()
+	// Whether the operator could take the waiting unit, asked only where there is
+	// one waiting. It plans an adoption, which reads several files and the
+	// configuration — cheap once at startup, and the only way to offer a command
+	// that will not go on to refuse (FR-018).
+	//
+	// A planning failure is swallowed deliberately, and it is the one place in
+	// this file that is right: the banner's job is to report the unit, and a host
+	// whose adoption could not be *planned* still has the same unit and the same
+	// waiting file to be told about. The cost of the swallow is one missing
+	// sentence about a command, and `crswd unit check` reports the reason in full.
+	if unitErr == nil && unitReport.Offer != "" {
+		if plan, err := unit.PlanAdoption(configResolver()); err == nil && plan.Adoptable {
+			unitReport.AdoptCommand = adoptCommandLine
+		}
+	}
 	if err := sayWhatBecameOfTheUnit(os.Stderr, unitReport, unitErr); err != nil {
 		return err
 	}

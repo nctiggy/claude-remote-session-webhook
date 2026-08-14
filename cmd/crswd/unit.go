@@ -72,6 +72,16 @@ func sayWhatBecameOfTheUnit(warn io.Writer, report updater.UnitReport, readErr e
 	if facts.Waiting != "" {
 		banner.WriteString("crswd: the newer unit is waiting at " + facts.Waiting + "\n")
 		banner.WriteString("crswd: compare them with: " + facts.Compare + "\n")
+
+		// Named only where taking it would be granted (FR-018). A banner offering
+		// a command that goes on to refuse teaches an operator that these lines
+		// are noise, and the next real one is the one they skip. Where adoption
+		// would refuse, `crswd unit check` still reports why — this line's absence
+		// is not the daemon staying quiet, it is the daemon not making an offer it
+		// cannot keep.
+		if facts.Adopt != "" {
+			banner.WriteString("crswd: take it, keeping your own hardening, with: " + facts.Adopt + "\n")
+		}
 	}
 
 	// Said in addition to the sentence above, because it is orthogonal to it: a

@@ -42,6 +42,16 @@ type UnitFacts struct {
 	// that file is really on this disk (UnitReport.Offer).
 	Waiting string
 
+	// Adopt is the command that takes the waiting unit, and is empty on every
+	// host where taking it would be refused.
+	//
+	// **Offered only where it would be granted**, which is the whole of FR-018. A
+	// banner naming a command that goes on to refuse teaches an operator that the
+	// suggestion is noise, and the next real one is the one they do not read. The
+	// refusals are real and common — the binary at the wrong path is the case this
+	// project's own host is in — so this is not a theoretical caution.
+	Adopt string
+
 	// Compare is the command that shows what is in it and not in theirs.
 	//
 	// It is a string to be read and pasted, never one this daemon runs: nothing in
@@ -132,6 +142,7 @@ func DescribeUnit(report UnitReport, err error) UnitFacts {
 			Sentence: UnitSentenceOffered,
 			Waiting:  report.Offer,
 			Compare:  unitCompare(report.Path, report.Offer),
+			Adopt:    report.AdoptCommand,
 		}
 	case !report.Present:
 		facts = UnitFacts{Sentence: UnitSentenceAbsent}

@@ -25,6 +25,8 @@ import (
 const configUsage = `usage: crswd                          start the daemon
        crswd config check [path]      report on a configuration file without starting
        crswd config migrate [path]    rewrite one into the current schema, keeping a backup
+       crswd unit check               report whether this host's systemd unit can be adopted
+       crswd unit adopt               take the unit a release left waiting, keeping your hardening
        crswd keygen                   print a new ed25519 release key pair
 
 With no path, check and migrate read the file the daemon itself would: ` +
