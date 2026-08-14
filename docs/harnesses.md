@@ -70,7 +70,7 @@ harnesses are not interchangeable in the ways that matter to this daemon:
   draws; a harness with different chrome may read worse or better and nobody
   would know until they looked.
 - **"Needs attention" is a Claude Code shape.** The status pill's states —
-  running, idle, needs-auth, dead — are inferred from what the daemon can see.
+  running, needs-auth, dead — are inferred from what the daemon can see.
   Another harness prompting for input may not look like any of them.
 - **The permission model differs per tool**, and this daemon's containment story
   is `allowed_roots` plus the operator's own judgement about

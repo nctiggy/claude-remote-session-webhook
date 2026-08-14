@@ -40,10 +40,9 @@ type sessionView struct {
 	// the same terms as Name and absent under the same circumstances.
 	WorkDir string
 
-	// DisplayState is derived per render from the reaper's own idle deadline
-	// (FR-019a–c). The stored lifecycle field is deliberately not in this
-	// struct: a view that carried it would be a second thing the card could
-	// render, and the one it must not.
+	// DisplayState is derived per render from the record (FR-019a–c). The stored
+	// lifecycle field is deliberately not in this struct: a view that carried it
+	// would be a second thing the card could render, and the one it must not.
 	DisplayState session.DisplayState
 
 	// StartCommand is the name of the command this session was running when the
@@ -80,51 +79,21 @@ type sessionView struct {
 	// to build.
 	Age string
 
-	// IdleDeadline and AbsoluteDeadline are how much longer this session has
-	// under each of the two bounds Principle VI gives it, formatted here for the
-	// reason Age is (T003).
+	// AbsoluteDeadline is how much longer this session has under the one bound
+	// Principle VI gives it, formatted here for the reason Age is (T003).
 	//
-	// There are two fields because there are two clocks, and a card showing one
-	// of them would be the interface asserting something the daemon does not do.
-	// The idle bound moves with every request and the operator may turn it off
-	// for a session; the absolute one is counted from creation, is never renewed,
-	// and cannot be turned off at all. So a card carrying only the idle deadline
-	// would read as "this session never dies" for exactly the session the
-	// operator relaxed — the same defect as copy claiming a session was compacted
-	// when the daemon only delivered the request.
+	// There were three fields here until milestone 15: an idle deadline, the
+	// activity it was measured from, and this. The card needed all three because
+	// a session could die of either bound and the operator had no way to check
+	// which clock was watching. With the idle bound withdrawn there is one
+	// question and one answer.
 	//
-	// IdleDeadline states that there is no idle limit for a session whose idle
-	// reaping is off, rather than the instant IdleDeadline returns for one: that
-	// instant is four hundred lifetimes out and means "never" rather than a date,
-	// and a card rendering it would be telling an operator a fact about their
-	// session that nothing in the daemon believes.
-	IdleDeadline     string
+	// It states that there is no lifetime limit for a session whose operator
+	// switched the deadline off, rather than the instant AbsoluteDeadline returns
+	// for one: that instant is a century out and means "never" rather than a
+	// date, and a card rendering it would be telling an operator a fact about
+	// their session that nothing in the daemon believes.
 	AbsoluteDeadline string
-
-	// IdleSince is how long ago the activity the idle deadline is counted from
-	// happened, formatted here for the reason Age is (T003).
-	//
-	// It is the row that makes the one above it answerable. "in 12 minutes" says
-	// when a session dies without saying why, and the operator's question was
-	// exactly that: whether a session they were using all afternoon was being
-	// judged on anything they had done. A deadline with the instant it is
-	// measured from beside it says what the clock is watching; a deadline alone
-	// asks the operator to take it on trust.
-	//
-	// It is session.IdleSince — the *later* of the record's two clocks — and
-	// never session.Session.LastActivity, which is the narrower fact the signed
-	// API's last_activity field carries: when a request last drove this session.
-	// Those two were one value until the tmux clock arrived, and a card rendering
-	// the narrow one beside a deadline computed from the wide one would be a page
-	// disagreeing with itself about the same session. The Go names are kept
-	// distinct here for that reason, and the card's label is the operator's word
-	// for it rather than either of them.
-	//
-	// Rendered for every card. Nothing here has to state an absence the way Name
-	// and WorkDir do: a record with no last-activity time is one the store
-	// refuses to hold at all (session.validate), so there is no session for which
-	// this is unknown.
-	IdleSince string
 
 	// PageToken is the value every action form on this card submits: minted
 	// for this render and bound to the identity layer 1 verified for it

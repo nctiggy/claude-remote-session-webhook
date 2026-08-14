@@ -514,10 +514,6 @@ func settingValue(cfg *config.Config, name string) (value string, known bool) {
 			return config.NeverLifetime, true
 		}
 		return cfg.SessionLifetimeMax.String(), true
-	case config.EnvIdleTimeout:
-		return cfg.IdleTimeout.String(), true
-	case config.EnvIdleTimeoutMax:
-		return cfg.IdleTimeoutMax.String(), true
 	case config.EnvCreateRatePerMin:
 		return strconv.Itoa(cfg.CreateRatePerMin), true
 	case config.EnvMaxBodyBytes:
@@ -683,7 +679,7 @@ func settingSectionOf(key string) string {
 		return "What it may touch"
 	case "start_commands", "remote_start_commands":
 		return "What it runs"
-	case "session_lifetime", "session_lifetime_max", "idle_timeout", "idle_timeout_max",
+	case "session_lifetime", "session_lifetime_max",
 		"max_sessions", "max_streams", "create_rate_per_min", "max_body_bytes", "pane_bound",
 		"destroy_on_shutdown":
 		return "Limits"

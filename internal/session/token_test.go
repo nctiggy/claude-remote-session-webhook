@@ -462,10 +462,11 @@ func TestCheckTokenIsGoodForExactlyTheSessionsLife(t *testing.T) {
 		{name: "the instant the session was created", at: contractCreatedAt},
 		{name: "a nanosecond in", at: contractCreatedAt.Add(time.Nanosecond)},
 		{name: "an hour in", at: contractCreatedAt.Add(time.Hour)},
-		// The idle timeout is the reaper's business and a different deadline
-		// entirely. A credential does not stop working because a session went
-		// quiet — it stops working because the session's life ended.
-		{name: "past the idle timeout, which is not this deadline", at: contractCreatedAt.Add(IdleTimeout + time.Minute)},
+		// A credential does not stop working because a session went quiet. It
+		// never did, and since milestone 15 nothing else does either — this row
+		// once named the idle timeout and now names the same instant as a plain
+		// hour further in, which is exactly the point.
+		{name: "long quiet, which ends nothing", at: contractCreatedAt.Add(2 * time.Hour)},
 		{name: "halfway through", at: contractCreatedAt.Add(AbsoluteLifetime / 2)},
 		{name: "the last nanosecond of the session", at: contractExpiresAt.Add(-time.Nanosecond)},
 		{name: "exactly at the deadline", at: contractExpiresAt, want: ErrTokenExpired},
@@ -583,20 +584,12 @@ func TestCheckTokenExpiresWithTheSessionAndNotOnItsOwnSchedule(t *testing.T) {
 
 // FR-038 has no renewal, and docs/auth-and-sessions.md has no re-issue: a
 // session used right up to its ceiling stops accepting its credential on
-// schedule. Use moves the idle clock and nothing else.
+// schedule. Use moves the last-driven stamp and nothing else.
 func TestCheckTokenIsNotRenewedByUse(t *testing.T) {
 	t.Parallel()
 
 	s, tok := issuedSession(t, "i")
 	s.LastActivity = contractExpiresAt.Add(-time.Second)
-
-	// Without this the test would prove nothing: the point is that a deadline
-	// which activity *has* pushed past the ceiling still does not move the one
-	// the credential is measured against.
-	if !s.IdleDeadline().After(s.TokenExpiry()) {
-		t.Fatalf("the fixture puts the idle deadline at %v, not past the credential's %v",
-			s.IdleDeadline(), s.TokenExpiry())
-	}
 
 	if err := s.CheckToken(tok, contractExpiresAt.Add(-time.Nanosecond)); err != nil {
 		t.Errorf("CheckToken() inside the lifetime of a busy session = %v, want it accepted", err)
@@ -637,7 +630,7 @@ func TestCheckTokenDerivesItsDeadlineFromTheRecord(t *testing.T) {
 				recomputes = append(recomputes, node.Sel.Name)
 			}
 		case *ast.Ident:
-			if node.Name == "AbsoluteLifetime" || node.Name == "IdleTimeout" {
+			if node.Name == "AbsoluteLifetime" {
 				recomputes = append(recomputes, node.Name)
 			}
 		}

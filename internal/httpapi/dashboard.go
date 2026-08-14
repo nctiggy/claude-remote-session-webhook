@@ -10,7 +10,7 @@ package httpapi
 // free to disagree with the thing it describes (data-model.md, "Derived, not
 // stored").
 //
-// The read is owner-scoped and does not advance the idle clock. Both properties
+// The read is owner-scoped and records no driving. Both properties
 // belong to internal/session rather than to this file: Manager.List takes the
 // owner and cannot be called without one (FR-017, FR-037), and there is no Touch
 // on that path (FR-034f). A dashboard that reached the store directly would be a
@@ -160,11 +160,12 @@ type stateCount struct {
 // two page loads — a row that reshuffles is a row an operator has to read
 // instead of scan.
 //
-// It holds the two states the daemon can derive (FR-019b). needs-auth and dead
-// are deliberately absent: the design system keeps tokens for them and the pill
-// renders them without an edit, but nothing in this daemon can produce either,
-// and a tile reading "dead 0" is a claim about a state no record can hold.
-var summarised = []session.DisplayState{session.DisplayRunning, session.DisplayIdle}
+// It holds the one state the daemon can derive (FR-019b). idle went with the
+// bound in milestone 15; needs-auth and dead are deliberately absent, because
+// the design system keeps tokens for them and the pill renders them without an
+// edit, but nothing in this daemon can produce either, and a tile reading
+// "dead 0" is a claim about a state no record can hold.
+var summarised = []session.DisplayState{session.DisplayRunning}
 
 // dashboard serves GET / (FR-017, FR-018, contracts/dashboard.md).
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
@@ -257,9 +258,8 @@ func (s *Server) pageTokenFor(w http.ResponseWriter, r *http.Request, operator *
 //
 // One clock reading serves the whole page, so every card's age and every card's
 // display state are as of one instant. Two readings would let a fleet render
-// with a session counted as running in the summary and drawn as idle in the grid
-// — a disagreement between a page and itself, over the one fact that says a
-// session is about to be reaped.
+// with a session counted one way in the summary and drawn another in the grid —
+// a disagreement between a page and itself about the same session.
 //
 // The token arrives as a parameter for the reason the clock reading is taken once
 // above: it belongs to the render rather than to a card, so every card on the page
@@ -391,14 +391,9 @@ func cardOf(live session.Session, now time.Time, token, remoteCommand string) se
 		//
 		// Each asks the record whether its own bound is off rather than reading
 		// the sign of a duration here, because that rule belongs where it is
-		// defined (session.IdleDisabled, session.LifetimeDisabled) and a second
+		// defined (session.LifetimeDisabled) and a second
 		// reading of it is a second answer.
-		IdleDeadline:     formatIdleDeadline(live, now),
 		AbsoluteDeadline: formatAbsoluteDeadline(live, now),
-		// The instant the idle row above is counted from, against the same clock
-		// reading — the record's own method, so the card cannot measure a
-		// deadline from one activity and name another (view.go, T003).
-		IdleSince: formatSince(now.Sub(live.IdleSince())),
 		// The token is also what makes the card render its action row (view.go),
 		// so every card either offers a control it can authorise or offers none.
 		PageToken: token,
@@ -410,9 +405,9 @@ func cardOf(live session.Session, now time.Time, token, remoteCommand string) se
 // attach to.
 //
 // The read is Manager.View and not Manager.Resolve, which is the whole reason
-// that method exists. It resolves ownership without advancing the idle clock
+// that method exists. It resolves ownership without recording a driving
 // (FR-034f): a browser tab left open on a session nobody is driving must not
-// postpone its idle deadline, or a forgotten tab holds an unsandboxed shell
+// overstate when it was last driven, or a forgotten tab describes an unsandboxed shell
 // alive for as long as it lives. Watching is not driving.
 //
 // It presents no per-session credential, and that is a decision rather than an
@@ -574,41 +569,25 @@ func formatAge(d time.Duration) string {
 	}
 }
 
-// noIdleLimit and noLifetimeLimit are what a card says instead of a deadline for
-// a session whose operator switched that bound off (#37, milestone 13).
+// noLifetimeLimit is what a card says instead of a deadline for a session whose
+// operator switched that bound off (#37, milestone 13).
 //
-// Each names the bound that is gone and claims nothing about the other, which is
-// what lets one card carry both without contradicting itself. A row reading
-// "never dies" would be false beside a live deadline and redundant beside a
-// second absence — and it is the pair of rows, not either sentence, that tells
-// an operator a session nothing will reap when that is what they asked for.
-const (
-	noIdleLimit     = "no idle limit"
-	noLifetimeLimit = "no lifetime limit"
-)
+// It had a twin, noIdleLimit, until milestone 15. The pair existed so that one
+// card could carry both bounds without either sentence claiming anything about
+// the other; with one bound left, this says the whole truth on its own.
+const noLifetimeLimit = "no lifetime limit"
 
-// formatIdleDeadline is how long a card says a session has before the idle clock
-// takes it.
+// formatAbsoluteDeadline is how long a card says a session has left.
 //
 // The disabled case is not a very distant deadline rendered coarsely. It is a
-// different fact, and it is stated rather than approximated: IdleDeadline
+// different fact, and it is stated rather than approximated: AbsoluteDeadline
 // answers a century out for such a session, which is the record's way of saying
 // "this comparison never fires" and not a date anybody should read off a card
 // (FR-018a's discipline, applied to a bound instead of to a name).
-func formatIdleDeadline(s session.Session, now time.Time) string {
-	if s.IdleDisabled() {
-		return noIdleLimit
-	}
-	return formatDeadline(s.IdleDeadline().Sub(now))
-}
-
-// formatAbsoluteDeadline is the same question and the same answer for the other
-// bound (milestone 13).
 //
-// It asks the record rather than testing the sign of a duration here, for
-// IdleDisabled's reason: the rule lives where it is defined, and a second
-// reading of it is a second answer, free to disagree with the first the day the
-// spelling changes. This one matters more than its twin — the card is where an
+// It asks the record rather than testing the sign of a duration here: the rule
+// lives where it is defined, and a second reading of it is a second answer, free
+// to disagree with the first the day the spelling changes. The card is where an
 // operator finds out that the deadline which is never renewed is not there at
 // all, and "in 36500 days" would read as a daemon that had lost track of it.
 func formatAbsoluteDeadline(s session.Session, now time.Time) string {
@@ -632,25 +611,6 @@ func formatDeadline(d time.Duration) string {
 		return "due now"
 	}
 	return "in " + formatAge(d)
-}
-
-// formatSince is how long a card says it has been since the session last did
-// anything, in formatAge's vocabulary for the reason formatDeadline is in it:
-// one page, one spelling of a duration.
-//
-// It is deliberately as coarse as the deadline it explains, which is also what
-// makes it honest about a value the daemon reads on a schedule. tmux's account
-// of a session's activity reaches a record only when a sweep stores it, so this
-// is the last activity *as of the last sweep* and can be up to one sweep
-// interval behind — a granularity of a minute absorbs that almost entirely,
-// where a rendered timestamp would show a precision the daemon does not have.
-//
-// A duration that has not reached a minute reads as less than one rather than as
-// "0 minutes ago", and so does a negative: the two clocks are the daemon's and
-// the host's, and a host whose reading is a few milliseconds ahead of the render
-// must not produce a card saying a session was last active in the future.
-func formatSince(d time.Duration) string {
-	return formatAge(d) + " ago"
 }
 
 // countOf is the one place this package pluralises, so a card and a future page

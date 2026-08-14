@@ -421,7 +421,7 @@ func newWithLayer1(
 	// name, so a manager nobody told is one with no remote mode to switch to.
 	sessions.SetRemoteControlCommand(cfg.RemoteControlCommand)
 	// The configured lifetimes reach the manager here, and nowhere else (#37).
-	sessions.SetLifetimes(cfg.SessionLifetime, cfg.SessionLifetimeMax, cfg.IdleTimeout, cfg.IdleTimeoutMax)
+	sessions.SetLifetimes(cfg.SessionLifetime, cfg.SessionLifetimeMax)
 	creates, err := newLimiter[auth.CallerID]("create", cfg.CreateRatePerMin, systemClock{})
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the create rate limiter: %w", err)
@@ -933,6 +933,20 @@ func cleanPath(p string) string {
 // host or a caller supplied (FR-042).
 const reasonAdopted = "took back a tmux session that outlived the daemon that started it"
 
+// reasonAdoptedNarrowed is the same act with one thing worth saying about it: the
+// lifetime the host had recorded for the session is not one this daemon's current
+// configuration would grant, so the session came back under the configured
+// default instead (FR-011).
+//
+// It is a separate constant rather than the reason above with a value appended,
+// for reasonAdopted's own reason: the trail carries no byte the host or a caller
+// supplied, and a lifetime read off a tmux option is exactly that.
+//
+// An operator finds out here or not at all. The card will simply show a deadline
+// where the operator remembers switching one off, and nothing else in the daemon
+// is going to mention that it changed its mind.
+const reasonAdoptedNarrowed = "took back a tmux session, under this daemon's configured lifetime: the one recorded for it is past the ceiling now in force"
+
 // Reconcile takes back the sessions a previous run left behind and records one
 // startup.adopt entry for each (FR-021, FR-025). It is the daemon's first act.
 //
@@ -995,12 +1009,16 @@ func (s *Server) Reconcile(ctx context.Context) error {
 		// The owner is the record's own, not a constant repeated here: the
 		// caller field has to name whoever the ownership check will compare
 		// against, and Adopt is the one that decided it.
+		reason := reasonAdopted
+		if a.LifetimeNarrowed {
+			reason = reasonAdoptedNarrowed
+		}
 		if err := s.trail.Emit(audit.Record{
 			Action:    audit.ActionStartupAdopt,
 			Caller:    string(a.Session.Owner),
 			SessionID: a.Session.ID,
 			Decision:  audit.Allow,
-			Reason:    reasonAdopted,
+			Reason:    reason,
 			// Remote is empty: there is no request behind this record.
 		}); err != nil {
 			failures = append(failures, err)
@@ -1013,17 +1031,16 @@ func (s *Server) Reconcile(ctx context.Context) error {
 	return nil
 }
 
-// StartReaper launches the idle and absolute-lifetime sweep and returns once it
+// StartReaper launches the absolute-lifetime sweep and returns once it
 // is running. It stops when ctx is done.
 //
 // It lives here rather than in main because the reaper needs the manager and the
 // audit sink, and this package owns both — main holding either of them would be a
 // second route to the one thing in the daemon that can cause execution on the
 // host. Failing to build one is fatal to the caller for the same reason a missing
-// secret is: a daemon serving without a reaper has no idle timeout and no
-// ceiling, which is two of the five bounds Principle VI calls non-negotiable, and
-// the sessions it starts would then only ever end by an explicit destroy or a
-// restart.
+// secret is: a daemon serving without a reaper has no ceiling, which is one of
+// the bounds Principle VI calls non-negotiable, and the sessions it starts would
+// then only ever end by an explicit destroy or a restart.
 //
 // A goroutine rather than a blocking call, because the reaper's whole point is
 // that an abandoned session dies without a request arriving to notice. Nothing

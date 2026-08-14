@@ -305,13 +305,17 @@ func parseSessions(stdout string) ([]SessionInfo, error) {
 		// Seven fields, and only the first may contain the separator: a session
 		// name is whatever the operator called it, while the six after it are
 		// digits, a flag, a validated label, base64, a validated command name,
-		// and digits again. So the last six splits are found from the right and
-		// everything before them is the name.
+		// and a duration or `never`. So the last six splits are found from the
+		// right and everything before them is the name.
 		//
 		// The workdir is base64 for exactly this reason (#72). A path may contain
 		// "|", and a raw one here would make the field boundaries ambiguous from
 		// either end — the one thing this parser is careful about.
-		rest, activityRaw, ok := cutLast(row, "|")
+		//
+		// The field count and the format string in argvList move together or
+		// this parser silently reads the wrong field into the wrong name.
+		// TestListFormatFieldCount is what holds them together.
+		rest, lifetime, ok := cutLast(row, "|")
 		if !ok {
 			return nil, fmt.Errorf("tmux list-sessions: unreadable row %q", row)
 		}
@@ -352,18 +356,6 @@ func parseSessions(stdout string) ([]SessionInfo, error) {
 			}
 		}
 
-		// Unreadable is deliberately not an error here, where an unreadable
-		// creation time is. This field is the second of two clocks and the idle
-		// deadline is taken from the later of them, so losing it costs a session
-		// nothing — while failing the row would abandon reconciliation, and with
-		// it adoption of every managed session on the host. The fallback runs in
-		// the direction that keeps sessions alive; there is no reading of this
-		// field that can make one reapable.
-		activity := time.Time{}
-		if secs, err := strconv.ParseInt(activityRaw, 10, 64); err == nil {
-			activity = time.Unix(secs, 0)
-		}
-
 		sessions = append(sessions, SessionInfo{
 			Name:    name,
 			Created: time.Unix(created, 0),
@@ -376,7 +368,12 @@ func parseSessions(stdout string) ([]SessionInfo, error) {
 			// started before it existed rather than a row that failed to parse.
 			// See SessionInfo.StartCommand: it is not an error.
 			StartCommand: startCommand,
-			Activity:     activity,
+			// Verbatim, unparsed, and empty for a session created before the
+			// option existed. What a lifetime means is internal/session's, and
+			// a malformed one there is absence rather than an error — a row that
+			// failed over it would cost the adoption of every session on the
+			// host, which is never the cheaper loss.
+			Lifetime: lifetime,
 		})
 	}
 	return sessions, nil

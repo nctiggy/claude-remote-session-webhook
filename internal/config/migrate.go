@@ -59,12 +59,23 @@ func migrate(path string, data []byte, renames map[string]string, warn io.Writer
 	// without re-checking anything: a file setting both spellings of one renamed
 	// key is refused here as the repeated key it is, so no rename can silently
 	// collapse two lines into one.
-	if _, err := parseFile(path, data, renames, warn); err != nil {
+	// dropRetired, not refuseRetired: a file carrying a key this daemon retired
+	// is precisely the file this command exists for, and parsing it the way
+	// startup does would refuse every one of them.
+	if _, err := parseFile(path, data, renames, dropRetired, warn); err != nil {
 		return nil, false, err
 	}
 
 	lines := strings.Split(string(data), "\n")
 	changed, stamped, firstPair := false, false, -1
+
+	// Lines to delete outright, collected rather than removed in place: removing
+	// while indexing would shift every index after the one removed, and firstPair
+	// below is an index into this slice.
+	var retiredLines []int
+
+	// Where the version stamp was inserted, or -1 if it was already present.
+	inserted := -1
 
 	for i, raw := range lines {
 		// The line's own ending is kept. A file written on one platform and
@@ -86,6 +97,16 @@ func migrate(path string, data []byte, renames map[string]string, warn io.Writer
 		value := strings.TrimSpace(rawValue)
 		if firstPair < 0 {
 			firstPair = i
+		}
+
+		if _, isRetired := retiredKeys[key]; isRetired {
+			// The whole line goes, comment and all if it had a trailing one —
+			// there are no trailing comments in this format, so the line is the
+			// setting and nothing else. Leaving a commented-out corpse behind
+			// would be this daemon editorialising in the operator's file.
+			retiredLines = append(retiredLines, i)
+			changed = true
+			continue
 		}
 
 		switch current, renamed := renames[key]; {
@@ -118,11 +139,23 @@ func migrate(path string, data []byte, renames map[string]string, warn io.Writer
 			}
 		}
 		lines = slices.Insert(lines, at, versionKey+" "+keyValueSeparator+" "+strconv.Itoa(SchemaVersion))
+		inserted = at
 		changed = true
 	}
 
 	if !changed {
 		return nil, false, nil
+	}
+
+	// After the version stamp, which may have inserted a line: these indices
+	// were taken before that insert, so they are corrected by it rather than
+	// invalidated. Deleted back to front so each removal cannot move the next.
+	for n := len(retiredLines) - 1; n >= 0; n-- {
+		at := retiredLines[n]
+		if inserted >= 0 && at >= inserted {
+			at++
+		}
+		lines = slices.Delete(lines, at, at+1)
 	}
 	return []byte(strings.Join(lines, "\n")), true, nil
 }

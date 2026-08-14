@@ -276,24 +276,26 @@ const (
 	fieldName    = "name"
 	fieldWorkDir = "work_dir"
 
-	// fieldLifetime and fieldIdleTimeout are the per-session overrides of the
-	// two clocks every session is bounded by (#37, milestone 10). They are
-	// spelled exactly as POST /sessions spells them in JSON, and read through
-	// that route's own parser: one door offering a session that outlives the
-	// defaults and the other refusing the same words would be two sets of rules
-	// for one bound.
+	// fieldLifetime is the per-session override of the one bound every session
+	// has (#37, milestone 10). It is spelled exactly as POST /sessions spells it
+	// in JSON, and read through that route's own parser: one door offering a
+	// session that outlives the defaults and the other refusing the same word
+	// would be two sets of rules for one bound.
 	//
-	// They carry duration strings rather than numbers, for parseLifetimeOverrides'
-	// reason — a bare 3600 is a unit the operator and the daemon have to agree
-	// about silently. Absent means the daemon's default, so a form that submits
-	// neither starts exactly the session this door started before they existed.
+	// It had a companion, `idle_timeout`, until milestone 15, and both went with
+	// the bound they configured.
 	//
-	// Nothing here is trusted for being typed by the operator. What the ceilings
-	// bound is the blast radius Principle VI bounds by construction, and a value
-	// past one is refused rather than clamped: an operator who believes they have
+	// It carries a duration string rather than a number, for
+	// parseLifetimeOverride's reason — a bare 3600 is a unit the operator and the
+	// daemon have to agree about silently. Absent means the daemon's default, so
+	// a form that submits neither starts exactly the session this door started
+	// before it existed.
+	//
+	// Nothing here is trusted for being typed by the operator. What the ceiling
+	// bounds is the blast radius Principle VI bounds by construction, and a value
+	// past it is refused rather than clamped: an operator who believes they have
 	// thirty days and silently has one learns otherwise when the session is gone.
-	fieldLifetime    = "lifetime"
-	fieldIdleTimeout = "idle_timeout"
+	fieldLifetime = "lifetime"
 
 	// fieldRemoteControl is the switch, and it carries a *mode* rather than a
 	// name (FR-003, FR-004). It replaced a `<select name="start_command">` that
@@ -452,7 +454,7 @@ func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
 	// refusal is refuseBrowserCreate's, so a value past a ceiling and a value the
 	// clock cannot read are one answer to the operator and one sentinel on the
 	// trail — never the caller's own text, which is what createReason keeps out.
-	lifetime, idle, err := parseLifetimeOverrides(r.PostForm.Get(fieldLifetime), r.PostForm.Get(fieldIdleTimeout))
+	lifetime, err := parseLifetimeOverride(r.PostForm.Get(fieldLifetime))
 	if err != nil {
 		s.refuseBrowserCreate(w, r, err)
 		return
@@ -502,14 +504,12 @@ func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
 		// carried. It is the whole of FR-004 in one assignment.
 		StartCommand: startCommand,
 		// The operator's two overrides, which the manager checks against the
-		// operator's own ceilings before a record exists (resolveLifetimes). A
-		// negative Idle is idle reaping off for this session and is safe because
-		// the absolute deadline still fires. A negative Lifetime switches that
-		// one off too (milestone 13), which is safe on different terms: the
-		// manager grants it only where the daemon's own ceiling is already
-		// unbounded, so this field cannot open a door the operator has not.
+		// operator's own ceiling before a record exists (resolveLifetimes). A
+		// negative Lifetime switches the absolute deadline off (milestone 13),
+		// which is safe on one condition the manager checks: it grants that only
+		// where the daemon's own ceiling is already unbounded, so this field
+		// cannot open a door the operator has not.
 		Lifetime: lifetime,
-		Idle:     idle,
 	})
 	if err != nil {
 		s.refuseBrowserCreate(w, r, err)
@@ -685,7 +685,7 @@ func (s *Server) renameFromBrowser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Manager.View, which is what a browser gets: it settles ownership without a
-	// per-session credential and without advancing the idle clock (FR-034a,
+	// per-session credential and without recording a driving (FR-034a,
 	// FR-034f). Ahead of the name check deliberately — a session this operator may
 	// not act on is answered the same whatever they asked to call it, so the two
 	// refusals cannot be read against each other to learn which identifiers are
@@ -836,7 +836,7 @@ func (s *Server) compactFromBrowser(w http.ResponseWriter, r *http.Request) {
 
 	// Manager.View, which is what a browser gets: it settles ownership without a
 	// per-session credential, because a browser holds none and must not be given
-	// one (FR-034a). It deliberately does not advance the idle clock (FR-034f) —
+	// one (FR-034a). It deliberately does not record a driving (FR-034f) —
 	// Compact does that itself, under the store's lock, because a compact is
 	// activity and a lookup is not.
 	live, err := s.sessions.View(id, operator.Owner)
@@ -860,7 +860,7 @@ func (s *Server) compactFromBrowser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// A compact changes nothing a card draws — the name, the working directory and
-	// the age are all as they were, and the idle clock it deferred is not on the
+	// the age are all as they were, and the clock it moved is not on the
 	// card at all — so the whole of what an operator learns here is the sentence
 	// the banner carries. That was true when the answer was a fragment and it is
 	// why this route never rendered a card.

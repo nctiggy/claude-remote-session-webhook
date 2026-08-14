@@ -226,6 +226,12 @@ func TestCreateSendsTheTmuxCommandsInOrder(t *testing.T) {
 		// empty string: an option set to nothing and one never set read back
 		// identically, so the branch that skipped it would be untestable.
 		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, "@crswd-start", ""}},
+		// The session's own lifetime, on the same terms and for a sharper reason
+		// (milestone 15): a create that wrote no lifetime is a session that comes
+		// back from the next restart carrying the daemon's default, whatever the
+		// operator asked for. Empty here is the default, which is what this
+		// fixture's request asks for.
+		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, "@crswd-lifetime", ""}},
 		{Op: tmuxctl.OpSendKeys, Argv: []string{
 			"tmux", "send-keys", "-t", pane, "--", "claude --dangerously-skip-permissions", "Enter",
 		}},
@@ -469,9 +475,6 @@ func TestCreateKeepsTheRecordWhenTeardownCannotBeVerified(t *testing.T) {
 			}
 			if rec.State != StateStarting {
 				t.Errorf("retained record state = %q, want %q — nothing was confirmed", rec.State, StateStarting)
-			}
-			if want := f.now.Add(IdleTimeout); !rec.IdleDeadline().Equal(want) {
-				t.Errorf("retained record idle deadline %s, want %s", rec.IdleDeadline(), want)
 			}
 			if want := f.now.Add(AbsoluteLifetime); !rec.AbsoluteDeadline().Equal(want) {
 				t.Errorf("retained record absolute deadline %s, want %s", rec.AbsoluteDeadline(), want)
@@ -901,12 +904,17 @@ func TestViewRefusesADeadSession(t *testing.T) {
 	}
 }
 
-// TestViewLeavesTheIdleClockWhereResolveMovesIt is FR-034f stated as the
-// difference between the two paths, because that is what makes it checkable: the
-// same record, the same daemon clock, one read that drives and one that watches.
+// TestViewLeavesTheClockWhereResolveMovesIt is FR-034f stated as the difference
+// between the two paths, because that is what makes it checkable: the same
+// record, the same daemon clock, one read that drives and one that watches.
 // Asserting only that View leaves the clock alone would also pass against a
 // Touch that had stopped working for everyone.
-func TestViewLeavesTheIdleClockWhereResolveMovesIt(t *testing.T) {
+//
+// The stakes changed in milestone 15 and the rule did not. This clock fed the
+// idle deadline until then, so a watching path that touched it would have kept
+// an unsandboxed shell alive; now it feeds a card, and what a breach costs is a
+// fleet that overstates when a session was last driven.
+func TestViewLeavesTheClockWhereResolveMovesIt(t *testing.T) {
 	t.Parallel()
 
 	f := newManagerFixture(t)
@@ -926,43 +934,14 @@ func TestViewLeavesTheIdleClockWhereResolveMovesIt(t *testing.T) {
 		t.Errorf("View() returned LastActivity %v; want the record as written, %v", got.LastActivity, f.now)
 	}
 	if stored := mustStored(t, f, s.ID); !stored.LastActivity.Equal(f.now) {
-		t.Errorf("View() moved the stored idle clock to %v; want it left at %v", stored.LastActivity, f.now)
+		t.Errorf("View() moved the stored clock to %v; want it left at %v", stored.LastActivity, f.now)
 	}
 
 	if _, err := mgr.Resolve(s.ID, auth.CallerOperator, tok); err != nil {
 		t.Fatalf("Resolve() unexpected error: %v", err)
 	}
 	if stored := mustStored(t, f, s.ID); !stored.LastActivity.Equal(later) {
-		t.Errorf("Resolve() left the idle clock at %v; the driving path must still advance it to %v", stored.LastActivity, later)
-	}
-}
-
-// TestASessionWatchedWithoutPauseIsStillReapedOnTime is US2 scenario 7 at the
-// only seam that can enforce it, and it is the reason View exists at all: a
-// browser tab that never stops watching must not keep an unsandboxed shell alive
-// (Principle VI). The reaper's own expiredAt is the judge — a test that recomputed
-// the deadline itself would agree with a View that had started touching the clock.
-func TestASessionWatchedWithoutPauseIsStillReapedOnTime(t *testing.T) {
-	t.Parallel()
-
-	f := newManagerFixture(t)
-	s, _ := mustCreate(t, f, f.request())
-
-	// A tab open across the whole idle window, watching far more often than the
-	// stream's one-second tick would.
-	for at := f.now; at.Before(f.now.Add(IdleTimeout)); at = at.Add(time.Minute) {
-		if _, err := f.managerAt(t, f.store, at).View(s.ID, auth.CallerOperator); err != nil {
-			t.Fatalf("View() at %v unexpected error: %v", at, err)
-		}
-	}
-
-	stored := mustStored(t, f, s.ID)
-	deadline := f.now.Add(IdleTimeout)
-	if !stored.IdleDeadline().Equal(deadline) {
-		t.Fatalf("after an hour of watching the idle deadline is %v; want it unmoved at %v", stored.IdleDeadline(), deadline)
-	}
-	if got := expiredAt(stored, deadline); got != ExpiryIdle {
-		t.Errorf("the reaper calls a continuously watched session %q at its idle deadline; want %q", got, ExpiryIdle)
+		t.Errorf("Resolve() left the clock at %v; the driving path must still advance it to %v", stored.LastActivity, later)
 	}
 }
 
@@ -1296,15 +1275,15 @@ func TestCompactUsesBufferPath(t *testing.T) {
 }
 
 // data-model.md's one field change for this milestone. Compact is activity — it
-// delivers into the session exactly as a prompt does — so it defers the idle
-// deadline exactly as a prompt does.
+// delivers into the session exactly as a prompt does — so it records a driving
+// exactly as a prompt does.
 //
 // The API path gets that from Resolve. This is the other path: a browser holds no
 // per-session credential, so it reaches its session through View, which is
 // required not to touch the clock (FR-034f). If this method did not, nothing on
-// that path would, and the reaper would go on measuring a session an operator is
-// driving as idle.
-func TestCompactDefersTheIdleDeadline(t *testing.T) {
+// that path would, and the fleet would go on describing a session the operator is
+// driving as untouched.
+func TestCompactRecordsTheDriving(t *testing.T) {
 	t.Parallel()
 
 	f := newManagerFixture(t)
@@ -1322,10 +1301,7 @@ func TestCompactDefersTheIdleDeadline(t *testing.T) {
 
 	stored := mustStored(t, f, s.ID)
 	if !stored.LastActivity.Equal(later) {
-		t.Errorf("the compact left the idle clock at %v, want it advanced to %v", stored.LastActivity, later)
-	}
-	if !stored.IdleDeadline().Equal(later.Add(IdleTimeout)) {
-		t.Errorf("the idle deadline is %v, want the hour after the compact %v", stored.IdleDeadline(), later.Add(IdleTimeout))
+		t.Errorf("the compact left the clock at %v, want it advanced to %v", stored.LastActivity, later)
 	}
 }
 
@@ -1524,8 +1500,8 @@ func TestSetModeKeepsIdentifierCredentialAndLifetime(t *testing.T) {
 		t.Error("the credential hash changed; the token its owner is holding no longer opens the session they still have")
 	case !after.CreatedAt.Equal(before.CreatedAt):
 		t.Errorf("CreatedAt moved to %v from %v; the absolute deadline derives from it, so a toggle would extend the ceiling", after.CreatedAt, before.CreatedAt)
-	case after.Lifetime != before.Lifetime, after.Idle != before.Idle:
-		t.Errorf("the bounds are now %v/%v, want %v/%v", after.Lifetime, after.Idle, before.Lifetime, before.Idle)
+	case after.Lifetime != before.Lifetime:
+		t.Errorf("the bound is now %v, want %v", after.Lifetime, before.Lifetime)
 	case !after.AbsoluteDeadline().Equal(before.AbsoluteDeadline()):
 		t.Errorf("the absolute deadline moved to %v from %v", after.AbsoluteDeadline(), before.AbsoluteDeadline())
 	case after.Owner != before.Owner:
@@ -1533,13 +1509,12 @@ func TestSetModeKeepsIdentifierCredentialAndLifetime(t *testing.T) {
 	}
 }
 
-// A mode change drives the session, so it defers the idle deadline exactly as a
-// compact does (data-model.md). The browser is the only door it has, and that
-// door reaches its session through View, which is required not to touch the
-// clock (FR-034f) — so if this did not, nothing on the path would, and the
-// reaper would go on measuring a session the operator has just restarted as
-// idle.
-func TestSetModeDefersTheIdleDeadline(t *testing.T) {
+// A mode change drives the session, so it records a driving exactly as a compact
+// does (data-model.md). The browser is the only door it has, and that door
+// reaches its session through View, which is required not to touch the clock
+// (FR-034f) — so if this did not, nothing on the path would, and the fleet would
+// go on describing a session the operator has just restarted as untouched.
+func TestSetModeRecordsTheDriving(t *testing.T) {
 	t.Parallel()
 
 	f := newManagerFixture(t)
@@ -1562,7 +1537,7 @@ func TestSetModeDefersTheIdleDeadline(t *testing.T) {
 
 	stored := mustStored(t, f, s.ID)
 	if !stored.LastActivity.Equal(later) {
-		t.Errorf("the transition left the idle clock at %v, want it advanced to %v", stored.LastActivity, later)
+		t.Errorf("the transition left the clock at %v, want it advanced to %v", stored.LastActivity, later)
 	}
 }
 
@@ -2249,7 +2224,7 @@ func TestAdoptTakesBackASurvivingSessionWithAFreshCredential(t *testing.T) {
 	// argv is spelled out rather than built from tmuxctl's helpers: this asserts
 	// the command line tmux will receive, not that Adopt called a builder.
 	want := []tmuxctl.Call{
-		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}|#{session_activity}"}},
+		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}|#{@crswd-lifetime}"}},
 		{Op: tmuxctl.OpHas, Argv: []string{"tmux", "has-session", "-t", "=" + name}},
 	}
 	calls := f.tmux.Calls()[before:]
@@ -2827,10 +2802,10 @@ func TestEveryFleetChangeEmits(t *testing.T) {
 			name: "the reaper's sweep",
 			arrange: func(t *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
 				s, _ := mustCreate(t, f, f.request())
-				r := reaperAt(t, f, f.now.Add(IdleTimeout))
+				r := reaperAt(t, f, f.now.Add(AbsoluteLifetime))
 				return r.mgr, func(t *testing.T) []FleetEvent {
 					if reaped := mustSweep(t, r); len(reaped) != 1 {
-						t.Fatalf("the sweep took %d sessions, want the idle one", len(reaped))
+						t.Fatalf("the sweep took %d sessions, want the expired one", len(reaped))
 					}
 					return []FleetEvent{vanished(s.ID)}
 				}
@@ -2864,21 +2839,6 @@ func TestEveryFleetChangeEmits(t *testing.T) {
 		},
 		{
 			// No record entered or left, and the card an open page is drawing is
-			// wrong all the same: the pill said idle a moment ago.
-			name: "activity that brings an idle session back",
-			arrange: func(t *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
-				s, tok := mustCreate(t, f, f.request())
-				mgr := f.managerAt(t, f.store, f.now.Add(IdleTimeout))
-				return mgr, func(t *testing.T) []FleetEvent {
-					if _, err := mgr.Resolve(s.ID, auth.CallerOperator, tok); err != nil {
-						t.Fatalf("Resolve() unexpected error: %v", err)
-					}
-					return []FleetEvent{{Kind: FleetChanged, ID: s.ID, Owner: auth.CallerOperator}}
-				}
-			},
-		},
-		{
-			// No record entered or left, and the card an open page is drawing is
 			// wrong all the same: it carries a label the daemon no longer holds.
 			name: "a rename",
 			arrange: func(t *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
@@ -2892,23 +2852,10 @@ func TestEveryFleetChangeEmits(t *testing.T) {
 			},
 		},
 		{
-			// The Resolve case's fact, reached the way a browser reaches it. A
-			// compact defers the idle deadline (data-model.md), so the pill that
-			// said idle a moment ago is wrong — again with no record entering or
-			// leaving, and again with nobody but the operator's own action behind it.
-			name: "a compact that brings an idle session back",
-			arrange: func(t *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
-				s, _ := mustCreate(t, f, f.request())
-				mgr := f.managerAt(t, f.store, f.now.Add(IdleTimeout))
-				return mgr, func(t *testing.T) []FleetEvent {
-					if err := mgr.Compact(context.Background(), *s); err != nil {
-						t.Fatalf("Compact() unexpected error: %v", err)
-					}
-					return []FleetEvent{{Kind: FleetChanged, ID: s.ID, Owner: auth.CallerOperator}}
-				}
-			},
-		},
-		{
+			// Since milestone 15 there is one display state, so no driving can
+			// change it and this is the only outcome a driving has. Two cases
+			// above this one asserted the transition idle → running and went
+			// with the bound.
 			name: "activity on a session that was already running",
 			arrange: func(t *testing.T, f managerFixture) (*Manager, func(*testing.T) []FleetEvent) {
 				s, tok := mustCreate(t, f, f.request())
@@ -3006,7 +2953,7 @@ func TestAFleetChangeCompletesWithNobodyListening(t *testing.T) {
 
 	// One record left, and the sweep is the path that has no request behind it
 	// at all — the one #15 was reported against.
-	r := reaperAt(t, f, f.now.Add(IdleTimeout))
+	r := reaperAt(t, f, f.now.Add(AbsoluteLifetime))
 	if got := mustSweep(t, r); len(got) != 1 {
 		t.Fatalf("the sweep took %d sessions with nobody watching, want the 1 left", len(got))
 	}
@@ -3293,16 +3240,13 @@ func TestLifetimeOverrides(t *testing.T) {
 		if got, want := s.AbsoluteDeadline(), s.CreatedAt.Add(AbsoluteLifetime); !got.Equal(want) {
 			t.Errorf("absolute deadline = %v; want %v", got, want)
 		}
-		if got, want := s.IdleDeadline(), s.LastActivity.Add(IdleTimeout); !got.Equal(want) {
-			t.Errorf("idle deadline = %v; want %v", got, want)
-		}
 	})
 
 	t.Run("an override beats the default", func(t *testing.T) {
 		t.Parallel()
 
 		f := newManagerFixture(t)
-		f.mgr.SetLifetimes(AbsoluteLifetime, 72*time.Hour, IdleTimeout, IdleTimeout)
+		f.mgr.SetLifetimes(AbsoluteLifetime, 72*time.Hour)
 
 		req := f.request()
 		req.Lifetime = 48 * time.Hour
@@ -3322,7 +3266,7 @@ func TestLifetimeOverrides(t *testing.T) {
 		t.Parallel()
 
 		f := newManagerFixture(t)
-		f.mgr.SetLifetimes(AbsoluteLifetime, 48*time.Hour, IdleTimeout, IdleTimeout)
+		f.mgr.SetLifetimes(AbsoluteLifetime, 48*time.Hour)
 
 		req := f.request()
 		req.Lifetime = 100 * time.Hour
@@ -3334,26 +3278,6 @@ func TestLifetimeOverrides(t *testing.T) {
 		}
 	})
 
-	// Disabling idle reaping is safe only because the absolute deadline still
-	// fires. If that ever stops being true this is a hole, not a knob — so the
-	// assertion is on the absolute deadline, not on the idle one.
-	t.Run("idle disabled still expires absolutely", func(t *testing.T) {
-		t.Parallel()
-
-		f := newManagerFixture(t)
-		req := f.request()
-		req.Idle = -1
-		s, _, err := f.mgr.Create(context.Background(), req)
-		if err != nil {
-			t.Fatalf("Create(idle disabled) = %v", err)
-		}
-		if !s.IdleDeadline().After(s.AbsoluteDeadline()) {
-			t.Error("a session with idle reaping disabled can still be reaped for idleness first")
-		}
-		if got, want := s.AbsoluteDeadline(), s.CreatedAt.Add(AbsoluteLifetime); !got.Equal(want) {
-			t.Errorf("absolute deadline = %v; want %v — disabling idle must not disable this", got, want)
-		}
-	})
 }
 
 // TestALifetimeThatNeverExpiresNeedsTheOperatorsCeiling is milestone 13's second
@@ -3393,7 +3317,7 @@ func TestALifetimeThatNeverExpiresNeedsTheOperatorsCeiling(t *testing.T) {
 		t.Parallel()
 
 		f := newManagerFixture(t)
-		f.mgr.SetLifetimes(AbsoluteLifetime, 8760*time.Hour, IdleTimeout, IdleTimeout)
+		f.mgr.SetLifetimes(AbsoluteLifetime, 8760*time.Hour)
 
 		req := f.request()
 		req.Lifetime = forever
@@ -3409,7 +3333,7 @@ func TestALifetimeThatNeverExpiresNeedsTheOperatorsCeiling(t *testing.T) {
 		t.Parallel()
 
 		f := newManagerFixture(t)
-		f.mgr.SetLifetimes(AbsoluteLifetime, -time.Hour, IdleTimeout, IdleTimeout)
+		f.mgr.SetLifetimes(AbsoluteLifetime, -time.Hour)
 
 		req := f.request()
 		req.Lifetime = forever
@@ -3420,9 +3344,10 @@ func TestALifetimeThatNeverExpiresNeedsTheOperatorsCeiling(t *testing.T) {
 		if !s.LifetimeDisabled() {
 			t.Fatalf("the record carries a lifetime of %v, which still expires", s.Lifetime)
 		}
-		// Ten years on and still in use. The idle clock is the *other* switch and
-		// is untouched here, so the session is driven up to the instant being
-		// asked about — what must not happen is the bound this case turned off.
+		// Ten years on and still in use, which since milestone 15 is the same
+		// question as ten years on and untouched: nothing but this bound can
+		// reap a session, so what must not happen is the bound this case turned
+		// off firing anyway.
 		inUse := *s
 		tenYearsOn := s.CreatedAt.Add(10 * 365 * 24 * time.Hour)
 		inUse.LastActivity = tenYearsOn
@@ -3431,47 +3356,27 @@ func TestALifetimeThatNeverExpiresNeedsTheOperatorsCeiling(t *testing.T) {
 		}
 	})
 
-	// The two switches together, which is what the create form offers and what
-	// the operator asked for twice. It is a separate case because the two bounds
-	// are separate deadlines: a session that survived the absolute one only to be
-	// taken for idleness would be the promise kept by half.
-	t.Run("both bounds off is reaped by neither", func(t *testing.T) {
+	// The session nothing reaps, which is what the create form offers and what
+	// the operator asked for. It was two switches until milestone 15 and is one
+	// now: with the idle bound withdrawn, switching this one off is the whole of
+	// the promise rather than half of it.
+	t.Run("the only bound off is reaped by nothing", func(t *testing.T) {
 		t.Parallel()
 
 		f := newManagerFixture(t)
-		f.mgr.SetLifetimes(AbsoluteLifetime, -time.Hour, IdleTimeout, IdleTimeout)
+		f.mgr.SetLifetimes(AbsoluteLifetime, -time.Hour)
 
 		req := f.request()
-		req.Lifetime, req.Idle = forever, forever
+		req.Lifetime = forever
 		s, _, err := f.mgr.Create(context.Background(), req)
 		if err != nil {
-			t.Fatalf("Create(never, idle off) = %v", err)
+			t.Fatalf("Create(never) = %v", err)
 		}
-		// Untouched since it started, which is the session this case is about:
-		// nothing has driven it and nothing has advanced either clock.
+		// Untouched since it started, which is the session this case is about
+		// and the session the 2026-08-14 incident destroyed: nothing has driven
+		// it, and being undriven is no longer a thing that can end it.
 		if got := expiredAt(*s, s.CreatedAt.Add(10*365*24*time.Hour)); got != "" {
-			t.Errorf("ten years of sitting still and the reaper takes this session for %q; both switches are off", got)
-		}
-	})
-
-	// An idle timeout is refused when it could never fire inside the lifetime it
-	// sits in. A lifetime with no end has no such timeout, and reading the
-	// negative as a very short lifetime would refuse every idle timeout there is
-	// on exactly these sessions.
-	t.Run("an ordinary idle timeout still fits inside it", func(t *testing.T) {
-		t.Parallel()
-
-		f := newManagerFixture(t)
-		f.mgr.SetLifetimes(AbsoluteLifetime, -time.Hour, IdleTimeout, IdleTimeout)
-
-		req := f.request()
-		req.Lifetime, req.Idle = forever, IdleTimeout
-		s, _, err := f.mgr.Create(context.Background(), req)
-		if err != nil {
-			t.Fatalf("Create(never, 60m idle) = %v; an idle timeout fires inside a lifetime with no end", err)
-		}
-		if got, want := s.IdleDeadline(), s.IdleSince().Add(IdleTimeout); !got.Equal(want) {
-			t.Errorf("idle deadline = %v; want %v — the idle clock is untouched by the other switch", got, want)
+			t.Errorf("ten years of sitting still and the reaper takes this session for %q; the bound is off", got)
 		}
 	})
 
@@ -3481,7 +3386,7 @@ func TestALifetimeThatNeverExpiresNeedsTheOperatorsCeiling(t *testing.T) {
 		t.Parallel()
 
 		f := newManagerFixture(t)
-		f.mgr.SetLifetimes(AbsoluteLifetime, -time.Hour, IdleTimeout, IdleTimeout)
+		f.mgr.SetLifetimes(AbsoluteLifetime, -time.Hour)
 
 		req := f.request()
 		req.Lifetime = 72 * time.Hour
@@ -3535,5 +3440,229 @@ func TestAdoptionRestoresNameAndWorkDir(t *testing.T) {
 	}
 	if !got.Adopted {
 		t.Error("a reclaimed session is not marked adopted")
+	}
+}
+
+// --- The lifetime the host holds (milestone 15, spec 009) -------------------
+
+// seedSurvivorWithLifetime is seedSurvivor with the sixth user option set, which
+// is how a session that outlived its daemon carries its own bound back.
+func (f managerFixture) seedSurvivorWithLifetime(id string, created time.Time, lifetime string) string {
+	name := tmuxNamePrefix + id
+	f.tmux.Seed(tmuxctl.SessionInfo{Name: name, Created: created, Managed: true, Lifetime: lifetime})
+	return name
+}
+
+// TestCreateRecordsTheSessionsLifetimeOnTheHost is the write half of the fix, and
+// it is asserted as the argv rather than as a field because the argv is what tmux
+// receives. A record that held the right value and a host that held none is
+// precisely the state that destroyed four sessions on 2026-08-14.
+//
+// **Must fail when** start stops setting @crswd-lifetime, or sets it from
+// anything other than the record's own Lifetime.
+func TestCreateRecordsTheSessionsLifetimeOnTheHost(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		lifetime time.Duration
+		want     string
+	}{
+		// The daemon's default, written as an empty option. Set-to-nothing and
+		// never-set read back identically, so this is not a branch adoption can
+		// tell apart — which is why start writes it unconditionally.
+		{name: "the daemon's default", want: ""},
+		{name: "a session that never expires", lifetime: -1, want: config.NeverLifetime},
+		{name: "an explicit lifetime", lifetime: 72 * time.Hour, want: "72h0m0s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newManagerFixture(t)
+			// A zero default and no ceiling. Zero is "the daemon's configured
+			// default", which is what a create that asks for nothing records —
+			// resolveLifetime substitutes a *concrete* default when one is
+			// configured, so a fixture with 24h here would write "24h0m0s" for
+			// the unset case and prove nothing about the empty option. No ceiling
+			// so the never case is granted rather than refused before anything
+			// reaches the host.
+			f.mgr.SetLifetimes(0, -time.Hour)
+
+			req := f.request()
+			req.Lifetime = tc.lifetime
+			s, _, err := f.mgr.Create(context.Background(), req)
+			if err != nil {
+				t.Fatalf("Create(%v) = %v", tc.lifetime, err)
+			}
+
+			pane := "=" + s.TmuxName() + ":"
+			want := []string{"tmux", "set-option", "-t", pane, tmuxctl.OptionLifetime, tc.want}
+
+			var found bool
+			for _, call := range f.tmux.Calls() {
+				if call.Op == tmuxctl.OpSetOption && len(call.Argv) > 4 && call.Argv[4] == tmuxctl.OptionLifetime {
+					found = true
+					if !slices.Equal(call.Argv, want) {
+						t.Errorf("the create set %q, want %q", call.Argv, want)
+					}
+				}
+			}
+			if !found {
+				t.Errorf("the create never set %s; this session comes back from the next restart carrying the daemon's default, whatever the operator asked for", tmuxctl.OptionLifetime)
+			}
+		})
+	}
+}
+
+// TestAdoptRestoresTheLifetimeTheHostHolds is the incident, run as a test.
+//
+// A session created never to expire, a restart, and a daemon that has to decide
+// what bound the session it just took back is under. Before milestone 15 it
+// decided "the default", and the reaper collected the session an hour later.
+//
+// **Must fail when** Adopt stops reading the option, or reads it into anything
+// but the record's own Lifetime.
+func TestAdoptRestoresTheLifetimeTheHostHolds(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		option   string
+		want     time.Duration
+		disabled bool
+	}{
+		{name: "never", option: config.NeverLifetime, disabled: true},
+		{name: "an explicit lifetime", option: "72h0m0s", want: 72 * time.Hour},
+		// Every session created before the option existed. Absence is "unknown"
+		// and hands the session the daemon's default; it is never a reason to
+		// skip the adoption, because an unadopted session is an unowned
+		// unsandboxed shell (FR-010).
+		{name: "no option at all", option: ""},
+		// A value from a build that does not exist, a truncated write, or an
+		// operator who set the option by hand. Read as absence, never as an
+		// error: the alternative to a defaulted lifetime is the same unowned
+		// shell.
+		{name: "a value no clock can read", option: "whenever"},
+		// The switch has one spelling and it is a word. A negative duration on
+		// the host is not a second way to reach the only bound Principle VI
+		// still rests on.
+		{name: "a negative duration is not the switch", option: "-1ns"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newManagerFixture(t)
+			id := testID("a")
+			started := f.now.Add(-2 * time.Hour)
+			f.seedSurvivorWithLifetime(id, started, tc.option)
+
+			mgr := f.managerAt(t, NewStore(), f.now)
+			// Unbounded, which is the daemon the operator had when they asked for
+			// a session that never expires. The narrowed case is its own test.
+			// A zero default for TestCreateRecordsTheSessionsLifetimeOnTheHost's
+			// reason: it is what makes "unset" distinguishable from a value.
+			mgr.SetLifetimes(0, -time.Hour)
+
+			got := mustAdoptOne(t, mgr)
+			s := got.Session
+
+			if got.LifetimeNarrowed {
+				t.Errorf("Adopt() reported the lifetime narrowed; this daemon's ceiling grants %q", tc.option)
+			}
+			if s.LifetimeDisabled() != tc.disabled {
+				t.Errorf("Adopt() LifetimeDisabled() = %v for option %q, want %v", s.LifetimeDisabled(), tc.option, tc.disabled)
+			}
+			if tc.disabled {
+				// The assertion that matters, and it is the reaper's own question
+				// rather than the instant: a century out is only "never" for as
+				// long as nothing compares against it, and expiredAt is what
+				// compares. A year past the old default is where the incident was.
+				if expiry := expiredAt(s, started.Add(365*24*time.Hour)); expiry != "" {
+					t.Errorf("a year on, the reaper takes an adopted never-expiring session for %q", expiry)
+				}
+				return
+			}
+			if s.Lifetime != tc.want {
+				t.Errorf("Adopt() lifetime = %v for option %q, want %v", s.Lifetime, tc.option, tc.want)
+			}
+			// Measured from the host's own start time either way, so no restart
+			// can extend a session past its ceiling (FR-009).
+			wantDeadline := started.Add(orDefault(tc.want, AbsoluteLifetime))
+			if !s.AbsoluteDeadline().Equal(wantDeadline) {
+				t.Errorf("Adopt() absolute deadline = %v, want %v", s.AbsoluteDeadline(), wantDeadline)
+			}
+		})
+	}
+}
+
+// TestAdoptWillNotHonourALifetimeTheCurrentCeilingRefuses is FR-011: the ceiling
+// in force now beats a value written when it was wider.
+//
+// An operator who narrows their ceiling while the daemon is down has said what
+// sessions on this host may do. A `never` recorded under the old one is then a
+// value on the host exempting a session from a bound its operator currently sets,
+// which is the one thing an override may never be — so the session is adopted
+// under today's rules rather than yesterday's, and never skipped: it is running,
+// and the alternative to a defaulted lifetime is an unowned unsandboxed shell.
+//
+// **Must fail when** the restored value is honoured without a ceiling check, or
+// when the refusal skips the adoption instead of defaulting it, or when the
+// substitution goes unrecorded.
+func TestAdoptWillNotHonourALifetimeTheCurrentCeilingRefuses(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	id := testID("a")
+	started := f.now.Add(-2 * time.Hour)
+	f.seedSurvivorWithLifetime(id, started, config.NeverLifetime)
+
+	// The narrowed ceiling: an ordinary daemon, which is what this host is now.
+	mgr := f.managerAt(t, NewStore(), f.now)
+	mgr.SetLifetimes(0, AbsoluteLifetime)
+
+	got := mustAdoptOne(t, mgr)
+	s := got.Session
+
+	if s.LifetimeDisabled() {
+		t.Error("Adopt() kept a never-expiring lifetime on a daemon whose ceiling would refuse one on a create")
+	}
+	if s.Lifetime != 0 {
+		t.Errorf("Adopt() lifetime = %v, want the daemon's configured default", s.Lifetime)
+	}
+	if want := started.Add(AbsoluteLifetime); !s.AbsoluteDeadline().Equal(want) {
+		t.Errorf("Adopt() absolute deadline = %v, want %v", s.AbsoluteDeadline(), want)
+	}
+	// Reported, because an operator finds out here or not at all: the card will
+	// simply show a deadline where they remember switching one off.
+	if !got.LifetimeNarrowed {
+		t.Error("Adopt() replaced the session's recorded lifetime and reported nothing; the trail is the only place that substitution is visible")
+	}
+	if _, err := f.store.Get(id, auth.CallerOperator); err == nil {
+		t.Error("the fixture's own store holds the record; this test adopts into a fresh one")
+	}
+	if _, err := mgr.View(id, auth.CallerOperator); err != nil {
+		t.Errorf("the session was not adopted at all (%v); a lifetime this daemon will not grant is a reason to default it, never to leave an unowned shell on the host", err)
+	}
+}
+
+// The vocabulary itself, both directions, because it is the one place a value
+// crosses out of this package and back. A round trip that lost the switch would
+// be the incident again with an extra step.
+func TestLifetimeEncodingRoundTrips(t *testing.T) {
+	t.Parallel()
+
+	for _, d := range []time.Duration{0, neverLifetime, 72 * time.Hour, time.Minute} {
+		if got := decodeLifetime(encodeLifetime(d)); got != d {
+			t.Errorf("decodeLifetime(encodeLifetime(%v)) = %v", d, got)
+		}
+	}
+	// Any negative is the switch on the way out, and comes back as the one this
+	// package writes — so a record that has been through the host reads the same
+	// as one that has not.
+	if got := (Session{Lifetime: decodeLifetime(encodeLifetime(-time.Hour))}); !got.LifetimeDisabled() {
+		t.Errorf("a disabled lifetime came back as %v, which still expires", got.Lifetime)
+	}
+	if got := encodeLifetime(0); got != "" {
+		t.Errorf("encodeLifetime(0) = %q, want the empty option that means unset", got)
 	}
 }

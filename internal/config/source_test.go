@@ -219,7 +219,6 @@ func TestFileBeatsDefault(t *testing.T) {
 		"max_streams = 4",
 		"create_rate_per_min = 2",
 		"max_body_bytes = 4096",
-		"idle_timeout = 17m",
 		"session_lifetime = 3h",
 		"start_commands = rc=claude remote-control --name {name}",
 	))
@@ -256,7 +255,6 @@ func TestFileBeatsDefault(t *testing.T) {
 		{"max_streams", cfg.MaxStreams, 4, config.DefaultMaxStreams},
 		{"create_rate_per_min", cfg.CreateRatePerMin, 2, config.DefaultCreateRatePerMin},
 		{"max_body_bytes", cfg.MaxBodyBytes, int64(4096), int64(config.DefaultMaxBodyBytes)},
-		{"idle_timeout", cfg.IdleTimeout, 17 * time.Minute, time.Hour},
 		{"session_lifetime", cfg.SessionLifetime, 3 * time.Hour, 24 * time.Hour},
 		{"access_aud", cfg.AccessAUD, goodAUD, ""},
 	} {
@@ -292,7 +290,7 @@ func TestEnvBeatsFile(t *testing.T) {
 	home := homeWith(t, fileLines(root,
 		"listen = 127.0.0.1:9999",
 		"max_sessions = 3",
-		"idle_timeout = 17m",
+		"session_lifetime = 17h",
 	))
 
 	cfg, err := config.LoadFrom(env(map[string]string{
@@ -327,8 +325,8 @@ func TestEnvBeatsFile(t *testing.T) {
 
 	// The layers are per key and not all-or-nothing: an environment that names
 	// one setting must not switch the file off for the rest.
-	if cfg.IdleTimeout != 17*time.Minute {
-		t.Errorf("IdleTimeout = %s, want 17m: an environment naming other keys stopped the file answering for this one", cfg.IdleTimeout)
+	if cfg.SessionLifetime != 17*time.Hour {
+		t.Errorf("SessionLifetime = %s, want 17h: an environment naming other keys stopped the file answering for this one", cfg.SessionLifetime)
 	}
 }
 
@@ -382,7 +380,7 @@ func TestFileValueIsValidatedIdentically(t *testing.T) {
 		{name: "a listen host that is not loopback", key: "listen", value: "0.0.0.0:8765", noDoor: true},
 		{name: "a session cap that is not a number", key: "max_sessions", value: "several"},
 		{name: "a session cap below one", key: "max_sessions", value: "0"},
-		{name: "an idle timeout that is not a duration", key: "idle_timeout", value: "soon"},
+		{name: "a session lifetime that is not a duration", key: "session_lifetime", value: "soon"},
 		{name: "a negative lifetime", key: "session_lifetime", value: "-1h"},
 		// The one where identical validation is the security property rather
 		// than a convenience: tmux's parser eats a trailing ";" before the line
@@ -474,7 +472,6 @@ func TestNoFileMatchesTodayExactly(t *testing.T) {
 		{"create_rate_per_min", want.CreateRatePerMin, config.DefaultCreateRatePerMin},
 		{"max_body_bytes", want.MaxBodyBytes, int64(config.DefaultMaxBodyBytes)},
 		{"session_lifetime", want.SessionLifetime, 24 * time.Hour},
-		{"idle_timeout", want.IdleTimeout, time.Hour},
 		{"remote_control_command", want.RemoteControlCommand, ""},
 	} {
 		if tc.got != tc.want {

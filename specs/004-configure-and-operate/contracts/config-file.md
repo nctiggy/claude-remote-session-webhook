@@ -53,9 +53,11 @@ allowed_roots = /home/nctiggy/code,/home/nctiggy/work
 # on the FIRST "=" only, which is why this line means what it looks like.
 start_commands = default=claude --dangerously-skip-permissions,rc=claude remote-control --permission-mode bypassPermissions
 
-# Sessions live a day unless told otherwise; -1 disables idle reaping.
+# Sessions live a day unless told otherwise. `never` is spellable on the
+# ceiling below it, which is what lets one create ask for a session that
+# never expires.
 session_lifetime = 24h
-idle_timeout = -1
+session_lifetime_max = never
 
 # This value contains a "#". It is not a comment, because a comment
 # marker is only a comment marker at the start of a line.

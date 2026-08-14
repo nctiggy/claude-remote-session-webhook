@@ -155,30 +155,6 @@ version = 1
 # lifetime and tears it down at once if it is already older.
 # session_lifetime_max = 24h
 
-# How long a session may sit idle before the reaper takes it. Go duration
-# syntax; it may not be negative, and longer than session_lifetime is a startup
-# failure because it could then never fire. `0` is not a disable here — zero
-# reads as unset and the built-in 60m applies; switching idle reaping off
-# belongs to one session, as a create-time override. Default: 60m.
-#
-# Idleness is measured from the later of two clocks: when a request last drove
-# the session, and when the host itself last saw it produce output — tmux's own
-# session activity. A session being worked in is not idle, whether the work is
-# the agent printing or a person typing in a terminal attached to it here.
-# Watching is still not driving: reading a session — the dashboard, the session
-# page, the live stream — advances neither clock, because a forgotten tab must
-# never hold an unsandboxed shell open. The second clock can only push the
-# deadline further out, so a host that gives no answer for a session leaves it
-# exactly as long-lived as it was before that clock existed.
-# idle_timeout = 60m
-
-# The ceiling for a per-session idle override, as session_lifetime_max is for
-# lifetimes. Below idle_timeout is a startup failure. It takes no `never` and
-# needs none: a create may switch idle reaping off for its own session without
-# asking this ceiling for room, because that session is still bounded by the
-# absolute deadline. Default: whatever idle_timeout is.
-# idle_timeout_max = 60m
-
 # How many sessions may be created per minute before the daemon starts refusing
 # creates. At least 1. Default: 6.
 # create_rate_per_min = 6

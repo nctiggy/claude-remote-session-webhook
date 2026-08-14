@@ -232,62 +232,6 @@
 <input class="switch-input" id="create-remote" type="checkbox" name="remote_control" value="on">
 <label class="switch-label" for="create-remote">Remote control</label>
 </div>{{/*
-  The idle clock, turned off for this session (T002, milestone 10). It is the
-  operator's own request — "I just want to be able to allow sessions to never
-  die if I choose" — and until T001 the dashboard could not make it: the
-  per-session override existed on the record, was bounded by the operator's
-  ceilings, was tested and was in the README, and this form passed four fields
-  and none of them was this one. A control that renders and submits nothing is
-  the failure this milestone is named after, so the field below is the field
-  actions.go reads and a test holds the two spellings together.
-
-  The switch, and not a duration entry, because there is exactly one thing an
-  operator asked to say here and it has two states. `idle_timeout=0` is the
-  spelling parseLifetimeOverrides already turns into a negative — zero on the
-  record means "unset", so one value cannot mean both "the operator said
-  nothing" and "the operator said none" — and an unticked box posts nothing at
-  all, which is the daemon's default. So a form submitted without it starts
-  exactly the session this door started before the field existed, and the
-  ticked state needs no parsing either side has not had since #37.
-
-  **The honest half is not decoration.** Turning off the idle clock does not
-  make a session immortal: there are two clocks, and the absolute one is
-  counted from CreatedAt and never renewed. A label reading "never die" with
-  nothing beside it would be this interface asserting something the daemon does
-  not do, which is the same defect as copy that claims a session was compacted
-  when the daemon only delivered the request.
-
-  Which sentence says so depends on whether the second switch is below it
-  (T005), and that is not decoration either. On a daemon whose ceiling stands,
-  the remaining bound is configuration and the settings page is where it moves,
-  which is what this hint has always said. On one whose operator removed that
-  ceiling, the form itself offers the switch — and a hint still sending the
-  operator to a settings page for a control three lines further down would be
-  the page describing a daemon it is not being rendered by.
-
-  So the sentence sits in the .field-hint the working-directory field already
-  uses, named by aria-describedby exactly as that one is, and it says where the
-  remaining bound comes from and what to do about it. It cannot go in the label:
-  .switch-label is the design system's label role — uppercase, tracked — and
-  three sentences set in it would be shouting, not prose a person reads.
-
-  It names no number. What the absolute lifetime is here is this daemon's
-  configuration, and a sentence saying "24 hours" would be false on every
-  install that set session_lifetime to something else. The way to push it out
-  is the operator's own settings page, which is where it is pointed.
-
-  The outer .field is what binds the two: .field-switch is a column flow, so a
-  hint inside the row would be a third column beside the box rather than an
-  aside under it. No new class either way — this is the vocabulary
-  docs/components.md already defines, arranged the way that document's own Form
-  rules arrange a control and the hint that describes it.
-*/}}<div class="field">
-<div class="field field-switch">
-<input class="switch-input" id="create-never-die" type="checkbox" name="idle_timeout" value="0" aria-describedby="create-never-die-note">
-<label class="switch-label" for="create-never-die">Never die when idle</label>
-</div>
-<p class="field-hint-text" id="create-never-die-note">Still ends at the absolute lifetime{{ if not .LifetimeCeilingRemoved }}, which settings moves{{ end }}.</p>
-</div>{{/*
   The absolute deadline, turned off for this session (T005, milestone 13) — the
   operator's second request, made twice: "I also want to allow for sessions to
   have an infinite lifetime."
@@ -321,12 +265,11 @@
   doors rather than the reaper, but the interface has to state it plainly rather
   than present it as a convenience.
 
-  The second sentence is the one nobody would find out any other way: a
-  never-expiring session does not survive a restart as one. Adoption rebuilds a
-  record from what tmux knows and tmux does not know about Lifetime, so it comes
-  back with this daemon's default and is torn down at once if it is already
-  older than that (FR-025). Saying "nothing reaps this session" and leaving that
-  out would be the same defect this whole hint exists to avoid.
+  The caveat that used to sit here is gone because the defect is: a
+  never-expiring session did not survive a restart as one, because adoption
+  rebuilt a record from what tmux knew and tmux did not know about Lifetime. It
+  does now (@crswd-lifetime, milestone 15), so the sentence below is true across
+  a redeploy rather than true until the next one.
 
   No new class. The row is .field-switch, the box .switch-input, the label
   .switch-label, and the aside .field-hint named by aria-describedby — the same
@@ -338,8 +281,23 @@
 <input class="switch-input" id="create-never-expire" type="checkbox" name="lifetime" value="never" aria-describedby="create-never-expire-note">
 <label class="switch-label" for="create-never-expire">Never die at the lifetime limit</label>
 </div>
-<p class="field-hint-text" id="create-never-expire-note">Removes the absolute lifetime. With both on, no clock reaps this session.</p>
-</div>{{ end }}
+<p class="field-hint-text" id="create-never-expire-note">Removes the absolute lifetime, and keeps it removed across a restart. Nothing then reaps this session.</p>
+</div>{{ else }}{{/*
+  The daemon whose ceiling stands, which is every daemon by default. It has no
+  switch above — resolveLifetimes would refuse every create that ticked one — so
+  without this it has nothing on the form about lifetimes at all, and an operator
+  would have no way to learn from this page that their session ends or where that
+  is decided.
+
+  That sentence used to live on the idle switch's hint, which is why it needs a
+  home now: milestone 15 withdrew that switch along with its bound, and the
+  sentence it carried was about the *other* bound the whole time.
+
+  It names no number. What the lifetime is here is this daemon's configuration,
+  and "24 hours" would be false on every install that set session_lifetime to
+  something else. The way to move it is the operator's own settings page, which is
+  where this points.
+*/}}<p class="field-hint-text">Sessions end at this daemon's lifetime limit, which settings moves.</p>{{ end }}
 <button class="button button-primary" type="submit">Start session</button>
 </form>
 <p class="create-note" id="create-busy" hidden>Starting a session. This page reloads with the fleet when the host answers.</p>

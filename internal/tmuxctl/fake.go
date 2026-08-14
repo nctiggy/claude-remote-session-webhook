@@ -90,14 +90,6 @@ func argvHas(name string) []string {
 	return []string{"tmux", "has-session", "-t", SessionTarget(name)}
 }
 
-// One exec yields everything reconciliation needs: name, creation time,
-// provenance, and the host's own idea of when the session last did anything.
-// An empty third field means we did not create the session.
-//
-// session_activity rides here as a seventh field rather than as a call of its
-// own because this exec already runs on every reconciliation. Measuring what a
-// session is really doing therefore costs a longer format string and nothing
-// else — no new exec, and no new failure mode on the reconciliation path.
 // argvReconcileEnv is the read half of the reconciliation. The removals that
 // follow it are one command per name and depend on what the server answers, so
 // the fake records the question rather than pretending to know the answers.
@@ -105,8 +97,16 @@ func argvReconcileEnv() []string {
 	return []string{"tmux", "show-environment", "-g"}
 }
 
+// One exec yields everything reconciliation needs: name, creation time,
+// provenance, and the four facts a record holds that the host would otherwise
+// lose. An empty third field means we did not create the session.
+//
+// The seventh field was #{session_activity} until milestone 15, read so the idle
+// bound could see output the daemon never mediated. That bound is gone;
+// @crswd-lifetime took the slot, because a lifetime the host does not hold is a
+// lifetime that does not survive the restart it exists for.
 func argvList() []string {
-	return []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{" + OptionManaged + "}|#{" + OptionName + "}|#{" + OptionWorkDir + "}|#{" + OptionStart + "}|#{session_activity}"}
+	return []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{" + OptionManaged + "}|#{" + OptionName + "}|#{" + OptionWorkDir + "}|#{" + OptionStart + "}|#{" + OptionLifetime + "}"}
 }
 
 // Fake is an in-memory Controller for every other package's tests, so no unit
@@ -114,8 +114,8 @@ func argvList() []string {
 // destroy, and the session cap all race against each other by design.
 //
 // Construct it with NewFake. The knobs (Seed, Vanish, SurviveKill, FailOp,
-// SetPane, SetNow, SetActivity) reproduce the states that only a broken or
-// restarted host would otherwise produce.
+// SetPane, SetNow) reproduce the states that only a broken or restarted host
+// would otherwise produce.
 type Fake struct {
 	mu        sync.Mutex
 	calls     []Call
@@ -126,11 +126,10 @@ type Fake struct {
 }
 
 type fakeSession struct {
-	workDir  string
-	created  time.Time
-	activity time.Time
-	options  map[string]string
-	pane     string
+	workDir string
+	created time.Time
+	options map[string]string
+	pane    string
 }
 
 // NewFake returns a fake with no sessions, as though tmux had just started.
@@ -154,15 +153,11 @@ func (f *Fake) New(_ context.Context, name, workDir string) error {
 	if _, ok := f.sessions[name]; ok {
 		return fmt.Errorf("duplicate session: %s", name)
 	}
-	// A brand-new tmux session's activity time is its creation time — it has not
-	// had a chance to do anything else yet. Modelling that rather than leaving it
-	// zero is what lets a test age a session with SetActivity and mean it.
 	now := f.now()
 	f.sessions[name] = &fakeSession{
-		workDir:  workDir,
-		created:  now,
-		activity: now,
-		options:  make(map[string]string),
+		workDir: workDir,
+		created: now,
+		options: make(map[string]string),
 	}
 	return nil
 }
@@ -318,7 +313,11 @@ func (f *Fake) List(_ context.Context) ([]SessionInfo, error) {
 			// and never returned it would let an adoption test pass against a
 			// daemon whose sessions all come back local after a restart.
 			StartCommand: s.options[OptionStart],
-			Activity:     s.activity,
+			// Read back for the same reason again, and this one is the reason
+			// milestone 15 exists: a fake that stored the lifetime and returned
+			// nothing would let every adoption test pass against a daemon whose
+			// never-expiring sessions come back mortal.
+			Lifetime: s.options[OptionLifetime],
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -333,9 +332,24 @@ func (f *Fake) Seed(info SessionInfo) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	s := &fakeSession{created: info.Created, activity: info.Activity, options: make(map[string]string)}
+	s := &fakeSession{created: info.Created, options: make(map[string]string)}
 	if info.Managed {
 		s.options[OptionManaged] = OptionManagedValue
+	}
+	// Seeded through the options, not a field of their own, so a seeded survivor
+	// is indistinguishable from one the daemon created and then forgot — which
+	// is exactly what a restart leaves behind.
+	if info.Label != "" {
+		s.options[OptionName] = info.Label
+	}
+	if info.StartCommand != "" {
+		s.options[OptionStart] = info.StartCommand
+	}
+	if info.Lifetime != "" {
+		s.options[OptionLifetime] = info.Lifetime
+	}
+	if info.WorkDir != "" {
+		s.workDir = info.WorkDir
 	}
 	f.sessions[info.Name] = s
 }
@@ -384,24 +398,6 @@ func (f *Fake) SetPane(name, content string) {
 		f.sessions[name] = s
 	}
 	s.pane = content
-}
-
-// SetActivity sets what List reports as the session's tmux activity time,
-// seeding the session if it does not exist yet — the latitude SetPane takes, for
-// the same reason. It is how a test arranges the two cases the idle clock now
-// turns on: a session the daemon has not heard from in an hour that tmux says is
-// still busy, and one that is genuinely quiet. Pass the zero time for a host
-// that gave no readable answer.
-func (f *Fake) SetActivity(name string, at time.Time) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	s, ok := f.sessions[name]
-	if !ok {
-		s = &fakeSession{options: make(map[string]string)}
-		f.sessions[name] = s
-	}
-	s.activity = at
 }
 
 // SetNow replaces the clock that stamps Created on sessions made through New,

@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -50,9 +51,11 @@ allowed_roots = /home/nctiggy/code,/home/nctiggy/work
 # on the FIRST "=" only, which is why this line means what it looks like.
 start_commands = default=claude --dangerously-skip-permissions,rc=claude remote-control --permission-mode bypassPermissions
 
-# Sessions live a day unless told otherwise; -1 disables idle reaping.
+# Sessions live a day unless told otherwise. The word never is spellable on
+# the ceiling below it, which is what lets one create ask for a session that
+# never expires.
 session_lifetime = 24h
-idle_timeout = -1
+session_lifetime_max = never
 
 # This value contains a "#". It is not a comment, because a comment
 # marker is only a comment marker at the start of a line.
@@ -68,12 +71,12 @@ func TestParseAcceptsWorkedExample(t *testing.T) {
 	}
 
 	want := map[string]string{ //nolint:gosec // G101 false positive: these are the expected *parse results* of the worked example in contracts/config-file.md. The "secret" is a fixture chosen to carry a "#" precisely so this test proves a value is not truncated at one; it authenticates nothing and exists nowhere but here.
-		"listen":           "127.0.0.1:8787",
-		"allowed_roots":    "/home/nctiggy/code,/home/nctiggy/work",
-		"start_commands":   "default=claude --dangerously-skip-permissions,rc=claude remote-control --permission-mode bypassPermissions",
-		"session_lifetime": "24h",
-		"idle_timeout":     "-1",
-		"shared_secret":    "hunter2#not-a-comment",
+		"listen":               "127.0.0.1:8787",
+		"allowed_roots":        "/home/nctiggy/code,/home/nctiggy/work",
+		"start_commands":       "default=claude --dangerously-skip-permissions,rc=claude remote-control --permission-mode bypassPermissions",
+		"session_lifetime":     "24h",
+		"session_lifetime_max": "never",
+		"shared_secret":        "hunter2#not-a-comment",
 	}
 	for key, value := range want {
 		got, ok := f.Lookup(config.VarForKey(key))
@@ -587,9 +590,17 @@ func TestFutureVersionRefuses(t *testing.T) {
 		name     string
 		contents string
 		want     []string
+		// ok marks a version this daemon still reads, which is every schema up
+		// to and including its own.
+		ok bool
 	}{
-		{name: "a version from a newer daemon", contents: "version = 99\n", want: []string{"99", "1", "config:1"}},
-		{name: "one past this one", contents: "version = 2\n", want: []string{"2", "config:1"}},
+		{name: "a version from a newer daemon", contents: "version = 99\n", want: []string{"99", "config:1"}},
+		{name: "one past this one", contents: fmt.Sprintf("version = %d\n", config.SchemaVersion+1), want: []string{strconv.Itoa(config.SchemaVersion + 1), "config:1"}},
+		// The schema before this one still loads. Bumping the version is how a
+		// retirement is recorded, not a reason to refuse every file written
+		// before it — an operator whose file predates schema 2 and sets no
+		// retired key has nothing to change.
+		{name: "the schema before this one", contents: "version = 1\nmax_sessions = 2\n", ok: true},
 		{name: "not a number", contents: "version = one\n", want: []string{"whole number", "config:1"}},
 		{name: "a decimal", contents: "version = 1.0\n", want: []string{"whole number"}},
 		{name: "before the first schema", contents: "version = 0\n", want: []string{"the first schema is 1"}},
@@ -601,6 +612,12 @@ func TestFutureVersionRefuses(t *testing.T) {
 			t.Parallel()
 
 			_, err := config.ParseFile("config", []byte(tc.contents), io.Discard)
+			if tc.ok {
+				if err != nil {
+					t.Fatalf("ParseFile() refused %s: %v", tc.name, err)
+				}
+				return
+			}
 			if err == nil {
 				t.Fatalf("ParseFile() accepted %s, so the version key is being ignored", tc.name)
 			}

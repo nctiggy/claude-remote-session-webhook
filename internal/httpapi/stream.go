@@ -269,8 +269,8 @@ var errWatchedSessionEnded = errors.New("the watched session is no longer there 
 //     header and nothing else, so a request the browser itself calls cross-site
 //     never causes a session to be looked up at all.
 //   - Ownership third, through Manager.View, which resolves it without
-//     advancing the idle clock (FR-034f). Watching is not driving: a tab left
-//     open on a session nobody is prompting must not postpone its idle
+//     recording a driving (FR-034f). Watching is not driving: a tab left
+//     open on a session nobody is prompting must not report itself as
 //     deadline, or a forgotten browser holds an unsandboxed shell alive for as
 //     long as it lives.
 //   - Capacity **last**, so that no caller who was going to be refused anyway
@@ -394,7 +394,7 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 //
 // The capture goes through Manager.Output rather than the controller, which is
 // what keeps one stripper rather than a second that agrees today (FR-029) — and
-// what keeps the stream off the idle clock, since Output takes the record it was
+// what keeps the stream off that clock, since Output takes the record it was
 // given and advances nothing on it (FR-034f). The one write it may make is the
 // opposite of an extension: a session the host has confirmed is gone loses its
 // record there, and the next tick's re-evaluation turns that into this stream's

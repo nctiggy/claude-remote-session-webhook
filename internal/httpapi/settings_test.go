@@ -773,7 +773,7 @@ func TestShowsSourcePerKey(t *testing.T) {
 		{"listen", config.SourceFile, "the file set it to the value it would have defaulted to; nothing about the value says so"},
 		{"max_streams", config.SourceDefault, "nothing supplied it, and it is not the value a comparison would call the default"},
 		{"max_sessions", config.SourceEnv, "the environment answered this lookup"},
-		{"idle_timeout", config.SourceDefault, "no lookup for it was ever recorded, which is the zero value's whole job"},
+		{"max_streams", config.SourceDefault, "no lookup for it was ever recorded, which is the zero value's whole job"},
 	} {
 		row := settingsRowFor(t, page, tc.key)
 		if !strings.Contains(row, "<td>"+tc.want.String()+"</td>") {
