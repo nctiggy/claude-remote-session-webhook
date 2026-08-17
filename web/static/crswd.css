@@ -577,31 +577,183 @@ body {
   color: var(--state-dead);
 }
 
-/* The create form's container. It is a panel rather than a card — a card is one
-   session (docs/components.md) and a create names none — so it borrows the
-   card's surface and border without its grid or its hover, which belong to
-   something clickable.
+/* The create control's place in the page. It was a panel — surface, border,
+   padding, the card's clothes without the card's grid — because it held the
+   whole form standing open on the fleet. It holds one button now (milestone 11),
+   and a panel around a single control is a box drawn for its own sake.
 
    It sits after the fleet, which is the same argument that puts the summary
    before the grid: a dashboard is scanned for what is running on this host
    before it is read for what to do next. */
 .create {
   margin-block-start: var(--s5);
-  padding: var(--s4);
-  background: var(--surface);
-  border: var(--edge-width) solid var(--edge);
-  border-radius: var(--r);
 }
 
-/* A section eyebrow, per the design system's typography table, rather than
-   another heading competing with the card names above it. */
-.create-heading {
-  margin: 0 0 var(--s4);
+/* The dialog (docs/components.md's Modal).
+
+   `.create` above lost the panel and this inherits it, which is the surface
+   moving to where the reading now happens rather than a new one being invented.
+   The border and the surface are the card's, for the same reason the panel
+   borrowed them: this is a thing to read on, not a thing to click.
+
+   **The one shadow in this stylesheet, and it is granted rather than taken.**
+   docs/design-system.md says elevation comes from --surface-lift and borders,
+   never shadows, and then names the single exception: a modal overlay. This is
+   that exception being spent, for the first time, on the case it was written
+   for. It is not a licence for a second one — a card that reaches for --glow is
+   still the drift Principle VII forbids.
+
+   A column, so the head stays put and the body below it is what scrolls when a
+   form outgrows the viewport. **The viewport bound itself is the browser's** —
+   a <dialog>'s UA rule already caps it at the visible area — so nothing here
+   names a height, which is what keeps this rule free of a viewport unit that
+   could never have been a token anyway. On a phone that arrangement is the
+   difference between a dialog and a trap: the way out stays on screen.
+
+   The margin is `auto` on both axes: a <dialog> is positioned by the browser and
+   centring it is the platform's job, not a transform this stylesheet applies. */
+.modal {
+  max-inline-size: min(100% - var(--s6), calc(var(--card-min) * 2));
+  margin: auto;
+  padding: var(--s4);
+  background: var(--surface);
+  border: var(--edge-width) solid var(--edge-bright);
+  border-radius: var(--r);
+  box-shadow: var(--glow);
+  color: var(--text);
+}
+
+/* **The column is on `[open]`, and that is a correctness rule rather than
+   tidiness.** A closed <dialog> is hidden by the user-agent rule
+   `dialog:not([open]) { display: none }` — and an author `display` beats a
+   user-agent one whatever the specificity says, because the cascade sorts by
+   origin first. So `display: flex` on `.modal` alone would have shown this
+   dialog's whole contents inline on the fleet, permanently, on every load: the
+   exact page this milestone existed to stop drawing, restored by the stylesheet.
+
+   Nothing else here needs the guard. Everything below is inside the dialog, so a
+   closed one takes the subtree with it. */
+.modal[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The dimming, mixed from the ground this page is already painted on rather than
+   from a black this stylesheet would have to name — the token stays the single
+   source of what "the dark behind everything" is here, and the backdrop is a
+   dilution of it rather than a second opinion. A backdrop is not a component and
+   carries no border, no radius and no text: it exists to say that what is behind
+   it is not what is being read. */
+.modal::backdrop {
+  background: color-mix(in srgb, var(--ground) 78%, transparent);
+}
+
+/* Title and close on one row, with the title taking the slack so the close
+   control sits against the edge whatever the title's length. */
+.modal-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--s3);
+  margin-block-end: var(--s4);
+}
+
+/* The form's old .create-heading, in its new home. A section eyebrow per the
+   design system's typography table rather than a heading competing with the card
+   names behind it — the dialog is above them, and shouting was never what told
+   an operator which one to read. */
+.modal-title {
+  margin: 0;
   color: var(--dim);
   font-size: var(--fs-eyebrow);
   font-weight: 600;
   letter-spacing: var(--ls-eyebrow);
   text-transform: uppercase;
+}
+
+/* Icon-only, and therefore sized by the touch floor rather than by its glyph:
+   a control an operator dismisses with a thumb is not a character-sized target.
+   It is not .button, because it is not one — a button in this vocabulary carries
+   words and a border, and this is the platform's dismissal affordance. */
+.modal-close {
+  display: grid;
+  place-items: center;
+  min-inline-size: var(--tap);
+  min-block-size: var(--tap);
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: var(--fs-brand);
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--transition);
+}
+
+/* Hover alone, and the keyboard is not forgotten: the global :focus-visible ring
+   is this control's focus indicator, exactly as it is the switch's. A
+   `.modal-close:focus-visible` rule here would also be the *first* block in this
+   file matching that selector, which is what TestTheFocusRingSurvives reads to
+   find the ring — so a colour change written for one control would be swept as
+   though it were the ring for every control. */
+.modal-close:hover {
+  color: var(--text);
+}
+
+/* What the last create did, said where the operator is standing
+   (contracts/outcome-where-the-operator-is.md).
+
+   It borrows the fleet note's surface and prose settings for the reason the
+   action toast does: all three are the page speaking about itself rather than
+   about a session, and a third banner invented here would be a third vocabulary.
+
+   Nothing here tells a success from a refusal, which is the rule the toast and
+   the banner both keep: an outcome is told apart by what it says, never by a
+   shade. A stylesheet colouring "started" apart from "that name is not one this
+   daemon takes" would be encoding the answer somewhere a colour-blind operator
+   cannot read it.
+
+   It sits above the scrolling body and below the head, so a form scrolled to its
+   submit still shows the reason the last one was refused. Present and empty from
+   the first render rather than hidden — a live region has to be in the
+   accessibility tree before its text arrives — so `:empty` is what keeps a
+   dialog that has refused nothing from carrying an empty box. */
+.modal-outcome {
+  margin: 0 0 var(--s4);
+  padding: var(--s3) var(--s4);
+  background: var(--surface-lift);
+  border: var(--edge-width) solid var(--edge-bright);
+  border-radius: var(--r);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: var(--fs-prose);
+}
+
+.modal-outcome:empty {
+  display: none;
+}
+
+/* The scrolling region, and the only part of the dialog that is allowed to
+   exceed the space the browser gave it. `min-block-size: 0` is what makes that
+   true rather than decorative: a flex item's automatic minimum is its content,
+   so without it the form refuses to shrink, the dialog grows past the viewport,
+   and the close control leaves the screen — which is the failure this whole
+   arrangement exists to prevent. */
+.modal-body {
+  min-block-size: 0;
+  overflow-y: auto;
+}
+
+/* The two ways out, on a row. Cancel first and submit last, so the tab order
+   ends on the affirmative one — the accessibility floor's rule that tab order
+   follows visual order, applied to the one row here where the order is a
+   choice. */
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  margin-block-start: var(--s2);
 }
 
 /* Fields stacked with the control last, so the tab order follows the visual

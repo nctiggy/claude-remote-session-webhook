@@ -374,6 +374,23 @@ type outcomeView struct {
 	// "renamed": a teardown this daemon could not verify means a live
 	// unsandboxed shell may have survived it (FR-023, AR-004).
 	Alarm bool
+
+	// Code is the outcome's own name from outcome.go's closed vocabulary, so the
+	// banner says which outcome it is and not merely what it reads as
+	// (milestone 11, contracts/outcome-where-the-operator-is.md).
+	//
+	// It exists because the create dialog has to close on a success and stay
+	// open on a refusal, and the scripted path's only view of what happened is
+	// the page the redirect landed on. Branching on the sentence would be a
+	// second implementation of this vocabulary written in prose, wrong the first
+	// time a word of copy changed.
+	//
+	// **It carries no caller input.** bannerFor sets it only after the map
+	// lookup succeeded, so the value is a key of that map — one of the constants
+	// in outcome.go — and never the raw query. The rule that there is no path
+	// from `?outcome=` to the document (FR-022) is unchanged: an unrecognised
+	// code still renders nothing at all, banner and attribute together.
+	Code string
 }
 
 // actionView is one entry in an action row, and it is deliberately empty.

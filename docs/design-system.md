@@ -153,6 +153,16 @@ declarations.
 Elevation comes from `--surface-lift` and borders, never shadows. The single
 exception is a modal overlay.
 
+**That exception is now spent, and by one rule.** `.modal` — the create dialog
+(milestone 11, see `components.md`) — carries `box-shadow: var(--glow)`, which
+is the only shadow on a surface in this stylesheet. It had been a theoretical
+grant since this sentence was written; it is a real one now, and it stays a
+single exception rather than becoming a precedent. A card, a panel, a menu or a
+toast reaching for `--glow` is still the drift Principle VII forbids, and
+`TestNoBackgroundSpendsAShadowToken` still refuses the specific mistake of
+spending it on a `background`, where it computes to nothing and takes the whole
+declaration with it.
+
 ## Digital rain
 
 The signature effect. It appears in exactly **two** places, at two strengths:

@@ -737,9 +737,9 @@ const componentsDocPath = "../../docs/components.md"
 
 // documentedComponentClass is the classes that document is answerable for *by
 // name*: the working-directory picker, the switch, the header the settings link
-// sits in — the three controls milestone 5 built or changed — and the action
-// toast. Matched by prefix on the class itself, so a rule added for any of them
-// is swept without this expression being edited.
+// sits in — the three controls milestone 5 built or changed — the action toast,
+// and the modal. Matched by prefix on the class itself, so a rule added for any
+// of them is swept without this expression being edited.
 //
 // The toast is here because it is the family that already rotted (#119). It
 // shipped on all three pages with issue #42 and docs/components.md went on
@@ -749,11 +749,19 @@ const componentsDocPath = "../../docs/components.md"
 // itself: the whole point of this expression is that adding a family is a
 // deliberate edit with the document's side of it in the same commit.
 //
+// The modal joined on the day it shipped (milestone 11), which is the whole
+// reason to write it down here rather than to note it: that document had
+// carried a Modal section for four milestones describing a component that did
+// not exist, with an illustration that could not be written in a template set
+// parsed with no function map. A family that arrived undocumented once and
+// unbuilt once is a family worth binding in both directions before it can do
+// either again.
+//
 // It is a near-twin of comboSelector and deliberately not the same variable.
 // That one is the set of rules T009 is answerable for the *styling* of, and
 // widening it to carry the masthead would quietly widen four assertions about
 // colour and focus that were written about a picker.
-var documentedComponentClass = regexp.MustCompile(`\.(combo|switch|masthead|action-toast)[\w-]*`)
+var documentedComponentClass = regexp.MustCompile(`\.(combo|switch|masthead|action-toast|modal)[\w-]*`)
 
 // TestTheComponentsDocumentNamesThePickerTheSwitchTheHeaderAndTheToast is the
 // third direction of the sweep above, and it exists because the first two cannot
@@ -1360,8 +1368,20 @@ func TestSubsetAnnounced(t *testing.T) {
 	if strings.Contains(markup, "create-workdir-subset") {
 		t.Error("the create form still renders the subset note's old region; the sentence is written into .combo-status now, and a field carrying two live regions is carrying one that never speaks")
 	}
-	if n := strings.Count(markup, `role="status"`); n != 1 {
-		t.Errorf("the create form renders %d live regions; want exactly 1 — what this field has to say about a narrowed list is one sentence, said in one place", n)
+	//
+	// Counted inside the combo wrapper rather than across the whole component,
+	// and the narrowing is the requirement rather than a loosening of it. What
+	// this assertion is about is *this field* — a picker with two live regions is
+	// a picker with one that never speaks, which is the defect above. The dialog
+	// around the field has since gained a region of its own for a different
+	// subject entirely (the answer to a create, milestone 11), and a count over
+	// the whole component would read that as this field speaking twice.
+	field := regexp.MustCompile(`(?s)<div class="combo"[^>]*>.*?</div>`).FindString(markup)
+	if field == "" {
+		t.Fatalf("the create form renders no .combo wrapper, so the count below would be a count of nothing:\n%s", markup)
+	}
+	if n := strings.Count(field, `role="status"`); n != 1 {
+		t.Errorf("the working-directory field renders %d live regions; want exactly 1 — what this field has to say about a narrowed list is one sentence, said in one place", n)
 	}
 }
 
@@ -3648,4 +3668,268 @@ func TestTheCardCarriesNoUnbreakableRun(t *testing.T) {
 			t.Errorf("%s holds a value with no break opportunity and no wrap rule below the breakpoint, so it sets a floor the card cannot shrink under and the operator zooms out to read it: %q", selector, rule)
 		}
 	}
+}
+
+// TestTheInvokerFallbackIsFeatureDetected is the one defect in milestone 11's
+// script half that nothing else here can see.
+//
+// The New session trigger opens its dialog with `command="show-modal"`, which is
+// the platform's own and needs no script. crswd.js carries a fallback for
+// browsers predating the Invoker Commands API — and bound unconditionally, that
+// fallback fires *alongside* the declarative invocation on a current browser.
+// showModal() on an already-open dialog throws, so the operator meets a console
+// error where a form should be. It looks like nothing on the first click and like
+// a flicker on the second, which is why it is pinned rather than reviewed.
+//
+// The detection is asserted on the platform rather than on any particular
+// engine: `commandForElement` is the property the API adds to a button, so the
+// guard answers "can this page open a dialog without me" instead of "which
+// browser is this".
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed —
+// the footing every other script assertion in this file stands on.
+//
+// **Must fail when** the guard is dropped, or narrowed to a user-agent sniff.
+func TestTheInvokerFallbackIsFeatureDetected(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	if !strings.Contains(source, "showModal()") {
+		t.Fatal("crswd.js never calls showModal(), so a browser predating the Invoker Commands API cannot open the create dialog at all")
+	}
+
+	/*
+	 * Inside the guard, not merely beside it.
+	 *
+	 * This asserted that `showModal()` appeared somewhere and that the guard
+	 * appeared somewhere, and a cross-model review pointed out what that admits:
+	 * an unconditional listener plus a dead guarded block satisfies both halves
+	 * and ships the double-open this test is named for. So the block is read out
+	 * of the file and the call has to be in it.
+	 */
+	guarded := blockAfter(t, source, `!('commandForElement' in HTMLButtonElement.prototype)`)
+	if !strings.Contains(guarded, "showModal()") {
+		t.Error("crswd.js calls showModal() outside the feature-detection block; on a current browser the listener and the platform's own command action both fire")
+	}
+	if outside := strings.Count(source, "showModal()") - strings.Count(guarded, "showModal()"); outside != 0 {
+		t.Errorf("crswd.js calls showModal() %d times outside the feature-detection block; every one of them races the declarative invocation", outside)
+	}
+
+	// showModal() throws InvalidStateError on a dialog that is already open, and
+	// the guard above is a feature probe rather than a proof — a partial
+	// implementation could honour the attribute and lack the property. The open
+	// check is what makes the two orderings agree instead of one of them throwing.
+	if !regexp.MustCompile(`!\w*\.open\b`).MatchString(guarded) {
+		t.Error("the fallback calls showModal() without checking whether the dialog is already open; that throws InvalidStateError wherever the platform got there first")
+	}
+
+	// And never the other way of asking, which answers a question about a name
+	// rather than about a capability and is wrong the moment an engine ships the
+	// feature under an unexpected one.
+	if regexp.MustCompile(`(?i)navigator\.(userAgent|vendor|appVersion)`).MatchString(source) {
+		t.Error("crswd.js reads the user agent; capability is what this page needs to know and the platform answers it directly")
+	}
+}
+
+// TestAnAnswerGoesWhereTheOperatorIsLooking is the script half of
+// contracts/outcome-where-the-operator-is.md.
+//
+// The markup half — that the create dialog carries a live region of its own — is
+// asserted in partials_test.go. A region nothing ever writes into is exactly as
+// silent as no region at all, and this repository has shipped that failure
+// before: a live half that is written, correct, and attached to nothing.
+//
+// The rule is that the answer follows the operator. A modal <dialog> makes
+// everything outside it inert, so while it is open the toast can neither be seen
+// nor announced; when it is closed the toast is where every action's answer has
+// always been read. One sentence, one place at a time, chosen from the dialog's
+// own open state rather than from which form was submitted — the fleet's cards
+// sit in no dialog and take the branch that has always existed.
+//
+// **Must fail when** the script writes every answer to the toast, which is the
+// state before this milestone and the state a revert to it would restore
+// silently: nothing renders differently until a create is refused with the dialog
+// open, and then nothing renders at all.
+func TestAnAnswerGoesWhereTheOperatorIsLooking(t *testing.T) {
+	t.Parallel()
+
+	source := script(t)
+
+	/*
+	 * The routing is read out of show()'s own body, not out of the file.
+	 *
+	 * This searched the whole script for `closest('dialog')`, `.open` and
+	 * `.modal-outcome`, and a cross-model review pointed out that show() could
+	 * still write every answer to the toast beside an unused helper and pass. So
+	 * the function is extracted and the branch has to be inside it, ahead of the
+	 * toast, with a return between them — which is the whole of the behaviour.
+	 */
+	show := blockAfter(t, source, "const show = (message, form)")
+
+	region := strings.Index(show, "textContent = message")
+	toasted := strings.Index(show, "paint(message)")
+	if region < 0 {
+		t.Fatalf("show() never writes the message into a region of its own; the dialog branch does not exist:\n%s", show)
+	}
+	if toasted < 0 {
+		t.Fatalf("show() never paints the toast, so every other action on this dashboard has lost its answer:\n%s", show)
+	}
+	if region > toasted {
+		t.Error("show() paints the toast before it considers the dialog; while a modal dialog is open the toast is inert, so the answer goes to a region nobody can see or hear")
+	}
+	if !strings.Contains(show[:toasted], "return") {
+		t.Error("show() writes the dialog's region and then falls through to the toast as well; one answer said twice is one of them said about the wrong thing")
+	}
+
+	// The helper the branch turns on, and the two facts it is answerable for: the
+	// dialog the form is actually in, and whether it is open. A helper that
+	// skipped the second would route into a closed dialog's region — markup that
+	// exists, is display:none, and is inert.
+	regionFor := blockAfter(t, source, "const regionFor = (form)")
+	for what, pattern := range map[string]*regexp.Regexp{
+		"looks for the dialog the submitted form is in": regexp.MustCompile(`closest\(\s*['"]dialog['"]\s*\)`),
+		"asks whether that dialog is actually open":     regexp.MustCompile(`\.open\b`),
+		"names the dialog's own region":                 regexp.MustCompile(`\.modal-outcome`),
+	} {
+		if !pattern.MatchString(regionFor) {
+			t.Errorf("regionFor() never %s: %s", what, pattern)
+		}
+	}
+
+	// And the region is emptied on the way in. The close event is not the hook —
+	// in Chrome 149 a close driven by `command="close"`, which is what both of
+	// this dialog's close controls are, fires no close event at all — so a
+	// listener there would work for the success path and miss every dismissal a
+	// person performs, leaving the last refusal above the next attempt.
+	if !regexp.MustCompile(`command="show-modal"\]\[commandfor`).MatchString(source) {
+		t.Error("crswd.js binds nothing to the control that opens the dialog, so a refusal from the last attempt survives into the next one")
+	}
+
+	// And the promotion that was tried and measured wrong is gone rather than
+	// left beside its replacement. A popover above a modal dialog is inert, and
+	// the popover user-agent rules move and resize the region on the way — so a
+	// leftover showPopover() is not a harmless second belt, it is the region
+	// being relocated to the middle of the viewport for no benefit.
+	for _, gone := range []string{"showPopover", "hidePopover", ":popover-open"} {
+		if strings.Contains(source, gone) {
+			t.Errorf("crswd.js still reaches for %s; a popover above a modal dialog is inert, and the attempt moves the toast and shrinks it", gone)
+		}
+	}
+}
+
+// TestAClosedDialogStaysClosed is a defect this stylesheet shipped for the
+// length of one edit, and it is written down because nothing else here could
+// see it.
+//
+// A closed <dialog> is hidden by the user-agent rule
+// `dialog:not([open]) { display: none }`. An author `display` beats a user-agent
+// one **whatever the specificity says**, because the cascade sorts by origin
+// before it sorts by anything else. So `.modal { display: flex }` — which is the
+// obvious way to write a column — renders the dialog's entire contents inline on
+// the fleet, permanently, on every load: the exact page milestone 11 existed to
+// stop drawing, restored by the stylesheet that was meant to draw the dialog.
+//
+// Every sweep in this file passes on that stylesheet. The class is rendered, the
+// class is styled, the document names the family, no rule carries a literal, and
+// the markup and the stylesheet name the same things. Only a browser would have
+// told anyone, and only by showing an operator the form they had just been moved
+// out of.
+//
+// **Must fail when** a `.modal` rule sets `display` without requiring `[open]`.
+func TestAClosedDialogStaysClosed(t *testing.T) {
+	t.Parallel()
+
+	var swept, guarded int
+	for _, rule := range cssRules(stylesheet(t)) {
+		if !strings.Contains(rule.body, "display:") {
+			continue
+		}
+		/*
+		 * Every compound selector in the list, not the rule's whole text, and
+		 * not an equality against two spellings anybody thought of.
+		 *
+		 * The first version of this test matched `.modal` and `.modal[open]`
+		 * exactly, and a cross-model review pointed out what that lets through:
+		 * `dialog.modal`, `.create .modal`, and `.modal, .something-else` all
+		 * set display on this dialog and none of them is either string. Splitting
+		 * the selector list and asking whether the *last* compound targets the
+		 * dialog catches all three, because that is the part a selector actually
+		 * matches on.
+		 */
+		for _, selector := range strings.Split(rule.selector, ",") {
+			selector = strings.TrimSpace(selector)
+			if selector == "" {
+				continue
+			}
+			last := selector
+			if i := strings.LastIndexAny(selector, " >+~"); i >= 0 {
+				last = strings.TrimSpace(selector[i+1:])
+			}
+			// The dialog itself, not its children: a closed dialog takes its
+			// whole subtree with it, so what those rules set is unreachable
+			// either way. `.modal-head` and friends are excluded by the `-`.
+			if !regexp.MustCompile(`(^|[.\w\[\]"=])\.modal($|[^\w-])`).MatchString(last + " ") {
+				continue
+			}
+			swept++
+			if strings.Contains(last, "[open]") {
+				guarded++
+				continue
+			}
+			t.Errorf("%q sets display on the dialog without requiring [open], and an author rule outranks the user agent's `dialog:not([open]) { display: none }` whatever its specificity; the dialog then stands open on the fleet on every load: %s", selector, strings.TrimSpace(rule.body))
+		}
+	}
+
+	if swept == 0 {
+		t.Fatal("crswd.css sets display on no .modal rule at all, so this sweep found nothing to check and would pass whatever the stylesheet did")
+	}
+	// The positive half, and the negative one is satisfied by deleting the rule.
+	// A dialog with no display of its own is a dialog that never becomes the
+	// column the head-stays-put arrangement depends on.
+	if guarded == 0 {
+		t.Error("crswd.css sets display on the dialog nowhere under [open]; the head cannot stay put while the body scrolls, and the close control leaves the screen on a long form")
+	}
+}
+
+// blockAfter is the brace-balanced `{ … }` that follows marker in source.
+//
+// It exists because a cross-model review made a fair charge against two script
+// assertions here: they searched the whole file for a pattern, so a guard in one
+// place and an unconditional call in another satisfied them. "The call is inside
+// the guard" is a structural claim, and Go cannot execute this file — so the
+// structure has to be read out of the text rather than inferred from a match
+// anywhere in it.
+//
+// Braces inside strings, comments or regular expressions would fool this. That is
+// acceptable for what it reads: crswd.js is this repository's own single script,
+// the blocks below are plain control flow, and a test that mis-parsed one would
+// fail loudly rather than pass quietly.
+func blockAfter(t *testing.T, source, marker string) string {
+	t.Helper()
+
+	at := strings.Index(source, marker)
+	if at < 0 {
+		t.Fatalf("crswd.js contains no %q, so the block it introduces cannot be read", marker)
+	}
+	open := strings.Index(source[at:], "{")
+	if open < 0 {
+		t.Fatalf("nothing follows %q that opens a block", marker)
+	}
+	open += at
+
+	depth := 0
+	for i := open; i < len(source); i++ {
+		switch source[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return source[open : i+1]
+			}
+		}
+	}
+	t.Fatalf("the block introduced by %q is never closed", marker)
+	return ""
 }

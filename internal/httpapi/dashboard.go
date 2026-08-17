@@ -70,17 +70,24 @@ var errDashboardNoOperator = errors.New("a dashboard route was reached with no v
 // served GET alone. T009 gave it a create and T010 gave that create a form, so
 // the sentence became the one thing an empty state must never be: a page telling
 // an operator it cannot do something it is offering to do two elements further
-// down. It points at the form rather than describing the mechanism, because
+// down. It points at what to use rather than describing the mechanism, because
 // what an operator needs here is where to go next.
+//
+// **Which is why it moved again in milestone 11.** It said "the form below", and
+// there is no form below any more — the create is a button that opens a dialog,
+// and a sentence naming a control that is not on the page is worse than no
+// sentence, because an operator reads it and looks for something. It names the
+// button by the words on the button, so what this says and what they click are
+// one string in two places rather than two descriptions that can drift.
 //
 // The component's Action parameter stays absent all the same (FR-024a), and now
 // for a design-system reason rather than a milestone one: the empty state is the
 // one surface where the rain runs at full strength, and docs/design-system.md
 // keeps rain off reading content — "not a pane, a card grid, a form, or a
-// table". The form is a sibling of this section, not a parameter of it.
+// table". The trigger is a sibling of this section, not a parameter of it.
 const (
 	emptyFleetTitle = "No sessions running"
-	emptyFleetBody  = "Nothing is executing on this host right now. The form below starts a Claude session in a tmux window on this host."
+	emptyFleetBody  = "Nothing is executing on this host right now. New session starts one in a tmux window here."
 )
 
 // fleetView is the whole of what the fleet page renders against.

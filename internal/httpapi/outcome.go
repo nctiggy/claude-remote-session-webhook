@@ -439,6 +439,14 @@ func bannerFor(raw string) *outcomeView {
 	if !ok {
 		return nil
 	}
+	// After the lookup, never before, and the order is the whole argument
+	// (milestone 11). The map lookup is the membership test the comment above
+	// describes, so a `raw` that reaches this line is one of the constants at the
+	// top of this file — the same closed vocabulary the Message beside it comes
+	// from. Setting Code before the `ok` check would put a caller's string on a
+	// nil-rendered view today and in the document the day someone stopped
+	// returning nil, which is precisely the path FR-022 closes by construction.
+	view.Code = raw
 	return &view
 }
 

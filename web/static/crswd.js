@@ -406,6 +406,58 @@
   }
 
   /*
+   * The invoker fallback (milestone 11, contracts/new-session-modal.md).
+   *
+   * The New session trigger opens its dialog with `command="show-modal"`, which
+   * is the Invoker Commands API and reached Baseline in 2026. On such a browser
+   * this block does nothing at all, and that is the intended state: the platform
+   * shows the dialog modally, moves focus into it, makes the page behind it
+   * inert and closes it on Esc, and every one of those is something this file
+   * would otherwise have to do and get right.
+   *
+   * That property is not a nicety. Every control on this dashboard works with
+   * scripting off; a create becoming the exception would be the one that
+   * mattered most, and it is why the attribute is the mechanism and this is the
+   * fallback rather than the other way round.
+   *
+   * **The guard is the contract, not a detail.** Bound unconditionally, this
+   * listener would fire alongside the declarative invocation on a current
+   * browser. It is detected on the platform (`commandForElement`, the property
+   * the API adds to a button) rather than on the browser, so it answers "can
+   * this page open a dialog without me" rather than "which engine is this".
+   *
+   * The attributes are read here rather than a class or an id, so the fallback
+   * covers whatever a template declares next without this file learning its
+   * name. A dialog that is not there is left alone: markup naming a target this
+   * page never rendered is a page the daemon did not draw, not a state to repair.
+   */
+  if (!('commandForElement' in HTMLButtonElement.prototype)) {
+    for (const trigger of document.querySelectorAll('button[command="show-modal"][commandfor]')) {
+      trigger.addEventListener('click', () => {
+        const dialog = document.getElementById(trigger.getAttribute('commandfor'));
+        // `open` is checked before showing, and it is not defensive noise:
+        // showModal() throws InvalidStateError on a dialog that is already open.
+        // The guard above is a feature probe rather than a proof — a partial
+        // implementation could honour the attribute *and* lack the property, and
+        // then this listener runs beside the platform's own action. That costs an
+        // exception in the console rather than nothing, and this is the line that
+        // makes the two orderings agree instead of one of them throwing.
+        if (dialog && !dialog.open) {
+          dialog.showModal();
+        }
+      });
+    }
+    for (const closer of document.querySelectorAll('button[command="close"][commandfor]')) {
+      closer.addEventListener('click', () => {
+        // close() on an already-closed dialog is a no-op rather than a throw, so
+        // this needs no matching guard. It is written as a comment because the
+        // asymmetry with the branch above otherwise reads as an omission.
+        document.getElementById(closer.getAttribute('commandfor'))?.close();
+      });
+    }
+  }
+
+  /*
    * The create form's command readout (US3, contracts/command-preview.md).
    *
    * It selects between the lines the server rendered into data-* attributes and
@@ -975,7 +1027,115 @@
     }, 6000);
   };
 
-  const show = (message) => {
+  /*
+   * Where the answer goes when a modal dialog is open (milestone 11,
+   * contracts/outcome-where-the-operator-is.md).
+   *
+   * A modal <dialog> is promoted to the top layer and **makes everything outside
+   * it inert**. This region is at the foot of <body>, so while the create dialog
+   * is open the toast is not merely hidden behind a backdrop — it is removed
+   * from the accessibility tree, which means a refused create would not even be
+   * announced. That is strictly worse than what shipped before the dialog
+   * existed, and it is the one way this milestone could have made things worse.
+   *
+   * **The promotion that was tried first does not work, and the reason is worth
+   * keeping.** Showing this region as a popover does put it in the top layer, and
+   * a popover above a modal dialog is inert all the same: measured in Chrome 149,
+   * a control inside the promoted region could not take focus while the dialog
+   * was open, and the popover's own user-agent rules had moved the region to the
+   * middle of the viewport and shrunk it to its content. Two defects, and the
+   * first one is silent.
+   *
+   * So the answer goes where the operator is looking. That is one sentence in one
+   * place, not two — the toast is unreachable by construction while the dialog is
+   * up, so nothing is being said twice. The copy is still the daemon's own from
+   * outcome.go, which was always the invariant worth keeping; what varies is
+   * where it is legible.
+   */
+  const regionFor = (form) => {
+    const dialog = form?.closest('dialog');
+    return (dialog?.open && dialog.querySelector('.modal-outcome')) || null;
+  };
+
+  /*
+   * A dialog that opens starts with nothing to say.
+   *
+   * Without this the answer outlives the attempt it was about. Two ways, and the
+   * second reads as a defect rather than as staleness:
+   *
+   * - Refused, dismissed, reopened later: the old refusal is still sitting there,
+   *   describing a submission the operator has moved on from.
+   * - Refused, corrected, *succeeded*: the create resets the form and closes the
+   *   dialog, and the region is the one thing neither of those touches. The next
+   *   open shows a refusal above an empty form — a sentence about nothing, in the
+   *   one place this dialog puts things that matter.
+   *
+   * **Cleared on the way in, not on the way out, and that is a measurement rather
+   * than a preference.** The obvious hook is the dialog's `close` event, and it
+   * does not cover the ways out that matter: in Chrome 149 a close driven by
+   * `command="close"` — which is what both of this dialog's own close controls
+   * are — closes the dialog and fires no `close` event at all, where a
+   * programmatic `.close()` fires one. A listener there would have worked for the
+   * success path and silently missed every dismissal a person actually performs.
+   *
+   * Opening has no such problem, because there is exactly one way in. The trigger
+   * is the only thing that opens this dialog, whether the platform acts on its
+   * `command` attribute or the fallback above calls showModal(), so a listener
+   * here runs on every path by construction rather than by enumeration.
+   *
+   * The fields are deliberately *not* cleared with it. Those are what the operator
+   * typed, and losing them to a stray Esc is the thing this milestone was careful
+   * about; the sentence is what the daemon said about an attempt that is over.
+   */
+  for (const trigger of document.querySelectorAll('button[command="show-modal"][commandfor]')) {
+    trigger.addEventListener('click', () => {
+      const region = document
+        .getElementById(trigger.getAttribute('commandfor'))
+        ?.querySelector('.modal-outcome');
+      if (region) {
+        region.textContent = '';
+      }
+    });
+  }
+
+  const show = (message, form) => {
+    /*
+     * A form inside an open dialog is answered inside it, and nowhere else.
+     *
+     * No sessionStorage on this branch, deliberately: what that carries across is
+     * the reload the *fleet* takes when its shape changes, and this branch is the
+     * one where nothing navigated and nothing will — the operator is still in the
+     * dialog with what they typed. Storing it would say the sentence a second
+     * time on the next page they happened to load.
+     */
+    const inDialog = regionFor(form);
+    if (inDialog) {
+      inDialog.textContent = message;
+
+      /*
+       * And the toast is put away rather than left standing behind the backdrop.
+       *
+       * Two ways it would otherwise outlive its own answer. An earlier action's
+       * sentence may still be inside its six seconds, in which case the operator
+       * closes the dialog and finds a toast about something they did before this
+       * one; and the copy in sessionStorage is restored on the *next* page load,
+       * where it would be read as the answer to whatever happened last. Both are
+       * one action's answer presented as another's.
+       *
+       * clearTimeout as well as hiding, or the pending timer fires later and
+       * removes the storage key under whatever has replaced it by then.
+       */
+      clearTimeout(hide);
+      toast.hidden = true;
+      toast.textContent = '';
+      try {
+        sessionStorage.removeItem(pending);
+      } catch {
+        // A tab that refuses storage had nothing stored to go stale.
+      }
+      return;
+    }
+
     // Stored before it is painted, because the reload can arrive between the
     // fetch resolving and the next frame.
     try {
@@ -1043,6 +1203,29 @@
   };
 
   /*
+   * Which outcome it was, as opposed to what it read as (milestone 11).
+   *
+   * The banner carries `data-outcome`, and that value is a key of outcome.go's
+   * closed vocabulary — bannerFor sets it only after the map lookup succeeded,
+   * so an unrecognised code renders no banner and therefore no attribute here.
+   * Reading it is how a create knows to close its dialog; reading the sentence
+   * would be that vocabulary re-implemented in prose.
+   *
+   * `[data-outcome]` rather than `.outcome[data-outcome]`, so both banner shapes
+   * answer: the alarming one is a section and the ordinary one a paragraph, and
+   * the code is on each. It is the same document the function above parses and
+   * deliberately parsed again rather than threaded through: these are two
+   * independent questions about one answer, and a page that carries a sentence
+   * but no code should give an empty code rather than borrow the other's result.
+   *
+   * A parse of a page-sized string, twice, at the speed a person clicks.
+   */
+  const outcomeCode = (html) => {
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    return parsed.querySelector('[data-outcome]')?.getAttribute('data-outcome') || '';
+  };
+
+  /*
    * Delegated from the document, not attached per form.
    *
    * The first version bound a listener to every action form at load, and the
@@ -1089,6 +1272,16 @@
       return;
     }
     event.preventDefault();
+
+    // The previous attempt's answer, cleared before this one is made. A dialog
+    // that is not reloaded between submissions keeps whatever was written into
+    // it, so without this an operator who fixed the field would submit against a
+    // refusal that is still on screen and have no way to tell the old sentence
+    // from the new one.
+    const clearing = regionFor(form);
+    if (clearing) {
+      clearing.textContent = '';
+    }
 
     const reenable = () => {
       for (const control of form.querySelectorAll('button[type="submit"]')) {
@@ -1148,15 +1341,46 @@
         return;
       }
 
-      show(sentence(said) || 'The host answered without a message.');
-      reenable();
-      if (form.matches('.create-form')) {
+      /*
+       * A create that worked is finished with its dialog. One that did not is
+       * the operator's next attempt (milestone 11, US3,
+       * contracts/outcome-where-the-operator-is.md).
+       *
+       * The reset used to be unconditional, and that is the behaviour this
+       * changes: a refused create cleared the name, the working directory and
+       * every switch, so an operator who mistyped one character retyped all of
+       * it. The dialog makes that worse rather than newly wrong — they would
+       * have had to reopen an empty form — so the two are fixed together.
+       *
+       * **The branch is the daemon's own code and never the sentence.** Reading
+       * prose to decide what happened would be outcome.go re-implemented in a
+       * browser, wrong the first time a word of copy changed. An answer with no
+       * code — a page this script did not expect, a fetch that resolved to
+       * something else — takes the refusal path, which leaves the operator
+       * looking at what they typed. That is the safe direction to be wrong in.
+       *
+       * Closed *before* the sentence is shown, and that ordering is the whole of
+       * why a success reads in the toast: show() asks whether this form's dialog
+       * is open, and on a create that worked it no longer is.
+       *
+       * `closest('dialog')` rather than the id, so this closes whichever dialog
+       * the form was in and needs no second spelling of a name the template
+       * owns. A form in no dialog — which is every other form here — finds
+       * nothing and this does nothing.
+       */
+      if (form.matches('.create-form') && outcomeCode(said) === 'created') {
+        form.closest('dialog')?.close();
         form.reset();
       }
+
+      show(sentence(said) || 'The host answered without a message.', form);
+      reenable();
     } catch {
       // A request that never reached the host is the one case where the operator
-      // must not be told anything happened, because nothing did.
-      show('That action could not be sent. The fleet is unchanged.');
+      // must not be told anything happened, because nothing did. It is said in
+      // the dialog when that is where the operator is, for the reason a refusal
+      // is: the toast is inert while a modal dialog is open.
+      show('That action could not be sent. The fleet is unchanged.', form);
       reenable();
     }
   });

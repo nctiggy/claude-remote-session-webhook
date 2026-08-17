@@ -33,7 +33,19 @@
   live region for the scripted path and it stays that; what replaces the
   announcement here is position, because this is the first thing in the page and
   so the first thing read.
-*/}}{{ with . }}{{ if .Alarm }}<section class="outcome outcome-alarm">
+
+  `data-outcome` says *which* outcome this is, on both shapes (milestone 11,
+  contracts/outcome-where-the-operator-is.md). The scripted path fetches this page rather
+  than navigating to it, and the create dialog has to close on a success and stay
+  open on a refusal; without this the only thing to branch on is the sentence,
+  which would be this vocabulary re-implemented in prose and wrong the first time
+  a word of copy changed.
+
+  It is not a second path from `?outcome=` to the document. The value is the key
+  bannerFor already matched — one of the constants in outcome.go — and an
+  unrecognised code still renders nothing at all, this attribute included,
+  because the `with` above renders nothing at all.
+*/}}{{ with . }}{{ if .Alarm }}<section class="outcome outcome-alarm" data-outcome="{{ .Code }}">
 <h2 class="outcome-heading">{{ .Heading }}</h2>
 <p class="outcome-body">{{ .Message }}</p>
-</section>{{ else }}<p class="outcome">{{ .Message }}</p>{{ end }}{{ end }}
+</section>{{ else }}<p class="outcome" data-outcome="{{ .Code }}">{{ .Message }}</p>{{ end }}{{ end }}

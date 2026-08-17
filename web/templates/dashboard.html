@@ -165,16 +165,25 @@
 {{ end }}</div>
 {{ template "empty" .Empty }}
 {{/*
-  The create form, after the fleet and outside both branches above (T010).
+  The create control, after the fleet and outside both branches above (T010).
 
   After, because a dashboard is scanned for what is running on this host before
   it is read for what to do next — the same argument that puts the summary before
   the grid. Outside both, because an operator who owns nothing is the one who
-  most needs it: a form rendered only beside the grid would be missing from the
-  one page where the fleet is empty.
+  most needs it: a control rendered only beside the grid would be missing from
+  the one page where the fleet is empty.
+
+  What this composes is a button now, and the form it opens is a dialog behind it
+  (milestone 11, contracts/new-session-modal.md). The call site did not change and
+  neither did this page's argument for where it goes — what changed is how much of
+  the page a create costs when nobody is making one. The dialog is in the top
+  layer when it is open, so it is not "further down" from anything here; the
+  ordering above is about the button.
 
   It renders nothing at all when this render minted no token, which is what makes
-  a page that cannot authorise a create offer none.
+  a page that cannot authorise a create offer none — and since milestone 11 that
+  covers the trigger as well as the form, because a button opening a dialog whose
+  submission is certain to be refused reads like a capability.
 */}}{{ template "create-form" .Create }}
 </main>{{/*
   Where an action's answer is shown, instead of the page it used to become.
