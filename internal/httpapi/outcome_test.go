@@ -199,7 +199,29 @@ func TestTheUnverifiedTeardownIsNotOneLineAmongMany(t *testing.T) {
 	if strings.Contains(ordinary, outcomeAlarmClass) {
 		t.Errorf("an ordinary outcome renders as the alarming one, so nothing is prominent:\n%s", ordinary)
 	}
-	if !strings.Contains(ordinary, `<p class="outcome">`) {
-		t.Errorf("an ordinary outcome renders no banner at all:\n%s", ordinary)
+	// The code as well as the class, since milestone 11 put one on both shapes.
+	// It is asserted here rather than in a test of its own because this is
+	// already the place that reads the ordinary banner's exact opening tag, and
+	// what the attribute has to be is the outcome this page was opened with —
+	// a banner saying "renamed" in words and something else in its data is the
+	// one failure that would leave the scripted path branching on the wrong
+	// answer while reading correctly.
+	//
+	// **More than one code, and both shapes.** A cross-model review pointed out
+	// that a single case here passes against an implementation that hardcodes the
+	// one code it was tested with, and says nothing at all about the alarming
+	// shape — which is a `<section>` rather than a `<p>` and carries the attribute
+	// on its own opening tag. `outcomeCreated` is the second case on purpose: it
+	// is the code the create dialog closes on, so an implementation that got it
+	// wrong would leave a successful create's dialog standing open with its
+	// answer written inside it.
+	for _, code := range []outcome{outcomeRenamed, outcomeCreated, outcomeDestroyed} {
+		page := f.open(t, "/?"+queryOutcome+"="+string(code)).Body.String()
+		if !strings.Contains(page, `<p class="outcome" data-outcome="`+string(code)+`">`) {
+			t.Errorf("the banner for %q renders no ordinary shape naming its own code:\n%s", code, page)
+		}
+	}
+	if !strings.Contains(alarming, `data-outcome="`+string(outcomeTeardownUnverified)+`"`) {
+		t.Errorf("the alarming banner does not name its own code, so the scripted path cannot tell it from any other answer:\n%s", alarming)
 	}
 }

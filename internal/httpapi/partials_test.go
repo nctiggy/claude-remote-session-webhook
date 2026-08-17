@@ -3783,3 +3783,338 @@ func TestACardSaysHowOldItIsWhatStartedItAndWhetherItDies(t *testing.T) {
 		})
 	}
 }
+
+// fullCreateForm is the create view with every conditional control reachable:
+// suggestions present, the daemon's lifetime ceiling removed, conversations
+// recorded, and both command lines resolved.
+//
+// It exists because the bare createForm() fixture draws none of them, and a test
+// reading only that would pass with four controls missing — the near miss
+// TestCreateFormHasNoStartCommandSelect was written about, where three tasks
+// shipped green for a requirement about what an operator sees because every
+// assertion made was about a route or a record.
+func fullCreateForm() createFormView {
+	return createFormView{
+		PageToken:              testCardToken,
+		Roots:                  []string{"/home/operator/code", "/srv/work"},
+		Suggestions:            []string{"/home/operator/code/crswd"},
+		LifetimeCeilingRemoved: true,
+		Commands:               map[bool]string{false: "local-command", true: "remote-command"},
+		Conversations: []conversationView{
+			{ID: "3f6c1d8e-4b2a-0957-e1c3-d5f7a9b1c3d5", Short: "3f6c1d8e", Modified: "2 hours"},
+		},
+		ResumeLatest:     "latest",
+		ResumeLatestFlag: "--continue",
+		ResumeOneFlag:    "--resume",
+	}
+}
+
+// outsideTheDialog is everything the create component draws that is not inside
+// its <dialog> — what comes before it and what comes after it, joined.
+//
+// **Both sides, and the second one is the correction.** This read only what came
+// before, and a cross-model review pointed out that a duplicate create form left
+// *after* `</dialog>` is outside the dialog, is exactly the "left a copy behind"
+// failure the assertions below claim to catch, and passed. A test that inspects
+// one side of the thing it is checking is a test of that side.
+func outsideTheDialog(t *testing.T, out string) string {
+	t.Helper()
+
+	ahead, rest, ok := strings.Cut(out, "<dialog")
+	if !ok {
+		t.Fatalf("the create component opens no <dialog>, so there is nothing behind the trigger:\n%s", out)
+	}
+	_, after, ok := strings.Cut(rest, "</dialog>")
+	if !ok {
+		t.Fatalf("the create component's <dialog> is never closed:\n%s", out)
+	}
+	return ahead + after
+}
+
+// insideTheDialog is the dialog's own markup, opening tag excluded.
+func insideTheDialog(t *testing.T, out string) string {
+	t.Helper()
+
+	_, after, ok := strings.Cut(out, "<dialog")
+	if !ok {
+		t.Fatalf("the create component opens no <dialog>:\n%s", out)
+	}
+	body, _, ok := strings.Cut(after, "</dialog>")
+	if !ok {
+		t.Fatalf("the create component's <dialog> is never closed:\n%s", out)
+	}
+	return body
+}
+
+// TestTheDashboardOffersATriggerAndKeepsTheFormBehindIt is FR-001 and FR-004:
+// the dashboard shows one control that leads to a create and nothing else about
+// creating one.
+//
+// The form was not wrong and none of its parts were removed — what was wrong is
+// that all of it was on screen all of the time, on the page an operator opens to
+// answer a different question. So this asserts a *placement*, which is a claim no
+// route test can make and the one this milestone is entirely about.
+//
+// **Must fail when** the form is moved into the dialog and a copy is left behind
+// in the flow, which is the shape of the mistake a move like this makes: both
+// render, both submit, and the page looks merely untidy rather than broken.
+func TestTheDashboardOffersATriggerAndKeepsTheFormBehindIt(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nothing but the trigger stands outside the dialog", func(t *testing.T) {
+		t.Parallel()
+
+		outside := outsideTheDialog(t, renderComponent(t, "create-form", fullCreateForm()))
+		for _, control := range []string{"<input", "<select", "<label", "<datalist", "<pre", "field-hint", "command-preview", "create-form", "modal-outcome"} {
+			if strings.Contains(outside, control) {
+				t.Errorf("the fleet still draws %s outside the dialog; the form moved and left a copy behind:\n%s", control, outside)
+			}
+		}
+		if !strings.Contains(outside, `command="show-modal"`) {
+			t.Errorf("the fleet draws no trigger that opens the dialog:\n%s", outside)
+		}
+	})
+
+	t.Run("the whole page, with a daemon that has something to offer", func(t *testing.T) {
+		t.Parallel()
+
+		f := newFleet(t)
+		f.cfg.StartCommands = config.NewStartCommands(map[string]string{
+			"default": "claude --dangerously-skip-permissions",
+			"rc":      "claude remote-control",
+		})
+
+		create := sectionOf(t, f.view(t).Body.String(), "create")
+		outside := outsideTheDialog(t, create)
+		if strings.Contains(outside, "<input") || strings.Contains(outside, "<label") {
+			t.Errorf("a rendered fleet carries create fields outside the dialog:\n%s", outside)
+		}
+	})
+
+	t.Run("no page token, no trigger and no dialog", func(t *testing.T) {
+		t.Parallel()
+
+		// The rule the form already followed, extended to the control that opens
+		// it: a button whose dialog's submission is certain to be refused by the
+		// gate reads like a capability, and an operator cannot tell it from a
+		// working one until they have used it.
+		view := fullCreateForm()
+		view.PageToken = ""
+
+		out := renderComponent(t, "create-form", view)
+		for _, offered := range []string{"<dialog", "<button", "<input", "show-modal"} {
+			if strings.Contains(out, offered) {
+				t.Errorf("a render that minted no token still offers %s:\n%s", offered, out)
+			}
+		}
+	})
+}
+
+// TestTheCreateDialogOpensAndClosesFromMarkupAlone is FR-005, FR-007 and FR-008,
+// read where they are actually decided: the bytes a browser is handed.
+//
+// The dialog opens with `command="show-modal"` — the Invoker Commands API, which
+// reached Baseline in 2026 — and that is what keeps this tree's rule that every
+// control works with scripting off. crswd.js carries a fallback for older
+// browsers and is not what makes this work; a test satisfied by the script would
+// pass on a page where the attribute had been dropped and the scriptless
+// operator had lost the create form entirely.
+//
+// **Must fail when** the trigger points at a dialog this component never renders,
+// when `show-modal` degrades to `show` — which is a non-modal dialog, and takes
+// the focus trap, the inert page behind and Esc with it — or when the only way
+// out is the backdrop, which is the one dismissal not every browser has.
+func TestTheCreateDialogOpensAndClosesFromMarkupAlone(t *testing.T) {
+	t.Parallel()
+
+	out := renderComponent(t, "create-form", fullCreateForm())
+
+	opening := regexp.MustCompile(`<dialog\b([^>]*)>`).FindStringSubmatch(out)
+	if opening == nil {
+		t.Fatalf("the create component opens no <dialog>:\n%s", out)
+	}
+	id, ok := attributeValue(t, opening[1], "id")
+	if !ok {
+		t.Fatalf("the dialog carries no id (<dialog%s>), so nothing can name it", opening[1])
+	}
+	if _, ok := attributeValue(t, opening[1], "closedby"); !ok {
+		t.Errorf("the dialog does not offer light dismiss (<dialog%s>); it is an enhancement and costs nothing where the browser ignores it", opening[1])
+	}
+	if _, ok := attributeValue(t, opening[1], "aria-labelledby"); !ok {
+		t.Errorf("the dialog is named by nothing (<dialog%s>); its title is a heading an operator can see, and one spelling of it is what keeps the two from disagreeing", opening[1])
+	}
+
+	var opens, closes int
+	for _, button := range regexp.MustCompile(`<button\b([^>]*)>`).FindAllStringSubmatch(out, -1) {
+		command, hasCommand := attributeValue(t, button[1], "command")
+		target, hasTarget := attributeValue(t, button[1], "commandfor")
+		if !hasCommand {
+			continue
+		}
+		if !hasTarget || target != id {
+			t.Errorf("a control commands %q at %q, and the dialog on this form is %q (<button%s>)", command, target, id, button[1])
+			continue
+		}
+		switch command {
+		case "show-modal":
+			opens++
+		case "close":
+			closes++
+		default:
+			// `show` is the trap this names: it opens the dialog non-modally, so
+			// the page behind stays interactive, Esc does nothing, and there is
+			// no focus trap — three of this dialog's four dismissal properties
+			// gone on one word.
+			t.Errorf("a control issues %q, which is not one of the two commands this dialog answers (<button%s>)", command, button[1])
+		}
+		if kind, _ := attributeValue(t, button[1], "type"); kind != "button" {
+			t.Errorf("a command control is type=%q; a <button> defaults to submit, and the one inside the form would submit the create it exists to abandon (<button%s>)", kind, button[1])
+		}
+	}
+	if opens != 1 {
+		t.Errorf("the component renders %d controls that open the dialog; one page needs exactly one", opens)
+	}
+	if closes < 1 {
+		t.Errorf("the component renders no control that closes the dialog, so the only ways out are Esc and a backdrop not every browser dismisses on")
+	}
+}
+
+// TestEveryCreateControlMovedIntoTheDialog is FR-002: the form was moved, not
+// rewritten.
+//
+// Rendered from fullCreateForm, because the four conditional controls are
+// exactly the ones a move loses silently — they are absent from the bare fixture
+// whether or not the template still draws them.
+//
+// **Must fail when** a control is dropped in the move, or renders outside the
+// dialog where the operator will never see it.
+func TestEveryCreateControlMovedIntoTheDialog(t *testing.T) {
+	t.Parallel()
+
+	inside := insideTheDialog(t, renderComponent(t, "create-form", fullCreateForm()))
+
+	// The field names are the route's own constants, so the markup's spelling and
+	// the handler's stay one fact — this suite's standing arrangement for a
+	// template set parsed with no function map.
+	for _, field := range []string{fieldName, fieldWorkDir, fieldRemoteControl, fieldLifetime, fieldResume} {
+		if !regexp.MustCompile(`name="` + regexp.QuoteMeta(field) + `"`).MatchString(inside) {
+			t.Errorf("the dialog posts no %q; a control that did not come across is a capability an operator has lost:\n%s", field, inside)
+		}
+	}
+	// The token is named by the constant the gate reads rather than by a literal,
+	// which is this suite's standing arrangement and here also keeps gosec's G101
+	// off a field *name* that every rendered page carries in plain sight — the
+	// same false positive browser.go annotates on the constant itself.
+	for what, marker := range map[string]string{
+		"the allowed-roots hint":     `id="create-roots"`,
+		"the working-directory list": `<datalist`,
+		"the command preview":        "data-command-preview",
+		"the page token":             fieldPageToken,
+		"the in-flight note":         `id="create-busy"`,
+	} {
+		if !strings.Contains(inside, marker) {
+			t.Errorf("%s is not inside the dialog:\n%s", what, inside)
+		}
+	}
+}
+
+// hintText is every sentence this form says to a person: the field hints and the
+// in-flight note. Not the labels, which name a control rather than explain one.
+var hintText = regexp.MustCompile(`(?s)<p class="(?:field-hint-text|create-note)"[^>]*>(.*?)</p>`)
+
+// TestNoHintOnTheCreateFormRunsPastALine is FR-013, and the numeric bound is a
+// proxy stated as one.
+//
+// What the requirement asks for is that no control carries more than a line, and
+// "a line" is not a property of a string — it depends on a width and a font. So
+// this pins a character budget instead, and the budget is calibrated rather than
+// chosen: every hint this milestone wrote is comfortably under it, and both of
+// the two-sentence hints it removed are over. A test that passed on the copy that
+// prompted the requirement would be a test of nothing.
+//
+// The roots list is exempt and is not matched here: it is a list rather than
+// prose, and it is the one hint that is load-bearing — the working-directory
+// refusal deliberately will not name the roots, so without it the field is one an
+// operator has to guess at.
+//
+// **Must fail when** a hint grows back into an explanation of the daemon.
+func TestNoHintOnTheCreateFormRunsPastALine(t *testing.T) {
+	t.Parallel()
+
+	const budget = 80
+
+	out := renderComponent(t, "create-form", fullCreateForm())
+	found := hintText.FindAllStringSubmatch(out, -1)
+	if len(found) == 0 {
+		t.Fatal("the create form says nothing to a person at all, so this sweep found nothing to check and would pass whatever the copy did")
+	}
+	for _, hint := range found {
+		if words := strings.TrimSpace(hint[1]); len(words) > budget {
+			t.Errorf("a hint runs to %d characters against a budget of %d, which is an explanation rather than a line: %q", len(words), budget, words)
+		}
+	}
+}
+
+// TestARefusedCreateHasSomewhereLegibleToBeSaid is
+// contracts/outcome-where-the-operator-is.md, and it exists because this
+// milestone got the answer wrong once before measuring it.
+//
+// A modal <dialog> makes everything outside it **inert** — not merely covered by
+// its backdrop, but removed from the accessibility tree. The action toast is at
+// the foot of <body>, so while the create dialog is open it can say nothing to
+// anybody: a refused create would be invisible *and* unannounced, which is worse
+// than what shipped before the dialog existed and is the one way this milestone
+// could have made things worse.
+//
+// The first attempt promoted the toast into the top layer with `popover`, on the
+// reasoning that top-layer stacking is insertion order. It is, and it does not
+// help: a popover above a modal dialog is inert too. Measured in Chrome 149 — a
+// control appended inside the promoted region could not take focus while the
+// dialog was open, where the identical control was focusable with the dialog
+// closed and focusable inside the dialog while it was open. The popover's
+// user-agent rules had also moved the region to the middle of the viewport and
+// shrunk it to its text.
+//
+// So the region is inside the dialog. That is not two places an outcome can be
+// written, which is the objection worth answering rather than dismissing: the
+// toast is unreachable by construction while the dialog is open, so exactly one
+// region can speak at a time, and both take their words from outcome.go.
+//
+// **Must fail when** the dialog carries no region of its own — which is the
+// state the popover attempt left it in, and which every sweep in this suite
+// passed.
+func TestARefusedCreateHasSomewhereLegibleToBeSaid(t *testing.T) {
+	t.Parallel()
+
+	page := newFleet(t).view(t).Body.String()
+
+	if n := strings.Count(page, `id="action-toast"`); n != 1 {
+		t.Errorf("the fleet carries %d toasts; the page outside the dialog has one place an answer is read", n)
+	}
+
+	inside := insideTheDialog(t, sectionOf(t, page, "create"))
+	region := regexp.MustCompile(`<p class="modal-outcome"([^>]*)>`).FindStringSubmatch(inside)
+	if region == nil {
+		t.Fatalf("the create dialog carries no region for an answer, so a refusal reaches an inert toast and is neither seen nor announced:\n%s", inside)
+	}
+	if live, ok := attributeValue(t, region[1], "aria-live"); !ok || live != "polite" {
+		t.Errorf("the dialog's answer region is aria-live=%q; a refusal an operator cannot see is one nobody hears either (<p%s>)", live, region[1])
+	}
+	if role, ok := attributeValue(t, region[1], "role"); !ok || role != "status" {
+		t.Errorf("the dialog's answer region carries role=%q (<p%s>)", role, region[1])
+	}
+	// Present and empty, never hidden. A live region has to be in the
+	// accessibility tree before its text arrives, and one revealed and written in
+	// the same frame is one some readers never announce.
+	if strings.Contains(region[1], "hidden") {
+		t.Errorf("the dialog's answer region ships hidden (<p%s>); a live region revealed and written at once is one some screen readers never announce", region[1])
+	}
+
+	// And the toast is left alone. The promotion that was tried is not merely
+	// unnecessary now — it actively hid the region behind the popover's own
+	// user-agent positioning, so its absence is asserted rather than assumed.
+	toast := openingTag(t, page, "output", "action-toast")
+	if strings.Contains(toast, "popover") {
+		t.Errorf("the toast is declared as a popover (<output%s>); a popover above a modal dialog is inert, and the attribute moves and resizes the region for nothing", toast)
+	}
+}

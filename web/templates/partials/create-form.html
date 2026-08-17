@@ -1,6 +1,15 @@
 {{/*
-  The create form — the one control on this dashboard that starts an unsandboxed
+  The create control — the one thing on this dashboard that starts an unsandboxed
   shell rather than ending one (US2, contracts/actions.md).
+
+  It is a trigger and a dialog now, and it used to be the form itself, standing
+  open on the fleet (milestone 11, contracts/new-session-modal.md). The reason is
+  not that the form was wrong. Every part of it arrived on its own milestone with
+  its own argument, and all of those arguments still hold. The reason is that all
+  of it was on screen all of the time, for an action an operator takes
+  occasionally, on the page they open to answer a different question — and the
+  harness picker in docs/harnesses.md is about to need room this form does not
+  have.
 
   It is outside every card, and that is structural rather than tidy. A card is
   one session (docs/components.md) and every form on it acts on that session; a
@@ -13,21 +22,22 @@
   rather than a preference: the empty state is the one surface where the rain
   runs at full strength, and rain never goes behind reading content, "not a pane,
   a card grid, a form, or a table". So the empty state's Action parameter stays
-  absent (FR-024a) and this section sits beside it.
+  absent (FR-024a) and this section sits beside it. The rule now covers the
+  dialog too, which is reading content and has no canvas behind it (FR-017).
 
   It renders from the page token for the reason the card's action row does: the
   token is the evidence the gate in browser.go demands, so a form rendered
-  without one could only offer a control the gate is certain to refuse. A
-  component built with no token renders nothing at all rather than an empty
-  field — FR-018a's discipline about absent values, applied to an affordance.
+  without one could only offer a control the gate is certain to refuse. The gate
+  wraps the trigger *and* the dialog, so a page that cannot authorise a create
+  offers neither (FR-004) — a button that opened a dialog whose submission was
+  certain to be turned away would be worse than no button, because it reads like
+  a capability.
 
   The three fields the route reads are the contract's three, and two of them are
   spelled here a second time: `name` and `work_dir` are fieldName and
   fieldWorkDir in actions.go, unreachable from a template set parsed with no
   function map. The test in partials_test.go is what holds the two spellings
-  together — the arrangement `confirm=yes` already has on the card. The third is
-  the token partial, so the field a page renders and the field the gate reads
-  stay one spelling.
+  together — the arrangement `confirm=yes` already has on the card.
 
   A plain form post and a submit button, per research.md R4: keyboard operability
   is a property of the element rather than work (FR-028), the focus ring the
@@ -44,42 +54,114 @@
   test all the same, because a hint that drifted would refuse a name this daemon
   would have accepted, in a browser, with nothing on the page to say why.
 
-  The working directory has no `pattern`, and now has a hint that names the
-  configured roots (T014). Those are two different things, and only the first was
-  ever the security argument: a regular expression spelling the allowlist would
-  be a client-side copy of the containment rule, free to drift from
-  ResolveWorkDir, and the refusal it produced would be a native browser bubble
-  this daemon never wrote. Listing the roots is not that. They are this
-  authenticated operator's own configuration, they are already on every card in
-  the fleet as a working directory, and the uniform refusal they sit beside is
-  protecting something else entirely — that one answers "outside the roots",
-  "not a directory" and "not there at all" identically so a caller cannot ask
-  this form whether a path exists. Naming the permitted set is not confirming
-  what is inside it. Without them the field is one an operator has to guess at,
-  and the refusal deliberately will not tell them.
-
-  Every configured root renders, not the first. A hint missing an operator's
-  second root would read as a refusal they have no way to explain.
-
-  The submit disables itself on submission (crswd.js). It is the one genuine
-  idempotence exposure of the four actions — a second destroy finds no record, a
-  second rename is the same end state, a second compact is a second delivery the
-  operator asked for, and a second create is a second unsandboxed shell
-  (research.md R7). The button carries no name attribute, so disabling it removes
-  nothing from what the form submits.
-
-  The note beside it is FR-031's in-progress state, hidden until the submission
-  reveals it. Its copy lives here rather than in the script for the reason the
-  pane's ended note does: what the interface says to a person belongs to a
-  template. It says the page reloads rather than that a card replaces it, which
-  is what T014 made true: the route answers 303 and the browser comes back to the
-  fleet.
   `if` rather than `with`, so `.` stays the view inside the form: the fields
   below need Roots and Suggestions, and `with` would have rebound the dot to the
   token alone. The token is passed explicitly to its own template instead, which
   says what it is at the point it is used.
-*/}}{{ if .PageToken }}<section class="create">
-<h2 class="create-heading">Start a session</h2>
+*/}}{{ if .PageToken }}<section class="create">{{/*
+  The trigger, and the whole of what the dashboard shows about creating a session
+  (FR-001, contracts/new-session-modal.md).
+
+  `command` and `commandfor` are the Invoker Commands API, which reached Baseline
+  in 2026. They are what makes this dialog open with **no script at all**: the
+  platform shows it modally, moves focus into it, makes the page behind it inert
+  and closes it on Esc, and every one of those is a thing crswd.js would
+  otherwise have to do and get right. That property is not a nicety here — every
+  control on this dashboard works with scripting off, and a create becoming the
+  exception would be the one that mattered most.
+
+  crswd.js carries a fallback for browsers older than that, and it is guarded on
+  the platform rather than on the browser. Unguarded it would fire alongside this
+  attribute and open the dialog twice.
+
+  `type="button"` on a control that sits inside no form. It is written because a
+  <button> defaults to `submit`, and the day this markup moves inside something
+  the default is the bug — the same reason the confirmation on a card is a field
+  the page sends rather than a state the page remembers.
+*/}}
+<button class="button button-primary" type="button" command="show-modal" commandfor="create-dialog">New session</button>{{/*
+  The dialog (docs/components.md's Modal, contracts/modal-vocabulary.md).
+
+  Modal was specified in that document for four milestones and never built, kept
+  "so that the first blocking confirmation that genuinely needs one is built
+  once, to these rules, rather than improvised". This is not a blocking
+  confirmation — it is a form container — and it is the first thing that has
+  genuinely needed the shape, so the rules come across and the illustration does
+  not: that section showed a call site passing a `dict` of Title and Body, and
+  this template set is parsed with no function map, so there is no `dict` and
+  never was. Modal ships the way Button and Field already ship, as a class
+  vocabulary the templates use.
+
+  `closedby="any"` is light dismiss, and it is an enhancement rather than a
+  requirement (FR-008). It is shipped in Chrome, Edge and Firefox and on WebKit's
+  Interop 2026 list, so a browser without it ignores the attribute and loses
+  nothing that matters: Esc and the two close controls below are always there.
+  Written as an attribute rather than as a click handler comparing event.target
+  to the dialog, which is the familiar polyfill and is four lines of script
+  re-implementing something the platform is in the middle of shipping — and which
+  gets the padded-dialog case wrong unless the padding moves to an inner element,
+  which is a layout decision made to serve a workaround.
+
+  `aria-labelledby` rather than `aria-label`: the dialog's name is a heading an
+  operator can see, so there is one spelling of it rather than two that can
+  disagree.
+
+  No rain canvas, and that is FR-017 rather than an omission. Rain has two
+  permitted homes and reading content is not one of them.
+*/}}
+<dialog class="modal" id="create-dialog" closedby="any" aria-labelledby="create-title">
+<div class="modal-head">{{/*
+  The form's old heading, moved and unchanged in its words. It was a section
+  eyebrow on the fleet; here it is the dialog's accessible name, which is the
+  same sentence doing a job it was already halfway doing. `.create-heading` is
+  gone rather than renamed in place — a class no template renders is a rule the
+  stylesheet sweep reads as dead, and the sweep is right.
+*/}}<h2 class="modal-title" id="create-title">Start a session</h2>{{/*
+  Icon-only, so it carries an accessible name — the accessibility floor's rule,
+  and the reason `aria-label` appears on a control whose visible content is a
+  glyph. The glyph is decorative once the label exists and is not read twice.
+*/}}<button class="modal-close" type="button" command="close" commandfor="create-dialog" aria-label="Close">×</button>
+</div>{{/*
+  What the last create did, said where the operator is standing (US3,
+  contracts/outcome-where-the-operator-is.md).
+
+  A modal <dialog> makes everything outside it **inert** — not merely covered by
+  the backdrop, but removed from the accessibility tree. So while this dialog is
+  open the action toast at the foot of the page cannot say anything to anybody:
+  a refused create would be invisible *and* unannounced, which is worse than what
+  shipped before this dialog existed.
+
+  Promoting the toast into the top layer was tried first and does not work. A
+  popover above a modal dialog is inert too — measured in Chrome 149, a control
+  inside the promoted region could not take focus while this dialog was open —
+  and the popover's user-agent rules moved the region to the middle of the
+  viewport and shrank it to fit its text on the way.
+
+  So the sentence comes here instead. That is not two places an outcome can be
+  written: the toast is unreachable by construction while this is open, so
+  exactly one region can speak at a time, and the words are the daemon's own from
+  outcome.go either way. A create that *succeeds* closes this dialog first and
+  then speaks, which is why the success still lands in the toast over the fleet.
+
+  Rendered present and empty rather than hidden, which is the rule the fleet's
+  own change note follows: a live region has to be in the accessibility tree
+  before its text arrives, and a region revealed and written in one go is one
+  some readers never announce. Empty, `:empty` in the stylesheet gives it no room.
+
+  aria-live="polite" and role="status" for the toast's reason — an answer is
+  worth saying at the next pause and never worth interrupting what a screen
+  reader is already reading.
+*/}}<p class="modal-outcome" role="status" aria-live="polite"></p>{{/*
+  The scrolling region is a wrapper rather than the form itself, and that is not
+  arbitrary: the form keeps `class="create-form"` alone, which is the spelling
+  TestEveryActionIsUsableWithoutScript reads to decide that the page a scriptless
+  action lands on is a fleet an operator can act from again. A second class on
+  that attribute would have made a layout decision into a change to what that
+  test can see, and the two have nothing to do with each other.
+
+  It holds the in-flight note as well as the form, because both are content that
+  scrolls; what stays put is the head above it, which is where the way out is.
+*/}}<div class="modal-body">
 <form class="create-form" method="post" action="/dashboard/sessions" data-submit-once="create-busy">{{ template "page-token" .PageToken }}<div class="field">
 <label class="field-label" for="create-name">Name</label>
 <input class="field-input" id="create-name" type="text" name="name" required maxlength="64" pattern="[-a-zA-Z0-9]+" autocomplete="off" spellcheck="false">
@@ -94,12 +176,6 @@
   remaining requirement, saying when the list is showing a subset (FR-045), is
   an addition to a control that already works rather than the thing that makes
   it work.
-
-  The abandoned branch's hand-rolled combobox is deliberately not carried here:
-  225 lines reimplementing filtering, focus management and ARIA roles the
-  browser already provides correctly, which degrade to nothing with scripting
-  off and own accessibility bugs the browser would otherwise own. Only its
-  discovery walk is worth carrying, and that is T023's.
 
   **A suggestion is never an authorisation.** The datalist submits an ordinary
   string, so the handler cannot tell a chosen path from a typed one and both
@@ -119,23 +195,14 @@
   copied into the markup, free to drift from ResolveWorkDir and refusing in a
   native browser bubble this daemon never wrote — which is the same reason this
   is not a `<select>`: a path absent from the list must still be typeable in
-  full.
+  full. Moving the field into a dialog changes none of that: the allowlist is
+  still the control and this is still presentation.
 */}}{{/*
   The wrapper the theme is applied over (T008, contracts/themed-combobox.md),
   and structure is the whole of what it is. The field inside it behaves exactly
   as it did before this div existed — the native control works first, and the
   theme is an enhancement over something that already functions, which is the
   rule that governs every part of that contract.
-
-  So what this markup does today is nothing. `.combo-list` is hidden and empty,
-  `.combo-status` is empty, and the control an operator meets is still the
-  platform's own `<input list>` and `<datalist>` described above. The three
-  additions exist so that the enhancement has somewhere to write, and they are
-  in the template rather than built by the script for two separate reasons: a
-  live region has to be in the accessibility tree before its text arrives for
-  the announcement to happen at all (docs/components.md's accessibility floor,
-  the same rule the subset note below already follows), and a class no template
-  renders is a rule stylesheet_test.go's sweep reads as dead.
 
   **No ARIA attribute here, deliberately.** No role, no aria-expanded, no
   aria-controls, no aria-activedescendant. With no script there is no combobox
@@ -145,29 +212,10 @@
 
   The `<datalist>` stays inside the wrapper and stays the one source of the
   options. The enhancement filters what the daemon rendered rather than keeping
-  a second copy of it that could disagree — it reaches the element through the
-  field's own `list` attribute, so the two spellings a browser needs are the
-  only ones anything holds.
-
-  Unconditional, where the `list` attribute and the `<datalist>` are not. Those
-  two are an offer, and an offer with nothing behind it is the markup FR-018a
-  refuses; these are the boxes an enhancement writes into, and a box that is
-  empty says nothing either way.
+  a second copy of it that could disagree.
 
   `.combo-status` carries FR-045's sentence (T010) — the one picker requirement
-  the platform's own control does not answer. The browser filters as the
-  operator types, takes a keyboard, announces its options and accepts a path
-  typed in full with nothing running; what it does not do is say that what is on
-  offer has been narrowed. `{n}` and `{all}` are filled by the same substitution
-  the fleet's own announcement uses, and both are counted off the options above
-  rather than being numbers this page could go stale about.
-
-  The sentence is here rather than in crswd.js for the reason every other
-  sentence this interface says is: a script that authored its own prose would be
-  a second place to look for it. It sits on the status region rather than in a
-  region of its own, which is where it started — the field had two live regions
-  for exactly as long as it took the enhancement to arrive, and one of them would
-  have been dead the moment this one spoke. It is deliberately absent from
+  the platform's own control does not answer. It is deliberately absent from
   aria-describedby: a description is read when focus arrives and a live region is
   read when it changes, so naming it in both would say the count on every focus
   and again on every filter, which is the noise the accessibility floor keeps off
@@ -178,28 +226,28 @@
 <p class="combo-status" role="status" aria-live="polite" data-workdir-subset="Showing {n} of {all} suggested directories."></p>
 </div>{{/*
   The whole hint is one element carrying one id, so aria-describedby on the input
-  reaches the sentence and the list together. A daemon configured with no root at
-  all cannot start — config.Load refuses it — so the `with` here is the zero
-  value's business rather than a state an operator can reach: a component
-  rendered without roots offers no hint instead of an empty list, which is
-  FR-018a's discipline about absent values.
+  reaches the sentence and the list together.
+
+  **This is the one hint the copy cut left alone, and it is exempt on purpose**
+  (FR-013, FR-014). Every other note on this form explained the daemon; this one
+  is the only way an operator learns what the refusal beside it will not tell
+  them. That refusal answers "outside the roots", "not a directory" and "not
+  there at all" identically, so a caller cannot ask this form whether a path
+  exists — naming the permitted set is not confirming what is inside it, and
+  without it the field is one an operator has to guess at.
+
+  Every configured root renders, not the first. A hint missing an operator's
+  second root would read as a refusal they have no way to explain.
+
+  A daemon configured with no root at all cannot start — config.Load refuses it
+  — so the `with` here is the zero value's business rather than a state an
+  operator can reach.
 */}}{{ with .Roots }}<div class="field-hint" id="create-roots">
 <p class="field-hint-text">A session may only run in a directory under {{ if eq (len .) 1 }}this root{{ else }}one of these roots{{ end }}:</p>
 <ul class="field-hint-list">{{ range . }}<li class="field-hint-root">{{ . }}</li>
 {{ end }}</ul>
 </div>{{ end }}
 </div>{{/*
-  There is no conversation field here, and its absence is the requirement rather
-  than a deletion that has not been finished (US5, FR-033 withdrawn). It asked an
-  operator for an opaque identifier they had no way to obtain from this page: the
-  offer beside it could only ever be the conversations of *this directory*, while
-  the thing an operator wants back is *this session's* — an ambiguity FR-032
-  already refuses to resolve by guessing. A field nobody can answer is worse than
-  no field, because it reads like a capability.
-
-  What replaces it is not designed yet and deliberately not invented here
-  (Principle II). Removing the question is this milestone's; answering it is not.
-*/}}{{/*
   Remote control as a mode, which is FR-026 finally rendered
   (contracts/remote-control-toggle.md). What stood here was a `<select>` of the
   operator's configured command *names*, and it is the reason milestone 4 shipped
@@ -210,14 +258,11 @@
   A real `<input type="checkbox">`, styled as a switch. The native control is the
   accessible core and only its presentation changes: it takes a keyboard, toggles
   with Space, is announced as a checkbox with its label, and needs no script to
-  do any of it — the same argument research.md R4 made for the plain form post
-  around it.
+  do any of it.
 
   Two states and no third. A ticked box posts `remote_control=on` and an unticked
   one posts nothing at all, so the field a lost or stripped submission carries is
-  the *less* privileged mode rather than the more. Anything else is the uniform
-  refusal, which is T004's, and it refuses a real configured name along with
-  everything else — the field carries a mode, and a mode is not a name.
+  the *less* privileged mode rather than the more.
 
   No name and no command line, in either direction (FR-002, FR-004). Which
   configured command each mode runs is read from configuration, exactly as the
@@ -232,18 +277,13 @@
 <input class="switch-input" id="create-remote" type="checkbox" name="remote_control" value="on">
 <label class="switch-label" for="create-remote">Remote control</label>
 </div>{{/*
-  The absolute deadline, turned off for this session (T005, milestone 13) — the
-  operator's second request, made twice: "I also want to allow for sessions to
-  have an infinite lifetime."
+  The absolute deadline, turned off for this session (T005, milestone 13).
 
   It is rendered only where this daemon's own ceiling is already gone, and that
   condition is the whole of why the control is safe to offer at all.
   resolveLifetimes grants a never-expiring session on exactly that condition, so
   under a finite ceiling this box would be refused on every submission an
-  operator ever made with it ticked — a control certain to be turned away, which
-  is what the page token's `if` above keeps off a card and what config.Editable
-  keeps off the settings page. The offer follows the daemon rather than teaching
-  an operator that one of its switches is simply broken.
+  operator ever made with it ticked — a control certain to be turned away.
 
   So switching this bound off takes *two* decisions by the same person, in two
   places: CRSW_SESSION_LIFETIME_MAX = never in their configuration, and this box
@@ -251,37 +291,24 @@
   and a form that could remove it would be a caller exempting itself from the
   operator's own bound rather than an operator exercising it.
 
-  `lifetime=never` is the field and the word POST /sessions already takes, read
-  by that route's own parser: one door offering a session that outlives the
-  defaults and the other refusing the same word would be two sets of rules for
-  one bound. Not "0" and not "-1h", for config.NeverLifetime's reason — both are
-  things a person writes meaning *no time at all*, and reading either as
-  "forever" switches off the one deadline that is never renewed. An unticked box
-  posts nothing, which is the daemon's configured default.
+  `lifetime=never` is the field and the word POST /sessions already takes: one
+  door offering a session that outlives the defaults and the other refusing the
+  same word would be two sets of rules for one bound. Not "0" and not "-1h", for
+  config.NeverLifetime's reason — both are things a person writes meaning *no
+  time at all*, and reading either as "forever" switches off the one deadline
+  that is never renewed.
 
-  **The hint says what is being switched off, not that it is free.** With both
-  switches on, no clock reaps this session — that is the operator's decision to
-  make on their own host, and the containment control is allowed_roots and the
-  doors rather than the reaper, but the interface has to state it plainly rather
-  than present it as a convenience.
-
-  The caveat that used to sit here is gone because the defect is: a
-  never-expiring session did not survive a restart as one, because adoption
-  rebuilt a record from what tmux knew and tmux did not know about Lifetime. It
-  does now (@crswd-lifetime, milestone 15), so the sentence below is true across
-  a redeploy rather than true until the next one.
-
-  No new class. The row is .field-switch, the box .switch-input, the label
-  .switch-label, and the aside .field-hint named by aria-describedby — the same
-  arrangement the switch above it uses, with the outer .field binding the two
-  because .field-switch is a column flow and a hint inside the row would be a
-  third column beside the box.
+  **The hint says what is being switched off, not that it is free**, and it is
+  one line because FR-013 caps every note on this form at one. What it lost in
+  the cut was a sentence about surviving a restart — true, and about the daemon
+  rather than about the switch, which is the test every cut here was made
+  against.
 */}}{{ if .LifetimeCeilingRemoved }}<div class="field">
 <div class="field field-switch">
 <input class="switch-input" id="create-never-expire" type="checkbox" name="lifetime" value="never" aria-describedby="create-never-expire-note">
 <label class="switch-label" for="create-never-expire">Never die at the lifetime limit</label>
 </div>
-<p class="field-hint-text" id="create-never-expire-note">Removes the absolute lifetime, and keeps it removed across a restart. Nothing then reaps this session.</p>
+<p class="field-hint-text" id="create-never-expire-note">Removes the absolute lifetime. Nothing then reaps this session.</p>
 </div>{{ else }}{{/*
   The daemon whose ceiling stands, which is every daemon by default. It has no
   switch above — resolveLifetimes would refuse every create that ticked one — so
@@ -289,14 +316,10 @@
   would have no way to learn from this page that their session ends or where that
   is decided.
 
-  That sentence used to live on the idle switch's hint, which is why it needs a
-  home now: milestone 15 withdrew that switch along with its bound, and the
-  sentence it carried was about the *other* bound the whole time.
-
   It names no number. What the lifetime is here is this daemon's configuration,
   and "24 hours" would be false on every install that set session_lifetime to
   something else. The way to move it is the operator's own settings page, which is
-  where this points.
+  where this points. Already one line, so the cut left it alone.
 */}}<p class="field-hint-text">Sessions end at this daemon's lifetime limit, which settings moves.</p>{{ end }}
 {{/*
   Continue a prior conversation in this directory (US4, FR-019, FR-020,
@@ -325,21 +348,24 @@
 
   It renders only where there is something to continue. A daemon whose host has
   no conversation history offers the two words and nothing else, which reads as
-  an offer with nothing behind it — so the whole block is conditional, which is
-  FR-018a's discipline about absent values applied to a control.
+  an offer with nothing behind it.
 
   What each option says is an identifier and a recency, and that is FR-025 rather
   than terseness: what a conversation *said* is the operator's work, and this
-  daemon renders none of it. The identifier is shortened for reading and rides in
-  full in the value.
+  daemon renders none of it.
+
+  **The note that stood under it is gone** (FR-013). It said the conversations
+  were those of the first suggested directory and that choosing one resumes it
+  instead of starting empty — the second half is what the label and the options
+  already say, and the first half is a fact about how the daemon assembled the
+  list rather than something an operator acts on.
 */}}{{ with .Conversations }}<div class="field">
 <label class="field-label" for="create-resume">Continue a conversation</label>
-<select class="field-input" id="create-resume" name="resume" aria-describedby="create-resume-note">
+<select class="field-input" id="create-resume" name="resume">
 <option value="" selected>Start fresh</option>
 <option value="{{ $.ResumeLatest }}">Continue the most recent</option>{{ range . }}
 <option value="{{ .ID }}">{{ .Short }} — {{ .Modified }}</option>{{ end }}
 </select>
-<p class="field-hint-text" id="create-resume-note">Conversations already recorded for the first suggested directory. Choosing one resumes it instead of starting empty.</p>
 </div>{{ end }}{{/*
   The command line this create will run (US3, FR-014 … FR-018,
   contracts/command-preview.md).
@@ -366,15 +392,44 @@
   Rendered as text by html/template like every other operator value, which is not
   theoretical: the session name is interpolated into it, and this is the same rule
   that renders pane output as text (FR-017, Principle VII).
-
-  The data-* attributes are what the script reads. They carry the two lines rather
-  than the script fetching them, so the enhancement has nothing of its own to go
-  stale and a page with no script still shows a true line.
 */}}{{ $local := index .Commands false }}{{ $remote := index .Commands true }}{{ if $local }}<div class="field">
 <span class="field-label" id="create-preview-label">Will run</span>
 <pre class="command-preview" data-command-preview aria-labelledby="create-preview-label" data-command-local="{{ $local }}"{{ if $remote }} data-command-remote="{{ $remote }}"{{ end }} data-command-continue="{{ .ResumeLatest }}" data-flag-continue="{{ .ResumeLatestFlag }}" data-flag-resume="{{ .ResumeOneFlag }}">{{ $local }}</pre>
-</div>{{ end }}
+</div>{{ end }}{{/*
+  The two ways out, on one row (contracts/new-session-modal.md).
+
+  Cancel is the second of the three dismissals the Modal rules require, and the
+  one that is neither the platform's own Esc nor the enhancement `closedby`
+  offers. It carries `type="button"` for the reason the trigger above does, and
+  here it is not hypothetical: this control *is* inside a form, and a <button>
+  without it would submit the create it exists to abandon.
+
+  The submit disables itself on submission (crswd.js). It is the one genuine
+  idempotence exposure of the four actions — a second destroy finds no record, a
+  second rename is the same end state, a second compact is a second delivery the
+  operator asked for, and a second create is a second unsandboxed shell
+  (research.md R7). The button carries no name attribute, so disabling it removes
+  nothing from what the form submits.
+*/}}<div class="modal-actions">
+<button class="button" type="button" command="close" commandfor="create-dialog">Cancel</button>
 <button class="button button-primary" type="submit">Start session</button>
-</form>
-<p class="create-note" id="create-busy" hidden>Starting a session. This page reloads with the fleet when the host answers.</p>
+</div>
+</form>{{/*
+  FR-031's in-progress state, hidden until the submission reveals it, and inside
+  the dialog because that is where the operator is looking — a disabled button in
+  the top layer beside a note in the normal flow is a pressed control with no
+  explanation (FR-012).
+
+  Its copy lives here rather than in the script for the reason the pane's ended
+  note does: what the interface says to a person belongs to a template.
+
+  **It no longer says the page reloads**, and that sentence had been wrong since
+  the submit handler began intercepting this form: the scripted path posts and
+  stays, and it is now the path that closes this dialog and lets the fleet stream
+  deliver the card. Shortening the note to one line (FR-013) was the moment to
+  stop repeating it rather than a reason to.
+*/}}
+<p class="create-note" id="create-busy" hidden>Starting a session on this host.</p>
+</div>
+</dialog>
 </section>{{ end }}

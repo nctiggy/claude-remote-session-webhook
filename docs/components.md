@@ -40,7 +40,7 @@ These exist. Use them.
 | Session card | `partials/session-card.html` | One session in the list, with its action row |
 | Status pill | `partials/status-pill.html` | Session state, everywhere it appears |
 | Pane viewer | `partials/pane.html` | Live terminal output |
-| Create form | `partials/create-form.html` | The one control that starts a session — name, the working-directory picker, the remote-control switch |
+| Create form | `partials/create-form.html` | The one control that starts a session: a **New session** trigger on the fleet, and a modal dialog holding the form — name, the working-directory picker, the remote-control switch |
 | Page token | `partials/page-token.html` | The hidden field **every** mutating form carries |
 | Empty state | `partials/empty.html` | Full-strength rain field + one sans-serif explanation |
 | Rain canvas | `partials/rain.html` | `<canvas class="rain">` — header and empty state only |
@@ -58,6 +58,15 @@ calling it unused for four milestones, because a component that is rendered *and
 styled satisfies every sweep except the one that reads this file (#119). It has a
 section of its own below; having no partial is now the only thing it still shares
 with the names above it.
+
+**Modal is now built and still has no partial** (milestone 11), which is a third
+state and worth telling apart from the two above. It is not waiting for a call
+site — the create control is one — and it is not in the canonical inventory,
+because that table's test demands a file per entry and the entry could only be
+called with a `dict` this template set has no function map to provide. So it sits
+here as a shipped vocabulary: the classes are real, they are styled, they are
+swept against this document, and the day a second call site earns a partial the
+markup lifts into it unchanged. Its section below says what it is.
 
 That is not permission to invent a second vocabulary. The class names in those
 sections are the ones the shipped templates already use — `.button`,
@@ -837,27 +846,85 @@ Rules:
 
 ## Modal
 
-**Not built, and nothing needs one.** The confirming step for the one destructive
-action is a hidden field the page sends deliberately (`confirm=yes`), which costs
-the same deliberate act and needs no script; a `<dialog>` needs script to open,
-and this tree's one script draws rain and reads panes.
+**Built, with no partial** — the create control is the one call site
+(`partials/create-form.html`, milestone 11). It takes Button's and Field's path
+above rather than the canonical inventory's, and two facts put it there.
 
-Kept as a specification so that the first blocking confirmation that genuinely
-needs one is built once, to these rules, rather than improvised:
+The first is that the illustration this section used to carry could not be
+written. It showed a call site handing `modal` a `dict` of Title, Body and
+Confirm, and **this template set is parsed with no function map**, so there is no
+`dict` and never was. A Go template takes one argument; a Modal partial would
+have to receive the create view and call the create form by name from inside
+itself, which is not a component — it is this dialog with a general name on it.
+
+The second is that the section's own premise expired. It said a `<dialog>` needs
+script to open, and that stopped being true when the Invoker Commands API reached
+Baseline: `command="show-modal"` opens one declaratively, and the create dialog
+does exactly that. The tree's rule that every control works with scripting off
+survived the move because of it.
 
 ```gotemplate
-{{/* Illustrative — see "Specified here, not built" above. */}}
-{{ template "modal" (dict
-     "Title" "Destroy session?"
-     "Body"  "This kills the tmux session and any work in it. Not reversible."
-     "Confirm" (dict "Variant" "danger" "Label" "Destroy")) }}
+<button class="button button-primary" type="button"
+        command="show-modal" commandfor="create-dialog">New session</button>
+<dialog class="modal" id="create-dialog" closedby="any" aria-labelledby="create-title">
+  <div class="modal-head">
+    <h2 class="modal-title" id="create-title">Start a session</h2>
+    <button class="modal-close" type="button" command="close"
+            commandfor="create-dialog" aria-label="Close">×</button>
+  </div>
+  <div class="modal-body">…the form…</div>
+</dialog>
 ```
 
+The family is `.modal`, `.modal::backdrop`, `.modal-head`, `.modal-title`,
+`.modal-close`, `.modal-outcome`, `.modal-body` and `.modal-actions`. It is swept
+against this document by
+`TestTheComponentsDocumentNamesThePickerTheSwitchTheHeaderAndTheToast` — a rule
+here that this section never names fails a build, and so does a name here with no
+rule. The toast is in that sweep because it rotted; the modal joined on the day
+it shipped, so that it cannot.
+
+**`.modal-outcome` is the one that needs its reason written down.** A modal
+`<dialog>` makes everything outside it *inert* — not merely covered by the
+backdrop, but removed from the accessibility tree — so the Toast below cannot
+speak at all while one is open. A create refused in the dialog would be both
+invisible and unannounced, which is worse than what shipped before the dialog
+existed.
+
+Promoting the toast into the top layer with `popover` was tried first, on the
+reasoning that top-layer stacking is insertion order. It is, and it does not
+help: a popover above a modal dialog is inert too (measured in Chrome 149 — a
+control inside the promoted region could not take focus while the dialog was
+open, where the identical control was focusable with the dialog closed), and the
+popover user-agent rules move the region to the middle of the viewport and shrink
+it to its text on the way.
+
+So the answer follows the operator. That is **not** a second outcome region in
+the sense this document forbids: the toast is unreachable by construction while
+the dialog is open, exactly one can speak at a time, and both take their words
+from `outcome.go`. A create that *succeeds* closes the dialog first and then
+speaks, so a success still lands in the Toast over the fleet it just changed.
+
 Rules:
-- Focus moves into the modal on open and returns to the trigger on close.
-- `Esc` closes. Clicking the backdrop closes. Both, always.
+- Focus moves into the modal on open and returns to the trigger on close. **Both
+  are the platform's**, given by `showModal()` and by opening from a button —
+  neither is script here, and neither should become script.
+- `Esc` closes. A close control closes. The backdrop closes **where the browser
+  has `closedby`**, which is Limited availability as of mid-2026 — so backdrop
+  dismissal is offered and is never the only way out.
 - Never nest a modal inside a modal.
 - Uses `<dialog>`, so the focus trap comes from the platform rather than JS.
+- **A trigger renders only where the thing behind it would be permitted.** The
+  create trigger and its dialog are inside the same page-token gate the form was:
+  a button opening a dialog whose submission is certain to be refused reads like
+  a capability.
+- **The head does not scroll; the body does.** A dialog whose close control has
+  left the screen is a trap, and on a phone that is the ordinary case rather than
+  the edge one.
+- **No rain behind it.** A dialog is reading content, and rain has two permitted
+  homes.
+- Elevation here is the design system's single shadow exception, spent. See
+  `design-system.md`.
 
 ## Accessibility floor
 

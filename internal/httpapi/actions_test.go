@@ -4583,7 +4583,14 @@ const (
 // where each half exists: the route chose the code, and the page turned it into
 // words. A test that only checked the code would go on passing through an edit to
 // the copy, which is the exact drift contracts/actions.md pinned bytes against.
-var renderedBanner = regexp.MustCompile(`<p class="outcome">([^<]*)</p>`)
+//
+// The attributes after the class are matched loosely on purpose. The banner
+// carries `data-outcome` since milestone 11 and may carry more; what this reads
+// is the *sentence*, and a pattern that had to be edited every time an attribute
+// arrived would be a pattern that fails for a reason unrelated to the words —
+// which is a test that goes red where nothing broke. The code on that attribute
+// has its own assertion, in outcome_test.go, against the exact opening tag.
+var renderedBanner = regexp.MustCompile(`<p class="outcome"[^>]*>([^<]*)</p>`)
 
 // bannerOn is the sentence a fleet page is carrying, or the empty string.
 func bannerOn(page string) string {
