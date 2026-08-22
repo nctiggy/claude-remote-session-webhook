@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -409,6 +410,14 @@ func newWithLayer1(
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: build the session manager: %w", err)
 	}
+	// The daemon's only durable memory (spec 012). It is resolved from the
+	// process environment rather than from cfg for the reason config.JournalPath
+	// documents: the journal belongs beside whichever configuration file this
+	// daemon actually read, so a second daemon started against its own
+	// configuration cannot replay the sessions of the one the operator is
+	// running. An empty path is a working daemon that remembers nothing, which
+	// is a container with no home and is exactly what this daemon did before.
+	sessions.SetJournal(session.NewJournal(config.JournalPath(os.Getenv)))
 	// The named start-command set reaches the manager here, and nowhere else
 	// (#38). Without this line the whole of internal/config's start-command
 	// handling is configuration nothing reads — which is the failure this repo
@@ -933,6 +942,17 @@ func cleanPath(p string) string {
 // host or a caller supplied (FR-042).
 const reasonAdopted = "took back a tmux session that outlived the daemon that started it"
 
+// reasonRecovered is the server's account of a session the journal remembered
+// and the host had lost — the OOM case spec 012 exists for, where the whole
+// tmux-spawn cgroup went and took the session with it.
+const reasonRecovered = "took back a session the journal recorded and the host no longer had"
+
+// reasonRecoverRefused is the same act refused. It is Allow/Deny rather than an
+// error for the reason a narrowed adoption is: the operator's current
+// configuration declining to reinstate a session is the allowlist, the ceiling
+// or the cap working, not the daemon failing.
+const reasonRecoverRefused = "did not take back a session the journal recorded"
+
 // reasonAdoptedNarrowed is the same act with one thing worth saying about it: the
 // lifetime the host had recorded for the session is not one this daemon's current
 // configuration would grant, so the session came back under the configured
@@ -1002,6 +1022,39 @@ func (s *Server) Reconcile(ctx context.Context) error {
 		}
 	}
 
+	// Before Adopt, and the order is the contract (contracts/session-journal.md):
+	// the host is the authority on what is *running* and the journal on what
+	// *should be*, so anything tmux still has is left entirely to Adopt below.
+	//
+	// Nothing is started here. What this does is put the records back, so that
+	// the supervisor's ordinary sweep recreates them under the same rules as any
+	// other revival rather than through a second path that could differ.
+	recovered, stats, err := s.sessions.ReplayJournal(ctx)
+	failures = append(failures, err)
+	if stats.Discarded > 0 || stats.SkippedVersion > 0 {
+		// Said out loud rather than swallowed. A discarded line is the
+		// half-written record of an unclean stop, and an operator who is losing
+		// them should learn it from the daemon rather than from a session that
+		// did not come back.
+		log.Printf("crswd: session journal: %d record(s) read, %d discarded as unreadable, %d written by a newer version",
+			stats.Records, stats.Discarded, stats.SkippedVersion)
+	}
+	for _, r := range recovered {
+		reason, decision := reasonRecovered, audit.Allow
+		if r.Reason != "" {
+			reason, decision = reasonRecoverRefused+": "+r.Reason, audit.Deny
+		}
+		if err := s.trail.Emit(audit.Record{
+			Action:    audit.ActionStartupAdopt,
+			Caller:    string(r.Session.Owner),
+			SessionID: r.Session.ID,
+			Decision:  decision,
+			Reason:    reason,
+		}); err != nil {
+			failures = append(failures, err)
+		}
+	}
+
 	adopted, err := s.sessions.Adopt(ctx)
 	failures = append(failures, err)
 
@@ -1053,6 +1106,25 @@ func (s *Server) StartReaper(ctx context.Context) error {
 		return fmt.Errorf("httpapi: start the reaper: %w", err)
 	}
 	go reaper.Run(ctx)
+	return nil
+}
+
+// StartSupervisor launches the revival sweep and returns once it is running
+// (spec 012).
+//
+// It is a second goroutine beside the reaper rather than more work inside it,
+// because the two move in opposite directions: the reaper ends sessions the
+// operator stopped coming back for, and this one restarts sessions the operator
+// never asked to lose.
+//
+// Started at the same point in startup and for the same reason: no session
+// should exist without the sweep that watches it already running.
+func (s *Server) StartSupervisor(ctx context.Context) error {
+	supervisor, err := session.NewSupervisor(s.sessions, s.trail)
+	if err != nil {
+		return fmt.Errorf("httpapi: start the supervisor: %w", err)
+	}
+	go supervisor.Run(ctx)
 	return nil
 }
 

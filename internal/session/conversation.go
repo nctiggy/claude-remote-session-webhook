@@ -225,3 +225,69 @@ func projectDirFor(workDir string) string {
 		return r
 	}, workDir)
 }
+
+// HasTranscript reports whether a conversation this daemon recorded still has a
+// transcript on the host (spec 012, FR-014).
+//
+// It exists because resuming an identifier with nothing behind it is not a
+// no-op: the CLI is handed --resume for a conversation that does not exist, and
+// what the operator gets is not the session they had. A session whose transcript
+// is gone is one the daemon must stop trying to revive and say so, rather than
+// restart forever into something that was never there.
+//
+// **No transcript is opened** (FR-025), exactly as Conversations opens none: this
+// is a stat of one path built from an identifier this daemon minted and a
+// directory it has already resolved.
+//
+// False for every failure, and for the empty identifier every session created
+// before spec 012 carries. False means "not revivable by identifier", which is
+// the safe reading — the alternative is a daemon that resumes a conversation it
+// cannot see.
+func (m *Manager) HasTranscript(conversationID, workDir string) bool {
+	if !isConversationID(conversationID) {
+		return false
+	}
+	dir, err := ResolveWorkDir(workDir, m.roots)
+	if err != nil {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(home, ".claude", "projects", projectDirFor(dir), conversationID+conversationFileSuffix))
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
+// startBinary is the first token of a start command, reduced to its base name:
+// "claude" for every command configured in this repository, whether the operator
+// spelled it bare or as an absolute path.
+//
+// It is what goes into @crswd-binary so tmux can answer whether the pane is
+// still running it (spec 012, FR-006). The alphabet is checked rather than
+// assumed — the value is written onto a tmux session and read back on a row
+// whose fields are separated by "|" — and anything outside it yields "", which
+// every reader treats as "no expectation recorded" and therefore as alive.
+//
+// The first token is found by whitespace, which is the same split the shell
+// makes of the same line; config.InsertStartFlags already documents that
+// contract and this follows it rather than inventing a second one.
+func startBinary(command string) string {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return ""
+	}
+	base := filepath.Base(fields[0])
+	if base == "." || base == string(filepath.Separator) {
+		return ""
+	}
+	for _, c := range base {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '.' && c != '_' && c != '-' {
+			return ""
+		}
+	}
+	return base
+}

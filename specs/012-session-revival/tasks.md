@@ -53,35 +53,35 @@ session lifecycle code, so the negative cases are not optional.
 
 ### Conversation identity
 
-- [ ] T011 [US1] Add `NewConversationID()` to `internal/session/id.go` returning a canonical lowercase UUID that satisfies the existing `isConversationID`, seeded from `crypto/rand`.
-- [ ] T012 [P] [US1] Write `internal/session/id_test.go` cases: the output always passes `ValidateResume`, two calls never collide, and a short read from the entropy source is an error rather than a weak id.
-- [ ] T013 [US1] In `Manager.Create` (`internal/session/manager.go`), mint a conversation id, insert `--session-id <uuid>` into the rendered start command with the existing `config.InsertStartFlags`, and write `@crswd-conversation` before the command is sent.
-- [ ] T014 [US1] Extend `Manager.Adopt` in `internal/session/manager.go` to read `@crswd-conversation` back, leaving it empty for sessions that predate the option.
-- [ ] T015 [P] [US1] Add `HasTranscript(conversationID, workDir string) bool` to `internal/session/conversation.go` — a directory-entry check only, opening no transcript, false on every error.
-- [ ] T016 [P] [US1] Write `internal/session/conversation_test.go` cases for `HasTranscript`: present, absent, unreadable directory, empty conversation id.
+- [X] T011 [US1] Add `NewConversationID()` to `internal/session/id.go` returning a canonical lowercase UUID that satisfies the existing `isConversationID`, seeded from `crypto/rand`.
+- [X] T012 [P] [US1] Write `internal/session/id_test.go` cases: the output always passes `ValidateResume`, two calls never collide, and a short read from the entropy source is an error rather than a weak id.
+- [X] T013 [US1] In `Manager.Create` (`internal/session/manager.go`), mint a conversation id, insert `--session-id <uuid>` into the rendered start command with the existing `config.InsertStartFlags`, and write `@crswd-conversation` before the command is sent.
+- [X] T014 [US1] Extend `Manager.Adopt` in `internal/session/manager.go` to read `@crswd-conversation` back, leaving it empty for sessions that predate the option.
+- [X] T015 [P] [US1] Add `HasTranscript(conversationID, workDir string) bool` to `internal/session/conversation.go` — a directory-entry check only, opening no transcript, false on every error.
+- [X] T016 [P] [US1] Write `internal/session/conversation_test.go` cases for `HasTranscript`: present, absent, unreadable directory, empty conversation id.
 
 ### The journal
 
-- [ ] T017 [US1] Create `internal/session/journal.go` with the record type from data-model.md, an `Append` that opens `O_APPEND|O_CREATE|O_WRONLY` at `0600` and fsyncs, and a `Replay` that reads in order with last-record-wins.
-- [ ] T018 [US1] Make `Replay` discard a truncated final line and skip an unknown `v`, returning the count of each so startup can report it, per `contracts/session-journal.md`.
-- [ ] T019 [P] [US1] Write `internal/session/journal_test.go` cases: round trip; last record wins; truncated final line discarded; unknown version skipped; missing file is not an error; unreadable file is an error; no token, token hash or pane content is ever marshalled.
-- [ ] T020 [US1] Append a `created` record in `Manager.Create` and an `ended` record wherever a session becomes terminal (`Destroy`, `DestroyAll`, the reaper's collection path) in `internal/session/manager.go`.
+- [X] T017 [US1] Create `internal/session/journal.go` with the record type from data-model.md, an `Append` that opens `O_APPEND|O_CREATE|O_WRONLY` at `0600` and fsyncs, and a `Replay` that reads in order with last-record-wins.
+- [X] T018 [US1] Make `Replay` discard a truncated final line and skip an unknown `v`, returning the count of each so startup can report it, per `contracts/session-journal.md`.
+- [X] T019 [P] [US1] Write `internal/session/journal_test.go` cases: round trip; last record wins; truncated final line discarded; unknown version skipped; missing file is not an error; unreadable file is an error; no token, token hash or pane content is ever marshalled.
+- [X] T020 [US1] Append a `created` record in `Manager.Create` and an `ended` record wherever a session becomes terminal (`Destroy`, `DestroyAll`, the reaper's collection path) in `internal/session/manager.go`.
 
 ### The supervisor
 
-- [ ] T021 [US1] Create `internal/session/supervisor.go` with a `Supervisor` type taking the manager, the audit logger, an injectable `ticker` and the manager's `Clock`, mirroring `reaper.go`'s constructor and `Run` shape.
-- [ ] T022 [US1] Implement `Supervisor.Sweep` in `internal/session/supervisor.go` against the ordered decision table in data-model.md, taking exactly one `tmux.List` call and judging every session from it.
-- [ ] T023 [US1] Implement revive-in-place in `internal/session/supervisor.go`: resolve the start command by name, render it, insert `--resume <uuid>`, `SendKeys` the line and Enter into the surviving shell.
-- [ ] T024 [US1] Implement recreate in `internal/session/supervisor.go`: `New` a tmux session under the same session id, re-write every `@crswd-*` option **before** the command is sent, then revive in place.
-- [ ] T025 [US1] Persist `ReviveAttempts` and `NextReviveAt` to the journal **before** each attempt, so a daemon that dies mid-revival resumes backing off rather than retrying instantly.
-- [ ] T026 [US1] Reset `ReviveAttempts` to zero and append a `revived` record on a sweep that observes a previously-dead session running again.
-- [ ] T027 [P] [US1] Write `internal/session/supervisor_test.go` positive cases: dead Claude with a live shell is revived in place; a missing tmux session is recreated then revived; a healthy session is left completely alone (zero tmux writes).
-- [ ] T028 [P] [US1] Write `internal/session/supervisor_test.go` invariant cases: revival carries `CreatedAt` unchanged, does not move `LastActivity`, does not mint a credential, and does not change `Owner`.
+- [X] T021 [US1] Create `internal/session/supervisor.go` with a `Supervisor` type taking the manager, the audit logger, an injectable `ticker` and the manager's `Clock`, mirroring `reaper.go`'s constructor and `Run` shape.
+- [X] T022 [US1] Implement `Supervisor.Sweep` in `internal/session/supervisor.go` against the ordered decision table in data-model.md, taking exactly one `tmux.List` call and judging every session from it.
+- [X] T023 [US1] Implement revive-in-place in `internal/session/supervisor.go`: resolve the start command by name, render it, insert `--resume <uuid>`, `SendKeys` the line and Enter into the surviving shell.
+- [X] T024 [US1] Implement recreate in `internal/session/supervisor.go`: `New` a tmux session under the same session id, re-write every `@crswd-*` option **before** the command is sent, then revive in place.
+- [X] T025 [US1] Persist `ReviveAttempts` and `NextReviveAt` to the journal **before** each attempt, so a daemon that dies mid-revival resumes backing off rather than retrying instantly.
+- [X] T026 [US1] Reset `ReviveAttempts` to zero and append a `revived` record on a sweep that observes a previously-dead session running again.
+- [X] T027 [P] [US1] Write `internal/session/supervisor_test.go` positive cases: dead Claude with a live shell is revived in place; a missing tmux session is recreated then revived; a healthy session is left completely alone (zero tmux writes).
+- [X] T028 [P] [US1] Write `internal/session/supervisor_test.go` invariant cases: revival carries `CreatedAt` unchanged, does not move `LastActivity`, does not mint a credential, and does not change `Owner`.
 
 ### Startup
 
-- [ ] T029 [US1] In `cmd/crswd/main.go`, replay the journal before the listener binds and before `Adopt`, so tmux wins on conflict, and report the counts of skipped and discarded records.
-- [ ] T030 [US1] Add `StartSupervisor` beside `StartReaper` in the daemon wiring and start it from `cmd/crswd/main.go`.
+- [X] T029 [US1] In `cmd/crswd/main.go`, replay the journal before the listener binds and before `Adopt`, so tmux wins on conflict, and report the counts of skipped and discarded records.
+- [X] T030 [US1] Add `StartSupervisor` beside `StartReaper` in the daemon wiring and start it from `cmd/crswd/main.go`.
 
 **Checkpoint**: quickstart Scenarios 1 and 2 pass by hand; `go test ./...` green.
 
@@ -93,12 +93,12 @@ session lifecycle code, so the negative cases are not optional.
 
 **Independent test**: destroy a session, run many sweeps, confirm nothing starts and no record reappears.
 
-- [ ] T031 [US2] Enforce decision rows 1 and 2 in `internal/session/supervisor.go`: `dead` and `failed` are terminal and a session past its absolute deadline is left to the reaper.
-- [ ] T032 [US2] Re-resolve `WorkDir` through `ResolveWorkDir` at every revival in `internal/session/supervisor.go`, taking the session to `failed` when the allowlist no longer contains it.
-- [ ] T033 [US2] Re-check the allowlist, the deadline and the cap for every replayed candidate in `internal/session/journal.go`'s consumer, dropping and recording those that fail.
-- [ ] T034 [US2] Refuse a recreate that would take the fleet over `CRSW_MAX_SESSIONS`, and ensure a revived session is never double-counted, in `internal/session/supervisor.go`.
-- [ ] T035 [US2] Guard against two revivals in flight for one session in `internal/session/supervisor.go`.
-- [ ] T036 [P] [US2] Write `internal/session/supervisor_test.go` negative cases: a destroyed session is never revived across many sweeps; a reaped session is never revived; an expired session is never revived; a de-allowlisted session goes `failed` and starts nothing; an over-cap recreate is refused; overlapping sweeps produce one revival.
+- [X] T031 [US2] Enforce decision rows 1 and 2 in `internal/session/supervisor.go`: `dead` and `failed` are terminal and a session past its absolute deadline is left to the reaper.
+- [X] T032 [US2] Re-resolve `WorkDir` through `ResolveWorkDir` at every revival in `internal/session/supervisor.go`, taking the session to `failed` when the allowlist no longer contains it.
+- [X] T033 [US2] Re-check the allowlist, the deadline and the cap for every replayed candidate in `internal/session/journal.go`'s consumer, dropping and recording those that fail.
+- [X] T034 [US2] Refuse a recreate that would take the fleet over `CRSW_MAX_SESSIONS`, and ensure a revived session is never double-counted, in `internal/session/supervisor.go`.
+- [X] T035 [US2] Guard against two revivals in flight for one session in `internal/session/supervisor.go`.
+- [X] T036 [P] [US2] Write `internal/session/supervisor_test.go` negative cases: a destroyed session is never revived across many sweeps; a reaped session is never revived; an expired session is never revived; a de-allowlisted session goes `failed` and starts nothing; an over-cap recreate is refused; overlapping sweeps produce one revival.
 - [ ] T037 [P] [US2] Write `internal/session/journal_test.go` replay-refusal cases: a replayed session whose directory left the allowlist, whose deadline has passed, or which would exceed the cap is dropped rather than started.
 
 **Checkpoint**: quickstart Scenario 3 passes; every negative case is covered.
@@ -111,12 +111,12 @@ session lifecycle code, so the negative cases are not optional.
 
 **Independent test**: make revival fail deterministically, run many sweeps, confirm attempts stop at the bound and the card shows failed. Restart the daemon; confirm attempts do not resume.
 
-- [ ] T038 [US3] Add the bound and the schedule as constants in `internal/session/supervisor.go` — 3 attempts at 5s / 30s / 3m — documented as constants for the same reason `SweepInterval` is.
-- [ ] T039 [US3] Mark a session `failed` on exhaustion in `internal/session/supervisor.go`, append a `failed` journal record, and stop attempting it.
-- [ ] T040 [US3] Emit `supervisor.revive`, `supervisor.recreate`, `supervisor.recovered` and `supervisor.failed` audit records per `contracts/session-revival.md`, carrying the session id and a reason constant and nothing else.
-- [ ] T041 [US3] Ensure a healthy sweep emits no audit record at all, so the four lines that matter are not buried.
-- [ ] T042 [P] [US3] Write `internal/session/supervisor_test.go` bound cases: attempts stop at three; delays grow; a success resets the count to zero; a restart mid-backoff does not reset the count; a `failed` session is never attempted again.
-- [ ] T043 [P] [US3] Write `internal/session/supervisor_test.go` trail cases: each action emits exactly one record; no record carries pane content, a credential, a directory the caller spelled, or free text.
+- [X] T038 [US3] Add the bound and the schedule as constants in `internal/session/supervisor.go` — 3 attempts at 5s / 30s / 3m — documented as constants for the same reason `SweepInterval` is.
+- [X] T039 [US3] Mark a session `failed` on exhaustion in `internal/session/supervisor.go`, append a `failed` journal record, and stop attempting it.
+- [X] T040 [US3] Emit `supervisor.revive`, `supervisor.recreate`, `supervisor.recovered` and `supervisor.failed` audit records per `contracts/session-revival.md`, carrying the session id and a reason constant and nothing else.
+- [X] T041 [US3] Ensure a healthy sweep emits no audit record at all, so the four lines that matter are not buried.
+- [X] T042 [P] [US3] Write `internal/session/supervisor_test.go` bound cases: attempts stop at three; delays grow; a success resets the count to zero; a restart mid-backoff does not reset the count; a `failed` session is never attempted again.
+- [X] T043 [P] [US3] Write `internal/session/supervisor_test.go` trail cases: each action emits exactly one record; no record carries pane content, a credential, a directory the caller spelled, or free text.
 - [ ] T044 [P] [US3] Add the `failed` pill to the session card in `web/templates/partials/` and `web/static/crswd.css` using existing design tokens only, reusing the canonical status pill rather than adding a second.
 - [ ] T045 [P] [US3] Surface `failed` in the session view type in `internal/httpapi/view.go` and the card rendering in `internal/httpapi/dashboard.go`.
 

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"strings"
 	"sync"
@@ -50,6 +51,11 @@ const enterKey = "Enter"
 // operator a flag the daemon stopped passing. The page reads these off the
 // daemon exactly as it reads the command lines.
 const (
+	// SessionIDFlag is how a fresh session is given the conversation identifier
+	// this daemon minted for it, so the conversation can later be resumed exactly
+	// rather than guessed at (spec 012, FR-001).
+	SessionIDFlag = "--session-id"
+
 	ResumeLatestFlag = "--continue"
 	ResumeOneFlag    = "--resume"
 )
@@ -168,6 +174,10 @@ var (
 // construction except the subscriber set, which carries its own lock, and the
 // store and controller are both concurrency-safe.
 type Manager struct {
+	// journal is the daemon's only durable memory (spec 012). Nil is a working
+	// manager that remembers nothing across the loss of a shell.
+	journal *Journal
+
 	// maxLifetime is the ceiling a per-session override may not exceed (#37).
 	// Zero means the built-in constant, so a manager nobody configured refuses
 	// any override beyond what the daemon always allowed.
@@ -216,6 +226,19 @@ type Manager struct {
 // forbids. A manager that was never given a set starts sessions with
 // claudeStartCommand, which is exactly what it did before this existed.
 func (m *Manager) SetStartCommands(cmds config.StartCommands) { m.startCommands = cmds }
+
+// SetJournal gives the manager somewhere durable to record session lifecycle
+// events (spec 012).
+//
+// It is a setter rather than a constructor argument for the reason
+// SetStartCommands is one: the journal's path comes from configuration the
+// daemon reads after it has built the manager, and a manager that could not be
+// built without one would be a manager no test could make.
+//
+// A manager with no journal keeps nothing and supervises exactly as it did
+// before spec 012 — which is what a host with no home directory to write to
+// gets, and what most unit tests want.
+func (m *Manager) SetJournal(j *Journal) { m.journal = j }
 
 // SetRemoteControlCommand names which configured command means remote (#58).
 //
@@ -661,6 +684,10 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 	if err != nil {
 		return nil, "", fmt.Errorf("create session %s: %w", id, err)
 	}
+	conversationID, err := conversationFor(resume)
+	if err != nil {
+		return nil, "", fmt.Errorf("create session %s: %w", id, err)
+	}
 
 	now := m.clock.Now()
 	s := Session{
@@ -676,6 +703,9 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 		// has never been driven was last driven when it was made.
 		LastActivity: now,
 		State:        StateStarting,
+		// The conversation this session will be having, chosen here so that
+		// bringing it back later is exact rather than a guess (spec 012).
+		ConversationID: conversationID,
 	}
 
 	// Claimed before the shell exists. A record without a tmux session is a
@@ -687,6 +717,17 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 	// is asked: a check before this line would be a second reading of the count
 	// that the one under the lock could disagree with.
 	if err := m.store.AddCapped(s, m.maxSessions); err != nil {
+		return nil, "", fmt.Errorf("create session %s: %w", id, err)
+	}
+
+	// Journalled before the shell exists, for the reason the record is claimed
+	// before it: a session the host is running and the journal has never heard of
+	// is a session that cannot be brought back, and a create that fails here has
+	// started nothing to be sorry about.
+	if err := m.journal.Append(createRecord(s)); err != nil {
+		if delErr := m.store.Delete(s.ID); delErr != nil {
+			return nil, "", fmt.Errorf("create session %s: %w (and the record could not be withdrawn: %w)", id, err, delErr)
+		}
 		return nil, "", fmt.Errorf("create session %s: %w", id, err)
 	}
 
@@ -1414,6 +1455,17 @@ func (m *Manager) Destroy(ctx context.Context, s Session) error {
 	// this call is the one that removed the record. The other half of that same
 	// race has already announced the session, and a second vanished would have
 	// an open page re-fetching a card that was gone the first time.
+	// The journal learns the session is over before the record goes, and this is
+	// the line that makes destroy final across a restart (FR-012): a replay that
+	// did not see this would find the create and bring back a session the
+	// operator ended. A failure here is reported rather than returned — the
+	// teardown is already verified and the session is genuinely gone, and turning
+	// a completed destroy into an error would be the one lie Principle VI cannot
+	// afford in either direction.
+	if err := m.journal.Append(endedRecord(s)); err != nil {
+		log.Printf("crswd: %v", fmt.Errorf("journal the end of session %s: %w", s.ID, err))
+	}
+
 	switch err := m.store.Delete(s.ID); {
 	case err == nil:
 		m.emit(FleetVanished, s)
@@ -1600,6 +1652,12 @@ func (m *Manager) Adopt(ctx context.Context) ([]AdoptedSession, error) {
 			LastActivity: now,
 			State:        StateRunning,
 			Adopted:      true,
+			// The conversation this session is having (spec 012). Empty for one
+			// started before the option existed, and empty again for one whose
+			// option could not be believed — both mean the same thing to the
+			// supervisor, which is that this session is watched but not revived
+			// by an identifier it never had.
+			ConversationID: info.ConversationID,
 		}
 
 		// The session's own lifetime, restored (milestone 15, FR-008). Without
@@ -1780,6 +1838,7 @@ func (m *Manager) confirmGone(ctx context.Context, name string) (bool, error) {
 // left to keep an alphabet for.
 func (m *Manager) start(ctx context.Context, s Session, resume string) error {
 	name := s.TmuxName()
+	_ = name
 
 	if err := m.tmux.New(ctx, name, s.WorkDir); err != nil {
 		return fmt.Errorf("start tmux session: %w", err)
@@ -1829,6 +1888,14 @@ func (m *Manager) start(ctx context.Context, s Session, resume string) error {
 	if err := m.tmux.SetOption(ctx, name, tmuxctl.OptionLifetime, encodeLifetime(s.Lifetime)); err != nil {
 		return fmt.Errorf("record the session lifetime: %w", err)
 	}
+	// The fifth and sixth facts (spec 012). The conversation is what a revival
+	// resumes; the binary is what tmux compares the pane against to decide there
+	// is anything to revive. Both are written even when empty, for the reason the
+	// two above are: set-to-nothing and never-set read back identically, and a
+	// branch that skipped one is a branch no reader could tell from the other.
+	if err := m.tmux.SetOption(ctx, name, tmuxctl.OptionConversation, s.ConversationID); err != nil {
+		return fmt.Errorf("record the session conversation: %w", err)
+	}
 	// The command is resolved from the name the record carries, not from the
 	// request: by the time a session is being started its name has already been
 	// checked against the configured set, and re-reading caller input here would
@@ -1837,7 +1904,10 @@ func (m *Manager) start(ctx context.Context, s Session, resume string) error {
 	if err != nil {
 		return fmt.Errorf("resolve the start command for session %s: %w", s.ID, err)
 	}
-	command, err := m.renderStart(template, resume, s.Name)
+	if err := m.tmux.SetOption(ctx, name, tmuxctl.OptionBinary, startBinary(template)); err != nil {
+		return fmt.Errorf("record the session start binary: %w", err)
+	}
+	command, err := m.renderStart(template, resume, s.ConversationID, s.Name)
 	if err != nil {
 		return fmt.Errorf("render the start command for session %s: %w", s.ID, err)
 	}
@@ -1870,8 +1940,8 @@ func (m *Manager) start(ctx context.Context, s Session, resume string) error {
 // name can never be read as a flag no matter what it contains — and it cannot
 // anyway, because ValidateName's alphabet has no leading hyphen in it. Two
 // defences, and this one is free.
-func (m *Manager) renderStart(template, resume, sessionName string) (string, error) {
-	flagged, err := m.resumeFlagged(template, resume)
+func (m *Manager) renderStart(template, resume, conversationID, sessionName string) (string, error) {
+	flagged, err := m.resumeFlagged(template, resume, conversationID)
 	if err != nil {
 		return "", err
 	}
@@ -1885,16 +1955,27 @@ func (m *Manager) renderStart(template, resume, sessionName string) (string, err
 // resumeFlagged is renderStart without the name substitution: the half both the
 // preview and the create share, split out so the preview can stop before the
 // step that needs a name.
-func (m *Manager) resumeFlagged(template, resume string) (string, error) {
+func (m *Manager) resumeFlagged(template, resume, conversationID string) (string, error) {
 	checked, err := ValidateResume(resume)
 	if err != nil {
 		return "", err
 	}
 	switch checked {
 	case "":
-		// Nothing to add, and the line is byte-identical to the one this daemon
-		// typed before the option existed.
-		return template, nil
+		// A fresh conversation, and the one case where this daemon *chooses* the
+		// identifier instead of being handed one. It is checked here rather than
+		// trusted from the record for the reason everything on this line is: the
+		// result is typed into a live shell.
+		if conversationID == "" {
+			// A session with no identifier — one created before spec 012, or one
+			// being revived without a conversation. The line is byte-identical to
+			// the one this daemon typed before the option existed.
+			return template, nil
+		}
+		if _, err := ValidateResume(conversationID); err != nil {
+			return "", fmt.Errorf("check the conversation identifier: %w", err)
+		}
+		return config.InsertStartFlags(template, SessionIDFlag, conversationID), nil
 	case ResumeLatest:
 		return config.InsertStartFlags(template, ResumeLatestFlag), nil
 	default:
@@ -1948,9 +2029,14 @@ func (m *Manager) StartCommandLine(mode Mode, resume, sessionName string) (strin
 		// The flags go on and the substitution does not, so the template's own
 		// placeholder survives for the page to fill in. A template carrying none
 		// is already the whole line.
-		return m.resumeFlagged(template, resume)
+		// No conversation identifier: the preview is drawn before a session
+		// exists, so there is none yet to show. The line an operator sees is the
+		// one that will run, minus the identifier this daemon mints at create —
+		// which is the same elision the preview already makes for a chosen
+		// conversation.
+		return m.resumeFlagged(template, resume, "")
 	}
-	return m.renderStart(template, resume, sessionName)
+	return m.renderStart(template, resume, "", sessionName)
 }
 
 // rollback undoes a half-started session and returns the error Create answers
@@ -1995,4 +2081,183 @@ func (m *Manager) rollback(ctx context.Context, s Session, cause error) error {
 		return fmt.Errorf("create session %s: %w", s.ID, errors.Join(cause, delErr))
 	}
 	return fmt.Errorf("create session %s: %w", s.ID, cause)
+}
+
+// conversationFor decides which Claude conversation a new session will be
+// having, from what the operator asked to resume (spec 012).
+//
+// Three answers, and only one of them is a choice this daemon makes:
+//
+//   - Nothing to resume — the ordinary create — gets a freshly minted identifier,
+//     which is passed as --session-id so the conversation is this daemon's to
+//     find again.
+//   - A named conversation is already an identifier; the session simply is that
+//     conversation, and it is passed as --resume.
+//   - "the most recent in this directory" resolves to an identifier only the CLI
+//     knows, and deliberately not here: a daemon that resolved it would be racing
+//     the CLI to read the same directory and losing whenever a session had been
+//     started elsewhere. Such a session carries no identifier and is therefore
+//     supervised but never revived by one — the same position as every session
+//     created before spec 012 (FR-005).
+func conversationFor(resume string) (string, error) {
+	checked, err := ValidateResume(resume)
+	if err != nil {
+		return "", err
+	}
+	switch checked {
+	case "":
+		return NewConversationID()
+	case ResumeLatest:
+		return "", nil
+	default:
+		return checked, nil
+	}
+}
+
+// createRecord is the journal line for a session that has just been claimed.
+func createRecord(s Session) journalRecord {
+	return journalRecord{
+		At:           time.Now().UTC(),
+		ID:           s.ID,
+		Event:        journalCreated,
+		Owner:        string(s.Owner),
+		Conversation: s.ConversationID,
+		WorkDir:      s.WorkDir,
+		Start:        s.StartCommand,
+		Lifetime:     encodeLifetime(s.Lifetime),
+		Created:      s.CreatedAt,
+	}
+}
+
+// endedRecord is the journal line for a session that has become terminal. It is
+// what stops a replay bringing back something the operator ended.
+func endedRecord(s Session) journalRecord {
+	return journalRecord{
+		At:    time.Now().UTC(),
+		ID:    s.ID,
+		Event: journalEnded,
+		Owner: string(s.Owner),
+	}
+}
+
+// Recovered is one session the journal knew about that the host had forgotten,
+// put back under management so the supervisor can bring it back.
+type Recovered struct {
+	Session Session
+
+	// Reason names why a candidate was dropped, and is empty for one that was
+	// taken. A dropped candidate is not a failure — it is the allowlist, the
+	// ceiling or the cap doing its job across a restart — but it is something an
+	// operator should be able to read.
+	Reason string
+}
+
+// ReplayJournal puts back every session the journal says should be running and
+// the host no longer has (spec 012, FR-015a).
+//
+// It runs at startup *before* Adopt, and the order is the contract in
+// contracts/session-journal.md: the host is the authority on what is running,
+// the journal on what should be. A session tmux still has is left entirely to
+// Adopt — nothing here writes over a record, exactly as nothing in Adopt does.
+//
+// Nothing is started here. Candidates are put in the store in the state the
+// supervisor's ordinary sweep acts on, so a recreated session goes through the
+// same allowlist, cap, deadline and give-up rules as any other revival rather
+// than through a second path that could differ from it.
+//
+// # Every bound is re-checked
+//
+// A journal is a file that outlives the configuration that produced it. An
+// allowlist that shrank, a ceiling that narrowed, or a fleet already at the cap
+// must all shrink what comes back, or this becomes a way to reinstate a session
+// the operator's current configuration would refuse to create.
+func (m *Manager) ReplayJournal(ctx context.Context) ([]Recovered, ReplayStats, error) {
+	records, stats, err := m.journal.Replay()
+	if err != nil {
+		return nil, stats, err
+	}
+
+	live, err := m.tmux.List(ctx)
+	if err != nil {
+		return nil, stats, fmt.Errorf("ask the host what it still has: %w", err)
+	}
+	onHost := make(map[string]bool, len(live))
+	for _, info := range live {
+		onHost[info.Name] = true
+	}
+
+	now := m.clock.Now()
+	out := make([]Recovered, 0, len(records))
+
+	for _, rec := range records {
+		// A session the operator ended is over. This is the line that makes
+		// destroy final across a restart (FR-012).
+		if rec.Event == journalEnded {
+			continue
+		}
+		if _, known := m.store.lookup(rec.ID); known {
+			continue
+		}
+		if onHost[tmuxNamePrefix+rec.ID] {
+			// Still running. Adopt owns it, and a record written here would be
+			// the one thing Adopt refuses to overwrite.
+			continue
+		}
+
+		workDir, err := ResolveWorkDir(rec.WorkDir, m.roots)
+		if err != nil {
+			out = append(out, Recovered{Session: Session{ID: rec.ID, Owner: auth.CallerID(rec.Owner)}, Reason: reasonWorkDirRefused})
+			continue
+		}
+		lifetime := decodeLifetime(rec.Lifetime)
+		if _, err := m.resolveLifetime(lifetime); err != nil {
+			// The ceiling in force now, not the one in force when the session
+			// was created — the same rule Adopt applies, for the same reason.
+			lifetime = 0
+		}
+
+		s := Session{
+			ID:             rec.ID,
+			Owner:          auth.CallerID(rec.Owner),
+			ConversationID: rec.Conversation,
+			WorkDir:        workDir,
+			StartCommand:   rec.Start,
+			Lifetime:       lifetime,
+			CreatedAt:      rec.Created,
+			LastActivity:   now,
+			ReviveAttempts: rec.Attempts,
+			// Starting, not running: the shell does not exist yet and the
+			// supervisor is what will build it. A record claiming to be running
+			// would be a card that lies until the first sweep.
+			State: StateStarting,
+			// The credential the create handed out is unrecoverable — it was
+			// never stored — so this session is owned, listed, capped and
+			// reapable, and nothing can drive it until somebody claims one.
+			// Exactly adoption's arrangement, for exactly adoption's reason.
+			CredentialPending: true,
+		}
+		if rec.Event == journalFailed {
+			// A session that had already given up stays given up. A restart that
+			// reset this would be a restart that resumed a loop the daemon had
+			// already stopped (FR-019).
+			s.State = StateFailed
+		}
+		if !s.AbsoluteDeadline().IsZero() && !now.Before(s.AbsoluteDeadline()) {
+			out = append(out, Recovered{Session: s, Reason: reasonReplayExpired})
+			continue
+		}
+
+		_, hash, err := NewToken()
+		if err != nil {
+			return out, stats, fmt.Errorf("mint a placeholder credential for session %s: %w", rec.ID, err)
+		}
+		s.TokenHash = hash
+
+		if err := m.store.AddCapped(s, m.maxSessions); err != nil {
+			out = append(out, Recovered{Session: s, Reason: reasonFleetAtCapacity})
+			continue
+		}
+		out = append(out, Recovered{Session: s})
+	}
+	return out, stats, nil
 }

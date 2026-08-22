@@ -907,6 +907,55 @@ func (st *Store) SetStartCommand(id, name string) error {
 	return nil
 }
 
+// SetConversation records which Claude conversation this session is having
+// (spec 012, FR-001).
+//
+// Written once at create and again by adoption, never by a caller: a request
+// that could choose which conversation a session resumes would be a request that
+// could read somebody else's work.
+func (st *Store) SetConversation(id, conversationID string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	s, ok := st.byID[id]
+	if !ok {
+		return fmt.Errorf("set conversation: %w", ErrSessionNotFound)
+	}
+	if s.State == StateDead {
+		return fmt.Errorf("set conversation: %w", ErrSessionDead)
+	}
+	s.ConversationID = conversationID
+	st.byID[id] = s
+	return nil
+}
+
+// SetRevive records an attempt against a session's give-up bound (spec 012,
+// FR-016, FR-017, FR-020).
+//
+// Both fields move together because they are one fact — "this is attempt N and
+// the next may not be before T" — and a caller able to move one without the
+// other could produce a session that backs off forever or one that never does.
+//
+// Unlike the setters above it is allowed on a failed session, because zeroing
+// the count is how a success clears one, and it is refused on a dead one for the
+// reason all of them are.
+func (st *Store) SetRevive(id string, attempts int, next time.Time) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	s, ok := st.byID[id]
+	if !ok {
+		return fmt.Errorf("set revive state: %w", ErrSessionNotFound)
+	}
+	if s.State == StateDead {
+		return fmt.Errorf("set revive state: %w", ErrSessionDead)
+	}
+	s.ReviveAttempts = attempts
+	s.NextReviveAt = next
+	st.byID[id] = s
+	return nil
+}
+
 // Delete drops a record and its token hash (FR-020).
 //
 // The record is overwritten before it is removed so the hash bytes do not sit in

@@ -390,12 +390,16 @@ func TestCreateStartsTheSessionItPromised(t *testing.T) {
 			}
 		}
 	}
-	// Six options now, the sixth being the session's own lifetime — the fact
-	// whose absence sent a never-expiring session back mortal from every restart
-	// (milestone 15).
+	// Eight options now. The sixth is the session's own lifetime — the fact whose
+	// absence sent a never-expiring session back mortal from every restart
+	// (milestone 15) — and the seventh and eighth are the conversation the
+	// session is having and the binary tmux compares its pane against, which are
+	// what let a session that dies be brought back to the same conversation
+	// (spec 012).
 	wantOps := []tmuxctl.Op{
 		tmuxctl.OpNew,
-		tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption,
+		tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption,
+		tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption, tmuxctl.OpSetOption,
 		tmuxctl.OpSendKeys,
 	}
 	if !slices.Equal(ops, wantOps) {

@@ -252,6 +252,14 @@ func run(ctx context.Context) error {
 		return err
 	}
 
+	// Beside the reaper, and after it, so that a session past its ceiling is
+	// collected rather than revived if the two ever disagree about one (spec
+	// 012). The supervisor already refuses an expired session itself; the order
+	// here means it never has to be the only thing that does.
+	if err := srv.StartSupervisor(ctx); err != nil {
+		return err
+	}
+
 	if err := srv.Listen(); err != nil {
 		return err
 	}

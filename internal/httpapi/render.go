@@ -20,12 +20,12 @@ package httpapi
 // notices.
 
 import (
-	"github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo"
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo"
 	"html/template"
 	"io/fs"
 	"net/http"

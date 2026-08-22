@@ -284,3 +284,65 @@ func TestProjectDirForMatchesClaudesLayout(t *testing.T) {
 		}
 	}
 }
+
+// TestHasTranscript is the check that stops the supervisor resuming an
+// identifier with nothing behind it (FR-014).
+func TestHasTranscript(t *testing.T) {
+	const present = "7f3a1b2c-4d5e-4f60-8a71-b2c3d4e5f607"
+	const absent = "00000000-0000-4000-8000-000000000000"
+
+	f := newManagerFixture(t)
+	conversationHome(t, f.repo(), map[string]time.Time{present + ".jsonl": {}})
+
+	tests := []struct {
+		name           string
+		conversationID string
+		workDir        string
+		want           bool
+	}{
+		{"a transcript that is there", present, f.repo(), true},
+		{"a transcript that is not", absent, f.repo(), false},
+		{"a session that never had one", "", f.repo(), false},
+		{"an identifier that is not one", "../../etc/passwd", f.repo(), false},
+		{"a directory outside the allowlist", present, "/not/allowlisted", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := f.mgr.HasTranscript(tt.conversationID, tt.workDir); got != tt.want {
+				t.Errorf("HasTranscript(%q, %q) = %v, want %v", tt.conversationID, tt.workDir, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStartBinary fixes what goes into @crswd-binary, which tmux compares the
+// pane against. An alphabet outside this set would put a value on a row whose
+// fields are separated by "|", so anything unexpected yields "" — read
+// everywhere as "no expectation recorded", and therefore as alive.
+func TestStartBinary(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct{ command, want string }{
+		{"claude --dangerously-skip-permissions", "claude"},
+		{"/home/op/.local/bin/claude --foo", "claude"},
+		{"  claude  --foo", "claude"},
+		{"claude", "claude"},
+		{"my-tool_v2.1 --x", "my-tool_v2.1"},
+		{"", ""},
+		{"   ", ""},
+		{"bad|name --x", ""},
+		// The first whitespace-separated token is the binary, which is the same
+		// split the shell makes of the same line — so this is "has", not a
+		// failure. config.InsertStartFlags documents that contract; this follows
+		// it rather than inventing a second one.
+		{"has space/", "has"},
+		{"/ --x", ""},
+		{"./ --x", ""},
+	}
+	for _, tt := range tests {
+		if got := startBinary(tt.command); got != tt.want {
+			t.Errorf("startBinary(%q) = %q, want %q", tt.command, got, tt.want)
+		}
+	}
+}

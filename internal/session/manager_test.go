@@ -232,9 +232,24 @@ func TestCreateSendsTheTmuxCommandsInOrder(t *testing.T) {
 		// operator asked for. Empty here is the default, which is what this
 		// fixture's request asks for.
 		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, "@crswd-lifetime", ""}},
+		// The conversation this session will be having, and the binary tmux
+		// compares its pane against to decide whether that conversation is still
+		// running (spec 012). The identifier is minted per create, so it is
+		// asserted by shape below rather than by value.
+		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, "@crswd-conversation", s.ConversationID}},
+		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, "@crswd-binary", "claude"}},
 		{Op: tmuxctl.OpSendKeys, Argv: []string{
-			"tmux", "send-keys", "-t", pane, "--", "claude --dangerously-skip-permissions", "Enter",
+			"tmux", "send-keys", "-t", pane, "--", "claude " + SessionIDFlag + " " + s.ConversationID + " --dangerously-skip-permissions", "Enter",
 		}},
+	}
+
+	// The identifier the record carries is the one the host was told about, and
+	// it is a conversation identifier rather than whatever happened to be in the
+	// field. Both halves matter: a create that recorded one value and typed
+	// another would resume the wrong conversation, and one that typed a value
+	// --resume cannot parse would open an interactive picker in a detached pane.
+	if _, err := ValidateResume(s.ConversationID); err != nil {
+		t.Fatalf("the session's conversation id %q is not one: %v", s.ConversationID, err)
 	}
 
 	got := f.tmux.Calls()
@@ -3215,7 +3230,13 @@ func assertTypedIntoTheShell(t *testing.T, fake *tmuxctl.Fake, want string) {
 			continue
 		}
 		for _, arg := range call.Argv {
-			if arg == want {
+			// The minted conversation identifier is stripped before the
+			// comparison and nothing else is (spec 012). These assertions are
+			// about the *configured* command reaching the host unaltered, and
+			// that is still exactly what they check — an identifier this daemon
+			// chose is not an alteration of the operator's line, and anything
+			// else appearing on it still fails here.
+			if withoutMintedConversation(t, arg) == want {
 				return
 			}
 		}
@@ -3711,8 +3732,17 @@ func TestStartCommandLineIsWhatTheSessionTypes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("StartCommandLine(resume=%q) = %v", resume, err)
 			}
-			if shown != typed {
-				t.Errorf("the form would show %q and the host was asked to type %q", shown, typed)
+			// The preview and the typed line must not diverge, with exactly one
+			// exception: the conversation identifier this daemon mints at create
+			// (spec 012). It cannot appear in a preview drawn before the session
+			// exists, because it does not exist yet either.
+			//
+			// Stripping only that keeps this test doing its job. Any *other*
+			// difference between what the operator is shown and what the host is
+			// asked to run still fails here, which is the bug this test exists
+			// to keep fixed.
+			if got := withoutMintedConversation(t, typed); shown != got {
+				t.Errorf("the form would show %q and the host was asked to type %q", shown, got)
 			}
 		})
 	}
@@ -3767,4 +3797,31 @@ func TestStartCommandLineLeavesThePlaceholderForThePage(t *testing.T) {
 		t.Errorf("the remote preview is %q and has lost %s; the page has nothing to substitute into",
 			remote, config.StartCommandNamePlaceholder)
 	}
+}
+
+// withoutMintedConversation removes the one thing spec 012 adds to a start
+// command that no caller asked for: the conversation identifier this daemon
+// mints for a fresh session.
+//
+// It exists so that the tests written before spec 012 keep asserting what they
+// were written to assert — that the configured command reaches the host intact —
+// rather than being loosened to "contains something like it". Anything *else*
+// that appeared on the line would still fail them.
+func withoutMintedConversation(t *testing.T, line string) string {
+	t.Helper()
+
+	fields := strings.Fields(line)
+	for i, f := range fields {
+		if f != SessionIDFlag {
+			continue
+		}
+		if i+1 >= len(fields) {
+			t.Fatalf("%s on %q has no value after it", SessionIDFlag, line)
+		}
+		if _, err := ValidateResume(fields[i+1]); err != nil {
+			t.Fatalf("%s on %q carries %q, which is not a conversation identifier: %v", SessionIDFlag, line, fields[i+1], err)
+		}
+		return strings.Join(append(append([]string{}, fields[:i]...), fields[i+2:]...), " ")
+	}
+	return line
 }
