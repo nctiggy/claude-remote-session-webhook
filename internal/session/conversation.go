@@ -163,11 +163,11 @@ func (m *Manager) Conversations(workDir string) []Conversation {
 		return nil
 	}
 
-	project, ok := projectSegment(dir)
+	project, ok := projectPath(home, dir)
 	if !ok {
 		return nil
 	}
-	entries, err := os.ReadDir(filepath.Join(home, ".claude", "projects", project))
+	entries, err := os.ReadDir(project)
 	if err != nil {
 		return nil
 	}
@@ -206,36 +206,50 @@ func (m *Manager) Conversations(workDir string) []Conversation {
 	return out
 }
 
-// projectSegment is projectDirFor with its invariant enforced at the point the
-// result becomes a path, rather than assumed from the function that built it.
+// projectPath is the directory Claude keeps a working directory's conversations
+// in, proved to be inside the tree it must not leave.
 //
-// # Why this is a function and not one more line inline
+// # Why the containment is checked here
 //
-// A working directory reaching here has already been through ResolveWorkDir —
-// absolute, cleaned, symlinks evaluated, contained inside the allowlist, and
-// confirmed to be a directory — and projectDirFor then maps every separator and
-// every dot to '-', so what comes out is a single path element that cannot
-// traverse anywhere. Both of those are true, and neither is visible at the call
-// site.
+// A working directory reaching this file has already been through
+// ResolveWorkDir — absolute, cleaned, symlinks evaluated, contained inside the
+// allowlist, and confirmed to be a directory — and projectDirFor then maps every
+// separator and every dot to '-', so what it returns cannot traverse anywhere.
+// Both are true. Neither is visible at the call site.
 //
 // That stopped being an academic point when spec 012 gave the conversation list
 // a route of its own. Until then the directory came from the daemon's own
-// suggestions; now it is a query parameter, and this is the one place in the
+// suggestions; now it is a query parameter, and this is the one place in this
 // daemon where caller-supplied text reaches the filesystem outside the tree the
-// allowlist covers. A reader — human or analyser — should not have to trace two
-// functions to establish that it cannot escape.
+// allowlist covers.
 //
-// So the segment is taken through filepath.Base and refused if it is not a name.
-// In practice Base changes nothing, which is the point: it is a check that
-// passes, not a repair that fires. False means "no conversations here", which is
-// what every other failure in this file already means.
-func projectSegment(workDir string) (string, bool) {
-	segment := filepath.Base(projectDirFor(workDir))
-	switch segment {
-	case "", ".", "..", string(filepath.Separator):
+// So the property is asserted rather than inherited, and it is asserted in the
+// form that actually matters: the path this daemon is about to read must be
+// under the projects directory. That is the same containment ResolveWorkDir
+// applies to the allowlist, applied to the second tree — and it holds whatever
+// projectDirFor does or stops doing, which an argument resting on that function's
+// current behaviour would not.
+//
+// False means "no conversations here", which is what every other failure in this
+// file already means.
+func projectPath(home, workDir string) (string, bool) {
+	return containedIn(filepath.Join(home, ".claude", "projects"), projectDirFor(workDir))
+}
+
+// containedIn joins a name onto a root and refuses the result if it is not
+// inside it.
+//
+// Clean first, because a traversal that is never cleaned is a traversal a prefix
+// test cannot see. The separator on the prefix is what stops `/a/projects-evil`
+// passing as a child of `/a/projects`, and the equality test is what stops the
+// root itself being returned as though it were one.
+func containedIn(root, name string) (string, bool) {
+	root = filepath.Clean(root)
+	target := filepath.Clean(filepath.Join(root, name))
+	if target == root || !strings.HasPrefix(target, root+string(filepath.Separator)) {
 		return "", false
 	}
-	return segment, true
+	return target, true
 }
 
 // projectDirFor is Claude's own encoding of a working directory into the name of
@@ -291,11 +305,15 @@ func (m *Manager) HasTranscript(conversationID, workDir string) bool {
 	if err != nil || home == "" {
 		return false
 	}
-	project, ok := projectSegment(dir)
+	project, ok := projectPath(home, dir)
 	if !ok {
 		return false
 	}
-	info, err := os.Stat(filepath.Join(home, ".claude", "projects", project, conversationID+conversationFileSuffix))
+	transcript, ok := containedIn(project, conversationID+conversationFileSuffix)
+	if !ok {
+		return false
+	}
+	info, err := os.Stat(transcript)
 	if err != nil {
 		return false
 	}

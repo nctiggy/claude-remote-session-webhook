@@ -347,13 +347,19 @@ func TestStartBinary(t *testing.T) {
 	}
 }
 
-// TestProjectSegmentCannotEscape is the check projectSegment exists to make
-// legible: whatever a caller spells, what reaches the filesystem is one path
-// element. ResolveWorkDir has already refused anything outside the allowlist by
-// the time a directory gets here, so these are inputs the guard should never
-// see — which is exactly why it is worth proving it holds for them.
-func TestProjectSegmentCannotEscape(t *testing.T) {
+// TestProjectPathCannotEscape is the check projectPath exists to make legible:
+// whatever a caller spells, the directory this daemon reads is inside the
+// projects tree or it is not read at all.
+//
+// ResolveWorkDir has already refused anything outside the allowlist by the time
+// a directory gets here, so these are inputs the guard should never see — which
+// is exactly why it is worth proving it holds for them, and why it is written to
+// hold whatever projectDirFor does or stops doing.
+func TestProjectPathCannotEscape(t *testing.T) {
 	t.Parallel()
+
+	const home = "/home/op"
+	root := filepath.Join(home, ".claude", "projects")
 
 	for _, workDir := range []string{
 		"/code/repo",
@@ -365,25 +371,42 @@ func TestProjectSegmentCannotEscape(t *testing.T) {
 		"..",
 		"/code/../../..",
 		"/code/repo/",
+		"/etc/passwd",
 	} {
 		t.Run(workDir, func(t *testing.T) {
 			t.Parallel()
 
-			segment, ok := projectSegment(workDir)
+			got, ok := projectPath(home, workDir)
 			if !ok {
 				return
 			}
-			if segment != filepath.Base(segment) {
-				t.Errorf("projectSegment(%q) = %q, which is not a single path element", workDir, segment)
+			if got != filepath.Clean(got) {
+				t.Errorf("projectPath(%q) = %q, which is not clean", workDir, got)
 			}
-			if strings.ContainsRune(segment, filepath.Separator) {
-				t.Errorf("projectSegment(%q) = %q, which carries a separator", workDir, segment)
-			}
-			if segment == ".." || strings.HasPrefix(segment, "..") && !strings.HasPrefix(segment, "---") {
-				// projectDirFor maps '.' to '-', so a traversal cannot survive it
-				// as dots. Anything that still begins with one has not been through it.
-				t.Errorf("projectSegment(%q) = %q, which reads as a traversal", workDir, segment)
+			if !strings.HasPrefix(got, root+string(filepath.Separator)) {
+				t.Errorf("projectPath(%q) = %q, which is outside %q", workDir, got, root)
 			}
 		})
+	}
+}
+
+// TestContainedInRefusesTheRootAndItsSiblings covers the two boundaries a naive
+// prefix test gets wrong.
+func TestContainedInRefusesTheRootAndItsSiblings(t *testing.T) {
+	t.Parallel()
+
+	const root = "/a/projects"
+
+	if _, ok := containedIn(root, "."); ok {
+		t.Error("containedIn returned the root itself as though it were a child")
+	}
+	if _, ok := containedIn(root, ".."); ok {
+		t.Error("containedIn returned the root's parent")
+	}
+	if _, ok := containedIn(root, "../projects-evil"); ok {
+		t.Error("containedIn accepted a sibling whose name merely starts with the root's")
+	}
+	if got, ok := containedIn(root, "child"); !ok || got != "/a/projects/child" {
+		t.Errorf("containedIn(root, %q) = %q, %v; want the child", "child", got, ok)
 	}
 }
