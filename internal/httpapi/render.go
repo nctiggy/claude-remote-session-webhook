@@ -25,13 +25,14 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo"
 	"html/template"
 	"io/fs"
 	"net/http"
 	"path"
 	"strings"
 	"time"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo"
 )
 
 // The browser door's response headers, named here once each because the name a

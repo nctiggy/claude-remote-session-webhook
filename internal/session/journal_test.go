@@ -5,12 +5,16 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
+
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 )
 
 func tempJournal(t *testing.T) *Journal {
@@ -246,5 +250,146 @@ func TestJournalRefusesANewline(t *testing.T) {
 	}
 	if got[0].WorkDir != "/code/re\npo" {
 		t.Errorf("WorkDir came back %q, want it intact", got[0].WorkDir)
+	}
+}
+
+// The replay tests below are the other half of US2. A journal outlives the
+// configuration that produced it, so an allowlist that shrank, a ceiling that
+// narrowed, or a fleet already at its cap must all shrink what comes back — or
+// the journal becomes a way to reinstate a session the operator's current
+// configuration would refuse to create.
+
+// restarted rebuilds the manager against the same journal and host, which is
+// what a daemon restart looks like from the store's point of view: everything
+// the process remembered is gone, and the file and the host are all that is left.
+func restarted(t *testing.T, f *managerFixture, j *Journal, roots []config.ApprovedRoot, now time.Time) {
+	t.Helper()
+
+	f.store = NewStore()
+	mgr, err := NewManagerWithClock(f.tmux, f.store, roots, capNotUnderTest, stoppedClock{now: now})
+	if err != nil {
+		t.Fatalf("NewManagerWithClock() = %v", err)
+	}
+	mgr.SetJournal(j)
+	f.mgr = mgr
+}
+
+func TestReplaySkipsASessionTheOperatorEnded(t *testing.T) {
+	f := newManagerFixture(t)
+	j := tempJournal(t)
+	f.mgr.SetJournal(j)
+
+	s := revivableSession(t, f)
+	if err := f.mgr.Destroy(context.Background(), s); err != nil {
+		t.Fatalf("Destroy() = %v", err)
+	}
+	// The daemon has restarted and remembers nothing.
+	restarted(t, &f, j, f.roots(), f.now)
+
+	got, _, err := f.mgr.ReplayJournal(context.Background())
+	if err != nil {
+		t.Fatalf("ReplayJournal() = %v", err)
+	}
+	for _, r := range got {
+		if r.Session.ID == s.ID && r.Reason == "" {
+			t.Error("a destroyed session was put back by a replay; destroy must survive a restart")
+		}
+	}
+	if _, ok := f.store.lookup(s.ID); ok {
+		t.Error("a destroyed session is in the store after a replay")
+	}
+}
+
+func TestReplayRefusesADeAllowlistedDirectory(t *testing.T) {
+	f := newManagerFixture(t)
+	j := tempJournal(t)
+	f.mgr.SetJournal(j)
+	s := revivableSession(t, f)
+	f.tmux.Vanish(s.TmuxName())
+
+	// The allowlist shrank while the daemon was down: it now names a different
+	// directory, so the session's own is outside it.
+	restarted(t, &f, j, []config.ApprovedRoot{{Path: t.TempDir()}}, f.now)
+
+	got, _, err := f.mgr.ReplayJournal(context.Background())
+	if err != nil {
+		t.Fatalf("ReplayJournal() = %v", err)
+	}
+	if len(got) != 1 || got[0].Reason == "" {
+		t.Fatalf("replayed %+v, want the session refused with a reason", got)
+	}
+	if _, ok := f.store.lookup(s.ID); ok {
+		t.Error("a session outside the current allowlist was put back into the store")
+	}
+}
+
+func TestReplayRefusesAnExpiredSession(t *testing.T) {
+	f := newManagerFixture(t)
+	j := tempJournal(t)
+	f.mgr.SetJournal(j)
+	s := revivableSession(t, f)
+	f.tmux.Vanish(s.TmuxName())
+
+	// The daemon came back long after this session's ceiling.
+	restarted(t, &f, j, f.roots(), s.AbsoluteDeadline().Add(time.Hour))
+
+	got, _, err := f.mgr.ReplayJournal(context.Background())
+	if err != nil {
+		t.Fatalf("ReplayJournal() = %v", err)
+	}
+	if len(got) != 1 || got[0].Reason == "" {
+		t.Fatalf("replayed %+v, want the session refused with a reason", got)
+	}
+	if _, ok := f.store.lookup(s.ID); ok {
+		t.Error("a session past its absolute deadline was put back; revival must never outlive a ceiling")
+	}
+}
+
+// TestReplayLeavesALiveSessionToAdopt is the ordering contract: the host is the
+// authority on what is running, the journal on what should be.
+func TestReplayLeavesALiveSessionToAdopt(t *testing.T) {
+	f := newManagerFixture(t)
+	j := tempJournal(t)
+	f.mgr.SetJournal(j)
+	revivableSession(t, f)
+	// Still on the host — the daemon restarted, the session did not.
+
+	restarted(t, &f, j, f.roots(), f.now)
+
+	got, _, err := f.mgr.ReplayJournal(context.Background())
+	if err != nil {
+		t.Fatalf("ReplayJournal() = %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("replay claimed %+v; a session tmux still has belongs to Adopt", got)
+	}
+}
+
+// TestReplayCarriesTheOriginalCreation is FR-010 across a restart: a session
+// that comes back comes back as old as it was.
+func TestReplayCarriesTheOriginalCreation(t *testing.T) {
+	f := newManagerFixture(t)
+	j := tempJournal(t)
+	f.mgr.SetJournal(j)
+	s := revivableSession(t, f)
+	f.tmux.Vanish(s.TmuxName())
+
+	restarted(t, &f, j, f.roots(), f.now.Add(time.Minute))
+
+	if _, _, err := f.mgr.ReplayJournal(context.Background()); err != nil {
+		t.Fatalf("ReplayJournal() = %v", err)
+	}
+	got, ok := f.store.lookup(s.ID)
+	if !ok {
+		t.Fatal("the session was not put back")
+	}
+	if !got.CreatedAt.Equal(s.CreatedAt) {
+		t.Errorf("CreatedAt = %v, want the original %v — a replay must not restart a deadline", got.CreatedAt, s.CreatedAt)
+	}
+	if got.ConversationID != s.ConversationID {
+		t.Errorf("ConversationID = %q, want %q", got.ConversationID, s.ConversationID)
+	}
+	if !got.CredentialPending {
+		t.Error("a replayed session must have no usable credential until one is claimed")
 	}
 }

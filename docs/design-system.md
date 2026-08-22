@@ -79,9 +79,15 @@ legibility at a glance beats theme purity:
 | `idle` | `--state-idle` | `#3fa85c` | Alive but waiting — dimmer, not absent | Withdrawn in milestone 15 |
 | `needs-auth` | `--state-auth` | `#ffb000` | Amber phosphor. In-world: real terminals had amber | Milestone 4 |
 | `dead` | `--state-dead` | `#ff4d4d` | The red pill — the one non-green the palette has earned | Not currently reachable |
+| `failed` | `--state-failed` | `#ff8c1a` | Between the amber that asks for attention and the red that reports an ending, which is exactly what it means | **Spec 012** |
 
 Do not invent a parallel palette for state, and do not fold state back into green
 for the sake of the theme. A dead session that reads as green is a bug.
+
+`failed` and `dead` are different colours because they are different facts, and
+an operator has to be able to tell them apart at a glance: `dead` is a session
+somebody ended, `failed` is one the daemon could not save. Only the second is a
+surprise, and only the second is still on the page.
 
 **Display state is derived, not stored.** The daemon writes only `starting` and
 `running` to a record, and deletes a record rather than marking it dead, so the

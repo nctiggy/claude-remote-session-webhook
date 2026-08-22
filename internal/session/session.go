@@ -123,6 +123,19 @@ const (
 	// bound did. A vocabulary of one is the honest size for a fleet where the
 	// only way a session ends is the operator or the ceiling.
 	DisplayRunning DisplayState = "running"
+
+	// DisplayFailed is a session the supervisor could not bring back (spec 012).
+	//
+	// It is the second display state, and the vocabulary grew for the reason it
+	// shrank to one: a state exists here when an operator can act on it. This one
+	// they can — a failed session is not coming back on its own, and the choice
+	// of destroying it or fixing what broke is theirs.
+	//
+	// It is deliberately not shown for a session that is merely being retried. A
+	// card that flickered between running and failed for three attempts would
+	// teach an operator to ignore it, which is the opposite of what a state that
+	// only ever appears for a genuine problem is for.
+	DisplayFailed DisplayState = "failed"
 )
 
 // Mode is where a session is driven from: the operator's own dashboard, or
@@ -145,8 +158,15 @@ const (
 )
 
 // Session is the daemon's record of one live Claude Code session, held in memory
-// for the process lifetime. There is no schema and no file on disk — restart
-// recovery comes from adopting live tmux sessions (FR-021), not from storage.
+// for the process lifetime.
+//
+// Restart recovery is primarily adoption: the daemon reconciles with the tmux
+// sessions still on the host (FR-021) rather than trusting anything it wrote
+// down. Since spec 012 there is also a journal, and it is deliberately the
+// junior partner — it records what *should* be running so that a session whose
+// shell the host has lost can be rebuilt, and the host still wins on anything
+// that is running now. What the journal holds is in journal.go; it holds no
+// credential and no content.
 //
 // Every value that can be computed from these fields is a method rather than a
 // field. Storing a derived value is storing a second copy that is free to drift
@@ -429,6 +449,9 @@ func orDefault(d, fallback time.Duration) time.Duration {
 // State is not consulted at all. Reading it is what FR-019a forbids, and both
 // values it can hold in production are this method's running anyway.
 func (s Session) DisplayState(_ time.Time) DisplayState {
+	if s.State == StateFailed {
+		return DisplayFailed
+	}
 	return DisplayRunning
 }
 

@@ -99,7 +99,7 @@ session lifecycle code, so the negative cases are not optional.
 - [X] T034 [US2] Refuse a recreate that would take the fleet over `CRSW_MAX_SESSIONS`, and ensure a revived session is never double-counted, in `internal/session/supervisor.go`.
 - [X] T035 [US2] Guard against two revivals in flight for one session in `internal/session/supervisor.go`.
 - [X] T036 [P] [US2] Write `internal/session/supervisor_test.go` negative cases: a destroyed session is never revived across many sweeps; a reaped session is never revived; an expired session is never revived; a de-allowlisted session goes `failed` and starts nothing; an over-cap recreate is refused; overlapping sweeps produce one revival.
-- [ ] T037 [P] [US2] Write `internal/session/journal_test.go` replay-refusal cases: a replayed session whose directory left the allowlist, whose deadline has passed, or which would exceed the cap is dropped rather than started.
+- [X] T037 [P] [US2] Write `internal/session/journal_test.go` replay-refusal cases: a replayed session whose directory left the allowlist, whose deadline has passed, or which would exceed the cap is dropped rather than started.
 
 **Checkpoint**: quickstart Scenario 3 passes; every negative case is covered.
 
@@ -117,8 +117,8 @@ session lifecycle code, so the negative cases are not optional.
 - [X] T041 [US3] Ensure a healthy sweep emits no audit record at all, so the four lines that matter are not buried.
 - [X] T042 [P] [US3] Write `internal/session/supervisor_test.go` bound cases: attempts stop at three; delays grow; a success resets the count to zero; a restart mid-backoff does not reset the count; a `failed` session is never attempted again.
 - [X] T043 [P] [US3] Write `internal/session/supervisor_test.go` trail cases: each action emits exactly one record; no record carries pane content, a credential, a directory the caller spelled, or free text.
-- [ ] T044 [P] [US3] Add the `failed` pill to the session card in `web/templates/partials/` and `web/static/crswd.css` using existing design tokens only, reusing the canonical status pill rather than adding a second.
-- [ ] T045 [P] [US3] Surface `failed` in the session view type in `internal/httpapi/view.go` and the card rendering in `internal/httpapi/dashboard.go`.
+- [X] T044 [P] [US3] Add the `failed` pill to the session card in `web/templates/partials/` and `web/static/crswd.css` using existing design tokens only, reusing the canonical status pill rather than adding a second.
+- [X] T045 [P] [US3] Surface `failed` in the session view type in `internal/httpapi/view.go` and the card rendering in `internal/httpapi/dashboard.go`.
 
 **Checkpoint**: quickstart Scenario 4 passes, restart included.
 
@@ -130,11 +130,11 @@ session lifecycle code, so the negative cases are not optional.
 
 **Independent test**: change the working directory on the form between two allowlisted directories with history; confirm the offered conversations change.
 
-- [ ] T046 [US4] Add `GET /sessions/conversations` to `internal/httpapi/routes.go` behind the existing auth and ownership check.
-- [ ] T047 [US4] Implement the handler in `internal/httpapi/dashboard.go` per `contracts/conversation-lookup.md`: read `dir`, call `session.Conversations`, answer `200` with a possibly-empty list, never 400 and never 404.
-- [ ] T048 [P] [US4] Write `internal/httpapi/dashboard_test.go` cases: a directory with history; one without; one outside the allowlist; a nonexistent one; an unauthenticated request refused; and that no transcript is opened.
-- [ ] T049 [US4] Refresh the `resume` select from that route when the working directory changes, in `web/static/crswd.js`, leaving the form usable when the request fails.
-- [ ] T050 [US4] Update `web/templates/partials/create-form.html` so the select is populated dynamically, and correct the comment that says the list is the first suggested directory's.
+- [X] T046 [US4] Add `GET /sessions/conversations` to `internal/httpapi/routes.go` behind the existing auth and ownership check.
+- [X] T047 [US4] Implement the handler in `internal/httpapi/dashboard.go` per `contracts/conversation-lookup.md`: read `dir`, call `session.Conversations`, answer `200` with a possibly-empty list, never 400 and never 404.
+- [X] T048 [P] [US4] Write `internal/httpapi/dashboard_test.go` cases: a directory with history; one without; one outside the allowlist; a nonexistent one; an unauthenticated request refused; and that no transcript is opened.
+- [X] T049 [US4] Refresh the `resume` select from that route when the working directory changes, in `web/static/crswd.js`, leaving the form usable when the request fails.
+- [X] T050 [US4] Update `web/templates/partials/create-form.html` so the select is populated dynamically, and correct the comment that says the list is the first suggested directory's.
 
 **Checkpoint**: quickstart Scenario 5 passes.
 

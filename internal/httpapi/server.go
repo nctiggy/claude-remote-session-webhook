@@ -646,6 +646,11 @@ func newServer(
 	// that table is contracts/http-api.md's six operations, each authorised by a
 	// signature, and this is authorised by an identity.
 	s.handleBrowser(patternVersion, audit.ActionDashboardVersion, s.version)
+	// The resume control's own read (spec 012). It is a browser route rather than
+	// an action because it changes nothing, and it carries ActionDashboardView
+	// rather than an action of its own because what it discloses is what the
+	// dashboard already discloses.
+	s.handleBrowser(patternConversations, audit.ActionDashboardView, s.conversations)
 	// The first route on this door that changes something, and the reason
 	// handleAction exists one line below handleBrowser rather than instead of it:
 	// everything above only reads, and a read is authorised by layer 1 alone.

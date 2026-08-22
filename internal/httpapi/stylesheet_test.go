@@ -49,6 +49,7 @@ var designTokens = map[string]string{
 	"--state-idle":    "#3fa85c",
 	"--state-auth":    "#ffb000",
 	"--state-dead":    "#ff4d4d",
+	"--state-failed":  "#ff8c1a",
 	"--mono":          `ui-monospace, "SF Mono", "JetBrains Mono", "Fira Mono", Menlo, Consolas, monospace`,
 	"--sans":          `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`,
 	"--s1":            ".25rem",
@@ -66,15 +67,21 @@ var designTokens = map[string]string{
 	"--fs-input":      "16px",
 }
 
-// documentedStates is the design system's state table: the four display states
-// and the token each one is coloured from. Two of them cannot occur in this
+// documentedStates is the design system's state table: the display states and
+// the token each one is coloured from. Two of them cannot occur in this
 // milestone and are checked anyway — the pill has to keep working for a state
 // the first time it happens, not the second.
+//
+// `failed` was one of those two until spec 012 and is now a state an operator
+// really sees: a session the supervisor tried the maximum number of times to
+// bring back and stopped. It needed a token and a rule and no edit to the pill,
+// which is what the pill's own comment promises.
 var documentedStates = map[string]string{
 	"running":    "--state-running",
 	"idle":       "--state-idle",
 	"needs-auth": "--state-auth",
 	"dead":       "--state-dead",
+	"failed":     "--state-failed",
 }
 
 // cssComment is what every sweep below reads past. A /* … */ comment is not a
@@ -1473,8 +1480,15 @@ func TestTheThemedPickerEnhancesTheNativeOne(t *testing.T) {
 	// element a variable holds is not spellable in a regular expression, so what
 	// is counted is every removal in the file — there is one, the fleet's own
 	// card, and a second is this.
-	if n := strings.Count(source, ".remove()"); n != 1 {
-		t.Errorf("crswd.js removes an element from the document in %d places; want exactly 1 — the fleet's departed card. The datalist is the enhancement's data source and stays where the daemon put it, or the options this file offers are a copy free to disagree with the markup", n)
+	//
+	// Counted inside the picker block rather than across the file. It was a
+	// whole-file count until spec 012, when the file gained a second enhancement
+	// — the conversation list, which builds and removes its own field because
+	// "there is nothing to continue" is the absence of that control. A count that
+	// spans two unrelated blocks has stopped measuring the thing it was written
+	// for, which is this block never taking the datalist out of the document.
+	if n := strings.Count(pickerBlock(t, source), ".remove()"); n != 0 {
+		t.Errorf("the picker removes an element from the document in %d places; want none. The datalist is the enhancement's data source and stays where the daemon put it, or the options this file offers are a copy free to disagree with the markup", n)
 	}
 
 	// And the markup half, which is what all of the above is protecting: the
@@ -1593,14 +1607,21 @@ func TestComboKeyboardOperable(t *testing.T) {
 	// own text — so there is no completion writing the nearest match into the
 	// field as it is typed, no Escape putting back what was there before, and no
 	// path by which the list narrows what may be submitted.
-	assigns := regexp.MustCompile(`\.value\s*=[^=]`).FindAllStringIndex(source, -1)
+	//
+	// Counted inside the picker block for the reason the removal above is: the
+	// file gained a second enhancement in spec 012 and a whole-file count now
+	// spans two controls. What must stay true is about *this* field — the working
+	// directory, where FR-008 says any path stays typeable — and the conversation
+	// list writes to a `<select>` whose values the daemon supplied and which has
+	// no typeable state to constrain.
+	assigns := regexp.MustCompile(`\.value\s*=[^=]`).FindAllStringIndex(picker, -1)
 	if len(assigns) != 1 {
-		t.Fatalf("crswd.js writes a field's value in %d places; want exactly 1 — the accept the operator asked for. Any second one is this file deciding what the operator meant to type, on the field FR-008 says any path stays typeable in", len(assigns))
+		t.Fatalf("the picker writes a field's value in %d places; want exactly 1 — the accept the operator asked for. Any second one is this file deciding what the operator meant to type, on the field FR-008 says any path stays typeable in", len(assigns))
 	}
 	if !regexp.MustCompile(`\.value\s*=\s*[A-Za-z_$][\w$]*\.textContent`).MatchString(picker) {
 		t.Error("the accepted path is not the option's own text; a value assembled here is one the daemon never offered, and the option is the only thing on this page that was")
 	}
-	if accept := strings.Index(source, "'Enter'"); accept < 0 || assigns[0][0] < accept {
+	if accept := strings.Index(picker, "'Enter'"); accept < 0 || assigns[0][0] < accept {
 		t.Error("the picker writes the field's value before it has answered Enter; the accept is the one keystroke that may change what is in this field, and a write on any other path is the list constraining what was typed")
 	}
 
