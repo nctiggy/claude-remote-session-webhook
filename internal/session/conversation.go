@@ -163,7 +163,11 @@ func (m *Manager) Conversations(workDir string) []Conversation {
 		return nil
 	}
 
-	entries, err := os.ReadDir(filepath.Join(home, ".claude", "projects", projectDirFor(dir)))
+	project, ok := projectSegment(dir)
+	if !ok {
+		return nil
+	}
+	entries, err := os.ReadDir(filepath.Join(home, ".claude", "projects", project))
 	if err != nil {
 		return nil
 	}
@@ -200,6 +204,38 @@ func (m *Manager) Conversations(workDir string) []Conversation {
 		return strings.Compare(a.ID, b.ID)
 	})
 	return out
+}
+
+// projectSegment is projectDirFor with its invariant enforced at the point the
+// result becomes a path, rather than assumed from the function that built it.
+//
+// # Why this is a function and not one more line inline
+//
+// A working directory reaching here has already been through ResolveWorkDir —
+// absolute, cleaned, symlinks evaluated, contained inside the allowlist, and
+// confirmed to be a directory — and projectDirFor then maps every separator and
+// every dot to '-', so what comes out is a single path element that cannot
+// traverse anywhere. Both of those are true, and neither is visible at the call
+// site.
+//
+// That stopped being an academic point when spec 012 gave the conversation list
+// a route of its own. Until then the directory came from the daemon's own
+// suggestions; now it is a query parameter, and this is the one place in the
+// daemon where caller-supplied text reaches the filesystem outside the tree the
+// allowlist covers. A reader — human or analyser — should not have to trace two
+// functions to establish that it cannot escape.
+//
+// So the segment is taken through filepath.Base and refused if it is not a name.
+// In practice Base changes nothing, which is the point: it is a check that
+// passes, not a repair that fires. False means "no conversations here", which is
+// what every other failure in this file already means.
+func projectSegment(workDir string) (string, bool) {
+	segment := filepath.Base(projectDirFor(workDir))
+	switch segment {
+	case "", ".", "..", string(filepath.Separator):
+		return "", false
+	}
+	return segment, true
 }
 
 // projectDirFor is Claude's own encoding of a working directory into the name of
@@ -255,7 +291,11 @@ func (m *Manager) HasTranscript(conversationID, workDir string) bool {
 	if err != nil || home == "" {
 		return false
 	}
-	info, err := os.Stat(filepath.Join(home, ".claude", "projects", projectDirFor(dir), conversationID+conversationFileSuffix))
+	project, ok := projectSegment(dir)
+	if !ok {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(home, ".claude", "projects", project, conversationID+conversationFileSuffix))
 	if err != nil {
 		return false
 	}

@@ -346,3 +346,44 @@ func TestStartBinary(t *testing.T) {
 		}
 	}
 }
+
+// TestProjectSegmentCannotEscape is the check projectSegment exists to make
+// legible: whatever a caller spells, what reaches the filesystem is one path
+// element. ResolveWorkDir has already refused anything outside the allowlist by
+// the time a directory gets here, so these are inputs the guard should never
+// see — which is exactly why it is worth proving it holds for them.
+func TestProjectSegmentCannotEscape(t *testing.T) {
+	t.Parallel()
+
+	for _, workDir := range []string{
+		"/code/repo",
+		"/../../etc",
+		"../../../etc/passwd",
+		"/",
+		"",
+		".",
+		"..",
+		"/code/../../..",
+		"/code/repo/",
+	} {
+		t.Run(workDir, func(t *testing.T) {
+			t.Parallel()
+
+			segment, ok := projectSegment(workDir)
+			if !ok {
+				return
+			}
+			if segment != filepath.Base(segment) {
+				t.Errorf("projectSegment(%q) = %q, which is not a single path element", workDir, segment)
+			}
+			if strings.ContainsRune(segment, filepath.Separator) {
+				t.Errorf("projectSegment(%q) = %q, which carries a separator", workDir, segment)
+			}
+			if segment == ".." || strings.HasPrefix(segment, "..") && !strings.HasPrefix(segment, "---") {
+				// projectDirFor maps '.' to '-', so a traversal cannot survive it
+				// as dots. Anything that still begins with one has not been through it.
+				t.Errorf("projectSegment(%q) = %q, which reads as a traversal", workDir, segment)
+			}
+		})
+	}
+}
