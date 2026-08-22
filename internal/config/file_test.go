@@ -1587,3 +1587,62 @@ func snapshot(t *testing.T, path string) ([]byte, os.FileInfo) {
 	}
 	return data, info
 }
+
+// TestJournalPath fixes where the session journal lives, which matters because
+// a daemon that replayed the wrong one would recreate somebody else's sessions.
+func TestJournalPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{
+			name: "beside a named configuration file",
+			env:  map[string]string{"CRSW_CONFIG_FILE": "/etc/crswd/other.conf"},
+			want: "/etc/crswd/sessions.jsonl",
+		},
+		{
+			name: "under XDG_CONFIG_HOME when no file is named",
+			env:  map[string]string{"XDG_CONFIG_HOME": "/xdg"},
+			want: "/xdg/crswd/sessions.jsonl",
+		},
+		{
+			name: "under HOME when neither is named",
+			env:  map[string]string{"HOME": "/home/op"},
+			want: "/home/op/.config/crswd/sessions.jsonl",
+		},
+		{
+			name: "a named file wins over both",
+			env:  map[string]string{"CRSW_CONFIG_FILE": "/tmp/t/config", "XDG_CONFIG_HOME": "/xdg", "HOME": "/home/op"},
+			want: "/tmp/t/sessions.jsonl",
+		},
+		{
+			name: "XDG wins over HOME",
+			env:  map[string]string{"XDG_CONFIG_HOME": "/xdg", "HOME": "/home/op"},
+			want: "/xdg/crswd/sessions.jsonl",
+		},
+		{
+			name: "a relative XDG directory is ignored, not joined to the cwd",
+			env:  map[string]string{"XDG_CONFIG_HOME": "relative", "HOME": "/home/op"},
+			want: "/home/op/.config/crswd/sessions.jsonl",
+		},
+		{
+			name: "nowhere to put one is not an error",
+			env:  map[string]string{},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := config.JournalPath(func(k string) string { return tt.env[k] })
+			if got != tt.want {
+				t.Errorf("JournalPath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

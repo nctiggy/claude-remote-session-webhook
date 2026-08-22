@@ -81,6 +81,12 @@ const (
 	configDirName     = "crswd"
 	configFileName    = "config"
 
+	// journalFileName is the session journal spec 012 added, and it sits beside
+	// the configuration rather than under $XDG_STATE_HOME. Two reasons: the
+	// operator asked for ~/.config/crswd, and a daemon whose files are split
+	// across two roots is a daemon an operator has to remember two paths for.
+	journalFileName = "sessions.jsonl"
+
 	// backupSuffix makes the default file's backup the `config.bak` the data
 	// model names, and keeps a file named anything else beside its own copy
 	// under a name that says which file it is a copy of.
@@ -295,6 +301,35 @@ func DefaultPath(getenv func(string) string) string {
 	}
 	if home := strings.TrimSpace(getenv(envHome)); filepath.IsAbs(home) {
 		return filepath.Join(home, defaultConfigHome, configDirName, configFileName)
+	}
+	return ""
+}
+
+// JournalPath is the session journal this daemon appends to (spec 012), resolved
+// from the same base DefaultPath resolves the configuration from.
+//
+// It returns "" for the same reason DefaultPath does — there is nowhere to put
+// one — and that is not an error: a container configured entirely by environment
+// variables has no home to keep a journal in, and a daemon there supervises the
+// sessions it can see and recreates none, which is what it did before spec 012.
+//
+// # Why it follows CRSW_CONFIG_FILE
+//
+// When the operator names a configuration file, the journal goes beside *that*
+// file rather than in the XDG layout. A second daemon started against its own
+// configuration — which is every acceptance test in this repository — must not
+// append to, or replay, the journal belonging to the daemon the operator is
+// actually running. Keeping the two together is what makes "which sessions does
+// this daemon own?" have the same answer as "which configuration did it read?".
+func JournalPath(getenv func(string) string) string {
+	if named := strings.TrimSpace(getenv(configFileVar)); named != "" {
+		return filepath.Join(filepath.Dir(named), journalFileName)
+	}
+	if dir := strings.TrimSpace(getenv(xdgConfigHomeVar)); filepath.IsAbs(dir) {
+		return filepath.Join(dir, configDirName, journalFileName)
+	}
+	if home := strings.TrimSpace(getenv(envHome)); filepath.IsAbs(home) {
+		return filepath.Join(home, defaultConfigHome, configDirName, journalFileName)
 	}
 	return ""
 }

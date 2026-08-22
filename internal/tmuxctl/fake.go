@@ -105,8 +105,48 @@ func argvReconcileEnv() []string {
 // bound could see output the daemon never mediated. That bound is gone;
 // @crswd-lifetime took the slot, because a lifetime the host does not hold is a
 // lifetime that does not survive the restart it exists for.
+//
+// Spec 012 appends two, and neither is a raw pane command. #{pane_current_command}
+// is the only value tmux would report here whose alphabet this daemon does not
+// control, and a "|" in it would not corrupt one field — parseSessions cuts from
+// the right, so an extra separator shifts *every* field on the row. So the
+// comparison happens inside tmux and what comes out is one character:
+//
+//	?  the session carries no @crswd-binary, so there is nothing to compare
+//	1  the pane is running the binary the session was started with
+//	0  it is not
+//
+// Both new fields therefore have alphabets this daemon writes and can state.
 func argvList() []string {
-	return []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{" + OptionManaged + "}|#{" + OptionName + "}|#{" + OptionWorkDir + "}|#{" + OptionStart + "}|#{" + OptionLifetime + "}"}
+	live := "#{?#{" + OptionBinary + "},#{==:#{pane_current_command},#{" + OptionBinary + "}},?}"
+	return []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{" + OptionManaged + "}|#{" + OptionName + "}|#{" + OptionWorkDir + "}|#{" + OptionStart + "}|#{" + OptionLifetime + "}|#{" + OptionConversation + "}|" + live}
+}
+
+// listFieldCount is the number of "|"-separated fields argvList produces. The
+// format string and parseSessions move together or the parser silently reads
+// one field into another's name; TestListFormatFieldCount is what holds them
+// together, and it is the test the comment in parseSessions has always promised.
+const listFieldCount = 9
+
+// fakeAliveCommand is what a seeded or created fake session reports as its pane
+// command until a test says otherwise. It is the binary every configured start
+// command in this repository begins with, so the default models a session whose
+// Claude is running — the state every test that is not about revival assumes.
+const fakeAliveCommand = "claude"
+
+// livenessOf is the comparison the real List has tmux make, made here instead so
+// the fake models the round trip rather than only its first half. A fake that
+// always answered "running" would let every revival test pass against a daemon
+// that never revives anything.
+func livenessOf(binary, paneCommand string) Liveness {
+	switch binary {
+	case "":
+		return LivenessUnknown
+	case paneCommand:
+		return LivenessRunning
+	default:
+		return LivenessStopped
+	}
 }
 
 // Fake is an in-memory Controller for every other package's tests, so no unit
@@ -128,8 +168,14 @@ type Fake struct {
 type fakeSession struct {
 	workDir string
 	created time.Time
-	options map[string]string
-	pane    string
+
+	// paneCommand is what List reports as #{pane_current_command}. It defaults
+	// to fakeAliveCommand because a seeded session models a *healthy* one, which
+	// is what every test that is not about death needs; SetPaneCommand is how a
+	// test that is about death says so.
+	paneCommand string
+	options     map[string]string
+	pane        string
 }
 
 // NewFake returns a fake with no sessions, as though tmux had just started.
@@ -155,9 +201,10 @@ func (f *Fake) New(_ context.Context, name, workDir string) error {
 	}
 	now := f.now()
 	f.sessions[name] = &fakeSession{
-		workDir: workDir,
-		created: now,
-		options: make(map[string]string),
+		workDir:     workDir,
+		created:     now,
+		paneCommand: fakeAliveCommand,
+		options:     make(map[string]string),
 	}
 	return nil
 }
@@ -318,6 +365,11 @@ func (f *Fake) List(_ context.Context) ([]SessionInfo, error) {
 			// nothing would let every adoption test pass against a daemon whose
 			// never-expiring sessions come back mortal.
 			Lifetime: s.options[OptionLifetime],
+			// And again for spec 012: a fake that stored the conversation and
+			// returned nothing would let every revival test pass against a daemon
+			// that resumes nothing.
+			ConversationID: s.options[OptionConversation],
+			Claude:         livenessOf(s.options[OptionBinary], s.paneCommand),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -332,7 +384,25 @@ func (f *Fake) Seed(info SessionInfo) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	s := &fakeSession{created: info.Created, options: make(map[string]string)}
+	s := &fakeSession{created: info.Created, paneCommand: fakeAliveCommand, options: make(map[string]string)}
+	// A seeded row may say what the pane is running, which is how a test seeds a
+	// survivor whose Claude has already died.
+	switch info.Claude {
+	case LivenessStopped:
+		// The ordinary failure: Claude gone, the login shell it was typed into
+		// still sitting there.
+		s.options[OptionBinary] = fakeAliveCommand
+		s.paneCommand = "bash"
+	case LivenessRunning:
+		s.options[OptionBinary] = fakeAliveCommand
+		s.paneCommand = fakeAliveCommand
+	case LivenessUnknown:
+		// A session started before OptionBinary existed carries no expectation,
+		// which is what a seeded survivor of an older build looks like.
+	}
+	if info.ConversationID != "" {
+		s.options[OptionConversation] = info.ConversationID
+	}
 	if info.Managed {
 		s.options[OptionManaged] = OptionManagedValue
 	}
@@ -394,10 +464,26 @@ func (f *Fake) SetPane(name, content string) {
 
 	s, ok := f.sessions[name]
 	if !ok {
-		s = &fakeSession{options: make(map[string]string)}
+		s = &fakeSession{paneCommand: fakeAliveCommand, options: make(map[string]string)}
 		f.sessions[name] = s
 	}
 	s.pane = content
+}
+
+// SetPaneCommand replaces what List reports as this session's pane command,
+// which is how a test says "Claude died here but the login shell survived" —
+// the ordinary failure spec 012 revives from, and one no unit test can produce
+// by actually killing a process.
+func (f *Fake) SetPaneCommand(name, command string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	s, ok := f.sessions[name]
+	if !ok {
+		s = &fakeSession{options: make(map[string]string)}
+		f.sessions[name] = s
+	}
+	s.paneCommand = command
 }
 
 // SetNow replaces the clock that stamps Created on sessions made through New,

@@ -23,7 +23,7 @@ session lifecycle code, so the negative cases are not optional.
 
 ## Phase 1: Setup
 
-- [ ] T001 Confirm the working tree is green before touching it: run `go build ./...`, `go vet ./...`, `go test ./...` and `golangci-lint run` from the repository root and record the result.
+- [X] T001 Confirm the working tree is green before touching it: run `go build ./...`, `go vet ./...`, `go test ./...` and `golangci-lint run` from the repository root and record the result.
 
 ---
 
@@ -31,15 +31,15 @@ session lifecycle code, so the negative cases are not optional.
 
 **These are the primitives every story below stands on. Nothing in Phase 3+ can start until they are done.**
 
-- [ ] T002 [P] Add `StateFailed State = "failed"` beside the existing states in `internal/session/session.go`, documenting that it is terminal and distinct from `dead` (a session nobody could save vs. a session somebody ended).
-- [ ] T003 [P] Add `ConversationID string`, `ReviveAttempts int` and `NextReviveAt time.Time` to `Session` in `internal/session/session.go`, with the field comments explaining why each is durable.
-- [ ] T004 [P] Add `OptionConversation = "@crswd-conversation"` to `internal/tmuxctl/controller.go` beside the five existing options, documenting that it is a cache and the journal is the authority.
-- [ ] T005 Extend the `list-sessions` format string in `internal/tmuxctl/exec.go` with `#{pane_current_command}` and the new option, and widen the row parser to match.
-- [ ] T006 Mirror the new format string and row shape in `internal/tmuxctl/fake.go` so the fake and the real controller cannot drift.
-- [ ] T007 Add `PaneCommand` and `ConversationID` to the `SessionInfo` type returned by `List` in `internal/tmuxctl/controller.go`.
-- [ ] T008 [P] Write `internal/tmuxctl/exec_test.go` cases for parsing a row with and without the new fields, including a session whose conversation option is unset (every pre-feature session).
-- [ ] T009 [P] Add `JournalPath(getenv)` to `internal/config/file.go`, resolving `sessions.jsonl` from the same base `DefaultPath` uses, and returning `""` when there is no absolute base.
-- [ ] T010 [P] Write `internal/config/file_test.go` cases for `JournalPath`: `XDG_CONFIG_HOME` set, only `HOME` set, neither set, and a relative directory ignored.
+- [X] T002 [P] Add `StateFailed State = "failed"` beside the existing states in `internal/session/session.go`, documenting that it is terminal and distinct from `dead` (a session nobody could save vs. a session somebody ended).
+- [X] T003 [P] Add `ConversationID string`, `ReviveAttempts int` and `NextReviveAt time.Time` to `Session` in `internal/session/session.go`, with the field comments explaining why each is durable.
+- [X] T004 [P] Add `OptionConversation = "@crswd-conversation"` to `internal/tmuxctl/controller.go` beside the five existing options, documenting that it is a cache and the journal is the authority.
+- [X] T005 Extend the `list-sessions` format string in `internal/tmuxctl/exec.go` with `#{pane_current_command}` and the new option, and widen the row parser to match.
+- [X] T006 Mirror the new format string and row shape in `internal/tmuxctl/fake.go` so the fake and the real controller cannot drift.
+- [X] T007 Add `PaneCommand` and `ConversationID` to the `SessionInfo` type returned by `List` in `internal/tmuxctl/controller.go`.
+- [X] T008 [P] Write `internal/tmuxctl/exec_test.go` cases for parsing a row with and without the new fields, including a session whose conversation option is unset (every pre-feature session).
+- [X] T009 [P] Add `JournalPath(getenv)` to `internal/config/file.go`, resolving `sessions.jsonl` from the same base `DefaultPath` uses, and returning `""` when there is no absolute base.
+- [X] T010 [P] Write `internal/config/file_test.go` cases for `JournalPath`: `XDG_CONFIG_HOME` set, only `HOME` set, neither set, and a relative directory ignored.
 
 **Checkpoint**: `go build ./...` and `go test ./...` pass; nothing behaves differently yet.
 

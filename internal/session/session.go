@@ -68,6 +68,21 @@ const (
 	// (FR-033), so a record that could leave this state would be a session that
 	// came back from a 404.
 	StateDead State = "dead"
+
+	// StateFailed means the supervisor tried to bring this session back, ran out
+	// of attempts, and stopped (spec 012, FR-018).
+	//
+	// It is terminal for revival and for nothing else. The record is still owned,
+	// still counted against the cap, still reapable, and still readable — because
+	// an operator whose session could not be saved needs to be able to look at it
+	// and end it, and a state that hid it would be the invisible failure this
+	// whole feature exists to remove.
+	//
+	// It is a separate state rather than StateDead, and the distinction is the
+	// point: dead is a session somebody ended, failed is a session the daemon
+	// could not save. An operator reading a card must be able to tell those
+	// apart, because only one of them is a surprise.
+	StateFailed State = "failed"
 )
 
 // Valid reports whether s is one of the three states. Anything else is a record
@@ -75,7 +90,7 @@ const (
 // answer to "does this accept a prompt?".
 func (s State) Valid() bool {
 	switch s {
-	case StateStarting, StateRunning, StateDead:
+	case StateStarting, StateRunning, StateDead, StateFailed:
 		return true
 	}
 	return false
@@ -234,6 +249,46 @@ type Session struct {
 	// FR-013's "never stored" true — a plaintext token held from startup until
 	// somebody asked for it would be exactly the storage that forbids.
 	CredentialPending bool `json:"-"`
+
+	// ConversationID is the Claude conversation this session is having: a UUID
+	// this daemon minted at create and passed as --session-id, and the value it
+	// passes to --resume to bring the session back (spec 012, FR-001).
+	//
+	// The daemon chooses it rather than discovering it afterwards, because the
+	// alternatives cannot tell two sessions in one working directory apart —
+	// --continue resolves to "most recent", and a display name is silently
+	// renamed by the CLI when it collides with a live session.
+	//
+	// **It is durable in two places, and the journal is the authority.** It is
+	// written onto the tmux session as @crswd-conversation, which is the cheap
+	// read while that session exists, and into the journal, which is the only
+	// copy that outlives it. On 2026-08-22 the kernel OOM killer took a whole
+	// tmux-spawn cgroup — Claude, its shell and its tmux session together — and
+	// every option on that session went with it. A handle kept only on the
+	// running shell is lost in exactly the failure it exists for.
+	//
+	// Empty for every session created before spec 012. Such a session is
+	// supervised like any other and revived by identifier never, because there
+	// is no identifier it was ever started with (FR-005).
+	ConversationID string
+
+	// ReviveAttempts is how many consecutive revivals have failed since the last
+	// success, and it is what stops this daemon becoming the thing it is meant to
+	// fix (FR-016).
+	//
+	// It is durable for one reason: a count that lived only in memory would be
+	// reset by every daemon restart, and a supervisor whose bound resets is a
+	// supervisor with no bound. On 2026-08-17 a unit on this host restarted 2,826
+	// times in four hours against an error no retry could fix.
+	ReviveAttempts int
+
+	// NextReviveAt is the earliest instant the next attempt may be made, so
+	// consecutive attempts are spaced further and further apart (FR-017).
+	//
+	// Zero means "now", which is what a session that has never failed carries.
+	// It is written *before* an attempt rather than after, so a daemon that dies
+	// mid-revival comes back backing off rather than retrying instantly.
+	NextReviveAt time.Time
 }
 
 // TmuxName is the host session name this record addresses.
@@ -715,6 +770,12 @@ func (st *Store) SetState(id string, next State) error {
 		return fmt.Errorf("set state: %w", ErrSessionNotFound)
 	}
 	if s.State == StateDead && next != StateDead {
+		return fmt.Errorf("set state: %w", ErrSessionDead)
+	}
+	// Failed is one-way too, with one exit: destroying it. A supervisor that
+	// could move a session back out of failed would be a supervisor whose bound
+	// is advisory, and the bound is the whole defence against a retry loop.
+	if s.State == StateFailed && next != StateFailed && next != StateDead {
 		return fmt.Errorf("set state: %w", ErrSessionDead)
 	}
 	s.State = next
