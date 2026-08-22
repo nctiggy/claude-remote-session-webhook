@@ -42,7 +42,7 @@ observed failure is exactly that (research D2).
 
 ## Journal record
 
-One JSON object per line in `~/.config/crswd/sessions.jsonl`. Last record for an
+One JSON object per line in `~/.config/crswd/sessions-<listen-address>.jsonl`. Last record for an
 id wins.
 
 | Field | Type | Notes |

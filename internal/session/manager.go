@@ -684,7 +684,13 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 	if err != nil {
 		return nil, "", fmt.Errorf("create session %s: %w", id, err)
 	}
-	conversationID, err := conversationFor(resume)
+	// Resolved before the identifier is minted, because whether there is one at
+	// all depends on what this session is going to run.
+	template, err := m.resolveStartCommand(req.StartCommand)
+	if err != nil {
+		return nil, "", fmt.Errorf("create session %s: %w", id, err)
+	}
+	conversationID, err := conversationFor(resume, conversationCapable(template))
 	if err != nil {
 		return nil, "", fmt.Errorf("create session %s: %w", id, err)
 	}
@@ -2090,7 +2096,9 @@ func (m *Manager) rollback(ctx context.Context, s Session, cause error) error {
 //
 //   - Nothing to resume — the ordinary create — gets a freshly minted identifier,
 //     which is passed as --session-id so the conversation is this daemon's to
-//     find again.
+//     find again. Unless the start command is one this daemon cannot give an
+//     identifier to, in which case it gets none and is supervised but never
+//     revived by one (see claudeBinary).
 //   - A named conversation is already an identifier; the session simply is that
 //     conversation, and it is passed as --resume.
 //   - "the most recent in this directory" resolves to an identifier only the CLI
@@ -2099,13 +2107,18 @@ func (m *Manager) rollback(ctx context.Context, s Session, cause error) error {
 //     started elsewhere. Such a session carries no identifier and is therefore
 //     supervised but never revived by one — the same position as every session
 //     created before spec 012 (FR-005).
-func conversationFor(resume string) (string, error) {
+func conversationFor(resume string, capable bool) (string, error) {
 	checked, err := ValidateResume(resume)
 	if err != nil {
 		return "", err
 	}
 	switch checked {
 	case "":
+		if !capable {
+			// A start command this daemon cannot give an identifier to. The
+			// session runs exactly as it always did — see claudeBinary.
+			return "", nil
+		}
 		return NewConversationID()
 	case ResumeLatest:
 		return "", nil

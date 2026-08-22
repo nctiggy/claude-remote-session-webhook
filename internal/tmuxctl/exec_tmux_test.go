@@ -473,3 +473,83 @@ func TestTmuxCapturePaneCarriesNoEscapeBytes(t *testing.T) {
 		t.Errorf("captured pane carries an ESC byte: %q", pane)
 	}
 }
+
+// TestTmuxListReportsTheConversationAndLiveness is spec 012's half of the round
+// trip, and it is the one assertion in this repository that only a real tmux can
+// make.
+//
+// The liveness field is not a value this daemon writes and reads back — it is an
+// *expression* tmux evaluates: `#{?#{@crswd-binary},#{==:#{pane_current_command},#{@crswd-binary}},?}`.
+// The fake models the comparison in Go, which is exactly where a mistake in that
+// expression would be invisible. If a tmux build does not support the nested
+// conditional, every session on the host reads as stopped and the supervisor
+// restarts a healthy fleet — so this is the test that has to run against the
+// binary an operator actually has.
+func TestTmuxListReportsTheConversationAndLiveness(t *testing.T) {
+	ctx := context.Background()
+	e := newTestExec(t)
+	const (
+		matching = "crswd-77777777777777777777777777777777"
+		stopped  = "crswd-88888888888888888888888888888888"
+		silent   = "crswd-99999999999999999999999999999999"
+		uuid     = "7f3a1b2c-4d5e-4f60-8a71-b2c3d4e5f607"
+	)
+
+	dir := t.TempDir()
+	for _, name := range []string{matching, stopped, silent} {
+		if err := e.New(ctx, name, dir); err != nil {
+			t.Fatalf("New %s: %v", name, err)
+		}
+		if err := e.SetOption(ctx, name, OptionManaged, OptionManagedValue); err != nil {
+			t.Fatalf("SetOption managed on %s: %v", name, err)
+		}
+		if err := e.SetOption(ctx, name, OptionConversation, uuid); err != nil {
+			t.Fatalf("SetOption conversation on %s: %v", name, err)
+		}
+	}
+
+	// The pane of a session New starts is running the login shell. So a session
+	// whose recorded binary *is* that shell reads as running, and one whose
+	// recorded binary is anything else reads as stopped — which is precisely the
+	// shape of the real case, where the shell is what is left after Claude exits.
+	shell, stderr, err := e.run(ctx, []string{"tmux", "-L", e.socket, "display-message", "-p", "-t", PaneTarget(matching), "#{pane_current_command}"}, nil)
+	if err != nil {
+		t.Fatalf("ask tmux what the pane is running: %v (%s)", err, stderr)
+	}
+	running := strings.TrimSpace(shell)
+	if running == "" {
+		t.Fatal("tmux reported no pane command at all; the liveness expression has nothing to compare against")
+	}
+
+	if err := e.SetOption(ctx, matching, OptionBinary, running); err != nil {
+		t.Fatalf("SetOption binary on %s: %v", matching, err)
+	}
+	if err := e.SetOption(ctx, stopped, OptionBinary, "definitely-not-"+running); err != nil {
+		t.Fatalf("SetOption binary on %s: %v", stopped, err)
+	}
+	// silent carries no binary at all — a session started before spec 012.
+
+	sessions, err := e.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	seen := make(map[string]SessionInfo, len(sessions))
+	for _, s := range sessions {
+		seen[s.Name] = s
+	}
+
+	for name, want := range map[string]Liveness{
+		matching: LivenessRunning,
+		stopped:  LivenessStopped,
+		silent:   LivenessUnknown,
+	} {
+		if got := seen[name].Claude; got != want {
+			t.Errorf("%s: Claude = %q, want %q — this tmux may not evaluate the nested conditional in the list format", name, got, want)
+		}
+	}
+	for _, name := range []string{matching, stopped, silent} {
+		if got := seen[name].ConversationID; got != uuid {
+			t.Errorf("%s: ConversationID = %q, want %q — this tmux may not keep or render %s", name, got, uuid, OptionConversation)
+		}
+	}
+}

@@ -1596,10 +1596,24 @@ func TestTheLeakSuiteReallyDrivesTheDaemon(t *testing.T) {
 	// evidence is that a render put it on a page and a handler wrote it back into
 	// a card — and, above that, that every admitted action carried it and none of
 	// them was refused, which driveTheActionRoutes already asserted.
+	//
+	// **The two renders are not asserted to carry the same bytes**, and that was a
+	// latent fragility here rather than a property. A page token is
+	// `expiry + mac` where expiry is `now.Add(12h).Unix()` — one-second
+	// granularity — so two renders that land either side of a second boundary
+	// carry different tokens, legitimately. This passed for as long as a create
+	// happened to fit inside one second and began failing the moment anything on
+	// that path grew slower, which is a test measuring the clock rather than the
+	// daemon.
+	//
+	// What has to be true is what is checked instead: the swept value really came
+	// off a rendered page (it did — proofFrom fatals otherwise, and every action
+	// below was admitted carrying it), and a create's own page really carries one
+	// too.
 	if run.pageProof == "" {
 		t.Error("no page token was ever rendered, so the sweep proves nothing about one")
-	} else if !strings.Contains(run.createdCard, run.pageProof) {
-		t.Error("the card a create rendered back carries no page token, so the sweep is reading a value the daemon never put on a page")
+	} else if !hiddenProof.MatchString(run.createdCard) {
+		t.Error("the page a create redirected to carries no page token at all, so the sweep is reading a value the daemon never put on a page")
 	}
 
 	// The pane's escape sequences live inside the pane content the rows above

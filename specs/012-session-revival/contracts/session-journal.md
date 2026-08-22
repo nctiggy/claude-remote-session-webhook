@@ -1,6 +1,6 @@
 # Contract: the session journal
 
-**File**: `$XDG_CONFIG_HOME/crswd/sessions.jsonl`, else `~/.config/crswd/sessions.jsonl`
+**File**: `$XDG_CONFIG_HOME/crswd/sessions-<listen-address>.jsonl`, else `~/.config/crswd/sessions-<listen-address>.jsonl`
 **Resolution**: the same base directory `config.DefaultPath` resolves for the
 configuration file, so configuration and state never live in two roots.
 

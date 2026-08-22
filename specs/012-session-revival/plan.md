@@ -26,7 +26,7 @@ through `internal/tmuxctl`; the `claude` CLI as the process being supervised. No
 new module dependency.
 
 **Storage**: one append-only JSONL journal at
-`$XDG_CONFIG_HOME/crswd/sessions.jsonl` (else `~/.config/crswd/`). No database —
+`$XDG_CONFIG_HOME/crswd/sessions-<listen-address>.jsonl` (else `~/.config/crswd/`). No database —
 explicitly ruled out by the operator, and nothing here needs queries.
 
 **Testing**: `go test ./...` (table-driven, `t.Parallel()`, no network, no real
@@ -110,7 +110,7 @@ specs/012-session-revival/
 internal/session/
 ├── supervisor.go       NEW  the sweep that revives; ticker/clock shape borrowed from reaper.go
 ├── supervisor_test.go  NEW
-├── journal.go          NEW  append-only read/write/replay of sessions.jsonl
+├── journal.go          NEW  append-only read/write/replay of the session journal
 ├── journal_test.go     NEW
 ├── session.go          MOD  +ConversationID +ReviveAttempts +NextReviveAt, +StateFailed
 ├── manager.go          MOD  mint the UUID at Create; Revive/Recreate; replay at startup

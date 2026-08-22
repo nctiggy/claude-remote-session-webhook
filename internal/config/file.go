@@ -81,11 +81,13 @@ const (
 	configDirName     = "crswd"
 	configFileName    = "config"
 
-	// journalFileName is the session journal spec 012 added, and it sits beside
-	// the configuration rather than under $XDG_STATE_HOME. Two reasons: the
-	// operator asked for ~/.config/crswd, and a daemon whose files are split
-	// across two roots is a daemon an operator has to remember two paths for.
-	journalFileName = "sessions.jsonl"
+	// journalFilePrefix and journalFileSuffix bracket the session journal spec
+	// 012 added. It sits beside the configuration rather than under
+	// $XDG_STATE_HOME: the operator asked for ~/.config/crswd, and a daemon whose
+	// files are split across two roots is a daemon an operator has to remember
+	// two paths for.
+	journalFilePrefix = "sessions-"
+	journalFileSuffix = ".jsonl"
 
 	// backupSuffix makes the default file's backup the `config.bak` the data
 	// model names, and keeps a file named anything else beside its own copy
@@ -306,30 +308,52 @@ func DefaultPath(getenv func(string) string) string {
 }
 
 // JournalPath is the session journal this daemon appends to (spec 012), resolved
-// from the same base DefaultPath resolves the configuration from.
+// from the same base DefaultPath resolves the configuration from and named after
+// the address this daemon listens on.
 //
 // It returns "" for the same reason DefaultPath does — there is nowhere to put
 // one — and that is not an error: a container configured entirely by environment
 // variables has no home to keep a journal in, and a daemon there supervises the
 // sessions it can see and recreates none, which is what it did before spec 012.
+// An empty listen address does the same, for the same reason.
 //
-// # Why it follows CRSW_CONFIG_FILE
+// # Why the address is in the name
 //
-// When the operator names a configuration file, the journal goes beside *that*
-// file rather than in the XDG layout. A second daemon started against its own
-// configuration — which is every acceptance test in this repository — must not
-// append to, or replay, the journal belonging to the daemon the operator is
-// actually running. Keeping the two together is what makes "which sessions does
-// this daemon own?" have the same answer as "which configuration did it read?".
-func JournalPath(getenv func(string) string) string {
+// **A journal is per-daemon, exactly as a tmux server is.** Each daemon names its
+// own tmux server after its listen address (tmuxctl.SocketFor) so two daemons on
+// one host cannot see each other's sessions, and the journal has to be namespaced
+// by the same thing or the isolation is only half there.
+//
+// It is not a hypothetical. A second daemon sharing a home directory replayed the
+// first one's journal, found those sessions absent from its *own* tmux server —
+// correctly, they were on the other one — and stood ready to recreate every one
+// of them. Two live shells for one session id, on two servers, neither aware of
+// the other. The acceptance suite caught it on the first run.
+//
+// The same sanitisation as the socket name, and for the same reason: what comes
+// out is a filename, and a colon or a slash from an address is not one.
+func JournalPath(getenv func(string) string, listen string) string {
+	listen = strings.TrimSpace(listen)
+	if listen == "" {
+		return ""
+	}
+	name := journalFilePrefix + strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		default:
+			return '-'
+		}
+	}, listen) + journalFileSuffix
+
 	if named := strings.TrimSpace(getenv(configFileVar)); named != "" {
-		return filepath.Join(filepath.Dir(named), journalFileName)
+		return filepath.Join(filepath.Dir(named), name)
 	}
 	if dir := strings.TrimSpace(getenv(xdgConfigHomeVar)); filepath.IsAbs(dir) {
-		return filepath.Join(dir, configDirName, journalFileName)
+		return filepath.Join(dir, configDirName, name)
 	}
 	if home := strings.TrimSpace(getenv(envHome)); filepath.IsAbs(home) {
-		return filepath.Join(home, defaultConfigHome, configDirName, journalFileName)
+		return filepath.Join(home, defaultConfigHome, configDirName, name)
 	}
 	return ""
 }

@@ -417,7 +417,10 @@ func newWithLayer1(
 	// configuration cannot replay the sessions of the one the operator is
 	// running. An empty path is a working daemon that remembers nothing, which
 	// is a container with no home and is exactly what this daemon did before.
-	sessions.SetJournal(session.NewJournal(config.JournalPath(os.Getenv)))
+	// Named after the listen address, exactly as this daemon's tmux server is:
+	// two daemons on one host must not replay each other's sessions any more than
+	// they may see each other's shells.
+	sessions.SetJournal(session.NewJournal(config.JournalPath(os.Getenv, cfg.Listen)))
 	// The named start-command set reaches the manager here, and nowhere else
 	// (#38). Without this line the whole of internal/config's start-command
 	// handling is configuration nothing reads — which is the failure this repo

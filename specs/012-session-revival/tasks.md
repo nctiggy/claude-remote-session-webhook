@@ -38,7 +38,7 @@ session lifecycle code, so the negative cases are not optional.
 - [X] T006 Mirror the new format string and row shape in `internal/tmuxctl/fake.go` so the fake and the real controller cannot drift.
 - [X] T007 Add `PaneCommand` and `ConversationID` to the `SessionInfo` type returned by `List` in `internal/tmuxctl/controller.go`.
 - [X] T008 [P] Write `internal/tmuxctl/exec_test.go` cases for parsing a row with and without the new fields, including a session whose conversation option is unset (every pre-feature session).
-- [X] T009 [P] Add `JournalPath(getenv)` to `internal/config/file.go`, resolving `sessions.jsonl` from the same base `DefaultPath` uses, and returning `""` when there is no absolute base.
+- [X] T009 [P] Add `JournalPath(getenv, listen)` to `internal/config/file.go`, resolving `sessions-<listen-address>.jsonl` from the same base `DefaultPath` uses, and returning `""` when there is no absolute base.
 - [X] T010 [P] Write `internal/config/file_test.go` cases for `JournalPath`: `XDG_CONFIG_HOME` set, only `HOME` set, neither set, and a relative directory ignored.
 
 **Checkpoint**: `go build ./...` and `go test ./...` pass; nothing behaves differently yet.
@@ -142,13 +142,13 @@ session lifecycle code, so the negative cases are not optional.
 
 ## Phase 7: Polish & Cross-Cutting
 
-- [ ] T051 [P] Document the revival lifecycle, the journal and the `failed` state in `docs/auth-and-sessions.md`, which the constitution's quality gate requires for any session-lifecycle change.
-- [ ] T052 [P] Document the journal as a new on-disk artifact in `docs/security.md` — what it holds, what it must never hold, and its mode.
-- [ ] T053 [P] Add the `failed` pill to `docs/components.md` so the card vocabulary stays the single source.
-- [ ] T054 Add a `quickstart`-tagged acceptance case in `cmd/crswd/` that starts a real daemon, kills Claude in a real tmux session, and asserts revival.
-- [ ] T055 Add a `tmux`-tagged case in `internal/tmuxctl/` asserting the new format string parses against the real tmux binary.
-- [ ] T056 Run the full gate: `go build ./...`, `go vet ./...`, `go test ./...`, `go test -tags tmux ./...`, `go vet -tags quickstart ./...`, `go test -tags dev ./...`, `gofmt -l .`, `golangci-lint run`.
-- [ ] T057 Update `ralph/PROGRESS.md` with what was built, what was verified, and anything that could not be run here.
+- [X] T051 [P] Document the revival lifecycle, the journal and the `failed` state in `docs/auth-and-sessions.md`, which the constitution's quality gate requires for any session-lifecycle change.
+- [X] T052 [P] Document the journal as a new on-disk artifact in `docs/security.md` — what it holds, what it must never hold, and its mode.
+- [X] T053 [P] Add the `failed` pill to `docs/components.md` so the card vocabulary stays the single source.
+- [X] T054 Add a `quickstart`-tagged acceptance case in `cmd/crswd/` that starts a real daemon, kills Claude in a real tmux session, and asserts revival.
+- [X] T055 Add a `tmux`-tagged case in `internal/tmuxctl/` asserting the new format string parses against the real tmux binary.
+- [X] T056 Run the full gate: `go build ./...`, `go vet ./...`, `go test ./...`, `go test -tags tmux ./...`, `go vet -tags quickstart ./...`, `go test -tags dev ./...`, `gofmt -l .`, `golangci-lint run`.
+- [X] T057 Update `ralph/PROGRESS.md` with what was built, what was verified, and anything that could not be run here.
 
 ---
 

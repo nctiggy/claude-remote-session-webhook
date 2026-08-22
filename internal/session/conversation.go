@@ -262,6 +262,29 @@ func (m *Manager) HasTranscript(conversationID, workDir string) bool {
 	return !info.IsDir()
 }
 
+// claudeBinary is the one binary this daemon knows takes a conversation
+// identifier, and the gate on minting one.
+//
+// It is a literal, and that is worth being uncomfortable about. The alternative
+// was worse: internal/config accepts *any* command line as a start command —
+// there is no rule that one must run Claude — so a daemon that inserted
+// --session-id unconditionally would break every operator whose start command is
+// something else. That is not hypothetical; it is how this constant came to
+// exist, when the real-tmux suite ran its `seq`-based start command and got
+// `seq: unrecognized option '--session-id'`.
+//
+// What an operator loses by wrapping Claude in a script named something else is
+// revival by identifier, and nothing else: the session starts exactly as it
+// always did, is supervised exactly as any other, and sits in the same position
+// as every session created before spec 012 (FR-005).
+const claudeBinary = "claude"
+
+// conversationCapable reports whether a start command is one this daemon may
+// give a conversation identifier to.
+func conversationCapable(template string) bool {
+	return startBinary(template) == claudeBinary
+}
+
 // startBinary is the first token of a start command, reduced to its base name:
 // "claude" for every command configured in this repository, whether the operator
 // spelled it bare or as an absolute path.

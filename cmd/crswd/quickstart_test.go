@@ -66,6 +66,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 )
 
@@ -2323,4 +2324,89 @@ func errorsAs(err error, target **exec.ExitError) bool {
 		*target = e
 	}
 	return ok
+}
+
+// TestSessionCarriesWhatRevivalNeeds is spec 012's acceptance case: a real
+// build, a real port, a real tmux server, and the two facts that decide whether
+// a session can ever be brought back.
+//
+// **What it does not assert, and why.** The sweep that actually revives runs on
+// a 30-second interval, and a test that waited for one would spend half a minute
+// to assert a timer. What it asserts instead is everything the sweep depends on
+// and nothing it can supply itself: that a real create writes a real conversation
+// identifier and a real binary onto a real tmux session, and that the journal
+// beside the daemon's own configuration records the session without recording a
+// credential. The revival itself is quickstart.md scenarios 1 and 2, driven by
+// hand against a running daemon, which is the honest place for a claim about a
+// timer.
+func TestSessionCarriesWhatRevivalNeeds(t *testing.T) {
+	h := newHost(t)
+	d := h.start(nil)
+
+	created := d.createSession("revivable")
+	name := "crswd-" + created.ID
+
+	if !h.hasSession(name) {
+		t.Fatalf("the create reported %s and the host has no such session", created.ID)
+	}
+
+	option := func(opt string) string {
+		t.Helper()
+		out, err := h.tmux("show-options", "-t", "="+name+":", opt)
+		if err != nil {
+			t.Fatalf("read %s off %s: %v", opt, name, err)
+		}
+		return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), opt))
+	}
+
+	// The conversation, which is what --resume is given. A create that recorded
+	// nothing here is a session that can never be brought back to the work it was
+	// doing, which is the whole of what spec 012 buys.
+	conversation := strings.Trim(option("@crswd-conversation"), `"`)
+	if conversation == "" {
+		t.Fatal("the session carries no conversation identifier; nothing could resume it")
+	}
+	if _, err := session.ValidateResume(conversation); err != nil {
+		t.Fatalf("the session carries %q, which is not a conversation identifier: %v", conversation, err)
+	}
+
+	// The binary, which is what tmux compares the pane against. Absent, every
+	// session reads as being of unknown liveness — safe, and permanently
+	// unrevivable.
+	if got := strings.Trim(option("@crswd-binary"), `"`); got != "claude" {
+		t.Errorf("@crswd-binary = %q, want %q — the stand-in this suite installs is named claude", got, "claude")
+	}
+
+	// The journal, beside the configuration this daemon actually read.
+	// config.JournalPath's own resolution, for the environment this suite hands
+	// the daemon: no CRSW_CONFIG_FILE and no XDG_CONFIG_HOME, so it falls back to
+	// $HOME/.config/crswd — and $HOME here is the suite's own temp home, which is
+	// what keeps an acceptance run from appending to the operator's journal.
+	journal := filepath.Join(h.home, ".config", "crswd", "sessions-"+strings.NewReplacer(":", "-", ".", "-").Replace(d.addr)+".jsonl")
+	info, err := os.Stat(journal)
+	if err != nil {
+		t.Fatalf("the daemon created a session and wrote no journal at %s: %v", journal, err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("the journal's mode is %o, want 600; it names every session on the host", perm)
+	}
+	body, err := os.ReadFile(journal) //nolint:gosec // journal is composed from the test's own temp dir
+	if err != nil {
+		t.Fatalf("read the journal: %v", err)
+	}
+	if !strings.Contains(string(body), created.ID) {
+		t.Errorf("the journal does not record the session that was just created:\n%s", body)
+	}
+	if !strings.Contains(string(body), conversation) {
+		t.Errorf("the journal records the session without its conversation, so a replay could not resume it:\n%s", body)
+	}
+	// FR-022 on a file. The token the create handed back must appear nowhere in it.
+	if created.Token != "" && strings.Contains(string(body), created.Token) {
+		t.Error("the journal contains the session's bearer token")
+	}
+	for _, forbidden := range []string{"token", "hash", "secret"} {
+		if strings.Contains(string(body), forbidden) {
+			t.Errorf("the journal names %q:\n%s", forbidden, body)
+		}
+	}
 }

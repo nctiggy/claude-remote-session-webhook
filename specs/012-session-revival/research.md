@@ -84,7 +84,7 @@ the failure this feature exists to recover from.
 
 ## D3 — Journal location and format
 
-**Decision**: `~/.config/crswd/sessions.jsonl`, append-only, one JSON object per
+**Decision**: `~/.config/crswd/sessions-<listen-address>.jsonl`, append-only, one JSON object per
 line, `O_APPEND` + `fsync` per record, replayed at startup.
 
 **Rationale for the directory**: it is where the operator asked for it, and it is

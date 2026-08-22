@@ -87,7 +87,7 @@ error.
 ## Journal
 
 ```bash
-cat ~/.config/crswd/sessions.jsonl
+cat ~/.config/crswd/sessions-127-0-0-1-8765.jsonl
 ```
 
 **Expected**: one line per lifecycle event, `0600`, no token, no pane content, no

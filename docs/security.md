@@ -561,6 +561,47 @@ web page it fetched — reaches the dashboard. **All of it is untrusted.**
 - The same applies to session names and working directories. A caller picks those,
   and the regex in §2 is what keeps them boring.
 
+## The session journal (the one file this daemon writes)
+
+`$XDG_CONFIG_HOME/crswd/sessions-<listen-address>.jsonl`, else `~/.config/crswd/sessions-<listen-address>.jsonl`.
+It is the only durable state the daemon keeps, and it exists because the host
+stopped being sufficient: on 2026-08-22 the kernel OOM killer took a whole
+`tmux-spawn` cgroup and destroyed a session's tmux state along with it, so
+everything recorded on that tmux session went too.
+
+**What it holds**: session id, owner, conversation identifier, working directory,
+start-command *name*, lifetime, original creation time, and a revival attempt
+count. That is the set the daemon cannot rediscover once the shell is gone.
+
+**What it must never hold**: a bearer token, a token hash, pane content,
+conversation content, or caller-supplied free text. The rule FR-042 places on the
+audit trail applies here unchanged — there is simply no request behind this file.
+A start-command *name* is recorded and a command *line* never is: a stored
+command line would be a command line a restart could be made to run.
+
+**Mode `0600`**, created with the directory at `0700`.
+
+**One journal per daemon, named after its listen address** — the same thing the
+tmux server is named after (`tmuxctl.SocketFor`). Two daemons on one host must not
+replay each other's sessions any more than they may see each other's shells, and
+without this they do: a second daemon sharing a home directory replays the first
+one's journal, finds those sessions absent from its *own* tmux server, and stands
+ready to recreate every one of them on it.
+
+**Append-only, fsynced per record.** The failure being defended against is an
+unclean stop, and a rewritten document degrades to a truncated file where a log
+degrades to a missing last line. On this host the unclean reset of 2026-08-17
+lost a flag out of a rewritten `~/.claude.json` and took a gitignored `.env` with
+it — that is the failure mode, observed, on this machine.
+
+**Reading it is fail-loud, replaying it is fail-safe.** A missing file means no
+session has been created yet. An unreadable one is fatal at startup, because a
+daemon that continued would supervise nothing and report nothing. A torn final
+line is discarded and counted. And every replayed candidate is re-checked against
+the allowlist, the ceiling and the cap in force *now* — a journal outlives the
+configuration that produced it, and it must never reinstate a session the
+operator's current configuration would refuse to create.
+
 ## Rate limiting & audit
 
 - Per-caller rate limit on session creation. Spawning Claude sessions is expensive

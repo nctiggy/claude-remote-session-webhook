@@ -300,13 +300,23 @@ The single source of truth for how session state is rendered. Colour comes from 
 state map in `design-system.md`; the label is always present.
 
 ```gotemplate
-{{ template "status-pill" .Session.State }}   {{/* running | needs-auth | dead */}}
+{{ template "status-pill" .Session.State }}   {{/* running | failed | needs-auth | dead */}}
 ```
 
 Never render state as a bare coloured dot, and never hand-write the colour at a call
 site — it comes from the state token map in `design-system.md`. `needs-auth` is amber
 and `dead` is red on purpose: legibility at a glance beats theme purity, and a dead
 session that reads as green is a bug.
+
+`failed` is the second state the daemon really derives (spec 012): a session the
+supervisor tried the maximum number of times to bring back and stopped. It is
+deliberately a different colour from `dead`, because they are different facts and an
+operator has to tell them apart at a glance — `dead` is a session somebody ended,
+`failed` is one the daemon could not save, and only the second is a surprise.
+
+It reached the pill with no edit to the component. The class is composed from the
+value, so a new state needs a token and a rule in `crswd.css` and nothing here —
+which is the property this component was built for and the one to keep.
 
 ## Session card
 
