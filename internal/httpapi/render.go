@@ -20,7 +20,6 @@ package httpapi
 // notices.
 
 import (
-	"github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo"
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
@@ -32,6 +31,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/nctiggy/claude-remote-session-webhook/internal/buildinfo"
 )
 
 // The browser door's response headers, named here once each because the name a

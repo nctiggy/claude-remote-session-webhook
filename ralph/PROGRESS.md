@@ -621,3 +621,74 @@ Every task in the plan is checked and the tree is green: build, vet, `go test ./
 cases that do not need the port the deployed daemon holds.
 
 RALPH_COMPLETE
+
+---
+
+## Spec 012 — session revival (2026-08-22)
+
+**Why it exists.** A session died on 22 August and nothing noticed until somebody
+asked. The kernel OOM killer took the whole `tmux-spawn-…` cgroup — Claude, its
+login shell and its tmux session together — at 08:16:10Z, on a host that had been
+up five days and whose tmux server never restarted. crswd knew the session was
+dead and only ever said so in answer to a request.
+
+**What was built.** A supervisor sweeping beside the reaper on the same cadence,
+one `tmux list-sessions` per sweep. Two deaths, one answer: Claude exiting leaves
+the login shell, so the command is typed again with `--resume`; the shell being
+destroyed leaves nothing, so a new one is built under the same session identity,
+marked owned before anything is typed into it. A durable append-only journal
+carries the conversation identifier and the attempt count across the loss of the
+shell. Three attempts per death at 5s / 30s / 3m, then `failed` on the card. And
+the create form's conversation list now follows the directory actually chosen.
+
+**Two questions were put to the operator rather than guessed** (Principle II).
+Whether to attempt a clean-exit distinction — no, the start command is typed into
+a login shell so no exit status exists, and destroy is the only final signal. And
+the scope boundary, which was then decided against journal evidence rather than
+preference: the observed failure destroys the tmux session, so the resume handle
+cannot live only on it.
+
+### Three defects the tests found, not a reviewer
+
+- **A pipe in a pane command shifts every field on a `list-sessions` row**, not
+  the field beside it. The first cut put `#{pane_current_command}` on the row and
+  compared in Go; writing the corruption case proved the parser reads from the
+  right, so one extra separator moves everything. tmux does the comparison now —
+  `#{?#{@crswd-binary},#{==:#{pane_current_command},#{@crswd-binary}},?}` — and
+  answers in one character. Verified against real tmux 3.4.
+- **`--session-id` was being injected into every configured start command.**
+  `internal/config` accepts any command line; there is no rule that one must run
+  Claude. The `-tags tmux` suite runs a `seq`-based command and produced
+  `seq: unrecognized option '--session-id'`. Minting is now gated on the start
+  binary, and a start command this daemon cannot give an identifier to gets none
+  and is supervised without being revived by one.
+- **Two daemons sharing a home replayed each other's journals.** Found by the
+  acceptance suite on its first run: daemon B replayed daemon A's records, found
+  those sessions absent from its *own* tmux server — correctly, they were on the
+  other one — and stood ready to recreate all of them. The journal is now named
+  after the listen address, exactly as the tmux server already was.
+
+### One pre-existing fragility corrected
+
+`TestTheLeakSuiteReallyDrivesTheDaemon` asserted two independently-minted page
+tokens were byte-equal. A page token is `expiry + mac` where expiry has
+one-second granularity, so two renders either side of a second boundary
+legitimately differ; it passed only while a create fitted inside one second, and
+the journal's per-record fsync was enough to end that. It now asserts the created
+page carries a page token rather than the same bytes.
+
+### Verification
+
+Everything in `AGENTS.md` was run and passes: `go build ./...`, `go vet ./...`,
+`go test ./...`, `go test -tags tmux ./...`, `go test -tags dev ./...`,
+`go test -tags quickstart ./cmd/crswd` (the **whole** suite this time, 35s — the
+port was free), `gofmt -l .` clean, and `golangci-lint run` with 0 issues.
+
+**What was not verified here.** The 30-second revival sweep end to end. The
+acceptance case asserts everything the sweep depends on — a real create writing a
+real conversation identifier and binary onto a real tmux session, and a journal
+recording it without a credential — but a test that waited for a timer would
+spend half a minute asserting a timer. Revival itself is `quickstart.md`
+scenarios 1 and 2, by hand, against a running daemon.
+
+RALPH_COMPLETE

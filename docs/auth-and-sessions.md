@@ -526,9 +526,64 @@ read, *or destroy* — only the reaper can end it. There is no renewal and no re
 one token covers exactly one session's life, and then both are gone. If you shorten
 one of these two numbers, shorten both.
 
+## Revival — bringing back a session nobody ended
+
+A session can stop without anybody asking it to. Claude can exit while its login
+shell survives; the shell and its whole tmux session can be destroyed while the
+tmux server lives; or the host can go down and take everything with it. Until
+spec 012 the daemon noticed none of these, and said "session is dead" only when
+somebody happened to ask.
+
+**What triggers it.** A sweep every 30 seconds — the reaper's cadence, a second
+goroutine beside it — asks tmux one question and judges every session from the
+answer. The reaper ends sessions nobody came back for; the supervisor restarts
+sessions nobody asked to lose.
+
+**How a session is brought back.** Every session is given a conversation
+identifier at create, passed as `--session-id`, and revival passes the same value
+to `--resume`. The identifier is the daemon's, never a caller's: `--continue`
+cannot tell two sessions in one directory apart, and a display name is silently
+renamed by the CLI when it collides.
+
+**Destroy is the only final signal.** The start command is typed into a login
+shell, so no exit status is observable and the daemon cannot tell an operator
+typing `/exit` from a crash. It does not pretend to: a session ended from inside
+comes back once, and the operator destroys it if that is what they meant. What is
+destroyed stays destroyed, across a restart, because the journal records the
+ending as well as the beginning.
+
+**Nothing about a bound is relaxed.** A revived session keeps its identity, its
+owner, its credential and its absolute deadline; `CreatedAt` is carried and never
+refreshed, so revival can never extend a life. The allowlist is re-resolved on
+every attempt and again on every replay, the cap still refuses a recreate that
+would exceed it, and a session past its ceiling is left to the reaper.
+
+**It gives up, and says so.** Three attempts per death, 5s / 30s / 3m apart, and
+then the session is `failed`: visible on its card, never attempted again, and
+still there to read and destroy. The attempt count is written *before* each
+attempt and survives a restart, because a bound that resets is not a bound.
+
+| Setting | Value |
+|---|---|
+| Revival sweep interval | 30 seconds, fixed — the reaper's own cadence |
+| Revival attempts per death | 3, fixed |
+| Backoff between attempts | 5s, 30s, 3m |
+| Attempt count reset | On any sweep that observes the session running again |
+
+**The journal.** `~/.config/crswd/sessions-<listen-address>.jsonl` (or
+`$XDG_CONFIG_HOME`), beside whichever configuration file this daemon read and
+named after the address it listens on — one journal per daemon, exactly as there
+is one tmux server per daemon, so two on a host cannot replay each other. Append-only, `0600`, one JSON
+object per line, fsynced per record, replayed at startup *before* adoption — the
+host is the authority on what is running, the journal on what should be. It holds
+no credential, no token hash, and no content. See `docs/security.md`.
+
 ## Checklist before merging auth or session work
 
 - [ ] All three layers still enforced; none bypassed for a "local" or "health" route
+- [ ] Revival still cannot extend a lifetime, exceed the cap, resurrect a destroyed
+      session, or start a shell in a directory the allowlist no longer covers
+- [ ] The give-up bound is still written before the attempt and still survives a restart
 - [ ] Each door still refuses only by the check that applies to it — no browser route
       asks for a signature, no API route consults an assertion
 - [ ] The assertion is validated in the daemon: audience pinned, `alg` read only to

@@ -48,7 +48,19 @@ const (
 	ActionSessionDestroy Action = "session.destroy"
 	ActionAuthReject     Action = "auth.reject"
 	ActionReaperDestroy  Action = "reaper.destroy"
-	ActionStartupAdopt   Action = "startup.adopt"
+
+	// The supervisor's four (spec 012). They are separate from the reaper's one
+	// because they are the opposite event: the reaper records a session it ended,
+	// these record a session it tried to keep.
+	//
+	// A healthy sweep emits none of them. A trail that logged every sweep would
+	// bury the four lines an operator actually needs under one line every thirty
+	// seconds per session.
+	ActionSupervisorRevive    Action = "supervisor.revive"
+	ActionSupervisorRecreate  Action = "supervisor.recreate"
+	ActionSupervisorRecovered Action = "supervisor.recovered"
+	ActionSupervisorFailed    Action = "supervisor.failed"
+	ActionStartupAdopt        Action = "startup.adopt"
 
 	// ActionStartupScrubEnv records that the daemon removed variables an older
 	// build left in the tmux server's global environment.

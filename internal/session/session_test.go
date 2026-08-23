@@ -996,3 +996,25 @@ func TestStoreIsSafeForConcurrentUse(t *testing.T) {
 		t.Errorf("Len() = %d, want %d — one record per distinct id", n, len(alphabet))
 	}
 }
+
+// TestDisplayStateShowsAFailedSession is the operator-facing half of the
+// give-up bound (FR-018). A session nobody could save must be visible as such,
+// because the failure spec 012 exists to remove is one that happened silently.
+func TestDisplayStateShowsAFailedSession(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		state State
+		want  DisplayState
+	}{
+		{StateStarting, DisplayRunning},
+		{StateRunning, DisplayRunning},
+		{StateFailed, DisplayFailed},
+	}
+	for _, tt := range tests {
+		s := Session{State: tt.state}
+		if got := s.DisplayState(time.Time{}); got != tt.want {
+			t.Errorf("DisplayState() for %q = %q, want %q", tt.state, got, tt.want)
+		}
+	}
+}

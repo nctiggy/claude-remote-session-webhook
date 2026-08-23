@@ -286,3 +286,50 @@ func TestNewIDFromKeepsPartialEntropyOutOfTheError(t *testing.T) {
 		t.Fatalf("newIDFrom() error %q carries the bytes it managed to read", err)
 	}
 }
+
+// TestNewConversationIDIsResumable is the property the whole feature rests on:
+// what this daemon mints must be something --resume can resolve. A value it
+// cannot resolve does not fail — it opens an interactive picker, and a picker in
+// a detached tmux pane is a session that hangs while still looking alive.
+func TestNewConversationIDIsResumable(t *testing.T) {
+	t.Parallel()
+
+	for range 200 {
+		got, err := NewConversationID()
+		if err != nil {
+			t.Fatalf("NewConversationID() = %v", err)
+		}
+		if _, err := ValidateResume(got); err != nil {
+			t.Fatalf("NewConversationID() produced %q, which ValidateResume refuses: %v", got, err)
+		}
+		if got != strings.ToLower(got) {
+			t.Fatalf("NewConversationID() produced %q; ValidateResume refuses uppercase rather than lowering it", got)
+		}
+	}
+}
+
+func TestNewConversationIDDoesNotRepeat(t *testing.T) {
+	t.Parallel()
+
+	seen := make(map[string]bool, 1000)
+	for range 1000 {
+		got, err := NewConversationID()
+		if err != nil {
+			t.Fatalf("NewConversationID() = %v", err)
+		}
+		if seen[got] {
+			t.Fatalf("NewConversationID() repeated %q; two sessions in one directory would be one conversation", got)
+		}
+		seen[got] = true
+	}
+}
+
+// TestNewConversationIDFailsOnShortEntropy: a short read must be an error rather
+// than an identifier with fewer random bytes behind it than its shape implies.
+func TestNewConversationIDFailsOnShortEntropy(t *testing.T) {
+	t.Parallel()
+
+	if _, err := newConversationIDFrom(strings.NewReader("too short")); err == nil {
+		t.Error("newConversationIDFrom() accepted an exhausted entropy source")
+	}
+}

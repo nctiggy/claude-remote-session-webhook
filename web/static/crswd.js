@@ -1934,3 +1934,134 @@ const waitOutTheUpdate = () => {
 
   waitOutTheUpdate();
 })();
+
+/*
+ * The conversation list follows the working directory (spec 012, FR-023).
+ *
+ * The server answers for the first suggested directory when the page renders,
+ * which is all a server-rendered form can honestly do: the directory field is
+ * free text and empty at render, so there is no directory to answer for yet. The
+ * defect that leaves is an operator who types or picks a *different* directory
+ * and is offered the first one's conversations — an offer to continue somebody
+ * else's work, which is worse than no offer at all.
+ *
+ * With this file absent the form is exactly what the server rendered: a list for
+ * the suggested directory, and a create that still works. That is the property
+ * to keep — this narrows a wrong offer, it does not enable the control.
+ *
+ * It builds and removes the whole field rather than only its options, because
+ * "there is nothing to continue" is the absence of the control and not an empty
+ * one. That is the rule create-form.html already applies at render; this applies
+ * it again when the answer changes.
+ */
+(() => {
+  const form = document.querySelector('form.create-form[data-conversations]');
+  if (!form) {
+    return;
+  }
+  const dirField = form.querySelector('input[name="work_dir"]');
+  if (!dirField) {
+    return;
+  }
+
+  const endpoint = form.dataset.conversations;
+  const latest = form.dataset.resumeLatest || '';
+
+  /* Where the field belongs when it has to be built: after the last field that
+     precedes it in the rendered form, so a rebuilt control lands where the
+     server would have put it rather than at the end. */
+  const anchor = () => form.querySelector('[data-command-preview]')?.closest('.field') || null;
+
+  const build = (conversations) => {
+    const existing = form.querySelector('[data-resume-field]');
+    const chosen = existing?.querySelector('select')?.value || '';
+
+    if (!conversations.length) {
+      existing?.remove();
+      return;
+    }
+
+    const field = existing || document.createElement('div');
+    field.className = 'field';
+    field.setAttribute('data-resume-field', '');
+    field.textContent = '';
+
+    const label = document.createElement('label');
+    label.className = 'field-label';
+    label.setAttribute('for', 'create-resume');
+    label.textContent = 'Continue a conversation';
+
+    const select = document.createElement('select');
+    select.className = 'field-input';
+    select.id = 'create-resume';
+    select.name = 'resume';
+
+    /* textContent throughout, never innerHTML. Everything below is a value the
+       daemon produced, but the rule the design system states is about the
+       mechanism rather than about today's data: markup assembled from a response
+       is how the one XSS surface in this project would be reopened. */
+    const option = (value, text) => {
+      const o = document.createElement('option');
+      o.value = value;
+      o.textContent = text;
+      return o;
+    };
+    select.append(option('', 'Start fresh'));
+    if (latest) {
+      select.append(option(latest, 'Continue the most recent'));
+    }
+    for (const c of conversations) {
+      select.append(option(c.id, `${c.short} — ${c.modified}`));
+    }
+
+    /* A choice the operator already made survives a refresh only if the new
+       directory still offers it. Otherwise the control returns to "Start fresh",
+       which is the safe default and the shipped behaviour. */
+    select.value = [...select.options].some((o) => o.value === chosen) ? chosen : '';
+
+    field.append(label, select);
+    if (!existing) {
+      form.insertBefore(field, anchor());
+    }
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+
+  let inFlight = 0;
+  const refresh = async () => {
+    const dir = dirField.value.trim();
+    const ticket = ++inFlight;
+    if (!dir) {
+      build([]);
+      return;
+    }
+    try {
+      const answer = await fetch(`${endpoint}?dir=${encodeURIComponent(dir)}`, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+      });
+      if (!answer.ok) {
+        return;
+      }
+      const body = await answer.json();
+      /* A slow answer for a directory the operator has since changed away from
+         must not overwrite a newer one. */
+      if (ticket !== inFlight) {
+        return;
+      }
+      build(Array.isArray(body?.conversations) ? body.conversations : []);
+    } catch {
+      /* A failed lookup leaves the form exactly as it is. The list is
+         convenience; the create still works, and session.ValidateResume is what
+         actually decides what may be resumed. */
+    }
+  };
+
+  let timer = 0;
+  const schedule = () => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(refresh, 250);
+  };
+
+  dirField.addEventListener('change', schedule);
+  dirField.addEventListener('input', schedule);
+})();

@@ -284,3 +284,129 @@ func TestProjectDirForMatchesClaudesLayout(t *testing.T) {
 		}
 	}
 }
+
+// TestHasTranscript is the check that stops the supervisor resuming an
+// identifier with nothing behind it (FR-014).
+func TestHasTranscript(t *testing.T) {
+	const present = "7f3a1b2c-4d5e-4f60-8a71-b2c3d4e5f607"
+	const absent = "00000000-0000-4000-8000-000000000000"
+
+	f := newManagerFixture(t)
+	conversationHome(t, f.repo(), map[string]time.Time{present + ".jsonl": {}})
+
+	tests := []struct {
+		name           string
+		conversationID string
+		workDir        string
+		want           bool
+	}{
+		{"a transcript that is there", present, f.repo(), true},
+		{"a transcript that is not", absent, f.repo(), false},
+		{"a session that never had one", "", f.repo(), false},
+		{"an identifier that is not one", "../../etc/passwd", f.repo(), false},
+		{"a directory outside the allowlist", present, "/not/allowlisted", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := f.mgr.HasTranscript(tt.conversationID, tt.workDir); got != tt.want {
+				t.Errorf("HasTranscript(%q, %q) = %v, want %v", tt.conversationID, tt.workDir, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStartBinary fixes what goes into @crswd-binary, which tmux compares the
+// pane against. An alphabet outside this set would put a value on a row whose
+// fields are separated by "|", so anything unexpected yields "" — read
+// everywhere as "no expectation recorded", and therefore as alive.
+func TestStartBinary(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct{ command, want string }{
+		{"claude --dangerously-skip-permissions", "claude"},
+		{"/home/op/.local/bin/claude --foo", "claude"},
+		{"  claude  --foo", "claude"},
+		{"claude", "claude"},
+		{"my-tool_v2.1 --x", "my-tool_v2.1"},
+		{"", ""},
+		{"   ", ""},
+		{"bad|name --x", ""},
+		// The first whitespace-separated token is the binary, which is the same
+		// split the shell makes of the same line — so this is "has", not a
+		// failure. config.InsertStartFlags documents that contract; this follows
+		// it rather than inventing a second one.
+		{"has space/", "has"},
+		{"/ --x", ""},
+		{"./ --x", ""},
+	}
+	for _, tt := range tests {
+		if got := startBinary(tt.command); got != tt.want {
+			t.Errorf("startBinary(%q) = %q, want %q", tt.command, got, tt.want)
+		}
+	}
+}
+
+// TestProjectPathCannotEscape is the check projectPath exists to make legible:
+// whatever a caller spells, the directory this daemon reads is inside the
+// projects tree or it is not read at all.
+//
+// ResolveWorkDir has already refused anything outside the allowlist by the time
+// a directory gets here, so these are inputs the guard should never see — which
+// is exactly why it is worth proving it holds for them, and why it is written to
+// hold whatever projectDirFor does or stops doing.
+func TestProjectPathCannotEscape(t *testing.T) {
+	t.Parallel()
+
+	const home = "/home/op"
+	root := filepath.Join(home, ".claude", "projects")
+
+	for _, workDir := range []string{
+		"/code/repo",
+		"/../../etc",
+		"../../../etc/passwd",
+		"/",
+		"",
+		".",
+		"..",
+		"/code/../../..",
+		"/code/repo/",
+		"/etc/passwd",
+	} {
+		t.Run(workDir, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := projectPath(home, workDir)
+			if !ok {
+				return
+			}
+			if got != filepath.Clean(got) {
+				t.Errorf("projectPath(%q) = %q, which is not clean", workDir, got)
+			}
+			if !strings.HasPrefix(got, root+string(filepath.Separator)) {
+				t.Errorf("projectPath(%q) = %q, which is outside %q", workDir, got, root)
+			}
+		})
+	}
+}
+
+// TestContainedInRefusesTheRootAndItsSiblings covers the two boundaries a naive
+// prefix test gets wrong.
+func TestContainedInRefusesTheRootAndItsSiblings(t *testing.T) {
+	t.Parallel()
+
+	const root = "/a/projects"
+
+	if _, ok := containedIn(root, "."); ok {
+		t.Error("containedIn returned the root itself as though it were a child")
+	}
+	if _, ok := containedIn(root, ".."); ok {
+		t.Error("containedIn returned the root's parent")
+	}
+	if _, ok := containedIn(root, "../projects-evil"); ok {
+		t.Error("containedIn accepted a sibling whose name merely starts with the root's")
+	}
+	if got, ok := containedIn(root, "child"); !ok || got != "/a/projects/child" {
+		t.Errorf("containedIn(root, %q) = %q, %v; want the child", "child", got, ok)
+	}
+}

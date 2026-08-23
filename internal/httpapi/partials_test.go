@@ -1006,6 +1006,10 @@ func TestTheStatusPillAlwaysCarriesItsLabelAsText(t *testing.T) {
 
 	for _, state := range []session.DisplayState{
 		session.DisplayRunning,
+		// The second state the daemon really derives (spec 012): a session the
+		// supervisor could not bring back. It reached the pill without an edit to
+		// the component, which is the claim the comment above makes.
+		session.DisplayFailed,
 		// Two states the daemon does not derive. needs-auth arrives with the
 		// device-code relay; idle was derived until milestone 15 and its token
 		// stays in the design system. Both are here for the same reason: the

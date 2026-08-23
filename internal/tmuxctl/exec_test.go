@@ -245,7 +245,7 @@ func TestExecSendsTheContractArgv(t *testing.T) {
 		{Argv: []string{"tmux", "-L", execSocket, "capture-pane", "-p", "-t", "=" + execName + ":"}},
 		{Argv: []string{"tmux", "-L", execSocket, "kill-session", "-t", "=" + execName}},
 		{Argv: []string{"tmux", "-L", execSocket, "has-session", "-t", "=" + execName}},
-		{Argv: []string{"tmux", "-L", execSocket, "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}|#{@crswd-lifetime}"}},
+		{Argv: []string{"tmux", "-L", execSocket, "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}|#{@crswd-lifetime}|#{@crswd-conversation}|#{?#{@crswd-binary},#{==:#{pane_current_command},#{@crswd-binary}},?}"}},
 	}
 
 	got := recorded(t)
@@ -536,7 +536,7 @@ func TestExecListDoesNotSwallowOtherFailures(t *testing.T) {
 }
 
 func TestExecListParsesTmuxOutput(t *testing.T) {
-	stub{stdout: "crswd-abc123|1785706480|1||||\ncrswd-abc123-decoy|1785706480|||||\nnotours|1785706480|||||\n"}.install(t)
+	stub{stdout: "crswd-abc123|1785706480|1||||||\ncrswd-abc123-decoy|1785706480|||||||\nnotours|1785706480|||||||\n"}.install(t)
 
 	got, err := newStubExec(t).List(context.Background())
 	if err != nil {
@@ -569,7 +569,7 @@ func TestParseSessions(t *testing.T) {
 		},
 		{
 			name:   "managed, lookalike, and unrelated",
-			stdout: "crswd-abc123|1785706480|1||||\ncrswd-abc123-decoy|1785706480|||||\nnotours|1785706480|||||\n",
+			stdout: "crswd-abc123|1785706480|1||||||\ncrswd-abc123-decoy|1785706480|||||||\nnotours|1785706480|||||||\n",
 			want: []SessionInfo{
 				{Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true},
 				{Name: "crswd-abc123-decoy", Created: time.Unix(1785706480, 0)},
@@ -583,14 +583,14 @@ func TestParseSessions(t *testing.T) {
 			// failing the whole call — and with it, adoption of every managed
 			// session on the host.
 			name:   "a pipe in someone else's session name",
-			stdout: "weird|name|1785706480|||||\n",
+			stdout: "weird|name|1785706480|||||||\n",
 			want: []SessionInfo{
 				{Name: "weird|name", Created: time.Unix(1785706480, 0)},
 			},
 		},
 		{
 			name:   "a pipe in a managed session name",
-			stdout: "a|b|c|1785706480|1||||\n",
+			stdout: "a|b|c|1785706480|1||||||\n",
 			want: []SessionInfo{
 				{Name: "a|b|c", Created: time.Unix(1785706480, 0), Managed: true},
 			},
@@ -598,14 +598,14 @@ func TestParseSessions(t *testing.T) {
 		{
 			// Provenance is the marker being set at all, never the name.
 			name:   "any non-empty marker means ours",
-			stdout: "crswd-abc123|1785706480|yes||||\n",
+			stdout: "crswd-abc123|1785706480|yes||||||\n",
 			want: []SessionInfo{
 				{Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true},
 			},
 		},
 		{
 			name:   "no trailing newline",
-			stdout: "crswd-abc123|1785706480|1||||\n",
+			stdout: "crswd-abc123|1785706480|1||||||\n",
 			want: []SessionInfo{
 				{Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true},
 			},
@@ -616,7 +616,7 @@ func TestParseSessions(t *testing.T) {
 			// would put a command name where the base64 workdir goes, or the
 			// lifetime where the command name goes, and lose both.
 			name:   "the start-command name comes back off the host",
-			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=|rc|\n",
+			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=|rc|||\n",
 			want: []SessionInfo{
 				{
 					Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true,
@@ -629,7 +629,7 @@ func TestParseSessions(t *testing.T) {
 			// user option as an empty field, which is the daemon's default and
 			// therefore local — not a row that failed to parse.
 			name:   "no start-command name is not an error",
-			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=||\n",
+			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=||||\n",
 			want: []SessionInfo{
 				{
 					Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true,
@@ -642,7 +642,7 @@ func TestParseSessions(t *testing.T) {
 			// (milestone 15). It is the rightmost field, so a parser that lost
 			// count would read a lifetime where the command name goes.
 			name:   "the session's own lifetime comes back off the host",
-			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=|rc|never\n",
+			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=|rc|never||\n",
 			want: []SessionInfo{
 				{
 					Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true,
@@ -657,7 +657,7 @@ func TestParseSessions(t *testing.T) {
 			// daemon's configured default rather than refusing to adopt it,
 			// because an unadopted session is an unowned unsandboxed shell.
 			name:   "no lifetime is not an error",
-			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=|rc|\n",
+			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=|rc|||\n",
 			want: []SessionInfo{
 				{
 					Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true,
@@ -672,7 +672,7 @@ func TestParseSessions(t *testing.T) {
 			// there. A row that failed over it would take reconciliation down,
 			// leaving every managed session on the host unadopted.
 			name:   "an unreadable lifetime is not an error here",
-			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=|rc|whenever\n",
+			stdout: "crswd-abc123|1785706480|1|deploy|L3JlcG8=|rc|whenever||\n",
 			want: []SessionInfo{
 				{
 					Name: "crswd-abc123", Created: time.Unix(1785706480, 0), Managed: true,
@@ -696,7 +696,7 @@ func TestParseSessions(t *testing.T) {
 		},
 		{
 			name:    "only one separator",
-			stdout:  "crswd-abc123|1785706480\n",
+			stdout:  "crswd-abc123|1785706480||\n",
 			wantErr: true,
 		},
 		{
@@ -810,5 +810,133 @@ func TestSocketForIsPerAddressAndStable(t *testing.T) {
 		default:
 			t.Errorf("SocketFor produced %q, which is not usable as a filename", r)
 		}
+	}
+}
+
+// TestListFormatFieldCount is the test parseSessions' comment has always
+// promised and this repository never had. The format string and the parser move
+// together or the parser reads one field into another's name, silently, and
+// every session on the host comes back mislabelled.
+func TestListFormatFieldCount(t *testing.T) {
+	t.Parallel()
+
+	argv := argvList()
+	format := argv[len(argv)-1]
+	if got := strings.Count(format, "|") + 1; got != listFieldCount {
+		t.Fatalf("argvList format has %d fields, listFieldCount says %d:\n  %s", got, listFieldCount, format)
+	}
+
+	// And the parser agrees: a row of exactly that many fields must parse.
+	parts := make([]string, listFieldCount)
+	parts[0] = "name"
+	// Field 2 is the creation time and must be a number for the row to parse.
+	parts[1] = "1785706480"
+	got, err := parseSessions(strings.Join(parts, "|") + "\n")
+	if err != nil {
+		t.Fatalf("a row of %d fields did not parse: %v", listFieldCount, err)
+	}
+	if len(got) != 1 || got[0].Name != "name" {
+		t.Fatalf("parsed %#v, wanted one session named %q", got, "name")
+	}
+}
+
+// TestParseSessionsSpec012Fields covers the two fields spec 012 added.
+//
+// There is deliberately no "a pipe in the pane command" case here: the raw pane
+// command never reaches this parser. tmux reduces it to one character before it
+// is ever put on a row, which is the whole reason argvList compares inside tmux
+// rather than reporting out and comparing here.
+func TestParseSessionsSpec012Fields(t *testing.T) {
+	t.Parallel()
+
+	const uuid = "7f3a1b2c-4d5e-4f60-8a71-b2c3d4e5f607"
+
+	tests := []struct {
+		name             string
+		row              string
+		wantConversation string
+		wantLive         Liveness
+	}{
+		{
+			name:             "both fields come back off the host",
+			row:              "crswd-abc|1785706480|1|deploy|L3JlcG8=|rc|never|" + uuid + "|1",
+			wantConversation: uuid,
+			wantLive:         LivenessRunning,
+		},
+		{
+			name:             "a dead Claude leaves the login shell in the pane",
+			row:              "crswd-abc|1785706480|1|deploy|L3JlcG8=|rc|never|" + uuid + "|0",
+			wantConversation: uuid,
+			wantLive:         LivenessStopped,
+		},
+		{
+			name:             "a session started before spec 012 carries neither",
+			row:              "crswd-abc|1785706480|1|deploy|L3JlcG8=|rc|never||?",
+			wantConversation: "",
+			wantLive:         LivenessUnknown,
+		},
+		{
+			name:             "an unrecognised liveness answer is unknown, never stopped",
+			row:              "crswd-abc|1785706480|1|deploy|L3JlcG8=|rc|never|" + uuid + "|yes",
+			wantConversation: uuid,
+			wantLive:         LivenessUnknown,
+		},
+		{
+			name:             "an uppercase identifier is refused rather than lowered",
+			row:              "crswd-abc|1785706480|1|deploy|L3JlcG8=|rc|never|7F3A1B2C-4D5E-4F60-8A71-B2C3D4E5F607|1",
+			wantConversation: "",
+			wantLive:         LivenessRunning,
+		},
+		{
+			name:             "a truncated identifier is refused",
+			row:              "crswd-abc|1785706480|1|deploy|L3JlcG8=|rc|never|7f3a1b2c-4d5e|1",
+			wantConversation: "",
+			wantLive:         LivenessRunning,
+		},
+		{
+			name:             "an identifier carrying the separator cannot shift the row",
+			row:              "crswd-abc|1785706480|1|deploy|L3JlcG8=|rc|never|a|b|1",
+			wantConversation: "",
+			wantLive:         LivenessRunning,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := parseSessions(tt.row + "\n")
+			if err != nil {
+				t.Fatalf("parseSessions(%q): %v", tt.row, err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("parsed %d sessions, wanted 1", len(got))
+			}
+			if got[0].ConversationID != tt.wantConversation {
+				t.Errorf("ConversationID = %q, want %q", got[0].ConversationID, tt.wantConversation)
+			}
+			if got[0].Claude != tt.wantLive {
+				t.Errorf("Claude = %q, want %q", got[0].Claude, tt.wantLive)
+			}
+		})
+	}
+}
+
+// TestLivenessUnknownIsAlive states the invariant every caller depends on: a
+// liveness this daemon could not establish must never read as stopped, because
+// stopped is what causes it to restart a session.
+func TestLivenessUnknownIsAlive(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{"", "?", "yes", "2", "true", "|"} {
+		if got := livenessFrom(raw); got == LivenessStopped {
+			t.Errorf("livenessFrom(%q) = %q, which would restart a healthy session", raw, got)
+		}
+	}
+	if got := livenessFrom("0"); got != LivenessStopped {
+		t.Errorf("livenessFrom(%q) = %q, want %q", "0", got, LivenessStopped)
+	}
+	if got := livenessFrom("1"); got != LivenessRunning {
+		t.Errorf("livenessFrom(%q) = %q, want %q", "1", got, LivenessRunning)
 	}
 }

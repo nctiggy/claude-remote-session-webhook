@@ -50,6 +50,11 @@
   --state-idle: #3fa85c;
   --state-auth: #ffb000;
   --state-dead: #ff4d4d;
+  /* Failed sits between the amber that asks for attention and the red that
+     reports an ending, because that is exactly what it means: a session the
+     daemon could not bring back is not merely waiting and has not been ended by
+     anyone (spec 012). */
+  --state-failed: #ff8c1a;
 
   /* Mono is what the machine says; sans is what a human wrote. No webfont URL:
      the policy in docs/security.md permits no CDN, so a linked face would fail
@@ -1059,10 +1064,15 @@ body {
   border-radius: var(--r);
 }
 
-/* Two of these four states cannot occur yet. They are here because the pill is
+/* Two of these five states cannot occur yet. They are here because the pill is
    the component that has to keep working when they arrive — needs-auth with
    milestone 4's device-code relay, dead the day a record can be dead — and a
-   state whose first render is its first test is a state that renders wrongly. */
+   state whose first render is its first test is a state that renders wrongly.
+
+   `failed` was the third of them until spec 012 and is now a state an operator
+   really sees: a session the supervisor tried the maximum number of times to
+   bring back and stopped. It needed no edit to the pill itself, which is the
+   claim that comment was making. */
 .pill-running {
   --pill-state: var(--state-running);
 }
@@ -1077,6 +1087,10 @@ body {
 
 .pill-dead {
   --pill-state: var(--state-dead);
+}
+
+.pill-failed {
+  --pill-state: var(--state-failed);
 }
 
 /* The pane viewer. The container is styled and the content never is — the

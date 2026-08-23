@@ -134,6 +134,40 @@ const (
 	// separates list-sessions fields nor a newline that would end a row early.
 	OptionLifetime = "@crswd-lifetime"
 
+	// OptionConversation carries the Claude conversation identifier this daemon
+	// minted for the session, so a restarted daemon can resume the conversation
+	// rather than start a new one (spec 012).
+	//
+	// **It is a cache, and internal/session's journal is the authority.** This
+	// option lives on the tmux session and dies with it, and the failure that
+	// motivated spec 012 is exactly that: on 2026-08-22 the kernel OOM killer
+	// took a whole tmux-spawn cgroup, so Claude, its login shell and its tmux
+	// session went together and every option here went with them. It is kept
+	// anyway because while the session does exist this is one field of a listing
+	// the daemon already makes, which is cheaper than a file read per sweep.
+	//
+	// Raw, like OptionName and OptionStart. A conversation identifier is
+	// 8-4-4-4-12 lowercase hexadecimal (session.ValidateResume), so it can carry
+	// neither the "|" that separates list-sessions fields nor a newline.
+	OptionConversation = "@crswd-conversation"
+
+	// OptionBinary carries the *binary* the session's start command begins with
+	// — "claude" for every command configured in this repository — and exists so
+	// that tmux itself can answer whether that binary is still what the pane is
+	// running (spec 012, FR-006).
+	//
+	// It is compared inside tmux rather than reported out and compared here, and
+	// that is a safety property rather than an optimisation: #{pane_current_command}
+	// is the one value on a session row whose alphabet this daemon does not
+	// control, and a row carrying it raw could contain the "|" that separates
+	// fields — which would not corrupt one field, it would shift every field on
+	// the row. Comparing inside tmux reduces it to one character.
+	//
+	// Raw, like OptionName and OptionStart: a binary name is validated to
+	// [A-Za-z0-9._-] before it is written, so it can carry neither the separator
+	// nor a newline.
+	OptionBinary = "@crswd-binary"
+
 	// OptionManagedValue is what OptionManaged is set to. List only tests the
 	// option for emptiness, so this is a marker rather than data — but it is
 	// spelled once so a future reader does not have to check whether the value
@@ -172,4 +206,48 @@ type SessionInfo struct {
 	// Empty for a session created before OptionLifetime existed, which every
 	// caller must read as "unknown" and none as "none".
 	Lifetime string
+
+	// ConversationID is OptionConversation read back, and empty for a session
+	// started before it existed or whose row could not be trusted to carry it —
+	// see parseSessions. Absence is "unknown", never "none".
+	ConversationID string
+
+	// Claude is whether the session's start binary is still what its pane is
+	// running, as tmux itself answered it (spec 012, FR-006).
+	//
+	// This daemon starts a login shell and types the Claude command into it, so
+	// the pane never dies when Claude does — the shell survives, which is
+	// deliberate (see New) and is why there is no exit status to read and this
+	// field exists instead.
+	//
+	// Three values, not two. LivenessUnknown is a session started before
+	// OptionBinary existed, and every caller must read it as alive: a supervisor
+	// that revived on a fact it could not establish would restart healthy
+	// sessions, which is a worse failure than the one it is fixing.
+	Claude Liveness
 }
+
+// Liveness is tmux's answer to whether a session's start binary is still running
+// in its pane.
+type Liveness string
+
+const (
+	// LivenessUnknown means the session does not carry OptionBinary, so there is
+	// nothing to compare against. Read it as alive.
+	//
+	// **It is the zero value, deliberately.** A SessionInfo built without this
+	// field set — by a test, by a future caller, by a struct literal somebody
+	// adds a field to — must default to the reading that starts nothing. If
+	// stopped were the zero value, forgetting to set it would restart a healthy
+	// session, and that is not a mistake this type should make available.
+	LivenessUnknown Liveness = ""
+
+	// LivenessRunning means the pane is running the binary the session was
+	// started with.
+	LivenessRunning Liveness = "running"
+
+	// LivenessStopped means the pane is running something else — in practice the
+	// login shell the command was typed into, still there because it was never
+	// replaced.
+	LivenessStopped Liveness = "stopped"
+)

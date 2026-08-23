@@ -315,7 +315,30 @@ func parseSessions(stdout string) ([]SessionInfo, error) {
 		// The field count and the format string in argvList move together or
 		// this parser silently reads the wrong field into the wrong name.
 		// TestListFormatFieldCount is what holds them together.
-		rest, lifetime, ok := cutLast(row, "|")
+		// Spec 012's two fields come off first, because they are last on the
+		// line. Neither can carry the separator: one is a single character tmux
+		// computed, the other a hexadecimal identifier this daemon wrote. See
+		// argvList for why the raw pane command is not here.
+		rest, liveRaw, ok := cutLast(row, "|")
+		if !ok {
+			return nil, fmt.Errorf("tmux list-sessions: unreadable row %q", row)
+		}
+		rest, conversation, ok := cutLast(rest, "|")
+		if !ok {
+			return nil, fmt.Errorf("tmux list-sessions: unreadable row %q", row)
+		}
+		// A conversation identifier that is not one is read as absent rather
+		// than carried, because the value's next stop is a command line. The
+		// daemon only ever writes a valid one, so this fires for a session whose
+		// option was set by hand — the same case OptionName and OptionStart
+		// accept, answered here the same way they answer it. Absent means "not
+		// revivable by identifier", which is safe; wrong means resuming somebody
+		// else's conversation, which is not.
+		if !looksLikeConversationID(conversation) {
+			conversation = ""
+		}
+
+		rest, lifetime, ok := cutLast(rest, "|")
 		if !ok {
 			return nil, fmt.Errorf("tmux list-sessions: unreadable row %q", row)
 		}
@@ -374,9 +397,67 @@ func parseSessions(stdout string) ([]SessionInfo, error) {
 			// failed over it would cost the adoption of every session on the
 			// host, which is never the cheaper loss.
 			Lifetime: lifetime,
+			// Empty for a session started before the option existed, and empty
+			// again for a row whose conversation field could not be trusted.
+			// Both mean the same thing to every caller: unknown.
+			ConversationID: conversation,
+			// "?" is a session carrying no @crswd-binary, which is every session
+			// started before spec 012, and anything unrecognised is read the same
+			// way. Unknown is alive — see SessionInfo.Claude.
+			Claude: livenessFrom(liveRaw),
 		})
 	}
 	return sessions, nil
+}
+
+// livenessFrom reads the one character argvList's liveness expression produces.
+//
+// Anything that is not "1" or "0" is unknown, which every caller reads as alive.
+// A tmux that answered something unexpected must not cause this daemon to
+// restart a healthy session.
+func livenessFrom(raw string) Liveness {
+	switch raw {
+	case "1":
+		return LivenessRunning
+	case "0":
+		return LivenessStopped
+	default:
+		return LivenessUnknown
+	}
+}
+
+// looksLikeConversationID is the shape check parseSessions uses to decide
+// whether the conversation field on a row can be believed: 8-4-4-4-12 lowercase
+// hexadecimal.
+//
+// It duplicates session.ValidateResume's alphabet, which is not ideal and is
+// deliberate: internal/session imports this package, so the dependency cannot
+// run the other way, and the alternative — carrying an unchecked value out of
+// here and validating it at the far end — would put an unvalidated conversation
+// identifier into a SessionInfo, which is the type the supervisor reads to
+// decide what to resume.
+//
+// session.ValidateResume remains the authority. This is a guard on a parse, not
+// a second definition of what a caller may ask for: nothing that passes here
+// skips that check on its way to a command line.
+func looksLikeConversationID(v string) bool {
+	groups := [...]int{8, 4, 4, 4, 12}
+
+	parts := strings.Split(v, "-")
+	if len(parts) != len(groups) {
+		return false
+	}
+	for i, want := range groups {
+		if len(parts[i]) != want {
+			return false
+		}
+		for _, c := range parts[i] {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // cutLast splits around the final occurrence of sep, which is how every field

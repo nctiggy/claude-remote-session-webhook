@@ -1587,3 +1587,88 @@ func snapshot(t *testing.T, path string) ([]byte, os.FileInfo) {
 	}
 	return data, info
 }
+
+// TestJournalPath fixes where the session journal lives, which matters because
+// a daemon that replayed the wrong one would recreate somebody else's sessions.
+func TestJournalPath(t *testing.T) {
+	t.Parallel()
+
+	const listen = "127.0.0.1:8765"
+
+	tests := []struct {
+		name   string
+		env    map[string]string
+		listen string
+		want   string
+	}{
+		{
+			name:   "beside a named configuration file",
+			env:    map[string]string{"CRSW_CONFIG_FILE": "/etc/crswd/other.conf"},
+			listen: listen,
+			want:   "/etc/crswd/sessions-127-0-0-1-8765.jsonl",
+		},
+		{
+			name:   "under XDG_CONFIG_HOME when no file is named",
+			env:    map[string]string{"XDG_CONFIG_HOME": "/xdg"},
+			listen: listen,
+			want:   "/xdg/crswd/sessions-127-0-0-1-8765.jsonl",
+		},
+		{
+			name:   "under HOME when neither is named",
+			env:    map[string]string{"HOME": "/home/op"},
+			listen: listen,
+			want:   "/home/op/.config/crswd/sessions-127-0-0-1-8765.jsonl",
+		},
+		{
+			name:   "a named file wins over both",
+			env:    map[string]string{"CRSW_CONFIG_FILE": "/tmp/t/config", "XDG_CONFIG_HOME": "/xdg", "HOME": "/home/op"},
+			listen: listen,
+			want:   "/tmp/t/sessions-127-0-0-1-8765.jsonl",
+		},
+		{
+			name:   "XDG wins over HOME",
+			env:    map[string]string{"XDG_CONFIG_HOME": "/xdg", "HOME": "/home/op"},
+			listen: listen,
+			want:   "/xdg/crswd/sessions-127-0-0-1-8765.jsonl",
+		},
+		{
+			name:   "a relative XDG directory is ignored, not joined to the cwd",
+			env:    map[string]string{"XDG_CONFIG_HOME": "relative", "HOME": "/home/op"},
+			listen: listen,
+			want:   "/home/op/.config/crswd/sessions-127-0-0-1-8765.jsonl",
+		},
+		{
+			// The isolation property: a second daemon on the same host, with the
+			// same home, must not land on the first one's journal. It has its own
+			// tmux server for exactly this reason and it needs its own journal for
+			// exactly the same one.
+			name:   "a second daemon on another port gets its own journal",
+			env:    map[string]string{"HOME": "/home/op"},
+			listen: "127.0.0.1:9999",
+			want:   "/home/op/.config/crswd/sessions-127-0-0-1-9999.jsonl",
+		},
+		{
+			name:   "nowhere to put one is not an error",
+			env:    map[string]string{},
+			listen: listen,
+			want:   "",
+		},
+		{
+			name:   "no listen address is nowhere to put one either",
+			env:    map[string]string{"HOME": "/home/op"},
+			listen: "",
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := config.JournalPath(func(k string) string { return tt.env[k] }, tt.listen)
+			if got != tt.want {
+				t.Errorf("JournalPath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

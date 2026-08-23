@@ -163,7 +163,11 @@ func (m *Manager) Conversations(workDir string) []Conversation {
 		return nil
 	}
 
-	entries, err := os.ReadDir(filepath.Join(home, ".claude", "projects", projectDirFor(dir)))
+	project, ok := projectPath(home, dir)
+	if !ok {
+		return nil
+	}
+	entries, err := os.ReadDir(project)
 	if err != nil {
 		return nil
 	}
@@ -202,6 +206,52 @@ func (m *Manager) Conversations(workDir string) []Conversation {
 	return out
 }
 
+// projectPath is the directory Claude keeps a working directory's conversations
+// in, proved to be inside the tree it must not leave.
+//
+// # Why the containment is checked here
+//
+// A working directory reaching this file has already been through
+// ResolveWorkDir — absolute, cleaned, symlinks evaluated, contained inside the
+// allowlist, and confirmed to be a directory — and projectDirFor then maps every
+// separator and every dot to '-', so what it returns cannot traverse anywhere.
+// Both are true. Neither is visible at the call site.
+//
+// That stopped being an academic point when spec 012 gave the conversation list
+// a route of its own. Until then the directory came from the daemon's own
+// suggestions; now it is a query parameter, and this is the one place in this
+// daemon where caller-supplied text reaches the filesystem outside the tree the
+// allowlist covers.
+//
+// So the property is asserted rather than inherited, and it is asserted in the
+// form that actually matters: the path this daemon is about to read must be
+// under the projects directory. That is the same containment ResolveWorkDir
+// applies to the allowlist, applied to the second tree — and it holds whatever
+// projectDirFor does or stops doing, which an argument resting on that function's
+// current behaviour would not.
+//
+// False means "no conversations here", which is what every other failure in this
+// file already means.
+func projectPath(home, workDir string) (string, bool) {
+	return containedIn(filepath.Join(home, ".claude", "projects"), projectDirFor(workDir))
+}
+
+// containedIn joins a name onto a root and refuses the result if it is not
+// inside it.
+//
+// Clean first, because a traversal that is never cleaned is a traversal a prefix
+// test cannot see. The separator on the prefix is what stops `/a/projects-evil`
+// passing as a child of `/a/projects`, and the equality test is what stops the
+// root itself being returned as though it were one.
+func containedIn(root, name string) (string, bool) {
+	root = filepath.Clean(root)
+	target := filepath.Clean(filepath.Join(root, name))
+	if target == root || !strings.HasPrefix(target, root+string(filepath.Separator)) {
+		return "", false
+	}
+	return target, true
+}
+
 // projectDirFor is Claude's own encoding of a working directory into the name of
 // the directory it keeps that directory's conversations in: every `/` and `.`
 // becomes `-`.
@@ -224,4 +274,101 @@ func projectDirFor(workDir string) string {
 		}
 		return r
 	}, workDir)
+}
+
+// HasTranscript reports whether a conversation this daemon recorded still has a
+// transcript on the host (spec 012, FR-014).
+//
+// It exists because resuming an identifier with nothing behind it is not a
+// no-op: the CLI is handed --resume for a conversation that does not exist, and
+// what the operator gets is not the session they had. A session whose transcript
+// is gone is one the daemon must stop trying to revive and say so, rather than
+// restart forever into something that was never there.
+//
+// **No transcript is opened** (FR-025), exactly as Conversations opens none: this
+// is a stat of one path built from an identifier this daemon minted and a
+// directory it has already resolved.
+//
+// False for every failure, and for the empty identifier every session created
+// before spec 012 carries. False means "not revivable by identifier", which is
+// the safe reading — the alternative is a daemon that resumes a conversation it
+// cannot see.
+func (m *Manager) HasTranscript(conversationID, workDir string) bool {
+	if !isConversationID(conversationID) {
+		return false
+	}
+	dir, err := ResolveWorkDir(workDir, m.roots)
+	if err != nil {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	project, ok := projectPath(home, dir)
+	if !ok {
+		return false
+	}
+	transcript, ok := containedIn(project, conversationID+conversationFileSuffix)
+	if !ok {
+		return false
+	}
+	info, err := os.Stat(transcript)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
+// claudeBinary is the one binary this daemon knows takes a conversation
+// identifier, and the gate on minting one.
+//
+// It is a literal, and that is worth being uncomfortable about. The alternative
+// was worse: internal/config accepts *any* command line as a start command —
+// there is no rule that one must run Claude — so a daemon that inserted
+// --session-id unconditionally would break every operator whose start command is
+// something else. That is not hypothetical; it is how this constant came to
+// exist, when the real-tmux suite ran its `seq`-based start command and got
+// `seq: unrecognized option '--session-id'`.
+//
+// What an operator loses by wrapping Claude in a script named something else is
+// revival by identifier, and nothing else: the session starts exactly as it
+// always did, is supervised exactly as any other, and sits in the same position
+// as every session created before spec 012 (FR-005).
+const claudeBinary = "claude"
+
+// conversationCapable reports whether a start command is one this daemon may
+// give a conversation identifier to.
+func conversationCapable(template string) bool {
+	return startBinary(template) == claudeBinary
+}
+
+// startBinary is the first token of a start command, reduced to its base name:
+// "claude" for every command configured in this repository, whether the operator
+// spelled it bare or as an absolute path.
+//
+// It is what goes into @crswd-binary so tmux can answer whether the pane is
+// still running it (spec 012, FR-006). The alphabet is checked rather than
+// assumed — the value is written onto a tmux session and read back on a row
+// whose fields are separated by "|" — and anything outside it yields "", which
+// every reader treats as "no expectation recorded" and therefore as alive.
+//
+// The first token is found by whitespace, which is the same split the shell
+// makes of the same line; config.InsertStartFlags already documents that
+// contract and this follows it rather than inventing a second one.
+func startBinary(command string) string {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return ""
+	}
+	base := filepath.Base(fields[0])
+	if base == "." || base == string(filepath.Separator) {
+		return ""
+	}
+	for _, c := range base {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '.' && c != '_' && c != '-' {
+			return ""
+		}
+	}
+	return base
 }

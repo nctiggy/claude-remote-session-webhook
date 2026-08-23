@@ -404,19 +404,7 @@ func (s *Server) conversationsFor(now time.Time, suggestions []string) []convers
 	if len(suggestions) == 0 {
 		return nil
 	}
-	found := s.sessions.Conversations(suggestions[0])
-	out := make([]conversationView, 0, len(found))
-	for _, c := range found {
-		out = append(out, conversationView{
-			ID:    c.ID,
-			Short: shortConversation(c.ID),
-			// formatAge's vocabulary, so one page cannot spell a duration two
-			// ways. A conversation written a moment ago reads "less than a
-			// minute ago" rather than as a timestamp nobody asked for.
-			Modified: formatAge(now.Sub(c.Modified)) + " ago",
-		})
-	}
-	return out
+	return s.conversationsForDir(now, suggestions[0])
 }
 
 // shortConversation is the first group of a UUID, which is what a person

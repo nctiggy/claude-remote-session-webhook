@@ -162,7 +162,7 @@
   It holds the in-flight note as well as the form, because both are content that
   scrolls; what stays put is the head above it, which is where the way out is.
 */}}<div class="modal-body">
-<form class="create-form" method="post" action="/dashboard/sessions" data-submit-once="create-busy">{{ template "page-token" .PageToken }}<div class="field">
+<form class="create-form" method="post" action="/dashboard/sessions" data-submit-once="create-busy" data-conversations="/sessions/conversations" data-resume-latest="{{ .ResumeLatest }}">{{ template "page-token" .PageToken }}<div class="field">
 <label class="field-label" for="create-name">Name</label>
 <input class="field-input" id="create-name" type="text" name="name" required maxlength="64" pattern="[-a-zA-Z0-9]+" autocomplete="off" spellcheck="false">
 </div>
@@ -350,6 +350,19 @@
   no conversation history offers the two words and nothing else, which reads as
   an offer with nothing behind it.
 
+  Since spec 012 the list follows the working directory rather than the one the
+  page happened to suggest when it rendered. The server still answers for the
+  first suggestion here, and `data-conversations` is where the script re-asks
+  when the operator changes the directory — building this field when there is
+  something to continue and removing it when there is not, which is the same rule
+  the `with` below applies, applied again later.
+
+  The field is wrapped rather than the script assembling one from nothing, so
+  what a dynamic list produces is the markup this template already defines. The
+  fleet page renders no conversation store at all and therefore no field, and it
+  must stay that way: a select shipped on every page is a control that outlives
+  the page it was designed for.
+
   What each option says is an identifier and a recency, and that is FR-025 rather
   than terseness: what a conversation *said* is the operator's work, and this
   daemon renders none of it.
@@ -359,7 +372,7 @@
   instead of starting empty — the second half is what the label and the options
   already say, and the first half is a fact about how the daemon assembled the
   list rather than something an operator acts on.
-*/}}{{ with .Conversations }}<div class="field">
+*/}}{{ with .Conversations }}<div class="field" data-resume-field>
 <label class="field-label" for="create-resume">Continue a conversation</label>
 <select class="field-input" id="create-resume" name="resume">
 <option value="" selected>Start fresh</option>
