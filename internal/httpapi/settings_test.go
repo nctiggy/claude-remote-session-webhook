@@ -559,8 +559,14 @@ func TestSecretRendersPresentOrAbsent(t *testing.T) {
 			page := settingsBody(t, settingsOn(t, tc.adjust))
 			row := settingsRowFor(t, page, tc.key)
 
-			if !strings.Contains(row, "<td>"+tc.want+"</td>") {
-				t.Errorf("with %s, the %s row is %q; want a value cell holding exactly %q", tc.name, tc.key, row, tc.want)
+			// The cell opens with the word and never carries the value. It is
+			// no longer asserted as the *whole* cell, because spec 014 put the
+			// origin note inside it — a secret that came from the environment
+			// rather than the file is exactly the kind an operator needs to know
+			// the origin of. What must not change is that the secret itself is
+			// not here, which the check below is for.
+			if !strings.Contains(row, "<td>"+tc.want) {
+				t.Errorf("with %s, the %s row is %q; want a value cell opening with %q", tc.name, tc.key, row, tc.want)
 			}
 			other := secretPresent
 			if tc.want == secretPresent {
@@ -596,7 +602,7 @@ func TestAllowedIdentitiesTreatedAsSecret(t *testing.T) {
 	}))
 
 	row := settingsRowFor(t, page, "access_allowed_emails")
-	if !strings.Contains(row, "<td>"+secretPresent+"</td>") {
+	if !strings.Contains(row, "<td>"+secretPresent) {
 		t.Errorf("the allowlist row is %q; a configured allowlist is %q", row, secretPresent)
 	}
 	for _, address := range []string{canaryAllowed, second} {
@@ -1401,7 +1407,7 @@ func TestFullRouteSweepLeaksNoSecret(t *testing.T) {
 	// stopped the test first would report the leak as a broken fixture.
 	page := s.answerFor(t, "the settings page, who may reach it")
 	for _, key := range []string{"shared_secret", "access_allowed_emails"} {
-		if row := settingsRowFor(t, page, key); !strings.Contains(row, "<td>"+secretPresent+"</td>") {
+		if row := settingsRowFor(t, page, key); !strings.Contains(row, "<td>"+secretPresent) {
 			t.Errorf("the swept daemon reports %s as %q; this is a claim about a daemon that has both secrets configured", key, row)
 		}
 	}
@@ -2403,5 +2409,49 @@ func TestOneSaveForTheWholeForm(t *testing.T) {
 	// One form, so one submit sends every row.
 	if n := strings.Count(page, `class="setting-form"`); n != 0 {
 		t.Errorf("the page still carries %d per-row forms", n)
+	}
+}
+
+// TestTheSettingsTableIsWellFormed counts cells, which sounds like a test about
+// HTML pedantry and is not.
+//
+// Spec 014 removed the Source column, and the first cut removed it from the head
+// and left it in every row: a table declaring two columns and rendering three.
+// Every other test in this file still passed — they look for the row's *content*,
+// and the content was all present and in the right cells by eye. What was wrong
+// was the shape, which nothing was asking about.
+//
+// A browser renders that as a third column with a blank heading, which is exactly
+// the column the change existed to remove. So this asks the one question the
+// content assertions cannot: does the body have as many cells as the head says it
+// does?
+func TestTheSettingsTableIsWellFormed(t *testing.T) {
+	t.Parallel()
+
+	headCell := regexp.MustCompile(`<th scope="col">`)
+	rowStart := regexp.MustCompile(`(?s)<tr>\s*<th scope="row">.*?</tr>`)
+	anyCell := regexp.MustCompile(`<t[dh][ >]`)
+
+	f := newFleet(t)
+	for _, section := range []string{sectionGeneral, sectionNetwork} {
+		t.Run(section, func(t *testing.T) {
+			t.Parallel()
+
+			page := settingsSectionBody(t, f, section)
+			columns := len(headCell.FindAllString(page, -1))
+			if columns == 0 {
+				t.Fatalf("the %s section renders no table head, so this asserted nothing:\n%s", section, page)
+			}
+			rows := rowStart.FindAllString(page, -1)
+			if len(rows) == 0 {
+				t.Fatalf("the %s section renders no setting rows, so this asserted nothing", section)
+			}
+			for _, row := range rows {
+				if cells := len(anyCell.FindAllString(row, -1)); cells != columns {
+					t.Errorf("a %s row renders %d cells against a %d-column head; a browser draws the difference as a column with no name:\n%s",
+						section, cells, columns, row)
+				}
+			}
+		})
 	}
 }

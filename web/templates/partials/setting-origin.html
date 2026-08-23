@@ -1,0 +1,16 @@
+{{/*
+  Where a setting's value came from, said only when it is worth saying (spec 014).
+
+  There was a Source column here. Three quarters of it said "file", which is where
+  a value ordinarily comes from and the case an operator never wonders about — so
+  the column spent a quarter of the table's width answering a question nobody was
+  asking. What is worth the ink is the surprise: a value that did **not** come from
+  the configuration file is the one an operator will otherwise try to edit and
+  watch not take effect.
+
+  It sits *inside* the value cell rather than in a cell of its own, and that is not
+  cosmetic. A row with a third cell under a two-column header is a malformed table:
+  the head would say two columns and the body would render three, which is exactly
+  what the first cut of this change did. Two columns of head and two of body is the
+  whole claim of removing the column.
+*/}}{{ if and .Source (ne .Source "file") }} <span class="settings-origin">from {{ .Source }}</span>{{ end }}

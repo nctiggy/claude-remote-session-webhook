@@ -1647,6 +1647,7 @@ body {
   color: var(--dim);
   font-size: var(--fs-eyebrow);
   white-space: nowrap;
+  margin-inline-start: var(--s2);
 }
 
 /* Waiting out an update.

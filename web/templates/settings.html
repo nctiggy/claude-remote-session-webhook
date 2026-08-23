@@ -438,16 +438,8 @@
   costs is the label's share of the pointer target, which the switch on the
   create form has and this one does not.
 */}}{{ if .Boolean }}<input type="hidden" name="was.{{ .Key }}" value="{{ if .On }}true{{ else }}false{{ end }}"><input class="switch-input" id="set-{{ .Key }}" type="checkbox" name="value.{{ .Key }}" value="true"{{ if .On }} checked{{ end }} aria-label="{{ .Key }}">{{ else }}<input type="hidden" name="was.{{ .Key }}" value="{{ .Value }}"><input class="setting-input" id="set-{{ .Key }}" type="text" name="value.{{ .Key }}" value="{{ .Value }}" aria-label="{{ .Key }}">{{ end }}
-</td>{{ else }}<td>{{ .Value }}</td>{{ end }}{{/*
-  Where the value came from, said only when it is worth saying (spec 014).
-
-  There was a Source column here. Three quarters of it said "file", which is the
-  ordinary case and the one an operator never wonders about — so the column spent
-  a quarter of the table's width to answer a question nobody was asking. What is
-  worth saying is the surprise: a value that did **not** come from the
-  configuration file, because that is the one an operator will otherwise try to
-  edit and watch not take effect.
-*/}}{{ if and .Source (ne .Source "file") }}<td class="settings-origin">from {{ .Source }}</td>{{ else }}<td></td>{{ end }}
+{{ template "setting-origin" . }}
+</td>{{ else }}<td>{{ .Value }}{{ template "setting-origin" . }}</td>{{ end }}
 </tr>
 {{ end }}</tbody>
 </table>
