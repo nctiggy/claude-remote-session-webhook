@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
@@ -71,12 +70,6 @@ type Supervisor struct {
 	interval time.Duration
 	ticker   ticker
 	report   func(error)
-
-	// inflight is FR-015. A revival that outlives its sweep must not have a
-	// second one started on top of it, because two start commands typed into one
-	// shell is two Claude processes in one session.
-	mu       sync.Mutex
-	inflight map[string]bool
 }
 
 // NewSupervisor builds the sweep. It mirrors NewReaper deliberately: the same
@@ -94,7 +87,6 @@ func NewSupervisor(m *Manager, trail *audit.Logger) (*Supervisor, error) {
 		interval: SweepInterval,
 		ticker:   systemTicker,
 		report:   reportToLog,
-		inflight: make(map[string]bool),
 	}, nil
 }
 
@@ -180,12 +172,13 @@ func (s *Supervisor) judge(ctx context.Context, sess Session, info tmuxctl.Sessi
 		return nil
 	}
 
-	// 8 — already being revived. Checked before the bound is spent so a slow
+	// 8 — already being restarted, by an earlier sweep or by an operator
+	// continuing a conversation. Checked before the bound is spent so a slow
 	// revival does not burn an attempt on every tick while it runs.
-	if !s.claim(sess.ID) {
+	if !s.mgr.claimRestart(sess.ID) {
 		return nil
 	}
-	defer s.release(sess.ID)
+	defer s.mgr.releaseRestart(sess.ID)
 
 	// 5 — out of attempts.
 	if sess.ReviveAttempts >= maxReviveAttempts {
@@ -285,22 +278,6 @@ func (s *Supervisor) giveUp(sess Session, reason string) error {
 	return nil
 }
 
-func (s *Supervisor) claim(id string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.inflight[id] {
-		return false
-	}
-	s.inflight[id] = true
-	return true
-}
-
-func (s *Supervisor) release(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.inflight, id)
-}
-
 // reviveRecord is the journal line for a session whose revival state moved.
 func reviveRecord(s Session, event string) journalRecord {
 	return journalRecord{
@@ -339,6 +316,16 @@ func (m *Manager) revive(ctx context.Context, s Session, shellSurvives bool) err
 		}
 	}
 
+	return m.sendStart(ctx, s)
+}
+
+// sendStart types this session's own start command into its shell, resuming the
+// conversation the record says it is having.
+//
+// One implementation, shared by revival and by Continue (spec 013). Two things
+// that start a session must type the same line for the same session, and two
+// implementations of that is one more than can be kept in step.
+func (m *Manager) sendStart(ctx context.Context, s Session) error {
 	template, err := m.resolveStartCommand(s.StartCommand)
 	if err != nil {
 		return fmt.Errorf("resolve the start command: %w", err)
@@ -358,10 +345,23 @@ func (m *Manager) revive(ctx context.Context, s Session, shellSurvives bool) err
 	if err != nil {
 		return fmt.Errorf("render the start command: %w", err)
 	}
-	if err := m.tmux.SendKeys(ctx, name, command, enterKey); err != nil {
+	if err := m.tmux.SendKeys(ctx, s.TmuxName(), command, enterKey); err != nil {
 		return fmt.Errorf("send the claude start command: %w", err)
 	}
 	return nil
+}
+
+// restartInto interrupts whatever the pane is running and starts the session
+// again on the conversation its record now names.
+//
+// It differs from a revival in exactly one thing, and it is the thing that makes
+// it a different function: the process is still alive, so it has to be stopped
+// first. A revival types into a shell whose Claude has already gone.
+func (m *Manager) restartInto(ctx context.Context, s Session) error {
+	if err := m.tmux.SendKeys(ctx, s.TmuxName(), interruptKey, interruptKey); err != nil {
+		return fmt.Errorf("interrupt the process: %w", err)
+	}
+	return m.sendStart(ctx, s)
 }
 
 // markSession writes every @crswd-* option a session carries. Create writes them

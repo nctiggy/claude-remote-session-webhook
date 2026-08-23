@@ -355,15 +355,17 @@ func TestSupervisorGivesUpWithNoConversationToResume(t *testing.T) {
 	}
 }
 
-// TestOneRevivalAtATime is FR-015. Two start commands typed into one shell is
-// two Claude processes in one session.
-func TestOneRevivalAtATime(t *testing.T) {
+// TestOneRestartAtATime is FR-015, and since spec 013 it covers both things that
+// restart a session: a sweep reviving one, and an operator continuing a different
+// conversation. Two start commands typed into one shell is two Claude processes
+// in one session.
+func TestOneRestartAtATime(t *testing.T) {
 	f := newManagerFixture(t)
 	s := revivableSession(t, f)
 	claudeDied(f, s)
 
 	sup, _ := supervisorAt(t, f, f.now)
-	if !sup.claim(s.ID) {
+	if !sup.mgr.claimRestart(s.ID) {
 		t.Fatal("the first claim on an idle session was refused")
 	}
 	before := len(typedInto(f, s))
@@ -373,8 +375,8 @@ func TestOneRevivalAtATime(t *testing.T) {
 	if got := len(typedInto(f, s)); got != before {
 		t.Errorf("a sweep revived a session already being revived (%d lines typed, was %d)", got, before)
 	}
-	sup.release(s.ID)
-	if !sup.claim(s.ID) {
+	sup.mgr.releaseRestart(s.ID)
+	if !sup.mgr.claimRestart(s.ID) {
 		t.Error("the session was still claimed after release")
 	}
 }

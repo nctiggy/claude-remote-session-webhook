@@ -23,14 +23,19 @@ import (
 // before it is turned into a path, so the set of directories whose conversations
 // can be listed is exactly the set the operator may start a session in (FR-022).
 
-// ResumeLatest is the resume value meaning "whatever conversation this directory
-// most recently had", which the Claude CLI resolves itself with --continue.
+// There was a ResumeLatest here until spec 013 — the word "latest", meaning
+// "whatever conversation this directory most recently had", which the CLI
+// resolved with --continue.
 //
-// It is a word rather than an identifier because the daemon does not need to know
-// which conversation that is, and a daemon that resolved it would be a daemon
-// racing the CLI to read the same directory — and losing whenever a session had
-// been started elsewhere in the meantime.
-const ResumeLatest = "latest"
+// It was removed because it was a choice nobody could make. The conversation it
+// named could not be shown, named or predicted from the page offering it, and
+// once two sessions could share a working directory it could not even be
+// reasoned about. What replaced it is a list of conversations an operator can
+// see, offered from the running session where they can see it.
+//
+// The value is now refused like any other unrecognised one, which is deliberate:
+// a daemon that quietly accepted a retired word would be a daemon whose contract
+// and whose behaviour disagree.
 
 // ErrInvalidResume is a resume value this daemon will not put on a command line.
 //
@@ -91,15 +96,13 @@ func ValidateResume(v string) (string, error) {
 	switch {
 	case v == "":
 		return "", nil
-	case v == ResumeLatest:
-		return v, nil
 	case isConversationID(v):
 		return v, nil
 	default:
 		// The value is not in the message. It is caller-supplied text and the
 		// trail may carry none of it (FR-042); the handler answers a uniform
 		// refusal and the sentinel is what the trail records.
-		return "", fmt.Errorf("%w: it is neither %q nor a conversation identifier", ErrInvalidResume, ResumeLatest)
+		return "", fmt.Errorf("%w: it is not a conversation identifier", ErrInvalidResume)
 	}
 }
 

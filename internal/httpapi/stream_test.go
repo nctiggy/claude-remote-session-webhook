@@ -44,6 +44,18 @@ const (
 	writeDeadlineUnderTest = 200 * time.Millisecond
 	tickUnderTest          = 10 * time.Millisecond
 
+	// slowTickUnderTest is for the one test that asks whether something happened
+	// *before* a tick could have. Ten milliseconds is a fine cadence for a test
+	// that waits for ticks and a terrible budget for one that races them: it made
+	// TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval a measurement of how
+	// loaded the machine was, and it failed in CI at 16ms while passing on every
+	// developer's host.
+	//
+	// A second is long enough that no amount of scheduling noise turns "did not
+	// wait for a tick" into "waited for a tick", and the test still finishes in
+	// milliseconds — because the whole claim is that it does not wait.
+	slowTickUnderTest = time.Second
+
 	// heartbeatsPastTheDeadline is how many writes must land after the deadline
 	// has passed before the claim is made. One could be a write already in flight
 	// when it fired; three is a response that is still being written to a
@@ -976,7 +988,15 @@ func TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval(t *testing.T) {
 
 	const screen = "a screen the page already rendered"
 
-	f, addr := watching(t)
+	// A slow tick, deliberately. This test asks whether the opening screen is sent
+	// *without* waiting for one, and the only honest way to ask that is to make a
+	// tick long enough that waiting for one would be unmistakable. Against the
+	// ordinary 10ms cadence the assertion was really "is this machine busy?" — and
+	// on a loaded CI runner the answer was yes.
+	f := watchingUnserved(t, config.DefaultMaxStreams)
+	f.streamTick = slowTickUnderTest
+	addr := serve(t, f)
+
 	live, _ := f.fixture.plant(t, session.Session{Name: "watch me", WorkDir: f.fixture.repo})
 	f.fixture.tmux.SetPane(live.TmuxName(), screen)
 
@@ -987,9 +1007,9 @@ func TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval(t *testing.T) {
 	}
 
 	readScreen(t, bufio.NewReader(resp.Body), opened, screen)
-	if waited := time.Since(opened); waited >= tickUnderTest {
+	if waited := time.Since(opened); waited >= slowTickUnderTest {
 		t.Errorf("the opening screen arrived %v after the open, which is past the %v interval; it must not wait for a tick",
-			waited.Round(time.Millisecond), tickUnderTest)
+			waited.Round(time.Millisecond), slowTickUnderTest)
 	}
 }
 

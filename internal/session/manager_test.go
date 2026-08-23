@@ -1404,15 +1404,25 @@ func (f managerFixture) configuredForModes() {
 // scrollback and the window go with it — or omits --continue, which starts the
 // configured command against an empty conversation and loses the work the
 // operator is toggling in order to keep driving.
-func TestSetModeRestartsInPlaceWithContinue(t *testing.T) {
+func TestSetModeRestartsInPlaceOnTheSameConversation(t *testing.T) {
 	t.Parallel()
+
+	const conversation = "7f3a1b2c-4d5e-4f60-8a71-b2c3d4e5f607"
 
 	f := newManagerFixture(t)
 	f.configuredForModes()
 	s, _ := mustCreate(t, f, f.request())
+	// Set explicitly: this fixture's start commands are stand-ins rather than
+	// claude, so a create under them mints no conversation (see claudeBinary).
+	// What is under test is what a mode change does with one, not which sessions
+	// get one.
+	if err := f.store.SetConversation(s.ID, conversation); err != nil {
+		t.Fatalf("SetConversation() = %v", err)
+	}
+	live, _ := f.store.lookup(s.ID)
 	before := len(f.tmux.Calls())
 
-	if _, err := f.mgr.SetMode(context.Background(), *s, ModeRemote); err != nil {
+	if _, err := f.mgr.SetMode(context.Background(), live, ModeRemote); err != nil {
 		t.Fatalf("SetMode() unexpected error: %v", err)
 	}
 
@@ -1422,7 +1432,11 @@ func TestSetModeRestartsInPlaceWithContinue(t *testing.T) {
 		// The interrupt, twice in one call: the first is a cancel to anything that
 		// catches SIGINT and only the second is a leave.
 		{Op: tmuxctl.OpSendKeys, Argv: []string{"tmux", "send-keys", "-t", pane, "--", "C-c", "C-c"}},
-		{Op: tmuxctl.OpSendKeys, Argv: []string{"tmux", "send-keys", "-t", pane, "--", remoteCommandLine + " --continue", "Enter"}},
+		// --resume with this session's own conversation, not --continue. The old
+		// flag meant "whatever this directory last had", which was true enough
+		// while a mode change was the only thing that restarted a pane and wrong
+		// the moment two sessions shared a directory (spec 013).
+		{Op: tmuxctl.OpSendKeys, Argv: []string{"tmux", "send-keys", "-t", pane, "--", insertAfterBinary(remoteCommandLine, ResumeOneFlag+" "+conversation), "Enter"}},
 		{Op: tmuxctl.OpSetOption, Argv: []string{"tmux", "set-option", "-t", pane, tmuxctl.OptionStart, remoteCommandName}},
 	}
 
@@ -1442,6 +1456,51 @@ func TestSetModeRestartsInPlaceWithContinue(t *testing.T) {
 		if call.Op == tmuxctl.OpNew || call.Op == tmuxctl.OpKill {
 			t.Errorf("the transition ran %s (%q); the session, its window and its scrollback are the things it must not touch",
 				call.Op, call.Argv)
+		}
+		for _, arg := range call.Argv {
+			if strings.Contains(arg, "--continue") {
+				t.Errorf("the transition typed %q; --continue left this daemon in spec 013", arg)
+			}
+		}
+	}
+}
+
+// insertAfterBinary places a flag where config.InsertStartFlags places one, so an
+// expectation in this file and the line the daemon builds cannot drift apart over
+// where a flag goes.
+func insertAfterBinary(command, flag string) string {
+	space := strings.Index(command, " ")
+	if space < 0 {
+		return command + " " + flag
+	}
+	return command[:space] + " " + flag + command[space:]
+}
+
+// TestSetModeOnASessionWithNoConversationStartsFresh is the honest half of the
+// change above. A session created before spec 012, or under a start command this
+// daemon cannot give a conversation identifier to, has nothing to resume by name
+// — so a mode change starts it fresh rather than resuming something it cannot
+// name. --continue used to paper over that, which is exactly what made it wrong.
+func TestSetModeOnASessionWithNoConversationStartsFresh(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	f.configuredForModes()
+	s, _ := mustCreate(t, f, f.request())
+	if err := f.store.SetConversation(s.ID, ""); err != nil {
+		t.Fatalf("SetConversation() = %v", err)
+	}
+	live, _ := f.store.lookup(s.ID)
+	before := len(f.tmux.Calls())
+
+	if _, err := f.mgr.SetMode(context.Background(), live, ModeRemote); err != nil {
+		t.Fatalf("SetMode() unexpected error: %v", err)
+	}
+	for _, call := range f.tmux.Calls()[before:] {
+		for _, arg := range call.Argv {
+			if strings.Contains(arg, ResumeOneFlag) || strings.Contains(arg, "--continue") {
+				t.Errorf("the transition typed %q for a session with no conversation to resume", arg)
+			}
 		}
 	}
 }
@@ -3704,7 +3763,7 @@ func TestStartCommandLineIsWhatTheSessionTypes(t *testing.T) {
 
 	const conversation = "88e5294c-d947-4527-b8c9-5eb8384bae6a"
 
-	for _, resume := range []string{"", ResumeLatest, conversation} {
+	for _, resume := range []string{"", conversation} {
 		t.Run("resume="+resume, func(t *testing.T) {
 			t.Parallel()
 
@@ -3773,18 +3832,10 @@ func TestStartCommandLineLeavesThePlaceholderForThePage(t *testing.T) {
 	}))
 	f.mgr.SetRemoteControlCommand(remoteCommandName)
 
-	for _, mode := range []Mode{ModeLocal, ModeRemote} {
-		line, err := f.mgr.StartCommandLine(mode, ResumeLatest, "")
-		if err != nil {
-			t.Fatalf("StartCommandLine(%s) with no name = %v; the form renders before a name is typed", mode, err)
-		}
-		if line == "" {
-			t.Fatalf("StartCommandLine(%s) with no name returned nothing to show", mode)
-		}
-		if !strings.Contains(line, ResumeLatestFlag) {
-			t.Errorf("the preview for %s is %q, which does not carry %q", mode, line, ResumeLatestFlag)
-		}
-	}
+	// A --continue preview assertion stood here until spec 013 removed that flag
+	// from the daemon. A mode preview now shows the configured line, and the
+	// resume flag it carries at run time names this session's own conversation
+	// rather than "whatever was most recent".
 
 	// The remote command is the one that carries the placeholder, and carrying it
 	// through is the whole of the fix: the page substitutes what the operator

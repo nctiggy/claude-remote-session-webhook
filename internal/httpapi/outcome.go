@@ -72,6 +72,13 @@ const (
 	// four sentences would tell an operator.
 	outcomeModeChanged outcome = "mode-changed"
 
+	// The continue action's outcomes (spec 013).
+	outcomeContinued           outcome = "continued"
+	outcomeContinueUnconfirmed outcome = "continue-unconfirmed"
+	outcomeContinueNotRunning  outcome = "continue-not-running"
+	outcomeContinueBusy        outcome = "continue-busy"
+	outcomeContinueFailed      outcome = "continue-failed"
+
 	// outcomeUpdated is the sixth, and the only success on this door whose banner
 	// is rendered by a different process from the one that chose it (T019): the
 	// route writes this redirect and then exits for systemd, so the fleet the
@@ -220,6 +227,25 @@ var banners = map[outcome]outcomeView{
 		// what the assistant is carrying, so a sentence claiming the compaction
 		// happened would assert a fact no part of this daemon looked at.
 		Message: "Compact delivered. The session decides what to do with it.",
+	},
+	outcomeContinued: {
+		// Claims the restart and the conversation, which are the two things this
+		// daemon did, and stops there — outcomeModeChanged's sentence is careful
+		// in the same place and for the same reason. Whether the assistant picks
+		// the conversation up is not a fact this process observed.
+		Message: "Continuing that conversation. The process in the pane was restarted, and the session, its window and its scrollback are as they were.",
+	},
+	outcomeContinueUnconfirmed: {
+		Message: "Nothing was continued. Continuing restarts the process in the pane, so it asks to be confirmed.",
+	},
+	outcomeContinueNotRunning: {
+		Message: "That session is not running, so there is nothing to continue.",
+	},
+	outcomeContinueBusy: {
+		Message: "That session is already being restarted. Try again in a moment.",
+	},
+	outcomeContinueFailed: {
+		Message: "That conversation could not be continued. The session was left as it was.",
 	},
 	outcomeModeChanged: {
 		// Claims the restart and the resumption, which are the two things this

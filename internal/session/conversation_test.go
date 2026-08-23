@@ -1,6 +1,8 @@
 package session
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,10 +27,10 @@ func TestValidateResume(t *testing.T) {
 
 	accepted := map[string]string{
 		"empty is a create that resumes nothing": "",
-		"the word the form posts":                ResumeLatest,
-		"a conversation identifier":              good,
-		"all zeroes is still the right shape":    "00000000-0000-0000-0000-000000000000",
-		"all f is the top of the alphabet":       "ffffffff-ffff-ffff-ffff-ffffffffffff",
+
+		"a conversation identifier":           good,
+		"all zeroes is still the right shape": "00000000-0000-0000-0000-000000000000",
+		"all f is the top of the alphabet":    "ffffffff-ffff-ffff-ffff-ffffffffffff",
 	}
 	for name, v := range accepted {
 		t.Run("accepts/"+name, func(t *testing.T) {
@@ -91,7 +93,7 @@ func TestValidateResume(t *testing.T) {
 			}
 			// The trail may carry no byte a caller supplied (FR-042), and this
 			// sentinel is what a handler records instead of the value.
-			if strings.Contains(err.Error(), v) && v != ResumeLatest {
+			if strings.Contains(err.Error(), v) {
 				t.Errorf("ValidateResume(%q) put the refused value in its error: %v", v, err)
 			}
 		})
@@ -408,5 +410,59 @@ func TestContainedInRefusesTheRootAndItsSiblings(t *testing.T) {
 	}
 	if got, ok := containedIn(root, "child"); !ok || got != "/a/projects/child" {
 		t.Errorf("containedIn(root, %q) = %q, %v; want the child", "child", got, ok)
+	}
+}
+
+// TestValidateResumeRefusesTheRetiredWord is spec 013, FR-016. "latest" meant
+// "whatever this directory last had" until the control offering it was removed.
+// A daemon that went on quietly accepting a retired word would be a daemon whose
+// contract and whose behaviour disagree — and the word is now indistinguishable
+// from any other thing that is not a conversation identifier, which is what it
+// should always have been to everything except the one control that spelled it.
+func TestValidateResumeRefusesTheRetiredWord(t *testing.T) {
+	t.Parallel()
+
+	got, err := ValidateResume("latest")
+	if err == nil {
+		t.Fatalf("ValidateResume(%q) = %q with no error; the value was retired in spec 013", "latest", got)
+	}
+	if !errors.Is(err, ErrInvalidResume) {
+		t.Errorf("ValidateResume(%q) failed with %v, want it to wrap %v", "latest", err, ErrInvalidResume)
+	}
+	if strings.Contains(err.Error(), "latest") {
+		t.Errorf("the refusal repeats the caller's value back: %v", err)
+	}
+}
+
+// TestNoCommandLineCarriesTheContinueFlag is spec 013, FR-017, asserted
+// structurally because it is a claim about the whole daemon rather than about one
+// path. --continue meant "whatever this directory last had": a value nothing
+// could show, name or predict, and the reason it went.
+//
+// A grep is a blunt instrument and that is the point — there is no path through
+// this package that should reintroduce the flag, so any occurrence at all is the
+// finding.
+func TestNoCommandLineCarriesTheContinueFlag(t *testing.T) {
+	t.Parallel()
+
+	root := ".."
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		body, err := os.ReadFile(path) //nolint:gosec // path comes from WalkDir over this package's own parent
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(body), `"--continue"`) {
+			t.Errorf("%s carries the --continue flag; spec 013 removed it from this daemon", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the source: %v", err)
 	}
 }

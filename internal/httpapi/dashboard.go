@@ -141,6 +141,19 @@ type fleetView struct {
 // and not in view.go. The card it holds is the fleet's own projection, not a
 // second one — see cardOf.
 type sessionPageView struct {
+	// Conversations is what this session's *own* working directory has been used
+	// for before, offered so the operator can point the session at one of them
+	// (spec 013).
+	//
+	// The directory is the record's, never the caller's: a page that took one
+	// would let a session started in one place resume work from another, which is
+	// a way around the allowlist rather than a convenience.
+	//
+	// Empty is the ordinary case on a fresh host, and renders as a statement that
+	// there is nothing to continue — never as an empty control, which reads as an
+	// offer with nothing behind it.
+	Conversations []conversationView
+
 	// Operator is the identity layer 1 verified, passed straight to the header
 	// component as the same pointer OperatorFrom returned (FR-020, FR-036).
 	Operator *access.VerifiedOperator
@@ -343,10 +356,6 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string, outcome 
 			Suggestions:            suggestions,
 			LifetimeCeilingRemoved: s.sessions.LifetimeCeilingRemoved(),
 			Commands:               s.previewCommands(),
-			Conversations:          s.conversationsFor(now, suggestions),
-			ResumeLatest:           session.ResumeLatest,
-			ResumeLatestFlag:       session.ResumeLatestFlag,
-			ResumeOneFlag:          session.ResumeOneFlag,
 		},
 		Outcome: outcome,
 	}
@@ -385,27 +394,10 @@ func (s *Server) previewCommands() map[bool]string {
 	return out
 }
 
-// conversationsFor is the prior conversations the resume control offers.
-//
-// It reads the *first* suggested directory and no other, which is the whole of
-// what a server-rendered form can honestly do: the working-directory field is
-// free text and empty when the page renders, so there is no directory to answer
-// for yet. What this provides is the offer for the directory an operator most
-// likely means, and the script narrows it as they type.
-//
-// This is a smaller promise than the removed US5 version made, and deliberately:
-// that one listed every suggested directory's conversations at once, which is how
-// it came to be an offer nobody could act on.
-//
-// Every failure is an empty list (session.Conversations), so a host with no
-// conversation history, no home directory, or a Claude release that moved the
-// directory renders a form that still works.
-func (s *Server) conversationsFor(now time.Time, suggestions []string) []conversationView {
-	if len(suggestions) == 0 {
-		return nil
-	}
-	return s.conversationsForDir(now, suggestions[0])
-}
+// conversationsFor stood here until spec 013. It answered for the first
+// suggested directory, because the create form had no session to ask about. The
+// control it fed is gone; conversationsForDir now serves the session page, which
+// has a record and therefore a directory of its own.
 
 // shortConversation is the first group of a UUID, which is what a person
 // distinguishes two conversations by. The full value rides in the control's own
@@ -555,6 +547,9 @@ func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
 		Operator: operator,
 		Session:  cardOf(live, s.clock.Now(), token, s.cfg.RemoteControlCommand),
 		Pane:     pane,
+		// The record's own directory. Every failure is an empty list, so a host
+		// whose Claude layout moved renders a page that still works.
+		Conversations: s.conversationsForDir(s.clock.Now(), live.WorkDir),
 	})
 }
 

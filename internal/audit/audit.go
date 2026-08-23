@@ -140,6 +140,10 @@ const (
 	ActionDashboardRename  Action = "dashboard.rename"
 	ActionDashboardCompact Action = "dashboard.compact"
 
+	// ActionDashboardContinue is an operator pointing a running session at a
+	// different conversation from its own working directory (spec 013).
+	ActionDashboardContinue Action = "dashboard.continue"
+
 	// ActionDashboardReject is a mutating browser request refused by the
 	// cross-site defence, and is deliberately not ActionAccessReject: an identity
 	// that passed layer 1 and then failed the cross-site check is a different and

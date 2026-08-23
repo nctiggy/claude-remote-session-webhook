@@ -2562,7 +2562,7 @@ func TestACreateMayAskForNoAbsoluteDeadlineWhereTheOperatorAllowedIt(t *testing.
 //
 // **Must fail when** the resume value reaches a command line, on stdin, or as an
 // argument — or when a value this daemon will not run is accepted at all.
-func TestAStrayResumeValueIsRefusedRatherThanExecuted(t *testing.T) {
+func TestAStrayResumeValueNeverReachesACommandLine(t *testing.T) {
 	t.Parallel()
 
 	for _, stray := range []string{
@@ -2595,100 +2595,61 @@ func TestAStrayResumeValueIsRefusedRatherThanExecuted(t *testing.T) {
 
 			w := c.post(t, form)
 
-			wantOutcome(t, w, outcome("bad-resume"))
-			if got := len(c.owned()); got != 0 {
-				t.Errorf("the store holds %d records after a refused resume; want none", got)
-			}
-			if got := c.started(); got != 0 {
-				t.Errorf("the host was asked to start %d sessions; want 0 — a conversation this daemon will not run costs no tmux command", got)
-			}
+			// **Ignored, not refused** — and that is a stronger property than the
+			// one this test asserted before spec 013, not a weaker one.
+			//
+			// The create form has no resume control any more, so the route does
+			// not read the field at all. A value that is never read cannot reach
+			// a command line however it is spelled, which is what the alphabet
+			// below was defending. The create therefore succeeds, and what has to
+			// be true is that nothing the caller sent went anywhere.
+			wantOutcome(t, w, outcome("created"))
 
 			// Every call, not only the send-keys: Argv is a command line and
-			// Stdin is the other way bytes reach a pane, and a value this daemon
-			// refused may travel on neither.
+			// Stdin is the other way bytes reach a pane, and a value nobody read
+			// may travel on neither.
 			for _, call := range c.fixture.tmux.Calls() {
 				for _, arg := range call.Argv {
+					// The working directory is exempt, and only it. t.TempDir()
+					// builds a path out of the subtest's name, so for these cases
+					// the allowlisted directory literally contains the string
+					// being hunted. It got there by ResolveWorkDir, not from the
+					// resume field, and it is the one argument on the one call
+					// where that collision is possible.
+					if strings.Contains(arg, c.fixture.repo) {
+						continue
+					}
 					if strings.Contains(arg, stray) {
-						t.Errorf("the host was handed %q; a refused resume value reached a command line", call.Argv)
+						t.Errorf("the host was handed %q; an ignored resume value reached a command line", call.Argv)
 					}
 				}
 				if bytes.Contains(call.Stdin, []byte(stray)) {
 					t.Errorf("%v was handed %q on stdin; a refused resume value reached the pane", call.Op, call.Stdin)
 				}
 				if slices.Contains(call.Argv, resumeOneFlagForTest) {
-					t.Errorf("the host was handed %q; a refused create resumes nothing", call.Argv)
+					t.Errorf("the host was handed %q; a create from the browser resumes nothing", call.Argv)
 				}
 			}
-			// The trail carries the sentinel and never the value (FR-042), which
-			// on this branch matters twice over: the value is the thing a shell
-			// would have run.
+			// And it reaches the trail no more than it reaches a shell (FR-042).
 			if strings.Contains(c.sink.String(), stray) {
-				t.Errorf("the trail carries the refused value %q:\n%s", stray, c.sink.String())
+				t.Errorf("the trail carries the ignored value %q:\n%s", stray, c.sink.String())
 			}
 		})
 	}
 }
 
-// TestACreateMayContinueAConversation is the granted half: the shapes the route
-// accepts, asserted as the line the host is asked to type.
+// TestACreateMayContinueAConversation stood here until spec 013.
 //
-// It is the argv rather than the record because the record does not carry this —
-// a resume is a fact about starting, not about the session that results — so the
-// command line is the only place the operator's choice is observable at all.
+// It drove the create form's resume control through the browser door: "start
+// fresh", "the most recent", and a named conversation. The control is gone — a
+// create form asked which conversation to pick up before the operator could see
+// what the directory held, and offered "the most recent" as an answer that named
+// something only the CLI could resolve.
 //
-// **Must fail when** the flags land somewhere an argument parser would not honour
-// them, or when the ordinary create stops being byte-identical to what it was.
-func TestACreateMayContinueAConversation(t *testing.T) {
-	t.Parallel()
-
-	const conversation = "88e5294c-d947-4527-b8c9-5eb8384bae6a"
-
-	for _, tc := range []struct {
-		name  string
-		posts string
-		want  []string
-	}{
-		{name: "start fresh", posts: "", want: nil},
-		{name: "the most recent", posts: "latest", want: []string{resumeLatestFlagForTest}},
-		{name: "one in particular", posts: conversation, want: []string{resumeOneFlagForTest, conversation}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			c := newCreator(t)
-			form := c.wellFormed(t)
-			if tc.posts != "" {
-				form.Set("resume", tc.posts)
-			}
-
-			wantOutcome(t, c.post(t, form), wantCreatedOutcome)
-
-			line := typedCommand(t, c)
-			for _, want := range tc.want {
-				if !strings.Contains(line, want) {
-					t.Errorf("the host was asked to type %q, which carries no %q", line, want)
-				}
-			}
-			if tc.want == nil {
-				// The ordinary create, which must be exactly the line this daemon
-				// typed before any of this existed.
-				if strings.Contains(line, resumeLatestFlagForTest) || strings.Contains(line, resumeOneFlagForTest) {
-					t.Errorf("a create that asked to resume nothing typed %q", line)
-				}
-			}
-			// The flags go after the binary and before everything else, because
-			// the configured commands end in a quoted prompt argument and whether
-			// a parser honours a flag after a positional is not this daemon's to
-			// assume (config.InsertStartFlags).
-			if len(tc.want) > 0 {
-				fields := strings.Fields(line)
-				if len(fields) < 2 || fields[1] != tc.want[0] {
-					t.Errorf("the line is %q; the resume flag must follow the binary immediately", line)
-				}
-			}
-		})
-	}
-}
+// The browser cannot resume at create any more, so there is nothing here to
+// drive. What replaced it is TestContinueFromBrowser below, which drives the same
+// decision where it can now be made: on a session the operator can already see.
+// The signed API keeps its own resume field and its own coverage.
 
 // The Claude CLI's flags as a test spells them: written out rather than read from
 // the constants the daemon uses, so a rename that changed what is typed at a
@@ -2698,23 +2659,10 @@ const (
 	resumeOneFlagForTest    = "--resume"
 )
 
-// typedCommand is the line the host was asked to type into the new session's
-// shell — the send-keys argument before the Enter.
-func typedCommand(t *testing.T, c *creator) string {
-	t.Helper()
-
-	for _, call := range c.fixture.tmux.Calls() {
-		if call.Op != tmuxctl.OpSendKeys {
-			continue
-		}
-		// argv is: tmux send-keys -t <target> -- <command> Enter
-		if len(call.Argv) >= 7 {
-			return call.Argv[5]
-		}
-	}
-	t.Fatalf("the host was never asked to type anything: %v", c.fixture.tmux.Calls())
-	return ""
-}
+// typedCommand stood here until spec 013. It read the line a create typed, for
+// the resume assertions on the create form — a form that no longer resumes
+// anything, so there is no longer a create whose typed line varies by what the
+// caller asked for.
 
 // --- US1: remote control at create time (T004) ------------------------------
 //
@@ -6437,17 +6385,27 @@ func TestToggleRestartsTheSessionUnderTheOtherCommand(t *testing.T) {
 	if len(calls) == 0 {
 		t.Fatal("the toggle reached the host 0 times; a mode the daemon only wrote down is a card that does not describe its session")
 	}
-	var restarted bool
+	// What this fixture can show is that the toggle restarts *in place*. Whether
+	// the restarted command resumes the session's conversation is asserted in
+	// internal/session, where a conversation can be put on the record — these
+	// stand-in start commands are not claude, so a session created under them is
+	// given no conversation identifier at all (see claudeBinary).
+	var typed bool
 	for _, call := range calls {
-		if slices.ContainsFunc(call.Argv, func(arg string) bool { return strings.Contains(arg, "--continue") }) {
-			restarted = true
+		if call.Op == tmuxctl.OpSendKeys {
+			typed = true
 		}
 		if call.Op == tmuxctl.OpNew || call.Op == tmuxctl.OpKill {
 			t.Errorf("the toggle ran %s (%q); the session and its scrollback are the things it must not touch", call.Op, call.Argv)
 		}
+		for _, arg := range call.Argv {
+			if strings.Contains(arg, "--continue") {
+				t.Errorf("the toggle typed %q; --continue left this daemon in spec 013", arg)
+			}
+		}
 	}
-	if !restarted {
-		t.Errorf("nothing typed into the pane carried --continue, so the conversation did not survive the toggle: %v", calls)
+	if !typed {
+		t.Errorf("nothing was typed into the pane, so the toggle changed no running process: %v", calls)
 	}
 
 	rec := g.only(t)
@@ -6456,5 +6414,229 @@ func TestToggleRestartsTheSessionUnderTheOtherCommand(t *testing.T) {
 	}
 	if got := rec["session_id"]; got != live.ID {
 		t.Errorf("session_id = %v; want %q", got, live.ID)
+	}
+}
+
+// continuer drives the continue route, spec 013's one new action. It borrows the
+// toggler's shape because they are the same kind of act — both end the process
+// the operator is watching and start another in its place.
+type continuer struct{ *toggler }
+
+func newContinuer(t *testing.T) *continuer {
+	t.Helper()
+	return &continuer{toggler: newToggler(t)}
+}
+
+// planted is a running session of this operator's own with a conversation
+// recorded on the host for its working directory, which is what Continue
+// requires: an identifier with no transcript behind it does not fail on resume,
+// it starts something that is not the conversation the operator asked for.
+//
+// It sets HOME, which os.UserHomeDir reads, so a test using it cannot be
+// parallel. That is the same trade every conversation-store test in this
+// repository makes.
+func (c *continuer) planted(t *testing.T, conversations ...string) session.Session {
+	t.Helper()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// The planted session's start command has to be one this daemon can resolve,
+	// or the restart fails for a reason that has nothing to do with continuing.
+	c.offersRemoteControl()
+
+	live := c.live(t)
+	dir := filepath.Join(home, ".claude", "projects", strings.ReplaceAll(c.fixture.repo, "/", "-"))
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("create the conversation store: %v", err)
+	}
+	for _, id := range conversations {
+		if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte("{}\n"), 0o600); err != nil {
+			t.Fatalf("record a conversation: %v", err)
+		}
+	}
+	return live
+}
+
+func (c *continuer) asking(t *testing.T, conversation string) url.Values {
+	t.Helper()
+
+	form := url.Values{}
+	form.Set(fieldPageToken, mustMint(t, c.pageKey, testOperatorEmail, testTime))
+	form.Set(fieldConfirm, confirmYes)
+	form.Set(fieldConversation, conversation)
+	return form
+}
+
+func (c *continuer) submit(t *testing.T, id string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	return c.send(t, "/dashboard/sessions/"+id+"/continue", secFetchSiteSameOrigin, form)
+}
+
+const continuedConversation = "8f14e45f-ceea-467a-9b3d-0f2fc9de5b21"
+
+// TestContinueFromBrowser is the happy path: a running session is pointed at a
+// conversation from its own directory, and the pane is restarted on it.
+func TestContinueFromBrowser(t *testing.T) {
+	c := newContinuer(t)
+	live := c.planted(t, continuedConversation)
+	before := len(c.fixture.tmux.Calls())
+
+	w := c.submit(t, live.ID, c.asking(t, continuedConversation))
+
+	wantOutcome(t, w, outcome("continued"))
+
+	// The pane was interrupted and restarted on the chosen conversation, and the
+	// session itself was not touched: a continue that tore the session down and
+	// built it again would satisfy every other assertion here.
+	var interrupted, resumed bool
+	for _, call := range c.fixture.tmux.Calls()[before:] {
+		if call.Op == tmuxctl.OpNew || call.Op == tmuxctl.OpKill {
+			t.Errorf("the continue ran %s (%q); the session and its scrollback are what it must not touch", call.Op, call.Argv)
+		}
+		if slices.Contains(call.Argv, "C-c") {
+			interrupted = true
+		}
+		if slices.ContainsFunc(call.Argv, func(a string) bool {
+			return strings.Contains(a, resumeOneFlagForTest+" "+continuedConversation)
+		}) {
+			resumed = true
+		}
+	}
+	if !interrupted {
+		t.Error("the running process was never interrupted, so two would be in the pane")
+	}
+	if !resumed {
+		t.Errorf("nothing typed carried %s %s: %v", resumeOneFlagForTest, continuedConversation, c.fixture.tmux.Calls()[before:])
+	}
+
+	// The record now says which conversation this session is having, so a revival
+	// after this brings back the one it was continuing.
+	got, err := c.fixture.store.Get(live.ID, auth.CallerOperator)
+	if err != nil {
+		t.Fatalf("read the store: %v", err)
+	}
+	if got.ConversationID != continuedConversation {
+		t.Errorf("the record carries conversation %q; want %q", got.ConversationID, continuedConversation)
+	}
+	// And nothing about the session's bounds moved.
+	if !got.CreatedAt.Equal(live.CreatedAt) || !got.AbsoluteDeadline().Equal(live.AbsoluteDeadline()) {
+		t.Error("continuing moved the session's creation time or its deadline; it restarts a process, not a session")
+	}
+	if got.TokenHash != live.TokenHash {
+		t.Error("continuing minted a new credential; the record never went away")
+	}
+}
+
+// TestContinueRefusals is the half that matters more: what this route must not do.
+func TestContinueRefusals(t *testing.T) {
+	tests := []struct {
+		name string
+		form func(c *continuer, t *testing.T, live session.Session) url.Values
+		want outcome
+	}{
+		{
+			name: "unconfirmed",
+			form: func(c *continuer, t *testing.T, _ session.Session) url.Values {
+				f := c.asking(t, continuedConversation)
+				f.Del(fieldConfirm)
+				return f
+			},
+			want: outcome("continue-unconfirmed"),
+		},
+		{
+			name: "confirmed with something that is not yes",
+			form: func(c *continuer, t *testing.T, _ session.Session) url.Values {
+				f := c.asking(t, continuedConversation)
+				f.Set(fieldConfirm, "on")
+				return f
+			},
+			want: outcome("continue-unconfirmed"),
+		},
+		{
+			name: "a conversation that is not an identifier",
+			form: func(c *continuer, t *testing.T, _ session.Session) url.Values {
+				return c.asking(t, "$(whoami)")
+			},
+			want: outcome("bad-resume"),
+		},
+		{
+			name: "the retired word",
+			form: func(c *continuer, t *testing.T, _ session.Session) url.Values {
+				return c.asking(t, "latest")
+			},
+			want: outcome("bad-resume"),
+		},
+		{
+			name: "a conversation with no transcript on this host",
+			form: func(c *continuer, t *testing.T, _ session.Session) url.Values {
+				return c.asking(t, "00000000-0000-4000-8000-000000000000")
+			},
+			want: outcome("bad-resume"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newContinuer(t)
+			live := c.planted(t, continuedConversation)
+			before := len(c.fixture.tmux.Calls())
+
+			w := c.submit(t, live.ID, tt.form(c, t, live))
+			wantOutcome(t, w, tt.want)
+
+			for _, call := range c.fixture.tmux.Calls()[before:] {
+				if call.Op == tmuxctl.OpSendKeys {
+					t.Errorf("a refused continue typed %q into the pane", call.Argv)
+				}
+			}
+			got, err := c.fixture.store.Get(live.ID, auth.CallerOperator)
+			if err != nil {
+				t.Fatalf("read the store: %v", err)
+			}
+			if got.ConversationID == "latest" || got.ConversationID == "$(whoami)" {
+				t.Errorf("a refused value reached the record: %q", got.ConversationID)
+			}
+		})
+	}
+}
+
+// TestContinueIgnoresADirectoryTheCallerNames is the containment claim. The
+// conversations a session may continue are the ones in its *own* recorded
+// directory; a route that took one from the caller would let a session started in
+// one place resume work from another, which is a way around the allowlist.
+func TestContinueIgnoresADirectoryTheCallerNames(t *testing.T) {
+	c := newContinuer(t)
+	live := c.planted(t, continuedConversation)
+
+	form := c.asking(t, continuedConversation)
+	form.Set("dir", "/etc")
+	form.Set("work_dir", "/etc")
+
+	w := c.submit(t, live.ID, form)
+	wantOutcome(t, w, outcome("continued"))
+
+	for _, call := range c.fixture.tmux.Calls() {
+		for _, arg := range call.Argv {
+			if strings.Contains(arg, "/etc") {
+				t.Errorf("a directory the caller named reached the host: %q", call.Argv)
+			}
+		}
+	}
+}
+
+// TestContinueTrailNamesTheSessionAndNotTheValue is FR-013 and FR-042 together.
+func TestContinueTrailNamesTheSessionAndNotTheValue(t *testing.T) {
+	c := newContinuer(t)
+	live := c.planted(t, continuedConversation)
+
+	c.submit(t, live.ID, c.asking(t, continuedConversation))
+
+	written := c.sink.String()
+	if !strings.Contains(written, live.ID) {
+		t.Errorf("the trail does not name the session it acted on:\n%s", written)
+	}
+	if strings.Contains(written, continuedConversation) {
+		t.Errorf("the trail carries the conversation identifier the caller sent:\n%s", written)
 	}
 }

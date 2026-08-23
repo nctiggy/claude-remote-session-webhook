@@ -31,6 +31,8 @@ var spelledOutcomes = []outcome{
 	"update-not-fetched", "update-unverified", "update-refused",
 	"restart-unconfirmed", "restart-refused",
 	"setting-written", "setting-refused",
+	// The continue action's five (spec 013).
+	"continued", "continue-unconfirmed", "continue-not-running", "continue-busy", "continue-failed",
 }
 
 // TestEveryOutcomeThisPackageSpellsHasASentence is the other half of FR-022: the
