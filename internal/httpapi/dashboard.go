@@ -343,10 +343,6 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string, outcome 
 			Suggestions:            suggestions,
 			LifetimeCeilingRemoved: s.sessions.LifetimeCeilingRemoved(),
 			Commands:               s.previewCommands(),
-			Conversations:          s.conversationsFor(now, suggestions),
-			ResumeLatest:           session.ResumeLatest,
-			ResumeLatestFlag:       session.ResumeLatestFlag,
-			ResumeOneFlag:          session.ResumeOneFlag,
 		},
 		Outcome: outcome,
 	}

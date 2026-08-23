@@ -3804,12 +3804,6 @@ func fullCreateForm() createFormView {
 		Suggestions:            []string{"/home/operator/code/crswd"},
 		LifetimeCeilingRemoved: true,
 		Commands:               map[bool]string{false: "local-command", true: "remote-command"},
-		Conversations: []conversationView{
-			{ID: "3f6c1d8e-4b2a-0957-e1c3-d5f7a9b1c3d5", Short: "3f6c1d8e", Modified: "2 hours"},
-		},
-		ResumeLatest:     "latest",
-		ResumeLatestFlag: "--continue",
-		ResumeOneFlag:    "--resume",
 	}
 }
 
@@ -4000,7 +3994,8 @@ func TestEveryCreateControlMovedIntoTheDialog(t *testing.T) {
 	// The field names are the route's own constants, so the markup's spelling and
 	// the handler's stay one fact — this suite's standing arrangement for a
 	// template set parsed with no function map.
-	for _, field := range []string{fieldName, fieldWorkDir, fieldRemoteControl, fieldLifetime, fieldResume} {
+	// fieldResume left this list in spec 013 with the control that posted it.
+	for _, field := range []string{fieldName, fieldWorkDir, fieldRemoteControl, fieldLifetime} {
 		if !regexp.MustCompile(`name="` + regexp.QuoteMeta(field) + `"`).MatchString(inside) {
 			t.Errorf("the dialog posts no %q; a control that did not come across is a capability an operator has lost:\n%s", field, inside)
 		}

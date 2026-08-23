@@ -299,35 +299,6 @@ type createFormView struct {
 	// preview for it is not rendered at all — FR-018a's discipline about absent
 	// values, applied to a readout.
 	Commands map[bool]string
-
-	// Conversations is what this working directory has been used for before, for
-	// the resume control (FR-020). Newest first.
-	//
-	// The field US5 removed carried the same name and was a different thing: it
-	// offered the conversations of every *suggested* directory to fill a free-text
-	// identifier field with, which asked an operator to resolve an ambiguity the
-	// daemon had refused to. This one is the conversations of the working
-	// directory the form is being rendered for, and the operator picks rather than
-	// types.
-	//
-	// It is the only thing in this struct that reads the filesystem on the render
-	// path, which is why session.Conversations bounds it: the directory goes
-	// through the create's own allowlist check before it becomes a path, and every
-	// failure is an empty list rather than a page that will not render.
-	Conversations []conversationView
-
-	// ResumeLatest is the value the "continue" control posts, spelled by the
-	// daemon rather than by the markup so the form and the parser cannot come to
-	// disagree about the word.
-	ResumeLatest string
-
-	// ResumeLatestFlag and ResumeOneFlag are the CLI flags the preview shows when
-	// one of those is chosen, and they are here for the reason Commands is: the
-	// script must not spell the daemon's vocabulary. A copy in crswd.js would be
-	// a second speller, free to show an operator a flag the daemon stopped
-	// passing — and the whole claim of the preview is that it shows what runs.
-	ResumeLatestFlag string
-	ResumeOneFlag    string
 }
 
 // conversationView is one prior conversation on the create form.

@@ -2562,7 +2562,7 @@ func TestACreateMayAskForNoAbsoluteDeadlineWhereTheOperatorAllowedIt(t *testing.
 //
 // **Must fail when** the resume value reaches a command line, on stdin, or as an
 // argument — or when a value this daemon will not run is accepted at all.
-func TestAStrayResumeValueIsRefusedRatherThanExecuted(t *testing.T) {
+func TestAStrayResumeValueNeverReachesACommandLine(t *testing.T) {
 	t.Parallel()
 
 	for _, stray := range []string{
@@ -2595,100 +2595,61 @@ func TestAStrayResumeValueIsRefusedRatherThanExecuted(t *testing.T) {
 
 			w := c.post(t, form)
 
-			wantOutcome(t, w, outcome("bad-resume"))
-			if got := len(c.owned()); got != 0 {
-				t.Errorf("the store holds %d records after a refused resume; want none", got)
-			}
-			if got := c.started(); got != 0 {
-				t.Errorf("the host was asked to start %d sessions; want 0 — a conversation this daemon will not run costs no tmux command", got)
-			}
+			// **Ignored, not refused** — and that is a stronger property than the
+			// one this test asserted before spec 013, not a weaker one.
+			//
+			// The create form has no resume control any more, so the route does
+			// not read the field at all. A value that is never read cannot reach
+			// a command line however it is spelled, which is what the alphabet
+			// below was defending. The create therefore succeeds, and what has to
+			// be true is that nothing the caller sent went anywhere.
+			wantOutcome(t, w, outcome("created"))
 
 			// Every call, not only the send-keys: Argv is a command line and
-			// Stdin is the other way bytes reach a pane, and a value this daemon
-			// refused may travel on neither.
+			// Stdin is the other way bytes reach a pane, and a value nobody read
+			// may travel on neither.
 			for _, call := range c.fixture.tmux.Calls() {
 				for _, arg := range call.Argv {
+					// The working directory is exempt, and only it. t.TempDir()
+					// builds a path out of the subtest's name, so for these cases
+					// the allowlisted directory literally contains the string
+					// being hunted. It got there by ResolveWorkDir, not from the
+					// resume field, and it is the one argument on the one call
+					// where that collision is possible.
+					if strings.Contains(arg, c.fixture.repo) {
+						continue
+					}
 					if strings.Contains(arg, stray) {
-						t.Errorf("the host was handed %q; a refused resume value reached a command line", call.Argv)
+						t.Errorf("the host was handed %q; an ignored resume value reached a command line", call.Argv)
 					}
 				}
 				if bytes.Contains(call.Stdin, []byte(stray)) {
 					t.Errorf("%v was handed %q on stdin; a refused resume value reached the pane", call.Op, call.Stdin)
 				}
 				if slices.Contains(call.Argv, resumeOneFlagForTest) {
-					t.Errorf("the host was handed %q; a refused create resumes nothing", call.Argv)
+					t.Errorf("the host was handed %q; a create from the browser resumes nothing", call.Argv)
 				}
 			}
-			// The trail carries the sentinel and never the value (FR-042), which
-			// on this branch matters twice over: the value is the thing a shell
-			// would have run.
+			// And it reaches the trail no more than it reaches a shell (FR-042).
 			if strings.Contains(c.sink.String(), stray) {
-				t.Errorf("the trail carries the refused value %q:\n%s", stray, c.sink.String())
+				t.Errorf("the trail carries the ignored value %q:\n%s", stray, c.sink.String())
 			}
 		})
 	}
 }
 
-// TestACreateMayContinueAConversation is the granted half: the shapes the route
-// accepts, asserted as the line the host is asked to type.
+// TestACreateMayContinueAConversation stood here until spec 013.
 //
-// It is the argv rather than the record because the record does not carry this —
-// a resume is a fact about starting, not about the session that results — so the
-// command line is the only place the operator's choice is observable at all.
+// It drove the create form's resume control through the browser door: "start
+// fresh", "the most recent", and a named conversation. The control is gone — a
+// create form asked which conversation to pick up before the operator could see
+// what the directory held, and offered "the most recent" as an answer that named
+// something only the CLI could resolve.
 //
-// **Must fail when** the flags land somewhere an argument parser would not honour
-// them, or when the ordinary create stops being byte-identical to what it was.
-func TestACreateMayContinueAConversation(t *testing.T) {
-	t.Parallel()
-
-	const conversation = "88e5294c-d947-4527-b8c9-5eb8384bae6a"
-
-	for _, tc := range []struct {
-		name  string
-		posts string
-		want  []string
-	}{
-		{name: "start fresh", posts: "", want: nil},
-		{name: "the most recent", posts: "latest", want: []string{resumeLatestFlagForTest}},
-		{name: "one in particular", posts: conversation, want: []string{resumeOneFlagForTest, conversation}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			c := newCreator(t)
-			form := c.wellFormed(t)
-			if tc.posts != "" {
-				form.Set("resume", tc.posts)
-			}
-
-			wantOutcome(t, c.post(t, form), wantCreatedOutcome)
-
-			line := typedCommand(t, c)
-			for _, want := range tc.want {
-				if !strings.Contains(line, want) {
-					t.Errorf("the host was asked to type %q, which carries no %q", line, want)
-				}
-			}
-			if tc.want == nil {
-				// The ordinary create, which must be exactly the line this daemon
-				// typed before any of this existed.
-				if strings.Contains(line, resumeLatestFlagForTest) || strings.Contains(line, resumeOneFlagForTest) {
-					t.Errorf("a create that asked to resume nothing typed %q", line)
-				}
-			}
-			// The flags go after the binary and before everything else, because
-			// the configured commands end in a quoted prompt argument and whether
-			// a parser honours a flag after a positional is not this daemon's to
-			// assume (config.InsertStartFlags).
-			if len(tc.want) > 0 {
-				fields := strings.Fields(line)
-				if len(fields) < 2 || fields[1] != tc.want[0] {
-					t.Errorf("the line is %q; the resume flag must follow the binary immediately", line)
-				}
-			}
-		})
-	}
-}
+// The browser cannot resume at create any more, so there is nothing here to
+// drive. What replaced it is TestContinueFromBrowser below, which drives the same
+// decision where it can now be made: on a session the operator can already see.
+// The signed API keeps its own resume field and its own coverage.
 
 // The Claude CLI's flags as a test spells them: written out rather than read from
 // the constants the daemon uses, so a rename that changed what is typed at a
@@ -6437,17 +6398,27 @@ func TestToggleRestartsTheSessionUnderTheOtherCommand(t *testing.T) {
 	if len(calls) == 0 {
 		t.Fatal("the toggle reached the host 0 times; a mode the daemon only wrote down is a card that does not describe its session")
 	}
-	var restarted bool
+	// What this fixture can show is that the toggle restarts *in place*. Whether
+	// the restarted command resumes the session's conversation is asserted in
+	// internal/session, where a conversation can be put on the record — these
+	// stand-in start commands are not claude, so a session created under them is
+	// given no conversation identifier at all (see claudeBinary).
+	var typed bool
 	for _, call := range calls {
-		if slices.ContainsFunc(call.Argv, func(arg string) bool { return strings.Contains(arg, "--continue") }) {
-			restarted = true
+		if call.Op == tmuxctl.OpSendKeys {
+			typed = true
 		}
 		if call.Op == tmuxctl.OpNew || call.Op == tmuxctl.OpKill {
 			t.Errorf("the toggle ran %s (%q); the session and its scrollback are the things it must not touch", call.Op, call.Argv)
 		}
+		for _, arg := range call.Argv {
+			if strings.Contains(arg, "--continue") {
+				t.Errorf("the toggle typed %q; --continue left this daemon in spec 013", arg)
+			}
+		}
 	}
-	if !restarted {
-		t.Errorf("nothing typed into the pane carried --continue, so the conversation did not survive the toggle: %v", calls)
+	if !typed {
+		t.Errorf("nothing was typed into the pane, so the toggle changed no running process: %v", calls)
 	}
 
 	rec := g.only(t)

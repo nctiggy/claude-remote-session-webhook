@@ -539,6 +539,14 @@ var (
 	// is answered exactly as an id nobody was ever issued is.
 	ErrSessionDead = errors.New("session is dead")
 
+	// ErrRestartInFlight refuses a second restart of a session whose process is
+	// already being restarted (spec 013, FR-012).
+	//
+	// It is a refusal about timing rather than about the request: nothing the
+	// caller sent is wrong, and trying again in a moment is the right response —
+	// which is why it is its own sentinel rather than folded into ErrSessionDead.
+	ErrRestartInFlight = errors.New("a restart of this session is already in flight")
+
 	// ErrUnknownStartCommand is a create naming a start command the operator did
 	// not configure. It is refused rather than falling back to the default: a
 	// caller that asked for remote control and silently got a plain session has

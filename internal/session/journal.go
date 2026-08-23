@@ -39,6 +39,12 @@ const (
 	journalRevived = "revived"
 	journalFailed  = "failed"
 	journalEnded   = "ended"
+
+	// journalContinued is an operator pointing a running session at a different
+	// conversation (spec 013). It is recorded for the same reason a revival is:
+	// the conversation a session is having must outlive the shell it is having it
+	// in, or a session recreated after an OOM comes back on the wrong one.
+	journalContinued = "continued"
 )
 
 // journalRecord is one line of the journal.

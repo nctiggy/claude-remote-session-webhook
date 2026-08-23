@@ -297,16 +297,15 @@ const (
 	// thirty days and silently has one learns otherwise when the session is gone.
 	fieldLifetime = "lifetime"
 
-	// fieldResume is the conversation this create should pick up instead of
-	// starting empty (milestone 15, contracts/conversation-resume.md). Absent or
-	// empty starts fresh, which is every create made before it existed.
+	// fieldResume left this file in spec 013 with the control that posted it. The
+	// create form starts every session fresh now, and choosing a conversation is
+	// something an operator does to a session they can already see.
 	//
-	// It is spelled here and read straight into the manager, which validates it
-	// (session.ValidateResume) and validates it again before it reaches a command
-	// line. Nothing in this package interprets the value: a second, weaker check
-	// at this boundary would be a check a future caller could be routed through
-	// instead of the real one.
-	fieldResume = "resume"
+	// The signed API still carries one (contracts/http-api.md is a closed set and
+	// a script that names a conversation deliberately is not the case that went
+	// wrong), which is why session.CreateRequest.Resume survives and this does
+	// not: what changed is which callers may set it, and a browser is no longer
+	// one of them.
 
 	// fieldRemoteControl is the switch, and it carries a *mode* rather than a
 	// name (FR-003, FR-004). It replaced a `<select name="start_command">` that
@@ -519,7 +518,6 @@ func (s *Server) createFromBrowser(w http.ResponseWriter, r *http.Request) {
 		// up as an argument in a line typed at an unsandboxed shell, so it is
 		// worth being plain that nothing here is trusted for having come from the
 		// operator's own browser.
-		Resume: r.PostForm.Get(fieldResume),
 		// The operator's two overrides, which the manager checks against the
 		// operator's own ceiling before a record exists (resolveLifetimes). A
 		// negative Lifetime switches the absolute deadline off (milestone 13),

@@ -56,8 +56,7 @@ const (
 	// rather than guessed at (spec 012, FR-001).
 	SessionIDFlag = "--session-id"
 
-	ResumeLatestFlag = "--continue"
-	ResumeOneFlag    = "--resume"
+	ResumeOneFlag = "--resume"
 )
 
 // interruptKey is tmux's name for Ctrl-C, which the pane's line discipline turns
@@ -77,16 +76,6 @@ const (
 // an empty line. What neither can do is guarantee the process is gone — see
 // SetMode, which says what this daemon may and may not claim about that.
 const interruptKey = "C-c"
-
-// continueFlag is what makes a mode change a change of mode rather than a new
-// conversation (SC-007). The restarted command resumes what the pane was already
-// holding, which is the whole reason the session, its window and its scrollback
-// are preserved either side of it: a toggle that started fresh would have thrown
-// away the work the operator is toggling in order to keep driving.
-//
-// It is daemon-authored and carries no ";" for tmux's parser to eat, so it
-// travels the way the start command does rather than through Paste.
-const continueFlag = "--continue"
 
 // compactCommand is Claude Code's own /compact and the newline that submits it
 // (FR-016, research D2). Nine bytes, every one of them delivered as data.
@@ -177,6 +166,17 @@ type Manager struct {
 	// journal is the daemon's only durable memory (spec 012). Nil is a working
 	// manager that remembers nothing across the loss of a shell.
 	journal *Journal
+
+	// restarting is the one claim on restarting a session's process, held by the
+	// supervisor when it revives and by Continue when an operator asks for a
+	// different conversation (spec 013, FR-012).
+	//
+	// It lives here rather than on the supervisor because there are now two
+	// things that type a start command into a live shell, and two locks with one
+	// job is how they come to disagree about which of them is allowed to. Two
+	// start commands in one pane is two Claude processes in one session.
+	restartingMu sync.Mutex
+	restarting   map[string]bool
 
 	// maxLifetime is the ceiling a per-session override may not exceed (#37).
 	// Zero means the built-in constant, so a manager nobody configured refuses
@@ -583,11 +583,19 @@ type CreateRequest struct {
 	// checked against that ceiling before anything is built.
 	Lifetime time.Duration
 
-	// Resume asks the new session to pick up a prior Claude conversation instead
-	// of starting an empty one (milestone 15, spec 009): ResumeLatest for the most
-	// recent in the working directory, or a conversation identifier for one in
-	// particular. Empty starts fresh, which is every create made before this
-	// field existed.
+	// Resume asks the new session to pick up a named prior conversation instead of
+	// starting an empty one (spec 009).
+	//
+	// **The dashboard never sets it.** Since spec 013 the create form starts every
+	// session fresh and choosing a conversation happens on the running session,
+	// where the operator can see what the directory holds. This field survives for
+	// the signed API, whose contract has carried it since spec 009 and whose
+	// callers are scripts that named a conversation deliberately —
+	// contracts/http-api.md is a closed set, and narrowing it because a *page*
+	// stopped needing a field would be a change nobody asked for.
+	//
+	// The one value it no longer takes is the retired "latest" (spec 013,
+	// FR-016), which ValidateResume now refuses like any other unrecognised one.
 	//
 	// It is validated here and again before it is rendered, and the second check
 	// is not redundant — read ValidateResume for what is being defended against.
@@ -652,14 +660,6 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 	}
 
 	// Refused here for resolveStartCommand's reason: a create naming a
-	// conversation this daemon will not put on a command line must produce no
-	// record, no tmux session and no token. It is the boundary check; start makes
-	// it again before the value reaches a line (ValidateResume).
-	resume, err := ValidateResume(req.Resume)
-	if err != nil {
-		return nil, "", err
-	}
-
 	if err := ValidateName(req.Name); err != nil {
 		return nil, "", fmt.Errorf("create session: %w", err)
 	}
@@ -683,6 +683,13 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, stri
 	token, hash, err := NewToken()
 	if err != nil {
 		return nil, "", fmt.Errorf("create session %s: %w", id, err)
+	}
+	// The boundary check. A conversation this daemon will not put on a command
+	// line must produce no record, no tmux session and no token; start makes the
+	// check again before the value reaches a line.
+	resume, err := ValidateResume(req.Resume)
+	if err != nil {
+		return nil, "", err
 	}
 	// Resolved before the identifier is minted, because whether there is one at
 	// all depends on what this session is going to run.
@@ -1234,7 +1241,7 @@ func (m *Manager) SetMode(ctx context.Context, s Session, mode Mode) (Session, e
 	if err != nil {
 		return Session{}, fmt.Errorf("resolve the start command for session %s: %w", s.ID, err)
 	}
-	command, err := config.RenderStartCommand(template, s.Name)
+	command, err := m.renderStart(template, s.ConversationID, "", s.Name)
 	if err != nil {
 		return Session{}, fmt.Errorf("render the start command for session %s: %w", s.ID, err)
 	}
@@ -1256,11 +1263,16 @@ func (m *Manager) SetMode(ctx context.Context, s Session, mode Mode) (Session, e
 	}
 	// One call for the line and the Return, exactly as start sends it: tmux
 	// consumes the arguments in order, so a single exec both types the command and
-	// runs it. The flag is appended by the daemon rather than configured, because
-	// resuming is a property of this transition and not of the operator's command
-	// — a configured --continue would also be there on every create, which is a
-	// session that never starts fresh.
-	if err := m.tmux.SendKeys(ctx, name, command+" "+continueFlag, enterKey); err != nil {
+	// runs it.
+	//
+	// The line already carries --resume for this session's own conversation,
+	// because renderStart put it there. It used to carry --continue instead, which
+	// meant "whatever this directory last had" — true enough while a mode change
+	// was the only thing that restarted a pane, and wrong the moment two sessions
+	// shared a directory. Spec 013 removed that flag from the daemon; a session
+	// carrying no conversation identifier now restarts fresh, which is the honest
+	// outcome when there is no conversation to name.
+	if err := m.tmux.SendKeys(ctx, name, command, enterKey); err != nil {
 		return Session{}, fmt.Errorf("restart the process in session %s: %w", s.ID, err)
 	}
 
@@ -1982,8 +1994,6 @@ func (m *Manager) resumeFlagged(template, resume, conversationID string) (string
 			return "", fmt.Errorf("check the conversation identifier: %w", err)
 		}
 		return config.InsertStartFlags(template, SessionIDFlag, conversationID), nil
-	case ResumeLatest:
-		return config.InsertStartFlags(template, ResumeLatestFlag), nil
 	default:
 		return config.InsertStartFlags(template, ResumeOneFlag, checked), nil
 	}
@@ -2089,42 +2099,35 @@ func (m *Manager) rollback(ctx context.Context, s Session, cause error) error {
 	return fmt.Errorf("create session %s: %w", s.ID, cause)
 }
 
-// conversationFor decides which Claude conversation a new session will be
-// having, from what the operator asked to resume (spec 012).
+// conversationFor decides which conversation a new session will be having.
 //
-// Three answers, and only one of them is a choice this daemon makes:
+// **The dashboard always arrives here with nothing to resume** since spec 013:
+// choosing a prior conversation moved to the running session, where the operator
+// can see what the directory holds. A named conversation still arrives from the
+// signed API, whose contract has carried one since spec 009.
 //
-//   - Nothing to resume — the ordinary create — gets a freshly minted identifier,
-//     which is passed as --session-id so the conversation is this daemon's to
-//     find again. Unless the start command is one this daemon cannot give an
-//     identifier to, in which case it gets none and is supervised but never
-//     revived by one (see claudeBinary).
-//   - A named conversation is already an identifier; the session simply is that
-//     conversation, and it is passed as --resume.
-//   - "the most recent in this directory" resolves to an identifier only the CLI
-//     knows, and deliberately not here: a daemon that resolved it would be racing
-//     the CLI to read the same directory and losing whenever a session had been
-//     started elsewhere. Such a session carries no identifier and is therefore
-//     supervised but never revived by one — the same position as every session
-//     created before spec 012 (FR-005).
+// Two answers, then. A named conversation is already an identifier and the
+// session simply is that conversation. Nothing named gets a freshly minted one,
+// so the conversation is this daemon's to find again — unless the start command
+// is one this daemon cannot give an identifier to, in which case the session runs
+// exactly as it always did and is supervised but never revived or continued by an
+// identifier it never had (see claudeBinary).
+//
+// The third answer was "the most recent in this directory", and spec 013 removed
+// it: it named a conversation only the CLI could resolve, so nobody choosing it
+// could know what they were choosing.
 func conversationFor(resume string, capable bool) (string, error) {
 	checked, err := ValidateResume(resume)
 	if err != nil {
 		return "", err
 	}
-	switch checked {
-	case "":
-		if !capable {
-			// A start command this daemon cannot give an identifier to. The
-			// session runs exactly as it always did — see claudeBinary.
-			return "", nil
-		}
-		return NewConversationID()
-	case ResumeLatest:
-		return "", nil
-	default:
+	if checked != "" {
 		return checked, nil
 	}
+	if !capable {
+		return "", nil
+	}
+	return NewConversationID()
 }
 
 // createRecord is the journal line for a session that has just been claimed.
@@ -2273,4 +2276,134 @@ func (m *Manager) ReplayJournal(ctx context.Context) ([]Recovered, ReplayStats, 
 		out = append(out, Recovered{Session: s})
 	}
 	return out, stats, nil
+}
+
+// claimRestart takes the single-restart claim for a session, and reports whether
+// it got it (spec 013, FR-012).
+//
+// Two things restart a session's process: the supervisor reviving one that died,
+// and an operator continuing a different conversation. Both interrupt the pane
+// and type a start command into it, so exactly one may be doing that at a time —
+// the alternative is two Claude processes in one shell, which is a session with
+// two of everything and an operator watching whichever one draws last.
+//
+// The map is created lazily so a Manager built by a struct literal, or by a test
+// that predates this field, is still a working Manager.
+func (m *Manager) claimRestart(id string) bool {
+	m.restartingMu.Lock()
+	defer m.restartingMu.Unlock()
+
+	if m.restarting == nil {
+		m.restarting = make(map[string]bool)
+	}
+	if m.restarting[id] {
+		return false
+	}
+	m.restarting[id] = true
+	return true
+}
+
+func (m *Manager) releaseRestart(id string) {
+	m.restartingMu.Lock()
+	defer m.restartingMu.Unlock()
+	delete(m.restarting, id)
+}
+
+// Continue points a running session at a prior conversation from its own working
+// directory (spec 013, FR-006).
+//
+// # It restarts a process, never a session
+//
+// Everything about the session survives: its identity, its owner, the credential
+// its owner holds, its working directory, its start command, when it was created
+// and therefore when it expires. What changes is which conversation the thing
+// inside the pane is having. That distinction is the whole of why this is not a
+// create, and it is what keeps Principle VI's bounds intact — a session that
+// could refresh its own deadline by continuing something would be a session with
+// no deadline at all.
+//
+// # Why the directory is not a parameter
+//
+// The conversations an operator may continue are the ones in *this session's*
+// recorded working directory. Taking a directory from the caller would let a
+// session started in one place resume work from another, which is a way around
+// the allowlist rather than a convenience.
+//
+// # The order is the contract
+//
+// The record, the tmux option and the journal are written *before* the pane is
+// touched. A daemon that died between the two comes back knowing which
+// conversation this session is on, and its supervisor revives it into that one.
+// Written after, the same crash leaves a session running a conversation nothing
+// has recorded.
+func (m *Manager) Continue(ctx context.Context, s Session, conversationID string) (Session, error) {
+	// Validated before anything else, because the value is caller-supplied and
+	// its next stop is a command line typed into a live shell. ResumeLatest no
+	// longer exists, so "latest" fails here exactly as any other unrecognised
+	// value does (spec 013, FR-016).
+	checked, err := ValidateResume(conversationID)
+	if err != nil {
+		return Session{}, fmt.Errorf("continue session %s: %w", s.ID, err)
+	}
+	if !isConversationID(checked) {
+		return Session{}, fmt.Errorf("continue session %s: %w: it is not a conversation identifier", s.ID, ErrInvalidResume)
+	}
+
+	// A session that is not running has nothing to continue into. Both terminal
+	// states are refused, and the sentinel is the one every caller already reads.
+	if s.State == StateDead || s.State == StateFailed {
+		return Session{}, fmt.Errorf("continue session %s: %w", s.ID, ErrSessionDead)
+	}
+
+	// The allowlist may have shrunk since this session was created. A directory
+	// it no longer covers is one this daemon may not start work in, whether the
+	// shell is already there or not.
+	if _, err := ResolveWorkDir(s.WorkDir, m.roots); err != nil {
+		return Session{}, fmt.Errorf("continue session %s: %w", s.ID, err)
+	}
+
+	// Resuming an identifier with no transcript behind it does not fail — it
+	// starts something that is not the conversation the operator asked for, which
+	// is worse than refusing.
+	if !m.HasTranscript(checked, s.WorkDir) {
+		return Session{}, fmt.Errorf("continue session %s: %w: there is no such conversation on this host", s.ID, ErrInvalidResume)
+	}
+
+	if !m.claimRestart(s.ID) {
+		return Session{}, fmt.Errorf("continue session %s: %w", s.ID, ErrRestartInFlight)
+	}
+	defer m.releaseRestart(s.ID)
+
+	// Touch first, and this is where Continue differs from a revival: a human
+	// asked for this, so it is a driving like a prompt or a compact. Touch is
+	// also the store's own answer, under the store's lock, to whether this record
+	// is still there and still live — a session the reaper collected between the
+	// caller's View and this call is refused here, before the pane is touched.
+	now := m.clock.Now()
+	if err := m.store.Touch(s.ID, now); err != nil {
+		return Session{}, fmt.Errorf("continue session %s: %w", s.ID, err)
+	}
+	s.LastActivity = now
+
+	// Recorded before the restart. See the note above on why the order matters.
+	if err := m.store.SetConversation(s.ID, checked); err != nil {
+		return Session{}, fmt.Errorf("continue session %s: %w", s.ID, err)
+	}
+	s.ConversationID = checked
+	if err := m.tmux.SetOption(ctx, s.TmuxName(), tmuxctl.OptionConversation, checked); err != nil {
+		return Session{}, fmt.Errorf("record the conversation of session %s: %w", s.ID, err)
+	}
+	if err := m.journal.Append(reviveRecord(s, journalContinued)); err != nil {
+		return Session{}, fmt.Errorf("journal the conversation of session %s: %w", s.ID, err)
+	}
+
+	// The supervisor's own restart path, deliberately: continue and revive must
+	// type the same line for the same session, and two implementations of "start
+	// this session on this conversation" is one more than can be kept in step.
+	if err := m.restartInto(ctx, s); err != nil {
+		return Session{}, fmt.Errorf("continue session %s: %w", s.ID, err)
+	}
+
+	m.emit(FleetChanged, s)
+	return s, nil
 }

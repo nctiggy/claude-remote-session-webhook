@@ -486,7 +486,6 @@
     }
 
     const remote = form.querySelector('input[name="remote_control"]');
-    const resume = form.querySelector('select[name="resume"]');
     const name = form.querySelector('input[name="name"]');
 
     // The placeholder the server left in the line, spelled once here because it
@@ -503,36 +502,15 @@
         return;
       }
 
-      // The flags go after the binary, which is where the daemon puts them
-      // (config.InsertStartFlags), and they are the daemon's own spelling read
-      // off the element rather than this script's copy of them.
-      //
-      // A specific conversation is previewed with an ellipsis instead of its
-      // identifier: the operator picked it from a list a moment ago, and a
-      // 36-character UUID in the middle of the line is noise in the one place
-      // this element exists to be readable.
-      const chosen = resume ? resume.value : '';
-      let flag = '';
-      if (chosen && chosen === pre.dataset.commandContinue) {
-        flag = pre.dataset.flagContinue || '';
-      } else if (chosen) {
-        flag = (pre.dataset.flagResume || '') + ' \u2026';
-      }
-
-      let shown = line;
-      if (flag) {
-        const space = line.indexOf(' ');
-        shown =
-          space < 0
-            ? line + ' ' + flag
-            : line.slice(0, space) + ' ' + flag + line.slice(space);
-      }
-
+      // The resume flag was composed here until spec 013. Every create starts
+      // fresh now, so the only thing this preview substitutes is the name — and
+      // the line the daemon composed is the line that runs, with no flag this
+      // script has to know how to spell.
       const typed = name && name.value ? name.value : PLACEHOLDER;
-      pre.textContent = shown.split(PLACEHOLDER).join(typed);
+      pre.textContent = line.split(PLACEHOLDER).join(typed);
     };
 
-    for (const control of [remote, resume, name]) {
+    for (const control of [remote, name]) {
       if (control) {
         control.addEventListener('input', render);
         control.addEventListener('change', render);
@@ -1936,132 +1914,10 @@ const waitOutTheUpdate = () => {
 })();
 
 /*
- * The conversation list follows the working directory (spec 012, FR-023).
+ * The create form's conversation list lived here until spec 013.
  *
- * The server answers for the first suggested directory when the page renders,
- * which is all a server-rendered form can honestly do: the directory field is
- * free text and empty at render, so there is no directory to answer for yet. The
- * defect that leaves is an operator who types or picks a *different* directory
- * and is offered the first one's conversations — an offer to continue somebody
- * else's work, which is worse than no offer at all.
- *
- * With this file absent the form is exactly what the server rendered: a list for
- * the suggested directory, and a create that still works. That is the property
- * to keep — this narrows a wrong offer, it does not enable the control.
- *
- * It builds and removes the whole field rather than only its options, because
- * "there is nothing to continue" is the absence of the control and not an empty
- * one. That is the rule create-form.html already applies at render; this applies
- * it again when the answer changes.
+ * It kept a select in step with the working directory as the operator typed. The
+ * control it served is gone: choosing a conversation moved to the running
+ * session, where the list is that session's own directory's and the operator has
+ * already seen what they started.
  */
-(() => {
-  const form = document.querySelector('form.create-form[data-conversations]');
-  if (!form) {
-    return;
-  }
-  const dirField = form.querySelector('input[name="work_dir"]');
-  if (!dirField) {
-    return;
-  }
-
-  const endpoint = form.dataset.conversations;
-  const latest = form.dataset.resumeLatest || '';
-
-  /* Where the field belongs when it has to be built: after the last field that
-     precedes it in the rendered form, so a rebuilt control lands where the
-     server would have put it rather than at the end. */
-  const anchor = () => form.querySelector('[data-command-preview]')?.closest('.field') || null;
-
-  const build = (conversations) => {
-    const existing = form.querySelector('[data-resume-field]');
-    const chosen = existing?.querySelector('select')?.value || '';
-
-    if (!conversations.length) {
-      existing?.remove();
-      return;
-    }
-
-    const field = existing || document.createElement('div');
-    field.className = 'field';
-    field.setAttribute('data-resume-field', '');
-    field.textContent = '';
-
-    const label = document.createElement('label');
-    label.className = 'field-label';
-    label.setAttribute('for', 'create-resume');
-    label.textContent = 'Continue a conversation';
-
-    const select = document.createElement('select');
-    select.className = 'field-input';
-    select.id = 'create-resume';
-    select.name = 'resume';
-
-    /* textContent throughout, never innerHTML. Everything below is a value the
-       daemon produced, but the rule the design system states is about the
-       mechanism rather than about today's data: markup assembled from a response
-       is how the one XSS surface in this project would be reopened. */
-    const option = (value, text) => {
-      const o = document.createElement('option');
-      o.value = value;
-      o.textContent = text;
-      return o;
-    };
-    select.append(option('', 'Start fresh'));
-    if (latest) {
-      select.append(option(latest, 'Continue the most recent'));
-    }
-    for (const c of conversations) {
-      select.append(option(c.id, `${c.short} — ${c.modified}`));
-    }
-
-    /* A choice the operator already made survives a refresh only if the new
-       directory still offers it. Otherwise the control returns to "Start fresh",
-       which is the safe default and the shipped behaviour. */
-    select.value = [...select.options].some((o) => o.value === chosen) ? chosen : '';
-
-    field.append(label, select);
-    if (!existing) {
-      form.insertBefore(field, anchor());
-    }
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-  };
-
-  let inFlight = 0;
-  const refresh = async () => {
-    const dir = dirField.value.trim();
-    const ticket = ++inFlight;
-    if (!dir) {
-      build([]);
-      return;
-    }
-    try {
-      const answer = await fetch(`${endpoint}?dir=${encodeURIComponent(dir)}`, {
-        credentials: 'same-origin',
-        cache: 'no-store',
-      });
-      if (!answer.ok) {
-        return;
-      }
-      const body = await answer.json();
-      /* A slow answer for a directory the operator has since changed away from
-         must not overwrite a newer one. */
-      if (ticket !== inFlight) {
-        return;
-      }
-      build(Array.isArray(body?.conversations) ? body.conversations : []);
-    } catch {
-      /* A failed lookup leaves the form exactly as it is. The list is
-         convenience; the create still works, and session.ValidateResume is what
-         actually decides what may be resumed. */
-    }
-  };
-
-  let timer = 0;
-  const schedule = () => {
-    window.clearTimeout(timer);
-    timer = window.setTimeout(refresh, 250);
-  };
-
-  dirField.addEventListener('change', schedule);
-  dirField.addEventListener('input', schedule);
-})();

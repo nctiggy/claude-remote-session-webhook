@@ -162,7 +162,7 @@
   It holds the in-flight note as well as the form, because both are content that
   scrolls; what stays put is the head above it, which is where the way out is.
 */}}<div class="modal-body">
-<form class="create-form" method="post" action="/dashboard/sessions" data-submit-once="create-busy" data-conversations="/sessions/conversations" data-resume-latest="{{ .ResumeLatest }}">{{ template "page-token" .PageToken }}<div class="field">
+<form class="create-form" method="post" action="/dashboard/sessions" data-submit-once="create-busy">{{ template "page-token" .PageToken }}<div class="field">
 <label class="field-label" for="create-name">Name</label>
 <input class="field-input" id="create-name" type="text" name="name" required maxlength="64" pattern="[-a-zA-Z0-9]+" autocomplete="off" spellcheck="false">
 </div>
@@ -308,7 +308,7 @@
 <input class="switch-input" id="create-never-expire" type="checkbox" name="lifetime" value="never" aria-describedby="create-never-expire-note">
 <label class="switch-label" for="create-never-expire">Never die at the lifetime limit</label>
 </div>
-<p class="field-hint-text" id="create-never-expire-note">Removes the absolute lifetime. Nothing then reaps this session.</p>
+<p class="field-hint-text" id="create-never-expire-note">This session runs with no lifetime limit.</p>
 </div>{{ else }}{{/*
   The daemon whose ceiling stands, which is every daemon by default. It has no
   switch above — resolveLifetimes would refuse every create that ticked one — so
@@ -322,64 +322,18 @@
   where this points. Already one line, so the cut left it alone.
 */}}<p class="field-hint-text">Sessions end at this daemon's lifetime limit, which settings moves.</p>{{ end }}
 {{/*
-  Continue a prior conversation in this directory (US4, FR-019, FR-020,
-  contracts/conversation-resume.md).
+  There was a "Continue a conversation" control here until spec 013.
 
-  US5 removed a field of the same purpose and the note it left is the design
-  brief for this one: it "asked an operator for an opaque identifier they had no
-  way to obtain from this page". So this is a picker and never a text box — every
-  option is a conversation the daemon found, and there is no way to type one that
-  does not exist.
+  It asked which prior conversation to pick up *before* the session existed —
+  before the operator could see what the directory held or what the session
+  would look like — and one of its three answers was "the most recent", which
+  named a conversation only the CLI could resolve. A choice offered where it
+  cannot be made informed is worse than no choice: it is an invitation to guess.
 
-  A `<select>` is right here where it is wrong for the working directory, and the
-  difference is the whole argument. A path absent from the list must still be
-  typeable in full, because the allowlist is the control and the suggestions are
-  presentation; a conversation absent from the list is one that does not exist,
-  and nothing is lost by refusing to name it. The route validates the value
-  anyway (session.ValidateResume) — the control is convenience, the validator is
-  the control.
-
-  Three kinds of option, and the first two are not conversations. "Start fresh"
-  posts nothing and is the shipped behaviour. "Continue the most recent" posts a
-  word the daemon spells rather than the markup, and the CLI resolves which
-  conversation that is — the daemon deliberately does not, because a daemon that
-  resolved it would be racing the CLI to read the same directory and losing
-  whenever a session had been started elsewhere in between.
-
-  It renders only where there is something to continue. A daemon whose host has
-  no conversation history offers the two words and nothing else, which reads as
-  an offer with nothing behind it.
-
-  Since spec 012 the list follows the working directory rather than the one the
-  page happened to suggest when it rendered. The server still answers for the
-  first suggestion here, and `data-conversations` is where the script re-asks
-  when the operator changes the directory — building this field when there is
-  something to continue and removing it when there is not, which is the same rule
-  the `with` below applies, applied again later.
-
-  The field is wrapped rather than the script assembling one from nothing, so
-  what a dynamic list produces is the markup this template already defines. The
-  fleet page renders no conversation store at all and therefore no field, and it
-  must stay that way: a select shipped on every page is a control that outlives
-  the page it was designed for.
-
-  What each option says is an identifier and a recency, and that is FR-025 rather
-  than terseness: what a conversation *said* is the operator's work, and this
-  daemon renders none of it.
-
-  **The note that stood under it is gone** (FR-013). It said the conversations
-  were those of the first suggested directory and that choosing one resumes it
-  instead of starting empty — the second half is what the label and the options
-  already say, and the first half is a fact about how the daemon assembled the
-  list rather than something an operator acts on.
-*/}}{{ with .Conversations }}<div class="field" data-resume-field>
-<label class="field-label" for="create-resume">Continue a conversation</label>
-<select class="field-input" id="create-resume" name="resume">
-<option value="" selected>Start fresh</option>
-<option value="{{ $.ResumeLatest }}">Continue the most recent</option>{{ range . }}
-<option value="{{ .ID }}">{{ .Short }} — {{ .Modified }}</option>{{ end }}
-</select>
-</div>{{ end }}{{/*
+  The decision moved to the running session, where the list is that session's own
+  directory's and the operator has already seen what they started. See
+  contracts/session-continue.md.
+*/}}{{/*
   The command line this create will run (US3, FR-014 … FR-018,
   contracts/command-preview.md).
 
@@ -407,7 +361,7 @@
   that renders pane output as text (FR-017, Principle VII).
 */}}{{ $local := index .Commands false }}{{ $remote := index .Commands true }}{{ if $local }}<div class="field">
 <span class="field-label" id="create-preview-label">Will run</span>
-<pre class="command-preview" data-command-preview aria-labelledby="create-preview-label" data-command-local="{{ $local }}"{{ if $remote }} data-command-remote="{{ $remote }}"{{ end }} data-command-continue="{{ .ResumeLatest }}" data-flag-continue="{{ .ResumeLatestFlag }}" data-flag-resume="{{ .ResumeOneFlag }}">{{ $local }}</pre>
+<pre class="command-preview" data-command-preview aria-labelledby="create-preview-label" data-command-local="{{ $local }}"{{ if $remote }} data-command-remote="{{ $remote }}"{{ end }}>{{ $local }}</pre>
 </div>{{ end }}{{/*
   The two ways out, on one row (contracts/new-session-modal.md).
 
