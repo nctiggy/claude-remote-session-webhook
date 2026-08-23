@@ -3587,10 +3587,10 @@ func TestTheSettingsMenuIsStillLinks(t *testing.T) {
 
 	page := renderComponent(t, "settings", settingsView{
 		Operator: &access.VerifiedOperator{Email: "operator@example.com"},
-		Shown:    "Limits",
+		Shown:    "General",
 		Sections: []settingSection{
-			{Title: "Listening", Settings: []settingRow{{Key: "listen", Value: loopbackListen, Source: "default"}}},
-			{Title: "Limits", Settings: []settingRow{{Key: "max_sessions", Value: "4", Source: "file"}}},
+			{Title: "Network", Settings: []settingRow{{Key: "listen", Value: loopbackListen, Source: "default"}}},
+			{Title: "General", Settings: []settingRow{{Key: "max_sessions", Value: "4", Source: "file"}}},
 		},
 	})
 
@@ -3602,7 +3602,7 @@ func TestTheSettingsMenuIsStillLinks(t *testing.T) {
 
 	// Updates is rendered outside the range over .Sections, so it is the entry a
 	// menu rebuilt from that loop alone would quietly drop.
-	for _, title := range []string{"Updates", "Listening", "Limits"} {
+	for _, title := range []string{"Updates", "Network", "General"} {
 		if _, ok := anchorTo(menu, settingsPath+"?section="+title); !ok {
 			t.Errorf("the menu offers no link to the %s section, so reaching it needs either a script or a typed address:\n%s", title, menu)
 		}

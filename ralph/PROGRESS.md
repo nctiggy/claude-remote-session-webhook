@@ -743,3 +743,40 @@ handler tests drive every branch, and `quickstart.md` scenarios 2 and 3 are the
 by-hand check against a running daemon.
 
 RALPH_COMPLETE
+
+---
+
+## Spec 014 — a settings page an operator can read (2026-08-23)
+
+Four complaints, four changes, and three of them are subtraction.
+
+- **Seven headings became three** (General, Network, Updates). "Other" was not a
+  category, it was a defect: `settingSectionOf` named `remote_start_commands`,
+  which is not a key this daemon has, and missed `start_command`,
+  `remote_control_command` and `session_environment`, which are. All three were
+  meaningful settings that had been misfiled, so they were classified rather than
+  hidden. The fallback heading stays, expected to be empty, with a test that fails
+  if it is used.
+- **One Save instead of one per row.** Per-row saving was deliberate and its two
+  reasons are kept rather than overruled: untouched values are not rewritten, and
+  a rendered secret never becomes a stored one. Both are enforced on the server by
+  comparing against a `was.` field the page carries, which is what makes them hold
+  with scripting off — a client-side diff would be correct with JavaScript and
+  would store the word `present` without it.
+- **The Source column went and its information stayed.** Three quarters of it said
+  "file". A value from somewhere else is now marked on its own row.
+- **The update section stopped narrating the status quo.** Three of the unit's
+  four sentences describe a host sitting in its ordinary state; only "a newer unit
+  is waiting" is something an operator can act on. That one renders inline, the
+  rest moved into a disclosure — quietened, not deleted.
+
+### Verification
+
+Full gate: build, vet, `go test ./...`, `-tags tmux`, `-tags dev`,
+`-tags quickstart ./cmd/crswd`, `gofmt` clean, `golangci-lint` 0 issues.
+
+Not verified here: the page by eye. The markup, the routing and the write rules
+are covered by tests; whether three sections read better than seven is a judgement
+only the operator can make.
+
+RALPH_COMPLETE

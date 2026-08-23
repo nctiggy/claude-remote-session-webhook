@@ -172,8 +172,22 @@
   cannot find is a difference they cannot see, and a difference nobody can see is
   a decision nobody can take. The command is text, like everything else here —
   this daemon prints it and never runs it.
-*/}}{{ with .Unit.Sentence }}<dt>Systemd unit</dt><dd>{{ . }}</dd>{{ end }}
-{{ with .Unit.Waiting }}<dt>Waiting at</dt><dd>{{ . }}</dd>{{ end }}
+
+  **Spec 014: these rows render only when they change what taking an update
+  would do.** There are four sentences the unit can carry, and three of them
+  describe the host sitting in its ordinary state — the unit is ours and an
+  update replaces it, or it is not ours and an update never will. An operator
+  reading their own settings page met three lines of status quo every time and
+  learned nothing they could act on.
+
+  `.Unit.Waiting` is the one that is actionable: a newer unit really is on the
+  disk, and it is theirs to take or to leave. When it is there the whole block
+  speaks. When it is not, the same facts move into the disclosure below —
+  quietened, not deleted, because "what would an update do to my unit?" is a
+  fair question to be able to answer, just not one to be answered at every
+  glance.
+*/}}{{ if .Unit.Waiting }}{{ with .Unit.Sentence }}<dt>Systemd unit</dt><dd>{{ . }}</dd>{{ end }}
+<dt>Waiting at</dt><dd>{{ .Unit.Waiting }}</dd>
 {{ with .Unit.Compare }}<dt>Compare them</dt><dd>{{ . }}</dd>{{ end }}{{/*
   The command that says whether this host can take the waiting unit, and what is
   stopping it when it cannot.
@@ -200,9 +214,28 @@
 
   Two rows for the same reason as Waiting and Compare: the sentence is the fact
   and the path is what lets an operator go and read it.
+*/}}{{/*
+  The override, said here only while an update is actually waiting — which is the
+  one moment it changes what an operator expects to happen. A host can be running
+  the release's own unit, byte for byte, and still not be running under the
+  hardening that unit describes, because systemd merges <unit>.d/*.conf over it.
 */}}{{ with .Unit.Overridden }}<dt>Hardening</dt><dd>{{ . }}</dd>{{ end }}
+{{ with .Unit.Override }}<dt>Override at</dt><dd>{{ . }}</dd>{{ end }}{{ end }}
+</dl>
+{{/*
+  The same facts, reachable rather than recited (spec 014, FR-013). Nothing here
+  is deleted — an operator who wants to know what an update would do to this
+  host's unit can open it and read exactly what the section used to say
+  unprompted.
+*/}}{{ if not .Unit.Waiting }}{{ if or .Unit.Sentence .Unit.Overridden }}<details class="unit-detail">
+<summary class="unit-detail-summary">What an update would do to this host</summary>
+<dl class="version-facts">
+{{ with .Unit.Sentence }}<dt>Systemd unit</dt><dd>{{ . }}</dd>{{ end }}
+{{ with .Unit.Inspect }}<dt>Can it be taken?</dt><dd>{{ . }}</dd>{{ end }}
+{{ with .Unit.Overridden }}<dt>Hardening</dt><dd>{{ . }}</dd>{{ end }}
 {{ with .Unit.Override }}<dt>Override at</dt><dd>{{ . }}</dd>{{ end }}
 </dl>
+</details>{{ end }}{{ end }}
 
 {{/*
   Check first, update second — the operator's shape, and the right one.
@@ -337,12 +370,27 @@
 <button class="button" type="submit">Sign out</button>
 </form>{{ end }}
 <p class="settings-source">{{ if $.ConfigFile }}Read from {{ $.ConfigFile }}{{ else }}No configuration file was read.{{ end }}</p>
+{{/*
+  One form around the table, and one Save at the end of it (spec 014).
+
+  There were as many forms as rows until then, each with its own button. The
+  reasons were good and both are kept, on the server rather than here: a key whose
+  submitted value equals the one this template rendered is not written, so an
+  operator changing one bound does not re-submit nine values they did not look at
+  — and a secret rendered as a statement rather than a value is submitted back
+  unchanged and skipped by that same rule, never stored.
+
+  That is why every row carries a hidden `was.` field. It is this page's account
+  of what it showed, and the route compares against it. Deciding in a script
+  instead would be correct with scripting on and would overwrite a secret with the
+  word `present` without it.
+*/}}{{ if $.Token }}<form class="settings-form" method="post" action="/settings/edit">
+<input type="hidden" name="crsw_page_token" value="{{ $.Token }}">{{ end }}
 <table class="settings-table">
 <thead>
 <tr>
 <th scope="col">Key</th>
 <th scope="col">Value</th>
-<th scope="col">Source</th>
 </tr>
 </thead>
 <tbody>
@@ -362,9 +410,6 @@
   they did not look at, and any of those going wrong would be attributed to the
   edit they meant to make.
 */}}{{ if and .Editable $.Token }}<td>
-<form class="setting-form" method="post" action="/settings/edit">
-<input type="hidden" name="crsw_page_token" value="{{ $.Token }}">
-<input type="hidden" name="key" value="{{ .Key }}">
 {{/*
   A true/false setting is a checkbox; everything else keeps the text field it
   always had. config.IsBool is the one predicate behind both, and it is the same
@@ -392,14 +437,22 @@
   anybody reading it aloud (docs/components.md, "The settings page"). What that
   costs is the label's share of the pointer target, which the switch on the
   create form has and this one does not.
-*/}}{{ if .Boolean }}<input class="switch-input" id="set-{{ .Key }}" type="checkbox" name="value" value="true"{{ if .On }} checked{{ end }} aria-label="{{ .Key }}">{{ else }}<input class="setting-input" id="set-{{ .Key }}" type="text" name="value" value="{{ .Value }}" aria-label="{{ .Key }}">{{ end }}
-<button class="button setting-save" type="submit">Save</button>
-</form>
-</td>{{ else }}<td>{{ .Value }}</td>{{ end }}
-<td>{{ .Source }}</td>
+*/}}{{ if .Boolean }}<input type="hidden" name="was.{{ .Key }}" value="{{ if .On }}true{{ else }}false{{ end }}"><input class="switch-input" id="set-{{ .Key }}" type="checkbox" name="value.{{ .Key }}" value="true"{{ if .On }} checked{{ end }} aria-label="{{ .Key }}">{{ else }}<input type="hidden" name="was.{{ .Key }}" value="{{ .Value }}"><input class="setting-input" id="set-{{ .Key }}" type="text" name="value.{{ .Key }}" value="{{ .Value }}" aria-label="{{ .Key }}">{{ end }}
+</td>{{ else }}<td>{{ .Value }}</td>{{ end }}{{/*
+  Where the value came from, said only when it is worth saying (spec 014).
+
+  There was a Source column here. Three quarters of it said "file", which is the
+  ordinary case and the one an operator never wonders about — so the column spent
+  a quarter of the table's width to answer a question nobody was asking. What is
+  worth saying is the surprise: a value that did **not** come from the
+  configuration file, because that is the one an operator will otherwise try to
+  edit and watch not take effect.
+*/}}{{ if and .Source (ne .Source "file") }}<td class="settings-origin">from {{ .Source }}</td>{{ else }}<td></td>{{ end }}
 </tr>
 {{ end }}</tbody>
 </table>
+{{ if $.Token }}<button class="button settings-save" type="submit">Save</button>
+</form>{{ end }}
 </section>{{ end }}{{ end }}
 </div>
 </div>

@@ -60,12 +60,33 @@ func editForm(t *testing.T, f *fleet, key, value string) url.Values {
 	if found == nil {
 		t.Fatalf("the %s section rendered no page token, so its form could never be submitted:\n%s", key, page)
 	}
+	// The batch form's shape (spec 014): one Save posts every row it rendered, so
+	// each row carries its own value and its own account of what was shown.
+	//
+	// `was.` is deliberately set to something the submitted value differs from.
+	// The route writes only what changed, so a helper that made them equal would
+	// build a form that correctly writes nothing — and every test using it would
+	// pass while asserting the opposite.
 	return url.Values{
-		fieldPageToken:    {found[1]},
-		fieldSettingKey:   {key},
-		fieldSettingValue: {value},
+		fieldPageToken:                {found[1]},
+		fieldRenderedPrefix + key:     {renderedBefore(value)},
+		fieldSettingValuePrefix + key: {value},
 	}
 }
+
+// renderedBefore is a value guaranteed to differ from the one being submitted, so
+// the batch route sees a change. What it is does not matter; that it is not the
+// new value is the whole of it.
+func renderedBefore(value string) string {
+	if value == settingUnchangedSentinel {
+		return "something else entirely"
+	}
+	return settingUnchangedSentinel
+}
+
+// settingUnchangedSentinel is a value no test submits, so it can stand for "what
+// the page had before" without colliding with what a test is setting.
+const settingUnchangedSentinel = "\x00was-rendered-as-this"
 
 // editFormWithoutValue is what an unchecked checkbox submits: the token, the
 // key, and no value field at all.
@@ -78,7 +99,7 @@ func editFormWithoutValue(t *testing.T, f *fleet, key string) url.Values {
 	t.Helper()
 
 	form := editForm(t, f, key, "")
-	form.Del(fieldSettingValue)
+	form.Del(fieldSettingValuePrefix + key)
 	return form
 }
 
@@ -169,8 +190,8 @@ func TestEditRefusesASecret(t *testing.T) {
 	before, _ := os.ReadFile(f.cfg.FilePath) //nolint:errcheck // absence is compared as absence.
 
 	form := editForm(t, f, "max_sessions", "3")
-	form.Set(fieldSettingKey, "shared_secret")
-	form.Set(fieldSettingValue, "a-value-an-attacker-chose")
+	form.Set(fieldRenderedPrefix+"shared_secret", settingUnchangedSentinel)
+	form.Set(fieldSettingValuePrefix+"shared_secret", "a-value-an-attacker-chose")
 
 	if w := editPost(t, f, form); w.Code == http.StatusSeeOther {
 		t.Error("the settings page wrote a secret")
@@ -308,4 +329,86 @@ func TestTheTickedSwitchIsAValueTheLoaderAccepts(t *testing.T) {
 	if !strings.Contains(string(after), "discover_roots = "+boolOn) {
 		t.Errorf("what the ticked box submits (%q) did not turn the setting on; the loader would not take it:\n%s", found[1], after)
 	}
+}
+
+// TestSaveWritesOnlyWhatChanged is the property that lets one Save button be as
+// safe as the row of them it replaced (spec 014, FR-007).
+func TestSaveWritesOnlyWhatChanged(t *testing.T) {
+	t.Parallel()
+
+	f := editable(t)
+	before := readConfigFile(t, f.cfg.FilePath)
+
+	form := editForm(t, f, "max_sessions", "7")
+	// A second row the operator did not touch: submitted, and submitted as what
+	// the page rendered.
+	form.Set(fieldRenderedPrefix+"max_streams", "13")
+	form.Set(fieldSettingValuePrefix+"max_streams", "13")
+
+	w := editPost(t, f, form)
+	wantOutcome(t, w, outcomeSettingWritten)
+
+	after := readConfigFile(t, f.cfg.FilePath)
+	if !strings.Contains(after, "max_sessions") || !strings.Contains(after, "7") {
+		t.Errorf("the changed key was not written:\n%s", after)
+	}
+	// The untouched key must not have been rewritten. If it had been, the file
+	// would carry a line for it that the original did not.
+	if strings.Contains(before, "max_streams") != strings.Contains(after, "max_streams") {
+		t.Errorf("a key the operator did not touch was written:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// TestSaveWithNothingChangedWritesNothing is FR-010. An operator told "written"
+// when nothing was would reasonably believe something happened.
+func TestSaveWithNothingChangedWritesNothing(t *testing.T) {
+	t.Parallel()
+
+	f := editable(t)
+	before := readConfigFile(t, f.cfg.FilePath)
+
+	form := editForm(t, f, "max_sessions", "7")
+	// Submitted exactly as rendered.
+	form.Set(fieldRenderedPrefix+"max_sessions", "7")
+
+	w := editPost(t, f, form)
+	wantOutcome(t, w, outcomeSettingUnchanged)
+
+	if after := readConfigFile(t, f.cfg.FilePath); after != before {
+		t.Errorf("a submit that changed nothing rewrote the file:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// TestSaveNeverStoresARenderedSecret is FR-008, and the reason the comparison is
+// made on the server rather than in a script.
+//
+// A secret renders as a statement that it is set, never as its value. Submitted
+// back untouched, it must be skipped by the same rule that skips every other
+// unchanged field — because the alternative is the word the page rendered
+// becoming the stored secret, on any browser with scripting off.
+func TestSaveNeverStoresARenderedSecret(t *testing.T) {
+	t.Parallel()
+
+	f := editable(t)
+
+	form := editForm(t, f, "max_sessions", "7")
+	form.Set(fieldRenderedPrefix+"shared_secret", secretPresent)
+	form.Set(fieldSettingValuePrefix+"shared_secret", secretPresent)
+
+	editPost(t, f, form)
+
+	if after := readConfigFile(t, f.cfg.FilePath); strings.Contains(after, secretPresent) {
+		t.Errorf("the word the page rendered in place of a secret became a stored value:\n%s", after)
+	}
+}
+
+// readConfigFile is the file this daemon would read at its next start.
+func readConfigFile(t *testing.T, path string) string {
+	t.Helper()
+
+	body, err := os.ReadFile(path) //nolint:gosec // path is the fixture's own temp file
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(body)
 }

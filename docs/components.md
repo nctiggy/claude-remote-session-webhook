@@ -82,6 +82,27 @@ built. A new partial follows that, not the sketch.
 
 ### The settings page
 
+Three sections — **General**, **Network**, **Updates** — and a fourth,
+"Not yet classified", which exists so a key can never vanish and is expected to
+be empty. `TestNoSettingIsUnclassified` keeps it that way.
+
+**One Save, at the end of the form.** There was one per row until spec 014, for
+two good reasons that the single button keeps rather than overrules: a key whose
+submitted value equals what the page rendered is not written, so an operator
+changing one bound does not re-submit nine they did not look at — and a secret
+rendered as a statement rather than a value is submitted back unchanged and
+skipped by that same rule. The comparison is made on the server, which is what
+makes it hold with scripting off; a script that diffed the form would be right
+with JavaScript and would store the word `present` without it.
+
+**No Source column.** Three quarters of it said "file". A row whose value came
+from somewhere else says so, on the row, in `.settings-origin` — the surprise is
+worth the ink and the ordinary case is not.
+
+**The update section states unit facts only when they are actionable**: when a
+newer unit is really waiting on the disk. Otherwise the same facts sit in a
+disclosure, quietened rather than deleted.
+
 `web/templates/settings.html` is the header partial, a menu of sections, and the
 panel one section renders into: a table of what this daemon is configured to do,
 one row per key, with the layer that supplied each value beside it.

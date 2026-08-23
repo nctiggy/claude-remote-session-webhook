@@ -32,6 +32,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
+	"strings"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 )
@@ -41,8 +43,22 @@ const patternSettingsEdit = "POST /settings/edit"
 
 // The form's fields.
 const (
-	fieldSettingKey   = "key"
-	fieldSettingValue = "value"
+	// The batch form's two per-key fields (spec 014). One Save writes every
+	// setting the operator changed, so each row carries its own value and its own
+	// account of what the page rendered for it.
+	//
+	// fieldRenderedPrefix is the half that makes one button safe. The route writes
+	// a key only when the submitted value differs from what was rendered, so a
+	// value nobody touched is not rewritten — and a secret the page rendered as a
+	// statement rather than a value is submitted back unchanged and skipped by the
+	// same rule, never stored.
+	//
+	// **The comparison is made here rather than in a script**, which is what lets
+	// it hold with scripting off. A form that relied on the browser to submit only
+	// what changed would be correct with JavaScript and would overwrite a secret
+	// with the word `present` without it.
+	fieldSettingValuePrefix = "value."
+	fieldRenderedPrefix     = "was."
 )
 
 // The refusals, each a sentinel authored here so a record can never carry a byte
@@ -78,7 +94,7 @@ const boolOn = "true"
 // true, and an empty value would then turn it on rather than off.
 const boolOff = "false"
 
-// submittedValue is what the form said the key should hold, and it exists for
+// submittedValueFrom is what the form said a key should hold, and it exists for
 // one fact about HTML: **an unchecked checkbox submits nothing at all.**
 //
 // So a boolean turned off arrives as a request with no value field — which is
@@ -98,36 +114,42 @@ const boolOff = "false"
 // The hidden-input trick is the other tempting fix and it is worse. A hidden
 // `false` and a checkbox sharing one name submit two values when ticked, Get
 // returns the first, and every boolean becomes unsettable — silently, and with a
-// test on the unticked case still green.
+// test on the unticked case still green. The `was.` field spec 014 added is not
+// that trick: it carries a *different* name, is never read as the new value, and
+// is compared against rather than submitted as one.
 //
 // The form is read directly rather than through Get for the reason
 // offersRemoteControlState reads its field that way: Get flattens absent and
 // present-but-empty to the same "", and absence is precisely the state being
-// read here.
-func submittedValue(form url.Values, key string) string {
-	if _, present := form[fieldSettingValue]; !present && config.IsBool(key) {
+// read here. It applies per key, so an unchecked box in a form of twenty rows
+// submits nothing for that row and everything for the others.
+func submittedValueFrom(form url.Values, field, key string) string {
+	if _, present := form[field]; !present && config.IsBool(key) {
 		return boolOff
 	}
-	return form.Get(fieldSettingValue)
+	return form.Get(field)
 }
 
-// editSetting writes one key and redirects back to the section it came from.
+// editSetting writes every setting the operator changed, in one request, and
+// redirects back to the section it came from.
+//
+// It was one key per request until spec 014, with a Save button on every row.
+// That arrangement had two reasons and this one keeps both:
+//
+//   - **Untouched values are not rewritten.** A key whose submitted value equals
+//     what the page rendered is skipped entirely, so an operator changing one
+//     bound does not re-submit nine values they did not look at, and a failure
+//     cannot be attributed to an edit they did not make.
+//   - **A rendered secret never becomes a stored one.** A secret renders as a
+//     statement that it is set. Submitted back unchanged, it is skipped by the
+//     same rule that skips every other untouched field — no special case, and no
+//     reliance on a script to leave it out of the request.
+//
+// One validation and one write for the whole batch, rather than per key: the
+// candidate file is built up, run through the loader once, and replaced once. A
+// batch that half-applied would leave the operator's configuration in a state
+// neither they nor this daemon asked for.
 func (s *Server) editSetting(w http.ResponseWriter, r *http.Request) {
-	key := r.PostForm.Get(fieldSettingKey)
-
-	if !config.Editable(key) {
-		// Uniform, and deliberately not naming what was asked for: the values
-		// this turns away are the ones nobody should be handed back.
-		AuditFrom(r.Context()).Deny(errSettingNotEditable.Error())
-		s.refuseAction(w)
-		return
-	}
-
-	// Read after the check above, so no absence is interpreted for a key this
-	// page may not write at all: what a request meant is a question worth asking
-	// only about a request that is going to be carried out.
-	value := submittedValue(r.PostForm, key)
-
 	path := s.cfg.FilePath
 	if path == "" {
 		// Nothing to edit. A daemon configured entirely by environment would
@@ -145,7 +167,43 @@ func (s *Server) editSetting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	next := config.Set(current, key, value)
+	next := current
+	var changed []string
+
+	// Driven by the rendered fields rather than by the value fields, because an
+	// unchecked box submits no value at all: the row the page rendered is the
+	// fact that a row exists, and the value is what may or may not have arrived.
+	for field := range r.PostForm {
+		key, ok := strings.CutPrefix(field, fieldRenderedPrefix)
+		if !ok {
+			continue
+		}
+		if !config.Editable(key) {
+			// Uniform, and deliberately not naming what was asked for: the values
+			// this turns away are the ones nobody should be handed back.
+			AuditFrom(r.Context()).Deny(errSettingNotEditable.Error())
+			s.refuseAction(w)
+			return
+		}
+		value := submittedValueFrom(r.PostForm, fieldSettingValuePrefix+key, key)
+		if value == r.PostForm.Get(field) {
+			// Unchanged. Not rewritten, and — for a secret rendered as a statement
+			// rather than a value — not stored.
+			continue
+		}
+		next = config.Set(next, key, value)
+		changed = append(changed, key)
+	}
+
+	if len(changed) == 0 {
+		// Said rather than swallowed. An operator who pressed Save and was told
+		// "written" would reasonably believe something was.
+		s.redirectOutcome(w, r, outcomeSettingUnchanged)
+		return
+	}
+	// Deterministic, because it reaches the audit trail: a map range is not an
+	// order an operator reading two records can compare.
+	slices.Sort(changed)
 
 	// The check that makes this safe to do while running. The candidate goes
 	// through the same loader a startup uses, so "would this daemon still come
@@ -167,11 +225,9 @@ func (s *Server) editSetting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The key, never the value. SetSessionID is the record's one free field on
-	// this door, and a setting's name is exactly the kind of thing it is for:
-	// which setting changed is what an audit trail is for, and what it now holds
-	// is the operator's business.
-	AuditFrom(r.Context()).SetSessionID(key)
+	// The keys, never the values. Which settings changed is what an audit trail
+	// is for; what they now hold is the operator's business.
+	AuditFrom(r.Context()).SetSessionID(strings.Join(changed, ","))
 	s.redirectOutcome(w, r, outcomeSettingWritten)
 }
 
