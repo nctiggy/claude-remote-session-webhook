@@ -75,6 +75,44 @@
 <summary class="rename-summary">Rename this session</summary>
 <form class="rename-form" method="post" action="/dashboard/sessions/{{ $.Session.ID }}/rename">{{ template "page-token" . }}<label class="field-label" for="rename-{{ $.Session.ID }}">New name</label><input class="field-input" id="rename-{{ $.Session.ID }}" type="text" name="name" value="{{ $.Session.Name }}" required maxlength="64" pattern="[-a-zA-Z0-9]+" autocomplete="off" spellcheck="false"><button class="button" type="submit" aria-describedby="card-id-{{ $.Session.ID }}">Rename</button></form>
 </details>{{ end }}
+{{/*
+  Continue a conversation (spec 013, contracts/session-continue.md).
+
+  It sits beside the rename and above the pane for the rename's reason: a control
+  below a fixed-height scroll container is one an operator scrolls past a terminal
+  to reach.
+
+  **This is where the decision belongs.** The create form asked it before the
+  session existed — before there was a directory on screen or a session to look
+  at — and offered "the most recent" as an answer that named a conversation only
+  the CLI could resolve. Here the list is this session's own directory's, and the
+  operator has already seen what they started.
+
+  A `<select>`, and never a text box. Every option is a conversation this daemon
+  found, so there is no way to name one that does not exist; the route validates
+  the value anyway (session.ValidateResume), because the control is convenience
+  and the validator is the control.
+
+  What each option says is an identifier and a recency, and that is FR-003 rather
+  than terseness: what a conversation *said* is the operator's work and this
+  daemon renders none of it.
+
+  The confirming field is hidden and constant, exactly as the destroy's is.
+  Continuing ends the process in the pane, so it is a deliberate act rather than
+  a selection — and a value the markup states cannot be half-submitted by a
+  control an operator did not mean to touch.
+
+  With nothing to continue the control states that, rather than rendering an
+  empty select. An offer with nothing behind it is worse than no offer.
+*/}}{{ with .Session.PageToken }}<details class="continue">
+<summary class="continue-summary">Continue a conversation</summary>
+{{ with $.Conversations }}<form class="continue-form" method="post" action="/dashboard/sessions/{{ $.Session.ID }}/continue">{{ template "page-token" $.Session.PageToken }}<input type="hidden" name="confirm" value="yes">
+<label class="field-label" for="continue-{{ $.Session.ID }}">Conversation</label>
+<select class="field-input" id="continue-{{ $.Session.ID }}" name="conversation" required>{{ range . }}
+<option value="{{ .ID }}">{{ .Short }} — {{ .Modified }}</option>{{ end }}
+</select>
+<button class="button" type="submit" aria-describedby="card-id-{{ $.Session.ID }}">Continue</button></form>{{ else }}<p class="field-hint-text">This directory has no earlier conversations to continue.</p>{{ end }}
+</details>{{ end }}
 {{ template "pane" .Pane }}
 </main>
 {{/*

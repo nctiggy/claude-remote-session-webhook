@@ -42,7 +42,9 @@ number of revivals.
 **Alternatives rejected**:
 - `--name` + `--resume <name>` — the picker hazard above, plus silent renames.
 - `--continue` — cannot distinguish two sessions in one directory, which is the
-  stated requirement.
+  stated requirement. *Spec 013 removed it from the daemon entirely, for the same
+  reason enlarged: a value that names a conversation nobody can see is one nobody
+  can choose.*
 
 **Free consequence**: the identifier is already the shape
 `session.ValidateResume` accepts (8-4-4-4-12 lowercase hex), so the validator

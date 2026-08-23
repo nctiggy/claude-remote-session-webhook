@@ -942,6 +942,15 @@ func (s *Server) refuseBrowserCompact(w http.ResponseWriter, r *http.Request, er
 // as a path nothing claims rather than as a 405 with an Allow header (FR-033).
 const patternDashboardMode = "POST /dashboard/sessions/{" + pathValueID + "}/mode"
 
+// patternDashboardContinue points a running session at a different conversation
+// from its own working directory (spec 013).
+const patternDashboardContinue = "POST /dashboard/sessions/{" + pathValueID + "}/continue"
+
+// fieldConversation is which conversation to continue. It is the only value this
+// route reads from the caller — the working directory comes off the record — and
+// it is validated by session.ValidateResume before it can reach a command line.
+const fieldConversation = "conversation"
+
 // fieldMode is the mode the operator asked for (contracts/session-mode.md).
 //
 // It carries a *mode* and never a command line. Which command each mode runs is
@@ -989,6 +998,16 @@ var (
 	// own sentinel rather than the destroy's, for the reason every reason on this
 	// door is: what tells one action's records from another's is this.
 	errModeUnconfirmed = errors.New("a browser mode change arrived without the confirming step")
+
+	// The continue action's vocabulary (spec 013). Each is this package's account
+	// of a refusal, authored out of constants, and none of them repeats what the
+	// caller sent — the conversation identifier is caller text and the trail may
+	// carry none of it.
+	errContinueUnconfirmed = errors.New("a browser continue arrived without the confirming step")
+	errContinueNotOffered  = errors.New("that is not a conversation this daemon will resume")
+	errContinueNotRunning  = errors.New("the session is not running, so there is nothing to continue")
+	errContinueBusy        = errors.New("a restart of this session is already in flight")
+	errContinueFailed      = errors.New("the session could not be restarted on that conversation")
 
 	// errModeUnavailable is a mode this daemon has no command for: remote where
 	// no remote-control command is configured, and local where the configured one
@@ -1177,4 +1196,96 @@ func routableID(id string) bool {
 		}
 	}
 	return true
+}
+
+// continueFromBrowser points a running session at one of the prior conversations
+// in its own working directory (spec 013, contracts/session-continue.md).
+//
+// It is modelled on modeFromBrowser step for step, because it is the same shape
+// of act: it ends the process the operator is watching and starts another in its
+// place. Where it differs is the value it carries — a conversation identifier
+// rather than one of two constants — and that difference is why the validation
+// lives behind the manager rather than here: the alphabet that makes it safe to
+// type is session.ValidateResume's, and this package must not grow a second
+// opinion about it.
+func (s *Server) continueFromBrowser(w http.ResponseWriter, r *http.Request) {
+	operator, ok := OperatorFrom(r.Context())
+	if !ok {
+		// Fail closed on the path that should not happen, the way every other
+		// handler on this door does: the gate in front puts the operator in the
+		// context, so a false here is a route wired without one.
+		AuditFrom(r.Context()).Deny(errDashboardNoOperator.Error())
+		s.refuseBrowser(w)
+		return
+	}
+
+	// The shape check the other session-scoped actions run, ahead of the lookup
+	// and for their reason: an identifier off the 32-lowercase-hex alphabet
+	// cannot name a session this daemon minted, so it is a path nothing claims
+	// rather than a session that is not there.
+	id := r.PathValue(pathValueID)
+	if !routableID(id) {
+		AuditFrom(r.Context()).Deny(errScopeNoRoute.Error())
+		s.renderNotFound(w, r, operator)
+		return
+	}
+
+	// The confirming step, compared rather than parsed, exactly as destroy and
+	// mode compare it. Continuing ends the process the operator is watching;
+	// `on`, `true`, `1` and an empty value are all things a stray checkbox or a
+	// hand-built request produces, and none of them is the deliberate act this
+	// asks for.
+	if r.PostForm.Get(fieldConfirm) != confirmYes {
+		AuditFrom(r.Context()).Deny(errContinueUnconfirmed.Error())
+		s.redirectOutcome(w, r, outcomeContinueUnconfirmed)
+		return
+	}
+
+	// Manager.View, which is what a browser gets: it settles ownership without a
+	// per-session credential, because a browser holds none and must not be given
+	// one. An id that never existed, one another operator owns, and one whose
+	// session is already gone are one answer to the caller and three sentinels on
+	// the record.
+	live, err := s.sessions.View(id, operator.Owner)
+	if err != nil {
+		AuditFrom(r.Context()).Deny(resolveReason(err).Error())
+		s.notFoundAction(w)
+		return
+	}
+	// The id off the daemon's own record, never the bytes in the path.
+	AuditFrom(r.Context()).SetSessionID(live.ID)
+
+	// Read from PostForm and never Form, for the reason the gate reads the token
+	// that way: a restart this daemon would accept from a query string is one a
+	// link can cause.
+	//
+	// **The working directory is not read at all.** It comes off the record
+	// inside Continue, which is what stops this route resuming work from a
+	// directory the session was never started in.
+	if _, err := s.sessions.Continue(r.Context(), live, r.PostForm.Get(fieldConversation)); err != nil {
+		s.refuseContinue(w, r, err)
+		return
+	}
+
+	s.redirectOutcome(w, r, outcomeContinued)
+}
+
+// refuseContinue maps a refusal to the operator's own vocabulary, and carries
+// none of what the caller sent: the conversation identifier is caller-supplied
+// text, and the trail may hold none of it.
+func (s *Server) refuseContinue(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, session.ErrInvalidResume):
+		AuditFrom(r.Context()).Deny(errContinueNotOffered.Error())
+		s.redirectOutcome(w, r, outcomeBadResume)
+	case errors.Is(err, session.ErrSessionDead):
+		AuditFrom(r.Context()).Deny(errContinueNotRunning.Error())
+		s.redirectOutcome(w, r, outcomeContinueNotRunning)
+	case errors.Is(err, session.ErrRestartInFlight):
+		AuditFrom(r.Context()).Deny(errContinueBusy.Error())
+		s.redirectOutcome(w, r, outcomeContinueBusy)
+	default:
+		AuditFrom(r.Context()).Deny(errContinueFailed.Error())
+		s.redirectOutcome(w, r, outcomeContinueFailed)
+	}
 }

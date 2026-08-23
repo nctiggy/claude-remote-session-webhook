@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -430,5 +431,38 @@ func TestValidateResumeRefusesTheRetiredWord(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "latest") {
 		t.Errorf("the refusal repeats the caller's value back: %v", err)
+	}
+}
+
+// TestNoCommandLineCarriesTheContinueFlag is spec 013, FR-017, asserted
+// structurally because it is a claim about the whole daemon rather than about one
+// path. --continue meant "whatever this directory last had": a value nothing
+// could show, name or predict, and the reason it went.
+//
+// A grep is a blunt instrument and that is the point — there is no path through
+// this package that should reintroduce the flag, so any occurrence at all is the
+// finding.
+func TestNoCommandLineCarriesTheContinueFlag(t *testing.T) {
+	t.Parallel()
+
+	root := ".."
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		body, err := os.ReadFile(path) //nolint:gosec // path comes from WalkDir over this package's own parent
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(body), `"--continue"`) {
+			t.Errorf("%s carries the --continue flag; spec 013 removed it from this daemon", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the source: %v", err)
 	}
 }

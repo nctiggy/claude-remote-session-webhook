@@ -318,6 +318,23 @@ It reached the pill with no edit to the component. The class is composed from th
 value, so a new state needs a token and a rule in `crswd.css` and nothing here —
 which is the property this component was built for and the one to keep.
 
+## Continue control
+
+A disclosure on the session page, below the rename and above the pane, holding a
+`<select>` of the conversations recorded for **this session's own** working
+directory and a hidden `confirm=yes`.
+
+It shares `.rename`'s rules rather than carrying its own: they are one control
+with two jobs — a disclosure holding a small form — and a second set of
+declarations differing only in a class name is how a second component starts.
+
+Never a text box. Every option is a conversation the daemon found, so there is no
+way to name one that does not exist. Each option says an identifier and a
+recency and nothing else: what a conversation *said* is the operator's work.
+
+With nothing to continue it states that in prose. An empty select is an offer with
+nothing behind it.
+
 ## Session card
 
 One session: name, state pill, identifier, start command, mode, working

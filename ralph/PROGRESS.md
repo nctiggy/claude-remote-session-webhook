@@ -692,3 +692,54 @@ spend half a minute asserting a timer. Revival itself is `quickstart.md`
 scenarios 1 and 2, by hand, against a running daemon.
 
 RALPH_COMPLETE
+
+---
+
+## Spec 013 — continue after start (2026-08-23)
+
+**Why.** The create form asked which conversation to pick up before the session
+existed — before the operator could see what the directory held — and offered
+"the most recent" as one of three answers, naming a conversation only the CLI
+could resolve. A choice offered where it cannot be made informed is an invitation
+to guess.
+
+**What was built.** The decision moved onto the running session:
+`POST /dashboard/sessions/{id}/continue`, behind the existing action gate, taking
+a conversation identifier and `confirm=yes` and **no directory** — the
+conversations a session may continue are the ones in its own recorded working
+directory. It restarts a process, not a session: identity, owner, credential,
+start command, creation time and deadline are all untouched, and the record's
+conversation moves so a later revival brings back the one being continued.
+
+**What was removed.** The create form's resume control, its script, `--continue`,
+`ResumeLatest`, and the lifetime hint that talked about reaping. The signed API
+keeps its resume field — it has carried one since spec 009 and a script naming a
+conversation deliberately was never the case that went wrong.
+
+### Three things worth recording
+
+- **`SetMode` improved rather than degraded.** It appended `--continue` so a mode
+  change kept its conversation. It now resumes by identifier, and a session
+  carrying none restarts fresh — which is the case `--continue` used to paper
+  over, and the reason it had to go.
+- **A test asserted a refusal that is now an omission.** The create route does not
+  read the resume field at all, so a value nobody reads cannot reach a command
+  line however it is spelled. That is a stronger property than the refusal it
+  replaced, and the test now says so.
+- **The API's contract was nearly narrowed by accident.** `CreateRequest.Resume`
+  was removed wholesale before it was noticed that `contracts/http-api.md` is a
+  closed set and `deploy/crswd-api` is a caller. It was restored for the API and
+  removed only from the browser — the ask was about a dialog, and removing an API
+  capability nobody mentioned would have been inventing scope.
+
+### Verification
+
+`go build`, `go vet`, `go test ./...`, `-tags tmux`, `-tags dev`,
+`-tags quickstart ./cmd/crswd` (whole suite), `gofmt -l .` clean, `golangci-lint`
+0 issues.
+
+Not verified here: continuing end to end against a real Claude. The unit and
+handler tests drive every branch, and `quickstart.md` scenarios 2 and 3 are the
+by-hand check against a running daemon.
+
+RALPH_COMPLETE

@@ -1147,7 +1147,13 @@ body {
    system permits a transition on a disclosure, and a block of markup sliding
    into a page above a live terminal is motion beside content an operator is
    reading. */
-.rename {
+/* The rename and the continue are one control with two jobs: a disclosure on the
+   session page holding a small form. They share these rules rather than each
+   having their own, because docs/components.md's premise is that there is one of
+   each thing — a second set of declarations differing only in a class name is
+   how a second component starts (spec 013). */
+.rename,
+.continue {
   margin-block-start: var(--s5);
   padding: var(--s4);
   background: var(--surface);
@@ -1159,7 +1165,8 @@ body {
    heading already uses: this is a section of the page saying what it is, and a
    second voice for that would be a second heading style. The pointer is the one
    thing a <summary> does not get from the platform's own affordance. */
-.rename-summary {
+.rename-summary,
+.continue-summary {
   color: var(--dim);
   font-size: var(--fs-eyebrow);
   font-weight: 600;
@@ -1174,7 +1181,8 @@ body {
    grid's own track token rather than by a width invented for a form, exactly as
    .field is — a name is short and an input spanning the shell is a control with
    nothing in most of it. */
-.rename-form {
+.rename-form,
+.continue-form {
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: center;
@@ -1183,7 +1191,8 @@ body {
   inline-size: min(100%, var(--card-min));
 }
 
-.rename-form .field-label {
+.rename-form .field-label,
+.continue-form .field-label {
   grid-column: 1 / -1;
 }
 

@@ -578,12 +578,40 @@ object per line, fsynced per record, replayed at startup *before* adoption — t
 host is the authority on what is running, the journal on what should be. It holds
 no credential, no token hash, and no content. See `docs/security.md`.
 
+## Continuing a conversation
+
+Choosing which prior conversation a session should pick up happens **on the
+running session**, not on the create form. The form asked it before the session
+existed — before there was anything on screen to look at — and one of its answers
+was "the most recent", which named a conversation only the CLI could resolve.
+
+`POST /dashboard/sessions/{id}/continue` takes a conversation identifier and
+`confirm=yes`, behind the same action gate every mutating dashboard route has. It
+takes **no directory**: the conversations a session may continue are the ones in
+its own recorded working directory, and a route that accepted one from the caller
+would let a session started in one place resume work from another.
+
+It restarts a process, never a session. Identity, owner, credential, working
+directory, start command, creation time and absolute deadline are all unchanged;
+what moves is the conversation the record says the session is having, which is
+also what a later revival will bring it back to. `LastActivity` moves too, and
+that is the one place it differs from a revival: a human asked for this.
+
+`--continue` is gone from the daemon (spec 013). A mode change now restarts on the
+session's own conversation by identifier, and a session carrying none — created
+before spec 012, or under a start command this daemon cannot give one to —
+restarts fresh, which is the honest outcome when there is nothing to name.
+
 ## Checklist before merging auth or session work
 
 - [ ] All three layers still enforced; none bypassed for a "local" or "health" route
 - [ ] Revival still cannot extend a lifetime, exceed the cap, resurrect a destroyed
       session, or start a shell in a directory the allowlist no longer covers
 - [ ] The give-up bound is still written before the attempt and still survives a restart
+- [ ] Continuing still restarts a process rather than a session: no new deadline,
+      no new credential, no change to the concurrent count
+- [ ] Only one restart of a session can be in flight, whether it came from a
+      revival or from an operator continuing
 - [ ] Each door still refuses only by the check that applies to it — no browser route
       asks for a signature, no API route consults an assertion
 - [ ] The assertion is validated in the daemon: audience pinned, `alg` read only to

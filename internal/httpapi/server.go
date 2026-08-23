@@ -686,6 +686,7 @@ func newServer(
 	// vocabulary before anything is looked up — no command line arrives from a
 	// browser, in either direction (FR-030).
 	s.handleAction(patternDashboardMode, audit.ActionSessionMode, s.modeFromBrowser)
+	s.handleAction(patternDashboardContinue, audit.ActionDashboardContinue, s.continueFromBrowser)
 	// The sixth, and the only one of the six that changes this daemon rather than
 	// a session it manages (T019). It goes through handleAction like the five
 	// above, and the argument for the gate is at its strongest here: a

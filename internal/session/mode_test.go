@@ -317,12 +317,25 @@ func TestTogglePreservesSessionAndScrollback(t *testing.T) {
 // run — and because the argv assertion already exists in the untagged suite,
 // against the fake, where it cannot show that a real tmux delivered the line
 // intact.
-func TestTogglePassesContinue(t *testing.T) {
+// TestToggleRestartsWithoutTheContinueFlag replaces an assertion that the
+// restarted line carried --continue. Spec 013 removed that flag from the daemon:
+// it meant "whatever this directory last had", which stopped being answerable the
+// moment two sessions could share a directory.
+//
+// A mode change now resumes the session's own conversation by identifier. This
+// fixture's start commands are `seq` stand-ins rather than claude, so a session
+// created under them is given no conversation identifier at all — which makes
+// this the case that proves the honest half: with nothing to name, the restart
+// carries no resume flag rather than a flag that guesses.
+func TestToggleRestartsWithoutTheContinueFlag(t *testing.T) {
 	f := newModeFixture(t)
 
 	page := f.withScrollback(t, f.toggled(t).after)
-	if !strings.Contains(page, remoteMarker+" --continue") {
-		t.Errorf("the restarted command in the pane is not the remote one with --continue:\n%s", page)
+	if !strings.Contains(page, remoteMarker) {
+		t.Errorf("the restarted command in the pane is not the remote one:\n%s", page)
+	}
+	if strings.Contains(page, "--continue") {
+		t.Errorf("the restarted command carries --continue, which left this daemon in spec 013:\n%s", page)
 	}
 }
 
