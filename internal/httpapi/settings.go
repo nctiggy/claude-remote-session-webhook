@@ -659,45 +659,72 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 // literal in all three is three chances for the sentence to attach to a heading
 // that no longer exists, and a section that quietly stopped carrying it looks
 // exactly like a daemon nobody asked about its door.
-const sectionWhoMayReachIt = "Who may reach it"
+//
+// Spec 014 collapsed the seven headings into three, and this one's contents are
+// now part of Network — how the daemon is reached and who gets in are one
+// question to the operator answering them.
+const sectionWhoMayReachIt = sectionNetwork
+
+// The three headings a settings page has, and the fourth that exists to be empty.
+//
+// There were seven until spec 014 — "Where it listens", "Who may reach it",
+// "What it may touch", "What it runs", "Limits" and "Other" — which is more
+// structure than an operator scanning their own configuration can hold, and one
+// of them meant "we did not classify this".
+const (
+	// sectionNetwork is how the daemon is reached and who gets in. The two are
+	// one question to an operator: a listener nobody may pass is not reachable,
+	// and a door on no address is not either.
+	sectionNetwork = "Network"
+
+	// sectionGeneral is everything the daemon does once somebody is in — where it
+	// may work, what it runs there, and the bounds on both.
+	sectionGeneral = "General"
+
+	// sectionUnclassified exists so that a key nothing claims still renders. It is
+	// expected to be empty, and TestNoSettingIsUnclassified fails if it is not —
+	// so a key added to config.go is a red test here rather than a mystery
+	// heading on the operator's page.
+	//
+	// The heading says what it means. "Other" read like a category; this reads
+	// like the omission it is.
+	sectionUnclassified = "Not yet classified"
+)
 
 // settingSectionOf says which section a key belongs under.
 //
-// A map from key to heading rather than a heading per key, so a key added to
-// config.go lands somewhere without this file being edited: anything unclaimed
-// falls to "Other", which is visible on the page and is the prompt to classify
-// it. The alternative — a key silently vanishing because no section claimed it —
-// is the failure this arrangement is shaped to avoid.
+// **The map is stated key by key and the fallback is a defect.** Until spec 014
+// this switch named `remote_start_commands`, which is not a key this daemon has,
+// and did not name `start_command`, `remote_control_command` or
+// `session_environment`, which are. All three fell to "Other" — where the
+// operator found them and could not tell what they were for. They were not
+// obscure settings; they were misfiled ones.
 func settingSectionOf(key string) string {
 	switch key {
-	case "listen":
-		return "Where it listens"
-	case "access_enabled", "access_team_domain", "access_aud", "access_allowed_emails",
+	case "listen",
+		"access_enabled", "access_team_domain", "access_aud", "access_allowed_emails",
 		"dashboard_password", "shared_secret":
-		return sectionWhoMayReachIt
-	case "allowed_roots", "workdir_suggestions", "discover_roots":
-		return "What it may touch"
-	case "start_commands", "remote_start_commands":
-		return "What it runs"
-	case "session_lifetime", "session_lifetime_max",
+		return sectionNetwork
+	case "allowed_roots", "workdir_suggestions", "discover_roots",
+		"start_command", "start_commands", "remote_control_command", "session_environment",
+		"session_lifetime", "session_lifetime_max",
 		"max_sessions", "max_streams", "create_rate_per_min", "max_body_bytes", "pane_bound",
 		"destroy_on_shutdown":
-		return "Limits"
+		return sectionGeneral
 	default:
-		return "Other"
+		return sectionUnclassified
 	}
 }
 
-// sectionOrder is the order the page shows them in, which is the order an
-// operator is likely to be looking: the reachable surface first, the containment
-// boundary next, and the numbers last.
+// sectionOrder is the order the page shows them in: what the daemon does, then
+// how it is reached, then the omission that should not exist.
+//
+// Updates is not here. It is not a group of configuration keys — it is the one
+// section that acts rather than describes — and it is placed by the template.
 var sectionOrder = []string{
-	"Where it listens",
-	sectionWhoMayReachIt,
-	"What it may touch",
-	"What it runs",
-	"Limits",
-	"Other",
+	sectionGeneral,
+	sectionNetwork,
+	sectionUnclassified,
 }
 
 // sectioned groups rows without dropping any, and hands the door sentence to

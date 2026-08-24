@@ -30,7 +30,7 @@ var spelledOutcomes = []outcome{
 	"create-failed", "destroy-failed", "rename-failed", "compact-failed", "mode-failed",
 	"update-not-fetched", "update-unverified", "update-refused",
 	"restart-unconfirmed", "restart-refused",
-	"setting-written", "setting-refused",
+	"setting-written", "setting-refused", "setting-unchanged",
 	// The continue action's five (spec 013).
 	"continued", "continue-unconfirmed", "continue-not-running", "continue-busy", "continue-failed",
 }

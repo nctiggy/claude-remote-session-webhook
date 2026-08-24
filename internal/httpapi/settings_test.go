@@ -559,8 +559,14 @@ func TestSecretRendersPresentOrAbsent(t *testing.T) {
 			page := settingsBody(t, settingsOn(t, tc.adjust))
 			row := settingsRowFor(t, page, tc.key)
 
-			if !strings.Contains(row, "<td>"+tc.want+"</td>") {
-				t.Errorf("with %s, the %s row is %q; want a value cell holding exactly %q", tc.name, tc.key, row, tc.want)
+			// The cell opens with the word and never carries the value. It is
+			// no longer asserted as the *whole* cell, because spec 014 put the
+			// origin note inside it — a secret that came from the environment
+			// rather than the file is exactly the kind an operator needs to know
+			// the origin of. What must not change is that the secret itself is
+			// not here, which the check below is for.
+			if !strings.Contains(row, "<td>"+tc.want) {
+				t.Errorf("with %s, the %s row is %q; want a value cell opening with %q", tc.name, tc.key, row, tc.want)
 			}
 			other := secretPresent
 			if tc.want == secretPresent {
@@ -596,7 +602,7 @@ func TestAllowedIdentitiesTreatedAsSecret(t *testing.T) {
 	}))
 
 	row := settingsRowFor(t, page, "access_allowed_emails")
-	if !strings.Contains(row, "<td>"+secretPresent+"</td>") {
+	if !strings.Contains(row, "<td>"+secretPresent) {
 		t.Errorf("the allowlist row is %q; a configured allowlist is %q", row, secretPresent)
 	}
 	for _, address := range []string{canaryAllowed, second} {
@@ -730,21 +736,18 @@ func TestSettingsRendersOneRowPerKey(t *testing.T) {
 	}
 }
 
-// TestShowsSourcePerKey is contracts/settings-page.md's source row, and every
-// case below is built so that the value alone cannot produce the right answer.
+// TestShowsSourcePerKey became TestShowsAnUnexpectedOriginOnly in spec 014.
 //
-// That is the point of the column. A source *inferred* at render time can only
-// compare the value against the built-in default, which is right about the two
-// uninteresting cases and wrong about both of the ones an operator is on this
-// page to ask about: a file that set a value the daemon would have defaulted to
-// anyway, and a value that differs from the default because something *else*
-// supplied it. So the fixture holds the default value under a file source and a
-// non-default value under a default source — a comparison would get both
-// backwards, and reading the shim's record gets both right.
+// It asserted a Source column holding "file", "default" or "environment" on every
+// row. Three quarters of that column said "file" — the ordinary case, and the one
+// an operator never wonders about — so it spent a quarter of the table's width
+// answering a question nobody asked.
 //
-// **Must fail when** the source is inferred at render time instead of read from
-// the map the precedence shim wrote (T008).
-func TestShowsSourcePerKey(t *testing.T) {
+// What the page says now is the surprise: a value that did *not* come from the
+// configuration file, because that is the one an operator will otherwise try to
+// edit and watch not take effect. The claim underneath is unchanged and is still
+// asserted: the origin of a value is a fact this page must not lose.
+func TestShowsAnUnexpectedOriginOnly(t *testing.T) {
 	t.Parallel()
 
 	f := settingsOn(t, func(cfg *config.Config) {
@@ -753,8 +756,7 @@ func TestShowsSourcePerKey(t *testing.T) {
 		cfg.Listen = config.DefaultListen
 		// The reverse: nothing supplied it, and it is not the built-in default
 		// either — which is every daemon whose ceiling was derived from another
-		// setting rather than configured (loadWith defaults the MAX pair to the
-		// pair below them).
+		// setting rather than configured.
 		cfg.MaxStreams = config.DefaultMaxStreams + 3
 		cfg.MaxSessions = 3
 		cfg.Sources = map[string]config.Source{
@@ -765,20 +767,30 @@ func TestShowsSourcePerKey(t *testing.T) {
 	})
 	page := settingsBody(t, f)
 
-	for _, tc := range []struct {
-		key  string
-		want config.Source
-		why  string
+	for _, tt := range []struct {
+		key    string
+		origin string
+		shown  bool
 	}{
-		{"listen", config.SourceFile, "the file set it to the value it would have defaulted to; nothing about the value says so"},
-		{"max_streams", config.SourceDefault, "nothing supplied it, and it is not the value a comparison would call the default"},
-		{"max_sessions", config.SourceEnv, "the environment answered this lookup"},
-		{"max_streams", config.SourceDefault, "no lookup for it was ever recorded, which is the zero value's whole job"},
+		// From the file, which is the ordinary case and says nothing.
+		{key: "listen", origin: "file", shown: false},
+		// Not from the file. Both are worth the ink.
+		{key: "max_streams", origin: "default", shown: true},
+		{key: "max_sessions", origin: "environment", shown: true},
 	} {
-		row := settingsRowFor(t, page, tc.key)
-		if !strings.Contains(row, "<td>"+tc.want.String()+"</td>") {
-			t.Errorf("the %s row is %q; want a source cell holding exactly %q — %s", tc.key, row, tc.want, tc.why)
-		}
+		t.Run(tt.key, func(t *testing.T) {
+			row := settingsRowFor(t, page, tt.key)
+			marked := strings.Contains(row, "from "+tt.origin)
+			switch {
+			case tt.shown && !marked:
+				t.Errorf("the %s row does not say its value came from %s, so an operator will edit it and watch nothing happen:\n%s", tt.key, tt.origin, row)
+			case !tt.shown && marked:
+				t.Errorf("the %s row spends ink saying its value came from the file, which is where a value ordinarily comes from:\n%s", tt.key, row)
+			}
+			if strings.Contains(row, "<th scope=\"col\">Source</th>") {
+				t.Errorf("the table still carries a Source column:\n%s", row)
+			}
+		})
 	}
 }
 
@@ -1248,7 +1260,7 @@ func TestFullRouteSweepLeaksNoSecret(t *testing.T) {
 		// loaded only the default section would be searching a fraction of what
 		// this route can return and reporting it as all of it.
 		{"the settings page, where it listens", http.MethodGet, settingsPath + "?section=Where+it+listens", nil, http.StatusOK},
-		{"the settings page, who may reach it", http.MethodGet, settingsPath + "?section=Who+may+reach+it", nil, http.StatusOK},
+		{"the settings page, who may reach it", http.MethodGet, settingsPath + "?section=Network", nil, http.StatusOK},
 		{"the settings page, what it may touch", http.MethodGet, settingsPath + "?section=What+it+may+touch", nil, http.StatusOK},
 		{"the settings page, what it runs", http.MethodGet, settingsPath + "?section=What+it+runs", nil, http.StatusOK},
 		{"the settings page, limits", http.MethodGet, settingsPath + "?section=Limits", nil, http.StatusOK},
@@ -1395,7 +1407,7 @@ func TestFullRouteSweepLeaksNoSecret(t *testing.T) {
 	// stopped the test first would report the leak as a broken fixture.
 	page := s.answerFor(t, "the settings page, who may reach it")
 	for _, key := range []string{"shared_secret", "access_allowed_emails"} {
-		if row := settingsRowFor(t, page, key); !strings.Contains(row, "<td>"+secretPresent+"</td>") {
+		if row := settingsRowFor(t, page, key); !strings.Contains(row, "<td>"+secretPresent) {
 			t.Errorf("the swept daemon reports %s as %q; this is a claim about a daemon that has both secrets configured", key, row)
 		}
 	}
@@ -1481,7 +1493,7 @@ func TestSettingsSurvivesAnUnreachableFeed(t *testing.T) {
 	// claim: a feed that could not be reached costs the Updates section and
 	// nothing else. Asked for through the menu, because that is how the page is
 	// arranged now — one section at a time.
-	if !strings.Contains(settingsSectionBody(t, f, "What it may touch"), "allowed_roots") {
+	if !strings.Contains(settingsSectionBody(t, f, sectionGeneral), "allowed_roots") {
 		t.Error("an unreachable feed cost the page its configuration, which needs no network at all")
 	}
 }
@@ -1489,7 +1501,8 @@ func TestSettingsSurvivesAnUnreachableFeed(t *testing.T) {
 // TestEverySettingAppearsInASection guards the grouping, not the sections.
 //
 // **Must fail when** a key is added to config.go that no section claims and the
-// grouping drops it. It cannot: settingSectionOf falls through to "Other", which
+// grouping drops it. It cannot: settingSectionOf falls through to the
+// unclassified heading, which
 // is visible on the page and is the prompt to classify it. A key that vanished
 // instead would leave the page quietly incomplete, which is worse than ungrouped.
 func TestEverySettingAppearsInASection(t *testing.T) {
@@ -1689,7 +1702,7 @@ func TestSettingsNamesTheDoorThatIsLive(t *testing.T) {
 	})
 }
 
-// doorSectionAsOperator opens "Who may reach it" on a password daemon, carrying
+// doorSectionAsOperator opens the Network section on a password daemon, carrying
 // nothing but the cookie a sign-in gave it — which is everything a browser on
 // such a daemon ever has.
 func doorSectionAsOperator(t *testing.T, d *loginDaemon) string {
@@ -1726,7 +1739,7 @@ func assertNamesTheDoor(t *testing.T, section, want string) {
 // TestTheDoorSentenceIsOnTheSectionThatAsksTheQuestion pins where it lives.
 //
 // One section and not the page, because the page shows one section at a time: a
-// sentence rendered outside them would follow the operator into "Limits", and a
+// sentence rendered outside them would follow the operator into General, and a
 // sentence repeated in all of them would be the same fact six times. "Who may
 // reach it" is the heading the door is the answer to, and the keys it was
 // resolved from are the rows directly beneath it.
@@ -1765,7 +1778,7 @@ func TestSettingsMarksWhereYouAre(t *testing.T) {
 	t.Parallel()
 
 	f := newFleet(t)
-	for _, section := range []string{sectionUpdates, "Limits"} {
+	for _, section := range []string{sectionUpdates, sectionGeneral} {
 		body := settingsSectionBody(t, f, section)
 		if !strings.Contains(body, `aria-current="page"`) {
 			t.Errorf("the %s section does not mark itself current, so only sighted operators know where they are", section)
@@ -1781,13 +1794,17 @@ func TestSettingsShowsOnlyTheChosenSection(t *testing.T) {
 	t.Parallel()
 
 	f := newFleet(t)
-	limits := settingsSectionBody(t, f, "Limits")
+	limits := settingsSectionBody(t, f, sectionGeneral)
 
 	if !strings.Contains(limits, ">max_sessions<") {
-		t.Error("the Limits section does not carry max_sessions")
+		t.Errorf("the %s section does not carry max_sessions", sectionGeneral)
 	}
-	if strings.Contains(limits, ">allowed_roots<") {
-		t.Errorf("the Limits section also renders allowed_roots, so the menu chooses nothing:\n%s", limits)
+	// A key from the *other* section. allowed_roots stood here until spec 014
+	// collapsed the seven headings into three and put it in General beside
+	// max_sessions — so the pair that proves the menu chooses has to straddle the
+	// new boundary rather than the old one.
+	if strings.Contains(limits, ">listen<") {
+		t.Errorf("the %s section renders a key from %s, so the menu chooses nothing:\n%s", sectionGeneral, sectionNetwork, limits)
 	}
 }
 
@@ -2346,6 +2363,94 @@ func TestTheSettingsPageSaysWhenHardeningIsOverridden(t *testing.T) {
 			// fact, never a replacement for the four arrangements.
 			if !strings.Contains(page, html.EscapeString(updater.UnitSentenceOurs)) {
 				t.Errorf("the Updates section stopped saying what became of the unit itself:\n%s", page)
+			}
+		})
+	}
+}
+
+// TestNoSettingIsUnclassified is FR-004's guard, and the reason the unclassified
+// heading exists at all.
+//
+// Three keys were falling into "Other" before spec 014 — start_command,
+// remote_control_command and session_environment — because the section map named
+// `remote_start_commands`, which is not a key this daemon has. An operator found
+// them under a heading that meant "we did not classify this" and reasonably asked
+// what they were for.
+//
+// The heading stays so a key can never vanish. This test is what makes it stay
+// empty: a key added to config.go and not classified is a red test here rather
+// than a mystery on the operator's page.
+func TestNoSettingIsUnclassified(t *testing.T) {
+	t.Parallel()
+
+	// Driven off the same rows the page renders, so this asks about exactly the
+	// keys an operator would meet rather than a list kept in step by hand.
+	for _, row := range settingsOf(testConfig(loopbackListen)) {
+		if got := settingSectionOf(row.Key); got == sectionUnclassified {
+			t.Errorf("%q lands under %q; give it a section in settingSectionOf", row.Key, sectionUnclassified)
+		}
+	}
+}
+
+// TestOneSaveForTheWholeForm is FR-005 and the shape of the change: the page
+// carries one Save, not one per row.
+func TestOneSaveForTheWholeForm(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	page := settingsSectionBody(t, f, sectionGeneral)
+
+	if n := strings.Count(page, `class="button setting-save"`); n != 0 {
+		t.Errorf("the page carries %d per-row Save buttons; spec 014 replaced them with one", n)
+	}
+	if n := strings.Count(page, `class="button settings-save"`); n != 1 {
+		t.Errorf("the page carries %d form-level Save buttons; want exactly 1", n)
+	}
+	// One form, so one submit sends every row.
+	if n := strings.Count(page, `class="setting-form"`); n != 0 {
+		t.Errorf("the page still carries %d per-row forms", n)
+	}
+}
+
+// TestTheSettingsTableIsWellFormed counts cells, which sounds like a test about
+// HTML pedantry and is not.
+//
+// Spec 014 removed the Source column, and the first cut removed it from the head
+// and left it in every row: a table declaring two columns and rendering three.
+// Every other test in this file still passed — they look for the row's *content*,
+// and the content was all present and in the right cells by eye. What was wrong
+// was the shape, which nothing was asking about.
+//
+// A browser renders that as a third column with a blank heading, which is exactly
+// the column the change existed to remove. So this asks the one question the
+// content assertions cannot: does the body have as many cells as the head says it
+// does?
+func TestTheSettingsTableIsWellFormed(t *testing.T) {
+	t.Parallel()
+
+	headCell := regexp.MustCompile(`<th scope="col">`)
+	rowStart := regexp.MustCompile(`(?s)<tr>\s*<th scope="row">.*?</tr>`)
+	anyCell := regexp.MustCompile(`<t[dh][ >]`)
+
+	f := newFleet(t)
+	for _, section := range []string{sectionGeneral, sectionNetwork} {
+		t.Run(section, func(t *testing.T) {
+			t.Parallel()
+
+			page := settingsSectionBody(t, f, section)
+			columns := len(headCell.FindAllString(page, -1))
+			if columns == 0 {
+				t.Fatalf("the %s section renders no table head, so this asserted nothing:\n%s", section, page)
+			}
+			rows := rowStart.FindAllString(page, -1)
+			if len(rows) == 0 {
+				t.Fatalf("the %s section renders no setting rows, so this asserted nothing", section)
+			}
+			for _, row := range rows {
+				if cells := len(anyCell.FindAllString(row, -1)); cells != columns {
+					t.Errorf("a %s row renders %d cells against a %d-column head; a browser draws the difference as a column with no name:\n%s",
+						section, cells, columns, row)
+				}
 			}
 		})
 	}

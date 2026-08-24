@@ -497,7 +497,7 @@ func TestTheSettingsPageOffersTheWayOut(t *testing.T) {
 
 	// Where it is not is the half nobody tests. The page shows one section at a
 	// time, so a control composed onto the view rather than onto its section
-	// would follow the operator into "Limits" — and the fact that the route is
+	// would follow the operator into General — and the fact that the route is
 	// registered is not a reason for every heading to offer it.
 	t.Run("and nowhere but the section that asks the question", func(t *testing.T) {
 		t.Parallel()

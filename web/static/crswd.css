@@ -1153,7 +1153,8 @@ body {
    each thing — a second set of declarations differing only in a class name is
    how a second component starts (spec 013). */
 .rename,
-.continue {
+.continue,
+.unit-detail {
   margin-block-start: var(--s5);
   padding: var(--s4);
   background: var(--surface);
@@ -1166,7 +1167,8 @@ body {
    second voice for that would be a second heading style. The pointer is the one
    thing a <summary> does not get from the platform's own affordance. */
 .rename-summary,
-.continue-summary {
+.continue-summary,
+.unit-detail-summary {
   color: var(--dim);
   font-size: var(--fs-eyebrow);
   font-weight: 600;
@@ -1609,12 +1611,9 @@ body {
    The input is labelled by aria-label rather than a visible <label>, because the
    row header beside it already says the key and a second copy would be the same
    word twice to anybody reading it aloud. */
-.setting-form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s2);
-  align-items: center;
-}
+/* There was a .setting-form here: one flex row per table cell, holding a field
+   and its own Save button. Spec 014 replaced the N forms with one, so a row is
+   now a field and nothing else and needs no layout of its own. */
 
 .setting-input {
   flex: 1 1 var(--field-min);
@@ -1628,8 +1627,27 @@ body {
   font-size: var(--fs-body);
 }
 
-.setting-save {
-  flex: 0 0 auto;
+/* The settings form, its one Save, and the origin note (spec 014).
+
+   There was a .setting-save here: one button per row, sized to sit inside a
+   table cell. There is one button now, after the table, so it is the ordinary
+   .button at the end of a form rather than a variant that exists to be small. */
+.settings-form {
+  display: contents;
+}
+
+.settings-save {
+  margin-block-start: var(--s4);
+}
+
+/* Said only for a value that did not come from the configuration file, which is
+   the case an operator will otherwise try to edit and watch not take effect. Dim,
+   because it is a footnote on the row rather than a column of its own. */
+.settings-origin {
+  color: var(--dim);
+  font-size: var(--fs-eyebrow);
+  white-space: nowrap;
+  margin-inline-start: var(--s2);
 }
 
 /* Waiting out an update.

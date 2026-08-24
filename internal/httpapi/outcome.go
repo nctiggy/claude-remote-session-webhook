@@ -92,6 +92,8 @@ const (
 	// daemon has not read it yet: a setting takes effect at the next start, and
 	// a word implying otherwise would be the page claiming something it has not
 	// observed — the same care compactDelivered takes.
+	outcomeSettingUnchanged outcome = "setting-unchanged"
+
 	outcomeSettingWritten outcome = "setting-written"
 	outcomeSettingRefused outcome = "setting-refused"
 
@@ -271,6 +273,9 @@ var banners = map[outcome]outcomeView{
 		// code carries no data, so what a banner can say is fixed at compile time.
 		// The version is on /dashboard/version, asked of whichever daemon answers.
 		Message: "Update installed. This daemon is exiting so its service manager can start the release that is now in place.",
+	},
+	outcomeSettingUnchanged: {
+		Message: "Nothing was changed, so nothing was written.",
 	},
 	outcomeSettingWritten: {
 		// Written, not saved, and it says the daemon has not read it yet — which
