@@ -875,3 +875,71 @@ a loop iteration can usefully say it.
   produced one factual correction and no code, from a full context load. If the
   loop is re-run against this plan unchanged, the next iteration has strictly
   less to find than this one did.
+
+---
+
+## Iteration 9 — 2026-09-01 — blocker holds on a third measurement; one new trap found
+
+**Did:** No code, and none was available. T007's remaining half is still the only
+open work and is still unreachable. This entry exists for two things only: the
+third measurement of the blocker, and **one new finding that will cost a future
+iteration a stall** if it is not written down.
+
+### The blocker, measured a third time
+
+- `gh issue view 121 --json number,title,state` → **refused, "This command
+  requires approval"**. Bare invocation, no pipe, no redirect — Iteration 8's
+  warning about the "multiple operations" refusal was followed, not retested.
+- `.claude/settings.json` was **read directly this iteration**, not inherited
+  from the notebook. Iteration 8's *conclusion* is confirmed — **no `gh` entry of
+  any kind** — so Iteration 7's `gh pr` / `gh repo` / `gh auth status` claim is
+  false about this repo, and the operator choosing route 2 is granting the first
+  `gh` entry here.
+- **Iteration 8's counts are themselves off, and I am not repeating them.** It
+  says "fifteen Go entries, eight git entries" (23). Counted off the file this
+  iteration: **twenty entries — eleven Go/lint** (`go mod|build|test|vet|fmt|run|
+  env|version`, `gofmt`, `goimports`, `golangci-lint`) **and nine git**
+  (`add|commit|status|diff|log|show|branch|switch|restore`). Nothing follows from
+  the difference — the `gh` conclusion stands either way — but Iteration 8 made
+  that miscount *in the act of correcting Iteration 7 for trusting a remembered
+  allowlist*, which is the sharpest available evidence that **this file's numbers
+  get re-counted, not cited.** The notebook is append-only, so Iteration 8 stays
+  as written and this is the correction.
+
+### Learned — new, and it will bite the next iteration
+
+**`git -C <repo> status` is refused; bare `git status` is allowed.** Measured
+both ways this iteration. The allow list matches on the command prefix, so
+`Bash(git status:*)` does not cover `git -C /home/nctiggy/code/... status
+--short` — the `-C` flag sits between `git` and the subcommand and breaks the
+match. The refusal is a permission prompt, and **a loop iteration is
+non-interactive, so this is a stall, not a detour.**
+
+This matters more than it looks: the operator's global house rules say to prefer
+`git -C <repo>` over `cd`. **In this repo that guidance is inverted** — the loop
+already runs with the repo as its working directory, so every git command must
+be written bare. Only `-C` was measured; do not assume the same about other
+flags without testing one.
+
+**Left:** the close of #121. Unchanged, and unchanged by anything an iteration
+can do.
+
+**Findings — noticed, not fixed:**
+
+- **The carried-forward findings are again not restated**, for the reason
+  Iteration 8 gave. `registeredPatterns`, the `200`/`202` rows in
+  `docs/components.md`, `docs/auth-and-sessions.md`'s "Four routes", the offer
+  not recomputing on rotation, and `TestQuickstartStory5RateLimit`'s cleanup
+  race are all live and all in Iteration 7. **They want a milestone 17.** An
+  iteration of *this* plan may not take them — AR-008, and they are not T007.
+- **Green, verified not assumed:** `go build ./...`, `go vet ./...`,
+  `go test ./...` (11 packages ok, `web` has no test files — this run covers
+  `TestTheDocumentsNameTheReflowAndTheWayBack`, T007's shipped half),
+  `golangci-lint run` **0 issues** at **v2.12.2** (#26's version check made),
+  working tree clean.
+- **The loop is converged, and this is the entry that says so with evidence.**
+  Iteration 8 predicted the next iteration would have strictly less to find. It
+  found one thing — a permission trap, not a defect in the milestone — and that
+  is the shape of everything left. **Re-running the loop against this plan is
+  now waste.** The next useful act is the operator's: close #121, or grant
+  `Bash(gh issue:*)`, or open milestone 17 for the five findings above.
