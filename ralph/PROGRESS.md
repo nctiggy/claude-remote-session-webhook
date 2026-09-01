@@ -201,3 +201,82 @@ Do not re-derive.**
   documented `tmux set-window-option -t … window-size latest`, it needs a second
   Controller method and T005 is bigger than it reads. **Not a blocker for T002 or
   T003; read it before starting T005.**
+
+---
+
+## Iteration 2 — 2026-09-01 — T002, the width clamp
+
+**Did:** Added `internal/config/width.go`: `DefaultPaneWidth = 80`,
+`MinPaneWidth = 20`, `MaxPaneWidth = 500`, `ClampPaneWidth(int) int` and
+`ParsePaneWidth(string) int`. Corrected `DefaultPaneBound`'s comment in the same
+commit. Commit `3c9cbfc`.
+
+**Learned:**
+
+- **A reading T002 forced, written down because the next iteration must not
+  re-take it: there is no `CRSW_PANE_WIDTH`.** The task says "in the shape
+  `PaneBound` already has (`EnvPaneBound`/`DefaultPaneBound`, `loadInt`)", and
+  two of those three are environment-variable machinery — so the env var was
+  considered and rejected, for three measured reasons. (1) An `Env*` constant in
+  this package is not just a constant: `config.Vars()`, `internal/httpapi`'s
+  `settingsValue` switch, `.env.example` and `README.md` all enumerate them, and
+  `TestREADMEDocumentsEveryVariable` and `deployexample_test.go` enforce it — so
+  it would ship a **settings-page row for the width**, which the plan puts out of
+  scope in writing ("It is a property of one session, set where that session is
+  read"). (2) `loadInt` refuses a non-number at startup, so it cannot be the
+  thing T002 describes: "a value that is not a number is the default rather than
+  an error" is a rule about the value being *clamped*, not about a variable being
+  loaded. (3) Nothing in T003–T007 needs the bounds to be operator-settable.
+  **If the operator does want one, it is a small addition on top of this — the
+  constants are already exported and already the only definition of the bounds.**
+- **The clamp reads text, not an int, and that is what T003 and T004 both need.**
+  A width reaches this daemon as a string every single time: a form field in
+  T004, and the `@crswd-width` option read back in T003. `ParsePaneWidth("")` is
+  80 by construction, so **T003's "a session with no option adopts as 80" falls
+  out of this function rather than needing a second rule** — call it, do not
+  write `if raw == ""`.
+- **`strconv.Atoi` saturates on `ErrRange` and that is load-bearing here.** A
+  40-digit width comes back as `math.MaxInt` *with* an error; the parse clamps it
+  rather than treating it as gibberish, so there is no cliff between 9999999999
+  (clamps to 500) and one digit more (would otherwise have been 80). T004's
+  "a width of nine million" case and any longer one now answer the same way.
+- **20 and 500 are a usability policy and are deliberately not tmux's 1..10000.**
+  Iteration 1 flagged that they should be a separate decision and they are. The
+  floor's argument is the one the milestone rests on: a reflow changes the
+  session for *every* reader, so the floor bounds the damage one viewer can do to
+  the others, and 20 is well under the narrowest real report measured here (44,
+  on a phone). The ceiling only exists so no width this daemon accepts can be one
+  tmux refuses — the T005 control is offered only to a viewer *narrower* than the
+  session, so no honest reflow goes near it.
+- **Iteration 1's finding about `DefaultPaneBound` was right that the comment was
+  falsified and wrong about why.** It said a narrower window makes a capture
+  *taller*. It does not: `capture-pane` with no `-S` returns the visible screen,
+  which is `pane_height` lines, and a reflow sets columns while the rows come
+  from the session. A narrower window fills the same 24 rows more completely. The
+  comment now says that, and 200 is untouched.
+- **Both guards were proven by breaking them**, as the plan requires: a
+  pass-through `ClampPaneWidth` fails 5 clamp rows and 6 parse rows, and dropping
+  the `ErrRange` exception fails the 40-digit row alone. Restored and green.
+
+**Left:** T003–T007. Nothing is blocked.
+
+**Findings — noticed, not fixed:**
+
+- **T002's clamp has no production caller yet, and by the plan's own convention
+  ("a task is not done when the code exists; it is done when something calls
+  it") that is a gap T004 closes.** It is the same shape T001 shipped in — the
+  `Resize` primitive still has no production caller either. **Two tasks now owe a
+  caller; if T004 slips, both are dead code with green tests**, which is exactly
+  the failure `docs/conventions.md` records three of. Worth checking at T004 that
+  it calls `config.ParsePaneWidth` rather than growing its own `strconv.Atoi`.
+- **`internal/tmuxctl/exec.go`'s `CapturePane` comment carries the same falsified
+  claim `DefaultPaneBound` did** — "a detached session keeps tmux's default
+  dimensions". Left alone deliberately: it is a different package, AR-008 says no
+  refactoring outside the task, and T002 named only `DefaultPaneBound`. The bound
+  it justifies is unaffected for the reason above (rows, not columns). **T007 owns
+  the documentation sweep and should take this sentence with it.**
+- **`ParsePaneWidth` trims surrounding whitespace and `loadInt` does not.** That
+  is a real inconsistency between two parsers in one package, and it is
+  intentional here — an advisory value from a browser should not be refused over
+  a space — but a reader comparing them will notice. Not worth a change to
+  `loadInt`, which refuses on purpose.

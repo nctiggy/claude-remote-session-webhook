@@ -135,7 +135,7 @@ must not silently change how their terminal behaves either.
       **an 80-column line already in the pane comes back re-wrapped at 44** — the
       measured behaviour above, pinned, because the whole milestone rests on it.
 
-- [ ] **T002** 🔒 Give the width a clamp in `internal/config`, in the shape
+- [x] **T002** 🔒 Give the width a clamp in `internal/config`, in the shape
       `PaneBound` already has (`EnvPaneBound`/`DefaultPaneBound`, `loadInt`).
       #120's requirement is exact: **advisory only — a bad value clamps, never
       refuses, and never escapes into an argv.** So: a floor and a ceiling, a
