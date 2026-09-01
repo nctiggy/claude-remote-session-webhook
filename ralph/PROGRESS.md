@@ -650,3 +650,139 @@ and inverted the guard that pinned them. Commit `c66aa38`.
   unexamined here.** This task touched no Go outside `stylesheet_test.go`, and
   `go test ./...` passed on the first run this iteration. Three iterations have now
   recorded it; it still deserves a task rather than another line.
+
+---
+
+## Iteration 7 — 2026-09-01 — T007, the documentation half. #121 is BLOCKED.
+
+**Did:** Wrote the reflow into `README.md` (a new *Reading a session on a narrow
+screen* section under "What it does", plus a bullet) and into
+`docs/components.md` (a `### Reflow offer` subsection under Pane viewer, the
+falsified wrap bullet replaced, and the reflow added to the Action controls
+table), and added `TestTheDocumentsNameTheReflowAndTheWayBack` to hold both to
+it. Commit `63f2694`.
+
+**⚠️ T007 is marked `- [!]`, not `- [x]`, and the milestone is NOT complete.**
+The task has two halves and only one of them can be done from inside this loop.
+
+### The blocker, stated exactly
+
+**#121 cannot be closed by any iteration of this loop, now or later.**
+
+- `.claude/settings.json` allows `Bash(gh pr:*)`, `Bash(gh repo:*)` and
+  `Bash(gh auth status)`. It does **not** allow `gh issue` or `gh api`. Measured:
+  `gh issue view 121` was refused as requiring approval.
+- A loop iteration is non-interactive, so the approval prompt cannot be answered.
+- So this iteration could not even *read* #121, let alone close it. Everything
+  said about that issue below is from the plan and from
+  `docs/mobile-open-questions.md`, not from the issue itself. **Do not record it
+  as verified against the issue text.**
+
+Two ways out, and both are the operator's:
+
+1. Close it by hand. The comment is written out below.
+2. Add `Bash(gh issue:*)` to `.claude/settings.json` and re-run. **This widens
+   what an autonomous loop may do to a public artifact of this project**, which
+   is a decision rather than a convenience, and is why no iteration should add it
+   on its own.
+
+**Closing comment for #121, ready to paste:**
+
+> Closing as moot. This issue asked for a wrap/alignment toggle, and the thing it
+> was a toggle for no longer exists.
+>
+> Milestone 16 (#120) moved the wrapping from the stylesheet to the terminal: a
+> pane narrower than its session offers a reflow, the daemon resizes the tmux
+> window, and the program re-wraps its own screen at the column edge. There is no
+> longer a CSS wrap to switch off — `white-space: pre-wrap` and
+> `overflow-wrap: anywhere` were deleted from `web/static/crswd.css`, and
+> `TestNoPaneRuleWrapsTheTerminalsOutput` now refuses their return from any
+> `.pane` rule at any width.
+>
+> Its prerequisite is also settled: Q1 in `docs/mobile-open-questions.md` was
+> ANSWERED on 2026-08-09 and the answer was that the wrapped reading was worth
+> its cost *while a stylesheet was the only thing that could do the wrapping*.
+> That is no longer the case.
+>
+> Building the toggle now would be the second mechanism #120 asked to be rid of,
+> with a control on top of it. The reflow is documented in `README.md` and in
+> `docs/components.md`.
+
+### Learned
+
+- **`docs/mobile-open-questions.md` is a third file with a claim about #121, and
+  whoever closes the issue owes it a line.** Q1 ends *"#121 is unblocked by this
+  answer and is still not evidenced"*, which stops being true the moment the
+  issue is closed as moot. Deliberately not edited here: that file's own
+  mechanism is that only the operator's report changes it, and the issue is not
+  in fact closed yet, so the sentence is still accurate. **Edit it in the same
+  commit as the close, not before.**
+- **A prose anchor can pass by accident, and one of mine did.** The first
+  spelling of the second-reader assertion was `"every reader"`. Breaking the
+  reflow paragraph in `docs/components.md` left the test green, because line 138
+  of that file already says *"would tell every reader something untrue"* about a
+  settings sentence. The anchor is now
+  `"however many people are reading it"` — the *reason* rather than the phrase —
+  and the test comment records why. **Every guard in this repo that greps a
+  document for prose has this failure mode; break it against a reworded document
+  and not only against a deleted one.**
+- **`gosec` G304 fires on `os.ReadFile(loopVariable)` even in a test that only
+  ever opens two constants.** The two existing document tests
+  (`TestTheComponentsDocumentNames…`, `TestTheREADMENamesTheSignInPath`) read a
+  single constant each and never met it. The fix is to read through the constants
+  and put the paths in a slice of structs — **not** `//nolint:gosec`, which this
+  tree does use but which would be a suppression on a file-open for the next hand
+  to copy somewhere it matters.
+- **The Action controls table's count is gone rather than corrected.** It said
+  "The four things the dashboard can change" and "All four also answer 400…"
+  while the tree registered continue, update, restart, settings-edit and logout
+  as well — so "five" would have been the same defect one milestone later. The
+  table is now the enumeration and the sentence carries no number, with one line
+  saying why. The status codes in that table (`200`, `202`) are a different
+  staleness and were left alone; see findings.
+- **`docs/auth-and-sessions.md` was deliberately not touched**, though it is
+  stale in the same way. T007 names two files, AR-008 forbids the drive-by, and
+  its "Four routes let a browser change this host" sentence was already wrong
+  before this milestone started. Finding below.
+- **Green here:** `go build ./...`, `go vet ./...`, `go test ./...` (11 packages
+  ok), `gofmt -l .` names nothing, `golangci-lint` is **v2.12.2** (#26's check)
+  with 0 issues, `go vet` compiles all three tagged suites, and
+  `go test -tags tmux ./internal/tmuxctl ./internal/session` is green.
+
+**Left:** the close of #121, and nothing else. Every code task in the milestone
+is done and the documentation is written.
+
+**Findings — noticed, not fixed:**
+
+- **`docs/auth-and-sessions.md` line 322 says "Four routes let a browser change
+  this host: `POST /dashboard/sessions` and
+  `POST /dashboard/sessions/{id}/{destroy,rename,compact}`", and there are now
+  six.** It also says "ownership, on each of the three that name a session",
+  which is five. It was already stale when spec 013 added `continue`; this
+  milestone made it staler by one. The action-gate *rules* underneath it are all
+  still correct — it is the enumeration that rotted, exactly as
+  `docs/components.md`'s did. **It deserves the same treatment: delete the count,
+  keep the list.** Not done here because T007 names two files and this is a third.
+- **`docs/components.md`'s Action controls table still reports `200`/`202`
+  statuses for four routes that answer `303`.** The Toast section three
+  paragraphs later says so plainly — "every one of those routes answers `303`
+  (`redirectOutcome`)" — so the document contradicts itself. The reflow's row was
+  written to the truth rather than to the table's convention, which makes the
+  disagreement visible instead of joining it. Fixing the other four rows is a
+  one-line-each edit and was outside this task.
+- **`registeredPatterns` in `settings_test.go` is stale by seven routes**,
+  restated from Iterations 4 and 5 because nothing has taken it and this
+  iteration added no route to it either. Third recording. The fix is to derive
+  the list from the mux; it is still the one guard in this repo quietly losing
+  coverage as routes are added, and it still wants a task.
+- **The offer is still computed once, at load, and nothing re-runs it on a
+  rotation** — Iteration 5's finding, unchanged. A phone turned from portrait to
+  landscape keeps a stale offer naming a width the reader no longer has, and the
+  number in the sentence is the number in the hidden field. The documentation
+  written this iteration does not mention it, deliberately: it describes what the
+  control does rather than a bug in when it appears.
+- **`TestQuickstartStory5RateLimit`'s temp-home cleanup race went unexercised
+  again.** This task touched one Go test file in `internal/httpapi` and two
+  markdown documents; `go test ./...` passed on every run. **Four iterations have
+  now recorded it without anyone looking at it**, which is the copy-forward habit
+  Iteration 0 warned about. It should be a task or it should be dropped.

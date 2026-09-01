@@ -183,7 +183,7 @@ must not silently change how their terminal behaves either.
       reflow works, it is a straight regression on a phone. The base rule's
       `white-space: pre` is what the pane returns to.
 
-- [ ] **T007** Document it and settle #121. `README.md` and
+- [!] **T007** Document it and settle #121. `README.md` and
       `docs/components.md`: what a reflow does, that it is per session and not per
       viewer, that it survives a restart, and that it takes the window out of
       automatic sizing until it is put back. Then **#121 — the wrap/alignment
@@ -191,6 +191,15 @@ must not silently change how their terminal behaves either.
       CSS wrap that no longer happens, its own prerequisite (Q1) is answered, and
       T006 removes the thing it was a toggle for. Closing it is the point of the
       task; leaving it open is a second mechanism waiting to be built.
+
+      **Half done, and the remaining half is the operator's.** The documentation
+      shipped in `63f2694`, held by `TestTheDocumentsNameTheReflowAndTheWayBack`.
+      **#121 is still open.** `gh issue` is not on the Bash allowlist in
+      `.claude/settings.json` — only `gh pr`, `gh repo` and `gh auth status` are —
+      and a loop iteration is non-interactive, so no iteration can read that issue
+      or close it. The closing comment is written out ready to paste in
+      `ralph/PROGRESS.md`, Iteration 7. **This is the only thing between milestone
+      16 and `RALPH_COMPLETE`, and re-running the loop cannot clear it.**
 
 ---
 
