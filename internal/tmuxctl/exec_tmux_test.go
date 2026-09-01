@@ -549,6 +549,61 @@ func TestTmuxResizeReflowsWhatIsAlreadyOnScreen(t *testing.T) {
 	}
 }
 
+// TestTmuxListReportsTheWidthOption is milestone 16's half of the round trip, and
+// it exists for the reason the lifetime's does: the unit tests either side prove
+// the daemon writes @crswd-width and that the parser reads the field, and neither
+// can prove tmux *keeps* a user option under that name and renders it in a
+// list-sessions format.
+//
+// It resizes the window as well as setting the option, because on the host those
+// are one fact. A test that set the option alone would pass on a tmux where the
+// resize silently did nothing, which is the state a reader on a phone would be
+// looking at.
+func TestTmuxListReportsTheWidthOption(t *testing.T) {
+	ctx := context.Background()
+	e := newTestExec(t)
+	const (
+		narrowed = "crswd-77777777777777777777777777777777"
+		plain    = "crswd-88888888888888888888888888888888"
+		narrow   = 44
+	)
+
+	dir := t.TempDir()
+	for _, name := range []string{narrowed, plain} {
+		if err := e.New(ctx, name, dir); err != nil {
+			t.Fatalf("New %s: %v", name, err)
+		}
+		if err := e.SetOption(ctx, name, OptionManaged, OptionManagedValue); err != nil {
+			t.Fatalf("SetOption managed on %s: %v", name, err)
+		}
+	}
+	if err := e.Resize(ctx, narrowed, narrow, DefaultRows); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
+	if err := e.SetOption(ctx, narrowed, OptionWidth, strconv.Itoa(narrow)); err != nil {
+		t.Fatalf("SetOption width: %v", err)
+	}
+
+	sessions, err := e.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	seen := make(map[string]SessionInfo, len(sessions))
+	for _, s := range sessions {
+		seen[s.Name] = s
+	}
+	if got, want := seen[narrowed].Width, strconv.Itoa(narrow); got != want {
+		t.Errorf("Width = %q, want %q — this tmux may not keep or render %s", got, want, OptionWidth)
+	}
+	// A session nobody has reflowed carries no option at all, which is what every
+	// session predating this milestone is. Absence has to survive the round trip
+	// as absence: read as a width, it would tell the operator this daemon had
+	// taken a window out of automatic sizing when it had not.
+	if got := seen[plain].Width; got != "" {
+		t.Errorf("Width = %q for a session nobody reflowed, want empty", got)
+	}
+}
+
 // hasLine reports whether the captured screen carries want as a whole line.
 // tmux pads nothing on the right, but a comparison against a trimmed line is
 // what makes "the break landed exactly at column 44" assertable rather than

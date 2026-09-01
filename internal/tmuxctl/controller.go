@@ -149,6 +149,29 @@ const (
 	// separates list-sessions fields nor a newline that would end a row early.
 	OptionLifetime = "@crswd-lifetime"
 
+	// OptionWidth carries how many columns this daemon last reflowed the session
+	// to (#120), and it is here for OptionLifetime's reason: adoption after a
+	// restart has to restore a fact rather than guess a default.
+	//
+	// **It is deliberately not #{window_width}**, which tmux would also answer on
+	// the same row. That is what the window *is*; this is what this daemon *made
+	// it*, and they are different facts. A resize takes the window permanently
+	// out of tmux's automatic sizing (measured: window-size reads `latest` before
+	// the call and `manual` after), so the presence of this option is the only
+	// record that a session stopped following a terminal attached on the host —
+	// which is the sentence the operator is owed, and which a width alone cannot
+	// carry.
+	//
+	// Absent means nobody has reflowed the session: every session that predates
+	// milestone 16, and every session since that nobody has narrowed. Such a
+	// session is 80 columns, which is config.DefaultPaneWidth and is tmux's own
+	// width for a window no client has attached.
+	//
+	// Raw, like OptionName and OptionStart. It is written from strconv.Itoa of a
+	// clamped int, so it is decimal digits and can carry neither the "|" that
+	// separates list-sessions fields nor a newline that would end a row early.
+	OptionWidth = "@crswd-width"
+
 	// OptionConversation carries the Claude conversation identifier this daemon
 	// minted for the session, so a restarted daemon can resume the conversation
 	// rather than start a new one (spec 012).
@@ -221,6 +244,16 @@ type SessionInfo struct {
 	// Empty for a session created before OptionLifetime existed, which every
 	// caller must read as "unknown" and none as "none".
 	Lifetime string
+
+	// Width is OptionWidth read back verbatim — "" or a decimal column count. A
+	// string for the reason Lifetime is one: this package executes tmux and
+	// reports what it said, and a parse here would be a second place deciding
+	// what a width means.
+	//
+	// Empty for a session nobody has reflowed, which every caller must read as
+	// "the width tmux gives a window no client has attached" and none as zero —
+	// a zero-column terminal is not a thing this daemon can have produced.
+	Width string
 
 	// ConversationID is OptionConversation read back, and empty for a session
 	// started before it existed or whose row could not be trusted to carry it —

@@ -71,7 +71,7 @@ func TestFakeRecordsExactArgv(t *testing.T) {
 		{Op: tmuxctl.OpResize, Argv: []string{"tmux", "resize-window", "-t", "=" + fakeName + ":", "-x", "44", "-y", "24"}},
 		{Op: tmuxctl.OpKill, Argv: []string{"tmux", "kill-session", "-t", "=" + fakeName}},
 		{Op: tmuxctl.OpHas, Argv: []string{"tmux", "has-session", "-t", "=" + fakeName}},
-		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}|#{@crswd-lifetime}|#{@crswd-conversation}|#{?#{@crswd-binary},#{==:#{pane_current_command},#{@crswd-binary}},?}"}},
+		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}|#{@crswd-lifetime}|#{@crswd-width}|#{@crswd-conversation}|#{?#{@crswd-binary},#{==:#{pane_current_command},#{@crswd-binary}},?}"}},
 	}
 
 	got := f.Calls()

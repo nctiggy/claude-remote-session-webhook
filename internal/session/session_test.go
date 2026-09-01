@@ -905,6 +905,81 @@ func TestStoreTouch(t *testing.T) {
 	})
 }
 
+// #120: the width a reflow left the window at is a field of the record, written
+// only by the store and only by this method.
+func TestStoreSetWidth(t *testing.T) {
+	t.Parallel()
+
+	id := testID("a")
+
+	t.Run("records the width and touches nothing else", func(t *testing.T) {
+		t.Parallel()
+
+		before := newTestSession(id, auth.CallerOperator)
+		st := storeWith(t, before)
+
+		if err := st.SetWidth(id, 44); err != nil {
+			t.Fatalf("SetWidth() unexpected error: %v", err)
+		}
+		got, err := st.Get(id, auth.CallerOperator)
+		if err != nil {
+			t.Fatalf("Get() unexpected error: %v", err)
+		}
+		if got.Width != 44 {
+			t.Errorf("Width = %d, want 44", got.Width)
+		}
+		if got.Columns() != 44 {
+			t.Errorf("Columns() = %d, want 44", got.Columns())
+		}
+		// A reflow is not driving: nothing is delivered into the pane, so the
+		// clock a card reports the session was last driven by must not move.
+		if !got.LastActivity.Equal(before.LastActivity) {
+			t.Errorf("SetWidth moved LastActivity to %v; a reflow drives nothing", got.LastActivity)
+		}
+		if !got.AbsoluteDeadline().Equal(contractExpiresAt) {
+			t.Errorf("AbsoluteDeadline() = %v, want %v", got.AbsoluteDeadline(), contractExpiresAt)
+		}
+	})
+
+	t.Run("refuses a dead record", func(t *testing.T) {
+		t.Parallel()
+
+		st := storeWith(t, newTestSession(id, auth.CallerOperator))
+		if err := st.SetState(id, StateDead); err != nil {
+			t.Fatalf("SetState(dead) unexpected error: %v", err)
+		}
+		if err := st.SetWidth(id, 44); !errors.Is(err, ErrSessionDead) {
+			t.Fatalf("SetWidth() error = %v, want one wrapping ErrSessionDead", err)
+		}
+	})
+
+	t.Run("refuses an unknown id", func(t *testing.T) {
+		t.Parallel()
+
+		st := NewStore()
+		if err := st.SetWidth(testID("b"), 44); !errors.Is(err, ErrSessionNotFound) {
+			t.Fatalf("SetWidth() error = %v, want one wrapping ErrSessionNotFound", err)
+		}
+	})
+}
+
+// TestColumnsIsTmuxsDefaultUntilSomethingReflows states the zero-means-inherited
+// rule for the field milestone 16 adds, in the one place it is expressed.
+//
+// **Must fail when** Columns starts reading the raw field, which would describe
+// every session predating this milestone — and every session since that nobody
+// has reflowed — as zero columns wide.
+func TestColumnsIsTmuxsDefaultUntilSomethingReflows(t *testing.T) {
+	t.Parallel()
+
+	if got := (Session{}).Columns(); got != config.DefaultPaneWidth {
+		t.Errorf("a session nobody has reflowed reports %d columns, want %d", got, config.DefaultPaneWidth)
+	}
+	if got := (Session{Width: 44}).Columns(); got != 44 {
+		t.Errorf("a session reflowed to 44 reports %d columns", got)
+	}
+}
+
 // FR-020: destroying a session clears its record and its stored credential hash.
 func TestStoreDeleteClearsTheRecord(t *testing.T) {
 	t.Parallel()

@@ -326,11 +326,11 @@ func parseSessions(stdout string) ([]SessionInfo, error) {
 	rows := strings.Split(trimmed, "\n")
 	sessions := make([]SessionInfo, 0, len(rows))
 	for _, row := range rows {
-		// Seven fields, and only the first may contain the separator: a session
-		// name is whatever the operator called it, while the six after it are
-		// digits, a flag, a validated label, base64, a validated command name,
-		// and a duration or `never`. So the last six splits are found from the
-		// right and everything before them is the name.
+		// Only the first field may contain the separator: a session name is
+		// whatever the operator called it, while everything after it is digits, a
+		// flag, a validated label, base64, a validated command name, a duration
+		// or `never`, and a column count. So every split is found from the right
+		// and whatever is left over is the name.
 		//
 		// The workdir is base64 for exactly this reason (#72). A path may contain
 		// "|", and a raw one here would make the field boundaries ambiguous from
@@ -362,6 +362,13 @@ func parseSessions(stdout string) ([]SessionInfo, error) {
 			conversation = ""
 		}
 
+		// Milestone 16's field, between spec 012's pair and the lifetime. It is
+		// carried verbatim like the lifetime is: what a width means belongs to
+		// internal/session, and a parse here would be a second place deciding it.
+		rest, width, ok := cutLast(rest, "|")
+		if !ok {
+			return nil, fmt.Errorf("tmux list-sessions: unreadable row %q", row)
+		}
 		rest, lifetime, ok := cutLast(rest, "|")
 		if !ok {
 			return nil, fmt.Errorf("tmux list-sessions: unreadable row %q", row)
@@ -421,6 +428,10 @@ func parseSessions(stdout string) ([]SessionInfo, error) {
 			// failed over it would cost the adoption of every session on the
 			// host, which is never the cheaper loss.
 			Lifetime: lifetime,
+			// Verbatim for the lifetime's reason, and empty for a session nobody
+			// has reflowed — which is a session at tmux's own width, never a
+			// session zero columns wide. internal/session reads the absence.
+			Width: width,
 			// Empty for a session started before the option existed, and empty
 			// again for a row whose conversation field could not be trusted.
 			// Both mean the same thing to every caller: unknown.

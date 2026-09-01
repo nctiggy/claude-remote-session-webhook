@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -208,6 +209,23 @@ type Session struct {
 	// so there is one expression of it.
 	Lifetime time.Duration
 
+	// Width is how many columns this session's window has been reflowed to
+	// (#120). Zero means nobody has reflowed it, which is every session that
+	// predates milestone 16 and every session since that nobody has narrowed —
+	// read it through Columns rather than comparing it against zero here.
+	//
+	// Zero is kept distinct from "80" deliberately, though both render into the
+	// same 80-column window. A reflow takes the window permanently out of tmux's
+	// automatic sizing, so this field is also the daemon's only record that the
+	// session stopped following a terminal attached on the host, and that is the
+	// sentence #120 requires the operator be told before they take one.
+	//
+	// **It is durable**, written onto the tmux session as @crswd-width and read
+	// back by Adopt, for the reason Lifetime is: a restart that lost it would put
+	// a record saying 80 in front of a window that is 44, which is the milestone
+	// 15 defect wearing a different field.
+	Width int
+
 	// StartCommand is the name — never the command line — of the command typed
 	// into this session's shell (#38). The name is what a card shows, what the
 	// audit trail records, and what a restart resolves again; the line itself is
@@ -366,6 +384,54 @@ func (s Session) AbsoluteDeadline() time.Time {
 // wherever it is asked about. A method named for the fact makes that possible;
 // a `< 0` at each call site does not.
 func (s Session) LifetimeDisabled() bool { return s.Lifetime < 0 }
+
+// Columns is how wide this session's window is (#120).
+//
+// Zero means nobody has reflowed it, and what such a session is, is tmux's own
+// width for a window no client has attached — the same zero-means-inherited rule
+// AbsoluteDeadline applies to Lifetime, expressed once here so that a caller
+// wanting only the number does not have to know the rule.
+func (s Session) Columns() int {
+	if s.Width == 0 {
+		return config.DefaultPaneWidth
+	}
+	return s.Width
+}
+
+// encodeWidth renders a session's width for the host to hold
+// (tmuxctl.OptionWidth).
+//
+// Empty for a session nobody has reflowed, so that never-set and set-to-nothing
+// read back the same — encodeLifetime's shape, minus its word, because a width
+// has no `never` to spell.
+//
+// Clamped on the way out as well as on the way in. This is the value a restart
+// will believe, and a width the operator could not have asked for has no business
+// surviving one.
+func encodeWidth(cols int) string {
+	if cols == 0 {
+		return ""
+	}
+	return strconv.Itoa(config.ClampPaneWidth(cols))
+}
+
+// decodeWidth reads back what encodeWidth wrote.
+//
+// Absent is zero rather than the default width spelled out, because the two say
+// different things: "80 because nothing has touched this window" and "80 because
+// somebody reflowed it to 80" differ by whether tmux is still sizing it
+// automatically, which is the thing the operator has to be told. Columns
+// collapses them again for anything that only wants the number.
+//
+// **Nothing here fails**, for decodeLifetime's reason and #120's: a width is
+// advisory, so an unreadable one is defaulted by config.ParsePaneWidth rather
+// than costing the session its adoption.
+func decodeWidth(raw string) int {
+	if strings.TrimSpace(raw) == "" {
+		return 0
+	}
+	return config.ParsePaneWidth(raw)
+}
 
 // neverLifetime is the negative this package writes when a lifetime has been
 // switched off. Any negative reads as off (LifetimeDisabled); this is the one
@@ -900,6 +966,32 @@ func (st *Store) SetName(id, name string) error {
 		return fmt.Errorf("set name: %w", ErrSessionDead)
 	}
 	s.Name = name
+	st.byID[id] = s
+	return nil
+}
+
+// SetWidth records the width a reflow left this session's window at (#120), and
+// writes no other field.
+//
+// The value is the one Manager.Reflow sent to tmux, already clamped, and this
+// deliberately does not clamp it again: the record must say what the window was
+// actually made, and a second clamp here could only make the two disagree.
+//
+// A dead session is refused, as SetName and Touch refuse one: its record is
+// waiting to be collected, and a width written onto it would describe a window
+// that is already gone.
+func (st *Store) SetWidth(id string, cols int) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	s, ok := st.byID[id]
+	if !ok {
+		return fmt.Errorf("set width: %w", ErrSessionNotFound)
+	}
+	if s.State == StateDead {
+		return fmt.Errorf("set width: %w", ErrSessionDead)
+	}
+	s.Width = cols
 	st.byID[id] = s
 	return nil
 }

@@ -105,9 +105,16 @@ const (
 // tmux's own size for a window no client has ever attached to, which is what
 // every session this daemon starts is until something resizes it (measured:
 // 80x24 on tmux 3.4).
+//
+// Only the height is exported, and the asymmetry is the point. resize-window
+// names both axes while #120 is about columns alone, so a caller reflowing a
+// session has to pass back the height the session already has — this one. The
+// width has a caller outside this package too, but it is a *policy* there
+// (config.DefaultPaneWidth, beside the bounds that clamp it) rather than the
+// argument to an exec.
 const (
 	tmuxDefaultColumns = 80
-	tmuxDefaultRows    = 24
+	DefaultRows        = 24
 )
 
 // clampDimension brings a dimension inside what tmux accepts. It never fails:
@@ -170,16 +177,21 @@ func argvReconcileEnv() []string {
 //	0  it is not
 //
 // Both new fields therefore have alphabets this daemon writes and can state.
+//
+// Milestone 16 puts @crswd-width between the lifetime and spec 012's pair, so
+// the row stays "everything this daemon wrote, then the one thing tmux computed"
+// and the comment above about the last two fields stays true. Digits only, so it
+// cannot carry the separator either.
 func argvList() []string {
 	live := "#{?#{" + OptionBinary + "},#{==:#{pane_current_command},#{" + OptionBinary + "}},?}"
-	return []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{" + OptionManaged + "}|#{" + OptionName + "}|#{" + OptionWorkDir + "}|#{" + OptionStart + "}|#{" + OptionLifetime + "}|#{" + OptionConversation + "}|" + live}
+	return []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{" + OptionManaged + "}|#{" + OptionName + "}|#{" + OptionWorkDir + "}|#{" + OptionStart + "}|#{" + OptionLifetime + "}|#{" + OptionWidth + "}|#{" + OptionConversation + "}|" + live}
 }
 
 // listFieldCount is the number of "|"-separated fields argvList produces. The
 // format string and parseSessions move together or the parser silently reads
 // one field into another's name; TestListFormatFieldCount is what holds them
 // together, and it is the test the comment in parseSessions has always promised.
-const listFieldCount = 9
+const listFieldCount = 10
 
 // fakeAliveCommand is what a seeded or created fake session reports as its pane
 // command until a test says otherwise. It is the binary every configured start
@@ -444,6 +456,11 @@ func (f *Fake) List(_ context.Context) ([]SessionInfo, error) {
 			// nothing would let every adoption test pass against a daemon whose
 			// never-expiring sessions come back mortal.
 			Lifetime: s.options[OptionLifetime],
+			// And again for milestone 16: a fake that stored the width and
+			// returned nothing would let every adoption test pass against a
+			// daemon whose reflowed sessions come back describing themselves as
+			// 80 columns while their windows are 44.
+			Width: s.options[OptionWidth],
 			// And again for spec 012: a fake that stored the conversation and
 			// returned nothing would let every revival test pass against a daemon
 			// that resumes nothing.
@@ -496,6 +513,16 @@ func (f *Fake) Seed(info SessionInfo) {
 	}
 	if info.Lifetime != "" {
 		s.options[OptionLifetime] = info.Lifetime
+	}
+	// A seeded width sets the window too, because on the host those are one
+	// fact: a survivor carrying @crswd-width=44 is a survivor whose window is 44
+	// columns wide. Seeding the option alone would let a test assert a record the
+	// daemon restored while the size it describes was never there.
+	if info.Width != "" {
+		s.options[OptionWidth] = info.Width
+		if cols, err := strconv.Atoi(info.Width); err == nil {
+			s.cols, s.rows = clampDimension(cols), DefaultRows
+		}
 	}
 	if info.WorkDir != "" {
 		s.workDir = info.WorkDir
@@ -602,7 +629,7 @@ func (f *Fake) Size(name string) (cols, rows int, ok bool) {
 		return 0, 0, false
 	}
 	if s.cols == 0 || s.rows == 0 {
-		return tmuxDefaultColumns, tmuxDefaultRows, true
+		return tmuxDefaultColumns, DefaultRows, true
 	}
 	return s.cols, s.rows, true
 }
