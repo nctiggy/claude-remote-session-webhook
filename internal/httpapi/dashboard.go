@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 )
 
@@ -542,6 +543,23 @@ func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
 	if !minted {
 		return
 	}
+
+	// The pane's own offer (#120, T005), filled after the mint for the reason the
+	// card's row is: a control is rendered from the token that authorises it, so a
+	// page that could mint none offers no reflow rather than one certain to be
+	// refused.
+	//
+	// All four come off the record and the daemon's own configuration, and none of
+	// them from the request. Columns is the width the session really has,
+	// MinColumns is the floor the route will apply to whatever a browser reports,
+	// and Target is the window's name for the sentence that says how to put
+	// automatic sizing back — this daemon takes it away and nothing here restores
+	// it, so naming the way back is the whole of what the operator is owed before
+	// they press.
+	pane.Columns = live.Columns()
+	pane.MinColumns = config.MinPaneWidth
+	pane.Target = live.PaneTarget()
+	pane.PageToken = token
 
 	s.renderPage(w, r, http.StatusOK, "session", sessionPageView{
 		Operator: operator,

@@ -27,6 +27,7 @@ import (
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 	"github.com/nctiggy/claude-remote-session-webhook/web"
 )
 
@@ -1731,6 +1732,136 @@ func TestThePaneSaysWhenTheWatchedSessionEnded(t *testing.T) {
 	// absence is — the two have to be the same decision.
 	if unread := renderComponent(t, "pane", paneView{ID: card.ID, Unread: true}); strings.Contains(unread, "data-ended") {
 		t.Errorf("a pane that opens no stream carries an end note anyway:\n%s", unread)
+	}
+}
+
+// reflowablePane is the pane as the session page really renders it once there is
+// something to offer: a screen, the width the session has, the floor the daemon
+// will act above, the window's own name, and the token the offer submits.
+func reflowablePane() paneView {
+	return paneView{
+		ID:         ownedCard().ID,
+		Text:       "$ go test ./...",
+		Columns:    config.DefaultPaneWidth,
+		MinColumns: config.MinPaneWidth,
+		Target:     tmuxctl.PaneTarget("crswd-" + ownedCard().ID),
+		PageToken:  testCardToken,
+	}
+}
+
+// TestThePaneOffersTheReflowOnlyBehindAToken is the card's own discipline held
+// at the one control this component carries (#120, T005).
+//
+// A reflow changes the session for every reader at once, so it is an action
+// route behind the action gate — and a form the gate is certain to refuse is
+// worse than no form, because an operator cannot tell the two apart until they
+// have pressed it in front of somebody else's screen.
+//
+// The unread direction is the pane's own rule rather than the card's: a screen
+// nobody could read carries no stream, and offering to re-wrap output that
+// cannot be shown is an action with nothing to observe.
+//
+// **Must fail when** the offer renders without a token, or renders beside a
+// screen the host would not give up.
+func TestThePaneOffersTheReflowOnlyBehindAToken(t *testing.T) {
+	t.Parallel()
+
+	full := reflowablePane()
+	offered := renderComponent(t, "pane", full)
+
+	// The address off the pattern the server registers rather than spelled again
+	// here, exactly as the stream's is: a renamed route otherwise leaves this test
+	// green and the control posting into a 404.
+	want := strings.Replace(strings.TrimPrefix(patternDashboardReflow, "POST "), "{"+pathValueID+"}", full.ID, 1)
+	form := regexp.MustCompile(`(?s)<form[^>]*action="` + regexp.QuoteMeta(want) + `".*?</form>`).FindString(offered)
+	if form == "" {
+		t.Fatalf("the pane offers no reflow posting to %s:\n%s", want, offered)
+	}
+	for required, why := range map[string]string{
+		`name="crsw_page_token"`:     "the gate refuses a form with no token, uniformly and with no way for the page to say why",
+		`name="confirm" value="yes"`: "the confirming step every action on this door compares rather than parses",
+		`name="columns"`:             "the width the browser measured, and the only value this route reads from the caller",
+	} {
+		if !strings.Contains(form, required) {
+			t.Errorf("the reflow offer carries no %s: %s\n%s", required, why, form)
+		}
+	}
+
+	// No token, no offer. The same rule the card's action row follows, and the
+	// reason the zero value of this component is the pane that shipped before the
+	// reflow existed.
+	anonymous := full
+	anonymous.PageToken = ""
+	if rendered := renderComponent(t, "pane", anonymous); strings.Contains(rendered, "/reflow") {
+		t.Errorf("a pane built with no page token offers a reflow anyway:\n%s", rendered)
+	}
+
+	// And a screen that could not be read offers nothing either.
+	unread := full
+	unread.Unread, unread.Text = true, ""
+	if rendered := renderComponent(t, "pane", unread); strings.Contains(rendered, "/reflow") {
+		t.Errorf("a pane saying the screen could not be read offers to re-wrap it anyway:\n%s", rendered)
+	}
+}
+
+// TestTheReflowOfferShipsHiddenAndSaysWhatItCosts is the copy half of T005, and
+// every claim in it is one the plan for milestone 16 fixes in writing.
+//
+// Hidden is the progressive-enhancement rule rather than a presentation choice.
+// What reveals this control is a measurement only a browser can make, so a page
+// with no script running has nothing to compare and nothing honest to offer —
+// and the pane above it is untouched either way, which is #121's rule that a
+// control must never become the thing that makes the pane function.
+//
+// The sentence has to name both widths because the operator is being asked to
+// narrow a window for readers who are not in the room, and it has to carry the
+// way back because tmux flips window-size to manual on the first resize and
+// nothing in this daemon sets it back. A warning delivered after the press is
+// the settled outcome's job (outcome.go); this is the one before it.
+//
+// **Must fail when** the offer renders visible, names one width, or leaves the
+// operator with no way back to automatic sizing.
+func TestTheReflowOfferShipsHiddenAndSaysWhatItCosts(t *testing.T) {
+	t.Parallel()
+
+	full := reflowablePane()
+	offered := renderComponent(t, "pane", full)
+
+	opener := regexp.MustCompile(`<form[^>]*/reflow"[^>]*>`).FindString(offered)
+	if opener == "" {
+		t.Fatalf("the pane opens no reflow form at all:\n%s", offered)
+	}
+	if !strings.Contains(opener, "hidden") {
+		t.Errorf("the reflow offer ships visible (%q); with no script there is no measurement, so there is no honest offer to make", opener)
+	}
+
+	// The field is empty in the markup. What fills it is the code that reveals the
+	// form, so a visible offer is one carrying the width its own sentence names.
+	if !strings.Contains(offered, `name="columns" value=""`) {
+		t.Errorf("the reflow offer ships a width nobody measured; the field is filled by the reveal or not at all:\n%s", offered)
+	}
+
+	sentence := regexp.MustCompile(`data-reflow-offer="([^"]*)"`).FindStringSubmatch(offered)
+	if sentence == nil {
+		t.Fatalf("the offer carries no copy for the reveal to fill:\n%s", offered)
+	}
+	said := sentence[1]
+	for required, why := range map[string]string{
+		strconv.Itoa(full.Columns): "the width the session is now — half of what makes the offer reviewable before it is taken",
+		"{n}":                      "the width the reader has, which only the browser can measure and only the template may word",
+		"window-size latest":       "the way back to automatic sizing, which nothing in this daemon does for the operator",
+		full.Target:                "the window the operator has to name to put it back",
+	} {
+		if !strings.Contains(said, required) {
+			t.Errorf("the reflow offer never says %q: %s\n%s", required, why, said)
+		}
+	}
+
+	// The ⚠️ the milestone plan requires the operator be told *before* they press:
+	// a session this daemon reflows stops following a terminal attached on the
+	// host, which is a change to how their own terminal behaves.
+	if !strings.Contains(said, "attached on the host") {
+		t.Errorf("the reflow offer never says the session stops sizing itself to a terminal on the host:\n%s", said)
 	}
 }
 

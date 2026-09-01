@@ -1921,3 +1921,135 @@ const waitOutTheUpdate = () => {
  * session, where the list is that session's own directory's and the operator has
  * already seen what they started.
  */
+
+/*
+ * The reflow offer (#120, T005).
+ *
+ * This is the one measurement in the whole dashboard that only a browser can
+ * make: how many terminal columns the reader actually has. The daemon knows how
+ * wide the session is and knows nothing whatever about the screen it is being
+ * read on, so the offer beside the pane is rendered hidden and revealed here, by
+ * the code that worked out the number it names.
+ *
+ * **It offers and never takes.** Nothing below submits anything. A tmux window
+ * has one size however many people are reading it, so a reflow changes the
+ * session for every reader at once — resizing on view was rejected in the
+ * milestone plan for being hostile to the second reader, and a script that
+ * posted this form by itself would be that decision reintroduced. What is
+ * revealed is a form; what submits it is a person.
+ *
+ * With this file absent the form stays hidden and the pane is the pane that
+ * shipped before it. That is the whole of the progressive-enhancement rule
+ * (#121): the control is an offer the page cannot make without a measurement,
+ * not a thing the pane needs in order to work.
+ *
+ * The copy is the template's and the numbers are filled into it, as the fleet's
+ * note and the picker's status line already are. The bounds are the template's
+ * too: the floor rides in a data- attribute rather than being spelled here, so
+ * config keeps its one definition of what this daemon will act on and a copy in
+ * this file cannot go on offering a width the daemon stopped accepting.
+ */
+(() => {
+  'use strict';
+
+  /*
+   * How many cells to measure across.
+   *
+   * One glyph's advance is a fraction of a pixel and every engine rounds what it
+   * reports somewhere, so a single character measured on its own is out by
+   * enough to cost a column or two by the right-hand edge of a phone. Measuring
+   * a run and dividing keeps the error where it cannot change the answer.
+   */
+  const REFLOW_CELLS = 100;
+
+  /*
+   * One character's advance in the pane's own font.
+   *
+   * A canvas rather than an element inserted into the page: what is inside the
+   * pane is a text node the host wrote, and nothing here is going anywhere near
+   * it — a measuring node in that element would be markup this dashboard put
+   * into the one place it renders nothing but text. Nothing is added to the
+   * document at all.
+   *
+   * The font is read off the element rather than spelled here, so the stylesheet
+   * stays the one place the pane's type is decided. font-size and font-family
+   * rather than the `font` shorthand, which not every engine reports for a rule
+   * written with custom properties — an empty shorthand measures the canvas
+   * default and would answer confidently in the wrong font.
+   */
+  const cellWidth = (pane) => {
+    const canvas = document.createElement('canvas');
+    const ink = canvas.getContext ? canvas.getContext('2d') : null;
+    if (!ink) {
+      return 0;
+    }
+    const style = window.getComputedStyle(pane);
+    ink.font = `${style.fontSize} ${style.fontFamily}`;
+    return ink.measureText('0'.repeat(REFLOW_CELLS)).width / REFLOW_CELLS;
+  };
+
+  /*
+   * How many columns of this session the reader can see at once.
+   *
+   * clientWidth is the padding box without the scrollbar, which is what a reader
+   * really has rather than what the element was asked to be; the padding is this
+   * element's own and is taken off it rather than guessed at from a token.
+   *
+   * Zero is the answer to anything that could not be measured — a pane with no
+   * layout, a font with no metrics — and it is a refusal rather than a fallback:
+   * the caller offers nothing at all rather than naming a number it does not
+   * believe.
+   */
+  const columnsOf = (pane) => {
+    const style = window.getComputedStyle(pane);
+    const inside =
+      pane.clientWidth -
+      parseFloat(style.paddingLeft) -
+      parseFloat(style.paddingRight);
+    const cell = cellWidth(pane);
+    if (!(cell > 0) || !(inside > 0)) {
+      return 0;
+    }
+    return Math.floor(inside / cell);
+  };
+
+  /*
+   * Reveal the offer, or leave it hidden.
+   *
+   * Every comparison is written so that a value that is not a number fails
+   * closed. A missing attribute reads as NaN and every `>` and `<` against one
+   * is false, so the form stays hidden rather than being revealed by an
+   * arithmetic accident — which for this control would be a screen narrowing
+   * under a second reader because the markup had drifted.
+   *
+   * Narrower than the session is the condition the milestone plan fixes: an
+   * offer to a reader who already sees the whole width is an invitation to
+   * damage the session for everyone else. Wide enough for the daemon to honour
+   * is the second half of the same honesty — below the floor the route would
+   * clamp, and the sentence would have named a width nobody was going to get.
+   *
+   * The field is filled before the form is shown, so a visible form is one
+   * carrying the number in its own sentence.
+   */
+  const offer = (form) => {
+    const pane = document.getElementById(form.dataset.reflow);
+    const note = form.querySelector('[data-reflow-offer]');
+    const field = form.querySelector('input[name="columns"]');
+    if (!pane || !note || !field || !note.dataset.reflowOffer) {
+      return;
+    }
+
+    const session = Number(form.dataset.reflowColumns);
+    const floor = Number(form.dataset.reflowFloor);
+    const fits = columnsOf(pane);
+    if (!(fits >= floor) || !(fits < session)) {
+      return;
+    }
+
+    field.value = String(fits);
+    note.textContent = note.dataset.reflowOffer.split('{n}').join(fits);
+    form.hidden = false;
+  };
+
+  document.querySelectorAll('form[data-reflow]').forEach(offer);
+})();

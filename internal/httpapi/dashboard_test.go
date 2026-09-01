@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -969,6 +970,62 @@ func TestTheSessionPageRendersTheCardAndTheScreen(t *testing.T) {
 		if strings.Contains(strings.ToLower(page), offer) {
 			t.Errorf("the session page wires a control with %q; this door's actions are plain form posts:\n%s", offer, page)
 		}
+	}
+}
+
+// TestTheSessionPageOffersTheReflowWithThisSessionsOwnFacts is T005 at the one
+// place the milestone can still be lost: the page.
+//
+// Everything under #120 was reachable only from a test until the route shipped,
+// and the route is reachable only from a page that renders a form to it. The
+// plan's own convention is that a task is not done when the code exists but when
+// something calls it — so this asserts the daemon's numbers arrive in the
+// markup, not that a component would render them if handed some.
+//
+// Both widths are the session's rather than the caller's, and the difference is
+// the whole of the record: a session reflowed to 44 offers 44 as what it *is*,
+// and a session nobody has touched offers 80 — which is tmux's width for a window
+// no client attached, not a number this page chose.
+//
+// **Must fail when** the page renders the offer against a default instead of the
+// session's own width, or names a window other than this session's in the way
+// back.
+func TestTheSessionPageOffersTheReflowWithThisSessionsOwnFacts(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	narrowed, _ := f.fixture.plant(t, session.Session{Name: "already narrow", WorkDir: f.fixture.repo, Width: 44})
+	f.fixture.tmux.SetPane(narrowed.TmuxName(), "$ go test ./...")
+
+	page := f.viewOf(t, narrowed.ID).Body.String()
+	form := regexp.MustCompile(`<form[^>]*/reflow"[^>]*>`).FindString(page)
+	if form == "" {
+		t.Fatalf("the session page offers no reflow at all, so nothing a browser can reach drives the route:\n%s", page)
+	}
+	for _, want := range []string{
+		`data-reflow-columns="44"`,
+		`data-reflow-floor="` + strconv.Itoa(config.MinPaneWidth) + `"`,
+		`data-reflow="pane-` + narrowed.ID + `"`,
+	} {
+		if !strings.Contains(form, want) {
+			t.Errorf("the offer on the session page carries no %s:\n%s", want, form)
+		}
+	}
+	// The way back names this session's window and not a shape of one. An operator
+	// who cannot name the window cannot put automatic sizing back, and a way back
+	// nobody can find is not one.
+	if !strings.Contains(page, narrowed.PaneTarget()) {
+		t.Errorf("the offer never names this session's own window (%s), so the way back is a command nobody can run:\n%s", narrowed.PaneTarget(), form)
+	}
+
+	// And the session nobody reflowed reports the width tmux gave it rather than
+	// the zero its record holds — the distinction Session.Columns exists for.
+	plain, _ := f.fixture.plant(t, session.Session{Name: "never reflowed", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(plain.TmuxName(), "$ go test ./...")
+
+	untouched := regexp.MustCompile(`<form[^>]*/reflow"[^>]*>`).FindString(f.viewOf(t, plain.ID).Body.String())
+	if want := `data-reflow-columns="` + strconv.Itoa(config.DefaultPaneWidth) + `"`; !strings.Contains(untouched, want) {
+		t.Errorf("a session nobody has reflowed offers %q; want %s — a record holding zero is a fact about automatic sizing, never a width", untouched, want)
 	}
 }
 

@@ -55,7 +55,61 @@
   accessibility floor asks of anything an operator has to scroll; the focus ring
   is the design system's own. It is deliberately not a live region: announcing
   every terminal line is unusable, and docs/components.md says so.
-*/}}{{ if .Unread }}<p class="pane-note">The screen could not be read from the host just now. Nothing was changed by asking for it.</p>{{ else }}<pre class="pane" id="pane-{{ .ID }}" tabindex="0" data-stream="/sessions/{{ .ID }}/stream" data-ended="pane-ended-{{ .ID }}" data-stalled="pane-stalled-{{ .ID }}">{{ .Text }}</pre>
+
+  The reflow offer (#120, T005) is the one control this component carries, and it
+  is docs/components.md's Action controls in that document's own shape: a form
+  posting to a real route, the page token inside it, the confirming field the
+  destroy and the continue send, and a plain `.button`. It is not a second
+  component and it wears no class of its own — the restart form on the settings
+  page is the precedent, and a further spelling for a control is the defect that
+  document exists to prevent.
+
+  **The daemon never acts on a viewer's width by itself.** A tmux window has one
+  size however many people are reading it, so a reflow changes the session for
+  every reader at once; the browser reports what it fits and somebody presses.
+  Resizing on view was rejected in the milestone plan for exactly that reason.
+
+  It ships `hidden` and stays hidden with no script running, which is the whole
+  of the progressive-enhancement rule here rather than a degradation of it: what
+  reveals the control is a measurement only a browser can make, so a page that
+  made none has nothing to compare and nothing honest to offer. The pane above it
+  is untouched by any of this — the baseline is a pane that works, and #121's
+  rule is that a control must never become the thing that makes it function.
+
+  What the offer says is the template's, filled by the script with the one number
+  the daemon cannot know — the same arrangement `.combo-status` and the fleet's
+  own note use, and for the same reason: what the interface says to a person
+  belongs here, and a script that authored its own prose would be a second place
+  to look for it. It names both widths because the operator is being asked to
+  narrow a window for readers who are not in the room.
+
+  It carries the ⚠️ before the press rather than after it. tmux flips
+  `window-size` from `latest` to `manual` on the first resize and nothing sets it
+  back, so a session this daemon reflows stops sizing itself to a terminal the
+  operator later attaches on the host — a change to how their own terminal
+  behaves, which this daemon does not make silently. The way back is the command
+  in that sentence, rendered as text and never run, on the same terms as the diff
+  the settings page prints between two unit files.
+
+  The columns field ships empty and is filled by the same code that reveals the
+  form, so a form that is visible is a form carrying the width it names. Its
+  route clamps regardless, three times over — an advisory number from a browser
+  is never trusted for being in the markup.
+
+  It sits above the screen rather than below it, which is the rename's and the
+  continue's argument on the session page applied inside this component: the pane
+  is a fixed-height scroll container holding a whole screen, so a control beneath
+  it is one an operator scrolls past a terminal to reach — and on the narrow
+  viewport where this offer is the only one that ever appears, that terminal is
+  most of the display.
+
+  A screen nobody could read carries no offer, for the reason it carries no
+  stream: a reflow whose result cannot be shown is an action with nothing to
+  observe, and the operator reloads instead.
+*/}}{{ if .Unread }}<p class="pane-note">The screen could not be read from the host just now. Nothing was changed by asking for it.</p>{{ else }}{{ with .PageToken }}<form method="post" action="/dashboard/sessions/{{ $.ID }}/reflow" data-reflow="pane-{{ $.ID }}" data-reflow-columns="{{ $.Columns }}" data-reflow-floor="{{ $.MinColumns }}" hidden>{{ template "page-token" . }}<input type="hidden" name="confirm" value="yes"><input type="hidden" name="columns" value="">
+<p class="pane-note" data-reflow-offer="This session is {{ $.Columns }} columns and your screen fits {n}. Reflowing re-wraps it at {n} for everyone reading this session, and the window stops sizing itself to a terminal attached on the host until you put it back with: tmux set-window-option -t '{{ $.Target }}' window-size latest"></p>
+<button class="button" type="submit" aria-describedby="card-id-{{ $.ID }}">Reflow this session</button></form>
+{{ end }}<pre class="pane" id="pane-{{ .ID }}" tabindex="0" data-stream="/sessions/{{ .ID }}/stream" data-ended="pane-ended-{{ .ID }}" data-stalled="pane-stalled-{{ .ID }}">{{ .Text }}</pre>
 <p class="pane-note" id="pane-ended-{{ .ID }}" hidden>This session has ended. The screen above is the last one it printed.</p>
 <p class="pane-note" id="pane-stalled-{{ .ID }}" hidden>Live updates stopped, and the session did not say it had ended. The screen above is the last one that arrived. Reload to try again.</p>{{ end }}
 <p class="pane-note">This is the live screen, not scrollback. Attach to the session on the host to read what came before it.</p>

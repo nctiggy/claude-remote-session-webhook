@@ -2635,6 +2635,81 @@ func TestThePaneWrapsOnlyOnNarrowViewports(t *testing.T) {
 	}
 }
 
+// TestTheReflowIsOfferedRatherThanTaken is T005's half of #120, held at the file
+// that decides it.
+//
+// The measurement is the reason any of this is in a script at all: the daemon
+// knows how wide the session is and can know nothing about the screen it is
+// being read on. What that buys has to stay an *offer*. A tmux window has one
+// size however many people are reading it, so a reflow changes the session for
+// every reader at once — the milestone plan rejects resizing on view in writing,
+// for being hostile to the second reader, and a script that submitted this form
+// by itself would be that decision put back without anyone deciding it.
+//
+// The order is the other half. A form revealed before the comparison is a
+// control that appears for a reader who already sees the whole width, which is
+// an invitation to narrow the session for everybody else.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed
+// — the footing every assertion in this file stands on. The query naming the
+// attribute the template renders is what holds the direction that loses
+// silently: an enhancement that is written, correct and attached to nothing.
+//
+// **Must fail when** the module submits, reveals without comparing, or spells
+// the daemon's bounds itself instead of reading the ones the markup carries.
+func TestTheReflowIsOfferedRatherThanTaken(t *testing.T) {
+	t.Parallel()
+
+	// Everything below is asserted inside the module rather than across the file.
+	// `hidden = false` is how the pane's end note is revealed too, and a claim
+	// about "the script" would be satisfied by that one.
+	//
+	// The anchor is the module's first statement rather than the paragraph above
+	// it, because script() strips the comments — an assertion anchored on prose
+	// would report a missing module for a file that had only been re-worded.
+	_, module, found := strings.Cut(script(t), "REFLOW_CELLS")
+	if !found {
+		t.Fatal("crswd.js carries no reflow module at all, so the offer the pane renders is never revealed to anybody")
+	}
+
+	query := regexp.MustCompile(`querySelectorAll\(\s*['"][^'"]*data-reflow[^'"]*['"]\s*\)`)
+	if query.FindString(module) == "" {
+		t.Error("crswd.js never queries the document for a form carrying data-reflow, so no offer is ever measured and none is ever shown")
+	}
+
+	for want, why := range map[string]string{
+		"measureText":           "the reader's width is a character count, and the pane's own font is the only thing that turns pixels into one",
+		"clientWidth":           "what a reader has is the box without its scrollbar, not the width the element was asked to be",
+		"dataset.reflowColumns": "the session's width is the daemon's to state; a number this file chose would be a second opinion about a window it cannot see",
+		"dataset.reflowFloor":   "the floor is config's one definition of what this daemon will act on, read from the markup rather than spelled here",
+		"dataset.reflowOffer":   "the sentence is the template's — a script that authored its own prose is a second place to look for what the interface says",
+		"'{n}'":                 "the one number the daemon cannot know, filled into the copy the template wrote",
+	} {
+		if !strings.Contains(module, want) {
+			t.Errorf("the reflow module does not carry %q: %s", want, why)
+		}
+	}
+
+	// Compare, then reveal. Both indices are inside the module, so the ordering is
+	// this control's rather than some other module's.
+	compare := strings.Index(module, "dataset.reflowColumns")
+	reveal := strings.Index(module, "hidden = false")
+	switch {
+	case compare < 0 || reveal < 0:
+		t.Fatalf("the reflow module does not read the session's width (%d) and reveal the offer (%d)", compare, reveal)
+	case compare > reveal:
+		t.Errorf("the reflow module reveals the offer at %d and reads the session's width at %d; a control shown before the comparison is one offered to a reader who already sees the whole width", reveal, compare)
+	}
+
+	// And it offers rather than takes. Nothing here posts, and the absence is the
+	// requirement: what is revealed is a form, and what submits it is a person.
+	for _, forbidden := range []string{".submit(", "requestSubmit", "fetch(", "XMLHttpRequest"} {
+		if strings.Contains(module, forbidden) {
+			t.Errorf("the reflow module carries %q; a reflow nobody pressed is every reader's screen changing because somebody opened a page", forbidden)
+		}
+	}
+}
+
 // TestThePaneKeepsItsDesktopAlignment is the other side of that trade, and the
 // side with no visible symptom.
 //

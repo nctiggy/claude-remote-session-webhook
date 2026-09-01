@@ -153,6 +153,52 @@ type paneView struct {
 	// — state the absence, never render something that reads like a value —
 	// applied to the screen instead of to a name.
 	Unread bool
+
+	// Columns is how wide this session's window is, through Session.Columns —
+	// so 80 for every session nobody has reflowed (#120).
+	//
+	// It is here because the offer beside the pane has to name it. A control
+	// that said only "reflow this" would be asking an operator to change every
+	// reader's screen on the daemon's word, and the number a viewer is compared
+	// against is half of what makes the offer reviewable before it is taken.
+	//
+	// It is the number rather than the record's raw Width for the reason
+	// Columns exists: zero is "nobody has touched this window", which is a fact
+	// about automatic sizing and not a width, and a page rendering it would say
+	// a session is nought columns wide.
+	Columns int
+
+	// MinColumns is the narrowest width this daemon will act on
+	// (config.MinPaneWidth), carried so the browser can decline to offer a
+	// reflow rather than name a number the daemon would quietly clamp.
+	//
+	// It rides in the markup rather than being spelled in crswd.js for the
+	// reason the command preview's flags do: the bounds are config's one
+	// definition, and a copy in the script is free to go on offering a width
+	// this daemon stopped accepting. What it really guards is a measurement
+	// that came back nonsense — a font with no metrics, an element with no
+	// layout — which would otherwise be read out to the operator as what their
+	// screen fits and then turned into something else on the way through.
+	MinColumns int
+
+	// Target is this session's window as tmux names it (Session.PaneTarget),
+	// for the one sentence in this component that carries a command.
+	//
+	// A reflow takes the window permanently out of tmux's automatic sizing and
+	// nothing in this daemon puts it back, so the offer has to say how — and a
+	// way back an operator cannot name is not one. It is rendered as text and
+	// never run, exactly as the settings page renders the diff between two unit
+	// files: this daemon prints the command and the operator decides.
+	Target string
+
+	// PageToken is the value the reflow form submits, on the same terms the
+	// card's actions carry theirs (see sessionView.PageToken).
+	//
+	// Empty renders no offer at all rather than one the gate is certain to
+	// refuse, which is why the zero value is safe for every call site that says
+	// nothing about it — and why a pane rendered without a token is the pane
+	// that shipped before this field existed.
+	PageToken string
 }
 
 // emptyView is what the fleet page renders instead of a grid when the viewer
