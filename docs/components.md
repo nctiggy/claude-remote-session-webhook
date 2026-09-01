@@ -424,9 +424,14 @@ Rules:
 
 ## Action controls
 
-The four things the dashboard can change, and the shape all four share. Read
+The things the dashboard can change, and the shape they share. Read
 `docs/auth-and-sessions.md` before altering any of it — the markup here is half of
 a security control, not decoration.
+
+**The list is the table below and deliberately not a number in this sentence.**
+It read "four" while the tree registered more than four, which is the
+enumeration rot this document warns about everywhere else, committed by the
+document itself.
 
 ```gotemplate
 {{ with .PageToken }}
@@ -445,10 +450,12 @@ a security control, not decoration.
 | Create | `POST /dashboard/sessions` | `200` and the new card; `429` at the cap or the rate limit |
 | Rename | `POST /dashboard/sessions/{id}/rename` | `200` and the renamed card |
 | Compact | `POST /dashboard/sessions/{id}/compact` | `202` — **delivered**, never "compacted" |
+| Reflow | `POST /dashboard/sessions/{id}/reflow` | A sentence, like the rest. A width outside the bounds is **clamped, never refused** — it is advisory, and #120's requirement is that a bad value comes back inside rather than turning the operator away |
 
-All four also answer `400` for input they refuse, `404` for a session that is not
+They also answer `400` for input they refuse, `404` for a session that is not
 this operator's to act on, and `500` when the host would not do it — each one
-`.card-outcome` sentence and never a status alone.
+`.card-outcome` sentence and never a status alone. The reflow's width is the one
+exception to the first of those, for the reason its row gives.
 
 Rules — these are security rules as much as design rules:
 - **Every mutating form includes `{{ template "page-token" . }}`.** It renders a
@@ -628,21 +635,23 @@ Rules — these are security rules as much as design rules:
   it too. **The vertical axis is deliberately left alone** — the pane is most of a
   phone's display, so containing it would seal the reader into a box instead of
   letting a flick that began inside it scroll the page.
-- **Below the breakpoint the pane wraps, and it is a trade rather than a fix.**
-  `white-space: pre-wrap` with `overflow-wrap: anywhere` there; the base rule
-  keeps `white-space: pre`. What it costs is alignment: Claude Code's own box
-  borders and dividers wrap into a line plus a stub, and any output that depends
-  on columns is misrepresented on a phone. What it buys is that reading a
-  paragraph stops requiring a horizontal pan per line — the dominant phone task,
-  which fails outright without it. Shrinking to fit was priced instead and needs a
-  ~6.9px font. **Reverting is two declarations**, and whether the trade reads
-  against a real session's chrome is the first
-  [open question](mobile-open-questions.md).
+- **Nothing in this stylesheet wraps the pane, at any width.** The base rule is
+  `white-space: pre` and no breakpoint overrides it;
+  `TestNoPaneRuleWrapsTheTerminalsOutput` sweeps *every* `.pane` rule, media
+  blocks flattened, for a wrapping declaration. There was one until milestone 16
+  — `white-space: pre-wrap` with `overflow-wrap: anywhere` below the breakpoint —
+  and it was a trade rather than a fix: it bought a paragraph that could be read
+  without a horizontal pan per line, and it cost alignment, because Claude Code
+  draws its chrome at full terminal width and every box border wrapped into a
+  line plus a stub. **The terminal does the wrapping now** — see the reflow offer
+  below — so a break lands at a column edge because the program put it there, and
+  nothing is misrepresented. Two mechanisms doing one job worse is what #120
+  asked to be rid of.
 - **Pinch-zoom is the escape hatch, so no page in this tree may clamp it.** A
   reader who needs the columns back zooms out to them. `maximum-scale` at any
   value and `user-scalable=no` are both refused by `TestNoPageClampsTheZoom`,
-  across every template — a clamp is cheap to add and it removes the one
-  mitigation the wrap has.
+  across every template — a clamp is cheap to add, and with the wrap gone it is
+  the whole of what a reader who has not reflowed has.
 - **The pane shows the live screen, not scrollback.** A repainting screen has no
   "bottom" to follow, so an update must never move the viewport for the reader.
   History is what `tmux attach` is for, and the interface should say so rather
@@ -652,6 +661,74 @@ Rules — these are security rules as much as design rules:
   exactly like a session sitting quietly at a prompt, and the last screen stays on
   the page rather than being replaced by the sentence about it.
 - No animation on new lines.
+
+### Reflow offer
+
+The one control this component carries (#120, milestone 16). A form above the
+`<pre>`, posting to `POST /dashboard/sessions/{id}/reflow`, offering to re-wrap
+the session at the width the reader's screen actually fits.
+
+It is Action controls in that section's own shape — a real form, the page token
+inside it, `confirm=yes`, a plain `.button` — and it **wears no class of its
+own**. The settings page's restart form is the precedent, and a further spelling
+for a control is the defect this document exists to prevent. The day it earns a
+class, this section names it in the same commit.
+
+```gotemplate
+{{/* Shipped hidden. The sentence is the template's; {n} is the one number only a
+     browser can measure, and crswd.js substitutes it as it reveals the form. */}}
+<form method="post" action="/dashboard/sessions/{{ $.ID }}/reflow"
+      data-reflow="pane-{{ $.ID }}" data-reflow-columns="{{ $.Columns }}"
+      data-reflow-floor="{{ $.MinColumns }}" hidden>…</form>
+```
+
+Rules:
+- **The daemon never acts on a viewer's width by itself.** A tmux window has one
+  size however many people are reading it, so a reflow changes the session for
+  **every reader at once** — it is a property of the session, never of a viewer.
+  The browser reports what it fits and somebody presses. Resizing on view was
+  rejected for exactly that reason and is out of scope in writing.
+- **It ships `hidden` and stays hidden with no script running.** What reveals it
+  is a measurement only a browser can make — the pane's own font against its own
+  box — so a page that made none has nothing to compare and nothing honest to
+  offer. The pane above it is untouched either way: the baseline is a pane that
+  works, and a control must never become the thing that makes it function.
+- **Offered only to a screen narrower than the session, and withheld below the
+  floor rather than clamped.** The route clamps regardless — three times over,
+  and deliberately so at a trust boundary — but a page that named a width the
+  daemon would then quietly change would be claiming something the daemon will
+  not do.
+- **The copy is the template's**, filled by the script with the one number the
+  daemon cannot know, which is the arrangement `.combo-status` and the fleet note
+  already use. It names **both** widths, because the operator is being asked to
+  narrow a window for readers who are not in the room.
+- **It carries the warning before the press, not after it.** tmux flips
+  `window-size` from `latest` to `manual` on the first resize and nothing sets it
+  back, so a reflowed session stops sizing itself to a terminal the operator
+  later attaches on the host. That is a change to how their own terminal behaves,
+  and this daemon does not make those silently. The way back is in the sentence —
+  `tmux set-window-option -t '=crswd-<id>:' window-size latest` — rendered as
+  text and never run, on the same terms as the `diff` the settings page prints.
+- **Reflowing back to 80 is not that undo.** It writes a width like any other
+  reflow; what returns the window to automatic sizing is the command above and
+  nothing this dashboard offers.
+- **It survives a restart**, because the width is written onto the tmux session
+  as `@crswd-width` and restored by adoption — the same mechanism
+  `@crswd-lifetime` uses, for the same reason. A session carrying no option is 80
+  columns, which is every session that predates milestone 16 and every session a
+  recreate rebuilds.
+- **A reflow also settles the window's height at 24 rows**, which is what a
+  detached session has. An operator who had attached a taller terminal loses that
+  height. #120 is about columns; the rows come from the session and are not the
+  caller's to choose.
+- **It sits above the `<pre>`, not below it** — the rename's and the continue's
+  argument applied inside this component. The pane is a fixed-height scroll
+  container holding a whole screen, so a control beneath it is one an operator
+  scrolls past a terminal to reach, and on the narrow viewport where this offer
+  is the only one that ever appears, that terminal is most of the display.
+- **A screen that could not be read carries no offer**, for the reason it carries
+  no stream: a reflow whose result cannot be shown is an action with nothing to
+  observe, and the operator reloads instead.
 
 ## Form
 

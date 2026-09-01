@@ -1865,6 +1865,83 @@ func TestTheReflowOfferShipsHiddenAndSaysWhatItCosts(t *testing.T) {
 	}
 }
 
+// TestTheDocumentsNameTheReflowAndTheWayBack is T007's half of #120: the two
+// documents an operator reads, held to the control the two tests above render.
+//
+// It exists because this component's own documentation went stale in exactly
+// this way once already. docs/components.md described a CSS wrap for a milestone
+// after the stylesheet stopped carrying one, and nothing failed — a document is
+// the one artifact here that no sweep of the markup or the stylesheet can see,
+// which is why #119's lesson was to bind it rather than to re-read it.
+//
+// The address is derived from the pattern the mux registers rather than spelled
+// again here, the same way the pane's own test derives it: a renamed route
+// otherwise leaves a document confidently naming an address that 404s.
+//
+// The four anchors are the four facts the milestone plan requires T007 to state
+// — what a reflow does, that it is per session and not per viewer, that it
+// survives a restart, and that it takes the window out of automatic sizing until
+// it is put back. The last is the one most owed: *nothing in this daemon sets
+// window-size back to latest*, so a document that stops carrying that command
+// leaves an operator with a terminal that behaves differently and no sentence
+// anywhere explaining why.
+//
+// **Must fail when** either document drops the reflow, the second reader, the
+// restart or the way back, and when the route moves without the document.
+func TestTheDocumentsNameTheReflowAndTheWayBack(t *testing.T) {
+	t.Parallel()
+
+	// The second reader is anchored on the *reason* rather than on the phrase
+	// "every reader", which was tried and is not load-bearing: docs/components.md
+	// already says it about a settings sentence, so the assertion passed with the
+	// reflow's own paragraph reworded away. An anchor a document satisfies by
+	// accident is an anchor that is not checking anything.
+	const (
+		secondReader = "however many people are reading it"
+		acrossAJoin  = "survives a restart"
+		wayBack      = "window-size latest"
+	)
+	route := strings.TrimPrefix(patternDashboardReflow, "POST ")
+
+	// Read through the constants rather than through the loop variable: gosec
+	// reads a path it cannot see the value of as file inclusion, and a suppression
+	// on a test that opens two documented paths would be a suppression for the
+	// next hand to copy somewhere it matters.
+	components, err := os.ReadFile(componentsDocPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", componentsDocPath, err)
+	}
+	readme, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", readmePath, err)
+	}
+
+	for _, doc := range []struct {
+		path     string
+		read     string
+		required map[string]string
+	}{
+		{componentsDocPath, string(components), map[string]string{
+			route:        "the address this control posts to, so the next hand reuses the component rather than building a second one",
+			secondReader: "a tmux window has one size however many people are reading it, so a reflow is the session's and never a viewer's",
+			acrossAJoin:  "the width is written onto the tmux session and restored by adoption, which is the whole reason @crswd-width exists",
+			wayBack:      "the way back to automatic sizing, which nothing in this daemon does for the operator",
+		}},
+		{readmePath, string(readme), map[string]string{
+			"reflow":     "this page is read before there is a running daemon, and a control nobody is told about is one nobody presses",
+			secondReader: "the operator is narrowing a window for readers who are not in the room, and that belongs on the page they read first",
+			acrossAJoin:  "a width that quietly reverted at the next restart would be worse than one that never persisted",
+			wayBack:      "an operator meeting a 44-column window in a 120-column terminal looks it up here, and finds nothing if this page never said it",
+		}},
+	} {
+		for want, why := range doc.required {
+			if !strings.Contains(doc.read, want) {
+				t.Errorf("%s never says %q: %s", doc.path, want, why)
+			}
+		}
+	}
+}
+
 // components is every component a page composes: docs/components.md's canonical
 // inventory, plus the create form.
 //

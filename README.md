@@ -17,6 +17,8 @@ what each costs you, is [The two doors](#the-two-doors).
 
 - See every session in flight, with live pane output
 - Create, destroy, rename and compact a session
+- Reflow a session to the width of the screen reading it — see
+  [Reading a session on a narrow screen](#reading-a-session-on-a-narrow-screen)
 - Switch a running session between its plain and remote-control modes
 - Read the whole configuration on `/settings` — every value and where it came from
 - Edit one non-secret setting, update the daemon to a signed release, and restart
@@ -32,6 +34,45 @@ The pages are built for a phone as well as a desktop.
 them: relaying Claude's own device-code login when a session asks for it, and the
 companion Claude skill that would drive the API. Everything else on this page
 describes what the daemon does today.
+
+### Reading a session on a narrow screen
+
+A session runs in an 80-column terminal. A phone fits about 44, so a paragraph
+cost a horizontal pan per line — and Claude Code prints mostly paragraphs. The
+dashboard used to wrap the pane in CSS, which fixed the reading and damaged the
+alignment: box borders and dividers came back as a line plus a stub.
+
+**The terminal does the wrapping now.** Open a session on a screen narrower than
+it, and the pane offers one control — *this session is 80 columns, your screen
+fits 44 — reflow it*. Press it and the daemon resizes the tmux window, the
+program re-wraps its own screen at the column edge, and nothing is
+misrepresented, because the program did the wrapping rather than a stylesheet.
+
+Three things about it are worth knowing before you press:
+
+- **It is a property of the session, not of your browser.** A tmux window has one
+  size however many people are reading it, so a reflow changes the screen for
+  every reader at once. The daemon never acts on a viewer's width by itself; it
+  reports what it fits and waits for somebody to press.
+- **It survives a restart.** The width is written onto the tmux session itself,
+  and the daemon restores it when it adopts the session again. A session nobody
+  has reflowed is 80 columns.
+- **⚠️ A reflowed session stops sizing itself to a terminal you attach on the
+  host.** Resizing a tmux window flips it out of automatic sizing and nothing
+  puts it back, so `tmux attach` in a 120-column terminal will show you a
+  44-column window with nothing on screen explaining why. Put it back with:
+
+  ```bash
+  tmux set-window-option -t '=crswd-<session-id>:' window-size latest
+  ```
+
+  Reflowing back to 80 is not that undo — it sets a width like any other reflow.
+  The command above is the way back, and the dashboard prints it beside the
+  control rather than running it for you.
+
+Measuring the screen needs a browser, so this is the one thing on the page that a
+scriptless browser is not offered: it gets the pane the daemon rendered, and
+pinch-zoom, which no page here is allowed to clamp.
 
 ## The security posture, stated plainly
 
