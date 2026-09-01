@@ -163,7 +163,7 @@ must not silently change how their terminal behaves either.
       action route — wrong owner, missing confirm, a width that is a word, a width
       that is negative, a width of nine million — and none of them may 500.
 
-- [ ] **T005** Offer it in the pane, reusing what `docs/components.md` already
+- [x] **T005** Offer it in the pane, reusing what `docs/components.md` already
       defines — **the pane viewer and the existing action controls, no new
       component**. The browser reports its own width; the control appears only
       when that width is narrower than the session's, names both numbers, and

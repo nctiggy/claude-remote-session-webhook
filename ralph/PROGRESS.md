@@ -444,3 +444,118 @@ driven only from a test. Commit `9ea64dc`.
   `Width = 80`, which is *not* the same as returning the window to automatic
   sizing. **T005 should not offer the absent-field case as an undo**; it looks
   like one and is not.
+
+---
+
+## Iteration 5 — 2026-09-01 — T005, the offer in the pane
+
+**Did:** Added the reflow control to `partials/pane.html` — a form to the T004
+route, shipped `hidden`, revealed by a new module in `crswd.js` that measures the
+pane's own font against its own box. `paneView` gained `Columns`, `MinColumns`,
+`Target` and `PageToken`; `sessionPage` fills all four off the record. Commit
+`d0ea1ad`.
+
+**Learned:**
+
+- **The "way back" is a rendered command, not a second `Controller` method, and
+  that was the sizing question Iterations 1 and 4 kept restating.** T005's text
+  is *"says that a reflowed session stops sizing itself to a terminal attached on
+  the host (the ⚠️ above), with the way back"* — the way back is part of what the
+  control **says**. The plan's ⚠️ section agrees: it requires the operator be
+  *left* a way back and that the page and docs *say* it. tmux already provides
+  one; nothing in this daemon took it away. So the sentence ends with
+  `tmux set-window-option -t '=crswd-<id>:' window-size latest`, rendered as text
+  and never run — the settings page's `diff` command is the exact precedent
+  ("this daemon prints it and never runs it"). **`internal/tmuxctl` still has no
+  `window-size latest` call and now deliberately needs none.** A control-shaped
+  undo would have been a second route, a second audit action and a second
+  outcome, all to wrap one command the operator can already run — and it would
+  have been the *only* action on this door with no confirming decision behind it.
+- **The offer carries no class, and that is the whole of "no new component".**
+  The settings page's restart form is the precedent — `<form>` with no class at
+  all, `.button`, and a `<p>` beside it — and taking it means **zero CSS in this
+  task**, so `TestTheStylesheetAndTheMarkupNameTheSameThings` and the
+  `.combo|.switch|.masthead|.action-toast|.modal` document sweep are both
+  untouched. **If a later task gives this control a class it must also give
+  `docs/components.md` a name for it in the same commit**, which is the trap #119
+  was.
+- **`script(t)` strips comments before any assertion sees the file**
+  (`jsComment.ReplaceAllString`). A JS test anchored on a comment reports a
+  missing module for a file that was only re-worded. `REFLOW_CELLS` exists as the
+  module's first statement partly to be that anchor, and the test says so.
+- **`TestTheStreamClientReplacesTheScreenWithText` polices every write in the
+  whole file**, not just the stream's: the sink regex rejects any
+  `innerHTML`/`outerHTML`/`innerText`/`nodeValue`/`srcdoc` and any `+=`, and a
+  separate assertion demands `pane.textContent =` appear **exactly once**. So a
+  new module may write `textContent` but must not name its element `pane` while
+  doing it. `note.textContent =` is why this one passes.
+- **Measurement is a canvas, deliberately not a probe element.** `measureText`
+  with the pane's computed `fontSize`/`fontFamily` adds nothing to the document
+  at all — a measuring node *inside* the pane would be markup this dashboard put
+  into the one element it renders nothing but text. The `font` shorthand is not
+  read: engines do not all report it for a rule written with custom properties,
+  and an empty one measures the canvas default confidently and wrongly. **There
+  is no `@font-face` in this tree** (`TestNoRuleNamesAFontFace`), so metrics are
+  stable at `defer` time and nothing waits on a font load.
+- **Every comparison in the reveal is written to fail closed.** `Number()` of a
+  missing attribute is `NaN` and every `<`/`>` against one is false, so the guard
+  is `!(fits >= floor) || !(fits < session)` rather than the readable inverse:
+  markup that drifted must leave the form hidden, never reveal it by arithmetic
+  accident.
+- **Below the floor the offer is withheld rather than clamped.** Naming a width
+  and then having the route clamp it would be the page claiming something the
+  daemon will not do; `MinColumns` rides in the markup so config keeps its one
+  definition. It is unreachable on a real phone (20 columns is ~145px) — what it
+  actually guards is a measurement that came back nonsense.
+- **It sits above the `<pre>`, not below it.** That is the rename's and the
+  continue's argument applied inside the component: a control under a
+  fixed-height scroll container is one an operator scrolls past a terminal to
+  reach, and on the narrow viewport where this is the only offer that ever
+  appears, that terminal is most of the display.
+- **Five guards were proven by breaking them**, as the plan requires: dropping
+  `hidden`, rendering the form without the token gate, revealing before
+  comparing, rendering `config.DefaultPaneWidth` instead of `live.Columns()`, and
+  deleting the way-back clause. Each fails at least one new test. Restored and
+  green.
+
+**Left:** T006 and T007. Nothing is blocked.
+
+**Findings — noticed, not fixed:**
+
+- **The offer is computed once, at load, and nothing re-runs it.** Rotating a
+  phone from landscape to portrait leaves no offer where one now applies, and
+  from portrait to landscape leaves a stale one on screen naming a width the
+  reader no longer has. A `resize` listener is three lines; what stopped it being
+  written is that hiding the control again can pull it out from under a finger
+  mid-tap, and that is a decision rather than an omission. **The stale direction
+  is the one that matters** — the number in the sentence is the number in the
+  hidden field, so a rotated reader could press an offer for a width they no
+  longer have. Worth a task, not a silent addition.
+- **`docs/components.md`'s Pane viewer section does not know this control
+  exists**, and neither does its Action controls table, which still lists four
+  routes. **T007 owns it** and should add the reflow to both — the table's "All
+  four also answer 400…" sentence needs the count changing with it. Left here
+  deliberately rather than done in passing: T007 is the documentation task and
+  AR-008 forbids the drive-by.
+- **`registeredPatterns` in `settings_test.go` is now stale by seven routes**,
+  restated from Iteration 4 because nothing has taken it. Unchanged by this task;
+  still worth a task of its own, and still the one guard in the repo quietly
+  losing coverage as routes are added.
+- **`TestQuickstartStory5RateLimit` fails under full-suite load and passes in
+  isolation**, with `unlinkat …/001/home: directory not empty` from `t.TempDir`'s
+  cleanup — the assertion itself passes, the burst being `[201 201 201 429 429]`,
+  which is what it wants. **This is the third iteration to see it** (Iteration 3
+  recorded the identical message). I tried to establish it as pre-existing by
+  running the suite at `HEAD` in a detached worktree and **could not complete
+  that check**: the worktree fails `-buildvcs` stamping, and the environment
+  refused both the `GOFLAGS` re-run and a scratch script, so **"pre-existing" here
+  rests on Iteration 3's record and on the changed files, not on a baseline run I
+  actually made.** Nothing this task touched runs in `cmd/crswd`'s temp-home path
+  — the change is `internal/httpapi` views, one template and one script — but
+  that is an argument, not a measurement. Something is still writing under the
+  test's temp home while cleanup runs, and it deserves a task.
+- **`aria-describedby="card-id-…"` on the reflow button resolves only because
+  the session page draws the card.** True today on the one page that renders this
+  component; a second page rendering a pane without a card would ship a dangling
+  reference, silently. The card's own action row has the same coupling, so this
+  is the shape of the tree rather than a defect this control introduced.
