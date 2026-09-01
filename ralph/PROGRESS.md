@@ -786,3 +786,92 @@ is done and the documentation is written.
   markdown documents; `go test ./...` passed on every run. **Four iterations have
   now recorded it without anyone looking at it**, which is the copy-forward habit
   Iteration 0 warned about. It should be a task or it should be dropped.
+
+---
+
+## Iteration 8 — 2026-09-01 — the blocker re-measured, and Iteration 7's account of it corrected
+
+**Did:** No code. T007's remaining half is still unreachable, so this iteration
+did the only two things that were available: re-measured the blocker rather than
+copying it forward, and **corrected a false premise in the way it was written
+down**. `ralph/IMPLEMENTATION_PLAN.md` T007 amended.
+
+### The correction, because it changes what the operator is deciding
+
+Iteration 7 wrote — and T007 in the plan repeated — that
+`.claude/settings.json` "allows `Bash(gh pr:*)`, `Bash(gh repo:*)` and
+`Bash(gh auth status)`". **That is wrong.** Read this iteration: the repo's
+`.claude/settings.json` allowlist is fifteen Go entries and eight git entries
+and **no `gh` entry at all**. `grep -rn "gh pr\|gh repo\|gh auth\|gh issue"`
+over the whole of `.claude/` matches nothing — not settings, not hooks.
+
+The *conclusion* was right and is unchanged: `gh issue` is not permitted, so no
+iteration can read or close #121. But the premise mattered, because Iteration 7
+offered the operator route 2 — "add `Bash(gh issue:*)` to
+`.claude/settings.json`" — described as widening an allowlist that already had
+`gh` on it. It does not. **That edit would put the first `gh` entry of any kind
+into this repo's allowlist**, which is a larger step than Iteration 7's wording
+implies, and the operator should be choosing it knowing that.
+
+Where Iteration 7's `gh pr` / `gh repo` belief came from is not established. It
+is not in this repo. It may be from a settings file outside the working
+directory; **I could not check** — reads and greps outside
+`/home/nctiggy/code/claude-remote-session-webhook` are blocked in this session,
+so that is unknown rather than ruled out.
+
+### Re-measured, not copied forward
+
+- `gh issue view 121 --json number,title,state` → **refused, "This command
+  requires approval"**. The session is non-interactive, so the prompt cannot be
+  answered. The blocker holds exactly as stated.
+- Note for whoever tries this next: writing it as
+  `gh issue view 121 ... 2>&1 | head -20` was refused *earlier and differently*,
+  as "multiple operations". A pipe or a redirect changes the refusal message
+  without changing the outcome — **do not read the first refusal as evidence
+  about the allowlist**; strip the command to one bare invocation before
+  concluding anything from what it says.
+
+### Verified rather than trusted
+
+T007's shipped half was checked against the artifact, not against Iteration 7's
+claim of it:
+
+- `TestTheDocumentsNameTheReflowAndTheWayBack` exists and **passes** (run
+  singly, `-v`).
+- Tree green on all four: `go build ./...`, `go vet ./...`, `go test ./...`
+  (11 packages ok, `web` has no test files), `golangci-lint run` **0 issues**
+  at **v2.12.2** — #26's version check made, not assumed.
+- `docs/mobile-open-questions.md:64` still reads "#121 is unblocked by this
+  answer and is still not evidenced" — still accurate, because the issue is
+  still open. Iteration 7's instruction stands: **that line is edited in the
+  same commit as the close, not before.**
+
+### The loop cannot finish, and that is now structural
+
+Every code task T001–T006 is `[x]`. T007 is `[!]`. `RALPH_COMPLETE` requires
+every task checked, and the one unchecked half is an action on a public GitHub
+artifact that this loop is not permitted to take. **Further iterations will
+produce entries like this one and nothing else.** Two ways out, both the
+operator's, unchanged from Iteration 7 — close #121 by hand with the comment
+written out above, or grant `Bash(gh issue:*)` knowing it is the first `gh`
+grant in the repo. A third exists and is worse: redefine T007 so the close is
+not part of it. Recorded, not taken — the plan says closing #121 *is* the point
+of the task, and an autonomous loop editing its own definition of done to reach
+`RALPH_COMPLETE` is the failure mode the whole notebook exists to prevent.
+
+**Left:** the close of #121. Nothing else, for the eighth time and the last time
+a loop iteration can usefully say it.
+
+**Findings — noticed, not fixed:**
+
+- **The four carried-forward findings are deliberately not restated here.**
+  `registeredPatterns` stale by seven routes, `docs/components.md`'s `200`/`202`
+  rows, `docs/auth-and-sessions.md`'s "Four routes", the offer not recomputing on
+  rotation, and `TestQuickstartStory5RateLimit`'s cleanup race are all in
+  Iteration 7 and above, unchanged, and none was touched this iteration. Copying
+  them down a ninth time would make the notebook longer without making any of
+  them more likely to be fixed. **They need a milestone 17, not another line.**
+- **This iteration is itself evidence for the rule it just followed.** It
+  produced one factual correction and no code, from a full context load. If the
+  loop is re-run against this plan unchanged, the next iteration has strictly
+  less to find than this one did.

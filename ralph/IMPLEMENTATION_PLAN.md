@@ -195,11 +195,13 @@ must not silently change how their terminal behaves either.
       **Half done, and the remaining half is the operator's.** The documentation
       shipped in `63f2694`, held by `TestTheDocumentsNameTheReflowAndTheWayBack`.
       **#121 is still open.** `gh issue` is not on the Bash allowlist in
-      `.claude/settings.json` — only `gh pr`, `gh repo` and `gh auth status` are —
-      and a loop iteration is non-interactive, so no iteration can read that issue
-      or close it. The closing comment is written out ready to paste in
-      `ralph/PROGRESS.md`, Iteration 7. **This is the only thing between milestone
-      16 and `RALPH_COMPLETE`, and re-running the loop cannot clear it.**
+      `.claude/settings.json` — **which carries no `gh` entry of any kind**, only
+      Go and git commands — and a loop iteration is non-interactive, so no
+      iteration can read that issue or close it. Re-measured in Iteration 8:
+      `gh issue view 121` was refused as requiring approval. The closing comment
+      is written out ready to paste in `ralph/PROGRESS.md`, Iteration 7. **This is
+      the only thing between milestone 16 and `RALPH_COMPLETE`, and re-running the
+      loop cannot clear it.**
 
 ---
 
