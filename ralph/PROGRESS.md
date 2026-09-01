@@ -280,3 +280,88 @@ commit. Commit `3c9cbfc`.
   intentional here — an advisory value from a browser should not be refused over
   a space — but a reader comparing them will notice. Not worth a change to
   `loadInt`, which refuses on purpose.
+
+---
+
+## Iteration 3 — 2026-09-01 — T003, the width the host holds
+
+**Did:** Added `tmuxctl.OptionWidth` (`@crswd-width`) and `SessionInfo.Width` to
+the `list-sessions` row, `Session.Width` + `Columns()` + `encodeWidth`/
+`decodeWidth` + `Store.SetWidth`, restored the width in `Adopt`, and wrote
+`Manager.Reflow` — which is **T001's and T002's first production caller**.
+Commit `2eddeb2`.
+
+**Learned:**
+
+- **T003 was split at "the route", not at "the write".** The task says the option
+  is "written onto the tmux session when a reflow is taken", so the reflow itself
+  is here and **T004 is only the HTTP route plus its audit and negative cases**.
+  T004 should call `Manager.Reflow(ctx, s, cols)` the way `continueFromBrowser`
+  calls `Continue`, and its own clamp is the third one on that path (handler →
+  `Reflow` → `argvResize`), which is what its "deliberate duplication" means.
+- **`markSession` deliberately does *not* write `@crswd-width`.** It is called on
+  a **recreate**, which builds a *new* 80-column window; writing the record's old
+  width there would put "44" on a window that is 80 — a lie in the direction spec
+  009 warns about. So the option is written by `Reflow` alone, where the resize
+  that makes it true happens in the same call. **A recreated session therefore
+  comes back at 80 with no option, which is honest**, and the operator reflows
+  again. See the findings for the journal half of this.
+- **Zero and 80 are kept apart on purpose, and T005 needs that.** `Width == 0`
+  means nobody has reflowed the session; `Columns()` collapses it to 80 for
+  anything that wants the number. The distinction is the *only* record that this
+  daemon took the window out of tmux's automatic sizing, which is the ⚠️ sentence
+  T005 and T007 owe the operator. `decodeWidth` therefore checks for an empty
+  option rather than calling `ParsePaneWidth` bare, which is a **deliberate
+  departure from iteration 2's advice** — the plan's "no option adopts as 80"
+  still holds, through `Columns()`.
+- **The width field went between `@crswd-lifetime` and spec 012's pair**, so the
+  row stays "everything the daemon wrote, then the one thing tmux computes", and
+  `parseSessions`' comment about the last two fields stays true. `listFieldCount`
+  is now **10**. Every row literal in `exec_test.go` needed a field inserted
+  *third from the right* — cutting is from the right, so counting from the left
+  gets the malformed-on-purpose rows wrong.
+- **`tmuxctl.DefaultRows` is now exported** (was `tmuxDefaultRows`) because
+  `resize-window` names both axes and #120 is about columns: `Reflow` passes back
+  the 24 rows the session already has. The column half stays unexported —
+  `config.DefaultPaneWidth` is the same number where the policy lives.
+- **The real-tmux round trip is pinned:** `TestTmuxListReportsTheWidthOption`
+  resizes *and* sets the option, so it cannot pass on a tmux where the resize
+  silently did nothing. `go test -tags tmux ./...` is green here.
+- **All six new guards were proven by breaking them**, as the plan requires:
+  dropping the restore in `Adopt`, dropping the `SetOption`, dropping the clamp,
+  writing the store before the resize, making the fake return `""` for a width it
+  stored, and reading the width out of the lifetime's field — each fails at least
+  one test. Restored and green.
+
+**Left:** T004–T007. Nothing is blocked.
+
+**Findings — noticed, not fixed:**
+
+- **The journal does not carry the width, and that is deliberate but incomplete.**
+  `journalRecord` holds the lifetime; adding the width without also resizing on
+  the recreate path would make the record claim a width the new window does not
+  have. **Either both or neither** — and "neither" is what shipped. If T005 or a
+  later spec wants a reflow to survive an OOM-killed tmux server, the change is
+  `reviveRecord` + a `Resize` in `Manager.revive`'s `!shellSurvives` branch, and
+  it needs the rows question below answered first.
+- **A reflow normalises the height to 24 and nothing says so.** Before the first
+  resize `window-size` is `latest`, so an operator who had attached a 50-row
+  terminal has a 50-row window; `Reflow` sets `-y 24` and that height is gone.
+  `#{window_height}` on the list row would give the true value if this ever
+  matters. **T007's documentation sweep should mention it, or T005 should read
+  the height back.**
+- **`#{window_width}` exists and is not what `@crswd-width` holds.** The option is
+  what this daemon *asked for*; the format variable is what the window *is*. They
+  agree today because nothing else resizes these windows, and they would diverge
+  the moment the operator puts a session back to `window-size latest` and attaches
+  — which is exactly the "way back" T005 promises. **If T005 renders a number to
+  the operator, it should consider rendering the truth rather than the intent.**
+- **`TestQuickstartStory5RateLimit` failed once on a `t.TempDir` cleanup race**
+  (`unlinkat .../001/home: directory not empty`) — not an assertion; the burst was
+  `[201 201 201 429 429]`, which is what it wants. It passed on two re-runs and
+  the full suite passed after. **Flaky teardown, not a regression**; something is
+  still writing under the temp home while cleanup runs.
+- **Two `wantErr` rows in `TestParseSessions` fail on the field count rather than
+  the reason they name** ("creation time is not a number" has seven fields, not
+  ten). That was already true before this change and is now one field further out.
+  Left alone under AR-008; worth a line when someone next touches that table.

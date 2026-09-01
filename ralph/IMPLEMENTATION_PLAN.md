@@ -145,7 +145,7 @@ must not silently change how their terminal behaves either.
       session "keeps tmux's 80x24 default", which this milestone retires. Test the
       clamp at both edges and past both edges.
 
-- [ ] **T003** Make the width durable: `OptionWidth = "@crswd-width"` written onto
+- [x] **T003** Make the width durable: `OptionWidth = "@crswd-width"` written onto
       the tmux session when a reflow is taken, and restored by adoption beside the
       five options it already restores. **Read spec 009 first** — a fact this
       daemon knows and tmux does not is exactly what was lost across a restart
