@@ -6640,3 +6640,473 @@ func TestContinueTrailNamesTheSessionAndNotTheValue(t *testing.T) {
 		t.Errorf("the trail carries the conversation identifier the caller sent:\n%s", written)
 	}
 }
+
+// --- The reflow (#120) -------------------------------------------------------
+//
+// The last action this door registers, and the only one whose caller-supplied
+// value is *clamped* rather than refused. Every other route here turns a bad
+// field away; #120 states the requirement for this one exactly the other way,
+// and the section below is where that difference is pinned rather than described.
+
+// The reflow's own answers, and the action its records carry. Each is written
+// out here rather than read from the constant the code writes, which is the
+// discipline every literal in this file follows: a test asserting against
+// outcomeReflowed would prove only that the code agrees with itself.
+const (
+	wantReflowedOutcome          = outcome("reflowed")
+	wantReflowUnconfirmedOutcome = outcome("reflow-unconfirmed")
+
+	wantReflowAction = "dashboard.reflow"
+)
+
+// reflowedColumns is the width every case below asks for, and it is the number
+// #120 was measured against rather than a round one: a phone reporting 44
+// columns, looking at a session that is 80.
+const reflowedColumns = 44
+
+// reflower drives the reflow route. It borrows the toggler's fixture for the
+// reason the continuer does — that is the registered browser door with the
+// store, the fake host and the trail all readable behind it — and adds the two
+// readings a reflow has to be checked against, because they are the two that can
+// disagree: what the record says the width is, and what the host says it is.
+type reflower struct{ *toggler }
+
+func newReflower(t *testing.T) *reflower {
+	t.Helper()
+	return &reflower{toggler: newToggler(t)}
+}
+
+// asking is the form a rendered control submits: the page token, the confirming
+// step FR-029 requires, and the column count.
+func (c *reflower) asking(t *testing.T, columns string) url.Values {
+	t.Helper()
+
+	form := url.Values{}
+	form.Set(fieldPageToken, mustMint(t, c.pageKey, testOperatorEmail, testTime))
+	form.Set(fieldConfirm, confirmYes)
+	form.Set(fieldColumns, columns)
+	return form
+}
+
+func (c *reflower) submit(t *testing.T, id string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	return c.send(t, "/dashboard/sessions/"+id+"/reflow", secFetchSiteSameOrigin, form)
+}
+
+// recorded is the width the daemon's own record carries, read back out of the
+// store rather than off the copy the test planted.
+func (c *reflower) recorded(t *testing.T, s session.Session) int {
+	t.Helper()
+
+	live, err := c.fixture.store.Get(s.ID, auth.CallerOperator)
+	if err != nil {
+		t.Fatalf("read the store for session %s: %v", s.ID, err)
+	}
+	return live.Width
+}
+
+// onHost is the width the host says the window has, and it is the assertion
+// recorded cannot make. A route that answered `reflowed` and wrote 44 into the
+// store without resizing anything leaves a card describing a window that is
+// still 80 — the milestone 15 defect this milestone is deliberately not
+// repeating, and one that is invisible from the store alone.
+func (c *reflower) onHost(t *testing.T, s session.Session) int {
+	t.Helper()
+
+	cols, _, ok := c.fixture.tmux.Size(s.TmuxName())
+	if !ok {
+		t.Fatalf("the host has no session named %q", s.TmuxName())
+	}
+	return cols
+}
+
+// untouchedWidth is the assertion every refusal below shares: the record still
+// says nobody has reflowed this session, and the window is still the width tmux
+// gave it.
+//
+// The zero is checked rather than the 80, and the two are not the same claim. A
+// session whose Width is zero is one this daemon has never taken out of tmux's
+// automatic sizing; one whose Width is 80 has been reflowed to the number it
+// already was. They render the same window and mean different things, which is
+// why a refused reflow has to leave the first rather than the second.
+func (c *reflower) untouchedWidth(t *testing.T, s session.Session) {
+	t.Helper()
+
+	if got := c.recorded(t, s); got != 0 {
+		t.Errorf("the record carries %d columns; want 0 — a refused reflow leaves the session one nobody has narrowed", got)
+	}
+	if got := c.onHost(t, s); got != config.DefaultPaneWidth {
+		t.Errorf("the host's window is %d columns; want %d — a refused reflow resizes nothing", got, config.DefaultPaneWidth)
+	}
+	if calls := c.fixture.tmux.Calls(); len(calls) != 0 {
+		t.Errorf("a refused reflow reached the host %d times (%v); want 0 — nothing is resized by a request this daemon would not carry out",
+			len(calls), calls)
+	}
+}
+
+// TestReflowFromBrowser is the happy path, and the first request that drives
+// everything milestone 16 has built end to end: a session at tmux's own 80
+// columns is reflowed to the 44 a phone reports, the host's window is 44
+// afterwards, and the record says so too.
+//
+// **Must fail when** the route answers `reflowed` without a resize having
+// happened. Both readings are asserted because either alone is satisfiable by a
+// stub — a handler that wrote the store and skipped tmux passes the record
+// check, and one that resized and never wrote the record passes the host check.
+// The first of those is not hypothetical: it is the shape of the milestone 15
+// defect, a record describing a session that is not what it says, and it is
+// invisible on a card.
+func TestReflowFromBrowser(t *testing.T) {
+	t.Parallel()
+
+	c := newReflower(t)
+	live := c.live(t)
+
+	if got := c.onHost(t, live); got != config.DefaultPaneWidth {
+		t.Fatalf("the session starts at %d columns; want %d — the case #120 states is a narrow viewer against a default window",
+			got, config.DefaultPaneWidth)
+	}
+
+	w := c.submit(t, live.ID, c.asking(t, strconv.Itoa(reflowedColumns)))
+
+	wantOutcome(t, w, wantReflowedOutcome)
+
+	if got := c.onHost(t, live); got != reflowedColumns {
+		t.Errorf("the host's window is %d columns; want %d — a reflow the terminal did not perform is a stylesheet's wrap wearing a resize's name",
+			got, reflowedColumns)
+	}
+	if got := c.recorded(t, live); got != reflowedColumns {
+		t.Errorf("the record carries %d columns; want %d", got, reflowedColumns)
+	}
+
+	// The session, the process in it and its scrollback are what a reflow must
+	// not touch. Re-wrapping a pane by killing the window and starting another
+	// would satisfy both assertions above and lose everything the operator was
+	// reading, which is the one way this route could answer honestly and still
+	// destroy their work.
+	for _, call := range c.fixture.tmux.Calls() {
+		if call.Op == tmuxctl.OpNew || call.Op == tmuxctl.OpKill || call.Op == tmuxctl.OpSendKeys {
+			t.Errorf("the reflow ran %s (%q); the session and its scrollback are what it must not touch", call.Op, call.Argv)
+		}
+	}
+
+	rec := c.only(t)
+	if got, want := rec["action"], wantReflowAction; got != want {
+		t.Errorf("action = %v; want %v — a browser reflow is countable on its own", got, want)
+	}
+	if got, want := rec["decision"], string(audit.Allow); got != want {
+		t.Errorf("decision = %v; want %v", got, want)
+	}
+	if got := rec["session_id"]; got != live.ID {
+		t.Errorf("session_id = %v; want %q", got, live.ID)
+	}
+}
+
+// TestReflowClampsRatherThanRefusing is #120's requirement stated exactly, and
+// the one place this route parts company with every other action on this door.
+//
+// The width is **advisory**. It is reported by a browser rather than typed by an
+// operator, so there is nobody to hand a refusal to and nobody holding a phone
+// who could act on one: a value outside the bounds is brought inside them, a
+// value that is not a number is the default, and neither is an error.
+//
+// **Must fail when** any of these answers something other than `reflowed`, or
+// answers a 500. wantOutcome asserts the 303, so a refusal and a panic-shaped
+// failure both fail here. The four cases the plan names — a word, a negative,
+// nine million, and a field nobody sent — are what a hand-built request
+// produces; the four at the bounds are what keeps the clamp from being a check
+// that never fires.
+func TestReflowClampsRatherThanRefusing(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		// columns is the field as submitted. absent removes it entirely, which is
+		// a different shape from an empty one and is what a form rendered without
+		// the control would send.
+		columns string
+		want    int
+
+		// nameable marks a submitted value that is not a number at all. Those are
+		// the ones that could name something on a command line if any byte of them
+		// travelled, so they are the ones swept out of the argv below. A numeric
+		// value is deliberately not swept for: "20" clamps to 20, so searching the
+		// argv for it would match this daemon's own correctly-formatted output and
+		// the assertion would be about arithmetic rather than about containment.
+		nameable bool
+	}{
+		"a width that is a word":                 {columns: "wide", want: config.DefaultPaneWidth, nameable: true},
+		"a width that is a command substitution": {columns: "$(tput cols)", want: config.DefaultPaneWidth, nameable: true},
+		"a width with a unit on it":              {columns: "44px", want: config.DefaultPaneWidth, nameable: true},
+		"no columns field at all":                {columns: absent, want: config.DefaultPaneWidth},
+		"an empty columns field":                 {columns: "", want: config.DefaultPaneWidth},
+
+		"a negative width":        {columns: "-40", want: config.MinPaneWidth},
+		"a width of zero":         {columns: "0", want: config.MinPaneWidth},
+		"one under the floor":     {columns: strconv.Itoa(config.MinPaneWidth - 1), want: config.MinPaneWidth},
+		"the floor exactly":       {columns: strconv.Itoa(config.MinPaneWidth), want: config.MinPaneWidth},
+		"the ceiling exactly":     {columns: strconv.Itoa(config.MaxPaneWidth), want: config.MaxPaneWidth},
+		"one over the ceiling":    {columns: strconv.Itoa(config.MaxPaneWidth + 1), want: config.MaxPaneWidth},
+		"a width of nine million": {columns: "9000000", want: config.MaxPaneWidth},
+		// Past what an int holds at all. strconv saturates on ErrRange, so this
+		// clamps to the ceiling rather than falling back to the default — there is
+		// deliberately no cliff between a number this daemon can hold and one
+		// digit more.
+		"more digits than an int holds": {columns: strings.Repeat("9", 40), want: config.MaxPaneWidth},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			c := newReflower(t)
+			live := c.live(t)
+
+			form := c.asking(t, tc.columns)
+			if tc.columns == absent {
+				form.Del(fieldColumns)
+			}
+
+			w := c.submit(t, live.ID, form)
+
+			wantOutcome(t, w, wantReflowedOutcome)
+
+			if got := c.onHost(t, live); got != tc.want {
+				t.Errorf("the host's window is %d columns; want %d — the clamp is what the window ends up at, not what the handler decided privately",
+					got, tc.want)
+			}
+			if got := c.recorded(t, live); got != tc.want {
+				t.Errorf("the record carries %d columns; want %d", got, tc.want)
+			}
+
+			// The submitted bytes stop at the clamp. This is the assertion the
+			// command-substitution case exists for: what reaches the host is a
+			// number this package formatted, and no argv carries text the caller
+			// chose. It is the same claim internal/tmuxctl makes at the exec, made
+			// again here because a clamp that fell back to the default while
+			// passing the original string along would satisfy every other check
+			// above.
+			if tc.nameable {
+				for _, call := range c.fixture.tmux.Calls() {
+					for _, arg := range call.Argv {
+						if strings.Contains(arg, tc.columns) {
+							t.Errorf("the submitted width reached the host verbatim: %q in %q", tc.columns, call.Argv)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestReflowRequiresConfirm is FR-029 on the route where the confirming step is
+// least obviously necessary and, for that reason, worth stating: a reflow tears
+// nothing down and restarts nothing, so what it confirms is not the risk to this
+// session but the effect on the other people reading it. A tmux window has one
+// size however many viewers it has, and nobody's screen goes narrow under them
+// because a link was followed.
+//
+// **Must fail when** an unconfirmed reflow resizes anything. The host is
+// asserted as well as the record, because a route that resized and then noticed
+// the missing confirmation would answer this same 303 and leave the window at 44.
+func TestReflowRequiresConfirm(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]func(url.Values){
+		"the confirming step was not sent": func(f url.Values) { f.Del(fieldConfirm) },
+		"confirmed with something that is not yes": func(f url.Values) {
+			f.Set(fieldConfirm, "on")
+		},
+		"confirmed with an empty value": func(f url.Values) { f.Set(fieldConfirm, "") },
+	}
+
+	for name, spoil := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			c := newReflower(t)
+			live := c.live(t)
+
+			form := c.asking(t, strconv.Itoa(reflowedColumns))
+			spoil(form)
+
+			w := c.submit(t, live.ID, form)
+
+			wantOutcome(t, w, wantReflowUnconfirmedOutcome)
+			c.untouchedWidth(t, live)
+
+			rec := c.only(t)
+			if got, want := rec["decision"], string(audit.Deny); got != want {
+				t.Errorf("decision = %v; want %v — a reflow this daemon did not perform is not an allowed action", got, want)
+			}
+			if got, want := rec["reason"], errReflowUnconfirmed.Error(); got != want {
+				t.Errorf("reason = %v; want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestReflowRefusesASessionThatIsNotThisOperatorsToActOn is FR-017 and SC-009 on
+// the newest route: three causes, one answer, and the difference kept where only
+// the operator can read it.
+//
+// **Must fail when** the three become distinguishable from outside. An answer
+// that separated "never existed" from "not yours" would let anyone who reaches
+// this door count the sessions on this host — and on this route it would do the
+// counting by resizing them.
+func TestReflowRefusesASessionThatIsNotThisOperatorsToActOn(t *testing.T) {
+	t.Parallel()
+
+	const stranger auth.CallerID = "a-second-operator"
+
+	cases := []struct {
+		name   string
+		target func(t *testing.T, c *reflower) session.Session
+		reason error
+	}{
+		{
+			name: "an identifier no session on this host ever had",
+			target: func(*testing.T, *reflower) session.Session {
+				return session.Session{ID: strings.Repeat("c", session.IDLen)}
+			},
+			reason: session.ErrSessionNotFound,
+		},
+		{
+			name: "a session another operator owns",
+			target: func(t *testing.T, c *reflower) session.Session {
+				t.Helper()
+				theirs, _ := c.fixture.plant(t, session.Session{
+					Owner: stranger, Name: "someone-elses", WorkDir: c.fixture.repo,
+				})
+				return theirs
+			},
+			reason: session.ErrSessionNotFound,
+		},
+		{
+			name: "a session of the operator's own that is no longer there",
+			target: func(t *testing.T, c *reflower) session.Session {
+				t.Helper()
+				gone, _ := c.fixture.plant(t, session.Session{
+					Name: "already-gone", WorkDir: c.fixture.repo, State: session.StateDead,
+				})
+				return gone
+			},
+			reason: session.ErrSessionDead,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := newReflower(t)
+			target := tc.target(t, c)
+
+			w := c.submit(t, target.ID, c.asking(t, strconv.Itoa(reflowedColumns)))
+
+			if w.Code != wantNotFoundStatus {
+				t.Fatalf("status = %d (%s); want %d", w.Code, w.Body.String(), wantNotFoundStatus)
+			}
+			if got := w.Body.String(); got != wantNotFoundBody {
+				t.Errorf("body\n%s\nwant\n%s", got, wantNotFoundBody)
+			}
+			if got, want := w.Header().Get(headerContentLength), strconv.Itoa(len(wantNotFoundBody)); got != want {
+				t.Errorf("%s = %q; want %q", headerContentLength, got, want)
+			}
+			if calls := c.fixture.tmux.Calls(); len(calls) != 0 {
+				t.Errorf("the host was asked to resize %d times (%v) for a session that is not this operator's to act on", len(calls), calls)
+			}
+
+			rec := c.only(t)
+			if got, want := rec["reason"], tc.reason.Error(); got != want {
+				t.Errorf("reason = %v; want %v — the record is the only place the cause is named", got, want)
+			}
+			if strings.Contains(w.Body.String(), tc.reason.Error()) {
+				t.Errorf("the response quotes the reason back:\n%s", w.Body.String())
+			}
+		})
+	}
+}
+
+// TestReflowRunsBehindTheActionGate is the registration claim, and
+// docs/security.md's checklist item for a new mutating browser route: both
+// halves of the gate are driven with the other satisfied.
+//
+// **Must fail when** the route is registered with handleBrowser rather than
+// handleAction. The window is asserted afterwards as well as the status, because
+// a gate that refused *after* the handler ran would answer 403 and still have
+// narrowed the session for everybody reading it — the failure a status code
+// cannot see.
+func TestReflowRunsBehindTheActionGate(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]func(t *testing.T, c *reflower) (url.Values, string){
+		"the form carried no page token": func(t *testing.T, c *reflower) (url.Values, string) {
+			t.Helper()
+			form := c.asking(t, strconv.Itoa(reflowedColumns))
+			form.Del(fieldPageToken)
+			return form, secFetchSiteSameOrigin
+		},
+		"the browser said the request came from another site": func(t *testing.T, c *reflower) (url.Values, string) {
+			t.Helper()
+			return c.asking(t, strconv.Itoa(reflowedColumns)), "cross-site"
+		},
+		"the browser reported no initiator at all": func(t *testing.T, c *reflower) (url.Values, string) {
+			t.Helper()
+			// Absent refuses on a route that changes something, which is where the
+			// action gate departs from the pane stream's reading of the same header.
+			return c.asking(t, strconv.Itoa(reflowedColumns)), absent
+		},
+	}
+
+	for name, arrange := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			c := newReflower(t)
+			live := c.live(t)
+			form, site := arrange(t, c)
+
+			w := c.send(t, "/dashboard/sessions/"+live.ID+"/reflow", site, form)
+
+			if w.Code != wantActionStatus {
+				t.Fatalf("status = %d (%s); want %d — the reflow route is not behind the gate",
+					w.Code, w.Body.String(), wantActionStatus)
+			}
+			if got := w.Body.String(); got != wantActionBody {
+				t.Errorf("body\n%s\nwant the gate's uniform refusal\n%s", got, wantActionBody)
+			}
+			c.untouchedWidth(t, live)
+			if got, want := c.only(t)["action"], string(audit.ActionDashboardReject); got != want {
+				t.Errorf("action = %v; want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestReflowTrailNamesTheSessionAndNotTheWidth is FR-042 on this route's one
+// caller-supplied value.
+//
+// **Must fail when** the record carries what was submitted. A column count is
+// not a secret, and that is beside the point: every reason on this trail is a
+// sentinel this codebase authored, and a route that put a caller's bytes on a
+// record would be the exception that makes the rule unenforceable.
+func TestReflowTrailNamesTheSessionAndNotTheWidth(t *testing.T) {
+	t.Parallel()
+
+	// A value nothing in the vocabulary and no clamped result could produce, so a
+	// match below is the submitted bytes and never a coincidence.
+	const submitted = "31337"
+
+	c := newReflower(t)
+	live := c.live(t)
+
+	c.submit(t, live.ID, c.asking(t, submitted))
+
+	written := c.sink.String()
+	if !strings.Contains(written, live.ID) {
+		t.Errorf("the trail does not name the session it acted on:\n%s", written)
+	}
+	if strings.Contains(written, submitted) {
+		t.Errorf("the trail carries the column count the caller sent:\n%s", written)
+	}
+}

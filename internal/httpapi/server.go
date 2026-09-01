@@ -687,6 +687,15 @@ func newServer(
 	// browser, in either direction (FR-030).
 	s.handleAction(patternDashboardMode, audit.ActionSessionMode, s.modeFromBrowser)
 	s.handleAction(patternDashboardContinue, audit.ActionDashboardContinue, s.continueFromBrowser)
+	// The reflow (#120), and the only one of these that changes what a session
+	// looks like rather than what it is doing. It goes through handleAction like
+	// every write above, and the argument is the one that makes the width a
+	// session's property rather than a viewer's: a tmux window has one size
+	// however many people are reading it, so a third-party page that could reach
+	// this route could narrow every session on this host under whoever is
+	// watching them. What it may name is a column count, clamped before it is
+	// used and clamped again before it reaches an argv.
+	s.handleAction(patternDashboardReflow, audit.ActionDashboardReflow, s.reflowFromBrowser)
 	// The sixth, and the only one of the six that changes this daemon rather than
 	// a session it manages (T019). It goes through handleAction like the five
 	// above, and the argument for the gate is at its strongest here: a

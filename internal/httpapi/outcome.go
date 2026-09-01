@@ -72,6 +72,15 @@ const (
 	// four sentences would tell an operator.
 	outcomeModeChanged outcome = "mode-changed"
 
+	// The reflow action's outcomes (#120). Three, where the continue above has
+	// five, and the missing two are the point rather than an omission: #120 makes
+	// a reported width *advisory*, so a column count outside the bounds is
+	// brought inside them and one that is not a number is the default. There is
+	// no bad-columns code because there is no width this route refuses.
+	outcomeReflowed          outcome = "reflowed"
+	outcomeReflowUnconfirmed outcome = "reflow-unconfirmed"
+	outcomeReflowFailed      outcome = "reflow-failed"
+
 	// The continue action's outcomes (spec 013).
 	outcomeContinued           outcome = "continued"
 	outcomeContinueUnconfirmed outcome = "continue-unconfirmed"
@@ -236,6 +245,32 @@ var banners = map[outcome]outcomeView{
 		// in the same place and for the same reason. Whether the assistant picks
 		// the conversation up is not a fact this process observed.
 		Message: "Continuing that conversation. The process in the pane was restarted, and the session, its window and its scrollback are as they were.",
+	},
+	outcomeReflowed: {
+		// Claims the two things this daemon did — the window was resized and the
+		// width was written down — and then states the cost, which is the half an
+		// operator has no other way to discover. tmux flips a resized window out of
+		// automatic sizing and nothing sets it back, so a session reflowed here
+		// stops following a terminal that later attaches on the host. A daemon
+		// whose whole update story is "never change something the operator owns
+		// without saying so" does not get to change how their terminal behaves
+		// quietly either.
+		//
+		// No number in it: a code carries no data, so what a banner can say is
+		// fixed at compile time. What the window is now is on the session's card.
+		Message: "Session reflowed. The terminal re-wrapped what is already on screen, every reader of this session sees the same width, and it no longer sizes itself to a terminal attached on the host.",
+	},
+	outcomeReflowUnconfirmed: {
+		// The shape the three unconfirmed banners above share, with the fact it
+		// states replaced: a reflow changes no process and no record, so what an
+		// operator needs to hear is that the width is the width it was.
+		Message: "This reflow was not confirmed, so the session is the width it was.",
+	},
+	outcomeReflowFailed: {
+		// Says the width is unchanged, which Manager.Reflow earns rather than this
+		// sentence assuming it: tmux is asked first and the record written after,
+		// so a resize that failed wrote nothing down.
+		Message: "The session could not be reflowed. It is the width it was.",
 	},
 	outcomeContinueUnconfirmed: {
 		Message: "Nothing was continued. Continuing restarts the process in the pane, so it asks to be confirmed.",

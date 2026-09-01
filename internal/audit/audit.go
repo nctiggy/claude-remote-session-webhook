@@ -144,6 +144,19 @@ const (
 	// different conversation from its own working directory (spec 013).
 	ActionDashboardContinue Action = "dashboard.continue"
 
+	// ActionDashboardReflow is an operator re-wrapping a session by resizing its
+	// window, so the terminal does the wrapping and a stylesheet does not (#120).
+	//
+	// It is dashboard.reflow rather than session.reflow, which session.mode's
+	// precedent would allow, because what an operator counts here is what the
+	// *browser* changed: a reflow changes the session for every reader at once,
+	// and the trail is the only place a second reader's screen going narrow is
+	// attributable to somebody's phone.
+	//
+	// It never carries the width. The record shape is frozen (FR-016) and a
+	// column count is not a field on it; what the window is now is on the card.
+	ActionDashboardReflow Action = "dashboard.reflow"
+
 	// ActionDashboardReject is a mutating browser request refused by the
 	// cross-site defence, and is deliberately not ActionAccessReject: an identity
 	// that passed layer 1 and then failed the cross-site check is a different and
