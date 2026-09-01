@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -21,6 +22,7 @@ const (
 	OpSendKeys     Op = "SendKeys"
 	OpPaste        Op = "Paste"
 	OpCapturePane  Op = "CapturePane"
+	OpResize       Op = "Resize"
 	OpKill         Op = "Kill"
 	OpHas          Op = "Has"
 	OpList         Op = "List"
@@ -80,6 +82,57 @@ func argvPasteBuffer(name string) []string {
 // raw control bytes to the API.
 func argvCapturePane(name string) []string {
 	return []string{"tmux", "capture-pane", "-p", "-t", PaneTarget(name)}
+}
+
+// The window dimensions tmux itself accepts, measured against tmux 3.4 on a
+// detached session: 1 and 10000 are taken, 0 and negatives are refused with
+// "width too small", and anything above 10000 with "width too large".
+//
+// They bound argvResize because these two integers are the only
+// caller-influenced values that have ever reached an argv in this package, and
+// the package header states that a request arriving here has already passed
+// authentication — so this is the last boundary that still holds. The handler
+// clamps too; that is defence in depth at a trust boundary, not drift.
+//
+// Wider than any width a viewer will report on purpose. The policy about what
+// makes a *usable* terminal belongs to the operator's configuration; what
+// belongs here is that no number this package formats can be one tmux rejects.
+const (
+	minDimension = 1
+	maxDimension = 10000
+)
+
+// tmux's own size for a window no client has ever attached to, which is what
+// every session this daemon starts is until something resizes it (measured:
+// 80x24 on tmux 3.4).
+const (
+	tmuxDefaultColumns = 80
+	tmuxDefaultRows    = 24
+)
+
+// clampDimension brings a dimension inside what tmux accepts. It never fails:
+// #120 requires a width the browser reported to be advisory, so a bad one is
+// corrected rather than turned into an error the operator has to read on a
+// phone.
+func clampDimension(v int) int {
+	if v < minDimension {
+		return minDimension
+	}
+	if v > maxDimension {
+		return maxDimension
+	}
+	return v
+}
+
+// The two integers are formatted here, by the one builder both implementations
+// share, so the clamp cannot hold on one side and not the other. strconv rather
+// than fmt because these become argv elements, not a message.
+func argvResize(name string, cols, rows int) []string {
+	return []string{
+		"tmux", "resize-window", "-t", PaneTarget(name),
+		"-x", strconv.Itoa(clampDimension(cols)),
+		"-y", strconv.Itoa(clampDimension(rows)),
+	}
 }
 
 func argvKill(name string) []string {
@@ -176,6 +229,12 @@ type fakeSession struct {
 	paneCommand string
 	options     map[string]string
 	pane        string
+
+	// The window size a Resize left behind. Zero means nothing has resized this
+	// session, which Size reads as tmux's own default rather than as a size —
+	// the fake holds what the host holds, so a test cannot pass against a daemon
+	// that resized nothing.
+	cols, rows int
 }
 
 // NewFake returns a fake with no sessions, as though tmux had just started.
@@ -269,6 +328,26 @@ func (f *Fake) CapturePane(_ context.Context, name string) (string, error) {
 		return "", errNoSession(name)
 	}
 	return s.pane, nil
+}
+
+// Resize records the call and leaves the session at the size tmux was told —
+// the clamped one, never the caller's. A fake that stored the raw request would
+// let a test assert a width the host could never have had, which is the same
+// mistake as a fake that stores a lifetime and returns nothing.
+func (f *Fake) Resize(_ context.Context, name string, cols, rows int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.record(OpResize, argvResize(name, cols, rows), nil)
+	if err := f.fail[OpResize]; err != nil {
+		return err
+	}
+	s, ok := f.sessions[name]
+	if !ok {
+		return errNoSession(name)
+	}
+	s.cols, s.rows = clampDimension(cols), clampDimension(rows)
+	return nil
 }
 
 // Kill removes the session unless SurviveKill marked it, in which case tmux
@@ -506,6 +585,26 @@ func (f *Fake) WorkDir(name string) (string, bool) {
 		return "", false
 	}
 	return s.workDir, true
+}
+
+// Size reports the window a session would render into, so a test can prove a
+// reflow reached the host rather than only that a handler returned 200.
+//
+// A session nothing has resized answers tmux's own 80x24, which is what the
+// real server answers for a detached session and what every session that
+// predates this method is. Reporting 0x0 there would be a size no terminal has.
+func (f *Fake) Size(name string) (cols, rows int, ok bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	s, ok := f.sessions[name]
+	if !ok {
+		return 0, 0, false
+	}
+	if s.cols == 0 || s.rows == 0 {
+		return tmuxDefaultColumns, tmuxDefaultRows, true
+	}
+	return s.cols, s.rows, true
 }
 
 // Option reports a tmux user option set on a session, so a test can prove

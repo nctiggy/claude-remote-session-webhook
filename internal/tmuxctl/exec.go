@@ -253,6 +253,30 @@ func countLines(screen string) int {
 	return n
 }
 
+// Resize sets the window to cols by rows, and tmux rewraps the screen that is
+// already in the pane — which is the whole of #120: the terminal does the
+// wrapping, so a break lands at the column edge and nothing is misrepresented.
+//
+// Measured against tmux 3.4 on a **detached** session with no client attached,
+// which is the only shape this daemon ever creates: an 80-column line already
+// on screen comes back re-wrapped at 44 with no new output. exec_tmux_test.go
+// pins that, because a fake can only prove the argv — and the argv proves
+// nothing about whether the screen actually reflowed.
+//
+// **tmux flips window-size to manual as a side effect and nothing sets it
+// back.** The cost is not on the browser's path but on the operator's: a
+// session resized here stops sizing itself to a terminal that later runs tmux
+// attach on the host, with nothing on screen to explain why.
+//
+// The dimensions are clamped in argvResize rather than here, so the fake and
+// this method cannot disagree about what tmux was told.
+func (e *Exec) Resize(ctx context.Context, name string, cols, rows int) error {
+	if _, stderr, err := e.run(ctx, argvResize(name, cols, rows), nil); err != nil {
+		return fmt.Errorf("tmux resize-window %s: %w", name, withStderr(err, stderr))
+	}
+	return nil
+}
+
 func (e *Exec) Kill(ctx context.Context, name string) error {
 	if _, stderr, err := e.run(ctx, argvKill(name), nil); err != nil {
 		return fmt.Errorf("tmux kill-session %s: %w", name, withStderr(err, stderr))

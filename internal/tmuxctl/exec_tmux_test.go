@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -472,6 +473,93 @@ func TestTmuxCapturePaneCarriesNoEscapeBytes(t *testing.T) {
 	if strings.ContainsRune(pane, 0x1b) {
 		t.Errorf("captured pane carries an ESC byte: %q", pane)
 	}
+}
+
+// TestTmuxResizeReflowsWhatIsAlreadyOnScreen is the measurement milestone 16
+// rests on, pinned so a tmux upgrade cannot quietly retract it.
+//
+// #120's whole argument is that the terminal should do the wrapping rather than
+// CSS, and that only works if tmux rewraps the screen it *already has*. If it
+// only applied the new width to output that arrived afterwards, a reader on a
+// phone would press reflow and watch nothing happen until the program in the
+// pane next repainted — which for an idle Claude session is never.
+//
+// A fake cannot make this assertion. It can prove the argv and nothing else, and
+// the argv is not the claim: the claim is what tmux does with it, on a detached
+// session with no client attached, which is the only shape this daemon creates.
+func TestTmuxResizeReflowsWhatIsAlreadyOnScreen(t *testing.T) {
+	ctx := context.Background()
+	e := newTestExec(t)
+	const (
+		name = "crswd-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		// Exactly 80 characters, the width tmux gives a window no client has
+		// attached to. Digits rather than a repeated character so the break is
+		// visible in a failure message and can only land in one place.
+		marker = "01234567890123456789012345678901234567890123456789012345678901234567890123456789"
+		narrow = 44
+	)
+
+	if err := e.New(ctx, name, t.TempDir()); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// The command that prints the marker must not contain it: the echoed command
+	// line is on the screen too and reflows with everything else, and a marker
+	// inside it would make "this line is the marker" ambiguous after the resize.
+	if err := e.SendKeys(ctx, name, `echo $(printf '0123456789%.0s' 1 2 3 4 5 6 7 8)`); err != nil {
+		t.Fatalf("SendKeys: %v", err)
+	}
+	if err := e.SendKeys(ctx, name, "Enter"); err != nil {
+		t.Fatalf("SendKeys Enter: %v", err)
+	}
+	waitFor(t, "the 80-column line to be drawn", func() bool {
+		out, err := e.CapturePane(ctx, name)
+		if err != nil {
+			t.Fatalf("CapturePane: %v", err)
+		}
+		return hasLine(out, marker)
+	})
+
+	// No new output after this point, and no client is attached. Everything the
+	// assertions below see is the screen tmux already had.
+	if err := e.Resize(ctx, name, narrow, 24); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
+
+	head, tail := marker[:narrow], marker[narrow:]
+	var pane string
+	waitFor(t, "the line to come back wrapped at "+strconv.Itoa(narrow), func() bool {
+		out, err := e.CapturePane(ctx, name)
+		if err != nil {
+			t.Fatalf("CapturePane: %v", err)
+		}
+		pane = out
+		return hasLine(out, head)
+	})
+
+	if !hasLine(pane, head) {
+		t.Errorf("no line equal to the first %d columns after the resize; pane =\n%s", narrow, pane)
+	}
+	if !hasLine(pane, tail) {
+		t.Errorf("no line carrying the remaining %d columns after the resize; pane =\n%s", len(tail), pane)
+	}
+	// The break is the terminal's, at the column edge — not a stylesheet's, and
+	// not a second copy of the line left behind at the old width.
+	if hasLine(pane, marker) {
+		t.Errorf("the 80-column line is still whole after a resize to %d; pane =\n%s", narrow, pane)
+	}
+}
+
+// hasLine reports whether the captured screen carries want as a whole line.
+// tmux pads nothing on the right, but a comparison against a trimmed line is
+// what makes "the break landed exactly at column 44" assertable rather than
+// "the characters are somewhere on screen".
+func hasLine(pane, want string) bool {
+	for _, line := range strings.Split(pane, "\n") {
+		if strings.TrimRight(line, " ") == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestTmuxListReportsTheConversationAndLiveness is spec 012's half of the round

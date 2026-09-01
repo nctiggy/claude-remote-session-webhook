@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -46,6 +48,9 @@ func TestFakeRecordsExactArgv(t *testing.T) {
 	if _, err := f.CapturePane(ctx, fakeName); err != nil {
 		t.Fatalf("CapturePane: %v", err)
 	}
+	if err := f.Resize(ctx, fakeName, 44, 24); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
 	if err := f.Kill(ctx, fakeName); err != nil {
 		t.Fatalf("Kill: %v", err)
 	}
@@ -63,6 +68,7 @@ func TestFakeRecordsExactArgv(t *testing.T) {
 		{Op: tmuxctl.OpPaste, Argv: []string{"tmux", "load-buffer", "-b", fakeName, "-"}, Stdin: []byte("hello")},
 		{Op: tmuxctl.OpPaste, Argv: []string{"tmux", "paste-buffer", "-d", "-b", fakeName, "-t", "=" + fakeName + ":"}},
 		{Op: tmuxctl.OpCapturePane, Argv: []string{"tmux", "capture-pane", "-p", "-t", "=" + fakeName + ":"}},
+		{Op: tmuxctl.OpResize, Argv: []string{"tmux", "resize-window", "-t", "=" + fakeName + ":", "-x", "44", "-y", "24"}},
 		{Op: tmuxctl.OpKill, Argv: []string{"tmux", "kill-session", "-t", "=" + fakeName}},
 		{Op: tmuxctl.OpHas, Argv: []string{"tmux", "has-session", "-t", "=" + fakeName}},
 		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}|#{@crswd-lifetime}|#{@crswd-conversation}|#{?#{@crswd-binary},#{==:#{pane_current_command},#{@crswd-binary}},?}"}},
@@ -134,6 +140,99 @@ func TestFakeCapturePaneNeverAsksForEscapes(t *testing.T) {
 	}
 	if slices.Contains(calls[0].Argv, "-e") {
 		t.Errorf("capture-pane asked for escapes: %q", calls[0].Argv)
+	}
+}
+
+// The clamp is the point of Resize taking two integers at all. They are the only
+// caller-influenced values that reach an argv in this package, and #120 requires
+// a width the browser reported to be advisory — so a bad one is corrected here
+// rather than refused, and what tmux is told is never a number it would reject.
+//
+// The bounds are tmux's own, measured against 3.4: 0 and negatives are "width
+// too small", anything past 10000 is "width too large". A clamp that let either
+// through would turn a viewport report into a failed reflow the operator reads
+// on a phone.
+func TestFakeResizeClampsWhatReachesTheArgv(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		cols, rows int
+		wantX      string
+		wantY      string
+	}{
+		"an ordinary phone width":  {cols: 44, rows: 24, wantX: "44", wantY: "24"},
+		"the floor itself":         {cols: 1, rows: 1, wantX: "1", wantY: "1"},
+		"the ceiling itself":       {cols: 10000, rows: 10000, wantX: "10000", wantY: "10000"},
+		"zero is not a terminal":   {cols: 0, rows: 0, wantX: "1", wantY: "1"},
+		"negative, past the floor": {cols: -1, rows: -80, wantX: "1", wantY: "1"},
+		"one past the ceiling":     {cols: 10001, rows: 10001, wantX: "10000", wantY: "10000"},
+		"nine million":             {cols: 9000000, rows: 9000000, wantX: "10000", wantY: "10000"},
+		"the extremes of int":      {cols: math.MinInt, rows: math.MaxInt, wantX: "1", wantY: "10000"},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			f := tmuxctl.NewFake()
+			if err := f.New(ctx, fakeName, fakeWorkDir); err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			// Never an error, however absurd the numbers: advisory means clamped,
+			// not rejected.
+			if err := f.Resize(ctx, fakeName, tc.cols, tc.rows); err != nil {
+				t.Fatalf("Resize(%d, %d): %v", tc.cols, tc.rows, err)
+			}
+
+			want := []string{"tmux", "resize-window", "-t", "=" + fakeName + ":", "-x", tc.wantX, "-y", tc.wantY}
+			calls := f.Calls()
+			got := calls[len(calls)-1]
+			if got.Op != tmuxctl.OpResize {
+				t.Fatalf("last call op = %q, want %q", got.Op, tmuxctl.OpResize)
+			}
+			if !slices.Equal(got.Argv, want) {
+				t.Errorf("argv =\n  %q\nwant\n  %q", got.Argv, want)
+			}
+
+			// And the session is left at what tmux was told, not at what the
+			// caller asked for — a fake that stored the unclamped value would let
+			// a test claim a size the host never had.
+			cols, rows, ok := f.Size(fakeName)
+			if !ok {
+				t.Fatal("Size reports no session after Resize")
+			}
+			if strconv.Itoa(cols) != tc.wantX || strconv.Itoa(rows) != tc.wantY {
+				t.Errorf("size = %dx%d, want %sx%s", cols, rows, tc.wantX, tc.wantY)
+			}
+		})
+	}
+}
+
+// A session nothing has resized is 80x24 — tmux's own default for a window no
+// client ever attached to, which is every session this daemon starts. Answering
+// 0x0 would be a size no terminal has, and a caller comparing a viewport against
+// it would offer a reflow to every session on the page.
+func TestFakeSizeIsTmuxsDefaultUntilSomethingResizes(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	f := tmuxctl.NewFake()
+	if err := f.New(ctx, fakeName, fakeWorkDir); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	cols, rows, ok := f.Size(fakeName)
+	if !ok {
+		t.Fatal("Size reports no session after New")
+	}
+	if cols != 80 || rows != 24 {
+		t.Errorf("size = %dx%d, want 80x24", cols, rows)
+	}
+
+	if _, _, ok := f.Size("crswd-00000000000000000000000000000000"); ok {
+		t.Error("Size reported a session that was never created")
 	}
 }
 

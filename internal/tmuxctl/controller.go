@@ -43,6 +43,21 @@ type Controller interface {
 	// attributes and hand raw control bytes to the API.
 	CapturePane(ctx context.Context, name string) (string, error)
 
+	// Resize sets the session's window to cols by rows, which is how the
+	// terminal rather than a stylesheet does the wrapping (#120). tmux rewraps
+	// what is already on the screen, so a narrow reader does not wait for the
+	// program in the pane to repaint.
+	//
+	// cols and rows are the only caller-influenced values that reach an argv in
+	// this package, so they are clamped here as well as at the handler — see
+	// argvResize. A width outside the range is brought inside it, never
+	// refused: #120 requires the browser's report to be advisory.
+	//
+	// **It takes the window out of tmux's automatic sizing, and nothing puts it
+	// back.** A resized session no longer follows a terminal that later runs
+	// tmux attach on the host, so a caller that offers this must say so.
+	Resize(ctx context.Context, name string, cols, rows int) error
+
 	// Kill asks tmux to destroy the session. It is not teardown on its own —
 	// callers confirm with Has, because an orphaned session is a live
 	// unsandboxed shell with no owner.
