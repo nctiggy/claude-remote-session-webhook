@@ -123,7 +123,7 @@ must not silently change how their terminal behaves either.
 
 ## Tasks
 
-- [ ] **T001** 🔒 Add the resize to `internal/tmuxctl` — `Controller`, `Exec` and
+- [x] **T001** 🔒 Add the resize to `internal/tmuxctl` — `Controller`, `Exec` and
       `Fake` — as `tmux resize-window -t <PaneTarget> -x <cols> -y <rows>`, with
       the argv built by one shared builder like `argvCapturePane`. **The two
       integers are formatted in this package with `strconv` and are the only

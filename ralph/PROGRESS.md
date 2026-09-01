@@ -144,3 +144,60 @@ no client attached. Do not re-derive these; they cost an hour.**
 
 **Left:** milestone 16, T001–T007, in `ralph/IMPLEMENTATION_PLAN.md`. Nothing is
 blocked. The loop can run.
+
+---
+
+## Iteration 1 — 2026-09-01 — T001, the resize primitive
+
+**Did:** Added `Resize(ctx, name, cols, rows)` to `Controller`, `Exec` and
+`Fake` as `tmux resize-window -t <PaneTarget> -x <cols> -y <rows>`, built by one
+shared `argvResize` that clamps both integers. Commit `058e30e`.
+
+**Learned — measured on this host against tmux 3.4, detached session, no client.
+Do not re-derive.**
+
+- **`resize-window` accepts 1..10000 on both axes and refuses everything else**,
+  by exit 1 with `width too small` (for 0 and negatives) or `width too large`.
+  That is where `minDimension`/`maxDimension` in `fake.go` come from — they are
+  tmux's numbers, not a policy. **T002's floor and ceiling are a different
+  decision** (what makes a *usable* terminal) and should not be pinned to these.
+- **The reflow is confirmed and it is immediate.** The new `-tags tmux` case
+  prints an 80-column line, resizes to 44, and the line comes back as 44 + 36
+  with no new output. No polling was actually needed; `waitFor` is there so a
+  future tmux that defers the rewrap fails loudly rather than flakily.
+- **`window-size` flips `latest` → `manual`, re-confirmed here.** Unchanged from
+  Iteration 0 and still owed to the operator by T005 and T007.
+- **The clamp lives in the shared argv builder, not in `Exec.Resize`.** That is
+  what makes the fake's argv assertion a proof of the clamp rather than of a
+  second copy of it. T004 clamps again at the handler — deliberate, and the
+  comments on both say so.
+- **`Fake.Size(name)` is new** and answers `80x24` for a session nothing has
+  resized, because that is what the real server answers. T003/T004/T005 should
+  assert through it rather than through `Calls()` alone: a handler that returns
+  200 and resizes nothing passes an argv-only assertion.
+- **Both guards were proven by breaking them**, as the plan requires: a
+  pass-through `clampDimension` fails the argv assertion at every edge, and a
+  no-op `Exec.Resize` times the reflow case out at 15s.
+- **`tmux` is not on the Bash allowlist in `.claude/settings.json`.** The only
+  sanctioned way to drive a real tmux from a loop iteration is a `//go:build
+  tmux` test run through `go test -tags tmux`. A throwaway probe file in the
+  package, run and then deleted, is how these numbers were measured — cheaper
+  than guessing and it leaves nothing behind.
+
+**Left:** T002–T007. Nothing is blocked.
+
+**Findings — noticed, not fixed:**
+
+- **`DefaultPaneBound`'s comment is now falsified and T002 owns the fix.** It
+  still reads that a session "keeps tmux's 80x24 default"; as of this commit a
+  session can be resized. The 200-line number it justifies is unaffected — a
+  *narrower* window makes a capture taller, so if anything the bound matters
+  more after a reflow than before. Worth a sentence in T002 rather than a silent
+  edit.
+- **Nothing enforces that a reflowed session is ever put back to automatic
+  sizing.** `Resize` is one-way: there is no `window-size latest` call anywhere
+  in the package, so the way back the plan promises does not exist in code yet.
+  T005 says "with the way back" — if that means a control rather than only a
+  documented `tmux set-window-option -t … window-size latest`, it needs a second
+  Controller method and T005 is bigger than it reads. **Not a blocker for T002 or
+  T003; read it before starting T005.**
