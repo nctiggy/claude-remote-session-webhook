@@ -365,3 +365,82 @@ Commit `2eddeb2`.
   the reason they name** ("creation time is not a number" has seven fields, not
   ten). That was already true before this change and is now one field further out.
   Left alone under AR-008; worth a line when someone next touches that table.
+
+---
+
+## Iteration 4 — 2026-09-01 — T004, the route that asks for it
+
+**Did:** Added `POST /dashboard/sessions/{id}/reflow` behind `handleAction` —
+`patternDashboardReflow`, `fieldColumns`, `reflowFromBrowser`,
+`refuseBrowserReflow`, `audit.ActionDashboardReflow`, and three outcomes
+(`reflowed`, `reflow-unconfirmed`, `reflow-failed`). It is **T001's, T002's and
+T003's first reachable caller**: before this commit the whole milestone could be
+driven only from a test. Commit `9ea64dc`.
+
+**Learned:**
+
+- **The handler's clamp is not redundant with `Manager.Reflow`'s, and the
+  difference is exactly one case.** Breaking the handler's
+  `config.ParsePaneWidth` down to a bare `strconv.Atoi` fails **5** of the 13
+  clamp rows, not 13: the manager clamps too, so `-40`, `0`, `19`, `501`,
+  `9000000` and 40 digits all still land correctly. What only the handler's
+  *parse* decides is that a **non-number is the default (80) rather than the
+  floor (20)** — `wide`, `$(tput cols)`, `44px`, an absent field and an empty
+  one. **If a later edit wants to argue the third clamp is redundant, that is
+  the case to point at**; the two are not the same function wearing two names.
+- **The verbatim-argv sweep has to be restricted to non-numeric input.** A
+  substring check for the submitted value matches the daemon's own correct
+  output whenever the clamp is the identity (`20` in `-x 20`). The table now
+  carries a `nameable` flag and only sweeps the three values that are text. A
+  first draft of this failed on `20`, `19`, `0` and `500` — all four *correct*.
+- **`dashboard.reflow`, not `session.reflow`.** `session.mode`'s precedent would
+  allow the second, but the plan directs modelling on spec 013's `continue` and
+  the reason holds: what an operator counts here is what the *browser* changed,
+  and the trail is the only place a second reader's screen going narrow is
+  attributable to somebody's phone. It is proven non-vacuous — registering the
+  route under `ActionDashboardCompact` fails `TestReflowFromBrowser`.
+- **`Fake.Size(name)` is the assertion that matters and Iteration 1 was right to
+  flag it.** A handler that wrote the store and skipped tmux passes every
+  store-only check. `reflower.onHost` reads the fake; `reflower.recorded` reads
+  the store; both are asserted on every clamp row.
+- **`untouchedWidth` checks `Width == 0`, deliberately not `Width == 80`.** Zero
+  means nobody has taken this session out of tmux's automatic sizing; 80 means
+  somebody reflowed it to the number it already was. Same window, different
+  facts — and T005 needs the distinction to decide whether to draw the ⚠️.
+- **Four guards were proven by breaking them**, as the plan requires: the clamp
+  (5 rows), the confirming step (3 rows), the `handleAction` registration (3
+  rows, via `handleBrowser`), and the audit action. All restored and green.
+- **The success banner carries the ⚠️** — that a reflowed session stops sizing
+  itself to a terminal attached on the host. **T005 still owns saying it
+  *before* the operator presses**, with the way back; this is the after.
+
+**Left:** T005, T006, T007. Nothing is blocked.
+
+**Findings — noticed, not fixed:**
+
+- **`registeredPatterns` in `settings_test.go` is stale by five routes and now
+  six.** It sweeps every registered path for secret disclosure and for
+  `Access-Control-Allow-*`, and its own comment admits "a twelfth would have to
+  be added here by hand". Since it was written, `patternDashboardContinue`,
+  `patternDashboardUpdate`, `patternDashboardRestart`, `patternSettingsEdit` and
+  `patternConversations` were all registered without being added — and
+  `patternDashboardReflow` follows them, because adding one to the list also
+  requires driving it in that sweep, which is outside T004 (AR-008). **This is
+  the one guard in the repo that is quietly losing coverage as routes are
+  added**, and it is worth a task of its own rather than a line here: the fix is
+  to derive the list from the mux rather than to keep typing it.
+- **`docs/auth-and-sessions.md` and `docs/components.md` do not know this route
+  exists.** T007 owns the documentation and should add it beside the
+  "Continuing a conversation" section, which is the shape the reflow's paragraph
+  wants.
+- **There is still no way back to `window-size latest` in code**, restated from
+  Iteration 1 because T005 is next and it is T005's blocker to size. Nothing in
+  `internal/tmuxctl` sets it, so if T005's "way back" is a control rather than a
+  documented `tmux set-window-option`, it needs a second `Controller` method and
+  T005 is bigger than it reads.
+- **A reflow to 80 and a session nobody reflowed are indistinguishable to the
+  operator but not to the daemon.** The route accepts an absent `columns` field
+  as 80, which means "put it back to the default width" — and that writes
+  `Width = 80`, which is *not* the same as returning the window to automatic
+  sizing. **T005 should not offer the absent-field case as an undo**; it looks
+  like one and is not.

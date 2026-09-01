@@ -154,7 +154,7 @@ must not silently change how their terminal behaves either.
       milestone is. Test: a session reflowed to 44, adopted after a restart, is
       still 44; a session with no option adopts as 80.
 
-- [ ] **T004** 🔒 `POST /dashboard/sessions/{id}/reflow`, behind the existing
+- [x] **T004** 🔒 `POST /dashboard/sessions/{id}/reflow`, behind the existing
       action gate, taking a column count and `confirm=yes` and nothing else — the
       rows come from the session, not from the caller. Model it on spec 013's
       `continue` route, including the audit action. **The clamp is applied here
