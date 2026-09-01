@@ -943,3 +943,83 @@ can do.
   is the shape of everything left. **Re-running the loop against this plan is
   now waste.** The next useful act is the operator's: close #121, or grant
   `Bash(gh issue:*)`, or open milestone 17 for the five findings above.
+
+---
+
+## Iteration 10 — 2026-09-01 — T007 finished from outside the loop, and the baseline nobody could run
+
+**Did:** Closed #121, corrected the last stale claim in
+`docs/mobile-open-questions.md`, ticked T007, and ran the full gate. Done from a
+session with `gh` rather than by a loop iteration, for the reason Iteration 7
+established and Iteration 8 corrected.
+
+### The blocker, resolved rather than worked around
+
+Iteration 7 could not close #121 and **refused to grant itself the permission**,
+which was right. Iteration 8 then caught that Iteration 7's account of *why* was
+wrong — the repo's `.claude/settings.json` has no `gh` entry at all — and flagged
+where the belief might have come from as "unknown rather than ruled out", because
+it cannot read outside the working directory.
+
+**It is ruled out now: `Bash(gh pr:*)` is in the operator's global
+`~/.claude/settings.json`, line 78.** So both iterations were right about what
+they could see: `gh pr` is permitted (globally), `gh issue` is permitted nowhere,
+and a repo-level `Bash(gh issue:*)` would still be that file's first `gh` line.
+The question it puts to the operator is narrower than Iteration 8 could tell:
+not "the first gh entry anywhere", but whether an **unattended** loop may act on
+public artefacts when interactive sessions already may.
+
+### ⚠️ The quickstart flake is pre-existing, and this is the baseline run
+
+Iterations 3, 5, 6 and 7 all recorded `TestQuickstartStory5RateLimit` failing on
+`unlinkat …/001/home: directory not empty` from `t.TempDir`. Iteration 5 was
+explicit that it could not prove it pre-existing — the detached worktree fails
+`-buildvcs` stamping — and said so rather than assuming.
+
+**Measured here, alternating full-suite runs on one host to control for drift:**
+
+| | run 1 | run 2 | earlier |
+|---|---|---|---|
+| `origin/main` | **FAIL** | ok | ok |
+| this branch | ok | ok | **FAIL**, **FAIL** |
+
+**Both fail intermittently. It is not this milestone's regression.** Note the
+trap: the first sample taken here was branch-fails-twice against main-passes-once,
+which reads as a clean regression and is not one. Two runs is not a baseline.
+
+**Root cause, from the artefact rather than a guess:** the leftover is a single
+`.bash_history`. The sessions the test creates run real login shells, and bash
+writes its history on exit — into the temp `HOME` the test is simultaneously
+removing. Nothing in `internal/tmuxctl`, `internal/config`, `internal/session` or
+`internal/httpapi` is involved. **Left unfixed on purpose (AR-008)**: it is
+`cmd/crswd` test teardown, not this milestone, and fixing it here would widen the
+PR. It wants a fix-lane task — most likely giving the test's session environment
+a `HISTFILE` it does not mind losing, rather than making teardown wait.
+
+### The gate
+
+`go build ./...`, `go vet ./...`, `go test ./...`, `-tags tmux`, `-tags dev` all
+pass; `gofmt -l .` names nothing; `golangci-lint run` (v2.12.2, checked per #26)
+reports 0 issues. `-tags quickstart ./cmd/crswd` passes on re-run, with the flake
+above characterised rather than waved at. CI has been green on every push.
+
+**Not verified here:** the pane by eye on a real phone, and a reflow driven end to
+end against a live Claude session. The tmux behaviour underneath it is pinned by
+`TestTmuxResizeReflowsWhatIsAlreadyOnScreen` against real tmux 3.4, but whether
+the offer reads well at 390px is a judgement only the operator can make.
+
+### Findings still open, carried forward deliberately
+
+- `TestQuickstartStory5RateLimit`'s temp-home race, above.
+- **`aria-describedby="card-id-…"` on the reflow button** resolves only because
+  the session page also draws the card (Iteration 5). True today; a second page
+  rendering a pane without a card would ship a dangling reference silently.
+- **Two `wantErr` rows in `TestParseSessions`** fail on field count rather than
+  the reason they name — pre-existing, and now one field further out (Iteration 3).
+- **The width shown may be the intent rather than the truth** (Iteration 3): the
+  two agree until an operator puts a session back to `window-size latest` and
+  attaches.
+- **The config migration still runs in the old binary** — a spec question from
+  milestone 15, untouched.
+
+RALPH_COMPLETE

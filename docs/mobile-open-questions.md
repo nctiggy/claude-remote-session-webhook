@@ -63,6 +63,12 @@ CSS was the right place for it.
 enough to want a wrap toggle (#121). That needs the wrap used in anger, not a
 first look. #121 is unblocked by this answer and is still not evidenced.
 
+**#121 was closed as moot on 2026-09-01**, and not because that evidence arrived
+— it never did. The toggle existed to switch off a CSS wrap, and milestone 16
+deleted the wrap, so there is nothing left for it to toggle. The paragraph above
+stands as what was true when it was written: the question it names was never
+answered, it was retired along with the mechanism that raised it.
+
 Below 780px the pane wraps (`white-space: pre-wrap`, `overflow-wrap: anywhere`).
 This is a known trade, not a fix: Claude Code draws box borders, rules and dividers
 that are alignment-dependent, and each of those wraps into a line plus a stub. What
