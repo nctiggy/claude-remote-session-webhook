@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 )
 
@@ -1287,5 +1288,187 @@ func (s *Server) refuseContinue(w http.ResponseWriter, r *http.Request, err erro
 	default:
 		AuditFrom(r.Context()).Deny(errContinueFailed.Error())
 		s.redirectOutcome(w, r, outcomeContinueFailed)
+	}
+}
+
+// --- Reflow -----------------------------------------------------------------
+//
+// The last route on this door that changes something, and the only one of them
+// that changes how a session *reads* rather than what it is doing (#120).
+//
+// It is the terminal doing the wrapping instead of the stylesheet: tmux resizes
+// the window and re-wraps what is already on screen, so a line breaks at the
+// column edge the program chose rather than wherever CSS decided. What earns it
+// the action gate is not the cost of one resize — it is that a tmux window has
+// one size however many people are reading it, so a reflow changes the session
+// for every reader at once, and a third-party page that could reach this route
+// could narrow every session on this host to twenty columns.
+
+// patternDashboardReflow is the reflow route (#120).
+//
+// It is spelled the other session-scoped actions' way and for their reasons:
+// under /dashboard/ so milestone 1's surface is untouched (FR-005) and a grep
+// for the prefix finds every browser-initiated change, the wildcard through
+// pathValueID so the name in the pattern and the name read back cannot drift
+// apart, and the method inside the pattern so a GET here falls to
+// handleUnrouted's `/` and is answered as a path nothing claims rather than as a
+// 405 with an Allow header (FR-033).
+const patternDashboardReflow = "POST /dashboard/sessions/{" + pathValueID + "}/reflow"
+
+// fieldColumns is how wide to make the window, and the only value this route
+// reads from the caller.
+//
+// It says columns rather than width because a browser's own idea of a width is
+// pixels, and what this reaches is a character count on a tmux command line. The
+// two numbers a resize needs are columns and rows; the rows are deliberately not
+// a field, because #120 is about columns and Manager.Reflow passes back the
+// height the session already has. A caller does not get to choose it.
+const fieldColumns = "columns"
+
+// The reflow action's two reasons, each a sentinel authored here so a record can
+// never carry a byte the caller chose (FR-042).
+var (
+	// errReflowUnconfirmed is a reflow without `confirm=yes` (FR-029). It is its
+	// own sentinel rather than the destroy's or the mode's, for the reason every
+	// reason on this door is: what tells one action's records from another's is
+	// this.
+	//
+	// The confirming step is asked for here even though a reflow tears nothing
+	// down and restarts nothing, which is the one thing that could make it look
+	// unnecessary. What it confirms is not the risk to this session but the
+	// effect on the others reading it: a width is one number for every viewer,
+	// and nobody's screen changes under them because a link was followed.
+	errReflowUnconfirmed = errors.New("a browser reflow arrived without the confirming step")
+
+	// errReflowRefused is the resize that failed for a reason nothing here
+	// classified — tmux would not take the size, or would not record it. It
+	// carries no detail, for the reason the compact's refusal does not: what went
+	// wrong is the operator's question to take to the journal, where the
+	// manager's own wrapped error was reported.
+	errReflowRefused = errors.New("the session could not be reflowed")
+)
+
+// reflowFromBrowser is POST /dashboard/sessions/{id}/reflow (#120).
+//
+// Everything that authorises it has already run: handleAction wrapped this
+// handler in the gate, so layer 1 has verified an identity, the browser has said
+// the request came from this page, and the form has carried a token minted for
+// that identity. What is left is the confirming step, the ownership check, the
+// clamp, and the resize.
+//
+// It is modelled on continueFromBrowser step for step, and differs in the one
+// place the two values differ. A conversation identifier is refused when it is
+// not one — the alphabet is what keeps it off a command line — and a column
+// count is *clamped* when it is not one, because #120 fixes the requirement
+// exactly there: the width is reported by a browser rather than typed by an
+// operator, so there is nobody to hand a refusal to and nobody who could act on
+// it. That is why this route has no bad-columns answer to give.
+func (s *Server) reflowFromBrowser(w http.ResponseWriter, r *http.Request) {
+	operator, ok := OperatorFrom(r.Context())
+	if !ok {
+		// Fail closed on the path that should not happen, the way every other
+		// handler on this door does: the gate in front puts the operator in the
+		// context, so a false here is a route wired without one.
+		AuditFrom(r.Context()).Deny(errDashboardNoOperator.Error())
+		s.refuseBrowser(w)
+		return
+	}
+
+	// The shape check the other session-scoped actions run, ahead of the lookup
+	// and for their reason: an identifier off the 32-lowercase-hex alphabet
+	// cannot name a session this daemon minted, so it is a path nothing claims
+	// rather than a session that is not there.
+	id := r.PathValue(pathValueID)
+	if !routableID(id) {
+		AuditFrom(r.Context()).Deny(errScopeNoRoute.Error())
+		s.renderNotFound(w, r, operator)
+		return
+	}
+
+	// The confirming step, compared rather than parsed, exactly as the destroy,
+	// the mode and the continue compare it (FR-029). It is read from PostForm and
+	// never Form for the reason the gate reads the token that way: a reflow this
+	// daemon would accept from a query string is every reader's screen changing
+	// because somebody followed a link.
+	//
+	// The form itself was parsed by the gate, under the configured body limit.
+	if r.PostForm.Get(fieldConfirm) != confirmYes {
+		AuditFrom(r.Context()).Deny(errReflowUnconfirmed.Error())
+		s.redirectOutcome(w, r, outcomeReflowUnconfirmed)
+		return
+	}
+
+	// Manager.View, which is what a browser gets: it settles ownership without a
+	// per-session credential, because a browser holds none and must not be given
+	// one (FR-034a). An id that never existed, one another operator owns, and one
+	// whose session is already gone are one answer to the caller (FR-017, SC-009)
+	// and three sentinels on the record.
+	live, err := s.sessions.View(id, operator.Owner)
+	if err != nil {
+		// resolveReason rather than a reason of this route's own, for the reason
+		// every other action here uses it: the trail already has a vocabulary for
+		// these, and never the wrapped error, which would carry the caller's
+		// spelling of the id (FR-042).
+		AuditFrom(r.Context()).Deny(resolveReason(err).Error())
+		s.notFoundAction(w)
+		return
+	}
+	// The id off the daemon's own record, never the bytes in the path. It is
+	// stamped before the resize, so a reflow that failed is findable in the trail
+	// under the session it failed against.
+	AuditFrom(r.Context()).SetSessionID(live.ID)
+
+	// The clamp, and the second of the three this value meets: config's policy
+	// here, config's policy again inside Manager.Reflow, and tmux's own bounds
+	// where internal/tmuxctl builds the argv. That is deliberate duplication at a
+	// trust boundary rather than drift — this one is the handler refusing to hand
+	// the manager a number it would have to fix, and the last one is the boundary
+	// that holds whether or not any handler ran.
+	//
+	// It is read here rather than before the lookup, unlike the mode's value,
+	// because the two checks are answering different questions. That one can
+	// refuse, and reads early so a request that was never going to be carried out
+	// costs no lookup; this one cannot refuse at all, so there is no request it
+	// could turn away and nothing to be saved by asking sooner.
+	//
+	// config.ParsePaneWidth rather than a strconv call of this package's own: the
+	// bounds are one definition and a second parser on this door would be a
+	// second opinion about what leaves a session readable for all of its readers.
+	// An absent field, an empty one and a word are the same answer — the default
+	// width — which is the honest reading of a number nobody typed.
+	cols := config.ParsePaneWidth(r.PostForm.Get(fieldColumns))
+
+	// The resize is Manager.Reflow and nothing else. It asks tmux first and
+	// writes the record after, so a resize that failed records nothing, and it
+	// writes the width onto the tmux session as well as into the store so a
+	// restart adopts the window it is actually looking at.
+	if _, err := s.sessions.Reflow(r.Context(), live, cols); err != nil {
+		s.refuseBrowserReflow(w, r, err)
+		return
+	}
+
+	s.redirectOutcome(w, r, outcomeReflowed)
+}
+
+// refuseBrowserReflow is what a failed resize answers, and it is
+// refuseBrowserCompact's shape for its reason: one function, so the branches are
+// read together.
+//
+// A session that vanished between View and the resize answers as an unknown id
+// does, exactly as the compact's and the mode's do (FR-017, SC-009), so a record
+// that was there for one read and gone for the next cannot be told from one that
+// was never the caller's.
+//
+// There is no arm for a width, and that absence is the whole of #120's advisory
+// rule expressed in control flow: nothing below Manager.Reflow can refuse a
+// column count, so there is no refusal here to map.
+func (s *Server) refuseBrowserReflow(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, session.ErrSessionNotFound), errors.Is(err, session.ErrSessionDead):
+		AuditFrom(r.Context()).Deny(resolveReason(err).Error())
+		s.notFoundAction(w)
+	default:
+		AuditFrom(r.Context()).Deny(errReflowRefused.Error())
+		s.redirectOutcome(w, r, outcomeReflowFailed)
 	}
 }

@@ -253,6 +253,30 @@ func countLines(screen string) int {
 	return n
 }
 
+// Resize sets the window to cols by rows, and tmux rewraps the screen that is
+// already in the pane — which is the whole of #120: the terminal does the
+// wrapping, so a break lands at the column edge and nothing is misrepresented.
+//
+// Measured against tmux 3.4 on a **detached** session with no client attached,
+// which is the only shape this daemon ever creates: an 80-column line already
+// on screen comes back re-wrapped at 44 with no new output. exec_tmux_test.go
+// pins that, because a fake can only prove the argv — and the argv proves
+// nothing about whether the screen actually reflowed.
+//
+// **tmux flips window-size to manual as a side effect and nothing sets it
+// back.** The cost is not on the browser's path but on the operator's: a
+// session resized here stops sizing itself to a terminal that later runs tmux
+// attach on the host, with nothing on screen to explain why.
+//
+// The dimensions are clamped in argvResize rather than here, so the fake and
+// this method cannot disagree about what tmux was told.
+func (e *Exec) Resize(ctx context.Context, name string, cols, rows int) error {
+	if _, stderr, err := e.run(ctx, argvResize(name, cols, rows), nil); err != nil {
+		return fmt.Errorf("tmux resize-window %s: %w", name, withStderr(err, stderr))
+	}
+	return nil
+}
+
 func (e *Exec) Kill(ctx context.Context, name string) error {
 	if _, stderr, err := e.run(ctx, argvKill(name), nil); err != nil {
 		return fmt.Errorf("tmux kill-session %s: %w", name, withStderr(err, stderr))
@@ -302,11 +326,11 @@ func parseSessions(stdout string) ([]SessionInfo, error) {
 	rows := strings.Split(trimmed, "\n")
 	sessions := make([]SessionInfo, 0, len(rows))
 	for _, row := range rows {
-		// Seven fields, and only the first may contain the separator: a session
-		// name is whatever the operator called it, while the six after it are
-		// digits, a flag, a validated label, base64, a validated command name,
-		// and a duration or `never`. So the last six splits are found from the
-		// right and everything before them is the name.
+		// Only the first field may contain the separator: a session name is
+		// whatever the operator called it, while everything after it is digits, a
+		// flag, a validated label, base64, a validated command name, a duration
+		// or `never`, and a column count. So every split is found from the right
+		// and whatever is left over is the name.
 		//
 		// The workdir is base64 for exactly this reason (#72). A path may contain
 		// "|", and a raw one here would make the field boundaries ambiguous from
@@ -338,6 +362,13 @@ func parseSessions(stdout string) ([]SessionInfo, error) {
 			conversation = ""
 		}
 
+		// Milestone 16's field, between spec 012's pair and the lifetime. It is
+		// carried verbatim like the lifetime is: what a width means belongs to
+		// internal/session, and a parse here would be a second place deciding it.
+		rest, width, ok := cutLast(rest, "|")
+		if !ok {
+			return nil, fmt.Errorf("tmux list-sessions: unreadable row %q", row)
+		}
 		rest, lifetime, ok := cutLast(rest, "|")
 		if !ok {
 			return nil, fmt.Errorf("tmux list-sessions: unreadable row %q", row)
@@ -397,6 +428,10 @@ func parseSessions(stdout string) ([]SessionInfo, error) {
 			// failed over it would cost the adoption of every session on the
 			// host, which is never the cheaper loss.
 			Lifetime: lifetime,
+			// Verbatim for the lifetime's reason, and empty for a session nobody
+			// has reflowed — which is a session at tmux's own width, never a
+			// session zero columns wide. internal/session reads the absence.
+			Width: width,
 			// Empty for a session started before the option existed, and empty
 			// again for a row whose conversation field could not be trusted.
 			// Both mean the same thing to every caller: unknown.

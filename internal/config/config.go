@@ -288,12 +288,18 @@ const (
 	// The spec fixes the property, not the number: capped, and refusing past it.
 	DefaultMaxStreams = 10
 
-	// DefaultPaneBound is 200 lines: a tmux session this daemon starts is never
-	// attached, so it keeps tmux's 80x24 default, and 200 is far above the
-	// tallest terminal an operator could resize one to. Like DefaultMaxStreams
-	// the spec fixes the property rather than the number — bounded, and refusing
-	// past it — so this is chosen to fire only when the assumption behind it has
-	// broken, never because a pane is merely full.
+	// DefaultPaneBound is 200 lines: a capture returns the visible screen, and a
+	// tmux session this daemon starts is 24 rows tall.
+	//
+	// It no longer rests on the whole of tmux's 80x24 default, which milestone 16
+	// retired — a session can now be reflowed (#120). But a reflow sets columns,
+	// and the rows come from the session rather than from whoever asked for it,
+	// so a narrower window fills the same 24 rows more completely instead of
+	// returning more of them. 200 stays far above the tallest screen a capture
+	// can answer with. Like DefaultMaxStreams the spec fixes the property rather
+	// than the number — bounded, and refusing past it — so this is chosen to fire
+	// only when the assumption behind it has broken, never because a pane is
+	// merely full.
 	//
 	// What breaks it is a capture that reaches into the scrollback: tmux's own
 	// history-limit defaults to 2000 lines, an order of magnitude past this, so

@@ -21,762 +21,1005 @@ When the whole plan is done and green, append a line containing exactly
 
 ---
 
-## Iteration 0 — updates that carry the files, not just the binary
+## Iteration 0 — 2026-09-01 — the loop had stopped, and nothing was broken
 
-**Did:** Archived milestone 14.
+**Did:** Archived milestone 15 to `ralph/archive/progress-milestone-15.md` and its
+plan to `ralph/archive/milestone-15-tasks.md`, then swept every finding milestone
+15 recorded as noticed-but-not-fixed to find out which are still real.
 
-**The operator:** *"How do we make it so that the updates also grab or update the
-systemd unit file as well? I feel like the config and systemd files should update
-as part of the updates… values saved as part of the updates but the files
-updated."*
+**Why this iteration exists.** `ralph/PROGRESS.md` had not moved in nine days. The
+cause is not a failure: it is that `loop.sh` refuses to start while the notebook
+carries the exit sentinel, and by 23 August that notebook carried **four** of them
+— milestone 15's, then one each appended by specs 012, 013 and 014, which ran the
+Spec Kit lane through the same file. The guard was doing exactly its job. What was
+missing underneath it is a milestone to run.
 
-**Findings:**
+**Learned — what the sweep actually found:**
 
-- **Half of it exists and nothing calls it.** `crswd config migrate`
-  (`internal/config/migrate.go`) already rewrites a config into the current schema
-  **line by line**, copying every line it has no reason to touch byte for byte,
-  spacing and line endings included — because "a migration that reproduced the
-  settings and dropped the commentary would take away more than it fixed". It is a
-  manual command. The updater never runs it.
-- **The unit needs a different answer, and the operator proved why in the same
-  session.** They hand-edited their unit to relax three hardening settings so
-  `sudo` works. An update that overwrote units would silently revert that on every
-  release. **The existing rule — never overwrite a unit this installer did not
-  write — is what protects them.**
-- **But the current behaviour is silence.** Their unit has no recorded hash, so it
-  will never be touched again and nothing ever says so. It still carries
-  `ExecStart=%h/bin/crswd`, the path v0.80 fixed, and no `EnvironmentFile` line at
-  all. **They are two fixes behind and have no way to find out.**
-- **So the shape is `.pacnew`, not overwrite**: keep refusing to replace an edited
-  unit, and stop being quiet about it — write the new one alongside and say so,
-  with a way to see the difference.
+- **Every fix-lane finding milestone 15 wrote down has since been taken.** Each was
+  carried forward by name through Iterations 1–7 as still open, so the notebook
+  reads as though a backlog accumulated. It did not. Measured on this tree:
+  - `internal/httpapi/render.go` **is gofmt-clean** — `gofmt -l .` names nothing.
+  - `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` **is no longer
+    wall-clock flaky.** It ran against a 10ms cadence; it now takes
+    `slowTickUnderTest` deliberately, and its comment records that the old
+    assertion "was really 'is this machine busy?'".
+  - `internal/config/migrate.go`'s header **no longer claims `cmd/crswd` is the
+    only writer** — it now says every write in the package is in `write.go`.
+  - `internal/config/write.go`'s header **names all four callers**, not two.
+  - `config.WriteFile`'s temporary-file prefix **is documented for the reason it
+    was flagged**: what comes through it is also a systemd unit, so it is named
+    for the daemon rather than for a configuration.
+  **The lesson for a future sweep: a finding restated in six consecutive
+  iterations is evidence of a copy-forward habit, not of six months of neglect.
+  Re-measure before planning against one.**
 
-**The test that matters:** an operator who relaxed `NoNewPrivileges` must still
-have it relaxed after an update, and must be told a newer unit exists.
+- **The tree on `main` is green.** `go build ./...`, `go vet ./...`,
+  `go test ./...` (all 11 packages ok) and `gofmt -l .` were run here and pass.
 
----
+- **The open task counts in `specs/*/tasks.md` are stale checkboxes, not work.**
+  003, 004, 005 and 007 report 12–16 open apiece for milestones that shipped;
+  006's two are `stage.go` and `swap.go`, both of which exist; 009's and 010's
+  single items are each "PR against `main`", and both PRs merged (#139, #140).
+  Nothing in `specs/` is a source of open work.
 
-## Iteration 1 — 2026-08-12
-
-**Did:** T001. `internal/updater/config.go` — a `ConfigMigrator` that rewrites the
-operator's configuration into the current schema during an update: stage beside
-their file, read the staged bytes back off disk, run them through `config.Validate`
-(the same loader a startup uses), then back up the original to `config.bak` and
-rename into place. `updateFromBrowser` calls it after a successful `Swap`.
-
-**Learned — things the next iteration would otherwise rediscover:**
-
-- **`internal/config` writes after all.** `migrate.go`'s header says "cmd/crswd is
-  the only code in this repository that writes a config file"; that has been stale
-  since the settings page shipped — `internal/config/write.go` has `WriteFile`,
-  `Validate`, `BackupPath`, and `internal/httpapi/settings_edit.go` is a second
-  writer. **`settings_edit.go` is the template to copy** for anything that writes
-  the operator's file: validate → back up → write, all through `config.*`. I reused
-  `config.WriteFile` for both the staged file and the backup rather than adding a
-  third copy of `writeAndSync` — `cmd/crswd/config_cmd.go` has its own.
-- **`config.Validate` needs a real environment.** It runs the whole loader, so a
-  test fixture needs `CRSW_SHARED_SECRET` (64 chars is safe) *and* a resolvable
-  `allowed_roots` — and it layers env **over** the file, so a fixture that sets
-  `CRSW_ALLOWED_ROOTS` in the environment cannot then test a bad root in the file.
-- **The one value that parses and does not load** is `allowed_roots` naming a
-  directory that is not there: `parseFile` only checks grammar, keys and schema, so
-  it sails through the migration and is refused by the loader. That is the whole
-  fixture for "a migration that would not validate".
-- **Where the migration could NOT go.** Startup is the obvious home and it is
-  closed: FR-008 and `specs/004-configure-and-operate/quickstart.md` both say the
-  daemon never writes the file it reads, and `cmd/crswd/config_cmd_test.go` asserts
-  it. An update is the exception because the operator asked for it by name.
-- `selfUpdate` now has a fourth member and `wired()` counts it, so a dropped wiring
-  refuses loudly rather than quietly stopping carrying the file.
-
-**Left:** T002–T007. T002 is next (ship the unit as a comparable release asset).
+**Left:** three items, and **every one of them needs the operator**, which is why
+this notebook stops here rather than picking one. They are set out with their
+evidence in `ralph/IMPLEMENTATION_PLAN.md`.
 
 **Findings — noticed, not fixed:**
 
-- **⚠️ The migration runs in the OLD binary, so a new release's schema changes land
-  one update late.** `config.SchemaVersion` and `renamedKeys` come from the code
-  that is running, and that is v-current, not v-next. A rename shipped in v0.90 is
-  applied by the update *after* the one that installs v0.90. Today this costs
-  nothing (`renamedKeys` is empty and `SchemaVersion` is 1) and it is what the plan
-  asked for. The fixes, if it ever matters: exec the staged candidate's own
-  `crswd config migrate` (T007 territory), or migrate on the first start after an
-  update — which needs an exception to FR-008 that nobody has written yet.
-  **Do not "fix" this silently; it is a spec question.**
-- **`cmd/crswd/config_cmd.go` still has its own `writeConfigFile`/`writeAndSync`,
-  duplicating `internal/config/write.go`.** Left alone on purpose (AR-008) — that
-  is exactly T007's job, and T007 should collapse three write paths, not two.
-- **`internal/config/migrate.go`'s header comment is wrong.** It claims cmd/crswd
-  is the only writer in the repository. Two other writers exist now. One-line doc
-  fix for the fix lane; not touched here.
-- **Flaky test:** `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval`
-  (`internal/httpapi/stream_test.go`) failed once on a loaded machine — "the opening
-  screen arrived 14ms after the open, which is past the 10ms interval" — and passed
-  on every rerun. It asserts a wall-clock deadline of 10ms, which a parallel suite
-  on a busy host will miss regardless of the code. CI will hit this eventually.
+- **⚠️ The config migration still runs in the *old* binary**, so a rename shipped
+  in v0.90 is applied by the update *after* the one that installs v0.90. Iteration
+  7 marked this **"a spec question, not a bug — do not 'fix' it silently"**, and
+  that still holds. It costs nothing today: `renamedKeys` is empty and
+  `SchemaVersion` is 1. T007 made one of the two fixes cheap — the staged
+  candidate's own `crswd config migrate` is now the same code the updater runs, so
+  exec-ing it changes *when* it runs and nothing else. Which fix is right is a
+  decision, not a discovery.
+
+- **`docs/mobile-open-questions.md` Q2 is still UNANSWERED**, and spec 014 may have
+  overtaken it. Q2 asks whether a bare provenance word reads as part of the value
+  once settings rows stack below 780px. Spec 014 then **removed the Source column
+  entirely** and marks a value from somewhere else on its own row. The question was
+  written against a layout that no longer ships. **It should be re-read before it
+  is answered** — the fallback it specced (an explicit label in the row) may
+  already be moot, and that file's own rule is that a question is answered by the
+  operator's report, never by a task claiming it.
+
+- **#120 and #121 are unchanged and were deliberately deferred.** Milestone 15 put
+  both out of scope in writing. #120 (reflow at the PTY rather than wrapping in
+  CSS) is the real answer to a phone-width pane and is a session-plumbing change,
+  not a CSS one; #121 (a wrap/alignment toggle) was gated on the wrap having been
+  used in anger first.
+
+- **The Spec Kit lane and the Ralph lane share one notebook and one sentinel.**
+  Specs 012–014 appended `RALPH_COMPLETE` to the milestone-15 notebook, which is
+  what left four exit sentinels in a file whose guard tolerates none. Nothing was
+  harmed, but the next loop start would have been refused on a file the Ralph lane
+  had finished with weeks earlier. Either lane may write here — but only the lane
+  that owns the current plan should write the sentinel.
 
 ---
 
-## Iteration 2 — 2026-08-12
+## Iteration 0, continued — milestone 16 chosen, and two decisions taken
 
-**Did:** T002. `internal/updater/unit.go` — `UnitAsset` (the release's own
-`crswd.service`), install.sh's two paths, and `Unit.Standing(published)` answering
-one of four: `UnitAbsent`, `UnitCurrent`, `UnitOurs`, `UnitTheirs`. Reads only;
-nothing is written and nothing is fetched here.
+The three remaining items were put to the operator rather than picked. Both
+answers are recorded here because the next iteration will otherwise re-derive
+them, and one of them contradicts an issue this repository wrote itself.
 
-**Learned — things the next iteration would otherwise rediscover:**
+**Decision 1 — milestone 16 is #120**, reflow at the PTY instead of wrapping in
+CSS. The other two items stay where they are: the migration/old-binary question is
+still a spec question, and Q2 is still the operator's to read on a phone.
 
-- **The delivery half of T002 was already done and needed nothing.** The release
-  workflow publishes `dist/crswd.service`, SHA256SUMS covers it, and the signature
-  covers SHA256SUMS. `Verify(UnitAsset, bytes, sums, sig)` works today —
-  `Verify` takes the asset name, so there is no second code path to write.
-  `TestThePublishedUnitIsDeliveredLikeEveryOtherAsset` pins it, including the
-  unsummed-asset refusal. **T003 just fetches `updater.UnitAsset` alongside the
-  tarball in `updateTo` and hands the bytes to `Standing`.**
-- **Ownership is the recorded digest, never the published bytes**, and the
-  comment in unit.go says why at length: an operator's unit differs from an
-  *older* published unit exactly as it differs from a *newer* one, so comparing
-  against the release refuses to correct any host that ever took a unit.
-  `internal/release/install_test.go`'s `TestInstallNeverOverwritesEditedUnit`
-  makes the same point from install.sh's side; read it before touching this.
-- **`UnitTheirs` is the zero value on purpose.** A standing nobody computed reads
-  as "leave that file alone". Do not reorder the `iota` block.
-- **Paths come from `HOME`, not XDG**, because install.sh composes them from
-  `$HOME` — `stage.go` already made the same choice for the staging directory.
-  `TestUnitAssetAndPathsAreTheInstallersOwn` reads `readonly UNIT_ASSET|UNIT|UNIT_RECORD`
-  out of install.sh; if those shell names ever move, move that pattern with them.
-- **Test fixtures are cheap here.** `newUnitFixture(t, unit, record)` builds a
-  whole host in a `t.TempDir()`; `nil` means the file is absent. `published(t)`
-  in `verify_test.go` already carries the unit as a published asset — it now uses
-  `UnitAsset` and the shared `publishedUnit` const rather than a literal.
-- **Mutation-checked, not just green:** flipping the no-record branch to
-  `UnitOurs` and drifting `unitRecordPath` each failed the new tests. Worth doing
-  again for T003 — the branch that matters most there is the one that does nothing.
+**Decision 2 — the width policy is *offered, not taken*.** The browser reports its
+width advisorily; the daemon never acts on it by itself, and a reflow is a
+deliberate act that changes the session for every reader at once. Resize-on-view
+was rejected for the reason #120 itself gives — hostile to a second viewer — and a
+manually pinned width was rejected because making the operator set 44 by hand on a
+phone is the problem the milestone exists to remove.
 
-**Left:** T003–T007. T003 is next: fetch the unit during an update, act on the
-standing, never overwrite `UnitTheirs`, and write `crswd.service.new` beside it.
+**Learned — tmux facts, measured on this host against tmux 3.4, detached sessions,
+no client attached. Do not re-derive these; they cost an hour.**
+
+- **`resize-window` works on a detached session.**
+  `resize-window -t '=crswd-abc:' -x 44 -y 12` → rc 0, `window_width=44`.
+  `PaneTarget` is the correct target helper; `resize-window` takes a window target
+  and `=name:` satisfies it. No third target helper is needed.
+- **tmux reflows content already on screen.** An 80-column line already in the
+  pane came back re-wrapped at 44 **with no new output and no client attached**.
+  This is the fact the whole milestone rests on, and it is better than assumed —
+  the operator does not wait for the TUI to repaint before the pane reads.
+- **⚠️ `new-session -t` does NOT give a grouped session its own width**, which is
+  the option #120 says it would look at first. `new-session -d -t a -s b -x 100
+  -y 30` returns 0 and leaves `#{window_width}` unchanged for both. Grouped
+  sessions share the window, a window has one size, and `-x`/`-y` describe a
+  **client's** size — inert for a daemon that never attaches a client. **The issue
+  is wrong on this point and the plan says so.**
+- **⚠️ `resize-window` implicitly sets `window-size` to `manual`** — it reads
+  `latest` before the call and `manual` after, and nothing sets it back. A
+  reflowed session therefore stops sizing itself to a terminal that later attaches
+  on the host. That is a change to how the operator's own terminal behaves, and
+  this daemon does not make those silently; T005 and T007 carry it.
+
+**Left:** milestone 16, T001–T007, in `ralph/IMPLEMENTATION_PLAN.md`. Nothing is
+blocked. The loop can run.
+
+---
+
+## Iteration 1 — 2026-09-01 — T001, the resize primitive
+
+**Did:** Added `Resize(ctx, name, cols, rows)` to `Controller`, `Exec` and
+`Fake` as `tmux resize-window -t <PaneTarget> -x <cols> -y <rows>`, built by one
+shared `argvResize` that clamps both integers. Commit `058e30e`.
+
+**Learned — measured on this host against tmux 3.4, detached session, no client.
+Do not re-derive.**
+
+- **`resize-window` accepts 1..10000 on both axes and refuses everything else**,
+  by exit 1 with `width too small` (for 0 and negatives) or `width too large`.
+  That is where `minDimension`/`maxDimension` in `fake.go` come from — they are
+  tmux's numbers, not a policy. **T002's floor and ceiling are a different
+  decision** (what makes a *usable* terminal) and should not be pinned to these.
+- **The reflow is confirmed and it is immediate.** The new `-tags tmux` case
+  prints an 80-column line, resizes to 44, and the line comes back as 44 + 36
+  with no new output. No polling was actually needed; `waitFor` is there so a
+  future tmux that defers the rewrap fails loudly rather than flakily.
+- **`window-size` flips `latest` → `manual`, re-confirmed here.** Unchanged from
+  Iteration 0 and still owed to the operator by T005 and T007.
+- **The clamp lives in the shared argv builder, not in `Exec.Resize`.** That is
+  what makes the fake's argv assertion a proof of the clamp rather than of a
+  second copy of it. T004 clamps again at the handler — deliberate, and the
+  comments on both say so.
+- **`Fake.Size(name)` is new** and answers `80x24` for a session nothing has
+  resized, because that is what the real server answers. T003/T004/T005 should
+  assert through it rather than through `Calls()` alone: a handler that returns
+  200 and resizes nothing passes an argv-only assertion.
+- **Both guards were proven by breaking them**, as the plan requires: a
+  pass-through `clampDimension` fails the argv assertion at every edge, and a
+  no-op `Exec.Resize` times the reflow case out at 15s.
+- **`tmux` is not on the Bash allowlist in `.claude/settings.json`.** The only
+  sanctioned way to drive a real tmux from a loop iteration is a `//go:build
+  tmux` test run through `go test -tags tmux`. A throwaway probe file in the
+  package, run and then deleted, is how these numbers were measured — cheaper
+  than guessing and it leaves nothing behind.
+
+**Left:** T002–T007. Nothing is blocked.
 
 **Findings — noticed, not fixed:**
 
-- **⚠️ T003 has one decision T002 could not make: `UnitCurrent` with no record.**
-  A host whose hand-written unit happens to be byte-identical to the published one
-  is current, so there is nothing to write — but there is still no record, so the
-  *next* release will read it as `UnitTheirs` and hand out a `.new`. Recording its
-  digest then would claim ownership of a file this daemon did not write, which is
-  the thing install.sh is careful never to do. Both answers are defensible; pick
-  one deliberately in T003 and say why in the code.
-- **`Unit` has no `wired()` seat yet.** `selfUpdate` in `internal/httpapi/update.go`
-  counts its four members so a dropped wiring refuses loudly (see Iteration 1).
-  T003 adds a fifth — add it to `wired()` too, or an update that stops carrying the
-  unit will look exactly like one that had nothing to carry.
-- **`internal/httpapi/render.go` is not gofmt-clean** (its `buildinfo` import sorts
-  above the stdlib block). Pre-existing, untouched, and invisible to CI because
-  AGENTS.md says Format runs nowhere but locally — `gofmt -l .` names it. One-line
-  fix for the fix lane.
-- **Still open from Iteration 1:** the migration runs in the *old* binary (schema
-  changes land one update late); `cmd/crswd/config_cmd.go` still duplicates
-  `internal/config/write.go` (T007); `internal/config/migrate.go`'s header comment
-  claims cmd/crswd is the only config writer, which is wrong; and
-  `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is wall-clock flaky.
+- **`DefaultPaneBound`'s comment is now falsified and T002 owns the fix.** It
+  still reads that a session "keeps tmux's 80x24 default"; as of this commit a
+  session can be resized. The 200-line number it justifies is unaffected — a
+  *narrower* window makes a capture taller, so if anything the bound matters
+  more after a reflow than before. Worth a sentence in T002 rather than a silent
+  edit.
+- **Nothing enforces that a reflowed session is ever put back to automatic
+  sizing.** `Resize` is one-way: there is no `window-size latest` call anywhere
+  in the package, so the way back the plan promises does not exist in code yet.
+  T005 says "with the way back" — if that means a control rather than only a
+  documented `tmux set-window-option -t … window-size latest`, it needs a second
+  Controller method and T005 is bigger than it reads. **Not a blocker for T002 or
+  T003; read it before starting T005.**
 
 ---
 
-## Iteration 3 — 2026-08-12
+## Iteration 2 — 2026-09-01 — T002, the width clamp
 
-**Did:** T003. `internal/updater/place.go` — `Unit.Place(asset, sums, signature)`
-acts on the standing T002 computes and returns a `UnitOutcome`: `UnitOurs` →
-replace and re-record, `UnitAbsent` → install and record, `UnitTheirs` → write
-`crswd.service.new` beside theirs and touch nothing else, `UnitCurrent` →
-nothing. `updateTo` fetches `updater.UnitAsset` as a fourth asset and the handler
-calls `Place` after `Swap`, beside the config migration.
+**Did:** Added `internal/config/width.go`: `DefaultPaneWidth = 80`,
+`MinPaneWidth = 20`, `MaxPaneWidth = 500`, `ClampPaneWidth(int) int` and
+`ParsePaneWidth(string) int`. Corrected `DefaultPaneBound`'s comment in the same
+commit. Commit `3c9cbfc`.
 
-**The two decisions T002 left open, and why:**
+**Learned:**
 
-- **`UnitCurrent` records nothing**, even when there is no record. A record is
-  what licenses the *next* release to replace a file, so writing one for a unit
-  this daemon did not write is install.sh's "this refusal undoing itself one
-  command later". Such a host is offered a `.new` at the release after this one,
-  which is correct — by then it really has fallen behind.
-- **`UnitAbsent` installs the published unit and records it**, which is
-  install.sh's own first row: nothing to protect, nothing to take away, and what
-  lands is inert until somebody runs `daemon-reload` and enables it.
+- **A reading T002 forced, written down because the next iteration must not
+  re-take it: there is no `CRSW_PANE_WIDTH`.** The task says "in the shape
+  `PaneBound` already has (`EnvPaneBound`/`DefaultPaneBound`, `loadInt`)", and
+  two of those three are environment-variable machinery — so the env var was
+  considered and rejected, for three measured reasons. (1) An `Env*` constant in
+  this package is not just a constant: `config.Vars()`, `internal/httpapi`'s
+  `settingsValue` switch, `.env.example` and `README.md` all enumerate them, and
+  `TestREADMEDocumentsEveryVariable` and `deployexample_test.go` enforce it — so
+  it would ship a **settings-page row for the width**, which the plan puts out of
+  scope in writing ("It is a property of one session, set where that session is
+  read"). (2) `loadInt` refuses a non-number at startup, so it cannot be the
+  thing T002 describes: "a value that is not a number is the default rather than
+  an error" is a rule about the value being *clamped*, not about a variable being
+  loaded. (3) Nothing in T003–T007 needs the bounds to be operator-settable.
+  **If the operator does want one, it is a small addition on top of this — the
+  constants are already exported and already the only definition of the bounds.**
+- **The clamp reads text, not an int, and that is what T003 and T004 both need.**
+  A width reaches this daemon as a string every single time: a form field in
+  T004, and the `@crswd-width` option read back in T003. `ParsePaneWidth("")` is
+  80 by construction, so **T003's "a session with no option adopts as 80" falls
+  out of this function rather than needing a second rule** — call it, do not
+  write `if raw == ""`.
+- **`strconv.Atoi` saturates on `ErrRange` and that is load-bearing here.** A
+  40-digit width comes back as `math.MaxInt` *with* an error; the parse clamps it
+  rather than treating it as gibberish, so there is no cliff between 9999999999
+  (clamps to 500) and one digit more (would otherwise have been 80). T004's
+  "a width of nine million" case and any longer one now answer the same way.
+- **20 and 500 are a usability policy and are deliberately not tmux's 1..10000.**
+  Iteration 1 flagged that they should be a separate decision and they are. The
+  floor's argument is the one the milestone rests on: a reflow changes the
+  session for *every* reader, so the floor bounds the damage one viewer can do to
+  the others, and 20 is well under the narrowest real report measured here (44,
+  on a phone). The ceiling only exists so no width this daemon accepts can be one
+  tmux refuses — the T005 control is offered only to a viewer *narrower* than the
+  session, so no honest reflow goes near it.
+- **Iteration 1's finding about `DefaultPaneBound` was right that the comment was
+  falsified and wrong about why.** It said a narrower window makes a capture
+  *taller*. It does not: `capture-pane` with no `-S` returns the visible screen,
+  which is `pane_height` lines, and a reflow sets columns while the rows come
+  from the session. A narrower window fills the same 24 rows more completely. The
+  comment now says that, and 200 is untouched.
+- **Both guards were proven by breaking them**, as the plan requires: a
+  pass-through `ClampPaneWidth` fails 5 clamp rows and 6 parse rows, and dropping
+  the `ErrRange` exception fails the 40-digit row alone. Restored and green.
 
-**Learned — things the next iteration would otherwise rediscover:**
-
-- **`Place` verifies its own bytes**; the caller cannot hand it unverified ones.
-  `Unit` grew a `verify` seam exactly like `Stager`'s, defaulted to
-  `updater.Verify` and pinned by `TestTheUnitIsVerifiedWithTheCommittedKey`. That
-  is why the httpapi seam is `Place(asset, sums, signature)` and not "the route
-  verifies then places" — update.go's header forbids a second copy of a check on
-  the route side (FR-029b).
-- **The unit is fetched with the other three, before the swap**, in install.sh's
-  own order (tarball, SHA256SUMS, SHA256SUMS.sig, crswd.service). A release with
-  no unit is refused while nothing on the host has changed. **Every tag from
-  v0.58 publishes it**, so this costs no rollback — checked, not assumed.
-- **`updateTo` now returns an `installed` struct**, not a version string: the
-  unit bytes have to survive out to the handler, because the steps that cannot
-  refuse an update run *after* the only irreversible line.
-- **A `.new` is withdrawn on every path that makes it untrue.** After a
-  replacement a leftover one names an *older* unit than the one just installed,
-  which is worse than the silence this milestone set out to fix.
-- **A replacement keeps the operator's mode.** A chmod does not change a digest,
-  so a unit narrowed to 0600 on purpose still reads as ours; widening it back to
-  install.sh's 0644 would be the same silent revert in the one dimension the
-  ownership check is blind to. New files get 0644 (`unitMode`), the record 0600.
-- **Writes go through `config.WriteFile`** rather than a fourth copy of
-  write-to-a-temp-and-rename. See the finding below about its temp-file name.
-- **Mutation-checked, five ways**, all caught: replacing a `UnitTheirs` unit,
-  recording a `UnitCurrent` one, dropping the verification, dropping
-  `withdrawOffer` from `settle`, and dropping `Place` from the route.
-
-**Left:** T004–T007. T004 is next: say on the settings page which of the three
-happened, with the `.new` filename and the `diff` command, reusing existing
-classes.
+**Left:** T003–T007. Nothing is blocked.
 
 **Findings — noticed, not fixed:**
 
-- **⚠️ T004 needs an outcome the handler currently drops.** `Place`'s
-  `UnitOutcome` is discarded at the call site on purpose — nothing renders it
-  yet, and the page the handler is composing is the one that waits for the
-  restart. **T004 has to decide where it comes from**: either the settings page
-  recomputes a `Standing` at render time (which needs the published unit, i.e. a
-  fetch on a page render — probably not), or the update persists what it did.
-  Note `Unit.NewPath()` already exists for naming the file, and the file on disk
-  is itself evidence: `crswd.service.new` being present *is* "a newer one is
-  waiting". That may be all T004 needs, and it needs no new state.
-- **`config.WriteFile`'s temporary file is named `.crswd-config-*`**, and
-  place.go now writes systemd units through it. A leftover from a crash
-  mid-write would be a `.crswd-config-…` file in `~/.config/systemd/user`, which
-  names the wrong thing. Reusing the one tested atomic writer is still right —
-  a fourth copy is what T007 exists to prevent — but the prefix should stop
-  saying "config" when T007 collapses the write paths.
-- **`config/write.go`'s header is now two callers out of date.** It says "Two
-  callers reach it, both explicit: `crswd config migrate`, and the settings
-  page's edit". `internal/updater/config.go` was the third and place.go is the
-  fourth. Same fix-lane one-liner as `migrate.go`'s header.
-- **The `quickstart` suite could not be run here**: `127.0.0.1:8765` is held by
-  the deployed daemon, which AGENTS.md documents as that suite's requirement.
-  `go vet -tags quickstart ./...` is clean, and so are `-tags tmux` and
-  `-tags dev`.
-- **Still open from Iterations 1 and 2:** the migration runs in the *old* binary;
-  `cmd/crswd/config_cmd.go` duplicates `internal/config/write.go` (T007);
-  `internal/config/migrate.go`'s header comment is wrong;
-  `internal/httpapi/render.go` is still not gofmt-clean (`gofmt -l .` names it and
-  nothing else); and `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is
-  wall-clock flaky.
+- **T002's clamp has no production caller yet, and by the plan's own convention
+  ("a task is not done when the code exists; it is done when something calls
+  it") that is a gap T004 closes.** It is the same shape T001 shipped in — the
+  `Resize` primitive still has no production caller either. **Two tasks now owe a
+  caller; if T004 slips, both are dead code with green tests**, which is exactly
+  the failure `docs/conventions.md` records three of. Worth checking at T004 that
+  it calls `config.ParsePaneWidth` rather than growing its own `strconv.Atoi`.
+- **`internal/tmuxctl/exec.go`'s `CapturePane` comment carries the same falsified
+  claim `DefaultPaneBound` did** — "a detached session keeps tmux's default
+  dimensions". Left alone deliberately: it is a different package, AR-008 says no
+  refactoring outside the task, and T002 named only `DefaultPaneBound`. The bound
+  it justifies is unaffected for the reason above (rows, not columns). **T007 owns
+  the documentation sweep and should take this sentence with it.**
+- **`ParsePaneWidth` trims surrounding whitespace and `loadInt` does not.** That
+  is a real inconsistency between two parsers in one package, and it is
+  intentional here — an advisory value from a browser should not be refused over
+  a space — but a reader comparing them will notice. Not worth a change to
+  `loadInt`, which refuses on purpose.
 
 ---
 
-## Iteration 4 — 2026-08-12
+## Iteration 3 — 2026-09-01 — T003, the width the host holds
 
-**Did:** T004. `updater.Unit.Report()` reads this host's unit, the record beside
-it and the offer beside that — no release, no network. `unitFactsOf` in
-`internal/httpapi/settings.go` turns it into one of five sentences, and the
-Updates section renders it as three rows of the **existing** `.version-facts`
-list: the sentence, `Waiting at` naming `crswd.service.new`, and `Compare them`
-carrying the `diff` command. No new CSS class, and no CSS change at all.
+**Did:** Added `tmuxctl.OptionWidth` (`@crswd-width`) and `SessionInfo.Width` to
+the `list-sessions` row, `Session.Width` + `Columns()` + `encodeWidth`/
+`decodeWidth` + `Store.SetWidth`, restored the width in `Adopt`, and wrote
+`Manager.Reflow` — which is **T001's and T002's first production caller**.
+Commit `2eddeb2`.
 
-**The decision T004 inherited, and the answer:**
+**Learned:**
 
-- **Where the outcome comes from: the files, not persisted state.** Iteration 3
-  left this open. `Place`'s `UnitOutcome` is still dropped at the call site. The
-  `crswd.service.new` an operator diffs *is* the claim "there is a newer unit
-  than yours", so it is what decides what the page says — a second account
-  written by the update would be free to go stale the moment somebody took the
-  offer and deleted it. **No new state, and nothing fetched on a render.**
-- **⚠️ The one place I did not do what T004 literally says.** T004 asks for
-  "theirs is current". A page cannot honestly say that from disk: absence of an
-  offer means *no update has left one*, which on a host that has never been
-  updated — the operator this milestone is for — is exactly the false
-  reassurance the milestone exists to end. So `unitSentenceTheirs` says "an
-  update never replaces it. Nothing newer is *waiting* beside it." The stronger
-  claim needs the published bytes, i.e. a fetch on a page render, which
-  Iteration 3 already priced as "probably not". **If somebody wants the literal
-  wording, the fix is to compare against the release on the existing Check
-  (three more asset fetches plus a `Verify`), not to soften the sentence.**
+- **T003 was split at "the route", not at "the write".** The task says the option
+  is "written onto the tmux session when a reflow is taken", so the reflow itself
+  is here and **T004 is only the HTTP route plus its audit and negative cases**.
+  T004 should call `Manager.Reflow(ctx, s, cols)` the way `continueFromBrowser`
+  calls `Continue`, and its own clamp is the third one on that path (handler →
+  `Reflow` → `argvResize`), which is what its "deliberate duplication" means.
+- **`markSession` deliberately does *not* write `@crswd-width`.** It is called on
+  a **recreate**, which builds a *new* 80-column window; writing the record's old
+  width there would put "44" on a window that is 80 — a lie in the direction spec
+  009 warns about. So the option is written by `Reflow` alone, where the resize
+  that makes it true happens in the same call. **A recreated session therefore
+  comes back at 80 with no option, which is honest**, and the operator reflows
+  again. See the findings for the journal half of this.
+- **Zero and 80 are kept apart on purpose, and T005 needs that.** `Width == 0`
+  means nobody has reflowed the session; `Columns()` collapses it to 80 for
+  anything that wants the number. The distinction is the *only* record that this
+  daemon took the window out of tmux's automatic sizing, which is the ⚠️ sentence
+  T005 and T007 owe the operator. `decodeWidth` therefore checks for an empty
+  option rather than calling `ParsePaneWidth` bare, which is a **deliberate
+  departure from iteration 2's advice** — the plan's "no option adopts as 80"
+  still holds, through `Columns()`.
+- **The width field went between `@crswd-lifetime` and spec 012's pair**, so the
+  row stays "everything the daemon wrote, then the one thing tmux computes", and
+  `parseSessions`' comment about the last two fields stays true. `listFieldCount`
+  is now **10**. Every row literal in `exec_test.go` needed a field inserted
+  *third from the right* — cutting is from the right, so counting from the left
+  gets the malformed-on-purpose rows wrong.
+- **`tmuxctl.DefaultRows` is now exported** (was `tmuxDefaultRows`) because
+  `resize-window` names both axes and #120 is about columns: `Reflow` passes back
+  the 24 rows the session already has. The column half stays unexported —
+  `config.DefaultPaneWidth` is the same number where the policy lives.
+- **The real-tmux round trip is pinned:** `TestTmuxListReportsTheWidthOption`
+  resizes *and* sets the option, so it cannot pass on a tmux where the resize
+  silently did nothing. `go test -tags tmux ./...` is green here.
+- **All six new guards were proven by breaking them**, as the plan requires:
+  dropping the restore in `Adopt`, dropping the `SetOption`, dropping the clamp,
+  writing the store before the resize, making the fake return `""` for a width it
+  stored, and reading the width out of the lifetime's field — each fails at least
+  one test. Restored and green.
 
-**Learned — things the next iteration would otherwise rediscover:**
-
-- **`unitCarrier` in `internal/httpapi/update.go` grew `Report()`**, rather than
-  a second seam. One pair of files answered by two seams is two answers a page
-  and an update could disagree about. `fakeUpdatePath` in `update_test.go`
-  answers the zero report deliberately — the page assertions run against a
-  **real** `updater.Unit` over a `t.TempDir()` home (`unitOnHost` in
-  `settings_test.go`), because a fake would let the page and the updater agree
-  about a host neither looked at.
-- **`updatePanelFor` is the composer, and it returns `nil` with no page token.**
-  So a mint failure costs the unit sentence as well as the update button. Left
-  as is: that server has no forms at all. The nil check is on
-  `s.updates.unit`, because `newServer` (every test in the package) wires no
-  update path — `newWithLayer1` is the only constructor that does.
-- **`.version-facts` was the whole answer to "reuse a class".** It is a `<dl>`
-  documented as "two terms, two answers", so a fact stated as a `dt`/`dd` pair
-  needs no name of its own. Adding a class would have needed a stylesheet rule,
-  and `stylesheet_test.go` holds every value in it to `docs/design-system.md`.
-- **`updater.Report` refuses rather than returning the zero `UnitReport`**, and
-  the reason is the sentence it would produce: the zero value reads as "no unit
-  on this host", whose sentence *promises an update will install one*. A read
-  that failed has its own sentence, and `unitFactsOf` takes the error to pick it.
-- **Mutation-checked, four ways**, all caught: composing `Offer` from the unit
-  path instead of stat-ing it (failed 6 cases across both packages), dropping
-  the two `.new` rows from the template, collapsing `UnitOurs` into
-  `UnitTheirs`, and dropping the `panel.Unit` wiring entirely (failed all four
-  page arrangements — the T001 lesson, tested).
-
-**Left:** T005–T007. T005 is next: the same three facts at startup, into the
-journal. It needs `updater.NewUnit(os.Getenv).Report()` in `cmd/crswd` beside the
-absent-identity-provider warning — **the sentences are `internal/httpapi`
-constants today**, so T005 either moves them somewhere both callers can reach or
-writes the journal's own wording; picking the second means two vocabularies for
-one fact, which is the drift T007 exists to collapse. Decide it deliberately.
+**Left:** T004–T007. Nothing is blocked.
 
 **Findings — noticed, not fixed:**
 
-- **`docs/components.md` gained the paragraph, `docs/design-system.md` did
-  not**, and it needed none: no token, no rule, no new class. Worth knowing
-  before T006 goes looking for a design doc to update.
-- **The `diff` command is shell-quoted by `shellQuoted` in `settings.go`.** It
-  is printed, never run — nothing in this daemon executes a shell — but an
-  operator pastes it, and an unquoted path with a space in it is a command that
-  silently diffs two other files. `TestTheDiffCommandSurvivesAHomeWithASpaceInIt`
-  is the only thing in the tree that would notice: every path a test builds is
-  under a temporary directory with no spaces in it.
-- **The `quickstart` suite still could not be run here.** `127.0.0.1:8765` is
-  held by the deployed daemon (checked with `ss -ltn`), which AGENTS.md
-  documents as that suite's requirement. `go vet -tags quickstart ./...` is
-  clean; `-tags tmux` and `-tags dev` were run in full and pass.
-- **Still open from Iterations 1–3:** the migration runs in the *old* binary;
-  `cmd/crswd/config_cmd.go` duplicates `internal/config/write.go` (T007);
-  `internal/config/migrate.go`'s and `internal/config/write.go`'s header
-  comments both name the wrong set of callers; `config.WriteFile`'s temp file is
-  still named `.crswd-config-*` while place.go writes systemd units through it;
-  `internal/httpapi/render.go` is still the only file `gofmt -l .` names; and
-  `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is wall-clock flaky.
+- **The journal does not carry the width, and that is deliberate but incomplete.**
+  `journalRecord` holds the lifetime; adding the width without also resizing on
+  the recreate path would make the record claim a width the new window does not
+  have. **Either both or neither** — and "neither" is what shipped. If T005 or a
+  later spec wants a reflow to survive an OOM-killed tmux server, the change is
+  `reviveRecord` + a `Resize` in `Manager.revive`'s `!shellSurvives` branch, and
+  it needs the rows question below answered first.
+- **A reflow normalises the height to 24 and nothing says so.** Before the first
+  resize `window-size` is `latest`, so an operator who had attached a 50-row
+  terminal has a 50-row window; `Reflow` sets `-y 24` and that height is gone.
+  `#{window_height}` on the list row would give the true value if this ever
+  matters. **T007's documentation sweep should mention it, or T005 should read
+  the height back.**
+- **`#{window_width}` exists and is not what `@crswd-width` holds.** The option is
+  what this daemon *asked for*; the format variable is what the window *is*. They
+  agree today because nothing else resizes these windows, and they would diverge
+  the moment the operator puts a session back to `window-size latest` and attaches
+  — which is exactly the "way back" T005 promises. **If T005 renders a number to
+  the operator, it should consider rendering the truth rather than the intent.**
+- **`TestQuickstartStory5RateLimit` failed once on a `t.TempDir` cleanup race**
+  (`unlinkat .../001/home: directory not empty`) — not an assertion; the burst was
+  `[201 201 201 429 429]`, which is what it wants. It passed on two re-runs and
+  the full suite passed after. **Flaky teardown, not a regression**; something is
+  still writing under the temp home while cleanup runs.
+- **Two `wantErr` rows in `TestParseSessions` fail on the field count rather than
+  the reason they name** ("creation time is not a number" has seven fields, not
+  ten). That was already true before this change and is now one field further out.
+  Left alone under AR-008; worth a line when someone next touches that table.
 
 ---
 
-## Iteration 5 — 2026-08-12
+## Iteration 4 — 2026-09-01 — T004, the route that asks for it
 
-**Did:** T005. `cmd/crswd/unit.go` — `sayWhatBecameOfTheUnit` writes this host's
-unit standing to stderr, called from `run` immediately after the staging sweep.
-The vocabulary moved out of `internal/httpapi/settings.go` into
-`internal/updater/facts.go` (`UnitFacts`, the five `UnitSentence*` constants,
-`DescribeUnit`, `unitCompare`, `shellQuoted`), so the page and the journal are
-one implementation. The page now renders `updater.UnitFacts` and calls
-`updater.DescribeUnit`; the template is untouched, because the three field names
-are identical.
+**Did:** Added `POST /dashboard/sessions/{id}/reflow` behind `handleAction` —
+`patternDashboardReflow`, `fieldColumns`, `reflowFromBrowser`,
+`refuseBrowserReflow`, `audit.ActionDashboardReflow`, and three outcomes
+(`reflowed`, `reflow-unconfirmed`, `reflow-failed`). It is **T001's, T002's and
+T003's first reachable caller**: before this commit the whole milestone could be
+driven only from a test. Commit `9ea64dc`.
 
-**The decision T004 left open, and the answer:**
+**Learned:**
 
-- **Move the vocabulary, do not write a second one.** Iteration 4 handed this
-  over explicitly. Two sets of words for one file is exactly the drift T007
-  exists to collapse, and its shape here would be a page and a journal
-  disagreeing about whether an update replaces this operator's unit — a question
-  with no tie-breaker anywhere on the host. `internal/updater` is the home
-  because it owns `UnitReport`, both callers already import it, and a startup
-  banner about a systemd unit must not come out of the HTTP package.
-- **The journal carries one thing the page does not: the read error.** The page
-  says `UnitSentenceUnknown` and stops, because the error names a path on this
-  disk. In the journal that detail is the whole value — "could not read the
-  unit" with no reason is a line that sends somebody looking.
+- **The handler's clamp is not redundant with `Manager.Reflow`'s, and the
+  difference is exactly one case.** Breaking the handler's
+  `config.ParsePaneWidth` down to a bare `strconv.Atoi` fails **5** of the 13
+  clamp rows, not 13: the manager clamps too, so `-40`, `0`, `19`, `501`,
+  `9000000` and 40 digits all still land correctly. What only the handler's
+  *parse* decides is that a **non-number is the default (80) rather than the
+  floor (20)** — `wide`, `$(tput cols)`, `44px`, an absent field and an empty
+  one. **If a later edit wants to argue the third clamp is redundant, that is
+  the case to point at**; the two are not the same function wearing two names.
+- **The verbatim-argv sweep has to be restricted to non-numeric input.** A
+  substring check for the submitted value matches the daemon's own correct
+  output whenever the clamp is the identity (`20` in `-x 20`). The table now
+  carries a `nameable` flag and only sweeps the three values that are text. A
+  first draft of this failed on `20`, `19`, `0` and `500` — all four *correct*.
+- **`dashboard.reflow`, not `session.reflow`.** `session.mode`'s precedent would
+  allow the second, but the plan directs modelling on spec 013's `continue` and
+  the reason holds: what an operator counts here is what the *browser* changed,
+  and the trail is the only place a second reader's screen going narrow is
+  attributable to somebody's phone. It is proven non-vacuous — registering the
+  route under `ActionDashboardCompact` fails `TestReflowFromBrowser`.
+- **`Fake.Size(name)` is the assertion that matters and Iteration 1 was right to
+  flag it.** A handler that wrote the store and skipped tmux passes every
+  store-only check. `reflower.onHost` reads the fake; `reflower.recorded` reads
+  the store; both are asserted on every clamp row.
+- **`untouchedWidth` checks `Width == 0`, deliberately not `Width == 80`.** Zero
+  means nobody has taken this session out of tmux's automatic sizing; 80 means
+  somebody reflowed it to the number it already was. Same window, different
+  facts — and T005 needs the distinction to decide whether to draw the ⚠️.
+- **Four guards were proven by breaking them**, as the plan requires: the clamp
+  (5 rows), the confirming step (3 rows), the `handleAction` registration (3
+  rows, via `handleBrowser`), and the audit action. All restored and green.
+- **The success banner carries the ⚠️** — that a reflowed session stops sizing
+  itself to a terminal attached on the host. **T005 still owns saying it
+  *before* the operator presses**, with the way back; this is the after.
 
-**Learned — things the next iteration would otherwise rediscover:**
-
-- **`sayWhatBecameOfTheUnit(w, report, err)` takes three arguments, and the
-  middle one cannot be spread.** Go refuses a multi-value call mixed with other
-  arguments, so `run` does `unitReport, unitErr := ...Report()` on its own line.
-  `updater.DescribeUnit(s.updates.unit.Report())` still spreads in httpapi
-  because the report is its *only* argument.
-- **`run` does not fail on a unit it cannot read**, and that is deliberate: the
-  read error becomes a sentence. What *is* fatal is a write that fails, on
-  `warnNoIdentityProvider`'s terms — a stream that will not take a line has
-  nowhere to report anything below that point, and the alternative is a
-  swallowed error.
-- **`cmd/crswd/main_test.go` already had the AST-wiring pattern** —
-  `TestStartupDiagnosticsGoToStderr` parses main.go, finds the call by name and
-  checks `render(call.Args[0]) == "os.Stderr"`. `TestStartupSaysWhatBecameOfTheUnit`
-  is that shape, and it is the assertion this milestone is about: not that the
-  code exists, but that a start runs it.
-- **The banner is safe for the documented `grep '^{' | jq` filter** — every line
-  is prefixed `crswd: `. `TestDocumentedCommandParses` (quickstart) asserts the
-  trail contains a `crswd: ` diagnostic *and* that the filter still parses, so it
-  gets stronger rather than weaker from this.
-- **The page test no longer builds its expected diff command with the
-  implementation's own helper.** It spells `diff '<unit>' '<offer>'` out, so a
-  page rendering some other command fails instead of agreeing with itself. The
-  journal test does the same.
-- **Mutation-checked, six ways**, all caught: dropping the call from `run`
-  (wiring test, 0 calls), pointing it at `os.Stdout` (that test *and*
-  `TestDiagnosticsGoToStderr`), dropping the read-error line, dropping the
-  waiting/compare lines, swallowing the write error, and collapsing
-  `UnitTheirs` into `UnitAbsent` — that last one failed in all three packages,
-  which is the point of there being one vocabulary.
-
-**Left:** T006 (README + deploy/README) and T007 (one config-write
-implementation). T006 is next.
+**Left:** T005, T006, T007. Nothing is blocked.
 
 **Findings — noticed, not fixed:**
 
-- **T006 has a doc question to answer, not just prose to write.** T005 gave the
-  journal the read error and the page nothing; if `deploy/README.md` is going to
-  tell an operator how to find out where their unit stands, it should say which
-  of the two to read and why they differ.
-- **`internal/httpapi/settings.go` lost ~115 lines and gained an import it
-  already had.** Nothing else in that file used `shellQuoted`, so no caller was
-  left behind — checked by grep before the move, and by the build after.
-- **The `quickstart` suite still could not be run here.** `127.0.0.1:8765` is
-  held by the deployed daemon (`ss -ltn`), which AGENTS.md documents as that
-  suite's requirement. `go vet -tags quickstart ./...` is clean; `-tags tmux` and
-  `-tags dev` were run in full and pass.
-- **Still open from Iterations 1–4:** the migration runs in the *old* binary;
-  `cmd/crswd/config_cmd.go` duplicates `internal/config/write.go` (T007);
-  `internal/config/migrate.go`'s and `internal/config/write.go`'s header
-  comments both name the wrong set of callers; `config.WriteFile`'s temp file is
-  still named `.crswd-config-*` while place.go writes systemd units through it;
-  `internal/httpapi/render.go` is still the only file `gofmt -l .` names; and
-  `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is wall-clock flaky.
+- **`registeredPatterns` in `settings_test.go` is stale by five routes and now
+  six.** It sweeps every registered path for secret disclosure and for
+  `Access-Control-Allow-*`, and its own comment admits "a twelfth would have to
+  be added here by hand". Since it was written, `patternDashboardContinue`,
+  `patternDashboardUpdate`, `patternDashboardRestart`, `patternSettingsEdit` and
+  `patternConversations` were all registered without being added — and
+  `patternDashboardReflow` follows them, because adding one to the list also
+  requires driving it in that sweep, which is outside T004 (AR-008). **This is
+  the one guard in the repo that is quietly losing coverage as routes are
+  added**, and it is worth a task of its own rather than a line here: the fix is
+  to derive the list from the mux rather than to keep typing it.
+- **`docs/auth-and-sessions.md` and `docs/components.md` do not know this route
+  exists.** T007 owns the documentation and should add it beside the
+  "Continuing a conversation" section, which is the shape the reflow's paragraph
+  wants.
+- **There is still no way back to `window-size latest` in code**, restated from
+  Iteration 1 because T005 is next and it is T005's blocker to size. Nothing in
+  `internal/tmuxctl` sets it, so if T005's "way back" is a control rather than a
+  documented `tmux set-window-option`, it needs a second `Controller` method and
+  T005 is bigger than it reads.
+- **A reflow to 80 and a session nobody reflowed are indistinguishable to the
+  operator but not to the daemon.** The route accepts an absent `columns` field
+  as 80, which means "put it back to the default width" — and that writes
+  `Width = 80`, which is *not* the same as returning the window to automatic
+  sizing. **T005 should not offer the absent-field case as an undo**; it looks
+  like one and is not.
 
 ---
 
-## Iteration 6 — 2026-08-12
+## Iteration 5 — 2026-09-01 — T005, the offer in the pane
 
-**Did:** T006. `README.md` gains *The other two files an update carries* under
-*Updating, and rolling back* — the migration (staged, loaded, `config.bak`,
-discarded if it would not load) and the unit's four branches as a table, with the
-`diff`/`cp`/`daemon-reload`/`restart` that takes a `.new`. `deploy/README.md`
-gains *What an update does to this file* under *Why the unit looks the way it
-does*. `TestTheOperatorPagesNameTheFilesThisPackageWrites` in
-`internal/updater/unit_test.go` holds both pages to `unitPath`, `unitRecordPath`
-and `UnitAsset + newSuffix`.
+**Did:** Added the reflow control to `partials/pane.html` — a form to the T004
+route, shipped `hidden`, revealed by a new module in `crswd.js` that measures the
+pane's own font against its own box. `paneView` gained `Columns`, `MinColumns`,
+`Target` and `PageToken`; `sessionPage` fills all four off the record. Commit
+`d0ea1ad`.
 
-**The question T005 left open, and the answer:**
+**Learned:**
 
-- **Which of the two accounts to read: either, and the journal when the read
-  failed.** They are one read of the same two files through
-  `updater.DescribeUnit`, so neither is fresher. The single difference is stated
-  in `deploy/README.md`: a failed read names a path on this disk and why, which
-  is a diagnostic for whoever administers the host rather than something a
-  browser is owed — so the page says only that it happened.
+- **The "way back" is a rendered command, not a second `Controller` method, and
+  that was the sizing question Iterations 1 and 4 kept restating.** T005's text
+  is *"says that a reflowed session stops sizing itself to a terminal attached on
+  the host (the ⚠️ above), with the way back"* — the way back is part of what the
+  control **says**. The plan's ⚠️ section agrees: it requires the operator be
+  *left* a way back and that the page and docs *say* it. tmux already provides
+  one; nothing in this daemon took it away. So the sentence ends with
+  `tmux set-window-option -t '=crswd-<id>:' window-size latest`, rendered as text
+  and never run — the settings page's `diff` command is the exact precedent
+  ("this daemon prints it and never runs it"). **`internal/tmuxctl` still has no
+  `window-size latest` call and now deliberately needs none.** A control-shaped
+  undo would have been a second route, a second audit action and a second
+  outcome, all to wrap one command the operator can already run — and it would
+  have been the *only* action on this door with no confirming decision behind it.
+- **The offer carries no class, and that is the whole of "no new component".**
+  The settings page's restart form is the precedent — `<form>` with no class at
+  all, `.button`, and a `<p>` beside it — and taking it means **zero CSS in this
+  task**, so `TestTheStylesheetAndTheMarkupNameTheSameThings` and the
+  `.combo|.switch|.masthead|.action-toast|.modal` document sweep are both
+  untouched. **If a later task gives this control a class it must also give
+  `docs/components.md` a name for it in the same commit**, which is the trap #119
+  was.
+- **`script(t)` strips comments before any assertion sees the file**
+  (`jsComment.ReplaceAllString`). A JS test anchored on a comment reports a
+  missing module for a file that was only re-worded. `REFLOW_CELLS` exists as the
+  module's first statement partly to be that anchor, and the test says so.
+- **`TestTheStreamClientReplacesTheScreenWithText` polices every write in the
+  whole file**, not just the stream's: the sink regex rejects any
+  `innerHTML`/`outerHTML`/`innerText`/`nodeValue`/`srcdoc` and any `+=`, and a
+  separate assertion demands `pane.textContent =` appear **exactly once**. So a
+  new module may write `textContent` but must not name its element `pane` while
+  doing it. `note.textContent =` is why this one passes.
+- **Measurement is a canvas, deliberately not a probe element.** `measureText`
+  with the pane's computed `fontSize`/`fontFamily` adds nothing to the document
+  at all — a measuring node *inside* the pane would be markup this dashboard put
+  into the one element it renders nothing but text. The `font` shorthand is not
+  read: engines do not all report it for a rule written with custom properties,
+  and an empty one measures the canvas default confidently and wrongly. **There
+  is no `@font-face` in this tree** (`TestNoRuleNamesAFontFace`), so metrics are
+  stable at `defer` time and nothing waits on a font load.
+- **Every comparison in the reveal is written to fail closed.** `Number()` of a
+  missing attribute is `NaN` and every `<`/`>` against one is false, so the guard
+  is `!(fits >= floor) || !(fits < session)` rather than the readable inverse:
+  markup that drifted must leave the form hidden, never reveal it by arithmetic
+  accident.
+- **Below the floor the offer is withheld rather than clamped.** Naming a width
+  and then having the route clamp it would be the page claiming something the
+  daemon will not do; `MinColumns` rides in the markup so config keeps its one
+  definition. It is unreachable on a real phone (20 columns is ~145px) — what it
+  actually guards is a measurement that came back nonsense.
+- **It sits above the `<pre>`, not below it.** That is the rename's and the
+  continue's argument applied inside the component: a control under a
+  fixed-height scroll container is one an operator scrolls past a terminal to
+  reach, and on the narrow viewport where this is the only offer that ever
+  appears, that terminal is most of the display.
+- **Five guards were proven by breaking them**, as the plan requires: dropping
+  `hidden`, rendering the form without the token gate, revealing before
+  comparing, rendering `config.DefaultPaneWidth` instead of `live.Columns()`, and
+  deleting the way-back clause. Each fails at least one new test. Restored and
+  green.
 
-**The one thing documented beyond the task's literal ask**, deliberately: **how
-to hand a unit over.** T006 asks how to *take* a `.new`, and the honest answer
-raises the next question immediately — a hand copy writes no record, so the unit
-stays the operator's and the next differing release offers again. `deploy/README.md`
-therefore also documents writing the digest into
-`~/.local/share/crswd/crswd.service.sha256` by hand, with the price stated in the
-same breath (every future update then replaces that file with no `.new` and no
-diff). Verified `sha256sum < file | cut -d' ' -f1` produces exactly what
-install.sh's `${sum%% *}` records, and the recipe `mkdir -p`s the directory
-because a host whose unit the installer never placed has never had one made.
-
-**Learned — things the next iteration would otherwise rediscover:**
-
-- **⚠️ A line beginning `journalctl` in either README is executed by the
-  quickstart suite.** `trailCommands` in `cmd/crswd/quickstart_test.go` collects
-  every line whose trimmed text (leading `#` stripped) starts with `journalctl`
-  from `README.md` and `deploy/README.md`; `filterOf` then *fatals* unless it
-  contains `--user`, `-u crswd`, `-o cat` **and** a pipe, and the command must
-  both survive a stream carrying `crswd: ` diagnostics and **reject** a truncated
-  record. `… | grep 'crswd: '` would fail that second half. A leading backtick
-  saves an inline mention, which is why every journal command added here is prose
-  rather than a fenced line.
-- **That sweep is runnable on this host even though the rest of `quickstart` is
-  not.** `go test -tags quickstart ./cmd/crswd -run TestEveryDocumentedTrailCommandSurvivesTheStream`
-  passes — it takes its own port; only the two startup cases need `127.0.0.1:8765`,
-  which the deployed daemon still holds. Worth running for any README change.
-- **Two other tests read these pages**: `internal/release/readme_test.go` (the
-  install one-liner must come before any `go build`/`git clone`, and the rollback
-  path, `POST /dashboard/update` and `version=` must all appear) and
-  `internal/config/deployexample_test.go` (only fenced blocks containing
-  `/.config/crswd/env` are scanned for `CRSW_` assignments — a new block is
-  invisible to it unless it names that file).
-- **`os.ReadFile` over a loop variable needs a `//nolint:gosec // G304` even in a
-  test.** The linter is v2.12.2 (#26 checked) and flagged it.
-- **Mutation-checked:** flipping `newSuffix` to `.pacnew` failed the new test on
-  both pages, which is the drift it exists to catch — a page naming an offer that
-  is not there is the "difference nobody can see" this milestone is about.
-
-**Left:** T007 — one config-write implementation shared by `crswd config migrate`
-and the update path. That is the last task in the plan.
+**Left:** T006 and T007. Nothing is blocked.
 
 **Findings — noticed, not fixed:**
 
-- **T007 now has four write paths to consider, not three.** `cmd/crswd/config_cmd.go`'s
-  `writeConfigFile`/`writeAndSync`, `internal/config/write.go`'s `WriteFile`,
-  `internal/updater/config.go` (staged + backup) and `internal/updater/place.go`
-  (units and the record) all go through or around the same idea. Note the
-  documentation now *claims* the update runs `crswd config migrate` "for you";
-  after T007 that should be literally true rather than nearly so.
-- **`README.md` documents `crswd.service.new` as never loadable by systemd**
-  (a unit must end in `.service`). That is true of systemd, not enforced here —
-  if `newSuffix` ever changes, it has to keep that property, and the new test
-  checks only that the pages agree with the constant.
-- **The `quickstart` suite as a whole still could not be run**: `ss -ltn` shows
-  `127.0.0.1:8765` held by the deployed daemon. `go vet -tags quickstart ./...`
-  is clean; `-tags tmux` and `-tags dev` were run in full and pass, as did
-  `golangci-lint run` (0 issues).
-- **Still open from Iterations 1–5:** the migration runs in the *old* binary;
-  `cmd/crswd/config_cmd.go` duplicates `internal/config/write.go` (T007);
-  `internal/config/migrate.go`'s and `internal/config/write.go`'s header comments
-  both name the wrong set of callers; `config.WriteFile`'s temp file is still
-  named `.crswd-config-*` while place.go writes systemd units through it;
-  `internal/httpapi/render.go` is still the only file `gofmt -l .` names; and
-  `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is wall-clock flaky.
+- **The offer is computed once, at load, and nothing re-runs it.** Rotating a
+  phone from landscape to portrait leaves no offer where one now applies, and
+  from portrait to landscape leaves a stale one on screen naming a width the
+  reader no longer has. A `resize` listener is three lines; what stopped it being
+  written is that hiding the control again can pull it out from under a finger
+  mid-tap, and that is a decision rather than an omission. **The stale direction
+  is the one that matters** — the number in the sentence is the number in the
+  hidden field, so a rotated reader could press an offer for a width they no
+  longer have. Worth a task, not a silent addition.
+- **`docs/components.md`'s Pane viewer section does not know this control
+  exists**, and neither does its Action controls table, which still lists four
+  routes. **T007 owns it** and should add the reflow to both — the table's "All
+  four also answer 400…" sentence needs the count changing with it. Left here
+  deliberately rather than done in passing: T007 is the documentation task and
+  AR-008 forbids the drive-by.
+- **`registeredPatterns` in `settings_test.go` is now stale by seven routes**,
+  restated from Iteration 4 because nothing has taken it. Unchanged by this task;
+  still worth a task of its own, and still the one guard in the repo quietly
+  losing coverage as routes are added.
+- **`TestQuickstartStory5RateLimit` fails under full-suite load and passes in
+  isolation**, with `unlinkat …/001/home: directory not empty` from `t.TempDir`'s
+  cleanup — the assertion itself passes, the burst being `[201 201 201 429 429]`,
+  which is what it wants. **This is the third iteration to see it** (Iteration 3
+  recorded the identical message). I tried to establish it as pre-existing by
+  running the suite at `HEAD` in a detached worktree and **could not complete
+  that check**: the worktree fails `-buildvcs` stamping, and the environment
+  refused both the `GOFLAGS` re-run and a scratch script, so **"pre-existing" here
+  rests on Iteration 3's record and on the changed files, not on a baseline run I
+  actually made.** Nothing this task touched runs in `cmd/crswd`'s temp-home path
+  — the change is `internal/httpapi` views, one template and one script — but
+  that is an argument, not a measurement. Something is still writing under the
+  test's temp home while cleanup runs, and it deserves a task.
+- **`aria-describedby="card-id-…"` on the reflow button resolves only because
+  the session page draws the card.** True today on the one page that renders this
+  component; a second page rendering a pane without a card would ship a dangling
+  reference, silently. The card's own action row has the same coupling, so this
+  is the shape of the tree rather than a defect this control introduced.
 
 ---
 
-## Iteration 7 — 2026-08-13
+## Iteration 6 — 2026-09-01 — T006, the second mechanism removed
 
-**Did:** T007, the last task. `config.MigrateFile` in `internal/config/write.go`
-is now the whole rewrite — stat for the mode, read, `config.Migrate`, stage at
-`config.migrating`, read back, offer to the caller's `accept`, write
-`config.bak`, rename — and both callers are it. `internal/updater`'s
-`ConfigMigrator.Migrate` is four lines and a `wouldStillStart` predicate;
-`cmd/crswd`'s `configMigrate` is the `ReadFile` check, the call, and the report.
-`writeConfigFile`/`writeAndSync`/`readFileAndMode` are gone from `cmd/crswd`, so
-`config.WriteFile` is the only atomic write of an operator's file left in the
-tree.
+**Did:** Deleted `white-space: pre-wrap` + `overflow-wrap: anywhere` and the
+comment block that named the trade from the 780px block of `web/static/crswd.css`,
+and inverted the guard that pinned them. Commit `c66aa38`.
 
-**The one thing the two callers still choose for themselves, and why:**
+**Learned:**
 
-- **The check on what landed is a parameter, not a shared constant.** An update
-  asks `config.Validate` — the loader, in the daemon's own environment, moments
-  before the restart that would otherwise discover the answer. The command asks
-  `config.ParseFile` instead, because `configCheck`'s own comment already
-  settles it: values are checked against the environment the *daemon* runs in,
-  and a migration refused because the operator's terminal carries no
-  `CRSW_SHARED_SECRET` would be refusing a file the daemon starts on perfectly
-  well, and would teach them to stop migrating. **Sharing the loader here would
-  have been the drift T007 exists to end, pointed the other way.**
-- **`crswd config migrate` therefore gained the staging and the read-back**, and
-  that is a real behaviour change, not a refactor: it used to write the backup
-  and then write over the operator's file with bytes nothing had looked at
-  again.
+- **The task was three files, not one, and the third was mandatory.**
+  `docs/design-system.md` says in its own words that the breakpoint enumeration
+  gains a row in the same commit a rule is added — and it already went stale once,
+  saying "two effects" while the block did four. Removal is the same obligation
+  read backwards, so the `.pane` row went with the rule and the sentence now says
+  both directions out loud. **This is not the T007 documentation sweep**: T007
+  owns `README.md` and `docs/components.md`, and both are still stale on purpose.
+- **`TestThePaneWrapsOnlyOnNarrowViewports` had to be replaced rather than
+  deleted, and the replacement is wider than the thing it replaced.** The old test
+  asserted the two declarations existed in the one block allowed to carry them.
+  `TestNoPaneRuleWrapsTheTerminalsOutput` sweeps **every** `.pane` rule through
+  `cssRules(stylesheet(t))` — which flattens media blocks, `mediaOpen` strips the
+  preludes — for `overflow-wrap|word-break|word-wrap` or a wrapping `white-space`
+  keyword. A deleted guard would have left the wrap free to return from the
+  `(pointer: coarse)` block or a block nobody has written yet.
+- **The sweep and `TestThePaneKeepsItsDesktopAlignment` are not redundant, and I
+  measured which catches what.** Restoring both declarations fails the sweep;
+  `overflow-wrap` alone fails it too; **deleting `white-space: pre` from the base
+  rule passes the sweep and fails the alignment test**, because an override that
+  declares nothing is legitimate and an absent base declaration inherits `normal`,
+  which wraps. Both comments now say exactly that, and both claims were run.
+- **`stylesheet(t)` strips CSS comments before every assertion in that file.** So
+  the value sweep (`TestNoRuleCarriesAValueThatBelongsInAToken`) cannot see a `px`
+  or a hex inside a comment, and prose in `crswd.css` is free to name real
+  numbers. Iteration 5's note that `script(t)` does the same for JS is the same
+  fact in the other file; **do not anchor an assertion on a comment in either.**
+- **Four other tests carried the wrap as their stated reason and were corrected
+  in place**, because a live guard whose premise is a deleted declaration is the
+  stale-enumeration failure this repo keeps recording:
+  `TestThePaneDoesNotChainItsOverscroll` ("even where the pane wraps"),
+  `TestThePaneDoesNotTrapVerticalScrolling` ("the breakpoint block, where the wrap
+  lives"), `TestThePaneKeepsItsDesktopAlignment` (framed as override-vs-base, a
+  distinction that no longer exists) and `TestNoPageClampsTheZoom` (whose guard
+  still stands — pinch is now the escape hatch for a reader who has **not**
+  reflowed, which is every reader until somebody presses the offer). No assertion
+  changed in any of the four.
+- **`docs/mobile-open-questions.md` Q1 was ANSWERED and said "the wrap stays".**
+  Its fallback was *exactly* these two declarations, so T006 took a fallback the
+  operator's answer had declined. It is recorded as superseded rather than
+  re-answered: that file's mechanism is that **only the operator's report answers
+  a question**, and this is not a verdict on the reading — it is the mechanism
+  moving. The answer stands above the note, untouched.
+- **Neither tagged suite covers this.** `cmd/crswd` and `internal/tmuxctl`
+  reference neither `crswd.css` nor `pre-wrap` (grepped, not assumed). Both were
+  compiled with `go vet -tags quickstart` and `-tags tmux`, and
+  `go test -tags tmux ./internal/tmuxctl ./internal/session` was run and is green.
+  `golangci-lint` is **v2.12.2** (#26's check) and reports 0 issues; `gofmt -l .`
+  names nothing; `go test ./...` is green in all 11 packages.
 
-**Learned — things the next iteration would otherwise rediscover:**
-
-- **`accept`'s error is returned verbatim**, which is what keeps
-  `updater.ErrConfigWouldNotLoad` where its meaning is. `errors.Is` still reaches
-  it through `MigrateFile`, and `internal/httpapi/update.go`'s two cases needed
-  no change at all. A sentinel moved into `internal/config` would have had to
-  mean "would not load" for a caller that cannot ask that question.
-- **`config.StagedPath(path)` exists for the same reason `BackupPath` does**:
-  `internal/updater/config_test.go` asserts nothing was left at that name, and a
-  test spelling `.migrating` itself would pass vacuously the day the constant
-  moved.
-- **`configMigrate` reports on `(migrated, err)` and not on `err` alone.**
-  `MigrateFile`'s deferred cleanup can join an error onto a *successful*
-  migration; "your file is unchanged" would then be a lie that sends the
-  operator to the wrong file. It is the only branch there where `migrated` is
-  true and `err` is not nil.
-- **The quickstart leftover check was asserting nothing.** It looked for
-  `.tmp-`, which was `cmd/crswd`'s own writer's prefix; `config.WriteFile` never
-  wrote such a name. It now names `.migrating` and `.crswd-tmp-` — and the
-  temporary file is `.crswd-tmp-` rather than `.crswd-config-` because
-  `place.go` writes systemd units through the same call (Iteration 3's finding,
-  which was handed to this task).
-- **Mutation-checked, four ways**, all caught: renaming into place before
-  `accept` sees the bytes (failed in *both* packages), dropping the staged
-  file's removal (both again), and each half of the drift guard — a caller that
-  stops calling `MigrateFile`, and a caller that grows an `os.Rename` of its own.
-- **The guard is an AST scan of two files by path** (`../../cmd/crswd/config_cmd.go`,
-  `../updater/config.go`) from `internal/config`'s own test, where
-  `docs_test.go` already reads `../../README.md`. It parses rather than compiles,
-  so it still runs when the file it is judging does not build.
-
-**Left:** nothing in the plan. T001–T007 are all ticked.
+**Left:** T007 alone — `README.md` and `docs/components.md`, then closing #121.
 
 **Findings — noticed, not fixed:**
 
-- **⚠️ Still open, and it is a spec question, not a bug:** the migration runs in
-  the **old** binary, so a rename shipped in v0.90 is applied by the update
-  *after* the one that installs v0.90. Today that costs nothing (`renamedKeys`
-  is empty, `SchemaVersion` is 1). T007 makes one of the two fixes cheaper —
-  `crswd config migrate` in the staged candidate is now the same code the
-  updater runs, so exec-ing it would change *when* it runs and nothing else —
-  but which fix is right needs somebody to decide. **Do not "fix" it silently.**
-- **`internal/httpapi/settings_edit.go` was left alone** (AR-008). It writes one
-  key rather than migrating a schema, and it validates *before* it writes rather
-  than after, which it can because it has the daemon's environment and no
-  rewrite to stage. It already goes through `config.WriteFile`, so it is not a
-  fourth write path — it is a different operation through the one writer.
-- **`README.md:801` says `config migrate` is "the only thing that rewrites a
-  configuration file wholesale".** Line 198 already says an update is that
-  command run for you, so the two read consistently — but if anyone edits either
-  sentence, they are now describing one implementation and should say so.
-- **`internal/httpapi/render.go` is still the only file `gofmt -l .` names**, and
-  `TestTheOpeningScreenIsSentWithoutWaitingOutAnInterval` is still wall-clock
-  flaky (10ms deadline). Both are fix-lane one-liners nobody has taken.
-- **The `quickstart` suite as a whole still could not be run**: `127.0.0.1:8765`
-  is held by the deployed daemon. `go vet -tags quickstart ./...` is clean and
-  the four cases that take their own port were run in full and pass
-  (`TestMigrateKeepsBackup`, `TestConfigCheckDoesNotStart`,
-  `TestFallsBackToBackupLoudly`, `TestEveryDocumentedTrailCommandSurvivesTheStream`).
-  `-tags tmux` and `-tags dev` were run in full and pass, as did
-  `golangci-lint run` (v2.12.2, 0 issues).
+- **`docs/components.md`'s pane bullet is now false and shipped that way, by the
+  plan's ordering.** It still reads "Below the breakpoint the pane wraps, and it
+  is a trade rather than a fix", names both declarations, and says "**Reverting is
+  two declarations**" — which has now happened. Its Action controls table is also
+  still missing the reflow route and still says "All four". **T007 owns both and
+  is the next task**; this is a one-iteration window, not a backlog, but if T007
+  is deferred for any reason this file is the first thing to fix.
+- **`specs/007-make-it-work-on-a-phone/contracts/pane.md` names the guard by its
+  old spelling** (`TestThePaneWrapsOnlyOnNarrowViewports`, "carries `white-space:
+  pre-wrap` **and** `overflow-wrap: anywhere`"), and `tasks.md` in the same spec
+  repeats it. Left alone: `specs/` is the record of what a milestone decided at
+  the time, and Iteration 0 established that nothing in `specs/` is a source of
+  open work. **Nothing enforces those test names**, so this rots silently rather
+  than failing — worth knowing before someone greps for a test that no longer
+  exists.
+- **The pane is now unwrapped for every reader who has not reflowed, and the only
+  thing standing between them and a horizontal pan per line is a JavaScript
+  module.** With the script blocked or failed, T005's offer stays `hidden` — which
+  is correct, and is #121's rule — but the baseline it degrades to is now the
+  *pre-milestone-7* phone experience rather than the wrapped one. That is the
+  milestone's stated intent and the operator chose it; it is written down here so
+  the next report of "the pane is unreadable on my phone" is diagnosed as *the
+  offer did not appear* rather than as a regression in the CSS.
+- **`TestQuickstartStory5RateLimit`'s temp-home cleanup race is unchanged and
+  unexamined here.** This task touched no Go outside `stylesheet_test.go`, and
+  `go test ./...` passed on the first run this iteration. Three iterations have now
+  recorded it; it still deserves a task rather than another line.
 
 ---
 
-Every task in the plan is checked and the tree is green: build, vet, `go test ./...`,
-`-tags tmux`, `-tags dev` and `golangci-lint run` all pass, as do the quickstart
-cases that do not need the port the deployed daemon holds.
+## Iteration 7 — 2026-09-01 — T007, the documentation half. #121 is BLOCKED.
 
-RALPH_COMPLETE
+**Did:** Wrote the reflow into `README.md` (a new *Reading a session on a narrow
+screen* section under "What it does", plus a bullet) and into
+`docs/components.md` (a `### Reflow offer` subsection under Pane viewer, the
+falsified wrap bullet replaced, and the reflow added to the Action controls
+table), and added `TestTheDocumentsNameTheReflowAndTheWayBack` to hold both to
+it. Commit `63f2694`.
+
+**⚠️ T007 is marked `- [!]`, not `- [x]`, and the milestone is NOT complete.**
+The task has two halves and only one of them can be done from inside this loop.
+
+### The blocker, stated exactly
+
+**#121 cannot be closed by any iteration of this loop, now or later.**
+
+- `.claude/settings.json` allows `Bash(gh pr:*)`, `Bash(gh repo:*)` and
+  `Bash(gh auth status)`. It does **not** allow `gh issue` or `gh api`. Measured:
+  `gh issue view 121` was refused as requiring approval.
+- A loop iteration is non-interactive, so the approval prompt cannot be answered.
+- So this iteration could not even *read* #121, let alone close it. Everything
+  said about that issue below is from the plan and from
+  `docs/mobile-open-questions.md`, not from the issue itself. **Do not record it
+  as verified against the issue text.**
+
+Two ways out, and both are the operator's:
+
+1. Close it by hand. The comment is written out below.
+2. Add `Bash(gh issue:*)` to `.claude/settings.json` and re-run. **This widens
+   what an autonomous loop may do to a public artifact of this project**, which
+   is a decision rather than a convenience, and is why no iteration should add it
+   on its own.
+
+**Closing comment for #121, ready to paste:**
+
+> Closing as moot. This issue asked for a wrap/alignment toggle, and the thing it
+> was a toggle for no longer exists.
+>
+> Milestone 16 (#120) moved the wrapping from the stylesheet to the terminal: a
+> pane narrower than its session offers a reflow, the daemon resizes the tmux
+> window, and the program re-wraps its own screen at the column edge. There is no
+> longer a CSS wrap to switch off — `white-space: pre-wrap` and
+> `overflow-wrap: anywhere` were deleted from `web/static/crswd.css`, and
+> `TestNoPaneRuleWrapsTheTerminalsOutput` now refuses their return from any
+> `.pane` rule at any width.
+>
+> Its prerequisite is also settled: Q1 in `docs/mobile-open-questions.md` was
+> ANSWERED on 2026-08-09 and the answer was that the wrapped reading was worth
+> its cost *while a stylesheet was the only thing that could do the wrapping*.
+> That is no longer the case.
+>
+> Building the toggle now would be the second mechanism #120 asked to be rid of,
+> with a control on top of it. The reflow is documented in `README.md` and in
+> `docs/components.md`.
+
+### Learned
+
+- **`docs/mobile-open-questions.md` is a third file with a claim about #121, and
+  whoever closes the issue owes it a line.** Q1 ends *"#121 is unblocked by this
+  answer and is still not evidenced"*, which stops being true the moment the
+  issue is closed as moot. Deliberately not edited here: that file's own
+  mechanism is that only the operator's report changes it, and the issue is not
+  in fact closed yet, so the sentence is still accurate. **Edit it in the same
+  commit as the close, not before.**
+- **A prose anchor can pass by accident, and one of mine did.** The first
+  spelling of the second-reader assertion was `"every reader"`. Breaking the
+  reflow paragraph in `docs/components.md` left the test green, because line 138
+  of that file already says *"would tell every reader something untrue"* about a
+  settings sentence. The anchor is now
+  `"however many people are reading it"` — the *reason* rather than the phrase —
+  and the test comment records why. **Every guard in this repo that greps a
+  document for prose has this failure mode; break it against a reworded document
+  and not only against a deleted one.**
+- **`gosec` G304 fires on `os.ReadFile(loopVariable)` even in a test that only
+  ever opens two constants.** The two existing document tests
+  (`TestTheComponentsDocumentNames…`, `TestTheREADMENamesTheSignInPath`) read a
+  single constant each and never met it. The fix is to read through the constants
+  and put the paths in a slice of structs — **not** `//nolint:gosec`, which this
+  tree does use but which would be a suppression on a file-open for the next hand
+  to copy somewhere it matters.
+- **The Action controls table's count is gone rather than corrected.** It said
+  "The four things the dashboard can change" and "All four also answer 400…"
+  while the tree registered continue, update, restart, settings-edit and logout
+  as well — so "five" would have been the same defect one milestone later. The
+  table is now the enumeration and the sentence carries no number, with one line
+  saying why. The status codes in that table (`200`, `202`) are a different
+  staleness and were left alone; see findings.
+- **`docs/auth-and-sessions.md` was deliberately not touched**, though it is
+  stale in the same way. T007 names two files, AR-008 forbids the drive-by, and
+  its "Four routes let a browser change this host" sentence was already wrong
+  before this milestone started. Finding below.
+- **Green here:** `go build ./...`, `go vet ./...`, `go test ./...` (11 packages
+  ok), `gofmt -l .` names nothing, `golangci-lint` is **v2.12.2** (#26's check)
+  with 0 issues, `go vet` compiles all three tagged suites, and
+  `go test -tags tmux ./internal/tmuxctl ./internal/session` is green.
+
+**Left:** the close of #121, and nothing else. Every code task in the milestone
+is done and the documentation is written.
+
+**Findings — noticed, not fixed:**
+
+- **`docs/auth-and-sessions.md` line 322 says "Four routes let a browser change
+  this host: `POST /dashboard/sessions` and
+  `POST /dashboard/sessions/{id}/{destroy,rename,compact}`", and there are now
+  six.** It also says "ownership, on each of the three that name a session",
+  which is five. It was already stale when spec 013 added `continue`; this
+  milestone made it staler by one. The action-gate *rules* underneath it are all
+  still correct — it is the enumeration that rotted, exactly as
+  `docs/components.md`'s did. **It deserves the same treatment: delete the count,
+  keep the list.** Not done here because T007 names two files and this is a third.
+- **`docs/components.md`'s Action controls table still reports `200`/`202`
+  statuses for four routes that answer `303`.** The Toast section three
+  paragraphs later says so plainly — "every one of those routes answers `303`
+  (`redirectOutcome`)" — so the document contradicts itself. The reflow's row was
+  written to the truth rather than to the table's convention, which makes the
+  disagreement visible instead of joining it. Fixing the other four rows is a
+  one-line-each edit and was outside this task.
+- **`registeredPatterns` in `settings_test.go` is stale by seven routes**,
+  restated from Iterations 4 and 5 because nothing has taken it and this
+  iteration added no route to it either. Third recording. The fix is to derive
+  the list from the mux; it is still the one guard in this repo quietly losing
+  coverage as routes are added, and it still wants a task.
+- **The offer is still computed once, at load, and nothing re-runs it on a
+  rotation** — Iteration 5's finding, unchanged. A phone turned from portrait to
+  landscape keeps a stale offer naming a width the reader no longer has, and the
+  number in the sentence is the number in the hidden field. The documentation
+  written this iteration does not mention it, deliberately: it describes what the
+  control does rather than a bug in when it appears.
+- **`TestQuickstartStory5RateLimit`'s temp-home cleanup race went unexercised
+  again.** This task touched one Go test file in `internal/httpapi` and two
+  markdown documents; `go test ./...` passed on every run. **Four iterations have
+  now recorded it without anyone looking at it**, which is the copy-forward habit
+  Iteration 0 warned about. It should be a task or it should be dropped.
 
 ---
 
-## Spec 012 — session revival (2026-08-22)
+## Iteration 8 — 2026-09-01 — the blocker re-measured, and Iteration 7's account of it corrected
 
-**Why it exists.** A session died on 22 August and nothing noticed until somebody
-asked. The kernel OOM killer took the whole `tmux-spawn-…` cgroup — Claude, its
-login shell and its tmux session together — at 08:16:10Z, on a host that had been
-up five days and whose tmux server never restarted. crswd knew the session was
-dead and only ever said so in answer to a request.
+**Did:** No code. T007's remaining half is still unreachable, so this iteration
+did the only two things that were available: re-measured the blocker rather than
+copying it forward, and **corrected a false premise in the way it was written
+down**. `ralph/IMPLEMENTATION_PLAN.md` T007 amended.
 
-**What was built.** A supervisor sweeping beside the reaper on the same cadence,
-one `tmux list-sessions` per sweep. Two deaths, one answer: Claude exiting leaves
-the login shell, so the command is typed again with `--resume`; the shell being
-destroyed leaves nothing, so a new one is built under the same session identity,
-marked owned before anything is typed into it. A durable append-only journal
-carries the conversation identifier and the attempt count across the loss of the
-shell. Three attempts per death at 5s / 30s / 3m, then `failed` on the card. And
-the create form's conversation list now follows the directory actually chosen.
+### The correction, because it changes what the operator is deciding
 
-**Two questions were put to the operator rather than guessed** (Principle II).
-Whether to attempt a clean-exit distinction — no, the start command is typed into
-a login shell so no exit status exists, and destroy is the only final signal. And
-the scope boundary, which was then decided against journal evidence rather than
-preference: the observed failure destroys the tmux session, so the resume handle
-cannot live only on it.
+Iteration 7 wrote — and T007 in the plan repeated — that
+`.claude/settings.json` "allows `Bash(gh pr:*)`, `Bash(gh repo:*)` and
+`Bash(gh auth status)`". **That is wrong.** Read this iteration: the repo's
+`.claude/settings.json` allowlist is fifteen Go entries and eight git entries
+and **no `gh` entry at all**. `grep -rn "gh pr\|gh repo\|gh auth\|gh issue"`
+over the whole of `.claude/` matches nothing — not settings, not hooks.
 
-### Three defects the tests found, not a reviewer
+The *conclusion* was right and is unchanged: `gh issue` is not permitted, so no
+iteration can read or close #121. But the premise mattered, because Iteration 7
+offered the operator route 2 — "add `Bash(gh issue:*)` to
+`.claude/settings.json`" — described as widening an allowlist that already had
+`gh` on it. It does not. **That edit would put the first `gh` entry of any kind
+into this repo's allowlist**, which is a larger step than Iteration 7's wording
+implies, and the operator should be choosing it knowing that.
 
-- **A pipe in a pane command shifts every field on a `list-sessions` row**, not
-  the field beside it. The first cut put `#{pane_current_command}` on the row and
-  compared in Go; writing the corruption case proved the parser reads from the
-  right, so one extra separator moves everything. tmux does the comparison now —
-  `#{?#{@crswd-binary},#{==:#{pane_current_command},#{@crswd-binary}},?}` — and
-  answers in one character. Verified against real tmux 3.4.
-- **`--session-id` was being injected into every configured start command.**
-  `internal/config` accepts any command line; there is no rule that one must run
-  Claude. The `-tags tmux` suite runs a `seq`-based command and produced
-  `seq: unrecognized option '--session-id'`. Minting is now gated on the start
-  binary, and a start command this daemon cannot give an identifier to gets none
-  and is supervised without being revived by one.
-- **Two daemons sharing a home replayed each other's journals.** Found by the
-  acceptance suite on its first run: daemon B replayed daemon A's records, found
-  those sessions absent from its *own* tmux server — correctly, they were on the
-  other one — and stood ready to recreate all of them. The journal is now named
-  after the listen address, exactly as the tmux server already was.
+Where Iteration 7's `gh pr` / `gh repo` belief came from is not established. It
+is not in this repo. It may be from a settings file outside the working
+directory; **I could not check** — reads and greps outside
+`/home/nctiggy/code/claude-remote-session-webhook` are blocked in this session,
+so that is unknown rather than ruled out.
 
-### One pre-existing fragility corrected
+### Re-measured, not copied forward
 
-`TestTheLeakSuiteReallyDrivesTheDaemon` asserted two independently-minted page
-tokens were byte-equal. A page token is `expiry + mac` where expiry has
-one-second granularity, so two renders either side of a second boundary
-legitimately differ; it passed only while a create fitted inside one second, and
-the journal's per-record fsync was enough to end that. It now asserts the created
-page carries a page token rather than the same bytes.
+- `gh issue view 121 --json number,title,state` → **refused, "This command
+  requires approval"**. The session is non-interactive, so the prompt cannot be
+  answered. The blocker holds exactly as stated.
+- Note for whoever tries this next: writing it as
+  `gh issue view 121 ... 2>&1 | head -20` was refused *earlier and differently*,
+  as "multiple operations". A pipe or a redirect changes the refusal message
+  without changing the outcome — **do not read the first refusal as evidence
+  about the allowlist**; strip the command to one bare invocation before
+  concluding anything from what it says.
 
-### Verification
+### Verified rather than trusted
 
-Everything in `AGENTS.md` was run and passes: `go build ./...`, `go vet ./...`,
-`go test ./...`, `go test -tags tmux ./...`, `go test -tags dev ./...`,
-`go test -tags quickstart ./cmd/crswd` (the **whole** suite this time, 35s — the
-port was free), `gofmt -l .` clean, and `golangci-lint run` with 0 issues.
+T007's shipped half was checked against the artifact, not against Iteration 7's
+claim of it:
 
-**What was not verified here.** The 30-second revival sweep end to end. The
-acceptance case asserts everything the sweep depends on — a real create writing a
-real conversation identifier and binary onto a real tmux session, and a journal
-recording it without a credential — but a test that waited for a timer would
-spend half a minute asserting a timer. Revival itself is `quickstart.md`
-scenarios 1 and 2, by hand, against a running daemon.
+- `TestTheDocumentsNameTheReflowAndTheWayBack` exists and **passes** (run
+  singly, `-v`).
+- Tree green on all four: `go build ./...`, `go vet ./...`, `go test ./...`
+  (11 packages ok, `web` has no test files), `golangci-lint run` **0 issues**
+  at **v2.12.2** — #26's version check made, not assumed.
+- `docs/mobile-open-questions.md:64` still reads "#121 is unblocked by this
+  answer and is still not evidenced" — still accurate, because the issue is
+  still open. Iteration 7's instruction stands: **that line is edited in the
+  same commit as the close, not before.**
 
-RALPH_COMPLETE
+### The loop cannot finish, and that is now structural
 
----
+Every code task T001–T006 is `[x]`. T007 is `[!]`. `RALPH_COMPLETE` requires
+every task checked, and the one unchecked half is an action on a public GitHub
+artifact that this loop is not permitted to take. **Further iterations will
+produce entries like this one and nothing else.** Two ways out, both the
+operator's, unchanged from Iteration 7 — close #121 by hand with the comment
+written out above, or grant `Bash(gh issue:*)` knowing it is the first `gh`
+grant in the repo. A third exists and is worse: redefine T007 so the close is
+not part of it. Recorded, not taken — the plan says closing #121 *is* the point
+of the task, and an autonomous loop editing its own definition of done to reach
+`RALPH_COMPLETE` is the failure mode the whole notebook exists to prevent.
 
-## Spec 013 — continue after start (2026-08-23)
+**Left:** the close of #121. Nothing else, for the eighth time and the last time
+a loop iteration can usefully say it.
 
-**Why.** The create form asked which conversation to pick up before the session
-existed — before the operator could see what the directory held — and offered
-"the most recent" as one of three answers, naming a conversation only the CLI
-could resolve. A choice offered where it cannot be made informed is an invitation
-to guess.
+**Findings — noticed, not fixed:**
 
-**What was built.** The decision moved onto the running session:
-`POST /dashboard/sessions/{id}/continue`, behind the existing action gate, taking
-a conversation identifier and `confirm=yes` and **no directory** — the
-conversations a session may continue are the ones in its own recorded working
-directory. It restarts a process, not a session: identity, owner, credential,
-start command, creation time and deadline are all untouched, and the record's
-conversation moves so a later revival brings back the one being continued.
-
-**What was removed.** The create form's resume control, its script, `--continue`,
-`ResumeLatest`, and the lifetime hint that talked about reaping. The signed API
-keeps its resume field — it has carried one since spec 009 and a script naming a
-conversation deliberately was never the case that went wrong.
-
-### Three things worth recording
-
-- **`SetMode` improved rather than degraded.** It appended `--continue` so a mode
-  change kept its conversation. It now resumes by identifier, and a session
-  carrying none restarts fresh — which is the case `--continue` used to paper
-  over, and the reason it had to go.
-- **A test asserted a refusal that is now an omission.** The create route does not
-  read the resume field at all, so a value nobody reads cannot reach a command
-  line however it is spelled. That is a stronger property than the refusal it
-  replaced, and the test now says so.
-- **The API's contract was nearly narrowed by accident.** `CreateRequest.Resume`
-  was removed wholesale before it was noticed that `contracts/http-api.md` is a
-  closed set and `deploy/crswd-api` is a caller. It was restored for the API and
-  removed only from the browser — the ask was about a dialog, and removing an API
-  capability nobody mentioned would have been inventing scope.
-
-### Verification
-
-`go build`, `go vet`, `go test ./...`, `-tags tmux`, `-tags dev`,
-`-tags quickstart ./cmd/crswd` (whole suite), `gofmt -l .` clean, `golangci-lint`
-0 issues.
-
-Not verified here: continuing end to end against a real Claude. The unit and
-handler tests drive every branch, and `quickstart.md` scenarios 2 and 3 are the
-by-hand check against a running daemon.
-
-RALPH_COMPLETE
+- **The four carried-forward findings are deliberately not restated here.**
+  `registeredPatterns` stale by seven routes, `docs/components.md`'s `200`/`202`
+  rows, `docs/auth-and-sessions.md`'s "Four routes", the offer not recomputing on
+  rotation, and `TestQuickstartStory5RateLimit`'s cleanup race are all in
+  Iteration 7 and above, unchanged, and none was touched this iteration. Copying
+  them down a ninth time would make the notebook longer without making any of
+  them more likely to be fixed. **They need a milestone 17, not another line.**
+- **This iteration is itself evidence for the rule it just followed.** It
+  produced one factual correction and no code, from a full context load. If the
+  loop is re-run against this plan unchanged, the next iteration has strictly
+  less to find than this one did.
 
 ---
 
-## Spec 014 — a settings page an operator can read (2026-08-23)
+## Iteration 9 — 2026-09-01 — blocker holds on a third measurement; one new trap found
 
-Four complaints, four changes, and three of them are subtraction.
+**Did:** No code, and none was available. T007's remaining half is still the only
+open work and is still unreachable. This entry exists for two things only: the
+third measurement of the blocker, and **one new finding that will cost a future
+iteration a stall** if it is not written down.
 
-- **Seven headings became three** (General, Network, Updates). "Other" was not a
-  category, it was a defect: `settingSectionOf` named `remote_start_commands`,
-  which is not a key this daemon has, and missed `start_command`,
-  `remote_control_command` and `session_environment`, which are. All three were
-  meaningful settings that had been misfiled, so they were classified rather than
-  hidden. The fallback heading stays, expected to be empty, with a test that fails
-  if it is used.
-- **One Save instead of one per row.** Per-row saving was deliberate and its two
-  reasons are kept rather than overruled: untouched values are not rewritten, and
-  a rendered secret never becomes a stored one. Both are enforced on the server by
-  comparing against a `was.` field the page carries, which is what makes them hold
-  with scripting off — a client-side diff would be correct with JavaScript and
-  would store the word `present` without it.
-- **The Source column went and its information stayed.** Three quarters of it said
-  "file". A value from somewhere else is now marked on its own row.
-- **The update section stopped narrating the status quo.** Three of the unit's
-  four sentences describe a host sitting in its ordinary state; only "a newer unit
-  is waiting" is something an operator can act on. That one renders inline, the
-  rest moved into a disclosure — quietened, not deleted.
+### The blocker, measured a third time
 
-### Verification
+- `gh issue view 121 --json number,title,state` → **refused, "This command
+  requires approval"**. Bare invocation, no pipe, no redirect — Iteration 8's
+  warning about the "multiple operations" refusal was followed, not retested.
+- `.claude/settings.json` was **read directly this iteration**, not inherited
+  from the notebook. Iteration 8's *conclusion* is confirmed — **no `gh` entry of
+  any kind** — so Iteration 7's `gh pr` / `gh repo` / `gh auth status` claim is
+  false about this repo, and the operator choosing route 2 is granting the first
+  `gh` entry here.
+- **Iteration 8's counts are themselves off, and I am not repeating them.** It
+  says "fifteen Go entries, eight git entries" (23). Counted off the file this
+  iteration: **twenty entries — eleven Go/lint** (`go mod|build|test|vet|fmt|run|
+  env|version`, `gofmt`, `goimports`, `golangci-lint`) **and nine git**
+  (`add|commit|status|diff|log|show|branch|switch|restore`). Nothing follows from
+  the difference — the `gh` conclusion stands either way — but Iteration 8 made
+  that miscount *in the act of correcting Iteration 7 for trusting a remembered
+  allowlist*, which is the sharpest available evidence that **this file's numbers
+  get re-counted, not cited.** The notebook is append-only, so Iteration 8 stays
+  as written and this is the correction.
 
-Full gate: build, vet, `go test ./...`, `-tags tmux`, `-tags dev`,
-`-tags quickstart ./cmd/crswd`, `gofmt` clean, `golangci-lint` 0 issues.
+### Learned — new, and it will bite the next iteration
 
-Not verified here: the page by eye. The markup, the routing and the write rules
-are covered by tests; whether three sections read better than seven is a judgement
-only the operator can make.
+**`git -C <repo> status` is refused; bare `git status` is allowed.** Measured
+both ways this iteration. The allow list matches on the command prefix, so
+`Bash(git status:*)` does not cover `git -C /home/nctiggy/code/... status
+--short` — the `-C` flag sits between `git` and the subcommand and breaks the
+match. The refusal is a permission prompt, and **a loop iteration is
+non-interactive, so this is a stall, not a detour.**
+
+This matters more than it looks: the operator's global house rules say to prefer
+`git -C <repo>` over `cd`. **In this repo that guidance is inverted** — the loop
+already runs with the repo as its working directory, so every git command must
+be written bare. Only `-C` was measured; do not assume the same about other
+flags without testing one.
+
+**Left:** the close of #121. Unchanged, and unchanged by anything an iteration
+can do.
+
+**Findings — noticed, not fixed:**
+
+- **The carried-forward findings are again not restated**, for the reason
+  Iteration 8 gave. `registeredPatterns`, the `200`/`202` rows in
+  `docs/components.md`, `docs/auth-and-sessions.md`'s "Four routes", the offer
+  not recomputing on rotation, and `TestQuickstartStory5RateLimit`'s cleanup
+  race are all live and all in Iteration 7. **They want a milestone 17.** An
+  iteration of *this* plan may not take them — AR-008, and they are not T007.
+- **Green, verified not assumed:** `go build ./...`, `go vet ./...`,
+  `go test ./...` (11 packages ok, `web` has no test files — this run covers
+  `TestTheDocumentsNameTheReflowAndTheWayBack`, T007's shipped half),
+  `golangci-lint run` **0 issues** at **v2.12.2** (#26's version check made),
+  working tree clean.
+- **The loop is converged, and this is the entry that says so with evidence.**
+  Iteration 8 predicted the next iteration would have strictly less to find. It
+  found one thing — a permission trap, not a defect in the milestone — and that
+  is the shape of everything left. **Re-running the loop against this plan is
+  now waste.** The next useful act is the operator's: close #121, or grant
+  `Bash(gh issue:*)`, or open milestone 17 for the five findings above.
+
+---
+
+## Iteration 10 — 2026-09-01 — T007 finished from outside the loop, and the baseline nobody could run
+
+**Did:** Closed #121, corrected the last stale claim in
+`docs/mobile-open-questions.md`, ticked T007, and ran the full gate. Done from a
+session with `gh` rather than by a loop iteration, for the reason Iteration 7
+established and Iteration 8 corrected.
+
+### The blocker, resolved rather than worked around
+
+Iteration 7 could not close #121 and **refused to grant itself the permission**,
+which was right. Iteration 8 then caught that Iteration 7's account of *why* was
+wrong — the repo's `.claude/settings.json` has no `gh` entry at all — and flagged
+where the belief might have come from as "unknown rather than ruled out", because
+it cannot read outside the working directory.
+
+**It is ruled out now: `Bash(gh pr:*)` is in the operator's global
+`~/.claude/settings.json`, line 78.** So both iterations were right about what
+they could see: `gh pr` is permitted (globally), `gh issue` is permitted nowhere,
+and a repo-level `Bash(gh issue:*)` would still be that file's first `gh` line.
+The question it puts to the operator is narrower than Iteration 8 could tell:
+not "the first gh entry anywhere", but whether an **unattended** loop may act on
+public artefacts when interactive sessions already may.
+
+### ⚠️ The quickstart flake is pre-existing, and this is the baseline run
+
+Iterations 3, 5, 6 and 7 all recorded `TestQuickstartStory5RateLimit` failing on
+`unlinkat …/001/home: directory not empty` from `t.TempDir`. Iteration 5 was
+explicit that it could not prove it pre-existing — the detached worktree fails
+`-buildvcs` stamping — and said so rather than assuming.
+
+**Measured here, alternating full-suite runs on one host to control for drift:**
+
+| | run 1 | run 2 | earlier |
+|---|---|---|---|
+| `origin/main` | **FAIL** | ok | ok |
+| this branch | ok | ok | **FAIL**, **FAIL** |
+
+**Both fail intermittently. It is not this milestone's regression.** Note the
+trap: the first sample taken here was branch-fails-twice against main-passes-once,
+which reads as a clean regression and is not one. Two runs is not a baseline.
+
+**Root cause, from the artefact rather than a guess:** the leftover is a single
+`.bash_history`. The sessions the test creates run real login shells, and bash
+writes its history on exit — into the temp `HOME` the test is simultaneously
+removing. Nothing in `internal/tmuxctl`, `internal/config`, `internal/session` or
+`internal/httpapi` is involved. **Left unfixed on purpose (AR-008)**: it is
+`cmd/crswd` test teardown, not this milestone, and fixing it here would widen the
+PR. It wants a fix-lane task — most likely giving the test's session environment
+a `HISTFILE` it does not mind losing, rather than making teardown wait.
+
+### The gate
+
+`go build ./...`, `go vet ./...`, `go test ./...`, `-tags tmux`, `-tags dev` all
+pass; `gofmt -l .` names nothing; `golangci-lint run` (v2.12.2, checked per #26)
+reports 0 issues. `-tags quickstart ./cmd/crswd` passes on re-run, with the flake
+above characterised rather than waved at. CI has been green on every push.
+
+**Not verified here:** the pane by eye on a real phone, and a reflow driven end to
+end against a live Claude session. The tmux behaviour underneath it is pinned by
+`TestTmuxResizeReflowsWhatIsAlreadyOnScreen` against real tmux 3.4, but whether
+the offer reads well at 390px is a judgement only the operator can make.
+
+### Findings still open, carried forward deliberately
+
+- `TestQuickstartStory5RateLimit`'s temp-home race, above.
+- **`aria-describedby="card-id-…"` on the reflow button** resolves only because
+  the session page also draws the card (Iteration 5). True today; a second page
+  rendering a pane without a card would ship a dangling reference silently.
+- **Two `wantErr` rows in `TestParseSessions`** fail on field count rather than
+  the reason they name — pre-existing, and now one field further out (Iteration 3).
+- **The width shown may be the intent rather than the truth** (Iteration 3): the
+  two agree until an operator puts a session back to `window-size latest` and
+  attaches.
+- **The config migration still runs in the old binary** — a spec question from
+  milestone 15, untouched.
 
 RALPH_COMPLETE

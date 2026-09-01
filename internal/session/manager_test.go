@@ -11,6 +11,7 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -2298,7 +2299,7 @@ func TestAdoptTakesBackASurvivingSessionWithAFreshCredential(t *testing.T) {
 	// argv is spelled out rather than built from tmuxctl's helpers: this asserts
 	// the command line tmux will receive, not that Adopt called a builder.
 	want := []tmuxctl.Call{
-		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}|#{@crswd-lifetime}|#{@crswd-conversation}|#{?#{@crswd-binary},#{==:#{pane_current_command},#{@crswd-binary}},?}"}},
+		{Op: tmuxctl.OpList, Argv: []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_created}|#{@crswd-managed}|#{@crswd-name}|#{@crswd-workdir}|#{@crswd-start}|#{@crswd-lifetime}|#{@crswd-width}|#{@crswd-conversation}|#{?#{@crswd-binary},#{==:#{pane_current_command},#{@crswd-binary}},?}"}},
 		{Op: tmuxctl.OpHas, Argv: []string{"tmux", "has-session", "-t", "=" + name}},
 	}
 	calls := f.tmux.Calls()[before:]
@@ -3875,4 +3876,280 @@ func withoutMintedConversation(t *testing.T, line string) string {
 		return strings.Join(append(append([]string{}, fields[:i]...), fields[i+2:]...), " ")
 	}
 	return line
+}
+
+// --- The width the host holds (milestone 16, #120) ---------------------------
+
+// seedSurvivorWithWidth is seedSurvivor with @crswd-width set, which is how a
+// session that outlived its daemon carries back the width it was reflowed to.
+// The fake sizes the window to match, because on a real host those are one fact.
+func (f managerFixture) seedSurvivorWithWidth(id string, created time.Time, width string) string {
+	name := tmuxNamePrefix + id
+	f.tmux.Seed(tmuxctl.SessionInfo{Name: name, Created: created, Managed: true, Width: width})
+	return name
+}
+
+// TestReflowResizesTheWindowAndRecordsIt is both halves of a reflow in one
+// assertion, because either half alone is the defect: a window tmux resized and
+// nothing recorded comes back from the next restart describing itself as 80
+// columns, and a record written without a resize describes a session that was
+// never narrowed.
+//
+// The clamp is asserted through the argv and through the fake's own window rather
+// than through the return value, because what makes it real is the number tmux
+// received.
+//
+// **Must fail when** Reflow stops writing @crswd-width, stops resizing, records a
+// width other than the one it sent, or lets a width outside config's bounds reach
+// either.
+func TestReflowResizesTheWindowAndRecordsIt(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		asked, want int
+	}{
+		{name: "a phone reporting its own width", asked: 44, want: 44},
+		// Advisory, never refused: #120 requires a browser's report to be
+		// corrected rather than turned into an error read on a phone.
+		{name: "narrower than a terminal is usable at", asked: 2, want: config.MinPaneWidth},
+		{name: "wider than any display", asked: 9_000_000, want: config.MaxPaneWidth},
+		{name: "a negative width", asked: -80, want: config.MinPaneWidth},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newManagerFixture(t)
+			s, _ := mustCreate(t, f, f.request())
+
+			got, err := f.mgr.Reflow(context.Background(), *s, tc.asked)
+			if err != nil {
+				t.Fatalf("Reflow(%d) unexpected error: %v", tc.asked, err)
+			}
+
+			// The host first: a caller that returns a record and resizes nothing
+			// passes every assertion made against the record alone.
+			cols, rows, ok := f.tmux.Size(s.TmuxName())
+			if !ok {
+				t.Fatal("the session is not on the host after a reflow")
+			}
+			if cols != tc.want {
+				t.Errorf("the window is %d columns after Reflow(%d), want %d", cols, tc.asked, tc.want)
+			}
+			// #120 is about columns. A reflow that moved the height as well would
+			// be changing something nobody asked about.
+			if rows != tmuxctl.DefaultRows {
+				t.Errorf("the window is %d rows after a reflow, want the %d it already had", rows, tmuxctl.DefaultRows)
+			}
+
+			pane := "=" + s.TmuxName() + ":"
+			wantArgv := []string{"tmux", "resize-window", "-t", pane, "-x", strconv.Itoa(tc.want), "-y", strconv.Itoa(tmuxctl.DefaultRows)}
+			var resized bool
+			for _, call := range f.tmux.Calls() {
+				if call.Op != tmuxctl.OpResize {
+					continue
+				}
+				resized = true
+				if !slices.Equal(call.Argv, wantArgv) {
+					t.Errorf("the reflow ran %q, want %q", call.Argv, wantArgv)
+				}
+			}
+			if !resized {
+				t.Error("Reflow never resized the window; the record would describe a session the host never narrowed")
+			}
+
+			// Then the option, which is what the next restart will believe.
+			if opt, _ := f.tmux.Option(s.TmuxName(), tmuxctl.OptionWidth); opt != strconv.Itoa(tc.want) {
+				t.Errorf("%s = %q on the host, want %q", tmuxctl.OptionWidth, opt, strconv.Itoa(tc.want))
+			}
+
+			// Then the record, in the store and in the copy handed back.
+			if got.Width != tc.want {
+				t.Errorf("Reflow(%d) returned a record of width %d, want %d", tc.asked, got.Width, tc.want)
+			}
+			held, err := f.mgr.View(s.ID, auth.CallerOperator)
+			if err != nil {
+				t.Fatalf("View() unexpected error: %v", err)
+			}
+			if held.Width != tc.want {
+				t.Errorf("the stored record is %d columns after Reflow(%d), want %d", held.Width, tc.asked, tc.want)
+			}
+		})
+	}
+}
+
+// TestReflowRecordsNothingTheHostRefused is the order as a property. tmux is
+// asked first and the record written afterwards, so a resize that failed leaves a
+// record still describing the width the window actually has.
+//
+// **Must fail when** the store is written before the resize, or when a failed
+// resize is reported as success.
+func TestReflowRecordsNothingTheHostRefused(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+	f.tmux.FailOp(tmuxctl.OpResize, errTmuxBroken)
+
+	if _, err := f.mgr.Reflow(context.Background(), *s, 44); !errors.Is(err, errTmuxBroken) {
+		t.Fatalf("Reflow() error = %v, want one wrapping the host's own failure", err)
+	}
+
+	held, err := f.mgr.View(s.ID, auth.CallerOperator)
+	if err != nil {
+		t.Fatalf("View() unexpected error: %v", err)
+	}
+	if held.Width != 0 {
+		t.Errorf("the record says %d columns after a resize the host refused; the window is still %d", held.Width, config.DefaultPaneWidth)
+	}
+	if opt, ok := f.tmux.Option(s.TmuxName(), tmuxctl.OptionWidth); ok {
+		t.Errorf("%s = %q after a refused resize; the next restart would adopt a width that never happened", tmuxctl.OptionWidth, opt)
+	}
+}
+
+// TestReflowRefusesADeadSession keeps the two guards Compact has: an empty ID
+// would build the bare prefix as a tmux target, and a dead session's window is
+// already gone.
+func TestReflowRefusesADeadSession(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	s, _ := mustCreate(t, f, f.request())
+
+	dead := *s
+	dead.State = StateDead
+	if _, err := f.mgr.Reflow(context.Background(), dead, 44); !errors.Is(err, ErrSessionDead) {
+		t.Errorf("Reflow(dead) error = %v, want one wrapping ErrSessionDead", err)
+	}
+	if _, err := f.mgr.Reflow(context.Background(), Session{}, 44); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("Reflow(no id) error = %v, want one wrapping ErrSessionNotFound", err)
+	}
+	for _, call := range f.tmux.Calls() {
+		if call.Op == tmuxctl.OpResize {
+			t.Fatalf("a refused reflow still reached the host: %q", call.Argv)
+		}
+	}
+}
+
+// TestAdoptRestoresTheWidthTheHostHolds is spec 009's lesson applied to the field
+// milestone 16 adds: a fact this daemon knows and nothing else records is a fact
+// that has to live on the host, or the first restart loses it.
+//
+// What losing this one costs is smaller than four destroyed sessions — a card
+// offering to reflow a session to the width it already has, and never saying that
+// the session has stopped following a terminal attached on the host — but the
+// shape is identical.
+//
+// **Must fail when** Adopt stops reading @crswd-width, reads it into another
+// field, or lets through a value nobody could have asked for.
+func TestAdoptRestoresTheWidthTheHostHolds(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		option      string
+		wantWidth   int
+		wantColumns int
+	}{
+		{name: "a session reflowed to a phone's width", option: "44", wantWidth: 44, wantColumns: 44},
+		// Every session that predates this milestone, and every session since
+		// that nobody has narrowed. Absence is not zero columns, and it is never
+		// a reason to skip an adoption: an unadopted session is an unowned
+		// unsandboxed shell.
+		{name: "no option at all", option: "", wantWidth: 0, wantColumns: config.DefaultPaneWidth},
+		// An operator who set the option by hand, or a value from a build that
+		// does not exist. Advisory means clamped or defaulted, never refused.
+		{name: "a width no terminal can be", option: "3", wantWidth: config.MinPaneWidth, wantColumns: config.MinPaneWidth},
+		{name: "a width that is a word", option: "wide", wantWidth: config.DefaultPaneWidth, wantColumns: config.DefaultPaneWidth},
+		{name: "a width longer than any integer", option: "99999999999999999999999999", wantWidth: config.MaxPaneWidth, wantColumns: config.MaxPaneWidth},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newManagerFixture(t)
+			f.seedSurvivorWithWidth(testID("a"), f.now.Add(-2*time.Hour), tc.option)
+
+			mgr := f.managerAt(t, NewStore(), f.now)
+			s := mustAdoptOne(t, mgr).Session
+
+			if s.Width != tc.wantWidth {
+				t.Errorf("Adopt() width = %d for option %q, want %d", s.Width, tc.option, tc.wantWidth)
+			}
+			if s.Columns() != tc.wantColumns {
+				t.Errorf("Adopt() columns = %d for option %q, want %d", s.Columns(), tc.option, tc.wantColumns)
+			}
+		})
+	}
+}
+
+// TestAWidthSurvivesARestart is the round trip through production code on both
+// sides: a session this daemon reflowed to 44, adopted by the next daemon, is
+// still 44 — and the host's own window agrees, so it cannot pass against a daemon
+// that recorded a width it never sent.
+//
+// **Must fail when** either half stops working.
+func TestAWidthSurvivesARestart(t *testing.T) {
+	t.Parallel()
+
+	f := newManagerFixture(t)
+	reflowed, _ := mustCreate(t, f, f.request())
+	untouched, _ := mustCreate(t, f, f.request())
+
+	if _, err := f.mgr.Reflow(context.Background(), *reflowed, 44); err != nil {
+		t.Fatalf("Reflow() unexpected error: %v", err)
+	}
+
+	// A second manager on the same host with an empty store is the restart: the
+	// records are gone, the tmux sessions and their options are not.
+	fresh := f.managerAt(t, NewStore(), f.now)
+	if _, err := fresh.Adopt(context.Background()); err != nil {
+		t.Fatalf("Adopt() unexpected error: %v", err)
+	}
+
+	after, err := fresh.View(reflowed.ID, auth.CallerOperator)
+	if err != nil {
+		t.Fatalf("View(reflowed) unexpected error: %v", err)
+	}
+	if after.Columns() != 44 {
+		t.Errorf("a session reflowed to 44 came back from the restart at %d columns", after.Columns())
+	}
+	if cols, _, _ := f.tmux.Size(reflowed.TmuxName()); cols != after.Columns() {
+		t.Errorf("the record says %d columns and the window is %d; one of them describes a session that does not exist", after.Columns(), cols)
+	}
+
+	plain, err := fresh.View(untouched.ID, auth.CallerOperator)
+	if err != nil {
+		t.Fatalf("View(untouched) unexpected error: %v", err)
+	}
+	if plain.Columns() != config.DefaultPaneWidth {
+		t.Errorf("a session nobody reflowed came back at %d columns, want %d", plain.Columns(), config.DefaultPaneWidth)
+	}
+	if plain.Width != 0 {
+		t.Errorf("a session nobody reflowed came back carrying a width of %d; this daemon would then tell its operator it had taken that window out of automatic sizing", plain.Width)
+	}
+}
+
+// The vocabulary itself, both directions, for TestLifetimeEncodingRoundTrips'
+// reason: this is the one place a width crosses out of this package and back.
+func TestWidthEncodingRoundTrips(t *testing.T) {
+	t.Parallel()
+
+	for _, cols := range []int{0, config.MinPaneWidth, 44, config.DefaultPaneWidth, config.MaxPaneWidth} {
+		if got := decodeWidth(encodeWidth(cols)); got != cols {
+			t.Errorf("decodeWidth(encodeWidth(%d)) = %d", cols, got)
+		}
+	}
+	// Unset has one spelling and it is the empty option, so never-set and
+	// set-to-nothing read back the same.
+	if got := encodeWidth(0); got != "" {
+		t.Errorf("encodeWidth(0) = %q, want the empty option that means nobody has reflowed this session", got)
+	}
+	if got := decodeWidth(""); got != 0 {
+		t.Errorf("decodeWidth(%q) = %d, want the zero that means nobody has reflowed this session", "", got)
+	}
+	// Clamped on the way out as well as on the way in: a width the operator could
+	// not have asked for has no business surviving a restart.
+	if got := encodeWidth(4); got != strconv.Itoa(config.MinPaneWidth) {
+		t.Errorf("encodeWidth(4) = %q, want %d", got, config.MinPaneWidth)
+	}
 }

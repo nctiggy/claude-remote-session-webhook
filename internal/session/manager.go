@@ -1125,6 +1125,77 @@ func (m *Manager) Compact(ctx context.Context, s Session) error {
 	return nil
 }
 
+// Reflow re-wraps a session by resizing its window, so the terminal does the
+// wrapping and a stylesheet does not (#120).
+//
+// It changes the session for **every** reader at once, because a tmux window has
+// one size however many people are looking at it. That is not a limitation being
+// worked around: grouped sessions were measured and share the window too, and
+// -x/-y describe a client this daemon never attaches. So a reflow is something
+// somebody chooses rather than something a viewport causes, and nothing in this
+// package may call it on a viewer's behalf.
+//
+// The width is the caller's and is clamped here, having already been clamped
+// where the argv is built (tmuxctl.argvResize). Two clamps on one value is
+// deliberate: this one is the policy about what leaves a session readable for all
+// of its readers, and that one is the last boundary before an exec. Neither is
+// the other's backstop.
+//
+// The height is not the caller's and never becomes one. #120 is about columns;
+// resize-window names both axes, so this passes back the height a session this
+// daemon started already has.
+//
+// The order is what a failure may leave behind. tmux is asked first and the
+// record written after, so a resize that failed records nothing — the other order
+// leaves a record claiming a width the window does not have, which is the
+// milestone 15 defect pointing the other way and just as invisible on a card.
+//
+// The record is the one View returned, for the reason Rename and Compact take the
+// one it returned: ownership is settled before anything reaches here, and the
+// target derives from the ID alone (FR-034).
+//
+// **The clock does not move.** A reflow is not driving a session — nothing is
+// delivered into the pane and Claude is not told — so it records no activity, for
+// the reason a stream records none.
+func (m *Manager) Reflow(ctx context.Context, s Session, cols int) (Session, error) {
+	// Compact's two guards, refused for Compact's reasons: an empty ID would
+	// build the bare prefix as a target, and a dead session's window is gone.
+	if s.ID == "" {
+		return Session{}, fmt.Errorf("reflow session: %w", ErrSessionNotFound)
+	}
+	if s.State == StateDead {
+		return Session{}, fmt.Errorf("reflow session %s: %w", s.ID, ErrSessionDead)
+	}
+
+	cols = config.ClampPaneWidth(cols)
+
+	if err := m.tmux.Resize(ctx, s.TmuxName(), cols, tmuxctl.DefaultRows); err != nil {
+		return Session{}, fmt.Errorf("reflow session %s: %w", s.ID, err)
+	}
+	// Written onto the tmux session so the width survives a restart, exactly as
+	// the lifetime is (milestone 15). The failure it avoids is the same one: a
+	// fact only this daemon knows it chose, lost at the moment the daemon that
+	// knew it went away. Here the cost is smaller than four destroyed sessions —
+	// a card describing an 80-column session whose window is 44 — but the shape
+	// is identical and so is the fix.
+	if err := m.tmux.SetOption(ctx, s.TmuxName(), tmuxctl.OptionWidth, encodeWidth(cols)); err != nil {
+		return Session{}, fmt.Errorf("record the width of session %s: %w", s.ID, err)
+	}
+	if err := m.store.SetWidth(s.ID, cols); err != nil {
+		return Session{}, fmt.Errorf("reflow session %s: %w", s.ID, err)
+	}
+	// The caller's copy carries the field this call just wrote, the way Rename's
+	// does: re-reading the store would cost a second lock for the single field
+	// this method is the writer of.
+	s.Width = cols
+
+	// Beside the store mutation rather than in the handler that asked for one,
+	// like every other emit here. Nothing entered or left the fleet, and a card
+	// an open page is drawing still names a width the session no longer has.
+	m.emit(FleetChanged, s)
+	return s, nil
+}
+
 // commandForMode is which configured name each mode runs, decided in one place
 // because it is the mapping the whole toggle turns on (contracts/session-mode.md).
 //
@@ -1676,6 +1747,14 @@ func (m *Manager) Adopt(ctx context.Context) ([]AdoptedSession, error) {
 			// supervisor, which is that this session is watched but not revived
 			// by an identifier it never had.
 			ConversationID: info.ConversationID,
+			// The width this daemon last reflowed the session to (#120). The
+			// window really is that wide after a restart — a tmux server outlives
+			// the daemon, which is the premise of this whole function — so a
+			// record that came back at the default would describe a session that
+			// is not there, and would offer the operator a reflow to a width the
+			// window already has. Zero for a session nobody reflowed, which is
+			// every session predating milestone 16, and Columns answers 80 for it.
+			Width: decodeWidth(info.Width),
 		}
 
 		// The session's own lifetime, restored (milestone 15, FR-008). Without

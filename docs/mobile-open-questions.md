@@ -50,9 +50,24 @@ is the dominant task on a phone, is worth that.
 **The wrap stays.** The fallback below is not taken, and it remains one revert of
 two declarations if a later session changes the verdict.
 
+**Superseded 2026-09-01 — the two declarations are gone, and not because this
+answer changed.** Milestone 16 (#120) moved the wrapping to the terminal: a pane
+narrower than its session offers a reflow, the daemon resizes the tmux window,
+and the program rewraps its own screen at the column edge. The fallback was taken
+as a consequence of that, not as a verdict on this. **The answer above stands** —
+what it settled is that the wrapped reading was worth its cost while a stylesheet
+was the only thing that could do the wrapping, and what it never claimed is that
+CSS was the right place for it.
+
 **What this does NOT settle**: whether an operator reaches for pinch-zoom often
 enough to want a wrap toggle (#121). That needs the wrap used in anger, not a
 first look. #121 is unblocked by this answer and is still not evidenced.
+
+**#121 was closed as moot on 2026-09-01**, and not because that evidence arrived
+— it never did. The toggle existed to switch off a CSS wrap, and milestone 16
+deleted the wrap, so there is nothing left for it to toggle. The paragraph above
+stands as what was true when it was written: the question it names was never
+answered, it was retired along with the mechanism that raised it.
 
 Below 780px the pane wraps (`white-space: pre-wrap`, `overflow-wrap: anywhere`).
 This is a known trade, not a fix: Claude Code draws box borders, rules and dividers

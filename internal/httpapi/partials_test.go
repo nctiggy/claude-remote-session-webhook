@@ -27,6 +27,7 @@ import (
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 	"github.com/nctiggy/claude-remote-session-webhook/web"
 )
 
@@ -1731,6 +1732,213 @@ func TestThePaneSaysWhenTheWatchedSessionEnded(t *testing.T) {
 	// absence is — the two have to be the same decision.
 	if unread := renderComponent(t, "pane", paneView{ID: card.ID, Unread: true}); strings.Contains(unread, "data-ended") {
 		t.Errorf("a pane that opens no stream carries an end note anyway:\n%s", unread)
+	}
+}
+
+// reflowablePane is the pane as the session page really renders it once there is
+// something to offer: a screen, the width the session has, the floor the daemon
+// will act above, the window's own name, and the token the offer submits.
+func reflowablePane() paneView {
+	return paneView{
+		ID:         ownedCard().ID,
+		Text:       "$ go test ./...",
+		Columns:    config.DefaultPaneWidth,
+		MinColumns: config.MinPaneWidth,
+		Target:     tmuxctl.PaneTarget("crswd-" + ownedCard().ID),
+		PageToken:  testCardToken,
+	}
+}
+
+// TestThePaneOffersTheReflowOnlyBehindAToken is the card's own discipline held
+// at the one control this component carries (#120, T005).
+//
+// A reflow changes the session for every reader at once, so it is an action
+// route behind the action gate — and a form the gate is certain to refuse is
+// worse than no form, because an operator cannot tell the two apart until they
+// have pressed it in front of somebody else's screen.
+//
+// The unread direction is the pane's own rule rather than the card's: a screen
+// nobody could read carries no stream, and offering to re-wrap output that
+// cannot be shown is an action with nothing to observe.
+//
+// **Must fail when** the offer renders without a token, or renders beside a
+// screen the host would not give up.
+func TestThePaneOffersTheReflowOnlyBehindAToken(t *testing.T) {
+	t.Parallel()
+
+	full := reflowablePane()
+	offered := renderComponent(t, "pane", full)
+
+	// The address off the pattern the server registers rather than spelled again
+	// here, exactly as the stream's is: a renamed route otherwise leaves this test
+	// green and the control posting into a 404.
+	want := strings.Replace(strings.TrimPrefix(patternDashboardReflow, "POST "), "{"+pathValueID+"}", full.ID, 1)
+	form := regexp.MustCompile(`(?s)<form[^>]*action="` + regexp.QuoteMeta(want) + `".*?</form>`).FindString(offered)
+	if form == "" {
+		t.Fatalf("the pane offers no reflow posting to %s:\n%s", want, offered)
+	}
+	for required, why := range map[string]string{
+		`name="crsw_page_token"`:     "the gate refuses a form with no token, uniformly and with no way for the page to say why",
+		`name="confirm" value="yes"`: "the confirming step every action on this door compares rather than parses",
+		`name="columns"`:             "the width the browser measured, and the only value this route reads from the caller",
+	} {
+		if !strings.Contains(form, required) {
+			t.Errorf("the reflow offer carries no %s: %s\n%s", required, why, form)
+		}
+	}
+
+	// No token, no offer. The same rule the card's action row follows, and the
+	// reason the zero value of this component is the pane that shipped before the
+	// reflow existed.
+	anonymous := full
+	anonymous.PageToken = ""
+	if rendered := renderComponent(t, "pane", anonymous); strings.Contains(rendered, "/reflow") {
+		t.Errorf("a pane built with no page token offers a reflow anyway:\n%s", rendered)
+	}
+
+	// And a screen that could not be read offers nothing either.
+	unread := full
+	unread.Unread, unread.Text = true, ""
+	if rendered := renderComponent(t, "pane", unread); strings.Contains(rendered, "/reflow") {
+		t.Errorf("a pane saying the screen could not be read offers to re-wrap it anyway:\n%s", rendered)
+	}
+}
+
+// TestTheReflowOfferShipsHiddenAndSaysWhatItCosts is the copy half of T005, and
+// every claim in it is one the plan for milestone 16 fixes in writing.
+//
+// Hidden is the progressive-enhancement rule rather than a presentation choice.
+// What reveals this control is a measurement only a browser can make, so a page
+// with no script running has nothing to compare and nothing honest to offer —
+// and the pane above it is untouched either way, which is #121's rule that a
+// control must never become the thing that makes the pane function.
+//
+// The sentence has to name both widths because the operator is being asked to
+// narrow a window for readers who are not in the room, and it has to carry the
+// way back because tmux flips window-size to manual on the first resize and
+// nothing in this daemon sets it back. A warning delivered after the press is
+// the settled outcome's job (outcome.go); this is the one before it.
+//
+// **Must fail when** the offer renders visible, names one width, or leaves the
+// operator with no way back to automatic sizing.
+func TestTheReflowOfferShipsHiddenAndSaysWhatItCosts(t *testing.T) {
+	t.Parallel()
+
+	full := reflowablePane()
+	offered := renderComponent(t, "pane", full)
+
+	opener := regexp.MustCompile(`<form[^>]*/reflow"[^>]*>`).FindString(offered)
+	if opener == "" {
+		t.Fatalf("the pane opens no reflow form at all:\n%s", offered)
+	}
+	if !strings.Contains(opener, "hidden") {
+		t.Errorf("the reflow offer ships visible (%q); with no script there is no measurement, so there is no honest offer to make", opener)
+	}
+
+	// The field is empty in the markup. What fills it is the code that reveals the
+	// form, so a visible offer is one carrying the width its own sentence names.
+	if !strings.Contains(offered, `name="columns" value=""`) {
+		t.Errorf("the reflow offer ships a width nobody measured; the field is filled by the reveal or not at all:\n%s", offered)
+	}
+
+	sentence := regexp.MustCompile(`data-reflow-offer="([^"]*)"`).FindStringSubmatch(offered)
+	if sentence == nil {
+		t.Fatalf("the offer carries no copy for the reveal to fill:\n%s", offered)
+	}
+	said := sentence[1]
+	for required, why := range map[string]string{
+		strconv.Itoa(full.Columns): "the width the session is now — half of what makes the offer reviewable before it is taken",
+		"{n}":                      "the width the reader has, which only the browser can measure and only the template may word",
+		"window-size latest":       "the way back to automatic sizing, which nothing in this daemon does for the operator",
+		full.Target:                "the window the operator has to name to put it back",
+	} {
+		if !strings.Contains(said, required) {
+			t.Errorf("the reflow offer never says %q: %s\n%s", required, why, said)
+		}
+	}
+
+	// The ⚠️ the milestone plan requires the operator be told *before* they press:
+	// a session this daemon reflows stops following a terminal attached on the
+	// host, which is a change to how their own terminal behaves.
+	if !strings.Contains(said, "attached on the host") {
+		t.Errorf("the reflow offer never says the session stops sizing itself to a terminal on the host:\n%s", said)
+	}
+}
+
+// TestTheDocumentsNameTheReflowAndTheWayBack is T007's half of #120: the two
+// documents an operator reads, held to the control the two tests above render.
+//
+// It exists because this component's own documentation went stale in exactly
+// this way once already. docs/components.md described a CSS wrap for a milestone
+// after the stylesheet stopped carrying one, and nothing failed — a document is
+// the one artifact here that no sweep of the markup or the stylesheet can see,
+// which is why #119's lesson was to bind it rather than to re-read it.
+//
+// The address is derived from the pattern the mux registers rather than spelled
+// again here, the same way the pane's own test derives it: a renamed route
+// otherwise leaves a document confidently naming an address that 404s.
+//
+// The four anchors are the four facts the milestone plan requires T007 to state
+// — what a reflow does, that it is per session and not per viewer, that it
+// survives a restart, and that it takes the window out of automatic sizing until
+// it is put back. The last is the one most owed: *nothing in this daemon sets
+// window-size back to latest*, so a document that stops carrying that command
+// leaves an operator with a terminal that behaves differently and no sentence
+// anywhere explaining why.
+//
+// **Must fail when** either document drops the reflow, the second reader, the
+// restart or the way back, and when the route moves without the document.
+func TestTheDocumentsNameTheReflowAndTheWayBack(t *testing.T) {
+	t.Parallel()
+
+	// The second reader is anchored on the *reason* rather than on the phrase
+	// "every reader", which was tried and is not load-bearing: docs/components.md
+	// already says it about a settings sentence, so the assertion passed with the
+	// reflow's own paragraph reworded away. An anchor a document satisfies by
+	// accident is an anchor that is not checking anything.
+	const (
+		secondReader = "however many people are reading it"
+		acrossAJoin  = "survives a restart"
+		wayBack      = "window-size latest"
+	)
+	route := strings.TrimPrefix(patternDashboardReflow, "POST ")
+
+	// Read through the constants rather than through the loop variable: gosec
+	// reads a path it cannot see the value of as file inclusion, and a suppression
+	// on a test that opens two documented paths would be a suppression for the
+	// next hand to copy somewhere it matters.
+	components, err := os.ReadFile(componentsDocPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", componentsDocPath, err)
+	}
+	readme, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", readmePath, err)
+	}
+
+	for _, doc := range []struct {
+		path     string
+		read     string
+		required map[string]string
+	}{
+		{componentsDocPath, string(components), map[string]string{
+			route:        "the address this control posts to, so the next hand reuses the component rather than building a second one",
+			secondReader: "a tmux window has one size however many people are reading it, so a reflow is the session's and never a viewer's",
+			acrossAJoin:  "the width is written onto the tmux session and restored by adoption, which is the whole reason @crswd-width exists",
+			wayBack:      "the way back to automatic sizing, which nothing in this daemon does for the operator",
+		}},
+		{readmePath, string(readme), map[string]string{
+			"reflow":     "this page is read before there is a running daemon, and a control nobody is told about is one nobody presses",
+			secondReader: "the operator is narrowing a window for readers who are not in the room, and that belongs on the page they read first",
+			acrossAJoin:  "a width that quietly reverted at the next restart would be worse than one that never persisted",
+			wayBack:      "an operator meeting a 44-column window in a 120-column terminal looks it up here, and finds nothing if this page never said it",
+		}},
+	} {
+		for want, why := range doc.required {
+			if !strings.Contains(doc.read, want) {
+				t.Errorf("%s never says %q: %s", doc.path, want, why)
+			}
+		}
 	}
 }
 

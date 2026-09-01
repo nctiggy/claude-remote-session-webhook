@@ -33,6 +33,10 @@ var spelledOutcomes = []outcome{
 	"setting-written", "setting-refused", "setting-unchanged",
 	// The continue action's five (spec 013).
 	"continued", "continue-unconfirmed", "continue-not-running", "continue-busy", "continue-failed",
+	// The reflow action's three (#120). Three rather than five because a column
+	// count is advisory: there is no code here for a width this route refused,
+	// since it refuses none.
+	"reflowed", "reflow-unconfirmed", "reflow-failed",
 }
 
 // TestEveryOutcomeThisPackageSpellsHasASentence is the other half of FR-022: the

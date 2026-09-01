@@ -2536,8 +2536,8 @@ func TestTheWaitingSentenceIsTheTemplatesAndNotTheScripts(t *testing.T) {
 // reading, mid-read, by scrolling.
 //
 // It is asserted on the base rule because it is unconditional. Scroll chaining
-// is not a phone behaviour — a trackpad does it — and even where the pane wraps,
-// an unbroken run longer than the viewport still scrolls in this axis.
+// is not a phone behaviour — a trackpad does it — and since the pane no longer
+// wraps at any width, every reader narrower than the session scrolls this axis.
 //
 // **Must fail when** a pan at the scroll edge chains into the browser's
 // navigation gesture and throws the reader off the page mid-session.
@@ -2567,7 +2567,8 @@ func TestThePaneDoesNotChainItsOverscroll(t *testing.T) {
 // stealing.
 //
 // Every `.pane` rule is swept, not just the base one: the declaration would do
-// the same damage from inside the breakpoint block, where the wrap lives.
+// the same damage from inside a media block, and the breakpoint has carried a
+// rule for this component before.
 //
 // **Must fail when** the vertical axis is contained too, trapping the reader in
 // a box that fills most of their screen.
@@ -2598,54 +2599,155 @@ func TestThePaneDoesNotTrapVerticalScrolling(t *testing.T) {
 }
 
 // whiteSpaceDecl is a wrapping mode and the keyword it is set to. The value is
-// captured rather than matched, because `pre` is a prefix of `pre-wrap` and the
-// two rules below want opposite answers from the same property.
+// captured rather than matched, because `pre` is a prefix of `pre-wrap`: a
+// `MatchString` for the value the base rule must carry passes happily on the
+// value it must not.
 var whiteSpaceDecl = regexp.MustCompile(`(?i)white-space\s*:\s*([a-z-]+)`)
 
-// TestThePaneWrapsOnlyOnNarrowViewports is the trade the milestone makes, held
-// to the half of the stylesheet that is allowed to make it.
+// cssWrapping is every way a stylesheet breaks a line the author did not break.
+// `white-space: pre` is the one value that is not one of them, so the property
+// is matched by its wrapping keywords rather than by its absence: an override
+// that declares nothing inherits the base rule, and whether the base rule is
+// still `pre` is TestThePaneKeepsItsDesktopAlignment's question, not this one's.
+var cssWrapping = regexp.MustCompile(`(?i)overflow-wrap|word-break|word-wrap|white-space\s*:\s*(pre-wrap|pre-line|break-spaces|normal|nowrap)`)
+
+// TestNoPaneRuleWrapsTheTerminalsOutput is #120 taken, asserted at the file that
+// used to promise the opposite.
 //
-// A session prints 80 columns. A 390px phone shows about 44 of them, so reading
-// one paragraph of prose is eleven pans right and back — the dominant phone task
-// failing outright. Wrapping fixes that and costs the alignment of Claude Code's
-// own box borders, dividers and tables, which wrap into a line plus a stub.
-// research.md priced the alternative: shrink-to-fit needs a ~6.9px font.
+// Below the breakpoint this stylesheet wrapped the pane — `white-space:
+// pre-wrap` with `overflow-wrap: anywhere` — and it was right to, on the
+// evidence it had. A session prints 80 columns, a 390px phone shows about 44 of
+// them, and reading one paragraph was eleven pans right and back. What it cost
+// was priced and accepted: Claude Code draws its chrome at full terminal width,
+// so every border, divider and diff wrapped into a line plus a stub, and
+// anything whose meaning is its alignment was misrepresented to the one reader
+// who could least afford to check it.
 //
-// `overflow-wrap: anywhere` rather than `break-word` because the run this has to
-// break is a path or a hash with no break opportunity in it, which is exactly
-// what a real terminal breaks at its column edge.
+// The trade is off because the wrapping moved. The pane now offers a reflow, the
+// daemon resizes the session, and tmux rewraps what is already on screen at the
+// column edge — so a narrow reader sees the breaks the *program* chose. Leaving
+// the CSS wrap beside that is the thing #120 names in as many words: a second
+// mechanism doing the same job worse, and the worse one is what renders until
+// somebody presses the offer.
 //
-// The assertion reads the rule inside the breakpoint block rather than
-// `blockFor(".pane")`, which returns the base rule — the first `.pane` in the
-// file — and would be unsatisfiable against a base rule that must say `pre`.
+// Every `.pane` rule is swept rather than the breakpoint's alone.
+// TestThePaneKeepsItsDesktopAlignment holds the base rule's `pre` from the other
+// side; this one's subject is any *other* rule putting the wrap back — at a
+// width, at a pointer, or in a block that does not exist yet — because the
+// declaration that was just deleted from one block does identical damage from
+// any of them.
 //
-// **Must fail when** wrapping is added to the base rule, so a desktop loses
-// column alignment to fix a phone.
-func TestThePaneWrapsOnlyOnNarrowViewports(t *testing.T) {
+// **Must fail when** the CSS wrap returns anywhere, so the pane has two things
+// breaking its lines and only one of them is the terminal.
+func TestNoPaneRuleWrapsTheTerminalsOutput(t *testing.T) {
 	t.Parallel()
 
-	narrow := blockFor(t, stylesheet(t), "@media (max-width: 780px)")
-	pane := blockFor(t, narrow, ".pane")
-
-	if got := whiteSpaceDecl.FindStringSubmatch(pane); got == nil || got[1] != "pre-wrap" {
-		t.Errorf("the pane does not wrap below the breakpoint, so reading a paragraph on a phone is a horizontal pan per line: %q", pane)
+	var swept int
+	for _, rule := range cssRules(stylesheet(t)) {
+		selectors := strings.Split(rule.selector, ",")
+		for i, one := range selectors {
+			selectors[i] = strings.TrimSpace(one)
+		}
+		if !slices.Contains(selectors, ".pane") {
+			continue
+		}
+		swept++
+		if match := cssWrapping.FindString(rule.body); match != "" {
+			t.Errorf("a .pane rule wraps the terminal's output (%q); the reflow at the PTY is what breaks these lines now, and a stylesheet breaking them as well misrepresents chrome the program had already aligned: %q", match, rule.body)
+		}
 	}
-	if !regexp.MustCompile(`(?i)overflow-wrap\s*:\s*anywhere`).MatchString(pane) {
-		t.Errorf("the pane wraps but an unbroken run — a path, a hash — still overflows the viewport with nothing to break it: %q", pane)
+	if swept == 0 {
+		t.Fatal("crswd.css has no .pane rule at all, so this test is checking nothing")
 	}
 }
 
-// TestThePaneKeepsItsDesktopAlignment is the other side of that trade, and the
-// side with no visible symptom.
+// TestTheReflowIsOfferedRatherThanTaken is T005's half of #120, held at the file
+// that decides it.
 //
-// Overriding `white-space` inside the breakpoint and changing it in the base
-// rule look identical on a phone. They differ on every desktop, where the pane
-// is wide enough for 80 columns and alignment is the whole point of a terminal:
-// a base-rule change would take diffs, tables and TUI chrome away from every
-// reader who never had the problem, silently, to fix one who did.
+// The measurement is the reason any of this is in a script at all: the daemon
+// knows how wide the session is and can know nothing about the screen it is
+// being read on. What that buys has to stay an *offer*. A tmux window has one
+// size however many people are reading it, so a reflow changes the session for
+// every reader at once — the milestone plan rejects resizing on view in writing,
+// for being hostile to the second reader, and a script that submitted this form
+// by itself would be that decision put back without anyone deciding it.
 //
-// **Must fail when** the base declaration is changed rather than overridden, and
-// every desktop reader loses alignment silently.
+// The order is the other half. A form revealed before the comparison is a
+// control that appears for a reader who already sees the whole width, which is
+// an invitation to narrow the session for everybody else.
+//
+// Go cannot execute this, so the claims are about the bytes a browser is handed
+// — the footing every assertion in this file stands on. The query naming the
+// attribute the template renders is what holds the direction that loses
+// silently: an enhancement that is written, correct and attached to nothing.
+//
+// **Must fail when** the module submits, reveals without comparing, or spells
+// the daemon's bounds itself instead of reading the ones the markup carries.
+func TestTheReflowIsOfferedRatherThanTaken(t *testing.T) {
+	t.Parallel()
+
+	// Everything below is asserted inside the module rather than across the file.
+	// `hidden = false` is how the pane's end note is revealed too, and a claim
+	// about "the script" would be satisfied by that one.
+	//
+	// The anchor is the module's first statement rather than the paragraph above
+	// it, because script() strips the comments — an assertion anchored on prose
+	// would report a missing module for a file that had only been re-worded.
+	_, module, found := strings.Cut(script(t), "REFLOW_CELLS")
+	if !found {
+		t.Fatal("crswd.js carries no reflow module at all, so the offer the pane renders is never revealed to anybody")
+	}
+
+	query := regexp.MustCompile(`querySelectorAll\(\s*['"][^'"]*data-reflow[^'"]*['"]\s*\)`)
+	if query.FindString(module) == "" {
+		t.Error("crswd.js never queries the document for a form carrying data-reflow, so no offer is ever measured and none is ever shown")
+	}
+
+	for want, why := range map[string]string{
+		"measureText":           "the reader's width is a character count, and the pane's own font is the only thing that turns pixels into one",
+		"clientWidth":           "what a reader has is the box without its scrollbar, not the width the element was asked to be",
+		"dataset.reflowColumns": "the session's width is the daemon's to state; a number this file chose would be a second opinion about a window it cannot see",
+		"dataset.reflowFloor":   "the floor is config's one definition of what this daemon will act on, read from the markup rather than spelled here",
+		"dataset.reflowOffer":   "the sentence is the template's — a script that authored its own prose is a second place to look for what the interface says",
+		"'{n}'":                 "the one number the daemon cannot know, filled into the copy the template wrote",
+	} {
+		if !strings.Contains(module, want) {
+			t.Errorf("the reflow module does not carry %q: %s", want, why)
+		}
+	}
+
+	// Compare, then reveal. Both indices are inside the module, so the ordering is
+	// this control's rather than some other module's.
+	compare := strings.Index(module, "dataset.reflowColumns")
+	reveal := strings.Index(module, "hidden = false")
+	switch {
+	case compare < 0 || reveal < 0:
+		t.Fatalf("the reflow module does not read the session's width (%d) and reveal the offer (%d)", compare, reveal)
+	case compare > reveal:
+		t.Errorf("the reflow module reveals the offer at %d and reads the session's width at %d; a control shown before the comparison is one offered to a reader who already sees the whole width", reveal, compare)
+	}
+
+	// And it offers rather than takes. Nothing here posts, and the absence is the
+	// requirement: what is revealed is a form, and what submits it is a person.
+	for _, forbidden := range []string{".submit(", "requestSubmit", "fetch(", "XMLHttpRequest"} {
+		if strings.Contains(module, forbidden) {
+			t.Errorf("the reflow module carries %q; a reflow nobody pressed is every reader's screen changing because somebody opened a page", forbidden)
+		}
+	}
+}
+
+// TestThePaneKeepsItsDesktopAlignment is the positive half of the rule above,
+// and the half with no visible symptom.
+//
+// The sweep refuses every wrapping keyword; this one requires the value that is
+// left. They are not the same assertion: a `.pane` rule that dropped
+// `white-space` altogether passes the sweep and inherits the browser's `normal`,
+// which wraps — the failure would be invisible on a phone, where the reader
+// expects to be narrow, and read on every desktop as diffs, tables and TUI
+// chrome losing the alignment that is the whole point of a terminal.
+//
+// **Must fail when** the base rule stops declaring `pre`, and a pane wide enough
+// for 80 columns wraps them anyway.
 func TestThePaneKeepsItsDesktopAlignment(t *testing.T) {
 	t.Parallel()
 
@@ -2664,27 +2766,29 @@ var viewportMeta = regexp.MustCompile(`(?i)<meta[^>]*name="viewport"[^>]*>`)
 
 // zoomClamp is the two ways a page takes pinch-zoom away. `maximum-scale` is
 // forbidden at any value, not just 1: a ceiling is a ceiling, and the operator
-// zooming into a wrapped diff is already past whatever number looked generous
-// when it was written.
+// zooming into an 80-column diff on a phone is already past whatever number
+// looked generous when it was written.
 var zoomClamp = regexp.MustCompile(`(?i)maximum-scale|user-scalable\s*=\s*["']?\s*(no|0)`)
 
-// TestNoPageClampsTheZoom keeps the escape hatch open for the trade the pane
-// makes below the breakpoint.
+// TestNoPageClampsTheZoom keeps the escape hatch open for a reader who is
+// narrower than the session.
 //
-// Wrapping the pane misrepresents everything alignment-dependent Claude Code
-// prints — box borders, dividers, tables, diffs. The mitigation is that the
-// reader can pinch into it, and that mitigation exists only for as long as no
-// page clamps the scale. Disabling zoom is also the standard reflex reached for
-// when a mobile layout misbehaves, so the moment this milestone introduced a
-// reason to reach for it is the moment it needs a guard.
+// The pane no longer wraps, and the reflow that replaced the wrap is *offered*
+// rather than taken — a tmux window has one width however many people are
+// reading it, so a session stays at 80 columns until somebody decides otherwise
+// for every reader at once. Until then, and for anyone who declines, pinching is
+// how a 44-character screen reads a line the program aligned to 80. Disabling
+// zoom is also the standard reflex reached for when a mobile layout misbehaves,
+// which is why the escape hatch needs a guard rather than a convention.
 //
 // The whole embedded tree is swept, not the four pages by name: a fifth page,
 // or a partial that grew a meta of its own, would otherwise ship unguarded. The
 // sweep is on the markup rather than inside the viewport meta, so a clamp in a
 // second meta element is caught by the same expression.
 //
-// **Must fail when** someone "fixes" the layout by disabling zoom, removing the
-// only mitigation for the trade the pane's wrap makes.
+// **Must fail when** someone "fixes" the layout by disabling zoom, and a reader
+// narrower than the session loses the only way to read it that changes nobody
+// else's screen.
 func TestNoPageClampsTheZoom(t *testing.T) {
 	t.Parallel()
 
