@@ -1109,7 +1109,17 @@ body {
    unconditional. Containing the vertical axis would cost far more than it
    buys: this element is 30rem of a ~660px phone, so a flick that began inside
    it would stop at its end rather than scrolling the page, and the reader is
-   sealed into a box filling their display. */
+   sealed into a box filling their display.
+
+   `white-space: pre` is unconditional, and since milestone 16 (#120) it stays
+   that way at every width. This block used to be overridden below the
+   breakpoint, where the pane wrapped: a trade that bought reading prose without
+   a pan per line and paid for it in the alignment of every border, divider and
+   diff Claude Code draws at full terminal width. The wrapping moved to the
+   terminal instead — a narrow reader is offered a reflow, the session is
+   resized, and tmux rewraps its own screen at the column edge — so the break is
+   the program's rather than this file's and nothing is misrepresented. A CSS
+   wrap beside that would be a second mechanism doing the same job worse. */
 .pane {
   overflow: auto;
   overscroll-behavior-x: contain;
@@ -1787,20 +1797,6 @@ body {
      docs/design-system.md gives it one. */
   .settings {
     grid-template-columns: 1fr;
-  }
-
-  /* 80 columns through a 44-character window is a horizontal pan per line, and
-     most of what a session prints is prose. Wrapping trades the alignment of
-     tables and TUI chrome for the ability to read a paragraph at all — a trade,
-     not a fix, and the one the pinch-zoom this page never clamps mitigates.
-     Safe because captures are right-trimmed — capture-pane carries no -N — so
-     blank padding does not wrap into a line of its own. `anywhere` rather than
-     `break-word` because an unbroken run is what a real terminal breaks at its
-     column edge, and because `break-word` leaves the run overflowing until the
-     line has something else on it. */
-  .pane {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
   }
 
   /* The menu becomes one scrolling row so the panel starts on the first screen.

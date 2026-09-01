@@ -130,17 +130,26 @@ needed, inline it as a `@font-face` data URI and embed it via `go:embed`.
 | Body | `14px / 1.5` | mono, `--text` |
 | Prose / help | `.86rem` | **sans**, `--dim` |
 | Label / pill | `.64–.68rem` | uppercase, `letter-spacing: .14em` |
-| Pane output | `12.5px / 1.45` | mono, `white-space: pre`; `pre-wrap` under the breakpoint, `tab-size: 4` |
+| Pane output | `12.5px / 1.45` | mono, `white-space: pre` at every width, `tab-size: 4` |
 
 Pane output sets `font-variant-ligatures: none` — ligatures misrepresent terminal text.
 
-`pre-wrap` below `780px` is a **trade, not a fix**: it costs the alignment of
-Claude Code's own box borders and dividers, and buys reading prose without a
-horizontal pan per line — the dominant phone task, which otherwise fails outright.
-Shrink-to-fit was rejected with arithmetic: 80 columns in a 390px viewport needs a
-~6.9px font. Whether the wrapped chrome is acceptable is
-[an open question](mobile-open-questions.md) whose fallback is deleting two
-declarations.
+**`pre` is unconditional — the pane does not wrap at any width.** It wrapped
+below `780px` from milestone 7 to milestone 16, and that was a **trade, not a
+fix**: it bought reading prose without a horizontal pan per line, the dominant
+phone task, and paid in the alignment of every box border, divider and diff
+Claude Code draws at full terminal width.
+
+The trade is off because the wrapping moved to the terminal. A pane narrower than
+its session offers a reflow; taking it resizes the tmux window and the program
+rewraps its own screen at the column edge, so a narrow reader sees the breaks the
+program chose rather than the ones a stylesheet invented. Keeping the CSS wrap
+beside that would be a second mechanism doing the same job worse (#120), and it
+is the one that renders until somebody presses the offer.
+
+Shrink-to-fit stays rejected on the arithmetic it was always rejected on: 80
+columns in a 390px viewport needs a ~6.9px font. Pinch-zoom is still the escape
+hatch for a reader who has not reflowed, so no page may clamp the scale.
 
 ## Spacing scale
 
@@ -256,7 +265,6 @@ Everything inside `@media (max-width: 780px)`:
 | `.summary` | two columns | Four state pills side by side are unreadable at 390px |
 | `.brand-tag` | hidden | The tagline is the first thing that is decoration, not information |
 | `.settings` | one column | The section menu goes above its panel rather than beside it |
-| `.pane` | `white-space: pre-wrap` + `overflow-wrap: anywhere` | 80 columns through a 44-character window is a pan per line. The trade is described under Typography; the base rule keeps `pre` |
 | `.settings-menu` | `position: static` | Sticky has no travel room in a one-column grid, so it does nothing — said rather than left to lapse |
 | `.settings-menu-list` | `grid-auto-flow: column` + `justify-content: start` + `overflow-x: auto` | Stacked, seven sections are ~300px of links above the thing the operator opened the page to read |
 | `.settings-menu-link` | `white-space: nowrap` | A chip that wraps is two rows of one entry |
@@ -268,9 +276,11 @@ Everything inside `@media (max-width: 780px)`:
 | `.masthead-bar` | gutters `--s5` → `--s4` | `.shell` narrows here and the header did not, so the one band on every screen sat 8px outside every card and table beneath it. The rule is the page's gutter rather than a number of its own, and the test reads `.shell` rather than naming a token, so the two cannot drift apart quietly |
 | `.operator` | `flex: 1 1 0` + `min-inline-size: 0` + `text-align: end` | A flex line wraps on its items' *hypothetical* sizes, so a long address wrapped the sticky bar to two rows and the ellipsis already on the identity only helped after it had. Basis `0` makes that hypothetical size zero and the ellipsis does the work instead. `min-inline-size` says what the base rule's `overflow: hidden` already buys; `text-align` is because basis `0` grows the item to fill, and identity at the top right is the second non-negotiable of this file |
 
-**Adding a rule to that block adds a row to this table, in the same commit.** An
-enumeration that has gone stale is worse than no enumeration — this table already
-said "two effects" once while the block did four things.
+**Adding a rule to that block adds a row to this table, in the same commit** —
+and removing one removes its row, for the same reason. An enumeration that has
+gone stale is worse than no enumeration: this table already said "two effects"
+once while the block did four things. `.pane` was a row here until milestone 16
+took the wrap out of the block; what replaced it is under Typography.
 
 Three rules about how it is written:
 
