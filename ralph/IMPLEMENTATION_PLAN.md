@@ -173,7 +173,7 @@ must not silently change how their terminal behaves either.
       #121's rule stands — the control must not become the thing that makes the
       pane function.
 
-- [ ] **T006** Remove the CSS wrap. Two declarations — `white-space: pre-wrap` and
+- [x] **T006** Remove the CSS wrap. Two declarations — `white-space: pre-wrap` and
       `overflow-wrap: anywhere` on `.pane` inside the `@media (max-width: 780px)`
       block of `web/static/crswd.css` — and the comment block above them that
       names the trade, which stops being true the moment the terminal does the

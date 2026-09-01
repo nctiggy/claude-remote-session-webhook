@@ -559,3 +559,94 @@ pane's own font against its own box. `paneView` gained `Columns`, `MinColumns`,
   component; a second page rendering a pane without a card would ship a dangling
   reference, silently. The card's own action row has the same coupling, so this
   is the shape of the tree rather than a defect this control introduced.
+
+---
+
+## Iteration 6 — 2026-09-01 — T006, the second mechanism removed
+
+**Did:** Deleted `white-space: pre-wrap` + `overflow-wrap: anywhere` and the
+comment block that named the trade from the 780px block of `web/static/crswd.css`,
+and inverted the guard that pinned them. Commit `c66aa38`.
+
+**Learned:**
+
+- **The task was three files, not one, and the third was mandatory.**
+  `docs/design-system.md` says in its own words that the breakpoint enumeration
+  gains a row in the same commit a rule is added — and it already went stale once,
+  saying "two effects" while the block did four. Removal is the same obligation
+  read backwards, so the `.pane` row went with the rule and the sentence now says
+  both directions out loud. **This is not the T007 documentation sweep**: T007
+  owns `README.md` and `docs/components.md`, and both are still stale on purpose.
+- **`TestThePaneWrapsOnlyOnNarrowViewports` had to be replaced rather than
+  deleted, and the replacement is wider than the thing it replaced.** The old test
+  asserted the two declarations existed in the one block allowed to carry them.
+  `TestNoPaneRuleWrapsTheTerminalsOutput` sweeps **every** `.pane` rule through
+  `cssRules(stylesheet(t))` — which flattens media blocks, `mediaOpen` strips the
+  preludes — for `overflow-wrap|word-break|word-wrap` or a wrapping `white-space`
+  keyword. A deleted guard would have left the wrap free to return from the
+  `(pointer: coarse)` block or a block nobody has written yet.
+- **The sweep and `TestThePaneKeepsItsDesktopAlignment` are not redundant, and I
+  measured which catches what.** Restoring both declarations fails the sweep;
+  `overflow-wrap` alone fails it too; **deleting `white-space: pre` from the base
+  rule passes the sweep and fails the alignment test**, because an override that
+  declares nothing is legitimate and an absent base declaration inherits `normal`,
+  which wraps. Both comments now say exactly that, and both claims were run.
+- **`stylesheet(t)` strips CSS comments before every assertion in that file.** So
+  the value sweep (`TestNoRuleCarriesAValueThatBelongsInAToken`) cannot see a `px`
+  or a hex inside a comment, and prose in `crswd.css` is free to name real
+  numbers. Iteration 5's note that `script(t)` does the same for JS is the same
+  fact in the other file; **do not anchor an assertion on a comment in either.**
+- **Four other tests carried the wrap as their stated reason and were corrected
+  in place**, because a live guard whose premise is a deleted declaration is the
+  stale-enumeration failure this repo keeps recording:
+  `TestThePaneDoesNotChainItsOverscroll` ("even where the pane wraps"),
+  `TestThePaneDoesNotTrapVerticalScrolling` ("the breakpoint block, where the wrap
+  lives"), `TestThePaneKeepsItsDesktopAlignment` (framed as override-vs-base, a
+  distinction that no longer exists) and `TestNoPageClampsTheZoom` (whose guard
+  still stands — pinch is now the escape hatch for a reader who has **not**
+  reflowed, which is every reader until somebody presses the offer). No assertion
+  changed in any of the four.
+- **`docs/mobile-open-questions.md` Q1 was ANSWERED and said "the wrap stays".**
+  Its fallback was *exactly* these two declarations, so T006 took a fallback the
+  operator's answer had declined. It is recorded as superseded rather than
+  re-answered: that file's mechanism is that **only the operator's report answers
+  a question**, and this is not a verdict on the reading — it is the mechanism
+  moving. The answer stands above the note, untouched.
+- **Neither tagged suite covers this.** `cmd/crswd` and `internal/tmuxctl`
+  reference neither `crswd.css` nor `pre-wrap` (grepped, not assumed). Both were
+  compiled with `go vet -tags quickstart` and `-tags tmux`, and
+  `go test -tags tmux ./internal/tmuxctl ./internal/session` was run and is green.
+  `golangci-lint` is **v2.12.2** (#26's check) and reports 0 issues; `gofmt -l .`
+  names nothing; `go test ./...` is green in all 11 packages.
+
+**Left:** T007 alone — `README.md` and `docs/components.md`, then closing #121.
+
+**Findings — noticed, not fixed:**
+
+- **`docs/components.md`'s pane bullet is now false and shipped that way, by the
+  plan's ordering.** It still reads "Below the breakpoint the pane wraps, and it
+  is a trade rather than a fix", names both declarations, and says "**Reverting is
+  two declarations**" — which has now happened. Its Action controls table is also
+  still missing the reflow route and still says "All four". **T007 owns both and
+  is the next task**; this is a one-iteration window, not a backlog, but if T007
+  is deferred for any reason this file is the first thing to fix.
+- **`specs/007-make-it-work-on-a-phone/contracts/pane.md` names the guard by its
+  old spelling** (`TestThePaneWrapsOnlyOnNarrowViewports`, "carries `white-space:
+  pre-wrap` **and** `overflow-wrap: anywhere`"), and `tasks.md` in the same spec
+  repeats it. Left alone: `specs/` is the record of what a milestone decided at
+  the time, and Iteration 0 established that nothing in `specs/` is a source of
+  open work. **Nothing enforces those test names**, so this rots silently rather
+  than failing — worth knowing before someone greps for a test that no longer
+  exists.
+- **The pane is now unwrapped for every reader who has not reflowed, and the only
+  thing standing between them and a horizontal pan per line is a JavaScript
+  module.** With the script blocked or failed, T005's offer stays `hidden` — which
+  is correct, and is #121's rule — but the baseline it degrades to is now the
+  *pre-milestone-7* phone experience rather than the wrapped one. That is the
+  milestone's stated intent and the operator chose it; it is written down here so
+  the next report of "the pane is unreadable on my phone" is diagnosed as *the
+  offer did not appear* rather than as a regression in the CSS.
+- **`TestQuickstartStory5RateLimit`'s temp-home cleanup race is unchanged and
+  unexamined here.** This task touched no Go outside `stylesheet_test.go`, and
+  `go test ./...` passed on the first run this iteration. Three iterations have now
+  recorded it; it still deserves a task rather than another line.
