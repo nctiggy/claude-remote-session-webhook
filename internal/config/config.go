@@ -1165,12 +1165,19 @@ func RenderStartCommand(command, sessionName string) (string, error) {
 //
 // # Why after the first token and not at the end
 //
-// The configured commands end in a quoted prompt argument —
-// `claude --dangerously-skip-permissions "/rc {name}"` is the deployed shape —
-// and whether an argument parser honours a flag that follows a positional is the
-// parser's business, not something this daemon may assume. Insertion after the
-// binary is a rule that can be stated, tested, and read off the preview the
-// operator is shown.
+// A configured command ends in whatever the operator wrote, and the two shapes
+// that ship as examples both make the end of the line the wrong place to write.
+// `claude --dangerously-skip-permissions --remote-control {name}` — the
+// deployed shape — ends in a flag and the value that belongs to it, so anything
+// appended lands after a value the parser is still reading as an argument, and
+// anything inserted a token earlier lands *between* the flag and its name and
+// silently renames the session. The older `"/rc {name}"` spelling ends in a
+// positional instead, and whether a parser honours a flag that follows one is
+// the parser's business, not something this daemon may assume.
+//
+// After the binary is the only position that is correct for both, and it is a
+// rule that can be stated, tested, and read off the preview the operator is
+// shown.
 //
 // The first token is found by whitespace, which is the same split a shell makes
 // of the same line. A command whose binary is a quoted path with a space in it

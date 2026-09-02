@@ -280,7 +280,17 @@ version = 1
 # pane empty, and an empty pane is a dashboard that cannot show, judge, or
 # compact anything. That form still works — write it here if you want it — it is
 # simply not what a pane-driven dashboard should ship as its example.
-# start_commands = rc=claude --dangerously-skip-permissions "/rc {name}"
+#
+# Reach remote control with the `--remote-control` FLAG, never the `/rc` slash
+# command. This file recommended the slash command until Claude Code 2.1.259
+# gave `/rc` a menu — Disconnect / Show QR code / Continue, "Enter to select ·
+# Esc to continue" — drawn over the input box, waiting. No operator is sitting
+# at a session this daemon started, so the keystroke never comes: the pane
+# parks, the create reports success, and every prompt posted to that session is
+# typed into a menu. `/rc` also occupies the positional prompt argument and
+# does not carry the name through, so the session arrives in claude.ai under an
+# auto-generated one. The flag has none of those three problems.
+# start_commands = rc=claude --dangerously-skip-permissions --remote-control {name}
 
 # Which entry of that set the dashboard's remote-control switch means. Set to a
 # name the set does not have, it is a startup failure: you have said which
