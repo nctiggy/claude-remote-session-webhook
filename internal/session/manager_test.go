@@ -3829,7 +3829,7 @@ func TestStartCommandLineLeavesThePlaceholderForThePage(t *testing.T) {
 	// subject of this test.
 	f.mgr.SetStartCommands(config.NewStartCommands(map[string]string{
 		config.DefaultStartCommandName: "claude --dangerously-skip-permissions",
-		remoteCommandName:              `claude --dangerously-skip-permissions "/rc {name}"`,
+		remoteCommandName:              "claude --dangerously-skip-permissions --remote-control {name}",
 	}))
 	f.mgr.SetRemoteControlCommand(remoteCommandName)
 
@@ -3850,6 +3850,63 @@ func TestStartCommandLineLeavesThePlaceholderForThePage(t *testing.T) {
 			remote, config.StartCommandNamePlaceholder)
 	}
 }
+
+// TestInjectedFlagsNeverSplitRemoteControlFromItsName is the deployed shape's
+// half of InsertStartFlags' after-the-binary rule.
+//
+// `claude --dangerously-skip-permissions --remote-control {name}` ends in a flag
+// and the value that belongs to it. Insertion anywhere but after the binary puts
+// this daemon's own `--resume` or `--session-id` between the two, and the
+// session comes up named after a conversation identifier rather than after what
+// the operator typed — a rename nothing in the create path would report, on the
+// one command whose whole purpose is to put a named session in front of someone
+// who is somewhere else.
+//
+// **Must fail when** a rendered start command carries `--remote-control` without
+// the session's own name as the very next token.
+func TestInjectedFlagsNeverSplitRemoteControlFromItsName(t *testing.T) {
+	t.Parallel()
+
+	const (
+		conversation = "88e5294c-4f1a-4b7e-9f10-2c6d0a3b7e51"
+		sessionName  = "mysession"
+	)
+
+	f := newManagerFixture(t)
+	f.mgr.SetStartCommands(config.NewStartCommands(map[string]string{
+		config.DefaultStartCommandName: "claude --dangerously-skip-permissions",
+		remoteCommandName:              "claude --dangerously-skip-permissions --remote-control {name}",
+	}))
+	f.mgr.SetRemoteControlCommand(remoteCommandName)
+
+	line, err := f.mgr.StartCommandLine(ModeRemote, conversation, sessionName)
+	if err != nil {
+		t.Fatalf("StartCommandLine(remote) = %v", err)
+	}
+
+	fields := strings.Fields(line)
+	for i, field := range fields {
+		if field != remoteControlFlag {
+			continue
+		}
+		if i+1 >= len(fields) {
+			t.Fatalf("the line is %q and ends on %s, so the session would carry whatever name claude invents",
+				line, remoteControlFlag)
+		}
+		if got := fields[i+1]; got != sessionName {
+			t.Fatalf("the line is %q and %s is followed by %q rather than the session's own name",
+				line, remoteControlFlag, got)
+		}
+		return
+	}
+	t.Fatalf("the line is %q and has lost %s, so it starts a session nobody can reach from elsewhere",
+		line, remoteControlFlag)
+}
+
+// remoteControlFlag is claude's own flag. It is named rather than spelled out
+// at each use because the test above searches a rendered line for it, and a
+// search for a misspelling finds nothing and reports that as a pass.
+const remoteControlFlag = "--remote-control"
 
 // withoutMintedConversation removes the one thing spec 012 adds to a start
 // command that no caller asked for: the conversation identifier this daemon

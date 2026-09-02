@@ -2376,7 +2376,7 @@ func TestTheCreateFormPreviewIsAReadoutAndNotAChooser(t *testing.T) {
 	view := createForm()
 	view.Commands = map[bool]string{
 		false: "claude --dangerously-skip-permissions",
-		true:  `claude --dangerously-skip-permissions "/rc {name}"`,
+		true:  "claude --dangerously-skip-permissions --remote-control {name}",
 	}
 	out := renderComponent(t, "create-form", view)
 
