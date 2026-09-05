@@ -118,11 +118,13 @@ const (
 	// distinction lasts one tmux exec, and it is not one an operator watching a
 	// fleet could act on.
 	//
-	// It is the only display state a live session has. There was a second until
-	// milestone 15 — a session the idle bound had caught up with, shown so an
-	// operator could see it was about to be destroyed — and it went when the
-	// bound did. A vocabulary of one is the honest size for a fleet where the
-	// only way a session ends is the operator or the ceiling.
+	// It is the only display state the *lifecycle* — State — produces on its
+	// own. There was a second until milestone 15 — a session the idle bound had
+	// caught up with, shown so an operator could see it was about to be
+	// destroyed — and it went when the bound did. DisplayBlocked and
+	// DisplayUnknown below are not a revival of that: they answer a different
+	// question, asked of a different input (see Session.DisplayState's own
+	// comment), and neither is measured from a clock.
 	DisplayRunning DisplayState = "running"
 
 	// DisplayFailed is a session the supervisor could not bring back (spec 012).
@@ -137,6 +139,31 @@ const (
 	// teach an operator to ignore it, which is the opposite of what a state that
 	// only ever appears for a genuine problem is for.
 	DisplayFailed DisplayState = "failed"
+
+	// DisplayBlocked is a session whose pane matched a named entry in
+	// dialog.go's registry (see DetectDialog) — a TUI dialog crswd did not
+	// spawn and cannot answer, sitting where a prompt or the tool's own output
+	// would otherwise be. It is the direct fix for the failure PR #150 found:
+	// every other observable this daemon has (process up, tmux pane present,
+	// `POST /prompt` accepting bytes) says exactly what DisplayRunning says, so
+	// without a pane-content check a parked session is indistinguishable from
+	// a healthy one. Which dialog is named beside this value rather than
+	// folded into it (see cardOf, promptResponse) — this stays one word so it
+	// keeps being the pill's own CSS class suffix, exactly as DisplayRunning
+	// and DisplayFailed already are.
+	DisplayBlocked DisplayState = "blocked"
+
+	// DisplayUnknown is a pane that looks dialog-shaped — it carries one of
+	// dialog.go's suspiciousMarkers — but named no signature the registry
+	// holds. This is the registry falling behind a dialog nobody has
+	// catalogued yet, and it is deliberately its own state rather than a
+	// silent fallback to DisplayRunning: a heuristic that goes quiet the
+	// moment it does not recognise something is the same bug PR #150 fixed,
+	// wearing a signature list instead of a slash command. See dialog.go's
+	// package comment for why this list is a heuristic over a TUI crswd does
+	// not own, and why that makes "unknown" the fail-closed answer rather than
+	// "healthy".
+	DisplayUnknown DisplayState = "unknown"
 )
 
 // Mode is where a session is driven from: the operator's own dashboard, or
@@ -514,6 +541,14 @@ func orDefault(d, fallback time.Duration) time.Duration {
 //
 // State is not consulted at all. Reading it is what FR-019a forbids, and both
 // values it can hold in production are this method's running anyway.
+//
+// It answers from the record alone and never from a pane. DisplayBlocked and
+// DisplayUnknown are produced by DetectDialog against pane text this method is
+// never given — a caller who has captured a pane composes the two answers
+// itself (see internal/httpapi's effectiveDisplayState) rather than this
+// method reaching for tmux, which would turn a pure, in-memory read into one
+// that can fail, block, or disagree with a capture the caller already made for
+// its own reasons.
 func (s Session) DisplayState(_ time.Time) DisplayState {
 	if s.State == StateFailed {
 		return DisplayFailed

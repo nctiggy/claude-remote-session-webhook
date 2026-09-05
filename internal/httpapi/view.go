@@ -43,7 +43,21 @@ type sessionView struct {
 	// DisplayState is derived per render from the record (FR-019a–c). The stored
 	// lifecycle field is deliberately not in this struct: a view that carried it
 	// would be a second thing the card could render, and the one it must not.
+	//
+	// It can also read session.DisplayBlocked or session.DisplayUnknown now
+	// (effectiveDisplayState), when the render had pane text to check against
+	// dialog.go's registry. Empty pane text — the fleet grid does not capture
+	// one per card, see cardOf — leaves this exactly what it always was.
 	DisplayState session.DisplayState
+
+	// ParkedOn names the dialog session.DisplayBlocked reports, and is empty
+	// for every other DisplayState including DisplayUnknown — which has no
+	// name to give (a suspicious marker matched, no signature did). The card
+	// shows it as a second line beside the pill for the same reason StartCommand
+	// is a line of its own rather than folded into Mode: "blocked" says a
+	// keystroke will not reach a prompt, and only this field says which dialog
+	// is in the way.
+	ParkedOn string
 
 	// StartCommand is the name of the command this session was running when the
 	// page rendered (#38, #39). A name, never the command line: the card tells

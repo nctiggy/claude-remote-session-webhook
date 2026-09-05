@@ -300,7 +300,15 @@ func (s *Server) fleet(operator *access.VerifiedOperator, token string, outcome 
 	owned := s.sessions.List(operator.Owner)
 	views := make([]sessionView, 0, len(owned))
 	for _, live := range owned {
-		views = append(views, cardOf(live, now, token, s.cfg.RemoteControlCommand))
+		// No pane text: capturing one per card on every fleet render is a
+		// per-session tmux exec this render does not otherwise make, and
+		// adding N of them to every dashboard poll is a cost this change
+		// deliberately does not take on tonight (see docs/fixes-log.md's entry
+		// for this fix). sessionPage below captures its own screen already and
+		// passes it through, so a session parked on a dialog is named the
+		// moment its own page is opened; the grid still reads DisplayRunning
+		// for it until then.
+		views = append(views, cardOf(live, now, token, s.cfg.RemoteControlCommand, ""))
 	}
 
 	return fleetView{
@@ -446,15 +454,24 @@ func (s *Server) rootPaths() []string {
 // one place that answers it (session.Session.Mode). A card that derived it from
 // anything else would be a second answer, free to disagree with the one the
 // toggle route checks before it acts.
-func cardOf(live session.Session, now time.Time, token, remoteCommand string) sessionView {
+//
+// paneText is the caller's own answer to "what does this session's pane hold
+// right now" — captured once, at the caller's own cost, and handed in rather
+// than fetched here, for the reason remoteCommand is a parameter and not a
+// config read: a card that reached for tmux itself would be an I/O call this
+// projection cannot fail, and a second capture free to disagree with one the
+// caller already made for its own purposes (the pane viewer, the prompt
+// route). Empty means "not checked" — sessionPage passes its own screen
+// capture; fleet does not capture one per card on every render, so its cards
+// answer exactly as they did before this parameter existed.
+func cardOf(live session.Session, now time.Time, token, remoteCommand, paneText string) sessionView {
+	displayState, parkedOn := effectiveDisplayState(live, now, paneText)
 	return sessionView{
-		ID:      live.ID,
-		Name:    live.Name,
-		WorkDir: live.WorkDir,
-		// The record's own method, which is the reaper's own deadline
-		// (FR-019a–c). Nothing here reads live.State: both values it holds in
-		// production display as running, and reading it is what FR-019a forbids.
-		DisplayState: live.DisplayState(now),
+		ID:           live.ID,
+		Name:         live.Name,
+		WorkDir:      live.WorkDir,
+		DisplayState: displayState,
+		ParkedOn:     parkedOn,
 		StartCommand: live.StartCommand,
 		// The record's own method again, for the reason DisplayState is one: a
 		// derived value is computed where it is defined, and the card renders
@@ -473,6 +490,40 @@ func cardOf(live session.Session, now time.Time, token, remoteCommand string) se
 		// The token is also what makes the card render its action row (view.go),
 		// so every card either offers a control it can authorise or offers none.
 		PageToken: token,
+	}
+}
+
+// effectiveDisplayState folds a pane's own dialog check (session.DetectDialog)
+// into the record's own DisplayState, for the one caller that has pane text to
+// offer it.
+//
+// DisplayFailed wins outright rather than being compared against a dialog
+// match. The two conditions are not observed together — a session the
+// supervisor gave up reviving is not a session with a live pane waiting on a
+// keystroke — and failed is already the louder of this daemon's two existing
+// words; a heuristic addition should not risk quieting it.
+//
+// paneText == "" — nothing captured — answers exactly as DisplayState alone
+// would, because DetectDialog never matches an empty string. That is what
+// keeps a caller with no capture to offer (fleet, today) behaving exactly as
+// it did before this function existed, rather than this function inventing an
+// opinion about a pane nobody read.
+func effectiveDisplayState(live session.Session, now time.Time, paneText string) (session.DisplayState, string) {
+	if base := live.DisplayState(now); base == session.DisplayFailed {
+		return base, ""
+	}
+	name, dialog := session.DetectDialog(paneText)
+	switch {
+	case !dialog:
+		return session.DisplayRunning, ""
+	case name != "":
+		return session.DisplayBlocked, name
+	default:
+		// A marker matched but named no signature: dialog.go's registry has
+		// not catalogued this one. DisplayUnknown, never DisplayRunning — see
+		// dialog.go's package comment for why silence here is the bug this
+		// file exists to fix.
+		return session.DisplayUnknown, ""
 	}
 }
 
@@ -563,8 +614,15 @@ func (s *Server) sessionPage(w http.ResponseWriter, r *http.Request) {
 
 	s.renderPage(w, r, http.StatusOK, "session", sessionPageView{
 		Operator: operator,
-		Session:  cardOf(live, s.clock.Now(), token, s.cfg.RemoteControlCommand),
-		Pane:     pane,
+		// pane.Text is the screen this handler just captured above — reused
+		// rather than read twice, and the reason this page's card can answer
+		// DisplayBlocked/DisplayUnknown where the fleet grid's cannot (cardOf).
+		// A pane the capture could not read (pane.Unread) carries an empty
+		// Text, which DetectDialog never matches, so an unreadable screen
+		// answers exactly as it did before this parameter existed rather than
+		// this page inventing an opinion about content it never saw.
+		Session: cardOf(live, s.clock.Now(), token, s.cfg.RemoteControlCommand, pane.Text),
+		Pane:    pane,
 		// The record's own directory. Every failure is an empty list, so a host
 		// whose Claude layout moved renders a page that still works.
 		Conversations: s.conversationsForDir(s.clock.Now(), live.WorkDir),

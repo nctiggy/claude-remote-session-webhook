@@ -920,6 +920,14 @@ func (f promptFixture) post(t *testing.T, body []byte, at time.Time) (*httptest.
 // TestPromptAnswersTheContractResponse is contracts/http-api.md's 202 example,
 // field by field. 202 and not 200: what is confirmed is that the keystrokes
 // reached the pane, not that Claude has read them.
+//
+// The fixture's pane is empty — plant sets none — so this is also the
+// backward-compatibility pin for the dialog check added alongside it (#150
+// follow-up): an ordinary prompt into an ordinary pane must answer exactly the
+// two fields it always has, with parked_on and suspicious_dialog omitted
+// rather than present-and-zero, or a caller checking len(body) or iterating
+// the object's own keys would see this response change shape the day nothing
+// about its prompt did.
 func TestPromptAnswersTheContractResponse(t *testing.T) {
 	t.Parallel()
 
@@ -939,7 +947,78 @@ func TestPromptAnswersTheContractResponse(t *testing.T) {
 		t.Errorf("delivered = %v; want true", got)
 	}
 	if len(body) != 2 {
-		t.Errorf("the response carries %d fields (%v); the contract defines exactly two", len(body), body)
+		t.Errorf("the response carries %d fields (%v); an ordinary prompt into an ordinary pane defines exactly two", len(body), body)
+	}
+}
+
+// rcMenuPromptFixture and uncatalogedDialogPromptFixture are stripped pane
+// captures shaped after session.dialog_test.go's own fixtures — see that
+// file's comment for why they are not the box art verbatim.
+const rcMenuPromptFixture = `╭──────────────────────────────────────────────╮
+│ ❯ Disconnect this session                      │
+│   Show QR code                                 │
+│   Continue                                     │
+╰──────────────────────────────────────────────╯
+  Enter to select · Esc to continue`
+
+const uncatalogedDialogPromptFixture = `╭──────────────────────────────────────────────╮
+│ A future Claude Code dialog nobody has         │
+│ catalogued in this registry yet                │
+╰──────────────────────────────────────────────╯
+  Enter to confirm · Esc to cancel`
+
+// TestPromptReportsAKnownDialogInsteadOfBareDelivered is the fix for PR #150's
+// own failure mode: a pane parked on a known dialog answered `delivered: true`
+// having typed into a menu, with nothing in the response to tell a caller
+// apart from an ordinary prompt. It must not any more.
+//
+// The pane is set before posting and never changes during it (the fake has no
+// session process to react to the keystrokes), so this also pins the read
+// order: promptSession checks what the pane holds *before* Prompt runs, and
+// the menu text set here is what that pre-check sees.
+func TestPromptReportsAKnownDialogInsteadOfBareDelivered(t *testing.T) {
+	t.Parallel()
+
+	f := newPromptFixture(t)
+	f.fixture.tmux.SetPane(f.live.TmuxName(), rcMenuPromptFixture)
+
+	answer, body := f.post(t, promptBody(), testTime)
+
+	if answer.Code != http.StatusAccepted {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusAccepted)
+	}
+	if got := body["delivered"]; got != true {
+		t.Errorf("delivered = %v; want true — the keystrokes did reach the pane", got)
+	}
+	if got := body["parked_on"]; got != "rc-menu" {
+		t.Errorf(`parked_on = %v; want "rc-menu"`, got)
+	}
+	if _, present := body["suspicious_dialog"]; present {
+		t.Errorf("suspicious_dialog is present (%v) for a named match; omitempty should have dropped it", body["suspicious_dialog"])
+	}
+}
+
+// TestPromptReportsAnUncatalogedDialogAsSuspicious is DisplayUnknown's own
+// claim, tested through the other surface that must never fall back to
+// silence: a pane carrying a marker several dialogs share, but none of
+// dialog.go's own named phrases, must say so rather than answering exactly as
+// an ordinary prompt would.
+func TestPromptReportsAnUncatalogedDialogAsSuspicious(t *testing.T) {
+	t.Parallel()
+
+	f := newPromptFixture(t)
+	f.fixture.tmux.SetPane(f.live.TmuxName(), uncatalogedDialogPromptFixture)
+
+	answer, body := f.post(t, promptBody(), testTime)
+
+	if answer.Code != http.StatusAccepted {
+		t.Fatalf("status = %d (%q); want %d", answer.Code, answer.Body, http.StatusAccepted)
+	}
+	if got := body["suspicious_dialog"]; got != true {
+		t.Errorf("suspicious_dialog = %v; want true", got)
+	}
+	if _, present := body["parked_on"]; present {
+		t.Errorf(`parked_on is present (%v); an uncatalogued dialog has no name to give`, body["parked_on"])
 	}
 }
 
@@ -984,6 +1063,11 @@ func TestAPromptIsDeliveredByteForByte(t *testing.T) {
 
 			tmuxName, pane := f.live.TmuxName(), f.live.PaneTarget()
 			want := []tmuxctl.Call{
+				// The dialog check's own read, ahead of every write below it
+				// (session/dialog.go, #150 follow-up): promptSession asks what
+				// the pane holds before typing into it, on every prompt whose
+				// text is non-empty, whether or not anything matches.
+				{Op: tmuxctl.OpCapturePane, Argv: []string{"tmux", "capture-pane", "-p", "-t", pane}},
 				{Op: tmuxctl.OpPaste, Argv: []string{"tmux", "load-buffer", "-b", tmuxName, "-"}, Stdin: []byte(payload)},
 				{
 					Op:   tmuxctl.OpPaste,

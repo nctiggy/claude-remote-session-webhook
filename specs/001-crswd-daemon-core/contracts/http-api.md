@@ -261,6 +261,28 @@ that is exactly `;` or ends in `;` is silently mangled by `send-keys`.
 {"id":"9f2c1ab47e0d4f6a8b3c5d7e1f0a2b4c","delivered":true}
 ```
 
+`delivered: true` means the keystrokes reached the pane — it has never meant
+they reached a running Claude Code prompt, and PR #150 found a session where
+they did not: a TUI dialog (a slash-command menu, the workspace-trust prompt)
+had drawn itself over the input box and waited, and this response answered
+exactly as it does for an ordinary prompt. Two additional, additive fields
+close that gap using a pane-content heuristic (`internal/session/dialog.go`) —
+never a real readiness signal from Claude Code, which this daemon does not
+have:
+
+| Field | Rules |
+|---|---|
+| `parked_on` | Omitted unless the pane matched a named dialog signature at the moment of delivery. A fixed registry name (`"workspace-trust"`, `"rc-menu"`), never pane content |
+| `suspicious_dialog` | Omitted unless `false`. `true` when the pane looked dialog-shaped (a marker several known dialogs share) but matched no named signature — the registry has not catalogued this one yet |
+
+Both are best-effort: a pane capture that fails leaves them both omitted,
+exactly as it did before they existed, rather than turning an otherwise-normal
+delivery into a refusal over a heuristic's own precondition failing.
+
+```json
+{"id":"9f2c1ab47e0d4f6a8b3c5d7e1f0a2b4c","delivered":true,"parked_on":"rc-menu"}
+```
+
 The prompt text never appears in any audit record or log line (FR-042).
 
 ---
