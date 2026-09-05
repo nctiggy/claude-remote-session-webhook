@@ -3033,7 +3033,7 @@ func TestCardShowsMode(t *testing.T) {
 				StartCommand: tc.start,
 				CreatedAt:    now.Add(-time.Hour),
 				LastActivity: now,
-			}, now, testCardToken, remoteCommand)
+			}, now, testCardToken, remoteCommand, "")
 
 			if card.Mode != tc.want {
 				t.Fatalf("cardOf projected mode %q for a session running %q, want %q", card.Mode, tc.start, tc.want)
@@ -3114,7 +3114,7 @@ func TestCardShowsItsDeadline(t *testing.T) {
 				Lifetime:     tc.lifetime,
 				CreatedAt:    now.Add(-time.Hour),
 				LastActivity: now,
-			}, now, testCardToken, "rc")
+			}, now, testCardToken, "rc", "")
 
 			out := renderComponent(t, "session-card", card)
 			found := cardLifetimeRow.FindStringSubmatch(out)
@@ -3965,7 +3965,7 @@ func TestACardSaysHowOldItIsWhatStartedItAndWhetherItDies(t *testing.T) {
 			adopted.Adopted = true
 
 			for what, s := range map[string]session.Session{"created": live, "adopted": adopted} {
-				out := renderComponent(t, "session-card", cardOf(s, now, testCardToken, "rc"))
+				out := renderComponent(t, "session-card", cardOf(s, now, testCardToken, "rc", ""))
 
 				for _, row := range []struct {
 					fact  string

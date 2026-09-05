@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -262,9 +263,31 @@ type promptRequest struct {
 // the session and no echo of the text — which is not merely unnecessary but
 // forbidden: prompt text is secret under docs/security.md §3, and a response
 // that repeats it is one more place it can be logged by whatever reads it.
+//
+// ParkedOn and SuspiciousDialog are additive (PR #150 follow-up). `delivered`
+// keeps meaning exactly what it always has — the keystrokes reached the pane —
+// because that claim was never false; what was false is a caller reading it as
+// "reached a prompt". Both new fields default to their zero value and are
+// omitted then, so a caller checking only `delivered` sees byte-for-byte the
+// response it always has.
 type promptResponse struct {
 	ID        string `json:"id"`
 	Delivered bool   `json:"delivered"`
+
+	// ParkedOn names the internal/session/dialog.go signature the pane matched
+	// at the moment this prompt was delivered — set only then. It is a fixed
+	// registry name (`"workspace-trust"`, `"rc-menu"`), never pane text: naming
+	// which known dialog a keystroke landed in is not the secret docs/security.md
+	// §3 protects, and pane content still never appears in this response.
+	ParkedOn string `json:"parked_on,omitempty"`
+
+	// SuspiciousDialog is true when the pane looked dialog-shaped — one of
+	// dialog.go's generic markers matched — but no signature named it. A
+	// caller should treat this exactly as it would a non-empty ParkedOn: the
+	// keystrokes did not reach an ordinary prompt. There is no name to give
+	// because the registry has not catalogued this one (see dialog.go's own
+	// comment on why "unknown" must never collapse into "delivered as usual").
+	SuspiciousDialog bool `json:"suspicious_dialog,omitempty"`
 }
 
 // outputResponse is the contract's 200 body for GET /sessions/{id}/output, in
@@ -688,6 +711,11 @@ func (s *Server) failTeardownUnverified(w http.ResponseWriter, r *http.Request) 
 // Delivery itself belongs to internal/session, which is the only thing here that
 // can cause execution on the host. What is left is the HTTP half: read the one
 // field, hand it over unaltered, and answer.
+//
+// The dialog check reads the pane before Prompt runs, deliberately. It asks
+// what the keystroke is about to land in rather than what the pane holds
+// afterwards, because the keystroke itself may dismiss or change a menu —
+// checking after would be asking the question once the answer had moved.
 func (s *Server) promptSession(w http.ResponseWriter, r *http.Request) {
 	resolved, ok := SessionFrom(r.Context())
 	if !ok {
@@ -700,6 +728,18 @@ func (s *Server) promptSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Guarded on the same emptiness Manager.Prompt itself refuses on
+	// (ErrEmptyPrompt), so that a body this route was always going to reject
+	// still costs the host nothing at all — not even a read. Duplicating the
+	// bare emptiness check here is not duplicating the rule: Manager.Prompt
+	// still owns ErrEmptyPrompt and every other reason a prompt can be
+	// refused, and refusePrompt below still asks it rather than assuming.
+	var parkedOn string
+	var suspicious bool
+	if req.Text != "" {
+		parkedOn, suspicious = s.paneDialogState(r.Context(), resolved)
+	}
+
 	if err := s.sessions.Prompt(r.Context(), resolved, req.Text); err != nil {
 		s.refusePrompt(w, r, err)
 		return
@@ -707,8 +747,41 @@ func (s *Server) promptSession(w http.ResponseWriter, r *http.Request) {
 
 	// 202, not 200: what is confirmed is that the keystrokes reached the pane,
 	// which is not the same claim as Claude having read them, and the contract
-	// spells that difference as "accepted for delivery".
-	s.writeJSON(w, r, http.StatusAccepted, promptResponse{ID: resolved.ID, Delivered: true})
+	// spells that difference as "accepted for delivery". ParkedOn and
+	// SuspiciousDialog narrow that further still: they say the keystrokes
+	// reached a dialog rather than a prompt, when the pane check above found
+	// one to say it about.
+	s.writeJSON(w, r, http.StatusAccepted, promptResponse{
+		ID:               resolved.ID,
+		Delivered:        true,
+		ParkedOn:         parkedOn,
+		SuspiciousDialog: suspicious,
+	})
+}
+
+// paneDialogState best-effort-checks whether resolved's pane is presently
+// sitting on a known TUI dialog (internal/session/dialog.go), for a prompt
+// about to be delivered into it.
+//
+// A capture that fails degrades to this route's answer before this check
+// existed — an ordinary delivery, with neither field set — because a
+// heuristic's own precondition failing is not a reason to treat an otherwise
+// normal prompt as suspicious, and is not a reason to refuse it either: the
+// check is additive information, never a gate (see the requirement this
+// implements — the task named the readiness-signal, refuse-the-prompt version
+// of this feature as the harder half deliberately left undone). A successful
+// read can only ever upgrade the answer, never downgrade one an operator would
+// otherwise have gotten.
+func (s *Server) paneDialogState(ctx context.Context, resolved session.Session) (parkedOn string, suspicious bool) {
+	capture, err := s.sessions.Output(ctx, resolved)
+	if err != nil {
+		return "", false
+	}
+	name, dialog := session.DetectDialog(capture.Text)
+	if !dialog {
+		return "", false
+	}
+	return name, name == ""
 }
 
 // refusePrompt maps a Prompt failure onto the answer the contract gives it.
