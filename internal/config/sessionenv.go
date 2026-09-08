@@ -94,6 +94,71 @@ var sessionBase = []string{
 // prefix is narrow enough to stay a locale rule and not a hole.
 const sessionBasePrefix = "LC_"
 
+// sessionDefault is a setting this daemon supplies a value for, as opposed to
+// one it carries a value the daemon already has.
+//
+// The base set above is a filter: a name in it crosses the boundary only when
+// the daemon's own environment happens to hold it. That shape cannot express
+// the case below — a value that follows from how this daemon is built, on a
+// host where nothing has any reason to have set it. Composing the environment
+// from nothing is what made that gap appear: before sessionenv.go a session
+// inherited whatever the operator's shell had, so "set it in ~/.profile" was an
+// answer. It is not one any more, and this is what replaces it.
+type sessionDefault struct {
+	name  string
+	value string
+}
+
+// sessionDefaults is what this daemon knows about the sessions it starts that
+// the sessions cannot know about themselves.
+//
+// The bar for an entry is high, and it is not "a good idea": it is that the
+// value is *determined* by this daemon's own structure, so that leaving it to
+// the operator means every deployment gets it wrong in the same way. Anything
+// short of that belongs in the operator's SESSION_ENVIRONMENT list, where it is
+// visible in their configuration rather than compiled into ours.
+var sessionDefaults = []sessionDefault{
+	{
+		// Every session this daemon starts is a separate `claude` process, and
+		// all of them read and write ONE credential store under $HOME. The
+		// stored login holds an 8h access token and a refresh token that
+		// *rotates*: refreshing consumes the old one. So when the access token
+		// expires, every session that notices races to refresh, one wins, and
+		// each loser replays a refresh token that has already been spent — and
+		// is logged out. Observed on the reference host as bursts rather than
+		// as single sessions dying: 3 in 98s, then 7 in 13min.
+		//
+		// Claude Code already ships the cure. On a 401 it can wait for another
+		// process to land a rotated token and pick that up instead of failing,
+		// and CLAUDE_CODE_OAUTH_401_WAIT_MS is how long it waits. Its own
+		// default is 60s when CLAUDE_CODE_REMOTE_SESSION_ID marks the process
+		// as a remote session's child, and 0 otherwise — measured in the 2.1.263
+		// bundle:
+		//
+		//	function qm(){return Boolean(a.CLAUDE_CODE_REMOTE_SESSION_ID)}
+		//	function Mfe(){let e=a.CLAUDE_CODE_OAUTH_401_WAIT_MS;if(e!==void 0)return e;return qm()?60000:0}
+		//
+		// A session here is a local tmux pane, so it takes the 0 — no wait, and
+		// full participation in the race. But the condition the 60s default
+		// exists for is not "is a remote session's child"; it is "shares one
+		// credential store with sibling processes that refresh it", and that is
+		// true of every session this daemon starts, by construction. Which is
+		// the whole argument for it being a default here rather than a line in
+		// somebody's configuration file.
+		//
+		// 60000 matches upstream's number rather than improving on it: the point
+		// is to be in the case upstream already reasoned about, and a number of
+		// our own would be one nothing upstream is testing against.
+		//
+		// NOT done by setting CLAUDE_CODE_REMOTE_SESSION_ID, which would be the
+		// shorter route to the same default. That variable means "child of a
+		// remote session" to Claude Code and gates other behaviour; claiming it
+		// falsely buys 60s of back-off and an unknown amount of everything else.
+		name:  "CLAUDE_CODE_OAUTH_401_WAIT_MS",
+		value: "60000",
+	},
+}
+
 // SessionEnvironment composes the environment a session receives from the
 // environment this daemon has.
 //
@@ -124,7 +189,71 @@ func SessionEnvironment(parent []string, passThrough []string) []string {
 		}
 		composed = append(composed, kv)
 	}
+	return withDefaults(composed)
+}
+
+// withDefaults adds the settings this daemon has an opinion about and the
+// composed environment does not already carry one for.
+//
+// The operator's value wins, which is what makes these defaults rather than
+// policy: a name in sessionDefaults is also in the base set, so a value in the
+// daemon's own environment is carried by the loop above and found here. An
+// empty one is not a value — every consumer of these is parsing the string, and
+// "" parses to nothing useful in any of them, so it is treated as absent rather
+// than passed on as a setting that will be rejected somewhere with no line
+// number. An operator turning one off writes the off value, not a blank.
+func withDefaults(composed []string) []string {
+	for _, def := range sessionDefaults {
+		// The exclusions are re-applied here rather than assumed to have been
+		// applied by the loop above, because this function appends and the loop
+		// filters: a default is not screened by anything the caller did. That
+		// makes "a session never receives a secret" a property of the result
+		// again rather than of whoever last edited sessionDefaults, which is the
+		// argument admits() already makes about passThrough. Unreachable today —
+		// and the day it stops being unreachable is the day it matters.
+		if excluded(def.name) {
+			continue
+		}
+		if _, supplied := lookup(composed, def.name); supplied {
+			continue
+		}
+		// dropVar first, so an empty assignment carried from the daemon's own
+		// environment is replaced rather than shadowed. Both spellings give a
+		// process the same value, because exec resolves a repeated name to the
+		// last entry — but only one of them says so to anything reading this
+		// slice, and the settings page and the tests both read this slice.
+		composed = append(dropVar(composed, def.name), def.name+"="+def.value)
+	}
 	return composed
+}
+
+// dropVar removes every assignment of a name from an environment slice.
+func dropVar(env []string, name string) []string {
+	kept := env[:0]
+	for _, kv := range env {
+		if n, _, ok := strings.Cut(kv, "="); ok && n == name {
+			continue
+		}
+		kept = append(kept, kv)
+	}
+	return kept
+}
+
+// lookup finds a non-empty assignment in an environment slice.
+//
+// It reports the last match, not the first, because that is the one exec gives
+// the process: a slice carrying a name twice is resolved by the kernel taking
+// the later entry, and a helper that answered with the earlier one would be
+// describing an environment no process ever sees.
+func lookup(env []string, name string) (string, bool) {
+	value, found := "", false
+	for _, kv := range env {
+		n, v, ok := strings.Cut(kv, "=")
+		if ok && n == name {
+			value, found = v, v != ""
+		}
+	}
+	return value, found
 }
 
 // admits reports whether a name may cross the boundary.
@@ -140,20 +269,38 @@ func admits(name string, named map[string]bool) bool {
 		return false
 	}
 
-	// Never, by either route. The prefix covers the daemon's whole
-	// configuration; IsSecret is consulted as well rather than instead, so that
-	// a secret which one day is not spelled with this prefix is still refused
-	// and the two answers cannot drift apart.
+	return !excluded(name)
+}
+
+// excluded is the half of the rules that no inclusion may override, kept apart
+// from admits so that both routes into a session's environment — the operator's
+// pass-through list and this file's own defaults — are screened by one predicate
+// rather than by two that agree today.
+//
+// The prefix covers the daemon's whole configuration; IsSecret is consulted as
+// well rather than instead, so that a secret which one day is not spelled with
+// this prefix is still refused and the two answers cannot drift apart.
+func excluded(name string) bool {
 	if strings.HasPrefix(name, envPrefix) {
-		return false
+		return true
 	}
-	return !IsSecret(KeyForVar(name))
+	return IsSecret(KeyForVar(name))
 }
 
 // isBase reports whether a name is in the set every session gets unasked.
 func isBase(name string) bool {
 	if strings.HasPrefix(name, sessionBasePrefix) {
 		return true
+	}
+	// A default's name is admitted so that an operator who sets it in the
+	// daemon's environment overrides the value below rather than being ignored
+	// by it. Without this the name would be filtered out on the way in and the
+	// default appended regardless, which is a setting that reads as configurable
+	// and is not.
+	for _, def := range sessionDefaults {
+		if name == def.name {
+			return true
+		}
 	}
 	for _, base := range sessionBase {
 		if name == base {

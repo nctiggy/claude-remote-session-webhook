@@ -310,6 +310,16 @@ nothing else — the shared secret, the Access values and every `CRSW_` setting 
 on this side of it, because a session runs `claude --dangerously-skip-permissions`
 and whatever is in its environment is one `env` away from being pane content.
 `CRSW_SESSION_ENVIRONMENT` names anything more a particular workflow needs.
+
+**One value the daemon states rather than carries:** `CLAUDE_CODE_OAUTH_401_WAIT_MS=60000`.
+Every session on the host shares one Claude credential store and one *rotating*
+refresh token, so when the access token expires they race to refresh it, one wins,
+and each loser replays a token already spent — and is logged out. It arrives as
+bursts, not as one session at a time. Claude Code ships that back-off already and
+defaults it to 60s only for a remote session's child; a tmux pane is not one, so it
+took the zero. Setting the variable in the daemon's own environment overrides this,
+and `0` turns it off.
+
 **Sessions already running when you upgrade keep the environment they were started
 with** — a process's environment cannot be changed from outside — so recreate them,
 and rotate the shared secret if one of them ever held it.
@@ -683,7 +693,7 @@ stands in for the permission prompt that is gone.
 | `CRSW_ALLOWED_ROOTS` | no | `$HOME/code`, with a loud banner | Colon-separated absolute directories a session may run in. An entry that is empty, relative, missing, unresolvable, or not a directory refuses |
 | `CRSW_DISCOVER_ROOTS` | no | `false` | Offer each approved root's immediate subdirectories as working-directory suggestions. Anything but a boolean refuses |
 | `CRSW_WORKDIR_SUGGESTIONS` | no | empty | Comma-separated absolute directories offered on the create form beside the roots. An entry that is empty or relative refuses; one outside the roots is offered and refused on create, because the list is a convenience and `CRSW_ALLOWED_ROOTS` is the control |
-| `CRSW_SESSION_ENVIRONMENT` | no | empty | Comma-separated environment variable **names** a session receives on top of the base set (`HOME`, `PATH`, `SHELL`, `USER`, `LOGNAME`, `TERM`, `LANG`, `LC_*`, `XDG_RUNTIME_DIR`, `TMUX_TMPDIR`). A session never inherits this daemon's environment, so the shared secret and every `CRSW_` setting stay on this side; this is the escape hatch for the one more variable a workflow needs. Names, not values. Naming a secret or anything `CRSW_` refuses at startup |
+| `CRSW_SESSION_ENVIRONMENT` | no | empty | Comma-separated environment variable **names** a session receives on top of the base set (`HOME`, `PATH`, `SHELL`, `USER`, `LOGNAME`, `TERM`, `LANG`, `LC_*`, `XDG_RUNTIME_DIR`, `TMUX_TMPDIR`), and on top of the one value the daemon states rather than carries, `CLAUDE_CODE_OAUTH_401_WAIT_MS=60000`. A session never inherits this daemon's environment, so the shared secret and every `CRSW_` setting stay on this side; this is the escape hatch for the one more variable a workflow needs. Names, not values. Naming a secret or anything `CRSW_` refuses at startup |
 | `CRSW_LISTEN` | no | `127.0.0.1:8765` | The listener. The host must be an IP literal; a name refuses under every door. A non-loopback host such as `0.0.0.0` is permitted **only when the dashboard has a door** — Access or `CRSW_DASHBOARD_PASSWORD`. With neither, it refuses: a daemon that admits nobody may not be reachable by anybody. A port out of range refuses |
 | `CRSW_MAX_SESSIONS` | no | `5` | How many sessions may exist at once. Below 1 refuses |
 | `CRSW_DESTROY_ON_SHUTDOWN` | no | `false` | Tear every session down when the daemon stops. Off by default: sessions survive a clean stop and startup adoption reclaims them, so a redeploy no longer costs the fleet. `true` restores the old behaviour, for a host being decommissioned rather than updated |

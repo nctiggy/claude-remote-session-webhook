@@ -82,6 +82,11 @@ const shimReady = "crswd-quickstart-shim-ready"
 // whether or not anything is reading it.
 const shimEcho = "shim-read:"
 
+// shimEnv prefixes the one environment variable the stand-in reports, so a test
+// can read a session's actual environment rather than the daemon's idea of it.
+// The value follows the prefix, or the word "unset".
+const shimEnv = "shim-oauth-401-wait:"
+
 // waitBudget bounds every poll in this file. These are real processes starting;
 // a fixed sleep would be either flaky or slow, and an unbounded wait would hang
 // the run instead of failing it.
@@ -304,6 +309,12 @@ func (h *host) writeShim() {
 	script := "#!/bin/sh\n" +
 		"# Stand-in for `claude --dangerously-skip-permissions` during the acceptance run.\n" +
 		"printf '%s\\n' " + shimReady + "\n" +
+		// Reported from inside the pane, by the process the daemon started,
+		// because that is the only place the claim can be made. Every other way
+		// of checking a session's environment reads the daemon's configuration
+		// and calls it the session's — which is exactly the gap that let a fix
+		// ship into one start command and be believed of all three.
+		"printf '" + shimEnv + "%s\\n' \"${CLAUDE_CODE_OAUTH_401_WAIT_MS-unset}\"\n" +
 		"while IFS= read -r line; do printf '" + shimEcho + "%s\\n' \"$line\"; done\n"
 
 	path := filepath.Join(h.shimDir, "claude")
@@ -2409,4 +2420,83 @@ func TestSessionCarriesWhatRevivalNeeds(t *testing.T) {
 			t.Errorf("the journal names %q:\n%s", forbidden, body)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The 401 back-off reaches a session, whichever start command made it
+// ---------------------------------------------------------------------------
+
+// Both names below are kept short on purpose: t.TempDir() builds the test's own
+// name into TMUX_TMPDIR, and the socket path underneath it has to stay inside
+// sun_path's 108 bytes. The descriptive spelling of the second one overflowed it.
+//
+// TestQuickstart401WaitReachesAPane is the acceptance half of the
+// refresh-race fix, and the half a unit test cannot make.
+//
+// **Must fail when** a session's own environment lacks CLAUDE_CODE_OAUTH_401_WAIT_MS.
+// Every session on a host shares one Claude credential store and one *rotating*
+// refresh token, so an expiring access token is a race whose losers replay a
+// spent token and are logged out — in bursts, not one at a time. Claude Code's
+// back-off for exactly that is 60s only when the process is a remote session's
+// child; a tmux pane is not one, so it took zero.
+//
+// The first fix for this shipped inside one of three start commands — a wrapper
+// script — and was believed of the other two, which run the binary directly. The
+// value is read here out of the pane, by the process the daemon started, because
+// that is the assertion the wrapper-shaped fix would have passed while leaving a
+// session made from the dashboard still racing. The daemon is started with the
+// variable explicitly unset, so a green run means the daemon stated the value
+// rather than having inherited one from whatever ran `go test`.
+func TestQuickstart401WaitReachesAPane(t *testing.T) {
+	h := newHost(t)
+	d := h.start(map[string]string{"CLAUDE_CODE_OAUTH_401_WAIT_MS": unset})
+
+	c := d.createSession("unauthenticated")
+	pane := d.waitForPane(c.ID, c.Token, shimEnv)
+
+	if got := shimEnvValue(t, pane); got != "60000" {
+		t.Errorf("a session's CLAUDE_CODE_OAUTH_401_WAIT_MS is %q, want %q; this session is a full participant in the refresh race:\n%s",
+			got, "60000", pane)
+	}
+}
+
+// TestQuickstart401WaitYieldsToOperator is the other half:
+// a default nobody can turn off is not a default.
+//
+// **Must fail when** the daemon's own value is ignored, or arrives beside the
+// stated one. Zero is upstream's own "off", so it is what an operator who wants
+// the old behaviour back reaches for.
+func TestQuickstart401WaitYieldsToOperator(t *testing.T) {
+	h := newHost(t)
+	d := h.start(map[string]string{"CLAUDE_CODE_OAUTH_401_WAIT_MS": "0"})
+
+	c := d.createSession("operator-said-no")
+	pane := d.waitForPane(c.ID, c.Token, shimEnv)
+
+	if got := shimEnvValue(t, pane); got != "0" {
+		t.Errorf("a session's CLAUDE_CODE_OAUTH_401_WAIT_MS is %q, want the operator's %q:\n%s", got, "0", pane)
+	}
+}
+
+// shimEnvValue reads the value the stand-in reported out of a captured pane.
+//
+// It takes the LAST such line rather than the first. A pane is a scrollback: a
+// session revived in place reports again, and a helper answering with the
+// earliest line would be describing the environment of a process that has since
+// been replaced.
+func shimEnvValue(t *testing.T, pane string) string {
+	t.Helper()
+
+	value := ""
+	found := false
+	for _, line := range strings.Split(pane, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if after, ok := strings.CutPrefix(trimmed, shimEnv); ok {
+			value, found = after, true
+		}
+	}
+	if !found {
+		t.Fatalf("no %s line in the pane; the stand-in never reported its environment:\n%s", shimEnv, pane)
+	}
+	return value
 }

@@ -151,8 +151,17 @@ func TestSessionEnvironmentOmitsRatherThanEmpties(t *testing.T) {
 	if _, ok := got["HOME"]; ok {
 		t.Error("HOME was composed from a parent that did not set it")
 	}
-	if len(got) != 1 {
-		t.Errorf("composed %d variables from a parent with one, want 1: %v", len(got), got)
+
+	// Everything the parent did not supply must be a value this daemon states,
+	// not one invented from an absence. Counting was the original assertion and
+	// stopped saying that the moment defaults existed: it would have failed for
+	// a default arriving correctly and passed for HOME being fabricated as long
+	// as some other name went missing at the same time.
+	delete(got, "PATH")
+	for name := range got {
+		if _, stated := config.SessionDefaultValue(name); !stated {
+			t.Errorf("%s was composed from a parent that did not set it and no default states it", name)
+		}
 	}
 }
 
@@ -173,6 +182,13 @@ func TestSessionEnvironmentIsTheWholeEnvironment(t *testing.T) {
 	// nothing allowed means the set was inherited from somewhere.
 	allowed := func(name string) bool {
 		if strings.HasPrefix(name, "LC_") {
+			return true
+		}
+		// A default is admitted here for the same reason as the base set and no
+		// other: this file states its value. The rule stays "every name has a
+		// rule that put it there" rather than becoming "every name the daemon
+		// happened to have".
+		if _, stated := config.SessionDefaultValue(name); stated {
 			return true
 		}
 		return slices.Contains([]string{"HOME", "PATH", "SHELL", "USER", "LOGNAME", "TERM", "LANG", "XDG_RUNTIME_DIR", "TMUX_TMPDIR"}, name)
@@ -294,6 +310,120 @@ func TestSessionEnvironmentRefusesAPassThroughSecret(t *testing.T) {
 	for name := range got {
 		if strings.HasPrefix(name, "CRSW_") {
 			t.Errorf("%s was passed through because it was named; naming must not override the exclusion", name)
+		}
+	}
+}
+
+// TestSessionEnvironmentSetsTheOAuth401Wait is the regression guard for the
+// bursts.
+//
+// **Must fail when** a session is composed without CLAUDE_CODE_OAUTH_401_WAIT_MS.
+// Every session on this host shares one credential store and one rotating
+// refresh token, so an expiring access token is a race the losers are logged out
+// by — observed as 3 sessions in 98s and 7 in 13min, not as one session at a
+// time. Claude Code's own back-off covers exactly this case and is 60s only when
+// the process is a remote session's child; a tmux pane is not, so it took the
+// zero. The daemon's environment here holds no such variable, which is the point:
+// on a real host nothing has any reason to have set it, so a fix that only
+// carries an operator's value is a fix nobody receives.
+func TestSessionEnvironmentSetsTheOAuth401Wait(t *testing.T) {
+	t.Parallel()
+
+	got := envOf(t, config.SessionEnvironment(daemonEnvironment(), nil))
+
+	if got["CLAUDE_CODE_OAUTH_401_WAIT_MS"] != "60000" {
+		t.Errorf("CLAUDE_CODE_OAUTH_401_WAIT_MS = %q, want %q; a session with no 401 back-off is a full participant in the refresh race",
+			got["CLAUDE_CODE_OAUTH_401_WAIT_MS"], "60000")
+	}
+}
+
+// TestSessionEnvironmentDefaultsReachEveryStartCommand is the reason this lives
+// in the daemon rather than in a start command.
+//
+// **Must fail when** the value is reachable only through the operator's
+// pass-through list. The first fix for this shipped inside one of three start
+// commands — the wrapper script behind `rcq` — leaving `default` and `rc`, which
+// run the real binary directly, still racing. Composition happens once for all
+// of them, and a session made by hand from the dashboard has to be covered by
+// the same thing that covers a scripted one.
+func TestSessionEnvironmentDefaultsReachEveryStartCommand(t *testing.T) {
+	t.Parallel()
+
+	// An operator who has never heard of this variable and named nothing.
+	got := envOf(t, config.SessionEnvironment(daemonEnvironment(), nil))
+
+	if _, ok := got["CLAUDE_CODE_OAUTH_401_WAIT_MS"]; !ok {
+		t.Fatal("a session composed for an operator who configured nothing has no 401 back-off")
+	}
+}
+
+// TestSessionEnvironmentDefaultYieldsToTheOperator pins that these are defaults
+// and not policy.
+//
+// **Must fail when** a value in the daemon's own environment is ignored or
+// duplicated. Zero is upstream's own "off", so it is the value an operator
+// reaches for to opt out — and a default that cannot be turned off is a setting
+// the operator has to patch the binary to change.
+func TestSessionEnvironmentDefaultYieldsToTheOperator(t *testing.T) {
+	t.Parallel()
+
+	parent := append(daemonEnvironment(), "CLAUDE_CODE_OAUTH_401_WAIT_MS=0")
+
+	// envOf fails the test on a repeated name, which is the other half of this:
+	// appending a default beside a carried value gives a slice where only exec's
+	// last-wins rule says which one applies.
+	got := envOf(t, config.SessionEnvironment(parent, nil))
+
+	if got["CLAUDE_CODE_OAUTH_401_WAIT_MS"] != "0" {
+		t.Errorf("CLAUDE_CODE_OAUTH_401_WAIT_MS = %q, want the operator's %q", got["CLAUDE_CODE_OAUTH_401_WAIT_MS"], "0")
+	}
+}
+
+// TestSessionEnvironmentReplacesAnEmptyDefault covers the one value that is not
+// a value.
+//
+// **Must fail when** an empty assignment is carried, or is carried *and* the
+// default appended beside it. Every consumer of a default parses the string, and
+// "" parses to nothing useful in any of them — Claude Code reads this one as an
+// integer with a floor of zero — so an empty variable buys the rejection without
+// the setting. It is treated as absent, and the name appears exactly once.
+func TestSessionEnvironmentReplacesAnEmptyDefault(t *testing.T) {
+	t.Parallel()
+
+	parent := append(daemonEnvironment(), "CLAUDE_CODE_OAUTH_401_WAIT_MS=")
+
+	got := envOf(t, config.SessionEnvironment(parent, nil))
+
+	if got["CLAUDE_CODE_OAUTH_401_WAIT_MS"] != "60000" {
+		t.Errorf("CLAUDE_CODE_OAUTH_401_WAIT_MS = %q, want the default %q; an empty assignment is not a setting",
+			got["CLAUDE_CODE_OAUTH_401_WAIT_MS"], "60000")
+	}
+}
+
+// TestSessionDefaultsCarryNoSecret is the structural guard on the second route
+// into a session's environment.
+//
+// **Must fail when** a name in sessionDefaults is one the boundary refuses by
+// the other route. Defaults are appended after the allowlist has run, so nothing
+// the caller does screens them: without this, a default spelled CRSW_ or named
+// by IsSecret would arrive in an unsandboxed shell having passed no check at all,
+// and every existing test in this file would stay green. Unreachable while the
+// list holds one CLAUDE_CODE_ name — which is why it is asserted now rather than
+// after the list has grown.
+func TestSessionDefaultsCarryNoSecret(t *testing.T) {
+	t.Parallel()
+
+	got := envOf(t, config.SessionEnvironment(daemonEnvironment(), nil))
+
+	for name := range got {
+		if _, stated := config.SessionDefaultValue(name); !stated {
+			continue
+		}
+		if strings.HasPrefix(name, "CRSW_") {
+			t.Errorf("%s is a default and a daemon variable; defaults are appended past the allowlist, so this reaches a session unscreened", name)
+		}
+		if config.IsSecret(config.KeyForVar(name)) {
+			t.Errorf("%s is a default and a secret", name)
 		}
 	}
 }

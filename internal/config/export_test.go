@@ -94,3 +94,21 @@ func ReadOsRelease() []byte { return readOsRelease() }
 // MaxOsReleaseBytes is the read bound, so the test comparing against the real
 // file truncates it by the same number rather than by its own copy of one.
 const MaxOsReleaseBytes = maxOsReleaseBytes
+
+// SessionDefaultValue reports the value this daemon states for a session
+// variable, and whether it states one at all.
+//
+// Exported so the two tests that police *why* a name is in a composed
+// environment can ask sessionenv.go rather than carry a second copy of the list.
+// Both are "every name here was put here by a rule" assertions, and a hand-kept
+// copy of the rules turns them into "every name here was expected by whoever
+// last edited this test" — which is the failure they exist to catch, one file
+// further along.
+func SessionDefaultValue(name string) (string, bool) {
+	for _, def := range sessionDefaults {
+		if def.name == name {
+			return def.value, true
+		}
+	}
+	return "", false
+}
