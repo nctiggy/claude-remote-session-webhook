@@ -476,11 +476,38 @@ Destroying a session clears **all** of:
 A killed session that leaves a tmux window behind is a live unsandboxed shell with
 no owner. Verify the kill; log the failure loudly if it did not work.
 
-## Relaying Claude's own login (not built yet)
+## Relaying Claude's own login (detection built; relay not built yet)
 
 A fresh session may sit at Claude Code's device-code prompt instead of a shell. The
 daemon detects that, surfaces the URL in the dashboard, takes the code the operator
 pastes back, and sends it into the pane.
+
+**What is built:** detection only. `internal/claudeauth.DetectPrompt` recognises both
+of Claude Code's sign-in screens — the login menu and the device-code screen — from
+golden files captured off a real process, and a session showing either renders
+`needs-auth` on its own page instead of `running`. It recovers the sign-in URL, and
+nothing renders it: the URL is not on the card, not in a log, not in an audit record.
+
+**What is not built:** everything after that. There is no form, no route that accepts
+a code, and no path that sends one into a pane. Two things that shaped the detection
+half and still bind the rest:
+
+- `POST /sessions/{id}/prompt` is on the **API door** — HMAC-signed, no browser
+  credential can reach it — so a relay form cannot reuse it. It needs a new
+  `/dashboard/` action route, carrying a live credential, with the page-token and
+  `Sec-Fetch-Site` checks every other action route has.
+- An expired credential does **not** put a running session on the device-code screen.
+  It appears on a fresh start, or after someone types `/login`; a session that was
+  already running just fails every request. So a relay needs a way to *summon* the
+  screen, and `claude auth login --claudeai` is a shell command — which argues for a
+  throwaway window rather than typing `/login` into somebody's live conversation.
+  The daemon has no such concept today: every tmux window it touches carries the
+  `crswd-` prefix and is a tracked session.
+
+**The fleet grid does not check panes**, so a session needing a login reads `running`
+there until its own page is opened. That matters more here than for a dialog: one
+expired credential parks every session on the host at once, and the grid is where an
+operator would expect to see that.
 
 This is the most fragile thing in the project and the most sensitive:
 

@@ -1822,3 +1822,130 @@ func TestTheFleetsRecordCarriesNothingThePageRendered(t *testing.T) {
 		}
 	}
 }
+
+// deviceCodeScreenFixture is Claude Code's device-code screen, captured from a
+// real 2.1.263 process at 120 columns against an isolated CLAUDE_CONFIG_DIR, so
+// no credential was involved in producing it. The URL's query is replaced with
+// an obviously-synthetic one; its wrapping across lines is the real thing, and
+// is the property internal/claudeauth's golden files exist to hold.
+//
+// Note what it does NOT contain: any of dialog.go's suspiciousMarkers. A
+// logged-out session is therefore not dialog-shaped, and read as DisplayRunning
+// on every observable this daemon had before internal/claudeauth — which is the
+// failure these tests close.
+const deviceCodeScreenFixture = ` Browser didn't open? Use the url below to sign in (c to copy)
+
+https://claude.com/cai/oauth/authorize?code=true&client_id=not-a-real-client-id-fixture&code_challenge=not-a-real-chall
+enge-fixture-value&state=not-a-real-state-fixture-value
+
+ Paste code here if prompted >`
+
+// TestASessionOnTheLoginScreenReadsNeedsAuthNeverRunning is the whole of what
+// this change ships.
+//
+// **Must fail when** a session sitting on Claude Code's sign-in screen renders
+// as healthy. The binary is up, the pane is live and `POST /prompt` would
+// accept bytes, so every observable this daemon had says `running` — while the
+// session can do no work at all, and neither can any other session on the host,
+// because they share one credential store.
+func TestASessionOnTheLoginScreenReadsNeedsAuthNeverRunning(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "a remote session", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), deviceCodeScreenFixture)
+
+	page := f.viewOf(t, live.ID).Body.String()
+	card := cardFor(t, page, live.ID)
+
+	if !strings.Contains(card, ">"+string(session.DisplayNeedsAuth)+"<") {
+		t.Errorf("the card does not show %q for a session waiting on a login:\n%s", session.DisplayNeedsAuth, card)
+	}
+	if strings.Contains(card, ">"+string(session.DisplayRunning)+"<") {
+		t.Errorf("the card still says %q for a session that cannot make a single model request:\n%s", session.DisplayRunning, card)
+	}
+	// The pill's class, not just its text. .pill-needs-auth has been in
+	// crswd.css since the design system reserved the token, and this is what
+	// proves the state reaches it rather than rendering as an unstyled word.
+	if !strings.Contains(card, "pill-"+string(session.DisplayNeedsAuth)) {
+		t.Errorf("the pill carries no pill-%s class, so the state renders unstyled:\n%s", session.DisplayNeedsAuth, card)
+	}
+}
+
+// TestTheLoginMenuAlsoReadsNeedsAuth covers the other screen.
+//
+// **Must fail when** only the device-code screen is recognised. An expired
+// credential does not put a running session on the device-code screen — that
+// appears on a fresh start, or after someone types /login — so a daemon that
+// knew only the second would miss the case an operator actually meets first.
+func TestTheLoginMenuAlsoReadsNeedsAuth(t *testing.T) {
+	t.Parallel()
+
+	const loginMenu = ` Claude Code can be used with your Claude subscription or billed based on API usage through your Console account.
+
+ Select login method:
+
+ ❯ 1. Claude account with subscription · Pro, Max, Team, or Enterprise
+   2. Anthropic Console account · API usage billing
+   3. 3rd-party platform · Amazon Bedrock, Microsoft Foundry, or Vertex AI`
+
+	f := newFleet(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "a remote session", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), loginMenu)
+
+	card := cardFor(t, f.viewOf(t, live.ID).Body.String(), live.ID)
+
+	if !strings.Contains(card, ">"+string(session.DisplayNeedsAuth)+"<") {
+		t.Errorf("the card does not show %q for a session on the login menu:\n%s", session.DisplayNeedsAuth, card)
+	}
+}
+
+// TestTheSignInURLNeverReachesThePage is a security assertion, not a rendering
+// one.
+//
+// **Must fail when** the sign-in link appears in the served HTML. It carries a
+// one-shot PKCE challenge and the state paired with it;
+// docs/auth-and-sessions.md forbids rendering it back into the page, and the
+// page is served to whoever passed the door rather than only to the person at
+// the pane. Relaying it is milestone 4, where it gets its own review — until
+// then a card says which session needs a person and nothing more.
+func TestTheSignInURLNeverReachesThePage(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "a remote session", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), deviceCodeScreenFixture)
+
+	card := cardFor(t, f.viewOf(t, live.ID).Body.String(), live.ID)
+
+	for _, secret := range []string{"code_challenge", "not-a-real-state-fixture-value", "oauth/authorize"} {
+		if strings.Contains(card, secret) {
+			t.Errorf("the card carries %q from the sign-in URL; that link is a live credential and this page is not where it goes:\n%s", secret, card)
+		}
+	}
+}
+
+// TestTheFleetGridDoesNotYetCheckPanesForALogin pins the same deliberate scope
+// cut TestTheFleetGridDoesNotYetCheckPanesForADialog already records, for the
+// state added here: the grid makes no per-card pane capture, so a session
+// needing a login reads DisplayRunning there until its own page is opened.
+//
+// It matters more for this state than for a dialog, because one expired
+// credential parks every session on the host at once — the grid is exactly
+// where an operator would expect to see that, and is the place it will not
+// show. If the grid is ever wired to capture panes, this test should change to
+// expect DisplayNeedsAuth, not be deleted having quietly stopped meaning
+// anything.
+func TestTheFleetGridDoesNotYetCheckPanesForALogin(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "a remote session", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), deviceCodeScreenFixture)
+
+	card := cardFor(t, f.view(t).Body.String(), live.ID)
+
+	if !strings.Contains(card, ">"+string(session.DisplayRunning)+"<") {
+		t.Errorf("the fleet grid's card no longer reads %q for a session needing a login — if the grid now checks panes, update this test to expect %q instead:\n%s", session.DisplayRunning, session.DisplayNeedsAuth, card)
+	}
+}

@@ -108,9 +108,11 @@ func (s State) Valid() bool {
 // worth showing: that this session is minutes from being reaped.
 //
 // There is no dead member, because a dead session has no record to render — the
-// reaper and Destroy both delete (FR-019b). needs-auth keeps its token in the
-// design system and arrives with milestone 4's device-code relay; a state
-// produced before it can be rendered would be a label nothing knows how to draw.
+// reaper and Destroy both delete (FR-019b). DisplayNeedsAuth was the exception
+// to that ordering for fifteen milestones — its token sat in the design system
+// waiting for the relay to produce it — and it is produced now, because the
+// detection half is worth having on its own: without it a session sitting on
+// Claude Code's login prompt is reported as running.
 type DisplayState string
 
 const (
@@ -164,6 +166,22 @@ const (
 	// not own, and why that makes "unknown" the fail-closed answer rather than
 	// "healthy".
 	DisplayUnknown DisplayState = "unknown"
+
+	// DisplayNeedsAuth is a session sitting on Claude Code's own sign-in
+	// screen: the binary is up, the pane is live, and it can do no work until
+	// somebody logs in (see internal/claudeauth).
+	//
+	// It is separate from DisplayBlocked, which it would otherwise be a case
+	// of, because it is the one parked state with a specific remedy — and the
+	// remedy is not the operator's to guess at from a pill reading "blocked".
+	// It also fails differently: every session on a host shares one credential
+	// store, so this state arriving on one card means it is about to arrive on
+	// all of them, which "some dialog is up" does not imply.
+	//
+	// Relaying the login is milestone 4 and is not built. Until it is, this
+	// state is the whole of the feature: it says which session needs a person,
+	// where before it said `running`.
+	DisplayNeedsAuth DisplayState = "needs-auth"
 )
 
 // Mode is where a session is driven from: the operator's own dashboard, or
