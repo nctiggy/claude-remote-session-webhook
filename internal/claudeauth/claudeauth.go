@@ -92,6 +92,12 @@ func (p Prompt) String() string {
 // design notes and the shipped 2.1.263, which added a third option.
 var selectMethodPhrases = []string{
 	"Select login method:",
+
+	// A second anchor, for the reason deviceCodePhrases has two: one phrase is
+	// one coincidence away from a card that says a working session is unusable.
+	// This one is on the screen at every width — it is the first option, and the
+	// menu has no state in which it is absent.
+	"Claude account with subscription",
 }
 
 // deviceCodePhrases are the anchors for the device-code screen.
@@ -134,6 +140,61 @@ func DetectPrompt(pane string) (*Prompt, bool) {
 	return nil, false
 }
 
+// quotes are the characters that turn an anchor into a mention of an anchor.
+//
+// # Why a detector has to care
+//
+// Every pane this runs against is a Claude Code session, and those sessions read
+// this repository — including this file, which declares all four anchor phrases
+// as string literals. Before this guard, `cat internal/claudeauth/claudeauth.go`
+// detected as KindDeviceCode: measured, not supposed. So did a diff of it, a
+// pager holding it, and a session answering a question about it.
+//
+// That failure is the inverted twin of the one this package fixes, and it is the
+// worse direction. A logged-out session reading `running` is a stale card. A
+// working session reading `needs-auth` sends an operator to re-authenticate a
+// host whose credential is fine — and it is silent, because the mislabelled
+// session goes on working and never contradicts the card.
+//
+// # Why quoting, and not something stronger
+//
+// The obvious guard is to anchor on whole lines, and it does not survive the
+// wrap this pane arrives with: the phrases are rendered at whatever width the
+// operator's terminal happens to be, which is the reason flatten() exists at all.
+// Quoting survives flattening, because a quote is part of the text and travels
+// with it wherever the line breaks.
+//
+// It is not a proof. An unquoted sentence that also carries a second anchor
+// still matches, and that is the honest limit of screen-scraping something this
+// package does not own. What it removes is the whole realistic population —
+// source, diffs, JSON, and prose that quotes a phrase to talk about it.
+const quotes = "\"'`"
+
+// containsUnquoted reports whether phrase appears at least once without a quote
+// character immediately on either side of it.
+//
+// At least once, rather than never quoted: a real sign-in screen may be on a
+// pane that ALSO holds a quoted mention scrolled above it, and the screen is what
+// matters. Only every occurrence being quoted means the phrase is being talked
+// about rather than shown.
+func containsUnquoted(flat, phrase string) bool {
+	for at := 0; ; {
+		i := strings.Index(flat[at:], phrase)
+		if i < 0 {
+			return false
+		}
+		start := at + i
+		end := start + len(phrase)
+
+		beforeQuoted := start > 0 && strings.ContainsRune(quotes, rune(flat[start-1]))
+		afterQuoted := end < len(flat) && strings.ContainsRune(quotes, rune(flat[end]))
+		if !beforeQuoted && !afterQuoted {
+			return true
+		}
+		at = start + 1
+	}
+}
+
 // flatten collapses every run of whitespace to a single space.
 //
 // This is what makes a phrase mean what it reads as regardless of where the
@@ -143,10 +204,11 @@ func flatten(pane string) string {
 	return strings.Join(strings.Fields(pane), " ")
 }
 
-// containsAll reports whether every phrase is present.
+// containsAll reports whether every phrase is present and shown rather than
+// quoted. See containsUnquoted for why the second half is not optional.
 func containsAll(flat string, phrases []string) bool {
 	for _, phrase := range phrases {
-		if !strings.Contains(flat, phrase) {
+		if !containsUnquoted(flat, phrase) {
 			return false
 		}
 	}

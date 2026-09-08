@@ -400,24 +400,24 @@ func (f *Fake) Has(_ context.Context, name string) (bool, error) {
 // List returns every session, sorted by name so tests are not at the mercy of
 // map iteration order. No sessions is an empty slice and no error, which is the
 // normal first-boot case.
-// ReconcileServerEnvironment records the call and reports that it removed
+// ReconcileServerEnvironment records the call and reports that it changed
 // nothing.
 //
-// **A fake server has no environment to clean**, and inventing removals it did
-// not make would let a test assert on a number this type made up. What it can
-// honestly answer is that the daemon asked — which is the thing worth asserting,
-// because the defect this method exists for is a startup path that never calls
-// it. The real behaviour is pinned in env_tmux_test.go against a real server,
-// which is the only place it can be.
-func (f *Fake) ReconcileServerEnvironment(_ context.Context) ([]string, error) {
+// **A fake server has no environment to reconcile**, and inventing removals or
+// assignments it did not make would let a test assert on a number this type made
+// up. What it can honestly answer is that the daemon asked — which is the thing
+// worth asserting, because the defect this method exists for is a startup path
+// that never calls it. The real behaviour is pinned in env_tmux_test.go against
+// a real server, which is the only place it can be.
+func (f *Fake) ReconcileServerEnvironment(_ context.Context) (Reconciliation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.record(OpReconcileEnv, argvReconcileEnv(), nil)
 	if err := f.fail[OpReconcileEnv]; err != nil {
-		return nil, err
+		return Reconciliation{}, err
 	}
-	return nil, nil
+	return Reconciliation{}, nil
 }
 
 func (f *Fake) List(_ context.Context) ([]SessionInfo, error) {

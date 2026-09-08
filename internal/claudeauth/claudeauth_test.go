@@ -1,6 +1,7 @@
 package claudeauth_test
 
 import (
+	"embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,12 @@ import (
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/claudeauth"
 )
+
+// sources is this package's own text, embedded so the false-positive guard reads
+// the real files rather than a copy of the anchors that would drift from them.
+//
+//go:embed claudeauth.go claudeauth_test.go
+var sources embed.FS
 
 // golden reads a pane captured from a real Claude Code process.
 //
@@ -196,5 +203,91 @@ func TestAPromptNeverPrintsItsURL(t *testing.T) {
 		if strings.Contains(rendered, "claude.com") || strings.Contains(rendered, "code_challenge") {
 			t.Errorf("a Prompt printed its sign-in URL: %s", rendered)
 		}
+	}
+}
+
+// TestDetectPromptDoesNotFireOnItsOwnSource is the regression guard for a
+// false positive that shipped.
+//
+// **Must fail when** a pane merely carrying these phrases is reported as a
+// sign-in screen. Every pane this package runs against is a Claude Code session,
+// and those sessions read this repository. This file declares all four anchors
+// as string literals, so before the quoting guard `cat` of it detected as
+// KindDeviceCode — measured on the merged build, not supposed.
+//
+// The harm is the inverted twin of the one this package fixes, and worse: a
+// logged-out session reading `running` is a stale card, while a working session
+// reading `needs-auth` sends an operator to re-authenticate a host whose
+// credential is fine, silently, because the mislabelled session keeps working.
+//
+// It reads the real files rather than a fixture on purpose. A fixture would be a
+// copy of the anchors that stops being a copy the moment somebody edits the
+// list, and the whole point is that this package's own text is the thing most
+// likely to be on screen while somebody works on it.
+func TestDetectPromptDoesNotFireOnItsOwnSource(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{"claudeauth.go", "claudeauth_test.go"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			src, err := sources.ReadFile(name)
+			if err != nil {
+				t.Fatalf("read %s: %v", name, err)
+			}
+			if got, found := claudeauth.DetectPrompt(string(src)); found {
+				t.Errorf("%s displayed in a pane detects as %v; a session reading this package would be labelled unusable", name, got)
+			}
+		})
+	}
+}
+
+// TestDetectPromptIgnoresAQuotedMention covers the shapes the guard is really
+// for, spelled out rather than left implicit in the file read above.
+func TestDetectPromptIgnoresAQuotedMention(t *testing.T) {
+	t.Parallel()
+
+	mentions := map[string]string{
+		"a Go string literal": `var selectMethodPhrases = []string{
+	"Select login method:",
+	"Claude account with subscription",
+}`,
+		"prose quoting both anchors": `The two anchors are the line "Select login method:" and the
+first option, "Claude account with subscription". Neither is
+enough alone.`,
+		"a diff of this package": `+	"Browser didn't open?",
++	"Paste code here if prompted",`,
+		"JSON": `{"phrases": ["Select login method:", "Claude account with subscription"]}`,
+	}
+
+	for name, pane := range mentions {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			if got, found := claudeauth.DetectPrompt(pane); found {
+				t.Errorf("a pane that only mentions the anchors detects as %v", got)
+			}
+		})
+	}
+}
+
+// TestDetectPromptStillFiresWhenAMentionIsAlsoOnScreen is the other half of the
+// "at least once unquoted" rule.
+//
+// A session really parked on the sign-in may have a quoted mention scrolled
+// above it — somebody was reading this package when their login expired, which
+// is exactly how this was found. The screen is what matters.
+func TestDetectPromptStillFiresWhenAMentionIsAlsoOnScreen(t *testing.T) {
+	t.Parallel()
+
+	pane := `  the anchors are "Select login method:" and "Claude account with subscription"
+` + golden(t, "select-method.pane")
+
+	got, found := claudeauth.DetectPrompt(pane)
+	if !found {
+		t.Fatal("a real sign-in screen went undetected because a quoted mention was scrolled above it")
+	}
+	if got.Kind != claudeauth.KindSelectMethod {
+		t.Errorf("kind = %q, want %q", got.Kind, claudeauth.KindSelectMethod)
 	}
 }

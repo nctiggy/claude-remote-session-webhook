@@ -1667,9 +1667,9 @@ type AdoptedSession struct {
 // Failures are collected rather than returned at the first one. A single session
 // the host cannot answer for must not leave the rest unowned, and startup treats
 // any returned error as fatal (T032), so nothing here is quietly skipped.
-// ReconcileEnvironment removes from the tmux server's global environment
-// everything a session's own environment would not carry, and returns the names
-// it removed.
+// ReconcileEnvironment makes the tmux server's global environment match the one
+// this daemon composes for a session, in both directions, and returns what it
+// changed.
 //
 // Called at startup before Adopt, and it belongs here rather than on the server
 // for the reason httpapi's own comment gives: nothing outside this package holds
@@ -1690,7 +1690,7 @@ type AdoptedSession struct {
 // Sessions already running are beyond reach: a process's environment cannot be
 // changed from outside it. They keep what they were started with until they are
 // recreated, which deploy/README.md tells the operator to do.
-func (m *Manager) ReconcileEnvironment(ctx context.Context) ([]string, error) {
+func (m *Manager) ReconcileEnvironment(ctx context.Context) (tmuxctl.Reconciliation, error) {
 	return m.tmux.ReconcileServerEnvironment(ctx)
 }
 

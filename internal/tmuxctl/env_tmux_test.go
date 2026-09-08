@@ -88,12 +88,12 @@ func TestReconcileStopsAnAdoptedServerLeaking(t *testing.T) {
 		t.Fatalf("a session on a dirty server did not carry %s, so this test cannot show that reconciliation removes it", leakedName)
 	}
 
-	removed, err := e.ReconcileServerEnvironment(context.Background())
+	done, err := e.ReconcileServerEnvironment(context.Background())
 	if err != nil {
 		t.Fatalf("ReconcileServerEnvironment: %v", err)
 	}
-	if !containsName(removed, leakedName) {
-		t.Errorf("reconciliation did not report removing %s; it reported %v", leakedName, removed)
+	if !containsName(done.Removed, leakedName) {
+		t.Errorf("reconciliation did not report removing %s; it reported %v", leakedName, done.Removed)
 	}
 
 	if got := paneEnvironment(t, e, "after"); strings.Contains(got, leakedName) {
@@ -153,12 +153,12 @@ func TestReconcileKeepsWhatASessionNeeds(t *testing.T) {
 func TestReconcileOnNoServerIsNotAnError(t *testing.T) {
 	e := newTestExec(t)
 
-	removed, err := e.ReconcileServerEnvironment(context.Background())
+	done, err := e.ReconcileServerEnvironment(context.Background())
 	if err != nil {
 		t.Errorf("ReconcileServerEnvironment with no server running: %v", err)
 	}
-	if len(removed) != 0 {
-		t.Errorf("removed %v from a server that does not exist", removed)
+	if !done.Empty() {
+		t.Errorf("changed %+v on a server that does not exist", done)
 	}
 }
 
@@ -169,4 +169,111 @@ func containsName(names []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// statedName stands in for a value this daemon composes rather than passes on —
+// CLAUDE_CODE_OAUTH_401_WAIT_MS is the real one. A server started before the
+// build that introduced it has no such variable and no way to acquire one.
+const statedName = "CRSW_TEST_STATED_VALUE"
+
+const statedValue = "60000"
+
+// TestReconcileGivesAnAdoptedServerWhatItLacks is the direction that was missing,
+// and the reason it is written as an acceptance test against a real server.
+//
+// **Must fail when** reconciliation only removes. On 2026-09-08 a fix composed
+// CLAUDE_CODE_OAUTH_401_WAIT_MS into every session's environment; it merged,
+// released and deployed, and changed nothing — the reference host's tmux server
+// had been up since 12:18, the daemon restarted at 15:17, and a session created
+// at 15:29 still had no such variable. A tmux server hands its global table to
+// every session created on it, so a client environment reaches a new session
+// only by way of the server it started. Every unit test passed throughout,
+// because a test harness always cold-starts a server, which is the one case that
+// works.
+func TestReconcileGivesAnAdoptedServerWhatItLacks(t *testing.T) {
+	e := newTestExec(t)
+	startDirtyServer(t, e)
+
+	// This daemon composes the name; the running server has never heard of it.
+	e.sessionEnv = append(e.sessionEnv, statedName+"="+statedValue)
+
+	// The premise, asserted rather than assumed: without it the rest of this
+	// test would pass on a host where the variable arrived some other way.
+	if got := paneEnvironment(t, e, "lacking"); strings.Contains(got, statedName) {
+		t.Fatalf("a session on the untouched server already had %s, so this test cannot show that reconciliation supplies it", statedName)
+	}
+
+	done, err := e.ReconcileServerEnvironment(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileServerEnvironment: %v", err)
+	}
+	if !containsName(done.Set, statedName) {
+		t.Errorf("reconciliation did not report setting %s; it reported set=%v removed=%v", statedName, done.Set, done.Removed)
+	}
+
+	// The claim: a session created now really has it. Read off the pane's own
+	// process, because that is the only thing that answers for what a session
+	// received — the session table does not hold what the global table carries.
+	got := paneEnvironment(t, e, "supplied")
+	if !strings.Contains(got, statedName+"="+statedValue) {
+		t.Errorf("a session created after reconciliation still lacks %s=%s; the fix is inert on every host with a warm server", statedName, statedValue)
+	}
+}
+
+// TestReconcileCorrectsAValueTheServerHoldsDifferently is the third case: the
+// name is there and the value is stale.
+//
+// An operator who edits a setting and restarts the daemon has changed what a
+// session should receive. A reconciliation that checked only for presence would
+// leave the old value in place on the server and hand it to every session
+// created next, which is the same defect as the missing name wearing a
+// disguise — and harder to see, because the variable is present and looks right.
+func TestReconcileCorrectsAValueTheServerHoldsDifferently(t *testing.T) {
+	e := newTestExec(t)
+	startDirtyServer(t, e)
+
+	// The server holds an old value for a name this build composes differently.
+	if _, stderr, err := e.run(context.Background(),
+		[]string{"tmux", "set-environment", "-g", statedName, "0"}, nil); err != nil {
+		t.Fatalf("seed the server with a stale value: %v: %s", err, stderr)
+	}
+	e.sessionEnv = append(e.sessionEnv, statedName+"="+statedValue)
+
+	done, err := e.ReconcileServerEnvironment(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileServerEnvironment: %v", err)
+	}
+	if !containsName(done.Set, statedName) {
+		t.Errorf("reconciliation left a stale value for %s in place; it reported set=%v", statedName, done.Set)
+	}
+
+	if got := paneEnvironment(t, e, "corrected"); !strings.Contains(got, statedName+"="+statedValue) {
+		t.Errorf("a session created after reconciliation still receives the stale value for %s", statedName)
+	}
+}
+
+// TestReconcileLeavesACorrectServerAlone pins that this is reconciliation and
+// not a write on every start.
+//
+// **Must fail when** a server already matching the daemon is reported as
+// changed. The trail says what a start did, and a start that rewrote every
+// variable it was already happy with would report work on every boot — which is
+// how an operator learns to stop reading it.
+func TestReconcileLeavesACorrectServerAlone(t *testing.T) {
+	e := newTestExec(t)
+	startDirtyServer(t, e)
+
+	// First pass does the work.
+	if _, err := e.ReconcileServerEnvironment(context.Background()); err != nil {
+		t.Fatalf("first ReconcileServerEnvironment: %v", err)
+	}
+
+	// Second pass, same daemon, same server: nothing left to do.
+	done, err := e.ReconcileServerEnvironment(context.Background())
+	if err != nil {
+		t.Fatalf("second ReconcileServerEnvironment: %v", err)
+	}
+	if !done.Empty() {
+		t.Errorf("a second pass over an already-correct server reported %+v; reconciliation is not idempotent", done)
+	}
 }

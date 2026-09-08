@@ -1027,14 +1027,18 @@ func (s *Server) Reconcile(ctx context.Context) error {
 	// tidier one, and the sessions already running are unreachable to this
 	// either way (see internal/tmuxctl/env.go).
 	failures := []error{}
-	if removed, err := s.sessions.ReconcileEnvironment(ctx); err != nil {
+	if done, err := s.sessions.ReconcileEnvironment(ctx); err != nil {
 		failures = append(failures, fmt.Errorf("reconcile the tmux server environment: %w", err))
-	} else if len(removed) > 0 {
+	} else if !done.Empty() {
+		// Both halves are named. A trail that reported only the removals would
+		// describe the deploy where the other half was missing as having done
+		// nothing at all, which is exactly how that went unnoticed.
 		if err := s.trail.Emit(audit.Record{
 			Action:   audit.ActionStartupScrubEnv,
 			Caller:   string(auth.CallerOperator),
 			Decision: audit.Allow,
-			Reason:   fmt.Sprintf("removed %d variable(s) an older build left in the tmux server environment", len(removed)),
+			Reason: fmt.Sprintf("tmux server environment: removed %d variable(s) an older build left, set %d this build composes",
+				len(done.Removed), len(done.Set)),
 		}); err != nil {
 			failures = append(failures, err)
 		}
