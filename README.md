@@ -32,8 +32,10 @@ The pages are built for a phone as well as a desktop.
 
 **Two things are not built yet**, and are named here so nobody goes looking for
 them: relaying Claude's own device-code login when a session asks for it, and the
-companion Claude skill that would drive the API. Everything else on this page
-describes what the daemon does today.
+companion Claude skill that would drive the API. The daemon does *recognise* a
+session sitting on Claude Code's sign-in screen and shows it as `needs-auth`
+rather than `running` — knowing is built, answering is not. Everything else on
+this page describes what the daemon does today.
 
 ### Reading a session on a narrow screen
 
@@ -123,7 +125,11 @@ neither door runs, serves the API, and admits nobody to the dashboard.
   as. Run it once in a terminal and finish its login first. **Relaying Claude's
   own device-code login is not built**: a session that comes up at that prompt
   sits there, and the only way to answer it is attaching to the tmux window by
-  hand on the host — which is the thing you installed this to avoid.
+  hand on the host — which is the thing you installed this to avoid. The session
+  page will at least tell you that is what happened: it reads `needs-auth`
+  instead of `running`. The fleet grid will not, because it captures no pane per
+  card — and since every session shares one credential store, one expired login
+  parks all of them.
 
 Then, on that host, whichever path you picked:
 

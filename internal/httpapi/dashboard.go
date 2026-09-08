@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/nctiggy/claude-remote-session-webhook/internal/access"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/claudeauth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 )
@@ -493,9 +494,10 @@ func cardOf(live session.Session, now time.Time, token, remoteCommand, paneText 
 	}
 }
 
-// effectiveDisplayState folds a pane's own dialog check (session.DetectDialog)
-// into the record's own DisplayState, for the one caller that has pane text to
-// offer it.
+// effectiveDisplayState folds a pane's own content checks — Claude Code's
+// sign-in screen (claudeauth.DetectPrompt) and then any TUI dialog
+// (session.DetectDialog) — into the record's own DisplayState, for the one
+// caller that has pane text to offer it.
 //
 // DisplayFailed wins outright rather than being compared against a dialog
 // match. The two conditions are not observed together — a session the
@@ -511,6 +513,20 @@ func cardOf(live session.Session, now time.Time, token, remoteCommand, paneText 
 func effectiveDisplayState(live session.Session, now time.Time, paneText string) (session.DisplayState, string) {
 	if base := live.DisplayState(now); base == session.DisplayFailed {
 		return base, ""
+	}
+	// Ahead of the dialog check, and not folded into it. Claude Code's sign-in
+	// screens are dialog-shaped — they carry the same "Enter to select" chrome
+	// dialog.go watches for — so whichever check runs first decides the answer.
+	// This one runs first because it is the more specific: `needs-auth` names
+	// the remedy, where `blocked` or `unknown` would report a host-wide
+	// credential problem as one session waiting on a keystroke.
+	if _, ok := claudeauth.DetectPrompt(paneText); ok {
+		// The prompt itself is dropped. It carries the sign-in URL, which is a
+		// one-shot PKCE challenge, and docs/auth-and-sessions.md forbids
+		// rendering it back into the page or storing it anywhere; a card says
+		// which session needs a person, and nothing more, until the relay
+		// exists to do something with it.
+		return session.DisplayNeedsAuth, ""
 	}
 	name, dialog := session.DetectDialog(paneText)
 	switch {
