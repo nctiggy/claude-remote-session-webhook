@@ -55,6 +55,17 @@
      daemon could not bring back is not merely waiting and has not been ended by
      anyone (spec 012). */
   --state-failed: #ff8c1a;
+  /* Blocked is a session parked on a dialog crswd named by matching its own
+     pane (internal/session/dialog.go) — closer to an alarm than failed's "the
+     daemon gave up", because a human typing the one keystroke it is waiting
+     for fixes it immediately, and nothing here will ever send that keystroke. */
+  --state-blocked: #ff3b3b;
+  /* Unknown is deliberately off the green-to-red health spectrum the states
+     above share: it is not a claim about how healthy the session is, it is an
+     admission that the pane looks dialog-shaped and the heuristic could not
+     name it. A colour from the same family as "healthy" or "dead" would be a
+     confidence this state does not have. */
+  --state-unknown: #9b8cff;
 
   /* Mono is what the machine says; sans is what a human wrote. No webfont URL:
      the policy in docs/security.md permits no CDN, so a linked face would fail
@@ -1093,6 +1104,17 @@ body {
   --pill-state: var(--state-failed);
 }
 
+/* blocked and unknown, added for the pane dialog heuristic
+   (internal/session/dialog.go): the pill needed no edit for either, which is
+   the same claim the comment above makes about failed. */
+.pill-blocked {
+  --pill-state: var(--state-blocked);
+}
+
+.pill-unknown {
+  --pill-state: var(--state-unknown);
+}
+
 /* The pane viewer. The container is styled and the content never is — the
    design system's fourth non-negotiable, which is a security rule wearing design
    clothes: what is inside this element is a text node the host wrote.
@@ -1335,6 +1357,23 @@ body {
 
 .card-mode-name {
   color: var(--text);
+  text-transform: uppercase;
+}
+
+/* The card's parked-dialog label (internal/session/dialog.go). Only rendered
+   beside the "blocked" pill, and only when the dialog was named — "unknown"
+   carries no name for this line to show. The name is tinted from the same
+   token the pill itself reads, so the two agree at a glance without either one
+   depending on colour alone (docs/design-system.md's fifth non-negotiable):
+   the text says "parked on X" whether or not the colour renders at all. */
+.card-parked {
+  color: var(--dim);
+  font-size: var(--fs-label);
+  letter-spacing: var(--ls-label);
+}
+
+.card-parked-name {
+  color: var(--state-blocked);
   text-transform: uppercase;
 }
 

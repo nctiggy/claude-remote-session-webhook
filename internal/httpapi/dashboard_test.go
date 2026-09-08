@@ -973,6 +973,98 @@ func TestTheSessionPageRendersTheCardAndTheScreen(t *testing.T) {
 	}
 }
 
+// rcMenuScreenFixture is what PR #150 found: the /rc remote-control menu,
+// which is the shape of pane content this test suite proves the session page
+// no longer mistakes for a healthy running session.
+const rcMenuScreenFixture = `╭──────────────────────────────────────────────╮
+│ ❯ Disconnect this session                      │
+│   Show QR code                                 │
+│   Continue                                     │
+╰──────────────────────────────────────────────╯
+  Enter to select · Esc to continue`
+
+// TestTheSessionPageNamesTheDialogAParkedSessionIsOn is PR #150's own failure,
+// closed: this page captures the session's real screen already
+// (TestTheSessionPageRendersTheCardAndTheScreen), and its card is
+// docs/components.md's one card — so the fix lives in feeding that capture to
+// the same projection that ordinarily sees no pane at all (cardOf), and this
+// is the proof it does.
+func TestTheSessionPageNamesTheDialogAParkedSessionIsOn(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "a remote session", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), rcMenuScreenFixture)
+
+	page := f.viewOf(t, live.ID).Body.String()
+	card := cardFor(t, page, live.ID)
+
+	if !strings.Contains(card, ">"+string(session.DisplayBlocked)+"<") {
+		t.Errorf("the card does not show %q for a session parked on a known dialog:\n%s", session.DisplayBlocked, card)
+	}
+	if strings.Contains(card, ">"+string(session.DisplayRunning)+"<") {
+		t.Errorf("the card still says %q for a session parked on a menu it will never dismiss:\n%s", session.DisplayRunning, card)
+	}
+	if !strings.Contains(card, "rc-menu") {
+		t.Errorf("the card names no dialog, so an operator still has to open the pane and guess what it is on:\n%s", card)
+	}
+}
+
+// TestAnUncatalogedDialogRendersUnknownNeverRunning is the registry's own
+// fail-closed rule (internal/session/dialog.go): a pane that looks
+// dialog-shaped but matches no named signature must never render as the
+// healthy word. Silently answering DisplayRunning for a dialog this registry
+// has not caught up with is the exact bug PR #150 fixed, wearing a signature
+// list instead of a slash command.
+func TestAnUncatalogedDialogRendersUnknownNeverRunning(t *testing.T) {
+	t.Parallel()
+
+	const uncataloged = `╭──────────────────────────────────────────────╮
+│ A future Claude Code dialog nobody has         │
+│ catalogued in this registry yet                │
+╰──────────────────────────────────────────────╯
+  Enter to confirm · Esc to cancel`
+
+	f := newFleet(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "a remote session", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), uncataloged)
+
+	page := f.viewOf(t, live.ID).Body.String()
+	card := cardFor(t, page, live.ID)
+
+	if !strings.Contains(card, ">"+string(session.DisplayUnknown)+"<") {
+		t.Errorf("the card does not show %q for a pane the registry does not recognise:\n%s", session.DisplayUnknown, card)
+	}
+	if strings.Contains(card, ">"+string(session.DisplayRunning)+"<") {
+		t.Errorf("the card claims %q for a pane the heuristic could not identify; an unmatched-but-suspicious pane must never read as healthy:\n%s", session.DisplayRunning, card)
+	}
+}
+
+// TestTheFleetGridDoesNotYetCheckPanesForADialog pins a deliberate, documented
+// scope cut (dashboard.go's fleet, cardOf's empty paneText argument there):
+// capturing one pane per card on every fleet render is a tmux exec this render
+// does not otherwise make, and this change does not take that cost on. The
+// session page above is where a parked session is named; the grid still reads
+// DisplayRunning for the same session until its own page is opened.
+//
+// This test exists so that gap stays a decision rather than an accident: if
+// the grid is ever wired to check panes too, this test should change to expect
+// DisplayBlocked, not be deleted having quietly stopped meaning anything.
+func TestTheFleetGridDoesNotYetCheckPanesForADialog(t *testing.T) {
+	t.Parallel()
+
+	f := newFleet(t)
+	live, _ := f.fixture.plant(t, session.Session{Name: "a remote session", WorkDir: f.fixture.repo})
+	f.fixture.tmux.SetPane(live.TmuxName(), rcMenuScreenFixture)
+
+	page := f.view(t).Body.String()
+	card := cardFor(t, page, live.ID)
+
+	if !strings.Contains(card, ">"+string(session.DisplayRunning)+"<") {
+		t.Errorf("the fleet grid's card no longer reads %q for a parked session — if the grid now checks panes, update this test to expect %q instead:\n%s", session.DisplayRunning, session.DisplayBlocked, card)
+	}
+}
+
 // TestTheSessionPageOffersTheReflowWithThisSessionsOwnFacts is T005 at the one
 // place the milestone can still be lost: the page.
 //

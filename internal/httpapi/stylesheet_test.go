@@ -50,6 +50,8 @@ var designTokens = map[string]string{
 	"--state-auth":    "#ffb000",
 	"--state-dead":    "#ff4d4d",
 	"--state-failed":  "#ff8c1a",
+	"--state-blocked": "#ff3b3b",
+	"--state-unknown": "#9b8cff",
 	"--mono":          `ui-monospace, "SF Mono", "JetBrains Mono", "Fira Mono", Menlo, Consolas, monospace`,
 	"--sans":          `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`,
 	"--s1":            ".25rem",
@@ -82,6 +84,8 @@ var documentedStates = map[string]string{
 	"needs-auth": "--state-auth",
 	"dead":       "--state-dead",
 	"failed":     "--state-failed",
+	"blocked":    "--state-blocked",
+	"unknown":    "--state-unknown",
 }
 
 // cssComment is what every sweep below reads past. A /* … */ comment is not a

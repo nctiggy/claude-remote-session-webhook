@@ -80,6 +80,8 @@ legibility at a glance beats theme purity:
 | `needs-auth` | `--state-auth` | `#ffb000` | Amber phosphor. In-world: real terminals had amber | Milestone 4 |
 | `dead` | `--state-dead` | `#ff4d4d` | The red pill — the one non-green the palette has earned | Not currently reachable |
 | `failed` | `--state-failed` | `#ff8c1a` | Between the amber that asks for attention and the red that reports an ending, which is exactly what it means | **Spec 012** |
+| `blocked` | `--state-blocked` | `#ff3b3b` | Closer to alarm than `failed`: a human typing the one keystroke a named dialog is waiting for fixes it immediately, and nothing here will ever send it | Pane dialog heuristic (`internal/session/dialog.go`) |
+| `unknown` | `--state-unknown` | `#9b8cff` | Off the green-to-red health spectrum on purpose — this is not a claim about how healthy the session is, it is the heuristic admitting it does not recognise a dialog-shaped pane | Pane dialog heuristic (`internal/session/dialog.go`) |
 
 Do not invent a parallel palette for state, and do not fold state back into green
 for the sake of the theme. A dead session that reads as green is a bug.
@@ -107,6 +109,13 @@ work.
 component. `needs-auth` arrives with the device-code relay; `dead` is unreachable
 today because destroyed and reaped sessions leave no record, and a state that
 renders wrongly the first time it occurs is a defect that ships in silence.
+
+`blocked` and `unknown` are a second axis rather than a return of `idle`'s clock:
+they answer "does the pane match a known dialog" (`internal/session/dialog.go`),
+not "how long has this session been quiet", and only the one caller that has
+captured a pane can produce them (`effectiveDisplayState`, `internal/httpapi`).
+"**running** for every live session" above is still true of the record alone; a
+card that has read the pane and found it parked on a dialog says so instead.
 
 ## Typography
 

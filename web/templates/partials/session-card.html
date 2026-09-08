@@ -65,7 +65,18 @@
 <div class="card-read">
 <a class="card-link" href="/sessions/{{ .ID }}/view" aria-describedby="card-id-{{ .ID }}" draggable="false">
 <h2 class="card-heading">{{ if .Name }}<span class="card-name" title="{{ .Name }}">{{ .Name }}</span>{{ else }}<span class="card-unknown">no name recorded</span>{{ end }}</h2>
-{{ template "status-pill" .DisplayState }}
+{{ template "status-pill" .DisplayState }}{{/*
+  Which dialog "blocked" means (internal/session/dialog.go), when there is a
+  name to give it. Absent for every other state, "unknown" included — a
+  suspicious marker matched there but named no signature, so there is nothing
+  true this line could say beyond what the pill already says.
+
+  Text beside the pill rather than folded into it, for the reason StartCommand
+  is its own line and not appended to Mode: the pill is one word from a fixed
+  vocabulary (docs/design-system.md's state table) and has to keep being a
+  valid CSS class suffix, where a dialog's name is open-ended text a card has
+  never had to carry before.
+*/}}{{ with .ParkedOn }}<p class="card-parked">parked on <span class="card-parked-name">{{ . }}</span></p>{{ end }}
 <p class="card-id" id="card-id-{{ .ID }}" title="{{ .ID }}">{{ .ID }}</p>{{/*
   What this session is running (#38, #39), when it is not the daemon's default.
 
