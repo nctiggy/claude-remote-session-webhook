@@ -476,21 +476,31 @@ Destroying a session clears **all** of:
 A killed session that leaves a tmux window behind is a live unsandboxed shell with
 no owner. Verify the kill; log the failure loudly if it did not work.
 
-## Relaying Claude's own login (detection built; relay not built yet)
+## Relaying Claude's own login (built)
 
-A fresh session may sit at Claude Code's device-code prompt instead of a shell. The
-daemon detects that, surfaces the URL in the dashboard, takes the code the operator
-pastes back, and sends it into the pane.
+A session may sit at Claude Code's sign-in prompt instead of working, and every
+session on the host shares one credential — so when that login goes, the whole fleet
+goes with it. The daemon names that condition and then repairs it, from a browser.
 
-**What is built:** detection only. `internal/claudeauth.DetectPrompt` recognises both
-of Claude Code's sign-in screens — the login menu and the device-code screen — from
-golden files captured off a real process, and a session showing either renders
-`needs-auth` on its own page instead of `running`. It recovers the sign-in URL, and
-nothing renders it: the URL is not on the card, not in a log, not in an audit record.
+**Detection** is `internal/claudeauth.DetectPrompt`, which recognises Claude Code's
+sign-in screens from golden files captured off a real process. A session showing one
+renders `needs-auth` on its own page instead of `running`. There are **three** screens,
+not two, and the third is the one that matters most here: `claude auth login` prints
+`If the browser didn't open, visit: <url>` with the URL **inline**, where an
+interactive `claude` starting logged out prints `Browser didn't open? Use the url
+below to sign in (c to copy)` with the URL at column zero. They share one phrase and
+no URL layout. The relay drives the third, so a detector built only from the first two
+reports the relay's own window as showing nothing.
 
-**What is not built:** everything after that. There is no form, no route that accepts
-a code, and no path that sends one into a pane. Two things that shaped the detection
-half and still bind the rest:
+**The relay** is the rest of it, in `internal/loginrelay` plus three action routes
+(`/dashboard/signin`, `/dashboard/signin/code`, `/dashboard/signin/cancel`) and a
+panel on the settings page. The daemon runs `claude auth login --claudeai` in a tmux
+window of its own, reads the link off that window, and carries back a code the
+operator pastes. The code reaches tmux on stdin through Paste, never in an argv;
+nothing about it is logged, audited, echoed into an outcome, or rendered back.
+
+**It never drives a working session**, and the two facts below are why — both of
+them shaped this design rather than merely constraining it:
 
 - `POST /sessions/{id}/prompt` is on the **API door** — HMAC-signed, no browser
   credential can reach it — so a relay form cannot reuse it. It needs a new

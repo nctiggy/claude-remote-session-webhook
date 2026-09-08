@@ -30,12 +30,46 @@ what each costs you, is [The two doors](#the-two-doors).
 post; the live pane and the fleet updates are the enhancement, not the mechanism.
 The pages are built for a phone as well as a desktop.
 
-**Two things are not built yet**, and are named here so nobody goes looking for
-them: relaying Claude's own device-code login when a session asks for it, and the
-companion Claude skill that would drive the API. The daemon does *recognise* a
-session sitting on Claude Code's sign-in screen and shows it as `needs-auth`
-rather than `running` — knowing is built, answering is not. Everything else on
-this page describes what the daemon does today.
+**One thing is not built yet**, and it is named here so nobody goes looking for
+it: the companion Claude skill that would drive the API. Everything else on this
+page describes what the daemon does today — including **signing Claude in from
+your phone**, which is [its own section](#signing-claude-in-without-going-to-the-host).
+
+### Signing Claude in without going to the host
+
+Every session on the host shares **one** Claude login. When it expires the whole
+fleet stops being able to make a request, and until this existed the only way to
+fix it was to sit at the machine and answer a device-code prompt in a terminal —
+which is the thing you installed this to avoid.
+
+**Settings → Sign-in** does it from wherever you are:
+
+1. Press **Start a sign-in**. The daemon runs `claude auth login` in a tmux window
+   of its own.
+2. Open the link it shows, sign in, and copy the code Anthropic gives you.
+3. Paste the code into the box and press **Send the code**.
+4. The panel says whether this host is signed in, and you press **Cancel this
+   sign-in** to close the window.
+
+**It never types into one of your sessions.** The window it drives is not a
+session — it has no identifier, carries none of the tmux options adoption looks
+for, is not counted against your session cap, and is never reaped or rendered as
+a card. That is deliberate: a session holds a conversation and a prompt state, and
+a relay that could damage the work it was called to rescue would not be a rescue.
+It also would not work, because an expired credential does not put a running
+session back at the sign-in screen — it fails each request and stays where it is.
+
+Two things it does not do. It does not answer the account-type menu for you: it
+runs `--claudeai`, the subscription account, because choosing a billing
+arrangement is not the daemon's to make. And **sessions already running when you
+sign in do not pick it up on their own** — a process's environment and its already
+failing requests are its own; restart the ones that were parked.
+
+The sign-in URL is a one-shot credential, so it is rendered on that panel and
+nowhere else — never on the fleet, never in a link you can share, never in the
+audit trail. The code you paste is carried to the window on stdin and is not
+written down anywhere at all: the trail records *that* a sign-in happened, never
+what was relayed.
 
 ### Reading a session on a narrow screen
 
@@ -121,13 +155,11 @@ neither door runs, serves the API, and admits nobody to the dashboard.
   unit, running as you and not as root.
 - **`tmux`.** Every session is a tmux window, so the installer refuses a host
   without it and so does the daemon at startup.
-- **`claude`, installed and already signed in**, as the user the daemon will run
-  as. Run it once in a terminal and finish its login first. **Relaying Claude's
-  own device-code login is not built**: a session that comes up at that prompt
-  sits there, and the only way to answer it is attaching to the tmux window by
-  hand on the host — which is the thing you installed this to avoid. The session
-  page will at least tell you that is what happened: it reads `needs-auth`
-  instead of `running`. The fleet grid will not, because it captures no pane per
+- **`claude`, installed**, as the user the daemon will run as. It does not have to
+  be signed in first: if it is not, the dashboard will sign it in for you — see
+  [Signing Claude in without going to the host](#signing-claude-in-without-going-to-the-host).
+  A session that comes up at the sign-in prompt reads `needs-auth` on its own page
+  rather than `running`. The fleet grid does not, because it captures no pane per
   card — and since every session shares one credential store, one expired login
   parks all of them.
 

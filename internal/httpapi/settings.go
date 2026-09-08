@@ -52,6 +52,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -142,6 +143,61 @@ type settingsView struct {
 	// page's first job is reporting local configuration, and that needs no
 	// network at all.
 	Update *updatePanel
+
+	// SignIn is the state of Claude Code's own login on this host. Nil on every
+	// render but the one showing its section, because composing it costs a tmux
+	// capture and a subprocess — an operator who came to read a root should not
+	// pay for a question they did not ask.
+	SignIn *signInPanel
+
+	// Outcome is what the action that redirected here did, or nil.
+	//
+	// The fleet has had one since T014; this page gained one when the sign-in
+	// relay landed, because that flow's steps happen here and an operator
+	// pressing a button on this page must be told what it did on this page. It
+	// is the same closed vocabulary and the same partial.
+	Outcome *outcomeView
+}
+
+// signInPanel is what an operator is shown about Claude Code's login.
+//
+// It is deliberately thin. The pane behind it holds the most sensitive screen on
+// this host, and what a person needs from it is: is this host signed in, is a
+// sign-in waiting, and if so what is the link. Everything else on that screen is
+// none of the dashboard's business.
+type signInPanel struct {
+	// Available is whether this daemon has a relay at all. False means the
+	// configured start command names nothing runnable, which the panel says
+	// rather than hiding behind a button that would refuse.
+	Available bool
+
+	// SignedIn is what `claude auth status` answered.
+	//
+	// It is asked of the CLI rather than read off the screen, because the wording
+	// Claude Code prints after a successful sign-in has never been captured here
+	// and this project does not add a signature it has not seen. Nil when the
+	// question could not be put — a host that could not answer is not a host that
+	// is signed out, and saying so would send an operator to fix what is not
+	// broken.
+	SignedIn *bool
+
+	// Running is whether a sign-in window is open.
+	Running bool
+
+	// Link is the sign-in URL, and it is the one place in this daemon it is ever
+	// rendered.
+	//
+	// It carries a one-shot PKCE challenge, so it is on this page and nowhere
+	// else: not on the fleet, not in a query string, not in the trail. Empty
+	// while the screen is still drawing, which the template renders as waiting
+	// rather than as no link — the two mean different things to somebody
+	// deciding whether to press again.
+	Link string
+
+	// Token is what this panel's forms carry, minted for this render and this
+	// identity. Empty draws no forms, for the reason the edit form is not drawn
+	// without one: a control that could not be submitted is worse than none.
+	Token string
 }
 
 // settingSection is a heading and the keys that belong under it.
@@ -642,14 +698,20 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	// layer 1 this server was actually built with. See doorSentence.
 	sections := sectioned(rows, doorFactsOf(s.browser))
 	editToken, _ := s.mintPageToken(r, operator)
+	shown := shownSection(r.URL.Query().Get(querySection), sections)
 	s.renderPage(w, r, http.StatusOK, "settings", settingsView{
 		Operator:   operator,
 		Settings:   rows,
 		Sections:   sections,
-		Shown:      shownSection(r.URL.Query().Get(querySection), sections),
+		Shown:      shown,
 		Token:      editToken,
 		ConfigFile: s.cfg.FilePath,
 		Update:     s.updatePanelFor(r, operator),
+		// Composed only for the render that shows it. It costs a tmux capture and
+		// a subprocess, and every other render of this page is somebody reading
+		// their configuration.
+		SignIn:  s.signInPanelFor(r, operator, shown),
+		Outcome: bannerFor(r.URL.Query().Get(queryOutcome)),
 	})
 }
 
@@ -901,6 +963,14 @@ const querySection = "section"
 // so it is named rather than derived.
 const sectionUpdates = "Updates"
 
+// sectionSignIn is the panel the sign-in relay lives on.
+//
+// A section of its own rather than a row under Updates: what Updates offers is a
+// new binary, and what this offers is a credential every session on the host
+// shares. An operator looking for one is not looking for the other, and the
+// section is where a card saying `needs-auth` sends them.
+const sectionSignIn = "Sign-in"
+
 // shownSection resolves the menu's choice to a section that exists.
 //
 // Anything unrecognised falls back to the first, rather than refusing: a link
@@ -912,6 +982,9 @@ const sectionUpdates = "Updates"
 func shownSection(asked string, sections []settingSection) string {
 	if asked == sectionUpdates {
 		return sectionUpdates
+	}
+	if asked == sectionSignIn {
+		return sectionSignIn
 	}
 	for _, section := range sections {
 		if section.Title == asked {
@@ -929,4 +1002,51 @@ func shownSection(asked string, sections []settingSection) string {
 		return sections[0].Title
 	}
 	return sectionUpdates
+}
+
+// signInPanelFor composes the sign-in section, and only when it is the section
+// being shown.
+//
+// shown is passed rather than re-read from the request so that this cannot
+// disagree with the menu about which section the operator is on — a panel
+// composed for a page that does not render it is a tmux capture and a subprocess
+// spent on nothing, on every load of a page people open to read a setting.
+func (s *Server) signInPanelFor(r *http.Request, operator *access.VerifiedOperator, shown string) *signInPanel {
+	if shown != sectionSignIn {
+		return nil
+	}
+
+	panel := &signInPanel{}
+	if s.signin == nil {
+		// A daemon whose start command names nothing runnable. The panel says so
+		// rather than offering a button that would refuse, which is the same rule
+		// the edit form follows about a field that could not be submitted.
+		return panel
+	}
+	panel.Available = true
+
+	// Minted before the reads rather than after, unlike the session page's: this
+	// panel has no uniform not-found to fall into, so there is no render that
+	// would be handing out a token for a page it is not going to serve.
+	panel.Token, _ = s.mintPageToken(r, operator)
+
+	if signedIn, err := s.signin.SignedIn(r.Context()); err != nil {
+		// Left nil. A host that could not answer is not a host that is signed
+		// out, and rendering it as signed out would send an operator to repair a
+		// credential that is fine.
+		s.report(fmt.Errorf("ask whether this host is signed in: %w", err))
+	} else {
+		panel.SignedIn = &signedIn
+	}
+
+	state, err := s.signin.State(r.Context())
+	if err != nil {
+		s.report(fmt.Errorf("read the sign-in window: %w", err))
+		return panel
+	}
+	panel.Running = state.Running
+	if state.Prompt != nil {
+		panel.Link = state.Prompt.URL
+	}
+	return panel
 }

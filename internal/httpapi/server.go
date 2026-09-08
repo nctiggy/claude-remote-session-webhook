@@ -38,6 +38,7 @@ import (
 	"github.com/nctiggy/claude-remote-session-webhook/internal/audit"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/auth"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/config"
+	"github.com/nctiggy/claude-remote-session-webhook/internal/loginrelay"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/session"
 	"github.com/nctiggy/claude-remote-session-webhook/internal/tmuxctl"
 	"github.com/nctiggy/claude-remote-session-webhook/web"
@@ -259,6 +260,14 @@ type Server struct {
 	// accident.
 	updates selfUpdate
 
+	// signin is the sign-in relay, and is nil on a daemon that could not build
+	// one — a start command naming no runnable binary is the only way that
+	// happens. Nil is a working daemon whose sign-in panel says so, rather than
+	// a refusal to start: a host that cannot relay a login is one an operator can
+	// still reach every other way, and taking the whole dashboard down over it
+	// would remove the page that explains the problem.
+	signin *loginrelay.Relay
+
 	// registered records what was actually handed to the mux, which is not the
 	// same claim as the routes table above. See Routes.
 	registered []Route
@@ -306,6 +315,37 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// The sign-in relay, wired here and nowhere else, for the reason releaseFeed
+	// is: it needs the composed session environment, which exists at this point
+	// and not inside NewWith. A test that wants one sets the field.
+	//
+	// Its environment is the one a session gets, so the credential store it
+	// repairs is the store a session reads — repairing a different one would be a
+	// daemon confidently signing in to somewhere nothing uses. Its working
+	// directory is an approved root for the same reason every other directory
+	// this daemon names is one, though nothing runs there: a sign-in has no
+	// working directory of its own, and inventing a path outside the operator's
+	// allowlist to hold a window would be a second answer to "where may this
+	// daemon start something".
+	//
+	// A failure is not fatal. It means the configured start command names nothing
+	// runnable, which is a real problem the sign-in panel reports — and taking
+	// the dashboard down over it would remove the page that explains it.
+	sessionEnv := config.SessionEnvironment(os.Environ(), cfg.SessionEnvironment)
+	if startCommand, named := cfg.StartCommands.Command(config.DefaultStartCommandName); named {
+		relay, err := loginrelay.New(tmux, startCommand, relayWorkDir(cfg), sessionEnv)
+		if err != nil {
+			srv.report(fmt.Errorf("the sign-in relay is unavailable on this host: %w", err))
+		} else {
+			srv.signin = relay
+		}
+	}
+	// A Config with no default start command is not reported, because loading one
+	// always seeds it: reaching here without one means a Config built by hand
+	// rather than by the loader, which is a test fixture and not a host. The
+	// panel says the relay is unavailable either way; what this avoids is a line
+	// of alarm in the output of every suite that composes a server.
 	// The real release feed, wired here and nowhere else. NewWith leaves it nil,
 	// so every test composes the Updates section without a network call and
 	// exercises the offline answer by default — which is the one an operator on a
@@ -714,6 +754,14 @@ func newServer(
 	// host download and execute a binary, and more than enough to be worth the
 	// gate.
 	s.handleAction(patternDashboardRestart, audit.ActionDashboardRestart, s.restartFromBrowser)
+
+	// The sign-in relay's three, on the same gate as every other action: an
+	// identity from layer 1, a same-origin browser, and a page token minted for
+	// that identity. They carry no {id} because a sign-in names no session — see
+	// signin.go.
+	s.handleAction(patternDashboardSignIn, audit.ActionDashboardSignIn, s.signInFromBrowser)
+	s.handleAction(patternDashboardSignInCode, audit.ActionDashboardSignInCode, s.signInCodeFromBrowser)
+	s.handleAction(patternDashboardSignInCancel, audit.ActionDashboardSignInCancel, s.signInCancelFromBrowser)
 
 	// The settings edit, through the same call every other write uses. The
 	// cross-site gate, the audit record and the ownership check are inherited
@@ -1379,4 +1427,26 @@ func assertBoundAddress(addr net.Addr, offLoopbackOK bool) error {
 		return fmt.Errorf("httpapi: bound to %v, which is not loopback: %w", addr, ErrNotLoopback)
 	}
 	return nil
+}
+
+// relayWorkDir is the directory the sign-in window is created in.
+//
+// The first approved root, because a tmux session needs a directory that exists
+// and this daemon has exactly one list of directories it is allowed to name.
+// Nothing runs there — `claude auth login` reads and writes a credential store
+// under HOME and has no use for a working directory — so this is about not
+// inventing a second answer to "where may this daemon start something", rather
+// than about containment.
+//
+// An empty list cannot happen: configuration refuses to load without a root, and
+// falls back to a loudly-announced default rather than to none. The empty string
+// is returned anyway, because a helper whose contract depends on a promise made
+// in another package is one that breaks quietly when that promise changes —
+// tmux refuses a session with no directory, and a refusal is what this should
+// become if that day comes.
+func relayWorkDir(cfg *config.Config) string {
+	if len(cfg.Roots) == 0 {
+		return ""
+	}
+	return cfg.Roots[0].Path
 }
