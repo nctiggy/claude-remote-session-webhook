@@ -73,19 +73,26 @@ type Controller interface {
 	// empty slice, not an error — that is the normal first-boot case.
 	List(ctx context.Context) ([]SessionInfo, error)
 
-	// ReconcileServerEnvironment removes from the tmux server's global
-	// environment everything a session's own environment would not carry, and
-	// returns the names it removed.
+	// ReconcileServerEnvironment makes the tmux server's global environment
+	// match the one this daemon composes for a session, in both directions, and
+	// returns what it changed.
+	//
+	// Both directions, because a tmux server hands its global table to every
+	// session created on it and keeps it for the server's whole life: a name
+	// the server should not have leaks into every new session, and a name it
+	// lacks can reach a new session no other way. The second half was missing
+	// once and made a shipped fix inert on the one host it was written for —
+	// internal/tmuxctl/env.go carries the measurement.
 	//
 	// On the interface rather than only on *Exec because the daemon must be
 	// able to call it at startup without reaching past the abstraction, and
 	// because a fake that could not answer it would let a test claim a clean
 	// startup path that was never exercised.
 	//
-	// A server that is not running is not an error: there is nothing to clean,
-	// and the first session created will start one from a client this package
-	// has already given a composed environment.
-	ReconcileServerEnvironment(ctx context.Context) ([]string, error)
+	// A server that is not running is not an error: there is nothing to
+	// reconcile, and the first session created will start one from a client
+	// this package has already given a composed environment.
+	ReconcileServerEnvironment(ctx context.Context) (Reconciliation, error)
 }
 
 // The tmux user options the daemon writes onto every session it creates, and
