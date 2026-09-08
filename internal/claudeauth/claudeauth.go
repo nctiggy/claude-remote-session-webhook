@@ -100,6 +100,30 @@ var selectMethodPhrases = []string{
 	"Claude account with subscription",
 }
 
+// authLoginPhrases are the anchors for the screen `claude auth login` draws,
+// which is NOT the screen an interactive `claude` draws when it starts logged
+// out — measured on 2.1.263, both captured under testdata:
+//
+//	claude (cold start):  "Browser didn't open? Use the url below to sign in (c to copy)"
+//	                      URL on its own line, at column zero
+//	claude auth login:    "If the browser didn't open, visit: https://…"
+//	                      URL inline, on the same line as the prose
+//
+// The two share exactly one phrase — "Paste code here if prompted" — and share
+// no URL layout at all. That matters because the relay drives `claude auth
+// login` in a window of its own rather than typing into a working session, so
+// the screen the relay has to read is this one. A detector that knew only the
+// first would have reported the relay's own window as showing nothing, and the
+// operator would have been handed a page with no link on it.
+//
+// "visit:" is the anchor rather than the sentence around it: the prose before it
+// is a full sentence and therefore the part most likely to be reworded, while
+// the colon-and-URL shape is what the screen is for.
+var authLoginPhrases = []string{
+	"Paste code here if prompted",
+	"the browser didn't open, visit:",
+}
+
 // deviceCodePhrases are the anchors for the device-code screen.
 //
 // Both must be present. Either alone is a phrase Claude Code could plausibly
@@ -132,6 +156,13 @@ func DetectPrompt(pane string) (*Prompt, bool) {
 		// Ordered before the menu check because the two screens share no
 		// anchor today and the order is therefore not load-bearing — stated so
 		// that a future shared phrase is a decision rather than an accident.
+		return &Prompt{Kind: KindDeviceCode, URL: signInURL(pane)}, true
+	}
+	if containsAll(flat, authLoginPhrases) {
+		// Same Kind as above: to everything downstream this is the same
+		// question — a screen with a link on it that wants a code back. What
+		// differs is only where the two put the link, which is signInURL's
+		// business and nobody else's.
 		return &Prompt{Kind: KindDeviceCode, URL: signInURL(pane)}, true
 	}
 	if containsAll(flat, selectMethodPhrases) {
@@ -229,14 +260,31 @@ func containsAll(flat string, phrases []string) bool {
 func signInURL(pane string) string {
 	lines := strings.Split(pane, "\n")
 	for i, line := range lines {
-		if !strings.HasPrefix(line, urlPrefix) {
+		// The link starts at column zero on the cold-start screen and part-way
+		// along a sentence on `claude auth login`'s. Cutting at the scheme
+		// covers both, and covers them identically: what follows the prefix is
+		// the URL either way, and what precedes it is prose this package has no
+		// use for.
+		_, after, found := strings.Cut(line, urlPrefix)
+		if !found {
 			continue
 		}
+		line = urlPrefix + after
 		var url strings.Builder
 		url.WriteString(strings.TrimRight(line, " "))
 		for _, next := range lines[i+1:] {
 			trimmed := strings.TrimRight(next, " ")
-			if trimmed == "" || strings.HasPrefix(trimmed, " ") {
+			// A continuation is a run of URL with no whitespace in it. Stopping
+			// at an *indented* line instead was right for the cold-start screen,
+			// where prose follows a blank line, and wrong for the one `claude
+			// auth login` draws: there the paste prompt sits immediately under
+			// the last continuation, at column zero, so the link came back with
+			// "Paste code here if prompted >" welded onto the end of it.
+			//
+			// Measured against a real terminal. The golden that missed it had a
+			// blank line invented into that gap, which is why a fixture is
+			// evidence only as far as it was really captured.
+			if trimmed == "" || strings.ContainsAny(trimmed, " \t") {
 				break
 			}
 			url.WriteString(trimmed)

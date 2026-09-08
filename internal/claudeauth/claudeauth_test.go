@@ -291,3 +291,105 @@ func TestDetectPromptStillFiresWhenAMentionIsAlsoOnScreen(t *testing.T) {
 		t.Errorf("kind = %q, want %q", got.Kind, claudeauth.KindSelectMethod)
 	}
 }
+
+// TestDetectPromptReadsTheAuthLoginScreen covers the screen the relay itself
+// drives, which is not the screen an interactive `claude` draws.
+//
+// **Must fail when** only the cold-start wording is known. Measured on 2.1.263:
+// `claude auth login --claudeai` prints "If the browser didn't open, visit:"
+// with the URL *inline on the same line*, where a `claude` that starts logged
+// out prints "Browser didn't open? Use the url below to sign in (c to copy)"
+// with the URL at column zero. They share one phrase and no URL layout.
+//
+// The relay runs `claude auth login` in a window of its own rather than typing
+// into a working session, so this is the screen it has to read. A detector
+// knowing only the other one reports the relay's own window as showing nothing,
+// and hands the operator a page with no link on it — which is the entire
+// feature, missing, with every other test green.
+func TestDetectPromptReadsTheAuthLoginScreen(t *testing.T) {
+	t.Parallel()
+
+	got, found := claudeauth.DetectPrompt(golden(t, "auth-login.pane"))
+	if !found {
+		t.Fatal("the `claude auth login` screen went undetected; the relay would show no link")
+	}
+	if got.Kind != claudeauth.KindDeviceCode {
+		t.Errorf("kind = %q, want %q — downstream this is the same question as the other device-code screen", got.Kind, claudeauth.KindDeviceCode)
+	}
+
+	// The inline URL has to come back whole, and without the prose in front of it.
+	if strings.Contains(got.URL, "browser didn't open") || strings.Contains(got.URL, "visit:") {
+		t.Errorf("the recovered URL carries the sentence it was printed inside: %q", got.URL)
+	}
+	if !strings.HasPrefix(got.URL, "https://claude.com/cai/oauth/authorize") {
+		t.Errorf("the recovered URL does not start at the link: %q", got.URL)
+	}
+	for _, fragment := range []string{
+		"code_challenge_method=S256",
+		"state=EXAMPLEstateEXAMPLEstateEXAMPLEstateEXAMPLE",
+	} {
+		if !strings.Contains(got.URL, fragment) {
+			t.Errorf("the recovered URL is missing %q; it was not rebuilt across the wrap", fragment)
+		}
+	}
+	if strings.ContainsAny(got.URL, " \t\n") {
+		t.Errorf("the recovered URL carries whitespace, so it is not one link: %q", got.URL)
+	}
+}
+
+// TestSignInURLStopsAtThePastePrompt is the regression guard for a link that
+// came back with the screen's next line welded onto it.
+//
+// **Must fail when** the recovered URL runs past the link. On the screen
+// `claude auth login` draws there is no blank line between the URL's last
+// continuation and "Paste code here if prompted >" — the prompt sits directly
+// under it, at column zero. A rule that stopped at an indented line therefore
+// did not stop at all, and the operator was handed a link with the prompt text
+// on the end of it, which loads nothing.
+//
+// It was found by an acceptance test against a real terminal, not here: the
+// golden that missed it had a blank line invented into that gap. A fixture is
+// evidence only as far as it was really captured, which is why this asserts the
+// no-blank-line shape explicitly rather than trusting the file to keep it.
+func TestSignInURLStopsAtThePastePrompt(t *testing.T) {
+	t.Parallel()
+
+	pane := golden(t, "auth-login.pane")
+
+	// The premise. If a blank line ever creeps back into the golden, this test
+	// stops covering the thing it exists for and says so.
+	lines := strings.Split(strings.TrimRight(pane, "\n"), "\n")
+	last := lines[len(lines)-1]
+	if !strings.HasPrefix(last, "Paste code here") {
+		t.Fatalf("the golden's last line is %q, not the paste prompt; this test no longer covers the case it was written for", last)
+	}
+	if before := lines[len(lines)-2]; strings.TrimSpace(before) == "" {
+		t.Fatal("the golden has a blank line before the paste prompt; the real screen has none, and with one this test proves nothing")
+	}
+
+	got, found := claudeauth.DetectPrompt(pane)
+	if !found {
+		t.Fatal("the screen went undetected")
+	}
+	for _, leaked := range []string{"Paste", "prompted", ">"} {
+		if strings.Contains(got.URL, leaked) {
+			t.Errorf("the recovered link carries %q from the line under it: it is not a link that will load", leaked)
+		}
+	}
+	if strings.ContainsAny(got.URL, " \t") {
+		t.Error("the recovered link carries whitespace")
+	}
+	if !strings.HasSuffix(got.URL, "EXAMPLE") {
+		t.Errorf("the link does not end where the URL ends; it ends %q", tail(got.URL))
+	}
+}
+
+// tail is the last few bytes of a URL, for a failure message that shows where it
+// stopped without printing a link.
+func tail(url string) string {
+	const show = 20
+	if len(url) <= show {
+		return url
+	}
+	return "…" + url[len(url)-show:]
+}

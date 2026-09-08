@@ -251,6 +251,33 @@ const (
 	// what the version route answers afterwards.
 	ActionDashboardRestart Action = "dashboard.restart"
 
+	// ActionDashboardSignIn is a sign-in relay summoned: this daemon started
+	// `claude auth login` in a window of its own so an operator away from the
+	// host could answer it.
+	//
+	// It is worth its own line in a trail because of what it changes. A sign-in
+	// replaces the credential every session on this host shares, so an operator
+	// asking "when did the fleet's authentication last change, and who asked for
+	// it" has one action to grep for.
+	ActionDashboardSignIn Action = "dashboard.signin"
+
+	// ActionDashboardSignInCode is a code relayed into a waiting sign-in.
+	//
+	// The record says THAT a code was carried and never what it was. The code is
+	// a live credential in transit — the one value on this door that is — and
+	// docs/auth-and-sessions.md is explicit that the trail may say a login relay
+	// happened and never what was relayed. Record.Reason is a sentinel authored
+	// in httpapi for the same reason every reason on this door is (FR-042).
+	ActionDashboardSignInCode Action = "dashboard.signin.code"
+
+	// ActionDashboardSignInCancel is a sign-in window ended without completing.
+	//
+	// Separate from the summon rather than folded into it, because the pair is
+	// what tells an abandoned attempt from one still open: a summon with no
+	// cancel and no code after it is a window that may still be sitting on this
+	// host holding a challenge.
+	ActionDashboardSignInCancel Action = "dashboard.signin.cancel"
+
 	// ActionLoginView is the sign-in form served, and ActionLoginSubmit is one
 	// sign-in attempt decided — allow or deny, one record per attempt (M12/T004).
 	//

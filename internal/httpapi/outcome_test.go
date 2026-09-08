@@ -37,6 +37,13 @@ var spelledOutcomes = []outcome{
 	// count is advisory: there is no code here for a width this route refused,
 	// since it refuses none.
 	"reflowed", "reflow-unconfirmed", "reflow-failed",
+	// The sign-in relay's nine. None of them says anything about the sign-in
+	// itself — not the link, which is a one-shot PKCE challenge, and not the
+	// code, which is a live credential in transit. What an outcome may carry is
+	// which step happened and whether it worked.
+	"signin-started", "signin-running", "signin-code-sent",
+	"signin-no-code", "signin-bad-code", "signin-not-running",
+	"signin-cancelled", "signin-unconfirmed", "signin-refused",
 }
 
 // TestEveryOutcomeThisPackageSpellsHasASentence is the other half of FR-022: the

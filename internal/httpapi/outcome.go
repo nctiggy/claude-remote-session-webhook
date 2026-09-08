@@ -182,6 +182,23 @@ const (
 	// nothing was downloaded has been told about the wrong action.
 	outcomeRestartUnconfirmed outcome = "restart-unconfirmed"
 	outcomeRestartRefused     outcome = "restart-refused"
+
+	// The sign-in relay's codes.
+	//
+	// None of them carries anything about the sign-in itself. The URL is a
+	// one-shot PKCE challenge and the code is a live credential, so what an
+	// outcome may say is which step happened and whether it worked — never what
+	// was carried. That is docs/auth-and-sessions.md's rule and it is the reason
+	// these read as thin as they do.
+	outcomeSignInStarted     outcome = "signin-started"
+	outcomeSignInRunning     outcome = "signin-running"
+	outcomeSignInCodeSent    outcome = "signin-code-sent"
+	outcomeSignInNoCode      outcome = "signin-no-code"
+	outcomeSignInBadCode     outcome = "signin-bad-code"
+	outcomeSignInNotRunning  outcome = "signin-not-running"
+	outcomeSignInCancelled   outcome = "signin-cancelled"
+	outcomeSignInUnconfirmed outcome = "signin-unconfirmed"
+	outcomeSignInRefused     outcome = "signin-refused"
 )
 
 // queryOutcome is the query parameter the fleet reads its banner from, spelled
@@ -193,6 +210,13 @@ const queryOutcome = "outcome"
 // reflects what the action did — a destroyed session is a card that is no longer
 // there, and a created one is a card that is.
 const pathFleet = "/"
+
+// pathSettingsPage is where an action whose result lives in a settings panel
+// returns the operator to. Spelled here beside pathFleet rather than derived
+// from patternSettings, because one is a route pattern and the other is a
+// destination, and a redirect built by trimming a method off a pattern is one
+// that breaks silently the day the pattern gains anything.
+const pathSettingsPage = "/settings"
 
 // headerLocation is written by hand on the one kind of response that has one.
 const headerLocation = "Location"
@@ -410,6 +434,48 @@ var banners = map[outcome]outcomeView{
 		// that nothing was torn down would be true and about something else.
 		Message: "This mode change was not confirmed, so nothing was changed.",
 	},
+	outcomeSignInStarted: {
+		Message: "A sign-in is now running on this host. Open the link below, then paste the code it gives you into the box beside it.",
+	},
+
+	outcomeSignInRunning: {
+		Message: "A sign-in was already in progress, so this one was not started. Finish that one, or cancel it and start again — starting a second would abandon the code the first is waiting for.",
+	},
+
+	outcomeSignInCodeSent: {
+		// Deliberately does not claim the sign-in succeeded. What this daemon
+		// knows is that the keystrokes reached the window; whether the code was
+		// the right one is between the operator and Anthropic, and the panel
+		// answers it by asking the CLI rather than by guessing from a screen.
+		Message: "The code was delivered to the sign-in. Check the sign-in panel to see whether this host is now signed in.",
+	},
+
+	outcomeSignInNoCode: {
+		Message: "No code was entered, so nothing was delivered and the sign-in is still waiting.",
+	},
+
+	outcomeSignInBadCode: {
+		// Says what was wrong with the shape and never quotes the value: the
+		// code is the one thing on this door that is a credential in transit.
+		Message: "That code carried characters a code does not — a line break, or a control character. Nothing was delivered, and the sign-in is still waiting.",
+	},
+
+	outcomeSignInNotRunning: {
+		Message: "There is no sign-in running on this host, so there was nothing to deliver a code to. Start one from the sign-in panel.",
+	},
+
+	outcomeSignInCancelled: {
+		Message: "The sign-in was ended. Nothing was signed in, and the code it was waiting for can no longer be used.",
+	},
+
+	outcomeSignInUnconfirmed: {
+		Message: "This sign-in was not confirmed, so nothing was started and nothing on this host changed.",
+	},
+
+	outcomeSignInRefused: {
+		Message: "The sign-in could not be started. Check the daemon's report output — the host may not have the Claude binary the configured start command names.",
+	},
+
 	outcomeUpdateUnconfirmed: {
 		// The same shape as the two above with the fact it states replaced: an
 		// unconfirmed update downloads nothing, so nothing about this daemon or any
@@ -534,5 +600,19 @@ func bannerFor(raw string) *outcomeView {
 // a thing to keep.
 func (s *Server) redirectOutcome(w http.ResponseWriter, r *http.Request, code outcome) {
 	to := url.URL{Path: pathFleet, RawQuery: url.Values{queryOutcome: []string{string(code)}}.Encode()}
+	http.Redirect(w, r, to.String(), http.StatusSeeOther)
+}
+
+// redirectSection is redirectOutcome for an action whose result is shown on a
+// section of the settings page rather than on the fleet.
+//
+// The same closed vocabulary and the same 303: what changes is only where the
+// operator lands, and the section name comes from this package rather than from
+// the request, so this adds no way to put a caller's bytes in a URL either.
+func (s *Server) redirectSection(w http.ResponseWriter, r *http.Request, section string, code outcome) {
+	to := url.URL{Path: pathSettingsPage, RawQuery: url.Values{
+		querySection: []string{section},
+		queryOutcome: []string{string(code)},
+	}.Encode()}
 	http.Redirect(w, r, to.String(), http.StatusSeeOther)
 }

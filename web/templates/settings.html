@@ -93,10 +93,19 @@
   The summary names the section being shown, so collapsed it still answers "where
   am I" rather than only "there is a menu here".
 */}}<nav class="settings-menu" aria-label="Settings sections">
+{{/*
+  What the action that redirected here did.
+
+  The same component and the same closed vocabulary the fleet uses. This page
+  gained one when the sign-in relay landed: that flow's steps happen here, so an
+  operator who presses a button on this page must be told what it did on this
+  page rather than being sent to a grid of cards to find out.
+*/}}{{ template "outcome" .Outcome }}
 <details class="settings-sections" open>
 <summary class="settings-sections-summary">{{ .Shown }}</summary>
 <ul class="settings-menu-list">
 <li><a class="settings-menu-link" href="/settings?section=Updates"{{ if eq .Shown "Updates" }} aria-current="page"{{ end }}>Updates</a></li>
+<li><a class="settings-menu-link" href="/settings?section=Sign-in"{{ if eq .Shown "Sign-in" }} aria-current="page"{{ end }}>Sign-in</a></li>
 {{ range .Sections }}<li><a class="settings-menu-link" href="/settings?section={{ .Title }}"{{ if eq $.Shown .Title }} aria-current="page"{{ end }}>{{ .Title }}</a></li>
 {{ end }}</ul>
 </details>
@@ -307,6 +316,69 @@
 <p class="update-caution">This stops this daemon and starts it again, running the binary already installed. Sessions survive it: they are tmux windows on this host rather than children of this process.</p>
 </form>
 </section>{{ end }}{{ end }}{{ end }}
+
+{{/*
+  Sign-in — Claude Code's own login, relayed.
+
+  This is the one page in this daemon that renders the sign-in URL, and it
+  renders it only here because the URL is a one-shot PKCE challenge: it is not on
+  the fleet, not in a query string, and not in the trail.
+
+  Every control is a plain form post carrying the page token, so the whole flow
+  works with scripting off — which matters more here than anywhere else on this
+  product, because the moment an operator needs it is the moment they are not at
+  a computer.
+*/}}{{ if eq .Shown "Sign-in" }}{{ with .SignIn }}<section class="settings-section">
+<h2 class="settings-title">Sign-in</h2>
+
+{{ if not .Available }}<p class="settings-note">This host has no sign-in relay. The configured start command names no runnable program, so there is nothing for this daemon to run <code>auth login</code> with. Fix <code>start_command</code> and restart.</p>{{ else }}
+
+{{/*
+  What this host's credential is, asked of the CLI rather than read off a screen.
+
+  Nil is neither answer: a host that could not be asked is not a host that is
+  signed out, and saying so would send somebody to repair a credential that is
+  fine.
+*/}}{{ if .SignedIn }}<p class="settings-note">This host <strong>is signed in</strong>. Every session shares this one login, so there is nothing to do here unless it stops working.</p>
+{{ else }}{{ if eq .SignedIn nil }}<p class="settings-note">This daemon could not ask whether this host is signed in. That is a fault on the host rather than an answer — check the daemon's own output.</p>
+{{ else }}<p class="settings-note">This host is <strong>not signed in</strong>. Every session on it shares this one login, so none of them can make a request until it is.</p>{{ end }}{{ end }}
+
+{{ if .Running }}{{/*
+  A sign-in is up. The link, then the box.
+
+  rel="noopener noreferrer" on a link carrying a credential in its query string:
+  a page opened from here must not be handed a window reference, and must not be
+  told where it came from.
+*/}}{{ if .Link }}<p class="settings-note">Open this link, sign in, and paste the code it gives you into the box below.</p>
+<p class="signin-link"><a href="{{ .Link }}" rel="noopener noreferrer" target="_blank">Open the Claude sign-in</a></p>
+{{ else }}<p class="settings-note">A sign-in is starting. The link appears here once Claude Code has drawn it — reload this page in a moment.</p>{{ end }}
+
+{{ if .Token }}<form method="post" action="/dashboard/signin/code">
+<input type="hidden" name="crsw_page_token" value="{{ .Token }}">
+<label class="field-label" for="signin-code">Code from the sign-in page</label>
+{{/*
+  autocomplete, autocapitalize and spellcheck are all off. This is a credential
+  typed on a phone, and a keyboard that capitalises it or a browser that
+  remembers it are both wrong — the first breaks the code, the second stores one.
+*/}}<input class="setting-input" id="signin-code" name="code" type="text" inputmode="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" required>
+<button class="button" type="submit">Send the code</button>
+</form>
+
+<form method="post" action="/dashboard/signin/cancel">
+<input type="hidden" name="crsw_page_token" value="{{ .Token }}">
+<button class="button" type="submit">Cancel this sign-in</button>
+<p class="update-caution">Ends the sign-in window on the host. The code it is waiting for stops working, and nothing on this host is signed in or out by pressing it.</p>
+</form>{{ end }}
+
+{{ else }}{{ if .Token }}<form method="post" action="/dashboard/signin">
+<input type="hidden" name="crsw_page_token" value="{{ .Token }}">
+<input type="hidden" name="confirm" value="yes">
+<button class="button" type="submit">Start a sign-in</button>
+<p class="update-caution">Runs Claude Code's own login in a window of its own on this host. It touches none of your sessions — it cannot, it is not one — and nothing changes until you paste back a code.</p>
+</form>{{ end }}{{ end }}
+
+{{ end }}
+</section>{{ end }}{{ end }}
 
 {{ range .Sections }}{{ if eq $.Shown .Title }}<section class="settings-section">
 <h2 class="settings-title">{{ .Title }}</h2>

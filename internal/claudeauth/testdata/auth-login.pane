@@ -1,0 +1,7 @@
+Opening browser to sign in…
+If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-0000-0000-00
+0000000000&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreat
+e_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload&code_chall
+enge=EXAMPLEchallengeEXAMPLEchallengeEXAMPLEchallenge&code_challenge_method=S256&state=EXAMPLEstateEXAMPLEstateEXAMPLEst
+ateEXAMPLE
+Paste code here if prompted >

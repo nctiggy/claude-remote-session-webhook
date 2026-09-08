@@ -2007,3 +2007,33 @@ body {
 [hidden] {
   display: none !important;
 }
+
+/* Prose inside a settings section.
+
+   The Updates section had no need for one: its content is a table and two
+   buttons, and .update-caution carries the sentence under each button. The
+   Sign-in section is the opposite shape — mostly sentences, because what an
+   operator needs from it is to be told what state their credential is in before
+   they are offered a control. This is that paragraph.
+
+   It is body colour rather than --dim, unlike .update-caution: a caution under a
+   button is secondary to the button, and these sentences ARE the content. */
+.settings-note {
+  margin: 0 0 var(--s3);
+}
+
+/* The one place this daemon renders Claude's sign-in URL.
+
+   Given room of its own and a comfortable target because of where it is used:
+   somebody holding a phone, away from the host, who has one thing to press. It
+   is deliberately not a .button — it leaves this product for claude.com, and a
+   link that looks like every other control on the page would hide that. */
+.signin-link {
+  margin: 0 0 var(--s3);
+  overflow-wrap: anywhere;
+}
+
+.signin-link a {
+  display: inline-block;
+  padding-block: var(--s2);
+}
