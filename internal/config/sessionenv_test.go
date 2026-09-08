@@ -151,9 +151,28 @@ func TestSessionEnvironmentOmitsRatherThanEmpties(t *testing.T) {
 	if _, ok := got["HOME"]; ok {
 		t.Error("HOME was composed from a parent that did not set it")
 	}
-	if len(got) != 1 {
-		t.Errorf("composed %d variables from a parent with one, want 1: %v", len(got), got)
+	if got["PATH"] != "/usr/bin" {
+		t.Errorf("PATH is %q, want the parent's %q", got["PATH"], "/usr/bin")
 	}
+
+	// Nothing beyond PATH may come from the parent. The count is not asserted
+	// directly because the result is a subset of the parent PLUS
+	// sessionDefaults, which this parent does not set — so a bare length would
+	// change whenever a default is added and would say nothing about the
+	// property under test.
+	for name := range got {
+		if name == "PATH" || isSessionDefaultName(name) {
+			continue
+		}
+		t.Errorf("%s was composed from a parent that set only PATH", name)
+	}
+}
+
+// isSessionDefaultName names the values SessionEnvironment supplies rather than
+// inherits. Spelled out here, as the base set is, so that the tests state what
+// they expect instead of asking the code under test to confirm itself.
+func isSessionDefaultName(name string) bool {
+	return name == "CLAUDE_CODE_OAUTH_401_WAIT_MS"
 }
 
 // TestSessionEnvironmentIsTheWholeEnvironment pins data-model V5, and it is the
@@ -173,6 +192,11 @@ func TestSessionEnvironmentIsTheWholeEnvironment(t *testing.T) {
 	// nothing allowed means the set was inherited from somewhere.
 	allowed := func(name string) bool {
 		if strings.HasPrefix(name, "LC_") {
+			return true
+		}
+		// A default is a rule that admits a name, so it belongs in this list.
+		// It is the one entry here that does NOT mean "the parent had it".
+		if isSessionDefaultName(name) {
 			return true
 		}
 		return slices.Contains([]string{"HOME", "PATH", "SHELL", "USER", "LOGNAME", "TERM", "LANG", "XDG_RUNTIME_DIR", "TMUX_TMPDIR"}, name)
@@ -294,6 +318,85 @@ func TestSessionEnvironmentRefusesAPassThroughSecret(t *testing.T) {
 	for name := range got {
 		if strings.HasPrefix(name, "CRSW_") {
 			t.Errorf("%s was passed through because it was named; naming must not override the exclusion", name)
+		}
+	}
+}
+
+// TestSessionEnvironmentCarriesTheOAuthWaitToEverySession pins the one default
+// this daemon supplies rather than passes on.
+//
+// **Must fail when** a composed environment lacks CLAUDE_CODE_OAUTH_401_WAIT_MS.
+// Every session is a separate `claude` process against one credential store;
+// when the eight-hour access token expires they race to refresh it, refresh
+// tokens rotate, and the loser replays a consumed one and is told 401. Claude
+// Code's own back-off for that case reads this variable and defaults it to 0 for
+// a local process, so the loser treats the 401 as fatal and demands a login on a
+// host whose credential is fine.
+//
+// The parent below is a daemon environment that has never heard of the variable,
+// which is the deployment this exists for: it must arrive without the operator
+// naming it, and without depending on which start command made the session.
+func TestSessionEnvironmentCarriesTheOAuthWaitToEverySession(t *testing.T) {
+	t.Parallel()
+
+	got := envOf(t, config.SessionEnvironment(daemonEnvironment(), nil))
+
+	value, ok := got["CLAUDE_CODE_OAUTH_401_WAIT_MS"]
+	if !ok {
+		t.Fatalf("a session would start with no CLAUDE_CODE_OAUTH_401_WAIT_MS; it races every other session for the credential and loses fatally")
+	}
+	if value != "60000" {
+		t.Errorf("CLAUDE_CODE_OAUTH_401_WAIT_MS is %q, want %q — upstream's own number for many processes over one credential store", value, "60000")
+	}
+}
+
+// TestSessionEnvironmentLetsTheOperatorOverrideADefault is the escape hatch, and
+// the reason a default is not simply hard-coded at the point of use.
+//
+// **Must fail when** a default is appended over a value the operator supplied.
+// Two entries for one name in cmd.Env means the last wins, and nothing in this
+// package says which that is — so the operator's answer would be decided by
+// append order rather than by the operator.
+func TestSessionEnvironmentLetsTheOperatorOverrideADefault(t *testing.T) {
+	t.Parallel()
+
+	parent := append(daemonEnvironment(), "CLAUDE_CODE_OAUTH_401_WAIT_MS=0")
+	composed := config.SessionEnvironment(parent, []string{"CLAUDE_CODE_OAUTH_401_WAIT_MS"})
+
+	seen := 0
+	for _, kv := range composed {
+		if name, _, _ := strings.Cut(kv, "="); name == "CLAUDE_CODE_OAUTH_401_WAIT_MS" {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("CLAUDE_CODE_OAUTH_401_WAIT_MS appears %d times in cmd.Env, want 1: %v", seen, composed)
+	}
+
+	got := envOf(t, composed)
+	if got["CLAUDE_CODE_OAUTH_401_WAIT_MS"] != "0" {
+		t.Errorf("the operator set the wait to %q and got %q; a default must not beat a stated value", "0", got["CLAUDE_CODE_OAUTH_401_WAIT_MS"])
+	}
+}
+
+// TestSessionDefaultsAreNotAWayPastTheBoundary holds the file's central rule
+// over the one construct that could quietly escape it.
+//
+// **Must fail when** a default names anything this daemon must never hand on. A
+// default skips the allowlist by construction — it is added because it is on a
+// list here, not because the parent had it — so the exclusions have to be
+// asserted against the result, exactly as they are for an inherited name.
+func TestSessionDefaultsAreNotAWayPastTheBoundary(t *testing.T) {
+	t.Parallel()
+
+	// A parent with nothing in it: whatever survives came from the defaults.
+	for _, kv := range config.SessionEnvironment(nil, nil) {
+		name, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(name, "CRSW_") {
+			t.Errorf("the default %s is this daemon's own configuration and must never reach a session", name)
+		}
+		if config.IsSecret(config.KeyForVar(name)) {
+			t.Errorf("the default %s is a secret and must never reach a session", name)
 		}
 	}
 }
