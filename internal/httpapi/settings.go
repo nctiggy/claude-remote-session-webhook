@@ -200,6 +200,19 @@ type signInPanel struct {
 	Token string
 }
 
+// SignedInTrue is what SignedIn points at, and it exists because the template
+// cannot ask that question itself.
+//
+// html/template's {{ if }} on a pointer tests whether the pointer is nil, not
+// what it points at — a *bool holding false is exactly as truthy as one holding
+// true. Measured 2026-09-09: a host `claude auth status --json` reported as
+// signed out rendered "This host is signed in" anyway, because the template
+// branched on `.SignedIn` directly. Meaningful only once a caller has ruled out
+// nil, the way the template does — the sentence for that case never calls this.
+func (p *signInPanel) SignedInTrue() bool {
+	return p.SignedIn != nil && *p.SignedIn
+}
+
 // settingSection is a heading and the keys that belong under it.
 type settingSection struct {
 	Title    string
