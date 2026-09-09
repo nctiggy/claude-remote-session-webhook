@@ -17,6 +17,8 @@ through Spec Kit instead (`/speckit-specify`).
 Why this exists: without a log, ad-hoc fixes are invisible. A recurring entry here
 is a signal that something needs a real design change rather than a fifth patch.
 
+- 2026-09-09 — The settings page's Sign-in panel held `SignedIn *bool` and branched on it directly; html/template's `{{ if }}` on a pointer tests whether it is nil, not what it points at, so a host reported signed *out* rendered "This host is signed in" — the one moment the panel mattered, it said there was nothing to do. `signInPanel.SignedInTrue()` dereferences it explicitly, only after the template has ruled out nil, and the template now checks nil first rather than last. (#159)
+
 ---
 
 <!-- Append below. Do not edit or reorder existing entries. -->

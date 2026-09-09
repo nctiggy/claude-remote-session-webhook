@@ -336,12 +336,15 @@
 {{/*
   What this host's credential is, asked of the CLI rather than read off a screen.
 
-  Nil is neither answer: a host that could not be asked is not a host that is
-  signed out, and saying so would send somebody to repair a credential that is
-  fine.
-*/}}{{ if .SignedIn }}<p class="settings-note">This host <strong>is signed in</strong>. Every session shares this one login, so there is nothing to do here unless it stops working.</p>
-{{ else }}{{ if eq .SignedIn nil }}<p class="settings-note">This daemon could not ask whether this host is signed in. That is a fault on the host rather than an answer — check the daemon's own output.</p>
-{{ else }}<p class="settings-note">This host is <strong>not signed in</strong>. Every session on it shares this one login, so none of them can make a request until it is.</p>{{ end }}{{ end }}
+  Nil is checked first, and by itself: a host that could not be asked is not a
+  host that is signed out, and saying so would send somebody to repair a
+  credential that is fine. The other two branch on SignedInTrue and never on
+  .SignedIn itself — html/template's {{ if }} on a pointer tests whether it is
+  nil, not what it points at, so a *bool holding false rendered exactly as
+  truthy as one holding true and the sentence below was unreachable.
+*/}}{{ if eq .SignedIn nil }}<p class="settings-note">This daemon could not ask whether this host is signed in. That is a fault on the host rather than an answer — check the daemon's own output.</p>
+{{ else if .SignedInTrue }}<p class="settings-note">This host <strong>is signed in</strong>. Every session shares this one login, so there is nothing to do here unless it stops working.</p>
+{{ else }}<p class="settings-note">This host is <strong>not signed in</strong>. Every session on it shares this one login, so none of them can make a request until it is. Press the button below to start one.</p>{{ end }}
 
 {{ if .Running }}{{/*
   A sign-in is up. The link, then the box.
