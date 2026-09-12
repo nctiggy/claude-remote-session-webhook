@@ -55,7 +55,7 @@ const (
 	// install.sh naming it: it is where the bytes are, and there is nowhere
 	// else to read it from at run time.
 	apiBase  = "https://api.github.com"
-	repoPath = "nctiggy/claude-remote-session-webhook"
+	repoPath = "craig-ai-tooling/claude-remote-session-webhook"
 
 	// ChecksumsAsset and SignatureAsset are the two assets whose names carry no
 	// version, so unlike the tarball they are spelled identically in every

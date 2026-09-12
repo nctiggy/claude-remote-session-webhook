@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # crswd installer — one command, no clone, no compiler.
 #
-#   curl -fsSL https://raw.githubusercontent.com/nctiggy/claude-remote-session-webhook/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/craig-ai-tooling/claude-remote-session-webhook/main/install.sh | bash
 #
 # It downloads a published release and proves the bytes are the ones this
 # project published, before any of them can be run. Two checks, in this order:
@@ -32,7 +32,7 @@
 set -eu
 
 # One base URL, so a fork changes a single line.
-readonly REPO_URL="https://github.com/nctiggy/claude-remote-session-webhook"
+readonly REPO_URL="https://github.com/craig-ai-tooling/claude-remote-session-webhook"
 
 # What the release workflow builds, and all it builds. Anything else is refused
 # by name rather than handed an amd64 binary to fail on later.
@@ -496,7 +496,7 @@ write_config() {
 # else is commented out, so in every other respect it behaves exactly like no
 # configuration file at all. Uncomment only what you mean to change. The full
 # annotated list of every setting there is lives at
-# https://github.com/nctiggy/claude-remote-session-webhook/blob/main/config.example
+# https://github.com/craig-ai-tooling/claude-remote-session-webhook/blob/main/config.example
 #
 # This file holds a credential, and the daemon refuses to read a file that sets
 # one at any mode but 0600. It was written that way. Keep it that way.

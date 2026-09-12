@@ -13,7 +13,7 @@
 
 [Unit]
 Description=Claude remote session webhook daemon
-Documentation=https://github.com/nctiggy/claude-remote-session-webhook
+Documentation=https://github.com/craig-ai-tooling/claude-remote-session-webhook
 After=network-online.target
 Wants=network-online.target
 
