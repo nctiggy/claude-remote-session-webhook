@@ -166,7 +166,7 @@ neither door runs, serves the API, and admits nobody to the dashboard.
 Then, on that host, whichever path you picked:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nctiggy/claude-remote-session-webhook/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/craig-ai-tooling/claude-remote-session-webhook/main/install.sh | bash
 ```
 
 One command. No clone, no compiler, no package manager. It downloads the latest
